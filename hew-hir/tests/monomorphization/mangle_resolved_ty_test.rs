@@ -4,7 +4,7 @@ use hew_hir::{mangle_dotted_name, mangle_resolved_ty};
 use hew_types::{ResolvedTraitBound, ResolvedTy};
 
 fn named(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
-    ResolvedTy::named_user(name, args)
+    ResolvedTy::user_for_test(name, args)
 }
 
 #[test]

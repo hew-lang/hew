@@ -411,7 +411,7 @@ fn aggregate_hash_ignores_padding_and_composes_exact_user_field_methods() {
         fn main() { let values: HashMap<Outer, i64> = HashMap.new(); }
     ",
         );
-        let outer = ResolvedTy::named_user("Outer", vec![]);
+        let outer = ResolvedTy::named_path(&physical.defs, "Outer", vec![]);
         let ctx = Context::create();
         let llvm = llvm(&ctx, &physical);
         let engine = engine(&llvm, optimized);
@@ -580,7 +580,7 @@ fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
         }
         emitter.llvm.verify().unwrap();
         let engine = engine(&emitter.llvm, optimized);
-        let outer = ResolvedTy::named_user("Outer", vec![]);
+        let outer = ResolvedTy::named_path(&physical.defs, "Outer", vec![]);
         let (hash_fn, eq_fn) = callbacks(&engine, &physical, &outer);
         let input = 1i64;
         let mut hash_out = 0xfeed_face_cafe_beefu64;
@@ -637,8 +637,11 @@ fn owned_user_key_methods_receive_borrowed_slots_and_override_structure() {
         let ctx = Context::create();
         let llvm = llvm(&ctx, &physical);
         let engine = engine(&llvm, optimized);
-        let (hash_fn, eq_fn) =
-            callbacks(&engine, &physical, &ResolvedTy::named_user("Key", vec![]));
+        let (hash_fn, eq_fn) = callbacks(
+            &engine,
+            &physical,
+            &ResolvedTy::named_path(&physical.defs, "Key", vec![]),
+        );
         // SAFETY: Key has exactly one managed-string pointer field; both strings
         // outlive the borrowed key callbacks and are released once afterwards.
         unsafe {
@@ -815,7 +818,10 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
         .to_string()
         .contains("has no callback"));
     // Malformed physical recipes must refuse even if a table entry exists.
-    let key = (ResolvedTy::named_user("Key", vec![]), ValueCapability::Eq);
+    let key = (
+        ResolvedTy::named_path(&physical.defs, "Key", vec![]),
+        ValueCapability::Eq,
+    );
     for method in [
         PhysicalValueMethod::Map(PhysicalMapId(0)),
         PhysicalValueMethod::Set(PhysicalSetId(0)),

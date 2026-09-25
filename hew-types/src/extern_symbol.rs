@@ -651,11 +651,7 @@ mod tests {
     fn expand_routes_proven_heap_handle_named_to_ptr_token() {
         let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
         let type_defs = type_defs_with_vec_handle();
-        let nested = Ty::Named {
-            name: "Vec".to_string(),
-            args: vec![Ty::I32],
-            builtin: None,
-        };
+        let nested = Ty::named_for_test("Vec", vec![Ty::I32]);
         let out = t.expand(&nested, &type_defs).unwrap();
         assert_eq!(out, "hew_vec_push_ptr");
     }
@@ -666,11 +662,7 @@ mod tests {
         // No TypeDef entry for `Connection` — fail-closed
         // `for_ty_with_layout` returns `LayoutDescriptor`, expansion
         // reports the would-be `_layout`-suffixed symbol.
-        let user = Ty::Named {
-            name: "Connection".to_string(),
-            args: vec![],
-            builtin: None,
-        };
+        let user = Ty::named_for_test("Connection", vec![]);
         let err = t.expand(&user, &HashMap::new()).unwrap_err();
         match err {
             TemplateExpansionError::UnsupportedCallingConvention {

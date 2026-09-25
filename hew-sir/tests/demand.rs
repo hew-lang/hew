@@ -93,7 +93,7 @@ fn invalidate_header(hir: &mut HirModule, name: &str) {
         })
         .expect("fixture declares the requested header");
     function.params[0].ty =
-        hew_types::ResolvedTy::named_user("UnregisteredDemandType".to_string(), Vec::new());
+        hew_types::ResolvedTy::named_for_test("UnregisteredDemandType", Vec::new());
 }
 
 fn lower_invalid_bodies(source: &str, names: &[&str]) -> LoweredModule {

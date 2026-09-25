@@ -23,9 +23,8 @@ impl LowerCtx {
         // `from_yaml` (A201). Built here deterministically so the HIR node's
         // result type and the checker-registered return type agree.
         let result_self_str = || ResolvedTy::Named {
-            name: "Result".to_string(),
             args: vec![value_ty.clone(), ResolvedTy::String],
-            builtin: Some(hew_types::BuiltinType::Result),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result),
             is_opaque: false,
         };
         let (operand, result_ty) = match direction {

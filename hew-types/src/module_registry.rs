@@ -971,20 +971,21 @@ impl ModuleRegistry {
             self.canonicalize_registry_signature_ty(child, canonical_owner)
         });
         let crate::ty::Ty::Named {
-            name,
+            head: crate::TypeHead::Unresolved(spelling),
             args,
-            builtin,
         } = mapped
         else {
             return mapped;
         };
         let name = self
-            .canonical_registry_signature_type_identity(&name, canonical_owner)
-            .unwrap_or(name);
-        crate::ty::Ty::Named {
-            builtin: builtin.or_else(|| self.encoding_value_builtin(&name)),
-            name,
-            args,
+            .canonical_registry_signature_type_identity(spelling.as_str(), canonical_owner)
+            .unwrap_or_else(|| spelling.to_string());
+        match self.encoding_value_builtin(&name) {
+            Some(builtin) => crate::ty::Ty::named_head(crate::TypeHead::Builtin(builtin), args),
+            None => crate::ty::Ty::Named {
+                head: crate::TypeHead::Unresolved(crate::Symbol::intern(&name)),
+                args,
+            },
         }
     }
 
@@ -1926,10 +1927,13 @@ mod tests {
                     method_name: "clone_for_test".to_string(),
                     c_symbol: c_symbol.to_string(),
                     params: vec![
-                        crate::ty::Ty::option(crate::ty::Ty::named("regex.Pattern", vec![])),
-                        crate::ty::Ty::named("regex.Foreign", vec![]),
+                        crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+                            "regex.Pattern",
+                            vec![],
+                        )),
+                        crate::ty::Ty::unresolved_for_test("regex.Foreign", vec![]),
                     ],
-                    return_type: crate::ty::Ty::option(crate::ty::Ty::named(
+                    return_type: crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
                         "regex.Pattern",
                         vec![],
                     )),
@@ -1960,17 +1964,23 @@ mod tests {
         assert_eq!(a.3, "vendor_a.text.regex");
         assert_eq!(
             a.1[0],
-            crate::ty::Ty::option(crate::ty::Ty::named("vendor_a.text.regex.Pattern", vec![])),
+            crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+                "vendor_a.text.regex.Pattern",
+                vec![]
+            )),
             "nested signature positions must retain the selected source owner"
         );
         assert_eq!(
             a.1[1],
-            crate::ty::Ty::named("regex.Foreign", vec![]),
+            crate::ty::Ty::unresolved_for_test("regex.Foreign", vec![]),
             "an undeclared foreign regex.X type must not inherit the owner"
         );
         assert_eq!(
             a.2,
-            crate::ty::Ty::option(crate::ty::Ty::named("vendor_a.text.regex.Pattern", vec![]))
+            crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+                "vendor_a.text.regex.Pattern",
+                vec![]
+            ))
         );
 
         let b = reg
@@ -2165,27 +2175,26 @@ mod tests {
             ("yaml", BuiltinType::YamlValue),
         ] {
             let owner = format!("std.encoding.{format}");
-            let input = Ty::option(Ty::named(format!("{format}.Value"), vec![]));
+            let input = Ty::option(Ty::unresolved_for_test(&format!("{format}.Value"), vec![]));
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&input, &owner),
                 input
             );
             registry.load_compiler_stdlib_module(&owner).unwrap();
             let expected = Ty::option(Ty::Named {
-                name: kind.canonical_name().to_string(),
                 args: vec![],
-                builtin: Some(kind),
+                head: crate::TypeHead::Builtin(kind),
             });
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&input, &owner),
                 expected
             );
-            let bare = Ty::named("Value", vec![]);
+            let bare = Ty::unresolved_for_test("Value", vec![]);
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&bare, &owner),
                 bare
             );
-            let foreign = Ty::named("user.Value", vec![]);
+            let foreign = Ty::unresolved_for_test("user.Value", vec![]);
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&foreign, &owner),
                 foreign
@@ -2202,10 +2211,10 @@ mod tests {
         registry.load("std.encoding.json").unwrap();
         assert_eq!(
             registry.canonicalize_registry_signature_ty(
-                &crate::Ty::named("json.Value", vec![]),
+                &crate::Ty::unresolved_for_test("json.Value", vec![]),
                 "std.encoding.json"
             ),
-            crate::Ty::named("std.encoding.json.Value", vec![])
+            crate::Ty::unresolved_for_test("std.encoding.json.Value", vec![])
         );
     }
 

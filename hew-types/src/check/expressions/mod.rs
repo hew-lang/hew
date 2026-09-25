@@ -33,7 +33,7 @@ mod variants_forms;
 /// else. `await` over a vector of task handles is the only vector form it joins.
 fn vec_task_output(ty: &Ty) -> Option<Ty> {
     let Ty::Named {
-        builtin: Some(BuiltinType::Vec),
+        head: crate::TypeHead::Builtin(BuiltinType::Vec),
         args,
         ..
     } = ty

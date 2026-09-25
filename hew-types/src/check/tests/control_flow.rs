@@ -692,8 +692,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn vec_with_empty_type_args_emits_diagnostic_not_fresh_var() {
         let errors = check_for_over(Ty::Named {
-            builtin: Some(crate::BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
             args: vec![],
         });
         assert!(
@@ -708,11 +707,7 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn stream_with_empty_type_args_emits_diagnostic_not_fresh_var() {
-        let errors = check_for_over(Ty::Named {
-            builtin: None,
-            name: "Stream".to_string(),
-            args: vec![],
-        });
+        let errors = check_for_over(Ty::named_for_test("Stream", vec![]));
         assert!(
             errors
                 .iter()
@@ -726,8 +721,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn vec_with_type_arg_is_valid() {
         let errors = check_for_over(Ty::Named {
-            builtin: Some(crate::BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
             args: vec![Ty::I64],
         });
         assert!(
@@ -750,8 +744,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn range_iterable_is_valid() {
         let errors = check_for_over(Ty::Named {
-            builtin: Some(crate::BuiltinType::Range),
-            name: "Range".to_string(),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::Range),
             args: vec![Ty::I64],
         });
         assert!(

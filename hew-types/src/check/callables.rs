@@ -418,12 +418,13 @@ impl Checker {
         // take; one without it promises nothing, and the instance reaches the
         // SIR verifier instead. Spec §3.8.1 puts that on the declaration, so
         // refuse here and name the bound alongside `consume`.
-        if let Ty::Named { name, args, .. } = &ty {
+        if let Ty::Named { head, args } = &ty {
+            let name = head.registry_key();
             if args.is_empty()
                 && self.is_type_param_in_scope(name)
                 && !self.type_param_has_marker_bound(name, MarkerTrait::Clone)
             {
-                let param = name.clone();
+                let param = name;
                 self.report_error_with_suggestions(
                     TypeErrorKind::OwnConsumeBorrowed,
                     span,
@@ -850,8 +851,7 @@ impl Checker {
                 }
                 let mut trial = self.subst.clone();
                 for (left, right) in lp.iter().zip(rp).chain(std::iter::once((&**lr, &**rr))) {
-                    self.try_unify_invariant_with_owner_identity(&mut trial, left, right)
-                        .then_some(())?;
+                    Self::try_unify_invariant(&mut trial, left, right).then_some(())?;
                 }
                 let capabilities = CallableCapabilities {
                     call: lc.call.max(rc.call),
@@ -887,25 +887,17 @@ impl Checker {
             }
             (
                 Ty::Named {
-                    name: left_name,
+                    head: left_head,
                     args: left,
-                    builtin: left_builtin,
                 },
                 Ty::Named {
-                    name: right_name,
+                    head: right_head,
                     args: right,
-                    builtin: right_builtin,
                 },
-            ) if left_name == right_name
-                && left_builtin == right_builtin
-                && left.len() == right.len() =>
-            {
-                Some(Ty::Named {
-                    name: left_name.clone(),
-                    builtin: *left_builtin,
-                    args: self.join_callable_type_list(left, right)?,
-                })
-            }
+            ) if left_head == right_head && left.len() == right.len() => Some(Ty::Named {
+                head: *left_head,
+                args: self.join_callable_type_list(left, right)?,
+            }),
             (Ty::Array(left, left_len), Ty::Array(right, right_len)) if left_len == right_len => {
                 self.join_callable_types(left, right)
                     .map(|ty| Ty::Array(Box::new(ty), *left_len))

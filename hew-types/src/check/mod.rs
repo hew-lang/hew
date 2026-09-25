@@ -288,7 +288,6 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         // one spelling, matching `ir-ladder.md` §1.1: one canonical key per
         // declaration, the qualified one, with the bare twin staying a lookup
         // alias never used as a fact key.
-        let module_prefix = name.rsplit_once('.').map(|(prefix, _)| prefix);
         let mut members = Vec::with_capacity(member_tys.len());
         for ty in member_tys {
             let ty = self
@@ -315,10 +314,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                     members: Vec::new(),
                 });
             };
-            let resolved =
-                resolve_member_ty(resolved, module_prefix, &self.checker.type_defs, &|name| {
-                    self.is_opaque_type(name)
-                });
+            let resolved = restore_member_opacity(resolved, &|name| self.is_opaque_type(name));
             members.push(resolved);
         }
         // A declaration with no fields and no variants is still a declaration:
@@ -341,67 +337,28 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
     }
 }
 
-/// Rewrite a member type's bare `Named` occurrences to the declaring module's
-/// canonical (qualified) spelling, so a declaration's own recursive
-/// occurrence carries the same key its declaration is looked up under.
-///
-/// Only rewrites a bare name that has a `{prefix}.{bare}` twin registered in
-/// `type_defs` — an unqualified reference to a type outside this module (a
-/// builtin, or a name `type_defs` never published under the prefix) is left
-/// exactly as resolved. Restore opacity from the same declaration authority
-/// after qualifying each name, including nominals nested inside members.
-/// `Ty` carries no opacity, so its boundary conversion alone is insufficient.
-pub(crate) fn resolve_member_ty(
+/// Restore a member type's opacity from its declaration authority, including
+/// nominals nested inside members. `Ty` carries no opacity, so its boundary
+/// conversion alone is insufficient.
+pub(crate) fn restore_member_opacity(
     ty: ResolvedTy,
-    prefix: Option<&str>,
-    type_defs: &HashMap<String, crate::check::types::TypeDef>,
     is_opaque_type: &impl Fn(&str) -> bool,
 ) -> ResolvedTy {
-    let rewrite_name = |name: String| -> String {
-        let Some(prefix) = prefix else {
-            return name;
-        };
-        if name.starts_with(prefix) && name[prefix.len()..].starts_with('.') {
-            return name;
-        }
-        let qualified = format!("{prefix}.{name}");
-        if type_defs.contains_key(&qualified) {
-            qualified
-        } else {
-            name
-        }
-    };
-    let resolve = |ty| resolve_member_ty(ty, prefix, type_defs, is_opaque_type);
+    let resolve = |ty| restore_member_opacity(ty, is_opaque_type);
     match ty {
         ResolvedTy::Named {
-            name,
+            head,
             args,
-            builtin,
             is_opaque,
         } => {
             let args = args.into_iter().map(resolve).collect();
-            // A builtin already carries its identity in `builtin`; the name
-            // string is display-only there and rewriting it would be a
-            // second, redundant identity authority.
-            let name = if builtin.is_none() {
-                rewrite_name(name)
-            } else {
-                name
-            };
-            // Source-owned lifecycle fields retain the same exact declaration
-            // discriminator as annotations and constructed values. The lookup
-            // requires the qualified declaration already present in this scope.
-            let builtin = builtin.or_else(|| {
-                (name.contains('.') && type_defs.contains_key(&name))
-                    .then(|| crate::lookup_source_owned_lifecycle_type(&name))
-                    .flatten()
-            });
-            let is_opaque = !builtin.is_some_and(crate::BuiltinType::is_substrate_handle)
-                && (is_opaque || is_opaque_type(&name));
+            let is_opaque = !head
+                .builtin()
+                .is_some_and(crate::BuiltinType::is_substrate_handle)
+                && (is_opaque || is_opaque_type(head.registry_key()));
             ResolvedTy::Named {
-                name,
+                head,
                 args,
-                builtin,
                 is_opaque,
             }
         }
@@ -504,8 +461,9 @@ pub(crate) fn declaration_walk_terminates(
     }
 
     fn nominal_names(ty: &ResolvedTy, out: &mut Vec<String>) {
-        if let ResolvedTy::Named { name, .. } = ty {
-            out.push(name.clone());
+        if let ResolvedTy::Named { head, .. } = ty {
+            let name = head.registry_key();
+            out.push(name.to_string());
         }
         let mut components = Vec::new();
         crate::type_facts::push_type_components(ty, &mut components);
@@ -516,8 +474,9 @@ pub(crate) fn declaration_walk_terminates(
 
     fn member_names(ty: &Ty, out: &mut Vec<String>) {
         match ty {
-            Ty::Named { name, args, .. } => {
-                out.push(name.clone());
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
+                out.push(name.to_string());
                 for arg in args {
                     member_names(arg, out);
                 }
@@ -1273,7 +1232,7 @@ impl Checker {
                 EntryExitAction::Integer(EntryIntegerType::from_ty(&integer)?),
             ),
             Ty::Named {
-                builtin: Some(crate::BuiltinType::Result),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
                 args,
                 ..
             } if matches!(args.as_slice(), [Ty::Unit, _]) => {
@@ -2685,7 +2644,7 @@ impl Checker {
                 .iter()
                 .filter_map(|name| {
                     self.inherent_impl_method_declaration(
-                        &Ty::named(name.clone(), Vec::new()),
+                        &self.named_ty_for_key(name, Vec::new()),
                         "close",
                     )
                     .map(|close| (name.clone(), close))

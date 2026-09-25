@@ -75,8 +75,8 @@ pub use check::{
     WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use def_table::{
-    DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, ModuleId,
-    NominalId, Predicate, TypeParamId,
+    DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, KnownDecl,
+    ModuleId, NominalId, Predicate, TypeParamId,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

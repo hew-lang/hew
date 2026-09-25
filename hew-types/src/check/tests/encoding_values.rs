@@ -10,9 +10,8 @@ const VALUE_SOURCE: &str = "#[opaque] pub type Value {}";
 
 fn encoding_ty(kind: BuiltinType) -> Ty {
     Ty::Named {
-        name: kind.canonical_name().to_string(),
         args: vec![],
-        builtin: Some(kind),
+        head: crate::TypeHead::Builtin(kind),
     }
 }
 
@@ -68,7 +67,15 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         let lookalike = check_source_in_module(&source, module.clone());
         assert!(lookalike.errors.is_empty(), "{:?}", lookalike.errors);
         let ty = &lookalike.fn_sigs[&format!("std.encoding.{format}.identity")].return_type;
-        assert!(matches!(ty, Ty::Named { builtin: None, .. }));
+        assert!(matches!(
+            ty,
+            Ty::Named {
+                head: crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            }
+        ));
         assert_eq!(
             lookalike.type_fact_context.declarations()[kind.canonical_name()].builtin,
             None
@@ -152,17 +159,17 @@ fn generic_equality_preserves_opaque_encoding_type_arguments() {
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
         let value = ResolvedTy::Named {
-            name: kind.canonical_name().to_string(),
             args: vec![],
-            builtin: Some(kind),
+            head: crate::TypeHead::Builtin(kind),
             is_opaque: true,
         };
         for argument in [
             value.clone(),
-            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![value]),
+            ResolvedTy::named_builtin(BuiltinType::Option, vec![value]),
         ] {
-            let receiver = ResolvedTy::named_user(
-                format!("std.encoding.{format}.Holder"),
+            let receiver = ResolvedTy::named_path(
+                service.defs(),
+                &format!("std.encoding.{format}.Holder"),
                 vec![argument.clone()],
             );
             let selection = service
@@ -231,7 +238,15 @@ fn encoding_value_names_do_not_grant_catalogue_authority() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let ty = &output.fn_sigs["identity"].return_type;
-    assert!(matches!(ty, Ty::Named { builtin: None, .. }));
+    assert!(matches!(
+        ty,
+        Ty::Named {
+            head: crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_),
+            ..
+        }
+    ));
     let facts = output.type_facts[&ResolvedTy::from_ty(ty).unwrap().into()];
     assert_eq!(
         (facts.class, facts.clone),
@@ -275,7 +290,11 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
                 "{import_source}: {:?}",
                 output.errors
             );
-            let expected = Ty::named("Envelope", vec![Ty::option(encoding_ty(kind))]);
+            let expected = Ty::named_in(
+                &output.defs,
+                "Envelope",
+                vec![Ty::option(encoding_ty(kind))],
+            );
             assert_eq!(output.fn_sigs["identity"].return_type, expected);
             let resolved = ResolvedTy::from_ty(&expected).unwrap();
             let facts = output.type_facts[&resolved.into()];
@@ -351,9 +370,8 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
         output.fn_sigs[&output.import_fn_name_aliases[&(None, 0, "forward".to_string())]]
             .return_type,
         Ty::Named {
-            name: "Vec".to_string(),
             args: vec![encoding_ty(BuiltinType::JsonValue)],
-            builtin: Some(BuiltinType::Vec)
+            head: crate::TypeHead::Builtin(BuiltinType::Vec)
         }
     );
 }
@@ -371,7 +389,7 @@ fn encoding_value_import_alias_cannot_promote_a_same_named_user_resource() {
     let output = check_items(items);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let ty = &output.fn_sigs["identity"].return_type;
-    assert_eq!(ty, &Ty::named("user.format.Value", vec![]));
+    assert_eq!(ty, &Ty::named_in(&output.defs, "user.format.Value", vec![]));
     let facts = output.type_facts[&ResolvedTy::from_ty(ty).unwrap().into()];
     assert_eq!(
         (facts.class, facts.clone),

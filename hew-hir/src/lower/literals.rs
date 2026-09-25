@@ -273,7 +273,10 @@ impl LowerCtx {
             | ResolvedTy::Duration
             | ResolvedTy::Tuple(_) => None,
             ResolvedTy::Named {
-                builtin: None,
+                head:
+                    hew_types::TypeHead::Nominal(_)
+                    | hew_types::TypeHead::Param(_)
+                    | hew_types::TypeHead::Unresolved(_),
                 is_opaque,
                 ..
             } => {
@@ -284,7 +287,8 @@ impl LowerCtx {
                 }
             }
             ResolvedTy::Named {
-                builtin: Some(_), ..
+                head: hew_types::TypeHead::Builtin(_) | hew_types::TypeHead::Actor(_),
+                ..
             } => Some(
                 "builtin container and handle types cannot ride the \
                  element-layout queue witness",

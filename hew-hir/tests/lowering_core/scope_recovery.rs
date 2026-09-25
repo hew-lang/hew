@@ -50,12 +50,12 @@ fn scope_recovery_keeps_result_values_and_owned_failure_binding() {
     assert!(matches!(
         &value.ty,
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Result),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result),
             ..
         }
     ));
     assert!(
-        matches!(&error.ty, ResolvedTy::Named { name, .. } if name == "std.builtins.ScopeFailure")
+        matches!(&error.ty, ResolvedTy::Named { head: name_head, .. } if name_head.spelling() == "std.builtins.ScopeFailure")
     );
     let HirExprKind::Block(block) = &handler.kind else {
         panic!("expected handler block");

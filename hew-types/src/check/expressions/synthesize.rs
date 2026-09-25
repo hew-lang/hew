@@ -94,11 +94,7 @@ impl Checker {
                         format!("invalid regex literal `re\"{pattern}\"`: {err}"),
                     );
                 }
-                Ty::Named {
-                    builtin: None,
-                    name: "std.text.regex.Pattern".to_string(),
-                    args: vec![],
-                }
+                self.named_ty_for_key("std.text.regex.Pattern", vec![])
             }
             Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
@@ -495,10 +491,10 @@ impl Checker {
                     if (r.as_option().is_some() && ty.as_option().is_some())
                         || (r.as_result().is_some() && ty.as_result().is_some())
                         || matches!(r, Ty::Var(_) | Ty::Error)
-                        || matches!(&r, Ty::Named { name, .. }
-                                if !Ty::is_named_builtin(name)
-                                    && !self.type_defs.contains_key(name)
-                                    && !self.type_aliases.contains_key(name))
+                        || matches!(&r, Ty::Named { head, .. }
+                                if head.builtin().is_none()
+                                    && !self.type_defs.contains_key(head.registry_key())
+                                    && !self.type_aliases.contains_key(head.registry_key()))
                     {
                         None
                     } else {
@@ -907,11 +903,7 @@ impl Checker {
         let (payload, error_ty) = if scope_recovery {
             Some((
                 container.clone(),
-                Ty::Named {
-                    name: "std.builtins.ScopeFailure".to_string(),
-                    args: Vec::new(),
-                    builtin: None,
-                },
+                self.named_ty_for_key("std.builtins.ScopeFailure", Vec::new()),
             ))
         } else if error.is_some() {
             container
@@ -985,8 +977,7 @@ impl Checker {
     /// element type may still be an inference variable.
     pub(super) fn vec_of(elem_ty: Ty) -> Ty {
         Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args: vec![elem_ty],
         }
     }
@@ -1045,8 +1036,7 @@ impl Checker {
             let k = TypeVar::fresh();
             let v = TypeVar::fresh();
             Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
-                name: "HashMap".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                 args: vec![Ty::Var(k), Ty::Var(v)],
             }
         } else {
@@ -1060,8 +1050,7 @@ impl Checker {
             }
             self.validate_hashmap_key_value_types(&first_key_ty, &first_val_ty, span);
             Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
-                name: "HashMap".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                 args: vec![first_key_ty, first_val_ty],
             }
         }
@@ -1251,7 +1240,7 @@ impl Checker {
             } else if is_moved && !is_write_target {
                 let is_linear = matches!(
                     &ty,
-                    Ty::Named { name, .. } if self.registry.is_linear(name)
+                    Ty::Named { head, .. } if self.registry.is_linear(head.registry_key())
                 );
                 let mut err = TypeError::new(
                     if is_linear {
@@ -1545,7 +1534,7 @@ impl Checker {
             }
             return match &obj_ty {
                 Ty::Named {
-                    builtin: Some(BuiltinType::Vec),
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
                     args,
                     ..
                 } if !args.is_empty() => {
@@ -1643,7 +1632,7 @@ impl Checker {
             // Publish the operand widening so HIR inserts an explicit cast
             // before the runtime bounds check.
             Ty::Named {
-                builtin: Some(BuiltinType::Vec),
+                head: crate::TypeHead::Builtin(BuiltinType::Vec),
                 args,
                 ..
             } if !args.is_empty() => {
@@ -1703,7 +1692,7 @@ impl Checker {
             // span. The key bound is the existing `K: Hash + Eq` admission
             // contract — the same one every HashMap method call enforces.
             Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
+                head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                 args,
                 ..
             } if args.len() == 2 => {
@@ -1769,7 +1758,8 @@ impl Checker {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 Ty::U8
             }
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
                     let expected_key = self
                         .lookup_named_method_sig(name, args, "at")

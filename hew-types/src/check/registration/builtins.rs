@@ -37,22 +37,14 @@ impl Checker {
             "println",
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
+            vec![Ty::param("T")],
             Ty::Unit,
         );
         self.register_builtin_fn_with_bounds(
             "print",
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
+            vec![Ty::param("T")],
             Ty::Unit,
         );
 
@@ -64,11 +56,7 @@ impl Checker {
             "to_string",
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
+            vec![Ty::param("T")],
             Ty::String,
         );
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
@@ -82,9 +70,8 @@ impl Checker {
             "instant::now",
             vec![],
             Ty::Named {
-                name: "instant".to_string(),
                 args: vec![],
-                builtin: Some(BuiltinType::Instant),
+                head: crate::TypeHead::Builtin(BuiltinType::Instant),
             },
         );
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
@@ -93,7 +80,7 @@ impl Checker {
                 view,
                 vec![
                     Ty::Var(TypeVar::fresh()),
-                    crate::actor_delivery::nominal(crate::actor_delivery::ON_FULL_TYPE, Vec::new()),
+                    crate::actor_delivery::nominal(crate::KnownDecl::OnFull, Vec::new()),
                 ],
                 Ty::Var(TypeVar::fresh()),
             );
@@ -101,9 +88,8 @@ impl Checker {
         self.register_builtin_fn(
             "sleep_until",
             vec![Ty::Named {
-                name: "instant".to_string(),
                 args: vec![],
-                builtin: Some(BuiltinType::Instant),
+                head: crate::TypeHead::Builtin(BuiltinType::Instant),
             }],
             Ty::Unit,
         );
@@ -145,11 +131,7 @@ impl Checker {
             "link_remote",
             vec![
                 Ty::remote_pid(Ty::Var(link_remote_t)),
-                Ty::Named {
-                    name: "PartitionPolicy".to_string(),
-                    args: vec![],
-                    builtin: None,
-                },
+                crate::actor_delivery::nominal(crate::KnownDecl::PartitionPolicy, Vec::new()),
             ],
             Ty::result(Ty::Unit, Ty::link_error()),
         );
@@ -171,18 +153,7 @@ impl Checker {
                 "T".to_string(),
                 vec!["Eq".to_string(), "Display".to_string()],
             )]),
-            vec![
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            ],
+            vec![Ty::param("T"), Ty::param("T")],
             Ty::Unit,
         );
         self.register_builtin_fn_with_bounds(
@@ -192,18 +163,7 @@ impl Checker {
                 "T".to_string(),
                 vec!["Eq".to_string(), "Display".to_string()],
             )]),
-            vec![
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            ],
+            vec![Ty::param("T"), Ty::param("T")],
             Ty::Unit,
         );
 
@@ -229,9 +189,8 @@ impl Checker {
             HashMap::new(),
             vec![Ty::I64],
             Ty::Named {
-                builtin: Some(BuiltinType::Vec),
-                name: "Vec".to_string(),
-                args: vec![Ty::named("T", vec![])],
+                head: crate::TypeHead::Builtin(BuiltinType::Vec),
+                args: vec![Ty::param("T")],
             },
         );
         self.register_collection_constructor(
@@ -275,11 +234,7 @@ impl Checker {
         self.register_builtin_fn("bool_to_string", vec![Ty::Bool], Ty::String);
 
         // Node/distributed builtins
-        let node_config = Ty::Named {
-            builtin: None,
-            name: "NodeConfig".to_string(),
-            args: vec![],
-        };
+        let node_config = crate::actor_delivery::nominal(crate::KnownDecl::NodeConfig, Vec::new());
         let node_error = Ty::builtin_named(BuiltinType::NodeError, vec![]);
         let node_result = Ty::result(Ty::Unit, node_error);
         self.register_builtin_fn("Node::start", vec![node_config], node_result.clone());
@@ -310,11 +265,7 @@ impl Checker {
             HashMap::new(),
             vec![Ty::String],
             Ty::result(
-                Ty::remote_pid(Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                }),
+                Ty::remote_pid(Ty::param("T")),
                 crate::builtin_enums::monomorphic_builtin_enum_ty("LookupError")
                     .expect("generated builtin enum catalog must contain LookupError"),
             ),
@@ -709,7 +660,11 @@ impl Checker {
     pub(super) fn register_builtin_error_prelude_bindings(&mut self) {
         for name in ["LinkError", "LookupError", "NodeError", "ScopeFailure"]
             .into_iter()
-            .chain(crate::actor_delivery::DECLARATIONS.iter().copied())
+            .chain(
+                crate::actor_delivery::DECLARATIONS
+                    .iter()
+                    .map(|known| known.path().trim_start_matches("std.builtins.")),
+            )
         {
             let canonical = format!("std.builtins.{name}");
             debug_assert!(
@@ -819,7 +774,7 @@ impl Checker {
             return Some(canonical.to_string());
         }
         if let Ty::Named {
-            builtin: Some(builtin),
+            head: crate::TypeHead::Builtin(builtin),
             ..
         } = ty
         {

@@ -327,7 +327,7 @@ fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
     let option_types: Vec<&Ty> = output
         .expr_types
         .values()
-        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
         !option_types.is_empty()
@@ -335,7 +335,7 @@ fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
                 !matches!(
                     *ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Option),
+                        head: crate::TypeHead::Builtin(BuiltinType::Option),
                         ..
                     }
                 )

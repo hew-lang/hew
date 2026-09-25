@@ -234,11 +234,15 @@ impl StructuralGlue {
                 Ok(PhysicalStructuralShape::Tuple { fields })
             }
             ResolvedTy::Named {
-                name,
-                builtin,
-                is_opaque,
-                ..
-            } => self.named_shape(module, ty, name, *builtin, *is_opaque, members),
+                head, is_opaque, ..
+            } => self.named_shape(
+                module,
+                ty,
+                head.registry_key(),
+                head.builtin(),
+                *is_opaque,
+                members,
+            ),
             _ => Err(refusal(ty)),
         }
     }

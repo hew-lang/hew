@@ -653,7 +653,11 @@ pub(crate) fn builtin_enum_hir_variants(spec: &BuiltinEnumSpec) -> Vec<HirVarian
                 HirVariantKind::Tuple(
                     payload_params
                         .iter()
-                        .map(|param| ResolvedTy::named_user(*param, Vec::new()))
+                        .map(|param| ResolvedTy::Named {
+                            head: hew_types::TypeHead::param(param),
+                            args: Vec::new(),
+                            is_opaque: false,
+                        })
                         .collect(),
                 )
             };
@@ -1456,7 +1460,7 @@ struct LowerCtx {
     /// `impl ... for <SelfType> { ... }` (or inherent `impl <SelfType>`) block,
     /// `Self` in any annotated `TypeExpr` position must resolve to the
     /// concrete self type rather than escaping to MIR as a literal
-    /// `ResolvedTy::named_user("Self", _)` (which has no entry in the
+    /// `ResolvedTy::named_path(&self.defs, &"Self", _)` (which has no entry in the
     /// record-field-order table and fail-closes at MIR boundary).
     ///
     /// Set by `lower_impl_block` before lowering each method, cleared after.
@@ -1631,12 +1635,9 @@ fn transfers_ownership_to_mailbox_guarded(
 ) -> bool {
     match ty {
         ResolvedTy::CancellationToken => true,
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } => {
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
+            let builtin = head.builtin();
             if builtin
                 .is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
             {
@@ -1668,7 +1669,7 @@ fn transfers_ownership_to_mailbox_guarded(
             }
             // A builtin carries no user member set to descend into, and its
             // ownership verdict is already decided above.
-            if builtin.is_some() || !visiting.insert(name.clone()) {
+            if builtin.is_some() || !visiting.insert(name.to_string()) {
                 return false;
             }
             let carries = type_member_tys.get(name).is_some_and(|members| {

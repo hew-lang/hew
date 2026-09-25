@@ -1584,8 +1584,8 @@ impl FunctionLowerer<'_> {
                 ResolvedTy::String,
                 ResolvedTy::String,
                 ResolvedTy::String,
-                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
-                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
+                ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::String]),
+                ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::String]),
             ];
             let shape = self
                 .module
@@ -1613,7 +1613,7 @@ impl FunctionLowerer<'_> {
         let error_ty = if family == RuntimeCallFamily::NodeLookup {
             match &value.ty {
                 ResolvedTy::Named {
-                    builtin: Some(BuiltinType::Result),
+                    head: hew_types::TypeHead::Builtin(BuiltinType::Result),
                     args,
                     ..
                 } if args.len() == 2

@@ -1087,9 +1087,8 @@ impl Checker {
                     }
                 } else {
                     match ty {
-                        Ty::Named {
-                            name: type_name, ..
-                        } => {
+                        Ty::Named { head, .. } => {
+                            let type_name = head.registry_key();
                             let container_kind =
                                 self.lookup_type_def(type_name).map_or("enum", |td| {
                                     if td.kind == TypeDefKind::Machine {
@@ -1100,7 +1099,7 @@ impl Checker {
                                 });
                             self.report_error(
                                 TypeErrorKind::Mismatch {
-                                    expected: type_name.clone(),
+                                    expected: type_name.to_string(),
                                     actual: name.clone(),
                                 },
                                 span,
@@ -1447,11 +1446,7 @@ impl Checker {
                             self.check_shadowing(capture_name, span);
                             self.env.define_with_span(
                                 capture_name.to_string(),
-                                Ty::Named {
-                                    builtin: None,
-                                    name: "string".to_string(),
-                                    args: vec![],
-                                },
+                                self.named_ty_for_key("string", vec![]),
                                 false,
                                 span.clone(),
                             );

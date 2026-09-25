@@ -79,7 +79,7 @@ fn result_main_carries_resolved_display_declaration() {
     assert!(matches!(
         result_ty,
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Result),
+            head: crate::TypeHead::Builtin(BuiltinType::Result),
             ..
         }
     ));

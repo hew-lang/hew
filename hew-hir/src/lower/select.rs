@@ -8,17 +8,17 @@ impl LowerCtx {
     /// checked `Result<Delivery, SendFailure<M>>` the call site carries.
     pub(super) fn submitted_message_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
-            builtin: Some(BuiltinType::Result),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Result),
             args,
             ..
         } = ty
         else {
             return None;
         };
-        let [_, ResolvedTy::Named { name, args, .. }] = args.as_slice() else {
+        let [_, ResolvedTy::Named { head, args, .. }] = args.as_slice() else {
             return None;
         };
-        if name != hew_types::actor_delivery::FAILURE_TYPE {
+        if *head != hew_types::KnownDecl::SendFailure.head() {
             return None;
         }
         let [message] = args.as_slice() else {
@@ -40,7 +40,7 @@ impl LowerCtx {
         let result_ty = match result {
             Ok(
                 ty @ ResolvedTy::Named {
-                    builtin: Some(BuiltinType::Result),
+                    head: hew_types::TypeHead::Builtin(BuiltinType::Result),
                     ..
                 },
             ) => ty,
@@ -99,7 +99,7 @@ impl LowerCtx {
             HirSelectArmKind::StreamNext { stream } => match &stream.ty {
                 ResolvedTy::Named {
                     args,
-                    builtin: Some(BuiltinType::Stream),
+                    head: hew_types::TypeHead::Builtin(BuiltinType::Stream),
                     ..
                 } if args.len() == 1 => Some(LowerCtx::resolved_option_ty(args[0].clone())),
                 _ => {

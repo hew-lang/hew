@@ -31,7 +31,7 @@ impl Checker {
 
     /// Project `A.Msg` and `A.Reply` through the actor's `ActorMsg` impl.
     fn actor_msg_types(&self, actor: &str) -> Option<(ResolvedTy, ResolvedTy)> {
-        let base = Ty::actor_handle(actor, Vec::new());
+        let base = Ty::actor_handle(self.nominal_head_for_key(actor)?, Vec::new());
         let project = |assoc: &str| {
             let ty = self.project_assoc_types(&Ty::AssocType {
                 base: Box::new(base.clone()),
@@ -54,10 +54,13 @@ impl Checker {
         ask: bool,
         span: &hew_parser::ast::Span,
     ) -> bool {
-        let Ty::Named { name, .. } = self.subst.resolve(actor) else {
+        let Ty::Named { head, .. } = self.subst.resolve(actor) else {
             return true;
         };
-        let canonical = self.canonical_nominal_name(&name).unwrap_or(name);
+        let name = head.registry_key();
+        let canonical = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.to_string());
         let Some((msg, reply)) = self.actor_msg_types(&canonical) else {
             return true;
         };
@@ -68,8 +71,9 @@ impl Checker {
             }
             // A record or enum can declare its schema; any other value has
             // no wire representation at all.
-            let declarable = matches!(ty, ResolvedTy::Named { name, builtin: None, .. }
-                if self.type_defs.contains_key(name) && !self.actor_protocol_descriptors.contains_key(name));
+            let declarable = matches!(ty, ResolvedTy::Named { head, .. }
+                if head.is_user() && self.type_defs.contains_key(head.registry_key())
+                    && !self.actor_protocol_descriptors.contains_key(head.registry_key()));
             let message = format!(
                 "remote actor `{canonical}` cannot carry `{}`: a value sent to a remote \
                  actor needs an explicit wire schema",

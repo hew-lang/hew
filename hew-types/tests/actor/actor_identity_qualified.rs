@@ -74,7 +74,10 @@ fn actor_handle_names(output: &TypeCheckOutput) -> Vec<String> {
     let mut names: Vec<String> = output
         .expr_types
         .values()
-        .filter_map(|t| t.actor_handle_identity().map(|(name, _)| name.to_string()))
+        .filter_map(|t| {
+            t.actor_handle_identity()
+                .map(|(name, _)| name.spelling.to_string())
+        })
         .collect();
     names.sort();
     names.dedup();

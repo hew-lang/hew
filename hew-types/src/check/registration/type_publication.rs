@@ -48,7 +48,7 @@ impl Checker {
             Ty::Array(element_ty, _) | Ty::Slice(element_ty) => {
                 self.ty_contains_owned_handle(element_ty, visiting)
             }
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => { let name = head.registry_key();
                 self.canonical_owned_handle_type_name(name).is_some()
                     || args
                         .iter()
@@ -161,12 +161,8 @@ impl Checker {
             HashMap::new(),
             vec![],
             Ty::Named {
-                builtin: Some(builtin),
-                name: builtin.canonical_name().to_string(),
-                args: type_params
-                    .iter()
-                    .map(|param| Ty::named(*param, vec![]))
-                    .collect(),
+                head: crate::TypeHead::Builtin(builtin),
+                args: type_params.iter().map(|param| Ty::param(param)).collect(),
             },
         );
         self.builtin_call_targets
@@ -531,7 +527,7 @@ impl Checker {
         // table before any semantic registration; aliases and later graph
         // visits resolve the existing module/path rows and cannot mint again.
         let identity_module = self.defs.mint_module(module_full_path, &[]);
-        if !self.defs.module_has_declarations(identity_module) {
+        if !self.defs.module_has_source_declarations(identity_module) {
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
                 self.mint_item_declaration_identities(
                     Some(identity_module),
@@ -2413,30 +2409,24 @@ impl Checker {
         let qualified_children = ty.map_children_pub(&|child| {
             self.qualify_source_member_ty(module_full_path, child, parameters)
         });
+        // A resolved head already names its declaration; only a spelling
+        // the registry mirror left unresolved takes the declaring module.
         let Ty::Named {
-            name,
+            head: crate::TypeHead::Unresolved(spelling),
             args,
-            builtin,
         } = qualified_children
         else {
             return qualified_children;
         };
-        if name.contains('.') || parameters.contains(&name) {
-            return Ty::Named {
-                name,
-                args,
-                builtin,
-            };
+        let name = spelling.as_str();
+        if name.contains('.') || parameters.iter().any(|parameter| parameter == name) {
+            return self.named_ty_for_key(name, args);
         }
         let canonical = format!("{module_full_path}.{name}");
         if self.type_defs.contains_key(&canonical) {
-            Ty::named(canonical, args)
+            self.named_ty_for_key(&canonical, args)
         } else {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            }
+            self.named_ty_for_key(name, args)
         }
     }
 

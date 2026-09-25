@@ -360,11 +360,7 @@ fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
     assert_eq!(value.ty, binding.ty);
     assert!(matches!(
         &value.ty,
-        hew_types::ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Result),
-            args,
-            ..
-        } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
+        hew_types::ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
     ));
     let (method_id, reply_ty) = match &value.kind {
         HirExprKind::ActorAsk {

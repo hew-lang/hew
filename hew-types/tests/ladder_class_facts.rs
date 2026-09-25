@@ -170,7 +170,7 @@ fn a_resource_declaration_has_no_clone_path() {
     let facts = row_matching(
         &output,
         "the `Conn` resource",
-        |ty| matches!(ty, ResolvedTy::Named { name, builtin: None, .. } if name == "Conn"),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling() == "Conn"),
     );
     assert_eq!(
         (ValueClass::AffineResource, CloneKind::None),
@@ -189,11 +189,7 @@ fn an_rc_is_an_affine_resource_that_retains_and_does_not_send() {
     let facts = row_matching(&output, "`Rc<i64>`", |ty| {
         matches!(
             ty,
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Rc),
-                args,
-                ..
-            } if args.as_slice() == [ResolvedTy::I64]
+            ResolvedTy::Named { head: hew_types::TypeHead::Builtin(BuiltinType::Rc), args, .. } if args.as_slice() == [ResolvedTy::I64]
         )
     });
     assert_eq!(
@@ -215,7 +211,7 @@ fn a_local_pid_is_bitcopy() {
         matches!(
             ty,
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::ActorHandle),
+                head: hew_types::TypeHead::Actor(_),
                 ..
             }
         )
@@ -278,7 +274,7 @@ fn an_indirect_enum_publishes_its_payload_class_over_an_owning_edge() {
     let facts = row_matching(
         &output,
         "the recursive enum `Tree`",
-        |ty| matches!(ty, ResolvedTy::Named { name, .. } if name.ends_with("Tree")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head, .. } if name_head.spelling().ends_with("Tree")),
     );
     assert_eq!(
         (ValueClass::CowValue, CloneKind::FieldWise),
@@ -296,7 +292,7 @@ fn an_indirect_enum_is_never_published_bit_copyable() {
     let facts = row_matching(
         &output,
         "the recursive enum `Tree`",
-        |ty| matches!(ty, ResolvedTy::Named { name, .. } if name.ends_with("Tree")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head, .. } if name_head.spelling().ends_with("Tree")),
     );
     assert_ne!(
         (ValueClass::BitCopy, CloneKind::Bits),
@@ -313,7 +309,7 @@ fn a_non_recursive_enum_in_the_same_program_stays_bit_copyable() {
     let facts = row_matching(
         &output,
         "the non-recursive enum `Colour`",
-        |ty| matches!(ty, ResolvedTy::Named { name, .. } if name.ends_with("Colour")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head, .. } if name_head.spelling().ends_with("Colour")),
     );
     assert_eq!(
         (ValueClass::BitCopy, CloneKind::Bits),
@@ -341,8 +337,8 @@ fn facts_of_path(relative: &str) -> TypeCheckOutput {
 fn named_at(ty: &ResolvedTy, name: &str, args: impl Fn(&[ResolvedTy]) -> bool) -> bool {
     matches!(
         ty,
-        ResolvedTy::Named { name: actual, args: actual_args, .. }
-            if actual.ends_with(name) && args(actual_args)
+        ResolvedTy::Named { head: actual_head, args: actual_args, .. }
+            if actual_head.spelling().ends_with(name) && args(actual_args)
     )
 }
 
@@ -602,7 +598,7 @@ fn main() -> i64 {
     let facts = row_matching(
         &output,
         "the imported enum `rec.Tree`",
-        |ty| matches!(ty, ResolvedTy::Named { name, builtin: None, .. } if name.ends_with("Tree")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling().ends_with("Tree")),
     );
     assert_eq!(
         (ValueClass::CowValue, CloneKind::FieldWise),
@@ -626,7 +622,7 @@ fn main() -> i64 {
     let facts = row_matching(
         &output,
         "the imported record `rec.Reply`",
-        |ty| matches!(ty, ResolvedTy::Named { name, builtin: None, .. } if name.ends_with("Reply")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling().ends_with("Reply")),
     );
     assert_ne!(
         (ValueClass::BitCopy, CloneKind::Bits),
@@ -655,7 +651,7 @@ fn main() -> i64 {
         let facts = row_matching(
             &output,
             &format!("imported `rec.{name}`"),
-            |ty| matches!(ty, ResolvedTy::Named { name: actual, builtin: None, .. } if actual.ends_with(name)),
+            |ty| matches!(ty, ResolvedTy::Named { head: actual_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if actual_head.spelling().ends_with(name)),
         );
         assert_ne!(
             (ValueClass::BitCopy, CloneKind::Bits),
@@ -674,7 +670,7 @@ fn a_local_recursive_declaration_still_publishes_alongside_the_import_fix() {
     let facts = row_matching(
         &output,
         "the local recursive enum `Tree`",
-        |ty| matches!(ty, ResolvedTy::Named { name, .. } if name.ends_with("Tree")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head, .. } if name_head.spelling().ends_with("Tree")),
     );
     assert_eq!(
         (ValueClass::CowValue, CloneKind::FieldWise),
@@ -699,7 +695,7 @@ fn main() -> i64 {
     let facts = row_matching(
         &output,
         "the imported record `rec.Holder`",
-        |ty| matches!(ty, ResolvedTy::Named { name, builtin: None, .. } if name.ends_with("Holder")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling().ends_with("Holder")),
     );
     assert_eq!(
         (ValueClass::BitCopy, CloneKind::Bits),

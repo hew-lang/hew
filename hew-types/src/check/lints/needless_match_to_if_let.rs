@@ -122,7 +122,7 @@ fn is_option(ty: &Ty) -> bool {
     matches!(
         ty,
         Ty::Named {
-            builtin: Some(BuiltinType::Option),
+            head: crate::TypeHead::Builtin(BuiltinType::Option),
             ..
         }
     )

@@ -651,8 +651,13 @@ fn test_self_with_generics_in_impl() {
         .fn_sigs
         .get("Pair::new")
         .expect("Pair::new should exist");
-    if let Ty::Named { name, args, .. } = &new_sig.return_type {
-        assert_eq!(name, "Pair", "return type should be Pair");
+    if let Ty::Named {
+        head: name_head,
+        args,
+        ..
+    } = &new_sig.return_type
+    {
+        assert_eq!(name_head.spelling(), "Pair", "return type should be Pair");
         assert_eq!(args.len(), 1, "Pair should have one type argument");
     } else {
         panic!("Expected Pair::new to return a named type");
@@ -1904,9 +1909,8 @@ fn array_literal_synthesizes_vec() {
     assert_eq!(
         ty,
         Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
-            args: vec![Ty::IntLiteral],
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
+            args: vec![Ty::IntLiteral]
         }
     );
     assert!(
@@ -1926,8 +1930,7 @@ fn literal_coercion_array_to_i32_vec() {
     ];
     let arr = (Expr::Array(elems), 0..9);
     let expected = Ty::Named {
-        builtin: Some(BuiltinType::Vec),
-        name: "Vec".to_string(),
+        head: crate::TypeHead::Builtin(BuiltinType::Vec),
         args: vec![Ty::I32],
     };
     let ty = checker.check_against(&arr.0, &arr.1, &expected);
@@ -2376,22 +2379,8 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
             type_params: vec!["T".to_string(), "U".to_string()],
             bounds: HashMap::new(),
             fields: HashMap::from([
-                (
-                    "first".to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: "T".to_string(),
-                        args: vec![],
-                    },
-                ),
-                (
-                    "second".to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: "U".to_string(),
-                        args: vec![],
-                    },
-                ),
+                ("first".to_string(), Ty::param("T")),
+                ("second".to_string(), Ty::param("U")),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -2418,11 +2407,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 rest: None,
             }),
         },
-        &Ty::Named {
-            builtin: None,
-            name: "Pair".to_string(),
-            args: vec![Ty::I64, Ty::Bool],
-        },
+        &Ty::named_for_test("Pair", vec![Ty::I64, Ty::Bool]),
         false,
         &(0..10),
     );
@@ -2480,11 +2465,7 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
                 rest: None,
             }),
         },
-        &Ty::Named {
-            builtin: None,
-            name: "Ghost".to_string(),
-            args: vec![],
-        },
+        &Ty::named_for_test("Ghost", vec![]),
         false,
         &(0..5),
     );
@@ -2703,14 +2684,7 @@ fn main() -> i64 { 0 }
 
 fn register_generic_wrapper(checker: &mut Checker) {
     let mut fields = HashMap::new();
-    fields.insert(
-        "value".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        },
-    );
+    fields.insert("value".to_string(), Ty::param("T"));
     checker.type_defs.insert(
         "Wrapper".to_string(),
         TypeDef {
@@ -2730,93 +2704,43 @@ fn register_generic_wrapper(checker: &mut Checker) {
 
 #[test]
 fn struct_init_coerces_literal_to_expected_type_arg() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    register_generic_wrapper(&mut checker);
-
-    // Wrapper { value: 42 } checked against Wrapper<i32>
-    let init = (
-        Expr::StructInit {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
-            fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
-            type_args: None,
-            base: None,
-        },
-        0..20,
+    // `Wrapper { value: 42 }` checked against `Wrapper<i32>` coerces the
+    // literal to the expected argument.
+    let tco = check_source(
+        "type Wrapper<T> { value: T }\n\
+         fn make() -> Wrapper<i32> { Wrapper { value: 42 } }",
     );
-    let expected = Ty::Named {
-        builtin: None,
-        name: "Wrapper".to_string(),
-        args: vec![Ty::I32],
-    };
-    let ty = checker.check_against(&init.0, &init.1, &expected);
-    assert_eq!(ty, expected);
-    assert!(
-        checker.errors.is_empty(),
-        "unexpected errors: {:?}",
-        checker.errors
+    assert!(tco.errors.is_empty(), "unexpected errors: {:?}", tco.errors);
+    assert_eq!(
+        tco.fn_sigs["make"].return_type,
+        Ty::named_in(&tco.defs, "Wrapper", vec![Ty::I32])
     );
 }
 
 #[test]
 fn struct_init_infers_type_param_from_literal() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    register_generic_wrapper(&mut checker);
-
-    // Wrapper { value: 42 } without expected type keeps the literal kind until
-    // a later coercion/defaulting boundary.
-    let init = (
-        Expr::StructInit {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
-            fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
-            type_args: None,
-            base: None,
-        },
-        0..20,
+    // Without an expected type the literal defaults at the binding boundary.
+    let tco = check_source(
+        "type Wrapper<T> { value: T }\n\
+         fn read(w: Wrapper<i64>) -> i64 { w.value }\n\
+         fn main() { let w = Wrapper { value: 42 }; let _ = read(w); }",
     );
-    let ty = checker.synthesize(&init.0, &init.1);
-    assert_eq!(
-        ty,
-        Ty::Named {
-            builtin: None,
-            name: "Wrapper".to_string(),
-            args: vec![Ty::IntLiteral],
-        }
-    );
-    assert!(
-        checker.errors.is_empty(),
-        "unexpected errors: {:?}",
-        checker.errors
-    );
+    assert!(tco.errors.is_empty(), "unexpected errors: {:?}", tco.errors);
 }
 
 #[test]
 fn struct_init_overflow_in_expected_type() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    register_generic_wrapper(&mut checker);
-
-    // Wrapper { value: 256 } checked against Wrapper<u8> — should error
-    let init = (
-        Expr::StructInit {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
-            fields: vec![(Ident::new("value"), make_int_literal(256, 10..13))],
-            type_args: None,
-            base: None,
-        },
-        0..20,
+    // `Wrapper { value: 256 }` checked against `Wrapper<u8>` is a range error.
+    let tco = check_source(
+        "type Wrapper<T> { value: T }\n\
+         fn make() -> Wrapper<u8> { Wrapper { value: 256 } }",
     );
-    let expected = Ty::Named {
-        builtin: None,
-        name: "Wrapper".to_string(),
-        args: vec![Ty::U8],
-    };
-    let _ty = checker.check_against(&init.0, &init.1, &expected);
     assert!(
-        checker
-            .errors
+        tco.errors
             .iter()
             .any(|e| e.message.contains("does not fit")),
         "expected range error: {:?}",
-        checker.errors
+        tco.errors
     );
 }
 
@@ -2975,14 +2899,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
     let mut variant_fields = HashMap::new();
     variant_fields.insert(
         "Holding".to_string(),
-        VariantDef::Struct(vec![(
-            "value".to_string(),
-            Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
-        )]),
+        VariantDef::Struct(vec![("value".to_string(), Ty::param("T"))]),
     );
     checker.type_defs.insert(
         "Keeper".to_string(),
@@ -3015,11 +2932,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         type_args,
         base: None,
     };
-    let expected = Ty::Named {
-        builtin: None,
-        name: "Keeper".to_string(),
-        args: vec![Ty::I64],
-    };
+    let expected = Ty::named_for_test("Keeper", vec![Ty::I64]);
     checker.check_against(&init, &span, &expected);
     assert!(
         !checker.errors.is_empty(),
@@ -3037,14 +2950,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
     let mut variant_fields_map = HashMap::new();
     variant_fields_map.insert(
         "Keeper::Holding".to_string(),
-        VariantDef::Struct(vec![(
-            "value".to_string(),
-            Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
-        )]),
+        VariantDef::Struct(vec![("value".to_string(), Ty::param("T"))]),
     );
     checker.type_defs.insert(
         "Keeper".to_string(),
@@ -3084,7 +2990,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
     );
     // The synthesised type should be Keeper<i64> (IntLiteral coerces to i64 / i64)
     assert!(
-        matches!(result, Ty::Named { ref name, .. } if name == "Keeper"),
+        matches!(result, Ty::Named { head: name_head, .. } if name_head.spelling() == "Keeper"),
         "synthesised type should be Keeper<…>, got: {result}"
     );
 }
@@ -3192,14 +3098,7 @@ fn record_init_type_args_generic_in_generic_user_user() {
     // Sorted by span start: outer Box init begins before inner Inner init.
     // The outer Box's single arg is `Inner<i64>`; the inner Inner's single
     // arg is `i64`.
-    assert_eq!(
-        entries[0],
-        vec![Ty::Named {
-            builtin: None,
-            name: "Inner".to_string(),
-            args: vec![Ty::I64],
-        }]
-    );
+    assert_eq!(entries[0], vec![Ty::named_for_test("Inner", vec![Ty::I64])]);
     assert_eq!(entries[1], vec![Ty::I64]);
 }
 
@@ -4336,7 +4235,7 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     // (callee, substitution, offset) triple for genuinely different sites.
     // Without the module in the visited-set key the second one is swallowed.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let type_param = Ty::normalize_named("T".to_string(), vec![]);
+    let type_param = Ty::param("T");
     checker.eq_requirements.insert(
         Some("same".to_string()),
         vec![crate::check::types::EqRequirement {

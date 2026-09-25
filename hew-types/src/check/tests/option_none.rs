@@ -43,9 +43,14 @@ fn builtin_none_records_option_type_at_span() {
         "expected exactly one expr_types entry starting at the `.None` offset"
     );
     match recorded {
-        Ty::Named { name, args, .. } => {
+        Ty::Named {
+            head: name_head,
+            args,
+            ..
+        } => {
             assert_eq!(
-                name, "Option",
+                name_head.spelling(),
+                "Option",
                 "recorded type must be Option, got {recorded:?}"
             );
             assert_eq!(

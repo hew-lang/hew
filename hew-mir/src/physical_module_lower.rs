@@ -658,9 +658,8 @@ pub fn encoding_format(ty: &ResolvedTy) -> Option<EncodingFormat> {
     [EncodingFormat::Json, EncodingFormat::Yaml]
         .into_iter()
         .find(|format| {
-            hew_types::RuntimeValueKind::Receiver(format.builtin())
-                .resolve(Some(ty))
-                .is_some()
+            matches!(ty, ResolvedTy::Named { head, args, .. }
+                if *head == hew_types::TypeHead::Builtin(format.builtin()) && args.is_empty())
         })
 }
 

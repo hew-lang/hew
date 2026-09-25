@@ -612,14 +612,17 @@ impl TypeFactService {
         }
         let builtin_owner = crate::Checker::canonical_primitive_or_builtin_key(&source.to_ty());
         let (owner, args) = match source {
-            ResolvedTy::Named { name, args, .. } => (
-                if self.context.aliases.contains_key(name) {
-                    name
-                } else {
-                    builtin_owner.as_deref().unwrap_or(name)
-                },
-                args.as_slice(),
-            ),
+            ResolvedTy::Named { head, args, .. } => {
+                let name = head.registry_key();
+                (
+                    if self.context.aliases.contains_key(name) {
+                        name
+                    } else {
+                        builtin_owner.as_deref().unwrap_or(name)
+                    },
+                    args.as_slice(),
+                )
+            }
             _ => (builtin_owner.as_deref().unwrap_or(""), &[][..]),
         };
         let Some((method, _)) = selected_impl_method(
@@ -661,11 +664,12 @@ impl TypeFactService {
     pub fn rendering_source(&self, source: &ResolvedTy) -> Result<ResolvedTy, String> {
         let mut source = source.clone();
         let mut visited = HashSet::new();
-        while let ResolvedTy::Named { name, args, .. } = &source {
+        while let ResolvedTy::Named { head, args, .. } = &source {
+            let name = head.registry_key();
             let Some(alias) = self.context.aliases.get(name) else {
                 break;
             };
-            if !visited.insert(name.clone()) {
+            if !visited.insert(name.to_string()) {
                 return Err("recursive rendering alias".into());
             }
             let target = alias
@@ -687,10 +691,10 @@ impl TypeFactService {
         variant: Option<&str>,
         field: &str,
     ) -> Result<Option<ResolvedTy>, String> {
-        let ResolvedTy::Named { name, args, .. } = source else {
+        let ResolvedTy::Named { head, args, .. } = source else {
             return Ok(None);
         };
-        let Some(definition) = self.context.rendering_members.get(name) else {
+        let Some(definition) = self.context.rendering_members.get(head.registry_key()) else {
             return Ok(None);
         };
         let ty = if let Some(variant) = variant {
@@ -743,9 +747,10 @@ impl TypeFactService {
         };
         let builtin_owner = crate::Checker::canonical_primitive_or_builtin_key(&as_ty);
         let (owner, args) = match ty {
-            ResolvedTy::Named { name, args, .. } => {
-                (builtin_owner.as_deref().unwrap_or(name), args.as_slice())
-            }
+            ResolvedTy::Named { head, args, .. } => (
+                builtin_owner.as_deref().unwrap_or(head.registry_key()),
+                args.as_slice(),
+            ),
             _ => (builtin_owner.as_deref().unwrap_or(""), &[][..]),
         };
         if let Some((method, _)) = selected_impl_method(
@@ -758,7 +763,7 @@ impl TypeFactService {
             if capability == ValueCapability::Hash {
                 let admitted_shape = match ty {
                     ResolvedTy::Named {
-                        builtin: Some(builtin),
+                        head: crate::TypeHead::Builtin(builtin),
                         ..
                     } => matches!(
                         builtin,
@@ -766,16 +771,18 @@ impl TypeFactService {
                             | crate::BuiltinType::Location
                             | crate::BuiltinType::RemotePid
                     ),
-                    ResolvedTy::Named { name, .. } => {
-                        self.context.type_defs.get(name).is_some_and(|definition| {
+                    ResolvedTy::Named { head, .. } => self
+                        .context
+                        .type_defs
+                        .get(head.registry_key())
+                        .is_some_and(|definition| {
                             !definition.is_indirect
                                 && matches!(
                                     definition.kind,
                                     crate::check::TypeDefKind::Struct
                                         | crate::check::TypeDefKind::Record
                                 )
-                        })
-                    }
+                        }),
                     _ => true,
                 };
                 if !admitted_shape {
@@ -827,8 +834,10 @@ impl TypeFactService {
                 self.members_have_capability(members, ValueCapability::Eq, visiting)
             }
             ResolvedTy::Named {
-                builtin:
-                    Some(builtin @ (BuiltinType::Option | BuiltinType::Result | BuiltinType::Vec)),
+                head:
+                    crate::TypeHead::Builtin(
+                        builtin @ (BuiltinType::Option | BuiltinType::Result | BuiltinType::Vec),
+                    ),
                 args,
                 ..
             } => {
@@ -845,12 +854,15 @@ impl TypeFactService {
                 self.members_have_capability(args, ValueCapability::Eq, visiting)
             }
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
+                head:
+                    crate::TypeHead::Builtin(
+                        BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid,
+                    ),
                 ..
             } => Ok(true),
             ResolvedTy::Named {
-                builtin:
-                    Some(
+                head:
+                    crate::TypeHead::Builtin(
                         BuiltinType::HashMap
                         | BuiltinType::HashSet
                         | BuiltinType::Rc
@@ -860,14 +872,10 @@ impl TypeFactService {
                     ),
                 ..
             } => Ok(false),
-            ResolvedTy::Named {
-                name,
-                args,
-                builtin,
-                ..
-            } => {
+            ResolvedTy::Named { head, args, .. } => {
+                let builtin = head.builtin();
                 let owner = ty.nominal_instance(&self.context.defs).map_or_else(
-                    || name.clone(),
+                    || head.registry_key().to_string(),
                     |instance| {
                         self.context
                             .defs
@@ -966,7 +974,7 @@ impl TypeFactService {
             | ResolvedTy::Bytes => true,
             ResolvedTy::TypeParam { name } => param(name, MarkerTrait::Serializable),
             ResolvedTy::Named {
-                builtin: Some(builtin),
+                head: crate::TypeHead::Builtin(builtin),
                 args,
                 ..
             } => match (builtin, args.as_slice()) {
@@ -990,14 +998,17 @@ impl TypeFactService {
                 _ => false,
             },
             ResolvedTy::Named {
-                name,
-                builtin: None,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 args,
                 is_opaque: false,
             } => {
+                let name = head.registry_key();
                 if !args.is_empty()
                     || !self.context.wire_types.contains(name)
-                    || visiting.contains(name)
+                    || visiting.iter().any(|visited| visited == name)
                     || self
                         .context
                         .declarations
@@ -1011,7 +1022,7 @@ impl TypeFactService {
                 let Ok(members) = self.declared_capability_members(ty) else {
                     return false;
                 };
-                visiting.push(name.clone());
+                visiting.push(name.to_string());
                 let ok = members
                     .iter()
                     .all(|member| self.serializable_within(member, param, visiting));
@@ -1053,13 +1064,13 @@ impl TypeFactService {
     /// Instantiate declaration members, preserving the same source identities
     /// and parallel parameter substitution as the class and record services.
     fn declared_capability_members(&self, ty: &ResolvedTy) -> Result<Vec<ResolvedTy>, ClassError> {
-        let ResolvedTy::Named { name, args, .. } = ty else {
+        let ResolvedTy::Named { head, args, .. } = ty else {
             return Err(ClassError::UnknownDeclaration {
                 name: ty.user_facing().to_string(),
             });
         };
         let nominal = ty.nominal_instance(&self.context.defs);
-        let name = nominal.as_ref().map_or(name.as_str(), |instance| {
+        let name = nominal.as_ref().map_or(head.registry_key(), |instance| {
             self.context.defs.path(instance.nominal.declaration())
         });
         let declaration =
@@ -1114,17 +1125,12 @@ impl TypeFactService {
                     ResolvedTy::from_ty(member).map_err(|_| ClassError::UnknownDeclaration {
                         name: name.to_string(),
                     })?;
-                let member = crate::check::resolve_member_ty(
-                    member,
-                    name.rsplit_once('.').map(|(prefix, _)| prefix),
-                    &self.context.type_defs,
-                    &|name| {
-                        self.context
-                            .declarations
-                            .get(name)
-                            .is_some_and(|decl| decl.is_opaque)
-                    },
-                );
+                let member = crate::check::restore_member_opacity(member, &|name| {
+                    self.context
+                        .declarations
+                        .get(name)
+                        .is_some_and(|decl| decl.is_opaque)
+                });
                 Ok(crate::value_class::substitute(
                     &member,
                     &declaration.type_params,
@@ -1142,7 +1148,7 @@ impl TypeFactService {
         match ty {
             // Preserve the existing identity-aggregate exceptions exactly.
             ResolvedTy::Named {
-                builtin: Some(builtin),
+                head: crate::TypeHead::Builtin(builtin),
                 ..
             } => Ok(matches!(
                 builtin,
@@ -1150,13 +1156,16 @@ impl TypeFactService {
                     | crate::BuiltinType::Location
                     | crate::BuiltinType::RemotePid
             )),
-            ResolvedTy::Named { name, args, .. } => {
+            ResolvedTy::Named { head, args, .. } => {
+                let name = head.registry_key();
                 let Some(definition) = self.context.type_defs.get(name) else {
                     // A memberless declaration such as a supervisor derives nothing.
                     if self.context.declarations.contains_key(name) {
                         return Ok(false);
                     }
-                    return Err(ClassError::UnknownDeclaration { name: name.clone() });
+                    return Err(ClassError::UnknownDeclaration {
+                        name: name.to_string(),
+                    });
                 };
                 if definition.type_params.len() != args.len() {
                     return Err(ClassError::UnknownDeclaration {
@@ -1329,17 +1338,16 @@ mod tests {
     };
 
     fn named(name: &str, builtin: Option<BuiltinType>, args: Vec<ResolvedTy>) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: name.to_string(),
-            args,
-            builtin,
-            is_opaque: false,
+        match builtin {
+            Some(BuiltinType::ActorHandle) => ResolvedTy::actor_for_test(name, args),
+            Some(builtin) => ResolvedTy::named_builtin(builtin, args),
+            None => ResolvedTy::user_for_test(name, args),
         }
     }
 
     fn generic_impl_binders(receiver_name: &str) -> super::ImplMethodBinders {
         super::ImplMethodBinders {
-            receiver: crate::Ty::named(receiver_name, vec![crate::Ty::named("T", vec![])]),
+            receiver: crate::Ty::named_for_test(receiver_name, vec![crate::Ty::param("T")]),
             impl_params: vec!["T".to_string()],
             method_params: vec![],
             obligations: Some(vec![]),
@@ -1367,14 +1375,8 @@ mod tests {
     #[test]
     fn impl_method_binders_recover_the_exact_nested_opaque_argument() {
         let binders = generic_impl_binders("owner.Wrapper");
-        let opaque = ResolvedTy::Named {
-            name: "owner.Handle".to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: true,
-        };
-        let argument =
-            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![opaque.clone()]);
+        let opaque = ResolvedTy::opaque_for_test("owner.Handle", vec![]);
+        let argument = ResolvedTy::named_builtin(BuiltinType::Option, vec![opaque.clone()]);
         let receiver = named("owner.Wrapper", None, vec![argument.clone()]);
 
         let mut defs = crate::DefTable::new();
@@ -1441,7 +1443,7 @@ mod tests {
         );
         // `std/failure.hew::CrashInfo { code: i64, message: string }`.
         decls.insert(
-            "CrashInfo".to_string(),
+            "std.failure.CrashInfo".to_string(),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -1452,7 +1454,7 @@ mod tests {
         );
         // `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`.
         decls.insert(
-            "CrashNotification".to_string(),
+            "std.failure.CrashNotification".to_string(),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -1471,7 +1473,6 @@ mod tests {
                 type_params: vec!["T".to_string()],
                 members: vec![
                     ResolvedTy::named_builtin(
-                        "Vec",
                         BuiltinType::Vec,
                         vec![ResolvedTy::TypeParam {
                             name: "T".to_string(),
@@ -1494,7 +1495,6 @@ mod tests {
     fn hashmap_iter_declared_type() -> DeclaredType {
         let vec_of_param = |name: &str| {
             ResolvedTy::named_builtin(
-                "Vec",
                 BuiltinType::Vec,
                 vec![ResolvedTy::TypeParam {
                     name: name.to_string(),
@@ -2319,11 +2319,10 @@ mod tests {
                     "Deep",
                     None,
                     vec![ResolvedTy::Named {
-                        name: "Vec".to_string(),
                         args: vec![ResolvedTy::TypeParam {
                             name: "T".to_string(),
                         }],
-                        builtin: Some(BuiltinType::Vec),
+                        head: crate::TypeHead::Builtin(BuiltinType::Vec),
                         is_opaque: false,
                     }],
                 )],
@@ -2386,11 +2385,10 @@ mod tests {
                     "Relay",
                     None,
                     vec![ResolvedTy::Named {
-                        name: "Vec".to_string(),
                         args: vec![ResolvedTy::TypeParam {
                             name: "T".to_string(),
                         }],
-                        builtin: Some(BuiltinType::Vec),
+                        head: crate::TypeHead::Builtin(BuiltinType::Vec),
                         is_opaque: false,
                     }],
                 )],
@@ -2471,10 +2469,9 @@ mod tests {
             }),
             crate::value_class::classify_ty(
                 &ResolvedTy::Named {
-                    name: "Vec".to_string(),
                     args: vec![element],
-                    builtin: Some(BuiltinType::Vec),
-                    is_opaque: false,
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
+                    is_opaque: false
                 },
                 &context
             )
@@ -2511,7 +2508,7 @@ mod tests {
         let output = checker.check_program(&parsed.program);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
-        let key = ResolvedTy::named_user("Key", vec![]);
+        let key = ResolvedTy::named_for_test("Key", vec![]);
         assert!(matches!(
             service
                 .capability_plan(&key, super::ValueCapability::Hash)

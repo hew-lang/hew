@@ -73,7 +73,7 @@ fn contextual_variant_reports_ambiguous_expected_owner() {
         .extend(["left.State".to_string(), "right.State".to_string()]);
 
     assert!(checker
-        .context_variant_expected_owner(&Ty::named("State", vec![]), &(0..6))
+        .context_variant_expected_owner(&Ty::named_for_test("State", vec![]), &(0..6))
         .is_none());
     assert!(checker.errors.iter().any(|error| {
         error.kind == TypeErrorKind::ContextVariantAmbiguous
@@ -787,7 +787,7 @@ fn record_with_bytes_field_eq_and_hash_are_accepted() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_for_test(
             "Packet",
             vec![],
         )))
@@ -812,7 +812,7 @@ fn record_with_non_hashable_field_is_not_hashable() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_for_test(
             "Sample",
             vec![],
         )))
@@ -2114,14 +2114,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         .fn_sigs
         .get("unwrap_or")
         .expect("unwrap_or signature should be registered");
-    assert_eq!(
-        sig.params[0],
-        Ty::Named {
-            builtin: None,
-            name: "Result".to_string(),
-            args: vec![],
-        }
-    );
+    assert_eq!(sig.params[0], Ty::named_in(&output.defs, "Result", vec![]));
 }
 
 #[test]
@@ -2480,7 +2473,7 @@ fn selected_eq_uses_nested_user_methods_for_otherwise_ineligible_members() {
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
     let selected = service
         .capability_plan(
-            &ResolvedTy::named_user("Key", vec![]),
+            &ResolvedTy::named_for_test("Key", vec![]),
             crate::ValueCapability::Eq,
         )
         .unwrap()
@@ -2580,7 +2573,7 @@ fn selected_eq_composes_exact_generic_user_method_for_bytes() {
         .lookup_path("Key::<impl Eq for Key<T>>::eq")
         .unwrap();
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
-    let key = ResolvedTy::named_user("Key", vec![ResolvedTy::Bytes]);
+    let key = ResolvedTy::named_for_test("Key", vec![ResolvedTy::Bytes]);
     let selected = service
         .capability_plan(&key, crate::ValueCapability::Eq)
         .unwrap()

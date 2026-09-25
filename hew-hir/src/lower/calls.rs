@@ -92,7 +92,7 @@ impl LowerCtx {
                 matches!(
                     resolved,
                     ResolvedTy::Named {
-                        builtin: Some(
+                        head: hew_types::TypeHead::Builtin(
                             hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream
                         ),
                         ..
@@ -922,9 +922,8 @@ impl LowerCtx {
                     .get(&rewrite_key)
                     .cloned()
                     .unwrap_or_else(|| ResolvedTy::Named {
-                        name: "Rc".to_string(),
                         args: vec![payload_ty.clone()],
-                        builtin: Some(BuiltinType::Rc),
+                        head: hew_types::TypeHead::Builtin(BuiltinType::Rc),
                         is_opaque: false,
                     });
                 let value = args
@@ -992,7 +991,8 @@ impl LowerCtx {
             if let Expr::ContextVariant(context) = &function.0 {
                 let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
                 let contextual_name = match &checker_ctor_ty {
-                    Some(ResolvedTy::Named { name, .. }) => {
+                    Some(ResolvedTy::Named { head, .. }) => {
+                        let name = head.registry_key();
                         format!("{name}::{}", context.name)
                     }
                     _ => context.name.to_string(),

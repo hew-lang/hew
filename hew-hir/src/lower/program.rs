@@ -190,7 +190,8 @@ pub fn lower_program_with_mono_cap(
     // stage looks them up by. Publish their identities alongside the graph's.
     for name in hew_types::actor_delivery::DECLARATIONS
         .iter()
-        .chain(&["ScopeFailure"])
+        .map(|known| known.path().trim_start_matches("std.builtins."))
+        .chain(["ScopeFailure"])
     {
         let canonical = format!("std.builtins.{name}");
         ctx.source_type_identities.insert(canonical.clone());
@@ -198,7 +199,7 @@ pub fn lower_program_with_mono_cap(
         // declaration of the same name still wins: the local-declaration
         // check in `resolve_named_type_ref` runs before this alias.
         ctx.file_import_root_type_aliases
-            .insert((*name).to_string(), canonical);
+            .insert(name.to_string(), canonical);
     }
     if let Some(module_graph) = &program.module_graph {
         for module_id in &module_graph.topo_order {
@@ -1888,9 +1889,10 @@ pub fn lower_program_with_mono_cap(
     });
     let mut delivery_declarations = Vec::new();
     if let Some(builtins) = builtin_declarations.as_ref() {
-        for name in hew_types::actor_delivery::DECLARATIONS {
+        for known in hew_types::actor_delivery::DECLARATIONS {
+            let name = known.path().trim_start_matches("std.builtins.");
             let Some((source, span)) = builtins.items.iter().find_map(|(item, span)| match item {
-                Item::TypeDecl(decl) if decl.name.name.as_str() == *name => Some((decl, span)),
+                Item::TypeDecl(decl) if decl.name.name.as_str() == name => Some((decl, span)),
                 _ => None,
             }) else {
                 continue;

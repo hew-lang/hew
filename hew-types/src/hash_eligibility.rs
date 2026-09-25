@@ -97,26 +97,21 @@ fn hash_ineligibility(
         | Ty::Bytes
         // Compiler-owned identity aggregates have fixed all-integer layouts and
         // exact structural equality, so they use the source-record layout-key ABI.
-        | Ty::Named {
-            builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
-            ..
-        } => None,
+        | Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid), .. } => None,
 
         // Tuples: tracked but not admitted as layout hash keys in this slice.
         Ty::Tuple(_) => Some(HashEligibility::IneligibleTuple(ty.clone())),
 
         // Encoding trees need format-specific operations, never an empty
         // source-field walk. No matching hash operation is currently supplied.
-        Ty::Named {
-            builtin: Some(BuiltinType::JsonValue | BuiltinType::YamlValue),
-            ..
-        } => Some(HashEligibility::IneligibleManaged(ty.clone())),
+        Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::JsonValue | BuiltinType::YamlValue), .. } => Some(HashEligibility::IneligibleManaged(ty.clone())),
 
         // Other named types are eligible iff Record kind, not indirect, and every
         // field is hash-eligible. Only `record`-keyword source types are Copy
         // value-semantic; Struct/Enum/Actor/Machine are not layout keys.
-        Ty::Named { name, .. } => match crate::check::type_def_for_spelling(
-            type_defs, name,
+        Ty::Named { head, .. } => match crate::check::type_def_for_spelling(
+            type_defs,
+            head.registry_key(),
         ) {
             Some(type_def) if type_def.is_indirect => {
                 Some(HashEligibility::IneligibleManaged(ty.clone()))
@@ -126,7 +121,7 @@ fn hash_ineligibility(
             // copied into a collection key slot: doing so would duplicate the
             // close obligation and make a later remove/free double-close it.
             Some(type_def)
-                if resource_types.contains(name) || resource_types.contains(&type_def.name) =>
+                if resource_types.contains(head.registry_key()) || resource_types.contains(&type_def.name) =>
             {
                 Some(HashEligibility::IneligibleManaged(ty.clone()))
             }
@@ -350,7 +345,7 @@ mod tests {
             "Point".to_string(),
             make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)], false),
         );
-        let ty = Ty::normalize_named("Point".to_string(), vec![]);
+        let ty = Ty::named_for_test("Point", vec![]);
         assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
     }
 
@@ -363,7 +358,7 @@ mod tests {
             "FPoint".to_string(),
             make_record("FPoint", vec![("x", Ty::F64), ("y", Ty::F64)], false),
         );
-        let ty = Ty::normalize_named("FPoint".to_string(), vec![]);
+        let ty = Ty::named_for_test("FPoint", vec![]);
         assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
     }
 
@@ -381,7 +376,7 @@ mod tests {
                 false,
             ),
         );
-        let ty = Ty::normalize_named("Named".to_string(), vec![]);
+        let ty = Ty::named_for_test("Named", vec![]);
         assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
     }
 
@@ -391,12 +386,12 @@ mod tests {
         // `Vec<T>` field is not hash-eligible (its per-key deep clone/drop is a
         // larger surface), so the record key stays rejected fail-closed.
         let mut tds = HashMap::new();
-        let vec_field = Ty::normalize_named("Vec".to_string(), vec![Ty::I64]);
+        let vec_field = Ty::named_for_test("Vec", vec![Ty::I64]);
         tds.insert(
             "Bag".to_string(),
             make_record("Bag", vec![("items", vec_field.clone())], false),
         );
-        let ty = Ty::normalize_named("Bag".to_string(), vec![]);
+        let ty = Ty::named_for_test("Bag", vec![]);
         assert_eq!(
             ty_is_hash_eligible(&ty, &tds),
             HashEligibility::IneligibleOwned(vec_field)
@@ -411,7 +406,7 @@ mod tests {
             "Handle".to_string(),
             make_record("Handle", vec![], true), // is_indirect = true
         );
-        let ty = Ty::normalize_named("Handle".to_string(), vec![]);
+        let ty = Ty::named_for_test("Handle", vec![]);
         assert_eq!(
             ty_is_hash_eligible(&ty, &tds),
             HashEligibility::IneligibleManaged(ty.clone())
@@ -459,7 +454,7 @@ mod tests {
                 false,
             ),
         );
-        let ty = Ty::normalize_named("Event".to_string(), vec![]);
+        let ty = Ty::named_for_test("Event", vec![]);
         assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
     }
 
@@ -473,7 +468,7 @@ mod tests {
             "Color".to_string(),
             make_non_record("Color", TypeDefKind::Enum),
         );
-        let ty = Ty::normalize_named("Color".to_string(), vec![]);
+        let ty = Ty::named_for_test("Color", vec![]);
         assert_eq!(
             ty_is_hash_eligible(&ty, &tds),
             HashEligibility::IneligibleNamedNonRecord(ty.clone()),
@@ -490,7 +485,7 @@ mod tests {
             make_record("Wrapper", vec![("value", Ty::I64)], false),
         );
         tds.get_mut("Wrapper").expect("inserted type").kind = TypeDefKind::Struct;
-        let ty = Ty::normalize_named("Wrapper".to_string(), vec![]);
+        let ty = Ty::named_for_test("Wrapper", vec![]);
         assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible,);
     }
 
@@ -505,7 +500,7 @@ mod tests {
             make_record("Token", vec![("id", Ty::I64)], false),
         );
         tds.get_mut("Token").expect("inserted type").kind = TypeDefKind::Struct;
-        let ty = Ty::normalize_named("Token".to_string(), vec![]);
+        let ty = Ty::named_for_test("Token", vec![]);
         assert_eq!(
             ty_is_hash_eligible_with_resources(&ty, &tds, &HashSet::from(["Token".to_string()]),),
             HashEligibility::IneligibleManaged(ty),

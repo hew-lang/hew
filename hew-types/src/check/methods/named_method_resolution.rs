@@ -105,16 +105,16 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let Ty::Named {
-            name,
+            head,
             args: type_args,
-            ..
         } = receiver_ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let canonical_name = self
             .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.clone());
+            .unwrap_or_else(|| name.to_string());
         let sig = self.lookup_named_method_sig(&canonical_name, type_args, method)?;
         let return_type = self
             .apply_instantiated_call_signature(
@@ -154,16 +154,16 @@ impl Checker {
         method: &str,
     ) -> Option<String> {
         let Ty::Named {
-            name,
+            head,
             args: type_args,
-            ..
         } = receiver_ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let canonical_name = self
             .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.clone());
+            .unwrap_or_else(|| name.to_string());
         let method_key = format!("{canonical_name}::{method}");
         if type_args.is_empty() {
             return Some(method_key);
@@ -192,12 +192,14 @@ impl Checker {
         sig: &FnSig,
         span: &Span,
     ) {
-        let Ty::Named { name, builtin, .. } = receiver_ty else {
+        let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
+        let name = head.registry_key();
+        let builtin = head.builtin();
         let canonical_name = self
             .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.clone());
+            .unwrap_or_else(|| name.to_string());
         let Some(dispatch_key) = self.named_source_method_dispatch_key(receiver_ty, method) else {
             return;
         };
@@ -208,7 +210,7 @@ impl Checker {
             || self.named_type_method_consumes_receiver(&canonical_name, method)
             || self.named_type_inherent_close_consumes_receiver(
                 &canonical_name,
-                *builtin,
+                builtin,
                 method,
                 sig,
             );
@@ -268,37 +270,34 @@ impl Checker {
     pub(super) fn qualify_method_return_to_owner(&self, owner: &str, ty: &Ty) -> Ty {
         let mapped =
             ty.map_children_pub(&|child| self.qualify_method_return_to_owner(owner, child));
+        // Only a spelling the registry mirror left unresolved is qualified;
+        // a resolved head already names its declaration.
         let Ty::Named {
-            name,
+            head: crate::TypeHead::Unresolved(spelling),
             args,
-            builtin: None,
         } = mapped
         else {
             return mapped;
         };
+        let name = spelling.as_str();
         if name.contains('.') {
             let name = self
                 .module_registry
-                .canonical_registry_signature_type_identity(&name, owner)
-                .unwrap_or(name);
-            return Ty::Named {
-                name,
-                args,
-                builtin: None,
-            };
+                .canonical_registry_signature_type_identity(name, owner)
+                .unwrap_or_else(|| name.to_string());
+            return self.named_ty_for_key(&name, args);
         }
         let qualified = format!("{owner}.{name}");
-        Ty::Named {
-            name: if self.type_defs.contains_key(&qualified)
+        self.named_ty_for_key(
+            &if self.type_defs.contains_key(&qualified)
                 || self.module_registry.is_method_receiver_type(&qualified)
             {
                 qualified
             } else {
-                name
+                name.to_string()
             },
             args,
-            builtin: None,
-        }
+        )
     }
 
     pub(super) fn call_arg_types(&self, args: &[CallArg]) -> Vec<Option<Ty>> {
@@ -325,7 +324,8 @@ impl Checker {
         type_display_name: &str,
     ) -> Ty {
         if let Some(ty) = self.try_resolve_named_method(receiver_ty, method_name, args, span) {
-            if let Ty::Named { name, .. } = receiver_ty {
+            if let Ty::Named { head, .. } = receiver_ty {
+                let name = head.registry_key();
                 // If the receiver type is a registered actor declaration AND
                 // the resolved method is a receive handler (tracked in
                 // `actor_receive_methods`), this dispatch crosses the
@@ -344,7 +344,7 @@ impl Checker {
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::ActorInstance {
-                            actor_name: name.clone(),
+                            actor_name: name.to_string(),
                         },
                     );
                     self.enforce_actor_method_send_args(args);
@@ -353,7 +353,7 @@ impl Checker {
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::NamedTypeInstance {
-                        type_name: name.clone(),
+                        type_name: name.to_string(),
                     },
                 );
             }
@@ -380,18 +380,22 @@ impl Checker {
         // `unclonable-leaf-fails-closed-transitively`.
         if method_name == "clone" && args.is_empty() {
             if let Ty::Named {
-                name,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 args: type_args,
-                builtin: None,
+                ..
             } = receiver_ty
             {
+                let name = head.registry_key();
                 match self.record_clone_admissibility(name, type_args, span) {
                     RecordCloneAdmissibility::Admissible => {
                         let record_ty = receiver_ty.clone();
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::RecordCloneInplace {
-                                record_name: name.clone(),
+                                record_name: name.to_string(),
                             },
                         );
                         // Seed for codegen's `emit_state_clone_drop_synthesis`.
@@ -403,8 +407,10 @@ impl Checker {
                         // names no monomorphic layout, so seeding it here would
                         // register a dead key. This mirrors the MIR keying
                         // (`monomorphic_user_record_key`, `args.is_empty()`).
-                        if type_args.is_empty() && !self.user_clone_record_seeds.contains(name) {
-                            self.user_clone_record_seeds.push(name.clone());
+                        if type_args.is_empty()
+                            && !self.user_clone_record_seeds.iter().any(|seed| seed == name)
+                        {
+                            self.user_clone_record_seeds.push(name.to_string());
                         }
                         return record_ty;
                     }
@@ -473,7 +479,7 @@ impl Checker {
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::RecordCloneInplace {
-                                record_name: name.clone(),
+                                record_name: name.to_string(),
                             },
                         );
                         return param_ty;
@@ -534,13 +540,17 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let Ty::Named {
-            name,
+            head:
+                head @ (crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_)),
             args: type_args,
-            builtin: None,
+            ..
         } = receiver_ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let type_def = self.lookup_type_def(name)?;
         let field_ty = type_def.fields.get(method_name)?;
         let field_ty =
@@ -551,7 +561,7 @@ impl Checker {
         // stored handle, not an indirect function call.
         if let Ty::Named {
             args: ref type_args,
-            builtin: Some(crate::BuiltinType::ActorFn),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
             ..
         } = resolved_field
         {
@@ -806,12 +816,13 @@ impl Checker {
                     .map(|item| self.ty_to_dispatch_pattern(item))
                     .collect(),
             ),
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 if args.is_empty() {
-                    TyPattern::Primitive(name)
+                    TyPattern::Primitive(name.to_string())
                 } else {
                     TyPattern::App {
-                        ctor: name,
+                        ctor: name.to_string(),
                         args: args
                             .iter()
                             .map(|arg| self.ty_to_dispatch_pattern(arg))

@@ -197,8 +197,8 @@ fn try_dot_completions(
 
     let mut items = Vec::new();
     let message_ty = match receiver_ty {
-        hew_types::Ty::Named { name, args, .. }
-            if name == hew_types::actor_delivery::FAILURE_TYPE && args.len() == 1 =>
+        hew_types::Ty::Named { head, args }
+            if *head == hew_types::KnownDecl::SendFailure.head() && args.len() == 1 =>
         {
             &args[0]
         }

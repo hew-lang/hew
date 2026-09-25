@@ -530,51 +530,27 @@ impl CanonicalExternTy {
             Self::Duration => matches!(ty, crate::Ty::Duration),
             Self::Instant => matches!(
                 ty,
-                crate::Ty::Named {
-                    builtin: Some(crate::BuiltinType::Instant),
-                    args,
-                    ..
-                } if args.is_empty()
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Instant), args, .. } if args.is_empty()
             ),
             Self::VecString => matches!(
                 ty,
-                crate::Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    args,
-                    ..
-                } if matches!(args.as_slice(), [crate::Ty::String])
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Vec), args, .. } if matches!(args.as_slice(), [crate::Ty::String])
             ),
             Self::VecChar => matches!(
                 ty,
-                crate::Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    args,
-                    ..
-                } if matches!(args.as_slice(), [crate::Ty::Char])
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Vec), args, .. } if matches!(args.as_slice(), [crate::Ty::Char])
             ),
             Self::OptionU8 => matches!(
                 ty,
-                crate::Ty::Named {
-                    builtin: Some(crate::BuiltinType::Option),
-                    args,
-                    ..
-                } if matches!(args.as_slice(), [crate::Ty::U8])
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Option), args, .. } if matches!(args.as_slice(), [crate::Ty::U8])
             ),
             Self::OptionI64 => matches!(
                 ty,
-                crate::Ty::Named {
-                    builtin: Some(crate::BuiltinType::Option),
-                    args,
-                    ..
-                } if matches!(args.as_slice(), [crate::Ty::I64])
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Option), args, .. } if matches!(args.as_slice(), [crate::Ty::I64])
             ),
             Self::OptionChar => matches!(
                 ty,
-                crate::Ty::Named {
-                    builtin: Some(crate::BuiltinType::Option),
-                    args,
-                    ..
-                } if matches!(args.as_slice(), [crate::Ty::Char])
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Option), args, .. } if matches!(args.as_slice(), [crate::Ty::Char])
             ),
         }
     }
@@ -944,9 +920,14 @@ impl RuntimeCallFamily {
     /// The caller must additionally prove the module is the shipped source.
     /// A C-void mutation retains its semantic updated-owner result; only the
     /// child is consumed by the source ABI, while SIR also moves the receiver.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of the extern declaration is matched independently"
+    )]
     #[must_use]
     pub fn matches_encoding_extern(
         self,
+        defs: &crate::DefTable,
         module: &str,
         declaration: &str,
         symbol: &str,
@@ -982,9 +963,9 @@ impl RuntimeCallFamily {
             *result == ResolvedTy::Unit
                 && params
                     .first()
-                    .is_some_and(|receiver| contract.matches_signature(params, receiver))
+                    .is_some_and(|receiver| contract.matches_signature(defs, params, receiver))
         } else {
-            contract.matches_signature(params, result)
+            contract.matches_signature(defs, params, result)
         }
     }
 

@@ -62,11 +62,11 @@ pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
 pub(crate) fn identity_aggregate_layout(ty: &Ty) -> Option<(usize, usize)> {
     match ty {
         Ty::Named {
-            builtin: Some(BuiltinType::ChildRef | BuiltinType::NodeId),
+            head: crate::TypeHead::Builtin(BuiltinType::ChildRef | BuiltinType::NodeId),
             ..
         } => Some((16, 8)),
         Ty::Named {
-            builtin: Some(BuiltinType::Location | BuiltinType::RemotePid),
+            head: crate::TypeHead::Builtin(BuiltinType::Location | BuiltinType::RemotePid),
             ..
         } => Some((32, 8)),
         _ => None,
@@ -126,8 +126,9 @@ fn primitive_copy_layout_on_path(
             let count = usize::try_from(*count).ok()?;
             Some((elem_size.checked_mul(count)?, elem_align))
         }
-        Ty::Named { name, args, .. } => {
-            let type_def = crate::check::types::type_def_for_spelling(type_defs, name)?;
+        Ty::Named { head, args } => {
+            let type_def =
+                crate::check::types::type_def_for_spelling(type_defs, head.registry_key())?;
             let visit_key = type_def.name.clone();
             if !visiting.insert(visit_key.clone()) {
                 return None;
@@ -162,14 +163,13 @@ fn primitive_copy_layout_member_on_path(
 ) -> Option<(usize, usize)> {
     match ty {
         Ty::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
         } if args.is_empty() => {
             let type_param_index = type_def
                 .type_params
                 .iter()
-                .position(|param| param == name)?;
+                .position(|declared| declared == param.spelling.as_str())?;
             let type_arg = type_args.get(type_param_index)?;
             // A fresh parameter path is needed for finite Wrap<Wrap<i64>>,
             // but must not erase a declaration cycle through that parameter.
@@ -787,13 +787,12 @@ impl Checker {
             _ => return self.registry.implements_marker(ty, marker),
         };
         if let Ty::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
         } = ty
         {
-            if args.is_empty() && self.is_type_param_in_scope(name) {
-                return self.type_param_has_marker_bound(name, marker);
+            if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()) {
+                return self.type_param_has_marker_bound(param.spelling.as_str(), marker);
             }
         }
         let ty = self.subst.resolve(ty).materialize_literal_defaults();
@@ -859,13 +858,10 @@ impl Checker {
         self.fn_sigs
             .get(name)
             .and_then(|sig| {
-                let Ty::Named {
-                    name: return_name, ..
-                } = &sig.return_type
-                else {
+                let Ty::Named { head, .. } = &sig.return_type else {
                     return None;
                 };
-                (return_name == name).then(|| sig.params.clone())
+                (head.registry_key() == name).then(|| sig.params.clone())
             })
             .unwrap_or_default()
     }
@@ -1086,11 +1082,16 @@ impl Checker {
     /// and iterates by borrow at every monomorphisation.
     fn clone_proven_element(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Named { name, args, .. } => {
-                if self.is_type_param_in_scope(name)
-                    && !self.type_param_has_marker_bound(name, MarkerTrait::Clone)
-                {
-                    return false;
+            Ty::Named { head, args } => {
+                if let crate::TypeHead::Param(param) = head {
+                    if self.is_type_param_in_scope(param.spelling.as_str())
+                        && !self.type_param_has_marker_bound(
+                            param.spelling.as_str(),
+                            MarkerTrait::Clone,
+                        )
+                    {
+                        return false;
+                    }
                 }
                 args.iter().all(|arg| self.clone_proven_element(arg))
             }
@@ -1313,8 +1314,8 @@ impl Checker {
             return false;
         }
 
-        if matches!(&resolved, Ty::Named { name, args, builtin: None }
-            if args.is_empty() && self.is_type_param_in_scope(name))
+        if matches!(&resolved, Ty::Named { head: crate::TypeHead::Param(param), args }
+            if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()))
         {
             return self.validate_collection_key_capabilities(&resolved, "Set", span);
         }
@@ -1389,7 +1390,7 @@ impl Checker {
         if matches!(
             elem_ty,
             Ty::Named {
-                builtin: Some(BuiltinType::Sink),
+                head: crate::TypeHead::Builtin(BuiltinType::Sink),
                 ..
             }
         ) {
@@ -1422,14 +1423,17 @@ impl Checker {
                 self.vec_element_contains_fn_value(inner, visiting)
             }
             Ty::Named {
-                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
+                head:
+                    crate::TypeHead::Builtin(
+                        BuiltinType::Range | BuiltinType::Option | BuiltinType::Result,
+                    ),
                 args,
                 ..
             } => args
                 .iter()
                 .any(|arg| self.vec_element_contains_fn_value(arg, visiting)),
-            Ty::Named { name, args, .. } => {
-                let Some(type_def) = self.lookup_type_def(name) else {
+            Ty::Named { head, args } => {
+                let Some(type_def) = self.lookup_type_def(head.registry_key()) else {
                     return false;
                 };
                 if visiting.contains(type_def.name.as_str()) {
@@ -1519,9 +1523,9 @@ impl Checker {
     ) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Named { builtin, args, .. } => {
+            Ty::Named { head, args } => {
                 if let Some(result) =
-                    collection.validate_named_collection(self, *builtin, args, span)
+                    collection.validate_named_collection(self, head.builtin(), args, span)
                 {
                     return result;
                 }
@@ -1584,8 +1588,7 @@ impl Checker {
 
     pub(super) fn make_vec_type(&mut self, elem_ty: Ty, span: &Span) -> Ty {
         let ty = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args: vec![elem_ty],
         };
         self.validate_concrete_vec_type(&ty, span);
@@ -1624,14 +1627,13 @@ impl Checker {
                 .all(|elem| self.rc_payload_clone_drop_supported(elem, visiting, false)),
             Ty::Array(elem, _) => self.rc_payload_clone_drop_supported(elem, visiting, false),
             Ty::Named {
-                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                head: crate::TypeHead::Builtin(BuiltinType::Rc | BuiltinType::Weak),
                 args,
                 ..
             } => args.len() == 1,
             Ty::Named {
-                name,
+                head: head @ crate::TypeHead::Builtin(builtin),
                 args,
-                builtin: Some(builtin),
             } => match builtin {
                 BuiltinType::Option | BuiltinType::Result => args
                     .iter()
@@ -1645,18 +1647,23 @@ impl Checker {
                         && self.rc_payload_clone_drop_supported(&args[1], visiting, true)
                 }
                 _ => {
-                    self.canonical_owned_handle_type_name(name).is_none()
-                        && !self.is_user_opaque_type_name(name)
+                    self.canonical_owned_handle_type_name(head.registry_key())
+                        .is_none()
+                        && !self.is_user_opaque_type_name(head.registry_key())
                         && self
                             .registry
                             .implements_marker(&resolved, MarkerTrait::Copy)
                 }
             },
             Ty::Named {
-                name,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 args,
-                builtin: None,
             } => {
+                // TRANSITION(A1 commit 3): registry lookups by key.
+                let name = head.registry_key();
                 if self.canonical_owned_handle_type_name(name).is_some()
                     || self.is_user_opaque_type_name(name)
                     || self.registry.is_linear(name)
@@ -1726,10 +1733,9 @@ impl Checker {
             || matches!(
                 &resolved,
                 Ty::Named {
-                    name,
+                    head: crate::TypeHead::Param(param),
                     args,
-                    builtin: None,
-                } if args.is_empty() && self.is_type_param_in_scope(name)
+                } if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str())
             );
         if unresolved_generic {
             self.report_error(
@@ -1777,8 +1783,8 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::normalize_named(
-                "Result".to_string(),
+            params: vec![Ty::named_for_test(
+                "Result",
                 vec![Ty::I32, Ty::Tuple(vec![Ty::Error])],
             )],
             ret: Box::new(Ty::Bool),
@@ -1881,8 +1887,8 @@ mod tests {
             (
                 "normalized_param_fn".to_string(),
                 FnSig {
-                    params: vec![Ty::normalize_named(
-                        "Sender".to_string(),
+                    params: vec![Ty::named_for_test(
+                        "Sender",
                         vec![Ty::Var(normalized_param_var)],
                     )],
                     return_type: Ty::Unit,
@@ -1893,8 +1899,8 @@ mod tests {
                 "normalized_return_fn".to_string(),
                 FnSig {
                     params: vec![Ty::I32],
-                    return_type: Ty::normalize_named(
-                        "Receiver".to_string(),
+                    return_type: Ty::named_for_test(
+                        "Receiver",
                         vec![Ty::Var(normalized_return_var)],
                     ),
                     ..FnSig::default()
@@ -1984,23 +1990,20 @@ mod tests {
                     bounds: HashMap::new(),
                     fields: HashMap::from([(
                         "tx".to_string(),
-                        Ty::normalize_named(
-                            "Sender".to_string(),
-                            vec![Ty::Var(normalized_field_var)],
-                        ),
+                        Ty::named_for_test("Sender", vec![Ty::Var(normalized_field_var)]),
                     )]),
                     variants: HashMap::from([(
                         "Recv".to_string(),
-                        VariantDef::Tuple(vec![Ty::normalize_named(
-                            "Receiver".to_string(),
+                        VariantDef::Tuple(vec![Ty::named_for_test(
+                            "Receiver",
                             vec![Ty::Var(normalized_variant_var)],
                         )]),
                     )]),
                     methods: HashMap::from([(
                         "close".to_string(),
                         FnSig {
-                            params: vec![Ty::normalize_named(
-                                "Sender".to_string(),
+                            params: vec![Ty::named_for_test(
+                                "Sender",
                                 vec![Ty::Var(normalized_method_var)],
                             )],
                             return_type: Ty::Unit,
@@ -2328,11 +2331,7 @@ mod tests {
                 type_params: vec!["T".to_string()],
                 type_param_bounds: HashMap::new(),
                 param_names: vec!["item".to_string()],
-                params: vec![Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                }],
+                params: vec![Ty::param("T")],
                 return_type: Ty::Unit,
                 doc_comment: None,
                 extern_symbol: None,
@@ -3043,42 +3042,14 @@ mod tests {
         let type_defs = HashMap::from([
             (
                 "Wrap".to_string(),
-                make_generic_record(
-                    "Wrap",
-                    vec!["T"],
-                    vec![(
-                        "v",
-                        Ty::Named {
-                            name: "T".to_string(),
-                            args: vec![],
-                            builtin: None,
-                        },
-                    )],
-                ),
+                make_generic_record("Wrap", vec!["T"], vec![("v", Ty::param("T"))]),
             ),
             (
                 "Pair".to_string(),
                 make_generic_record(
                     "Pair",
                     vec!["A", "B"],
-                    vec![
-                        (
-                            "a",
-                            Ty::Named {
-                                name: "A".to_string(),
-                                args: vec![],
-                                builtin: None,
-                            },
-                        ),
-                        (
-                            "b",
-                            Ty::Named {
-                                name: "B".to_string(),
-                                args: vec![],
-                                builtin: None,
-                            },
-                        ),
-                    ],
+                    vec![("a", Ty::param("A")), ("b", Ty::param("B"))],
                 ),
             ),
             (
@@ -3087,45 +3058,14 @@ mod tests {
             ),
             (
                 "Holder".to_string(),
-                make_generic_record(
-                    "Holder",
-                    vec!["T"],
-                    vec![(
-                        "value",
-                        Ty::Named {
-                            name: "T".to_string(),
-                            args: vec![],
-                            builtin: None,
-                        },
-                    )],
-                ),
+                make_generic_record("Holder", vec!["T"], vec![("value", Ty::param("T"))]),
             ),
         ]);
 
-        let wrap_i64 = Ty::Named {
-            name: "Wrap".to_string(),
-            args: vec![Ty::I64],
-            builtin: None,
-        };
-        let pair_i64 = Ty::Named {
-            name: "Pair".to_string(),
-            args: vec![Ty::I64, Ty::I64],
-            builtin: None,
-        };
-        let holder_point = Ty::Named {
-            name: "Holder".to_string(),
-            args: vec![Ty::Named {
-                name: "Point".to_string(),
-                args: vec![],
-                builtin: None,
-            }],
-            builtin: None,
-        };
-        let nested_wrap = Ty::Named {
-            name: "Wrap".to_string(),
-            args: vec![wrap_i64.clone()],
-            builtin: None,
-        };
+        let wrap_i64 = Ty::named_for_test("Wrap", vec![Ty::I64]);
+        let pair_i64 = Ty::named_for_test("Pair", vec![Ty::I64, Ty::I64]);
+        let holder_point = Ty::named_for_test("Holder", vec![Ty::named_for_test("Point", vec![])]);
+        let nested_wrap = Ty::named_for_test("Wrap", vec![wrap_i64.clone()]);
 
         assert_eq!(primitive_copy_layout(&wrap_i64, &type_defs), Some((8, 8)));
         assert_eq!(primitive_copy_layout(&pair_i64, &type_defs), Some((16, 8)));
@@ -3158,7 +3098,7 @@ mod tests {
             "left.Pair".to_string(),
             FnSig {
                 params: vec![Ty::I64],
-                return_type: Ty::named("left.Pair", Vec::new()),
+                return_type: Ty::named_for_test("left.Pair", Vec::new()),
                 ..FnSig::default()
             },
         );
@@ -3168,7 +3108,7 @@ mod tests {
             "Pair".to_string(),
             FnSig {
                 params: vec![Ty::Bool],
-                return_type: Ty::named("left.Pair", Vec::new()),
+                return_type: Ty::named_for_test("left.Pair", Vec::new()),
                 ..FnSig::default()
             },
         );

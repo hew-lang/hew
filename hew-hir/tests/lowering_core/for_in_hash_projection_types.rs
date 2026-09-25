@@ -103,10 +103,9 @@ fn assert_hashset_vec_iter(
     assert_eq!(
         vec.ty,
         ResolvedTy::Named {
-            name: "Vec".into(),
             args: vec![elem_ty.clone()],
-            builtin: Some(hew_types::BuiltinType::Vec),
-            is_opaque: false,
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
+            is_opaque: false
         },
         "`HashSet::to_vec` must carry its checker-authored Vec result type"
     );
@@ -127,10 +126,9 @@ fn assert_hashset_vec_iter(
     assert_eq!(
         receiver.ty,
         ResolvedTy::Named {
-            name: "HashSet".into(),
             args: vec![elem_ty],
-            builtin: Some(hew_types::BuiltinType::HashSet),
-            is_opaque: false,
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashSet),
+            is_opaque: false
         },
         "the projection receiver must retain the real iterable HashSet type"
     );
@@ -211,7 +209,7 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
         assert!(matches!(
             receiver.ty,
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::HashMap),
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashMap),
                 ..
             }
         ));

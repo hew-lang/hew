@@ -625,11 +625,8 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
         assert!(
             matches!(
                 ty,
-                Ty::Named {
-                    name,
-                    args,
-                    builtin: Some(crate::BuiltinType::Stream),
-                } if name == "Stream" && args == &[Ty::I64]
+                Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Stream), args }
+                    if args == &[Ty::I64]
             ),
             "got: {ty:?}",
         );
@@ -638,11 +635,8 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
     assert!(
         matches!(
             sink,
-            Ty::Named {
-                name,
-                builtin: Some(crate::BuiltinType::Sink),
-                args,
-            } if name == "Sink" && args == &[Ty::String]
+            Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Sink), args }
+                if args == &[Ty::String]
         ),
         "a qualified builtin spelling must keep its builtin identity and element: {sink:?}"
     );

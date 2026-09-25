@@ -302,11 +302,7 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
         .expect("generic inherent method must retain its signature");
     assert_eq!(
         get_sig.return_type,
-        Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        },
+        Ty::param("T"),
         "the body must resolve the primary return hole"
     );
 
@@ -320,10 +316,10 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     );
     assert!(matches!(
         &with_sig.return_type,
-        Ty::Named { name, args, .. }
-            if name == "Box"
-                && matches!(args.as_slice(), [Ty::Named { name, args, .. }]
-                    if name == "T" && args.is_empty())
+        Ty::Named { head, args }
+            if head.spelling() == "Box"
+                && matches!(args.as_slice(), [Ty::Named { head, args }]
+                    if head.is_param() && head.spelling() == "T" && args.is_empty())
     ));
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
@@ -1628,12 +1624,10 @@ fn trait_method_where_clause_bound_enforced_positive() {
         output.errors
     );
     assert!(
-        output.call_type_args.values().any(|args| args
-            == &vec![crate::ty::Ty::Named {
-                builtin: None,
-                name: "Page".to_string(),
-                args: vec![]
-            }]),
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::named_in(&output.defs, "Page", vec![])]),
         "expected method-level bound call to infer U=Page, got {:?}",
         output.call_type_args
     );
@@ -1681,11 +1675,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            return_type: Ty::param("T"),
             ..FnSig::default()
         },
     );
@@ -1695,11 +1685,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
     );
     checker.env.define(
         "boxy".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "Boxy".to_string(),
-            args: vec![Ty::String],
-        },
+        Ty::named_for_test("Boxy", vec![Ty::String]),
         false,
     );
 
@@ -1739,21 +1725,13 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            return_type: Ty::param("T"),
             ..FnSig::default()
         },
     );
     checker.env.define(
         "wrapper".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "Wrapper".to_string(),
-            args: vec![Ty::String],
-        },
+        Ty::named_for_test("Wrapper", vec![Ty::String]),
         false,
     );
 
@@ -1789,13 +1767,8 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Register HashMap with a string-keyed .get() method (as the stdlib defines it).
     // Return type is Option<V>, represented as the Named form.
     let option_v = Ty::Named {
-        builtin: Some(crate::BuiltinType::Option),
-        name: "Option".to_string(),
-        args: vec![Ty::Named {
-            builtin: None,
-            name: "V".to_string(),
-            args: vec![],
-        }],
+        head: crate::TypeHead::Builtin(crate::BuiltinType::Option),
+        args: vec![Ty::param("V")],
     };
     let mut methods = HashMap::new();
     methods.insert(
@@ -1813,11 +1786,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     );
     checker.env.define(
         "m".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "HashMap".to_string(),
-            args: vec![Ty::String, Ty::I64],
-        },
+        Ty::user_for_test("HashMap", vec![Ty::String, Ty::I64]),
         false,
     );
 
@@ -1941,16 +1910,8 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
         "Wrapper::value".to_string(),
         FnSig {
             param_names: vec!["next".to_string()],
-            params: vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            params: vec![Ty::param("T")],
+            return_type: Ty::param("T"),
             ..FnSig::default()
         },
     );
@@ -1978,11 +1939,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     );
     checker.env.define(
         "thing".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "widgets.Thing".to_string(),
-            args: vec![],
-        },
+        Ty::named_for_test("widgets.Thing", vec![]),
         false,
     );
 
@@ -2700,15 +2657,7 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
         ..Default::default()
     };
 
-    checker.enforce_type_param_bounds(
-        &sig,
-        &[Ty::Named {
-            builtin: None,
-            name: "Thing".to_string(),
-            args: vec![],
-        }],
-        &(0..0),
-    );
+    checker.enforce_type_param_bounds(&sig, &[Ty::named_for_test("Thing", vec![])], &(0..0));
 
     assert!(
         checker
@@ -2938,16 +2887,8 @@ fn record_field_marker_derivation_expands_top_level_alias() {
         output.errors
     );
 
-    let good = Ty::Named {
-        builtin: None,
-        name: "Good".to_string(),
-        args: vec![],
-    };
-    let bad = Ty::Named {
-        builtin: None,
-        name: "Bad".to_string(),
-        args: vec![],
-    };
+    let good = Ty::named_for_test("Good", vec![]);
+    let bad = Ty::named_for_test("Bad", vec![]);
 
     for marker in [
         crate::traits::MarkerTrait::Send,

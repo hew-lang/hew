@@ -260,12 +260,11 @@ impl LowerCtx {
         result_ty: ResolvedTy,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let error_ty = self.qualify_current_module_record_ty(ResolvedTy::Named {
-            name: error.type_name.clone(),
-            args: Vec::new(),
-            builtin: None,
-            is_opaque: false,
-        });
+        let error_ty = self.qualify_current_module_record_ty(ResolvedTy::named_path(
+            &self.defs,
+            &error.type_name,
+            Vec::new(),
+        ));
         let error_key = format!("{}::{}", error.type_name, error.variant_name);
         // This is the ordinary checked VariantMatch identity. Project its
         // exact constructor into the HIR layout registry, without resolving a
@@ -398,12 +397,7 @@ impl LowerCtx {
                         span.clone(),
                         "checker-authoritative variant-ctor result type failed boundary conversion",
                     ));
-                    ResolvedTy::Named {
-                        name: type_name_owned.clone(),
-                        args: Vec::new(),
-                        builtin: None,
-                        is_opaque: false,
-                    }
+                    ResolvedTy::named_path(&self.defs, &type_name_owned, Vec::new())
                 }
             }
         } else {
@@ -415,12 +409,7 @@ impl LowerCtx {
                 span.clone(),
                 "checker did not record a result type for this variant constructor call",
             ));
-            ResolvedTy::Named {
-                name: type_name_owned.clone(),
-                args: Vec::new(),
-                builtin: None,
-                is_opaque: false,
-            }
+            ResolvedTy::named_path(&self.defs, &type_name_owned, Vec::new())
         };
         (
             HirExprKind::MachineVariantCtor {

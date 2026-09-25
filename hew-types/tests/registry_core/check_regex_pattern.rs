@@ -21,7 +21,7 @@ fn regex_literal_close_uses_canonical_resource_identity() {
         output
             .expr_types
             .values()
-            .any(|ty| { matches!(ty, Ty::Named { name, .. } if name == "std.text.regex.Pattern") }),
+            .any(|ty| { matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "std.text.regex.Pattern") }),
         "regex literal must use the canonical pattern identity: {:#?}",
         output.expr_types
     );

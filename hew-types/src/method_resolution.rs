@@ -30,18 +30,11 @@ fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_arg
         while captures(&fresh) || sig.type_params.contains(&fresh) {
             fresh.push('\'');
         }
-        renames.insert(
-            method_param.clone(),
-            Ty::Named {
-                builtin: None,
-                name: fresh,
-                args: Vec::new(),
-            },
-        );
+        renames.insert(method_param.clone(), Ty::param(&fresh));
     }
     if !renames.is_empty() {
         let binder_name = |name: &String| match renames.get(name) {
-            Some(Ty::Named { name: fresh, .. }) => fresh.clone(),
+            Some(Ty::Named { head, .. }) => head.spelling().to_string(),
             _ => name.clone(),
         };
         for param_ty in &mut sig.params {
@@ -122,7 +115,7 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         // `lookup_method_sig` path the checker falls back to for receive-fn
         // dispatch resolves `orders.order(arg)` against `Orders::order` in
         // `fn_sigs` through the ordinary named arm below.
-        Ty::Named { name, args, .. } => Some((name.as_str(), args.as_slice())),
+        Ty::Named { head, args } => Some((head.registry_key(), args.as_slice())),
         _ => None,
     }
 }
@@ -133,7 +126,7 @@ fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<
     }
     match receiver_ty {
         Ty::Named {
-            builtin: Some(BuiltinType::Vec),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args,
             ..
         } if args.len() == 1 => Some(FnSig {
@@ -141,7 +134,7 @@ fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<
             ..FnSig::default()
         }),
         Ty::Named {
-            builtin: Some(BuiltinType::HashMap),
+            head: crate::TypeHead::Builtin(BuiltinType::HashMap),
             args,
             ..
         } if args.len() == 2 => Some(FnSig {
@@ -149,7 +142,7 @@ fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<
             ..FnSig::default()
         }),
         Ty::Named {
-            builtin: Some(BuiltinType::HashSet),
+            head: crate::TypeHead::Builtin(BuiltinType::HashSet),
             args,
             ..
         } if args.len() == 1 => Some(FnSig {
@@ -295,7 +288,7 @@ pub fn lookup_type_def_for_receiver(
 ) -> Option<TypeDef> {
     // Actor handles have no public fields accessible via the handle.
     if let Ty::Named {
-        builtin: Some(BuiltinType::ActorHandle),
+        head: crate::TypeHead::Actor(_),
         ..
     } = receiver_ty
     {
@@ -315,11 +308,7 @@ pub fn collect_method_sigs_for_named_type(
 ) -> Vec<(String, FnSig)> {
     let mut methods = Vec::new();
     let mut seen = HashSet::new();
-    let receiver_ty = Ty::Named {
-        builtin: crate::lookup_builtin_type(type_name),
-        name: type_name.to_string(),
-        args: type_args.to_vec(),
-    };
+    let receiver_ty = Ty::registry_named(type_name, type_args.to_vec());
     let receiver_type_params = lookup_type_def(type_defs, type_name)
         .map(|type_def| type_def.type_params)
         .unwrap_or_default();
@@ -456,16 +445,8 @@ mod tests {
             "Wrapper::value".to_string(),
             FnSig {
                 param_names: vec!["next".to_string()],
-                params: vec![Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                }],
-                return_type: Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
+                params: vec![Ty::param("T")],
+                return_type: Ty::param("T"),
                 ..FnSig::default()
             },
         );
@@ -561,11 +542,7 @@ mod tests {
         assert_eq!(type_def.type_params, vec!["T".to_string()]);
         assert_eq!(
             type_def.methods["recv"].return_type,
-            Ty::option(Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            })
+            Ty::option(Ty::param("T"))
         );
     }
 
@@ -575,18 +552,15 @@ mod tests {
         let fn_sigs = HashMap::new();
         for receiver_ty in [
             Ty::Named {
-                builtin: Some(BuiltinType::Vec),
-                name: "Vec".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::Vec),
                 args: vec![Ty::String],
             },
             Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
-                name: "HashMap".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                 args: vec![Ty::String, Ty::I64],
             },
             Ty::Named {
-                builtin: Some(BuiltinType::HashSet),
-                name: "HashSet".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                 args: vec![Ty::String],
             },
         ] {
@@ -612,9 +586,8 @@ mod tests {
         assert_eq!(
             sig.return_type,
             Ty::Named {
-                builtin: Some(BuiltinType::HashSet),
-                name: "HashSet".to_string(),
-                args: vec![Ty::String],
+                head: crate::TypeHead::Builtin(BuiltinType::HashSet),
+                args: vec![Ty::String]
             }
         );
     }

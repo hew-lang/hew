@@ -3,7 +3,7 @@
 use super::*;
 
 fn vector(element: ResolvedTy) -> ResolvedTy {
-    ResolvedTy::named_builtin("Vec", crate::BuiltinType::Vec, vec![element])
+    ResolvedTy::named_builtin(crate::BuiltinType::Vec, vec![element])
 }
 
 #[test]
@@ -13,31 +13,47 @@ fn vector_contract_binds_receiver_element_and_result_together() {
     let contract = RuntimeCallFamily::Vector(VecValueOp::Push)
         .semantic_contract()
         .unwrap();
-    assert!(contract.matches_signature(&[values.clone(), ResolvedTy::String], &values));
-    assert!(!contract.matches_signature(&[values.clone(), ResolvedTy::I64], &values));
-    assert!(!contract.matches_signature(&[values.clone(), ResolvedTy::String], &other));
+    assert!(contract.matches_signature(
+        &crate::DefTable::new(),
+        &[values.clone(), ResolvedTy::String],
+        &values
+    ));
     assert!(!contract.matches_signature(
+        &crate::DefTable::new(),
+        &[values.clone(), ResolvedTy::I64],
+        &values
+    ));
+    assert!(!contract.matches_signature(
+        &crate::DefTable::new(),
+        &[values.clone(), ResolvedTy::String],
+        &other
+    ));
+    assert!(!contract.matches_signature(
+        &crate::DefTable::new(),
         &[
-            ResolvedTy::named_user("Vec", vec![ResolvedTy::String]),
+            ResolvedTy::user_for_test("Vec", vec![ResolvedTy::String]),
             ResolvedTy::String
         ],
         &values
     ));
-    assert!(!contract.matches_signature(std::slice::from_ref(&values), &values));
-    let renamed = ResolvedTy::named_builtin(
-        "std.collections.Sequence",
-        crate::BuiltinType::Vec,
-        vec![ResolvedTy::String],
-    );
-    assert!(contract.matches_signature(&[renamed.clone(), ResolvedTy::String], &renamed));
+    assert!(!contract.matches_signature(
+        &crate::DefTable::new(),
+        std::slice::from_ref(&values),
+        &values
+    ));
+    let renamed = ResolvedTy::named_builtin(crate::BuiltinType::Vec, vec![ResolvedTy::String]);
+    assert!(contract.matches_signature(
+        &crate::DefTable::new(),
+        &[renamed.clone(), ResolvedTy::String],
+        &renamed
+    ));
 }
 
 #[test]
 fn vector_results_are_exact_for_every_operation() {
     let values = vector(vector(ResolvedTy::String));
     let element = vector(ResolvedTy::String);
-    let optional =
-        ResolvedTy::named_builtin("Option", crate::BuiltinType::Option, vec![element.clone()]);
+    let optional = ResolvedTy::named_builtin(crate::BuiltinType::Option, vec![element.clone()]);
     let cases = [
         (VecValueOp::New, vec![], values.clone()),
         (VecValueOp::Len, vec![values.clone()], ResolvedTy::I64),
@@ -65,9 +81,12 @@ fn vector_results_are_exact_for_every_operation() {
     ];
     for (op, args, result) in cases {
         let contract = RuntimeCallFamily::Vector(op).semantic_contract().unwrap();
-        assert!(contract.matches_signature(&args, &result), "{op:?}");
         assert!(
-            !contract.matches_signature(&args, &ResolvedTy::Bool),
+            contract.matches_signature(&crate::DefTable::new(), &args, &result),
+            "{op:?}"
+        );
+        assert!(
+            !contract.matches_signature(&crate::DefTable::new(), &args, &ResolvedTy::Bool),
             "{op:?} must reject an unrelated result"
         );
     }

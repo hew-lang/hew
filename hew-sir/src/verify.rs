@@ -335,12 +335,7 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
             == Some(&shape.instance)
             || matches!(
                 &shape.aggregate_ty,
-                ResolvedTy::Named {
-                    name,
-                    args,
-                    builtin: Some(_),
-                    ..
-                } if shape.instance.args == *args && module.defs.path(shape.instance.nominal.declaration()) == name
+                ResolvedTy::Named { head: head @ hew_types::TypeHead::Builtin(_), args, .. } if shape.instance.args == *args && module.defs.path(shape.instance.nominal.declaration()) == head.registry_key()
             );
         if !carries_instance {
             refuse(format!(
@@ -586,7 +581,9 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
             || (matches!(
                 key.0,
                 ResolvedTy::Named {
-                    builtin: None,
+                    head: hew_types::TypeHead::Nominal(_)
+                        | hew_types::TypeHead::Param(_)
+                        | hew_types::TypeHead::Unresolved(_),
                     is_opaque: true,
                     ..
                 }
@@ -783,7 +780,10 @@ fn verify_structural_rendering(
             is_opaque: true, ..
         } => Vec::new(),
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap),
+            head:
+                hew_types::TypeHead::Builtin(
+                    hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap,
+                ),
             args,
             ..
         } => args.clone(),
@@ -2855,7 +2855,9 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || (matches!(
             ty,
             ResolvedTy::Named {
-                builtin: None,
+                head: hew_types::TypeHead::Nominal(_)
+                    | hew_types::TypeHead::Param(_)
+                    | hew_types::TypeHead::Unresolved(_),
                 is_opaque: true,
                 ..
             }
@@ -4272,7 +4274,7 @@ fn verify_runtime_call_terminator(
         crate::CallResult::Never => ResolvedTy::Never,
         crate::CallResult::Value(value) => value.ty.clone(),
     };
-    let instantiated = match contract.instantiate(&parameter_types, &result_ty) {
+    let instantiated = match contract.instantiate(shapes.defs, &parameter_types, &result_ty) {
         Ok(contract) => contract,
         Err(reason) => {
             invalid_operation(function, id, reason, diagnostics);
@@ -5343,7 +5345,7 @@ fn verify_terminator_shape(
                         | hew_types::WireCodecDirection::ToYaml => value.ty == ResolvedTy::String,
                         hew_types::WireCodecDirection::FromJson
                         | hew_types::WireCodecDirection::FromYaml => {
-                            matches!(&value.ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
+                            matches!(&value.ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
                         }
                     };
                     ty_matches && normal.args.iter().any(|arg| arg.value == value.id)
@@ -5540,7 +5542,7 @@ fn verify_terminator_shape(
                             .iter()
                             .all(|input| input.decision == crate::BoundaryDecision::Borrow)
                         && matches!(result, crate::CallResult::Value(value)
-                            if argument_types.is_some_and(|arguments| operation.contract().matches_signature(&arguments, &value.ty))
+                            if argument_types.is_some_and(|arguments| operation.contract().matches_signature(variants.defs, &arguments, &value.ty))
                                 && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                 }
                 crate::SuspendKind::Sleep => {
@@ -5592,7 +5594,7 @@ fn verify_terminator_shape(
                         if input.decision == crate::BoundaryDecision::BorrowMut
                         && types.get(&input.operand.value).and_then(crate::generator_parts)
                             .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
-                                if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
+                                if value.ty == ResolvedTy::named_builtin(hew_types::BuiltinType::Option, vec![yielded.clone()]))))
                 }
                 crate::SuspendKind::StreamNext { .. } => {
                     resumes.len() == 1
@@ -5600,7 +5602,7 @@ fn verify_terminator_shape(
                         if input.decision == crate::BoundaryDecision::BorrowMut
                         && types.get(&input.operand.value).and_then(crate::stream_element)
                             .is_some_and(|element| matches!(result, crate::CallResult::Value(value)
-                                if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![element.clone()])
+                                if value.ty == ResolvedTy::named_builtin(hew_types::BuiltinType::Option, vec![element.clone()])
                                     && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))))
                 }
                 crate::SuspendKind::StreamSend { park } => {

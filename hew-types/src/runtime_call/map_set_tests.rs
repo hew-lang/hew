@@ -3,7 +3,7 @@
 use super::*;
 
 fn builtin(kind: BuiltinType, arguments: Vec<ResolvedTy>) -> ResolvedTy {
-    ResolvedTy::named_builtin(kind.canonical_name(), kind, arguments)
+    ResolvedTy::named_builtin(kind, arguments)
 }
 
 #[test]
@@ -23,15 +23,25 @@ fn map_selection_and_projection_keep_exact_nested_value_types() {
     let get = RuntimeCallFamily::Map(MapValueOp::Get)
         .semantic_contract()
         .unwrap();
-    assert!(get.matches_signature(&[map.clone(), ResolvedTy::String], &optional));
-    assert!(!get.matches_signature(&[map.clone(), ResolvedTy::I64], &optional));
+    assert!(get.matches_signature(
+        &crate::DefTable::new(),
+        &[map.clone(), ResolvedTy::String],
+        &optional
+    ));
     assert!(!get.matches_signature(
+        &crate::DefTable::new(),
+        &[map.clone(), ResolvedTy::I64],
+        &optional
+    ));
+    assert!(!get.matches_signature(
+        &crate::DefTable::new(),
         &[map.clone(), ResolvedTy::String],
         &builtin(BuiltinType::Option, vec![ResolvedTy::String])
     ));
     assert!(!get.matches_signature(
+        &crate::DefTable::new(),
         &[map.clone(), ResolvedTy::String],
-        &ResolvedTy::named_user("Option", vec![value.clone()])
+        &ResolvedTy::user_for_test("Option", vec![value.clone()])
     ));
 
     let entries = RuntimeCallFamily::Map(MapValueOp::Entries)
@@ -41,8 +51,9 @@ fn map_selection_and_projection_keep_exact_nested_value_types() {
         BuiltinType::Vec,
         vec![ResolvedTy::Tuple(vec![ResolvedTy::String, value.clone()])],
     );
-    assert!(entries.matches_signature(std::slice::from_ref(&map), &pairs));
+    assert!(entries.matches_signature(&crate::DefTable::new(), std::slice::from_ref(&map), &pairs));
     assert!(!entries.matches_signature(
+        &crate::DefTable::new(),
         std::slice::from_ref(&map),
         &builtin(
             BuiltinType::Vec,
@@ -75,20 +86,28 @@ fn collection_constructors_require_canonical_identity_and_arity() {
     ] {
         let contract = family.semantic_contract().unwrap();
         let receiver = builtin(kind, arguments.clone());
-        assert!(contract.matches_signature(&[], &receiver));
+        assert!(contract.matches_signature(&crate::DefTable::new(), &[], &receiver));
         assert!(contract.matches_signature(
+            &crate::DefTable::new(),
             &[],
-            &ResolvedTy::named_builtin("renamed.Collection", kind, arguments.clone())
+            &ResolvedTy::named_builtin(kind, arguments.clone())
         ));
         assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
             &[],
-            &ResolvedTy::named_user(kind.canonical_name(), arguments)
+            &ResolvedTy::user_for_test(kind.canonical_name(), arguments)
         ));
-        assert!(!contract.matches_signature(&[], &builtin(kind, vec![])));
-        assert!(
-            !contract.matches_signature(&[], &builtin(BuiltinType::Vec, vec![ResolvedTy::String]))
-        );
-        assert!(!contract.matches_signature(std::slice::from_ref(&receiver), &receiver));
+        assert!(!contract.matches_signature(&crate::DefTable::new(), &[], &builtin(kind, vec![])));
+        assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
+            &[],
+            &builtin(BuiltinType::Vec, vec![ResolvedTy::String])
+        ));
+        assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
+            std::slice::from_ref(&receiver),
+            &receiver
+        ));
     }
 }
 
@@ -99,11 +118,13 @@ fn map_updates_replace_the_receiver_and_preserve_input_owners() {
         vec![ResolvedTy::String, ResolvedTy::Bytes],
     );
     let insert = RuntimeCallFamily::Map(MapValueOp::Insert);
-    assert!(insert
-        .semantic_contract()
-        .unwrap()
-        .matches_signature(&[map.clone(), ResolvedTy::String, ResolvedTy::Bytes], &map));
+    assert!(insert.semantic_contract().unwrap().matches_signature(
+        &crate::DefTable::new(),
+        &[map.clone(), ResolvedTy::String, ResolvedTy::Bytes],
+        &map
+    ));
     assert!(!insert.semantic_contract().unwrap().matches_signature(
+        &crate::DefTable::new(),
         &[map.clone(), ResolvedTy::String, ResolvedTy::Bytes],
         &ResolvedTy::Unit
     ));
@@ -122,11 +143,17 @@ fn map_updates_replace_the_receiver_and_preserve_input_owners() {
         .semantic_contract()
         .unwrap();
     assert!(remove.matches_signature(
+        &crate::DefTable::new(),
         &[map.clone(), ResolvedTy::String],
         &ResolvedTy::Tuple(vec![map.clone(), removed.clone()])
     ));
-    assert!(!remove.matches_signature(&[map.clone(), ResolvedTy::String], &removed));
     assert!(!remove.matches_signature(
+        &crate::DefTable::new(),
+        &[map.clone(), ResolvedTy::String],
+        &removed
+    ));
+    assert!(!remove.matches_signature(
+        &crate::DefTable::new(),
         &[map, ResolvedTy::String],
         &ResolvedTy::Tuple(vec![
             builtin(
@@ -146,14 +173,20 @@ fn set_updates_return_presence_and_adopt_an_owned_element() {
         let family = RuntimeCallFamily::Set(operation);
         let contract = family.semantic_contract().unwrap();
         assert!(contract.matches_signature(
+            &crate::DefTable::new(),
             &[set.clone(), ResolvedTy::String],
             &ResolvedTy::Tuple(vec![set.clone(), ResolvedTy::Bool])
         ));
         assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
             &[vector.clone(), ResolvedTy::String],
             &ResolvedTy::Tuple(vec![vector.clone(), ResolvedTy::Bool])
         ));
-        assert!(!contract.matches_signature(&[set.clone(), ResolvedTy::String], &ResolvedTy::Bool));
+        assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
+            &[set.clone(), ResolvedTy::String],
+            &ResolvedTy::Bool
+        ));
         // The element's ingress follows its clone fact - copied in when
         // it has one, moved in when it has none - so insertion cannot
         // prove a borrow for it, while removal only probes.
@@ -166,9 +199,10 @@ fn set_updates_return_presence_and_adopt_an_owned_element() {
         assert!(family.invalidates_collection_element_aliases());
     }
     let elements = RuntimeCallFamily::Set(SetValueOp::Elements);
-    assert!(elements
-        .semantic_contract()
-        .unwrap()
-        .matches_signature(std::slice::from_ref(&set), &vector));
+    assert!(elements.semantic_contract().unwrap().matches_signature(
+        &crate::DefTable::new(),
+        std::slice::from_ref(&set),
+        &vector
+    ));
     assert!(!elements.invalidates_collection_element_aliases());
 }

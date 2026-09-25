@@ -50,7 +50,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         };
         self.module
             .target
-            .variant_layout(&ResolvedTy::named_builtin(name, builtin, Vec::new()))
+            .variant_layout(&ResolvedTy::named_builtin(builtin, Vec::new()))
             .filter(|layout| !layout.is_indirect)
             .ok_or_else(|| {
                 CodegenError::FailClosed(format!("missing inline notification layout for {name}"))

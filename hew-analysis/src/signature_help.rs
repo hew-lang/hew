@@ -615,11 +615,7 @@ fn probe(mat: Matcher, s: string) {
                 end: 6,
                 module_idx: 0,
             },
-            Ty::Named {
-                name: "StreamModule".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            Ty::named_for_test("StreamModule", vec![]),
         );
 
         let tc = make_tc_with_fields(fn_sigs, type_defs, expr_types);
@@ -673,11 +669,7 @@ fn probe(mat: Matcher, s: string) {
                 end: 5,
                 module_idx: 0,
             },
-            Ty::Named {
-                name: "Widget".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            Ty::named_for_test("Widget", vec![]),
         );
 
         let tc = make_tc_with_fields(fn_sigs, type_defs, expr_types);

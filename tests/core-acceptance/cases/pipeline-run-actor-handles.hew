@@ -6,7 +6,7 @@
 import std.pipeline;
 
 fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
-    PipelineItemI64 { value: value, label: label, crash_stage: false }
+    pipeline.PipelineItemI64 { value: value, label: label, crash_stage: false }
 }
 
 fn settled_count(source: pipeline.SourceI64, expected: i64) -> i64 {

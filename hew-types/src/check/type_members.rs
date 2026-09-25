@@ -35,13 +35,16 @@ impl Checker {
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
         let Ty::Named {
-            name,
-            builtin: Some(builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result)),
+            head:
+                head @ crate::TypeHead::Builtin(
+                    builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result),
+                ),
             ..
         } = self.subst.resolve(expected)
         else {
             return None;
         };
+        let name = head.registry_key();
         let span = match usage {
             DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
                 *span
@@ -71,7 +74,7 @@ impl Checker {
             return Some(Ty::Error);
         }
         let head = ResolvedDottedTypeHead {
-            canonical_type: name,
+            canonical_type: name.to_string(),
             builtin: Some(builtin),
             type_args: None,
             span: span.clone(),
@@ -261,8 +264,7 @@ impl Checker {
         let result = match usage {
             DottedTypeMemberUse::Reference { span: _ } if variant.payload_type_args.is_empty() => {
                 Ty::Named {
-                    builtin: Some(builtin),
-                    name: head.canonical_type.clone(),
+                    head: crate::TypeHead::Builtin(builtin),
                     args: (0..expected_arity)
                         .map(|_| Ty::Var(TypeVar::fresh()))
                         .collect(),
@@ -326,8 +328,7 @@ impl Checker {
             .map(|type_arg| self.resolve_type_expr(type_arg))
             .collect::<Vec<_>>();
         let expected = Ty::Named {
-            builtin: Some(builtin),
-            name: head.canonical_type.clone(),
+            head: crate::TypeHead::Builtin(builtin),
             args: resolved_args,
         };
         let span = match usage {

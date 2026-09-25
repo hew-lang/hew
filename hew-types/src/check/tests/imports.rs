@@ -444,7 +444,7 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
             .fn_sigs
             .get("hew.deepalias.make")
             .map(|sig| &sig.return_type),
-        Some(&Ty::named("hew.aliassrc.Color", vec![]))
+        Some(&Ty::named_for_test("hew.aliassrc.Color", vec![]))
     );
 }
 
@@ -615,11 +615,7 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
-            Ty::Named {
-                builtin: None,
-                name: "hew.closableerr.CloseError".to_string(),
-                args: vec![],
-            },
+            Ty::named_for_test("hew.closableerr.CloseError", vec![]),
         )),
         "the nested impl return must retain the exact source owner"
     );
@@ -657,11 +653,7 @@ fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
-            Ty::Named {
-                builtin: None,
-                name: "hew.closableerr.CloseError".to_string(),
-                args: vec![],
-            },
+            Ty::named_for_test("hew.closableerr.CloseError", vec![]),
         )),
         "the qualified sibling must resolve through its source owner"
     );
@@ -930,11 +922,7 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
         "../../../../tests/pkg-import/imported_actor_ask_record.hew"
     ));
 
-    let result_ty = Ty::Named {
-        builtin: None,
-        name: "hew.testffi.TestResult".to_string(),
-        args: vec![],
-    };
+    let result_ty = Ty::named_in(&output.defs, "hew.testffi.TestResult", vec![]);
     assert!(
         checker.registry.has_type_markers("hew.testffi.TestResult"),
         "canonical record marker metadata must be published"
@@ -1135,19 +1123,13 @@ fn user_channel_lookalike_keeps_its_own_sender_and_receiver_identity() {
     let params = &output.fn_sigs["probe"].params;
     assert!(matches!(
         &params[0],
-        Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } if name == "std.channel.Sender" && args.is_empty()
+        Ty::Named { head: head @ crate::TypeHead::Nominal(_), args }
+            if head.spelling() == "std.channel.Sender" && args.is_empty()
     ));
     assert!(matches!(
         &params[1],
-        Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } if name == "std.channel.Receiver" && args.is_empty()
+        Ty::Named { head: head @ crate::TypeHead::Nominal(_), args }
+            if head.spelling() == "std.channel.Receiver" && args.is_empty()
     ));
 }
 
@@ -1633,11 +1615,7 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     checker.fn_sigs.insert(
         "std.net.net_error".to_string(),
         FnSig {
-            return_type: Ty::Named {
-                name: "net.NetError".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            return_type: Ty::named_for_test("net.NetError", vec![]),
             ..FnSig::default()
         },
     );
@@ -1655,7 +1633,7 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
         .expect("source declaration must publish its canonical signature");
     assert!(matches!(
         signature.return_type,
-        Ty::Named { ref name, .. } if name == "std.net.NetError"
+        Ty::Named { head, .. } if head.spelling() == "std.net.NetError"
     ));
 }
 
@@ -1739,8 +1717,9 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         .get("std.net.tls.Holder")
         .expect("canonical Holder definition must be registered");
     match holder.fields.get("wrap") {
-        Some(Ty::Named { name, .. }) => assert_eq!(
-            name, "std.net.tls.Wrap",
+        Some(Ty::Named { head, .. }) => assert_eq!(
+            head.spelling(),
+            "std.net.tls.Wrap",
             "the private local member must retain its exact source-qualified type identity"
         ),
         other => panic!("Holder.wrap must be a named type, got {other:?}"),
@@ -1914,11 +1893,11 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         let signature = output.fn_sigs.get(function).expect("function signature");
         assert!(matches!(
             signature.params.as_slice(),
-            [Ty::Named { name, builtin: None, .. }] if name == expected
+            [Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. }] if head.spelling() == expected
         ));
         assert!(matches!(
             &signature.return_type,
-            Ty::Named { name, builtin: None, .. } if name == expected
+            Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. } if head.spelling() == expected
         ));
     }
 
@@ -1927,10 +1906,9 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         .values()
         .filter_map(|ty| match ty {
             ResolvedTy::Named {
-                name,
-                builtin: None,
+                head: head @ crate::TypeHead::Nominal(_),
                 ..
-            } => Some(name.as_str()),
+            } => Some(head.spelling()),
             _ => None,
         })
         .collect();
@@ -2538,9 +2516,8 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
         stream_open.return_type,
         Ty::result(
             Ty::Named {
-                name: "Stream".to_string(),
                 args: vec![Ty::Bytes],
-                builtin: Some(BuiltinType::Stream),
+                head: crate::TypeHead::Builtin(BuiltinType::Stream)
             },
             Ty::String,
         ),
@@ -2861,15 +2838,6 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
     }
 }
 
-/// The canonical `Ty` an aliased member must upgrade to.
-fn named_ty(name: &str) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args: vec![],
-    }
-}
-
 #[test]
 fn import_alias_in_record_field_resolves_to_source_identity() {
     // mod_a exports `pub type Payload { code: i64 }`; root imports it as `Tag`
@@ -2897,7 +2865,7 @@ fn import_alias_in_record_field_resolves_to_source_identity() {
         .expect("`Boxed` must be registered");
     assert_eq!(
         boxed_def.fields.get("item"),
-        Some(&named_ty("myapp.mod_a.Payload")),
+        Some(&Ty::named_in(&output.defs, "myapp.mod_a.Payload", vec![])),
         "field `item: Tag` must resolve to the canonical source identity \
          `myapp.mod_a.Payload`, not the frozen bare alias `Tag`"
     );
@@ -2954,12 +2922,20 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         .expect("`Wrap` must be registered");
     assert_eq!(
         wrap_def.variants.get("Has"),
-        Some(&VariantDef::Tuple(vec![named_ty("myapp.mod_a.Payload")])),
+        Some(&VariantDef::Tuple(vec![Ty::named_in(
+            &output.defs,
+            "myapp.mod_a.Payload",
+            vec![]
+        )])),
         "enum variant payload `Has(Tag)` must resolve to `myapp.mod_a.Payload`"
     );
     assert_eq!(
         output.fn_sigs.get("Has").map(|sig| sig.params.clone()),
-        Some(vec![named_ty("myapp.mod_a.Payload")]),
+        Some(vec![Ty::named_in(
+            &output.defs,
+            "myapp.mod_a.Payload",
+            vec![]
+        )]),
         "the variant constructor `Has` must be re-keyed to take `myapp.mod_a.Payload`"
     );
 }
@@ -3023,7 +2999,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
             .type_defs
             .get("pkg.Receive")
             .and_then(|receive| receive.variants.get("Message")),
-        Some(&VariantDef::Tuple(vec![named_ty("pkg.Delivery")])),
+        Some(&VariantDef::Tuple(vec![Ty::named_in(&output.defs, "pkg.Delivery", vec![])])),
         "an imported enum payload must retain its defining-module identity, not a same-leaf neighbour or the prelude"
     );
 }
@@ -3056,7 +3032,7 @@ fn local_type_shadows_import_alias_in_member_position() {
         .expect("`Boxed` must be registered");
     assert_eq!(
         boxed_def.fields.get("item"),
-        Some(&named_ty("Tag")),
+        Some(&Ty::named_in(&output.defs, "Tag", vec![])),
         "a local `type Tag` must shadow the import alias `Tag` in member position; \
          the field must NOT upgrade to `mod_a.Payload`"
     );
@@ -3095,7 +3071,7 @@ fn aliased_member_matches_qualified_member_type() {
         .and_then(|d| d.fields.get("item"));
     assert_eq!(
         aliased_field,
-        Some(&named_ty("myapp.mod_a.Payload")),
+        Some(&Ty::named_in(&output.defs, "myapp.mod_a.Payload", vec![])),
         "the aliased member must resolve to the canonical `myapp.mod_a.Payload`"
     );
     assert_eq!(

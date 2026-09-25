@@ -507,11 +507,7 @@ fn structural_impl_populates_method_table_for_dyn_named() {
     assert_eq!(entry.trait_name, "Named");
     assert_eq!(
         entry.concrete_type,
-        Ty::Named {
-            builtin: None,
-            name: "Widget".to_string(),
-            args: vec![],
-        }
+        Ty::named_in(&output.defs, "Widget", vec![])
     );
     assert_eq!(
         entry.method_table,
@@ -753,14 +749,14 @@ fn dyn_return_joins_record_each_concrete_arm_coercion() {
         .dyn_trait_coercions
         .values()
         .filter(
-            |coercion| matches!(&coercion.concrete_type, Ty::Named { name, .. } if name == "Dog"),
+            |coercion| matches!(&coercion.concrete_type, Ty::Named { head, .. } if head.spelling() == "Dog"),
         )
         .count();
     let cat_sites = output
         .dyn_trait_coercions
         .values()
         .filter(
-            |coercion| matches!(&coercion.concrete_type, Ty::Named { name, .. } if name == "Cat"),
+            |coercion| matches!(&coercion.concrete_type, Ty::Named { head, .. } if head.spelling() == "Cat"),
         )
         .count();
     assert!(dog_sites >= 3, "every Dog arm must record a coercion site");

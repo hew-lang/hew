@@ -1773,7 +1773,7 @@ fn machine_transition_block_body_types_let_binding_and_contextual_tail() {
         .find(|(key, _)| key.start == tail)
         .map(|(_, ty)| ty);
     assert!(
-        matches!(tail_ty, Some(Ty::Named { name, .. }) if name == "Counter"),
+        matches!(tail_ty, Some(Ty::Named { head: name_head, .. }) if name_head.spelling() == "Counter"),
         "the contextual tail must resolve to the machine type, got {tail_ty:?}"
     );
 }
@@ -1842,11 +1842,7 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
     );
     assert_eq!(
         block_ty,
-        Some(Ty::Named {
-            name: "Counter".to_string(),
-            args: vec![],
-            builtin: None,
-        }),
+        Some(Ty::named_in(&output.defs, "Counter", vec![])),
         "a transition body produces the machine's state type"
     );
 }

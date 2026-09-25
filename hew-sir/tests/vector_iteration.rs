@@ -49,7 +49,6 @@ fn explicit_next_uses_the_common_vector_and_aggregate_contracts() {
     ",
     );
     let cursor = hew_types::ResolvedTy::named_builtin(
-        "VecIter",
         hew_types::BuiltinType::VecIter,
         vec![hew_types::ResolvedTy::I64],
     );

@@ -59,7 +59,7 @@ impl Checker {
         {
             return false;
         }
-        matches!(parent, Ty::Named { name, .. } if self.registry.is_resource(name))
+        matches!(parent, Ty::Named { head, .. } if self.registry.is_resource(head.registry_key()))
     }
 
     /// Whether a MODULE-QUALIFIED type name denotes a transferring builtin.
@@ -324,20 +324,24 @@ impl Checker {
             // finds no `TypeDef` for `Range`, and reports `UndefinedField`
             // exactly as before.
             Ty::Named {
-                builtin: Some(BuiltinType::Range),
+                head: crate::TypeHead::Builtin(BuiltinType::Range),
                 args,
                 ..
             } if args.len() == 1 && matches!(field, "start" | "end") => args[0].clone(),
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 // A role retains the child's complete type after substituting
                 // the owning supervisor's concrete arguments.
                 if let Some(Ty::Named {
-                    name: sup_name,
+                    head: sup_head,
                     args: sup_args,
-                    ..
                 }) = resolved.as_local_actor_ref()
                 {
-                    if let Some(children) = self.supervisor_children.get(sup_name).cloned() {
+                    if let Some(children) = self
+                        .supervisor_children
+                        .get(sup_head.registry_key())
+                        .cloned()
+                    {
                         let selected = children
                             .statics
                             .iter()
@@ -350,15 +354,19 @@ impl Checker {
                         if let Some((kind, index, (child_name, template))) = selected {
                             let parameters = self
                                 .type_defs
-                                .get(sup_name)
+                                .get(sup_head.registry_key())
                                 .map_or_else(Vec::new, |definition| definition.type_params.clone());
                             let substitution = parameters
                                 .into_iter()
                                 .zip(sup_args.iter().cloned())
                                 .collect();
                             let child_ty = template.substitute_named_params_parallel(&substitution);
-                            if let Ty::Named { name, args, .. } = &child_ty {
-                                self.enforce_type_def_instantiation_bounds(name, args, span);
+                            if let Ty::Named { head, args } = &child_ty {
+                                self.enforce_type_def_instantiation_bounds(
+                                    head.registry_key(),
+                                    args,
+                                    span,
+                                );
                             }
                             self.supervisor_child_slots.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
@@ -368,12 +376,21 @@ impl Checker {
                                         .expect("supervisor child count exceeds u32"),
                                     child_ty: child_ty.user_facing().to_string(),
                                     child_name: child_name.clone(),
-                                    supervisor: sup_name.clone(),
+                                    supervisor: sup_head.registry_key().to_string(),
                                 },
                             );
                             if kind == super::types::ChildKind::Pool {
                                 return Ty::supervisor_pool(
-                                    Ty::actor_handle(sup_name.clone(), sup_args.clone()),
+                                    Ty::actor_handle(
+                                        match sup_head {
+                                            crate::TypeHead::Nominal(nominal)
+                                            | crate::TypeHead::Actor(nominal) => *nominal,
+                                            _ => unreachable!(
+                                                "a local actor reference names an actor"
+                                            ),
+                                        },
+                                        sup_args.clone(),
+                                    ),
                                     child_ty,
                                 );
                             }
@@ -388,7 +405,10 @@ impl Checker {
                         self.report_error_with_suggestions(
                             TypeErrorKind::UndefinedField,
                             span,
-                            format!("supervisor `{sup_name}` has no child named `{field}`"),
+                            format!(
+                                "supervisor `{}` has no child named `{field}`",
+                                sup_head.registry_key()
+                            ),
                             similar,
                         );
                         return Ty::Error;
@@ -474,9 +494,12 @@ impl Checker {
             let resolved = self.subst.resolve(scrutinee_ty);
             let uninhabited = match &resolved {
                 Ty::Never => true,
-                Ty::Named { name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
-                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-                }),
+                Ty::Named { head, .. } => {
+                    self.lookup_type_def(head.registry_key())
+                        .is_some_and(|definition| {
+                            definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                        })
+                }
                 _ => false,
             };
             if uninhabited {
@@ -1126,7 +1149,7 @@ impl Checker {
             .canonical_nominal_name(name)
             .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));
         if self.reject_sealed_delivery_access(
-            &crate::actor_delivery::nominal(&delivery_owner, Vec::new()),
+            &self.named_ty_for_key(&delivery_owner, Vec::new()),
             span,
         ) {
             return Ty::Error;
@@ -1269,15 +1292,10 @@ impl Checker {
                     // If the expected type is still an unbound type parameter,
                     // synthesize so the field value determines the type (rather
                     // than failing with "expected T, found i64").
-                    let is_unbound_param = td.type_params.iter().any(|tp| {
-                        !type_arg_map.contains_key(tp)
-                            && expected
-                                == (Ty::Named {
-                                    builtin: None,
-                                    name: tp.clone(),
-                                    args: vec![],
-                                })
-                    });
+                    let is_unbound_param = td
+                        .type_params
+                        .iter()
+                        .any(|tp| !type_arg_map.contains_key(tp) && expected == (Ty::param(tp)));
                     let actual = if is_unbound_param {
                         self.synthesize(expr, es)
                     } else {
@@ -1287,14 +1305,7 @@ impl Checker {
 
                     // Infer type params: if field type is a bare type param, bind it
                     for tp in &td.type_params {
-                        if !type_arg_map.contains_key(tp)
-                            && *declared_ty
-                                == (Ty::Named {
-                                    builtin: None,
-                                    name: tp.clone(),
-                                    args: vec![],
-                                })
-                        {
+                        if !type_arg_map.contains_key(tp) && *declared_ty == (Ty::param(tp)) {
                             type_arg_map.insert(tp.clone(), actual.clone());
                         }
                     }
@@ -1320,10 +1331,9 @@ impl Checker {
             // so the missing-field check is skipped.
             if let Some((base_expr, base_span)) = base {
                 let base_ty = self.synthesize(base_expr, base_span);
+                let declared_head = self.named_ty_for_key(name, Vec::new()).head();
                 match &base_ty {
-                    Ty::Named {
-                        name: base_name, ..
-                    } if base_name == name => {}
+                    Ty::Named { head, .. } if Some(*head) == declared_head => {}
                     _ => {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -1376,11 +1386,7 @@ impl Checker {
             // whose arguments were inferred from the fields above.
             let result_name = module_local_name.as_deref().unwrap_or(name);
             self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
-            Ty::Named {
-                builtin: None,
-                name: result_name.to_string(),
-                args: type_args,
-            }
+            self.named_ty_for_key(result_name, type_args)
         } else if let Some((enum_name, variant_fields, enum_type_params)) =
             self.lookup_struct_variant_init(name)
         {
@@ -1419,15 +1425,9 @@ impl Checker {
 
                     // If the expected type is still an unbound type parameter, synthesize
                     // so the field value determines the concrete type.
-                    let is_unbound_param = enum_type_params.iter().any(|tp| {
-                        !type_arg_map.contains_key(tp)
-                            && expected
-                                == (Ty::Named {
-                                    builtin: None,
-                                    name: tp.clone(),
-                                    args: vec![],
-                                })
-                    });
+                    let is_unbound_param = enum_type_params
+                        .iter()
+                        .any(|tp| !type_arg_map.contains_key(tp) && expected == (Ty::param(tp)));
                     let actual = if is_unbound_param {
                         self.synthesize(expr, es)
                     } else {
@@ -1437,14 +1437,7 @@ impl Checker {
 
                     // Bind bare type params from this field's declared type
                     for tp in &enum_type_params {
-                        if !type_arg_map.contains_key(tp)
-                            && *declared_ty
-                                == (Ty::Named {
-                                    builtin: None,
-                                    name: tp.clone(),
-                                    args: vec![],
-                                })
-                        {
+                        if !type_arg_map.contains_key(tp) && *declared_ty == (Ty::param(tp)) {
                             type_arg_map.insert(tp.clone(), actual.clone());
                         }
                     }
@@ -1489,11 +1482,7 @@ impl Checker {
             // struct-variant brace init on the same TypeDef-bound authority as
             // annotations, tuple variants, and plain struct/record init.
             self.enforce_type_def_instantiation_bounds(&enum_name, &type_args, span);
-            Ty::Named {
-                builtin: None,
-                name: enum_name,
-                args: type_args,
-            }
+            self.named_ty_for_key(&enum_name, type_args)
         } else {
             let similar = crate::error::find_similar(
                 name,
@@ -1645,13 +1634,9 @@ impl Checker {
             let declared = declared_owned.as_ref().or(declared);
             let ty_raw = match declared {
                 Some(declared_ty) => {
-                    let is_bare_actor = if let Ty::Named {
-                        name: field_type_name,
-                        ..
-                    } = declared_ty
-                    {
+                    let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
                         self.type_defs
-                            .get(field_type_name)
+                            .get(head.registry_key())
                             .is_some_and(|td| td.kind == TypeDefKind::Actor)
                     } else {
                         false
@@ -1854,7 +1839,10 @@ impl Checker {
             }
             self.enforce_type_def_instantiation_bounds(&name, &resolved_type_args, span);
 
-            Ty::actor_handle(name, resolved_type_args)
+            match self.nominal_head_for_key(&name) {
+                Some(actor) => Ty::actor_handle(actor, resolved_type_args),
+                None => Ty::Error,
+            }
         } else {
             Ty::Error
         }

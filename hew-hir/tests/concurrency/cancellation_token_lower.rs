@@ -90,8 +90,6 @@ fn lowers_cancellation_token_local_and_is_cancelled_intrinsic() {
 
 #[test]
 fn cancellation_token_resolved_type_carries_builtin_identity() {
-    let named = hew_types::Ty::normalize_named("CancellationToken".to_string(), Vec::new());
-    assert_eq!(named, hew_types::Ty::CancellationToken);
     assert_eq!(
         hew_types::lookup_builtin_type("CancellationToken"),
         Some(BuiltinType::CancellationToken)

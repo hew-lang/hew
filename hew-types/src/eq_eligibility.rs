@@ -50,10 +50,6 @@ impl EqEligibilityFailure {
 /// Returns `Some(rejection)` if `ty` is not equality-eligible, `None` if eligible.
 ///
 /// Only concrete elements are eligible at this layout gate.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the closed type-shape walk keeps each equality capability decision explicit"
-)]
 fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqEligibilityFailure> {
     match ty {
         Ty::I8
@@ -77,19 +73,12 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
         | Ty::F64
         | Ty::FloatLiteral
         | Ty::String
-        | Ty::Named {
-            builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
-            ..
-        } => None,
+        | Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid), .. } => None,
         Ty::Tuple(elems) => elems.iter().enumerate().find_map(|(index, elem)| {
             eq_ineligibility(elem, type_defs)
                 .map(|failure| failure.at_member(index.to_string()))
         }),
-        Ty::Named {
-            builtin: Some(BuiltinType::Option | BuiltinType::Result),
-            args,
-            ..
-        } => args.iter().enumerate().find_map(|(index, arg)| {
+        Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result), args, .. } => args.iter().enumerate().find_map(|(index, arg)| {
             let member = if args.len() == 1 {
                 "Some"
             } else if index == 0 {
@@ -100,23 +89,14 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
             eq_ineligibility(arg, type_defs)
                 .map(|failure| failure.at_member(member))
         }),
-        Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            args,
-            ..
-        } if args.len() == 1 => eq_ineligibility(&args[0], type_defs)
+        Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::Vec), args, .. } if args.len() == 1 => eq_ineligibility(&args[0], type_defs)
             .map(|failure| failure.at_member("element")),
-        Ty::Named {
-            builtin: Some(
-                BuiltinType::HashMap
+        Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::HashMap
                     | BuiltinType::HashSet
                     | BuiltinType::Rc
                     | BuiltinType::Weak
                     | BuiltinType::JsonValue
-                    | BuiltinType::YamlValue,
-            ),
-            ..
-        }
+                    | BuiltinType::YamlValue,), .. }
         | Ty::CancellationToken
         | Ty::Array(_, _)
         | Ty::Slice(_)
@@ -130,8 +110,9 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
             reason: EqEligibility::IneligibleOwned(ty.clone()),
             member: String::new(),
         }),
-        Ty::Named { name, args, .. } => match crate::check::type_def_for_spelling(
-            type_defs, name,
+        Ty::Named { head, args } => match crate::check::type_def_for_spelling(
+            type_defs,
+            head.registry_key(),
         ) {
             Some(type_def) if type_def.is_indirect => {
                 Some(EqEligibilityFailure {

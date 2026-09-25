@@ -27,7 +27,7 @@ fn abstract_subst(name: &str) -> HashMap<String, ResolvedTy> {
 }
 
 fn named(name: &str) -> ResolvedTy {
-    ResolvedTy::named_user(name, vec![])
+    ResolvedTy::param(name)
 }
 
 /// `&T` (a generic origin's `fn f<T>(x: &T) -> &T` parameter) must lower to

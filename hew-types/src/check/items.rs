@@ -122,16 +122,19 @@ impl Checker {
                 continue;
             }
             let Ty::Named {
-                name,
-                builtin: None,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 ..
             } = self.resolve_type_expr(&param.ty)
             else {
                 continue;
             };
+            let name = head.registry_key();
             let marker = crate::value_class::ClassDeclarations::declared_type(
                 &self.class_declarations(),
-                &name,
+                name,
             )
             .map(|declared| declared.marker);
             if !matches!(
@@ -148,12 +151,12 @@ impl Checker {
                     function,
                     index,
                     self.current_module.as_deref(),
-                    &name,
+                    name,
                 )
             {
                 continue;
             }
-            let shown = name.rsplit('.').next().unwrap_or(&name).to_string();
+            let shown = name.rsplit('.').next().unwrap_or(name).to_string();
             self.report_error_with_suggestions(
                 TypeErrorKind::BoundaryResourceMustConsume,
                 span,
@@ -1258,30 +1261,20 @@ impl Checker {
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
         let identity = Self::actor_identity(self.current_module.as_deref(), ad.name.name.as_str());
-        let actor_ty = Ty::Named {
-            builtin: None,
-            name: identity.clone(),
-            args: ad
-                .type_params
+        let actor_ty = self.named_ty_for_key(
+            &identity,
+            ad.type_params
                 .iter()
-                .map(|parameter| Ty::Named {
-                    builtin: None,
-                    name: parameter.name.to_string(),
-                    args: Vec::new(),
-                })
+                .map(|parameter| Ty::param(&parameter.name.to_string()))
                 .collect(),
-        };
+        );
         let generic_bindings: HashMap<_, _> = ad
             .type_params
             .iter()
             .map(|parameter| {
                 (
                     parameter.name.to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: parameter.name.to_string(),
-                        args: Vec::new(),
-                    },
+                    Ty::param(&parameter.name.to_string()),
                 )
             })
             .collect();
@@ -2494,14 +2487,7 @@ impl Checker {
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
-                generic_bindings.insert(
-                    tp.name.to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: tp.name.to_string(),
-                        args: vec![],
-                    },
-                );
+                generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
             }
         }
         if !generic_bindings.is_empty() {
@@ -2827,14 +2813,7 @@ impl Checker {
             let mut generic_bindings = std::collections::HashMap::new();
             if let Some(tps) = &id.type_params {
                 for tp in tps {
-                    generic_bindings.insert(
-                        tp.name.to_string(),
-                        Ty::Named {
-                            builtin: None,
-                            name: tp.name.to_string(),
-                            args: vec![],
-                        },
-                    );
+                    generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
                 }
             }
             let pushed_generic = !generic_bindings.is_empty();
@@ -2934,11 +2913,8 @@ impl Checker {
         // Trait declarations and other receiver contexts outside an impl do
         // not have a source-resolved impl target to reuse. Preserve the
         // existing primitive/nominal fallback for those contexts.
-        let receiver_ty = Ty::from_name(self_name).unwrap_or_else(|| Ty::Named {
-            builtin: None,
-            name: self_name.clone(),
-            args: self_args.clone(),
-        });
+        let receiver_ty = Ty::from_name(self_name)
+            .unwrap_or_else(|| self.named_ty_for_key(self_name, self_args.clone()));
         (receiver_ty, true)
     }
 }
@@ -2946,14 +2922,9 @@ impl Checker {
 fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
     match ty {
         Ty::Named {
-            name,
+            head: crate::TypeHead::Actor(actor),
             args,
-            builtin: Some(builtin),
-        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorHandle)
-            && args.is_empty() =>
-        {
-            Some(name.as_str())
-        }
+        } if args.is_empty() => Some(actor.spelling.as_str()),
         _ => None,
     }
 }
@@ -2971,13 +2942,10 @@ fn is_canonical_std_named_type(
 ) -> bool {
     matches!(
         ty,
-        Ty::Named {
-            name,
-            args,
-            builtin: resolved_builtin,
-        } if args.is_empty()
-            && (*resolved_builtin == Some(builtin)
-                || (resolved_builtin.is_none() && name == source_identity))
+        Ty::Named { head, args }
+            if args.is_empty()
+                && (head.builtin() == Some(builtin)
+                    || (head.is_user() && head.registry_key() == source_identity))
     )
 }
 
@@ -2988,11 +2956,8 @@ fn is_canonical_std_named_type(
 fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
     matches!(
         ty,
-        Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } if args.is_empty() && name == source_identity
+        Ty::Named { head, args }
+            if args.is_empty() && !head.is_param() && head.registry_key() == source_identity
     )
 }
 
@@ -3012,10 +2977,9 @@ mod lifecycle_std_identity_tests {
     use super::*;
 
     fn named(name: &str, builtin: Option<crate::BuiltinType>) -> Ty {
-        Ty::Named {
-            name: name.to_string(),
-            args: Vec::new(),
-            builtin,
+        match builtin {
+            Some(builtin) => Ty::named_head(crate::TypeHead::Builtin(builtin), Vec::new()),
+            None => Ty::user_for_test(name, Vec::new()),
         }
     }
 

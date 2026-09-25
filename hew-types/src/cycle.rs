@@ -350,11 +350,7 @@ fn collect_value_type_refs<'a>(
                 active,
             );
         }
-        Ty::Named {
-            name,
-            args,
-            builtin,
-        } => match builtin {
+        Ty::Named { head, args } => match head.builtin() {
             Some(crate::BuiltinType::Option | crate::BuiltinType::Result) => {
                 for arg in args {
                     collect_value_type_refs(
@@ -373,7 +369,8 @@ fn collect_value_type_refs<'a>(
             }
             Some(_) => {}
             None => {
-                let Some((target_key, target_def)) = type_defs.get_key_value(name) else {
+                let Some((target_key, target_def)) = type_defs.get_key_value(head.registry_key())
+                else {
                     return;
                 };
                 if !is_value_type_node(target_def) {
@@ -543,12 +540,9 @@ fn collect_actor_refs<'a>(
                 collect_actor_refs(elem, type_defs, out, visited_structs);
             }
         }
-        Ty::Named {
-            name,
-            args,
-            builtin,
-        } => {
-            if matches!(builtin, Some(crate::BuiltinType::ActorHandle)) {
+        Ty::Named { head, args } => {
+            let name = head.registry_key();
+            if head.is_actor() {
                 // An actor is the type of its handle, so the handle names the
                 // actor this reference reaches.
                 if let Some((actor_key, _)) = type_defs.get_key_value(name) {
@@ -711,11 +705,11 @@ mod tests {
     }
 
     fn actor_handle(name: &str) -> Ty {
-        Ty::actor_handle(name, Vec::new())
+        Ty::actor_for_test(name, Vec::new())
     }
 
     fn named_type(name: &str) -> Ty {
-        Ty::named(name, vec![])
+        Ty::named_for_test(name, vec![])
     }
 
     fn make_enum(name: &str, variants: HashMap<String, VariantDef>) -> (String, TypeDef) {
@@ -888,13 +882,16 @@ mod tests {
             make_record(
                 "Wrapper",
                 vec!["T".to_string()],
-                HashMap::from([("value".to_string(), Ty::named("T", vec![]))]),
+                HashMap::from([("value".to_string(), Ty::param("T"))]),
             ),
             make_enum(
                 "Tree",
                 HashMap::from([(
                     "Node".to_string(),
-                    VariantDef::Tuple(vec![Ty::named("Wrapper", vec![named_type("Tree")])]),
+                    VariantDef::Tuple(vec![Ty::named_for_test(
+                        "Wrapper",
+                        vec![named_type("Tree")],
+                    )]),
                 )]),
             ),
         ]
@@ -992,17 +989,7 @@ mod tests {
     fn transitive_through_struct() {
         // A has field of struct S, S holds B's actor handle, B holds A's
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor(
-                "A",
-                HashMap::from([(
-                    "s".to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: "S".to_string(),
-                        args: vec![],
-                    },
-                )]),
-            ),
+            make_actor("A", HashMap::from([("s".to_string(), Ty::param("S"))])),
             make_struct("S", HashMap::from([("b".to_string(), actor_handle("B"))])),
             make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
@@ -1042,11 +1029,7 @@ mod tests {
                 "A",
                 HashMap::from([(
                     "bs".to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: "Vec".to_string(),
-                        args: vec![actor_handle("B")],
-                    },
+                    Ty::named_for_test("Vec", vec![actor_handle("B")]),
                 )]),
             ),
             make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
@@ -1119,17 +1102,7 @@ mod tests {
     fn struct_without_actor_ref_no_false_positive() {
         // A has struct S with only i32 fields, no actor handle
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor(
-                "A",
-                HashMap::from([(
-                    "s".to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: "S".to_string(),
-                        args: vec![],
-                    },
-                )]),
-            ),
+            make_actor("A", HashMap::from([("s".to_string(), Ty::param("S"))])),
             make_struct("S", HashMap::from([("x".to_string(), Ty::I32)])),
         ]
         .into_iter()
@@ -1163,11 +1136,7 @@ mod tests {
                 "A",
                 HashMap::from([(
                     "wrapper".to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: "Wrapper".to_string(),
-                        args: vec![actor_handle("B")],
-                    },
+                    Ty::named_for_test("Wrapper", vec![actor_handle("B")]),
                 )]),
             ),
             make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
@@ -1215,16 +1184,8 @@ mod tests {
                 HashMap::from([(
                     "combo".to_string(),
                     Ty::Tuple(vec![
-                        Ty::Named {
-                            builtin: None,
-                            name: "Wrapper".to_string(),
-                            args: vec![actor_handle("B")],
-                        },
-                        Ty::Named {
-                            builtin: None,
-                            name: "Wrapper".to_string(),
-                            args: vec![actor_handle("C")],
-                        },
+                        Ty::named_for_test("Wrapper", vec![actor_handle("B")]),
+                        Ty::named_for_test("Wrapper", vec![actor_handle("C")]),
                     ]),
                 )]),
             ),

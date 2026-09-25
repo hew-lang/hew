@@ -102,11 +102,7 @@ impl SemActorHandler {
             return true;
         }
         self.failure_display.is_some()
-            && matches!(&self.return_ty, ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Result),
-                args,
-                ..
-            } if matches!(args.as_slice(), [ResolvedTy::Unit, _]))
+            && matches!(&self.return_ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if matches!(args.as_slice(), [ResolvedTy::Unit, _]))
     }
 }
 
@@ -219,14 +215,13 @@ impl SemModule {
 /// An actor is the type of its handle, so a handle carries its own identity; a
 /// `ChildRef<A>` names the same actor through its role parameter.
 pub(crate) fn local_actor_instance(
-    defs: &hew_types::DefTable,
     ty: &ResolvedTy,
 ) -> Option<hew_types::resolved_ty::NominalInstance> {
-    if let Some(instance) = ty.actor_handle_instance(defs) {
+    if let Some(instance) = ty.actor_handle_instance() {
         return Some(instance);
     }
     let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::ChildRef),
+        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
         args,
         ..
     } = ty
@@ -236,7 +231,7 @@ pub(crate) fn local_actor_instance(
     let [actor_ty] = args.as_slice() else {
         return None;
     };
-    actor_ty.actor_handle_instance(defs)
+    actor_ty.actor_handle_instance()
 }
 
 impl SemActor {
@@ -245,7 +240,6 @@ impl SemActor {
     #[must_use]
     pub fn child_ref_ty(&self) -> ResolvedTy {
         ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ChildRef.canonical_name(),
             hew_types::BuiltinType::ChildRef,
             vec![self.handle_ty.clone()],
         )
@@ -260,7 +254,7 @@ impl SemActor {
         matches!(
             self.handle_ty,
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorFn),
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
                 ..
             }
         )
@@ -314,10 +308,7 @@ impl SemActor {
             caller_visible_projection: false,
         }];
         let request_params = if sealed {
-            vec![ResolvedTy::named_opaque(
-                "std.builtins.ActorRequestOwner",
-                Vec::new(),
-            )]
+            vec![hew_types::runtime_call::actor_request_owner_ty()]
         } else {
             handler.params.clone()
         };
@@ -341,13 +332,13 @@ impl SemActor {
         if !matches_protocol {
             return Err("ask reply differs from its receive protocol".into());
         }
-        let ResolvedTy::Named { name, args, .. } = error else {
+        let ResolvedTy::Named { head, args, .. } = error else {
             return Err("ask lacks its completion envelope".into());
         };
         let [failure, request] = args.as_slice() else {
             return Err("ask envelope lacks its failure and request parameters".into());
         };
-        if name != hew_types::actor_delivery::ACTOR_ERROR_TYPE {
+        if *head != hew_types::KnownDecl::ActorError.head() {
             return Err("ask must return the checked ActorError envelope".into());
         }
         if request.to_ty() != hew_types::Ty::never_type() {
@@ -360,9 +351,10 @@ impl SemActor {
                     .ok_or("ask rejection lacks its sealed handler protocol")?;
             if *request_target != target.to_ty()
                 || policy != hew_types::actor_delivery::SendPolicy::Reject
-                || (method != defs.path(handler.declaration)
+                || (method.spelling.as_str() != defs.path(handler.declaration)
                     && !(self.is_lambda()
-                        && method == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID))
+                        && method.spelling.as_str()
+                            == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID))
                 || *parameters
                     != hew_types::Ty::Tuple(handler.params.iter().map(ResolvedTy::to_ty).collect())
                 || *success != reply.to_ty()
@@ -400,11 +392,7 @@ impl SemActor {
         let [msg] = handler.params.as_slice() else {
             return Err("a remote member takes exactly its message".into());
         };
-        let addressed = matches!(target, ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::RemotePid),
-            args,
-            ..
-        } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
+        let addressed = matches!(target, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid), args, .. } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
         if !addressed {
             return Err("remote call target is not this actor's RemotePid".into());
         }
@@ -441,25 +429,25 @@ impl SemActor {
     }
 
     /// Check the handle spelling this descriptor answers to.
-    fn validate_handle(&self, defs: &hew_types::DefTable) -> Result<(), String> {
+    fn validate_handle(&self) -> Result<(), String> {
         // A named actor is addressed by its own type. An anonymous actor has no
         // source nominal to name, so its handle is `actor(M) -> R` and the
         // protocol it must agree with is its single handler's.
         match &self.handle_ty {
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorHandle),
+                head: hew_types::TypeHead::Actor(_),
                 ..
             } => {
                 if self
                     .handle_ty
-                    .actor_handle_instance(defs)
+                    .actor_handle_instance()
                     .is_none_or(|instance| instance.nominal.declaration() != self.declaration)
                 {
                     return Err("actor handle refers to another declaration".into());
                 }
             }
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorFn),
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
                 args,
                 ..
             } => {
@@ -509,11 +497,9 @@ impl SemActor {
         };
         let expected_params = usize::from(typed.is_some()) + 1;
         let expected_return = match typed {
-            Some((_, hew_types::BuiltinType::CrashAction)) => ResolvedTy::named_builtin(
-                "std.failure.CrashAction",
-                hew_types::BuiltinType::CrashAction,
-                Vec::new(),
-            ),
+            Some((_, hew_types::BuiltinType::CrashAction)) => {
+                ResolvedTy::named_builtin(hew_types::BuiltinType::CrashAction, Vec::new())
+            }
             _ => ResolvedTy::Unit,
         };
         let payload_matches = typed.is_none_or(|(expected, _)| {
@@ -538,7 +524,7 @@ impl SemActor {
         if module.actor(self.id) != Some(self) {
             return Err("actor descriptor is not at its canonical index".into());
         }
-        self.validate_handle(&module.defs)?;
+        self.validate_handle()?;
         if self.state_ty
             != ResolvedTy::Tuple(self.fields.iter().map(|field| field.ty.clone()).collect())
         {
@@ -797,11 +783,7 @@ impl ActorCallProtocol {
     /// The operation is an affine owner, distinct from a scope-owned task.
     #[must_use]
     pub fn operation_ty(&self) -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ActorCall.canonical_name(),
-            hew_types::BuiltinType::ActorCall,
-            vec![self.result.clone()],
-        )
+        ResolvedTy::named_builtin(hew_types::BuiltinType::ActorCall, vec![self.result.clone()])
     }
 }
 
@@ -1274,7 +1256,7 @@ impl ActorOperation {
 /// The `Ok` and `Err` arms of a checked `Result`.
 fn result_parts(ty: &ResolvedTy) -> Option<[&ResolvedTy; 2]> {
     let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::Result),
+        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result),
         args,
         ..
     } = ty

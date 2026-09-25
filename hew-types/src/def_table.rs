@@ -263,6 +263,12 @@ impl NominalId {
         Self { declaration }
     }
 
+    /// The nominal identity of a declared type, actor or machine.
+    #[must_use]
+    pub fn of_declaration(declaration: DefId) -> Self {
+        Self { declaration }
+    }
+
     #[must_use]
     pub fn declaration(self) -> DefId {
         self.declaration
@@ -358,6 +364,145 @@ impl Predicate {
             Self::Serializable => "Serializable",
             Self::Resource => "Resource",
         }
+    }
+}
+
+/// The std declarations the compiler constructs types of without resolving
+/// a spelling: the actor delivery protocol, the uninhabited
+/// `Never` and the collection cursors. Each has one row minted when the table
+/// is created, which the source declaration adopts when it is inventoried, so
+/// a type the compiler builds and the type the source names are one identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KnownDecl {
+    ActorError,
+    Never,
+    ActorMailbox,
+    ActorPolicy,
+    Message,
+    SendFailure,
+    Delivery,
+    OnFull,
+    RejectSend,
+    WaitSend,
+    DropNewestSend,
+    ReplaceLatestSend,
+    ActorRequest,
+    ActorRequestOwner,
+    ActorRequestAdmission,
+    VecIter,
+    HashMapIter,
+    NodeConfig,
+    PartitionPolicy,
+}
+
+impl KnownDecl {
+    pub const ALL: [Self; 19] = [
+        Self::ActorError,
+        Self::Never,
+        Self::ActorMailbox,
+        Self::ActorPolicy,
+        Self::Message,
+        Self::SendFailure,
+        Self::Delivery,
+        Self::OnFull,
+        Self::RejectSend,
+        Self::WaitSend,
+        Self::DropNewestSend,
+        Self::ReplaceLatestSend,
+        Self::ActorRequest,
+        Self::ActorRequestOwner,
+        Self::ActorRequestAdmission,
+        Self::VecIter,
+        Self::HashMapIter,
+        Self::NodeConfig,
+        Self::PartitionPolicy,
+    ];
+
+    /// The declaration's canonical path in `std.builtins`.
+    #[must_use]
+    pub const fn path(self) -> &'static str {
+        match self {
+            Self::ActorError => "std.builtins.ActorError",
+            Self::Never => "std.builtins.Never",
+            Self::ActorMailbox => "std.builtins.ActorMailbox",
+            Self::ActorPolicy => "std.builtins.ActorPolicy",
+            Self::Message => "std.builtins.Message",
+            Self::SendFailure => "std.builtins.SendFailure",
+            Self::Delivery => "std.builtins.Delivery",
+            Self::OnFull => "std.builtins.OnFull",
+            Self::RejectSend => "std.builtins.RejectSend",
+            Self::WaitSend => "std.builtins.WaitSend",
+            Self::DropNewestSend => "std.builtins.DropNewestSend",
+            Self::ReplaceLatestSend => "std.builtins.ReplaceLatestSend",
+            Self::ActorRequest => "std.builtins.ActorRequest",
+            Self::ActorRequestOwner => "std.builtins.ActorRequestOwner",
+            Self::ActorRequestAdmission => "std.builtins.ActorRequestAdmission",
+            Self::VecIter => "std.builtins.VecIter",
+            Self::HashMapIter => "std.builtins.HashMapIter",
+            Self::NodeConfig => "std.builtins.NodeConfig",
+            Self::PartitionPolicy => "std.link_monitor.PartitionPolicy",
+        }
+    }
+
+    const fn leaf(self) -> &'static str {
+        match self {
+            Self::ActorError => "ActorError",
+            Self::Never => "Never",
+            Self::ActorMailbox => "ActorMailbox",
+            Self::ActorPolicy => "ActorPolicy",
+            Self::Message => "Message",
+            Self::SendFailure => "SendFailure",
+            Self::Delivery => "Delivery",
+            Self::OnFull => "OnFull",
+            Self::RejectSend => "RejectSend",
+            Self::WaitSend => "WaitSend",
+            Self::DropNewestSend => "DropNewestSend",
+            Self::ReplaceLatestSend => "ReplaceLatestSend",
+            Self::ActorRequest => "ActorRequest",
+            Self::ActorRequestOwner => "ActorRequestOwner",
+            Self::ActorRequestAdmission => "ActorRequestAdmission",
+            Self::VecIter => "VecIter",
+            Self::HashMapIter => "HashMapIter",
+            Self::NodeConfig => "NodeConfig",
+            Self::PartitionPolicy => "PartitionPolicy",
+        }
+    }
+
+    /// The nominal identity of this declaration in every table.
+    #[must_use]
+    pub fn nominal(self) -> NominalId {
+        NominalId::from_minted_declaration(DefTable::known(self))
+    }
+
+    /// The type head of this declaration. The collection cursors are
+    /// compiler builtins whose layout the std declaration supplies.
+    #[must_use]
+    pub fn head(self) -> crate::TypeHead {
+        match self {
+            Self::VecIter => crate::TypeHead::Builtin(crate::BuiltinType::VecIter),
+            Self::HashMapIter => crate::TypeHead::Builtin(crate::BuiltinType::HashMapIter),
+            _ => crate::TypeHead::Nominal(crate::NominalHead::new(self.nominal(), self.path())),
+        }
+    }
+
+    /// The known declaration spelled `leaf` in `std.builtins`.
+    ///
+    /// TRANSITION(P2): read only by the second checker run over the embedded
+    /// builtin source, which re-declares the cursors at its own root; deleted
+    /// with that run (B1).
+    #[must_use]
+    pub fn from_leaf(leaf: Symbol) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|known| Symbol::intern(known.leaf()) == leaf)
+    }
+
+    /// The known declaration a nominal identity is, when it is one.
+    #[must_use]
+    pub fn of(nominal: NominalId) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|known| known.nominal() == nominal)
     }
 }
 
@@ -556,11 +701,41 @@ impl DefTable {
                 path: predicate.spelling().to_string(),
             });
         }
+        for known in KnownDecl::ALL {
+            let id = table.push_row(DefRow {
+                name: Symbol::intern(known.leaf()),
+                kind: DeclarationKind::Type,
+                module: None,
+                owner: None,
+                site: None,
+                path: known.path().to_string(),
+            });
+            table.by_path.insert(known.path().to_string(), id);
+        }
         table
+    }
+
+    /// The row of a known `std.builtins` declaration: known rows follow the
+    /// predicates, in [`KnownDecl::ALL`] order.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixed rows number far below `u32::MAX`.
+    #[must_use]
+    pub fn known(known: KnownDecl) -> DefId {
+        DefId(
+            u32::try_from(BuiltinAnchor::ALL.len() + Predicate::ALL.len())
+                .expect("fixed row count fits u32")
+                + known as u32,
+        )
     }
 
     /// The row of a compiler predicate: predicates follow the builtin
     /// anchors, in [`Predicate::ALL`] order.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixed rows number far below `u32::MAX`.
     #[must_use]
     pub fn predicate(predicate: Predicate) -> DefId {
         DefId(
@@ -570,6 +745,10 @@ impl DefTable {
     }
 
     /// The predicate a definition is, when it is one.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixed rows number far below `u32::MAX`.
     #[must_use]
     pub fn as_predicate(id: DefId) -> Option<Predicate> {
         let first = u32::try_from(BuiltinAnchor::ALL.len()).expect("anchor count fits u32");
@@ -644,13 +823,24 @@ impl DefTable {
     /// Whether the table holds only the builtin anchors.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.defs.len() == BuiltinAnchor::ALL.len() + Predicate::ALL.len()
+        self.defs.len() == BuiltinAnchor::ALL.len() + Predicate::ALL.len() + KnownDecl::ALL.len()
     }
 
-    /// Whether `self` holds every row of `base` unchanged and appended only.
+    /// Whether `self` holds every row of `base` and only appended rows. A
+    /// known declaration `base` still held sourceless may have been adopted
+    /// by its source; it keeps its identity and path.
     #[must_use]
     pub fn extends(&self, base: &DefTable) -> bool {
-        self.defs.get(..base.defs.len()) == Some(&base.defs[..])
+        self.defs.get(..base.defs.len()).is_some_and(|prefix| {
+            prefix.iter().zip(&base.defs).all(|(row, base_row)| {
+                row == base_row
+                    || (base_row.site.is_none()
+                        && row.name == base_row.name
+                        && row.kind == base_row.kind
+                        && row.owner == base_row.owner
+                        && row.path == base_row.path)
+            })
+        })
     }
 
     /// The table a second checker run over the embedded builtin source mints
@@ -944,6 +1134,17 @@ impl DefTable {
             });
         }
         if let Some(&established) = self.by_path.get(&path) {
+            // A known declaration's pre-minted row is adopted by its source.
+            if self.row(established).site.is_none() {
+                let row = &mut self.defs[established.index()];
+                row.name = name;
+                row.kind = occurrence.kind();
+                row.module = occurrence.module();
+                row.owner = owner;
+                row.site = Some(occurrence);
+                self.by_occurrence.insert(occurrence, established);
+                return Ok(established);
+            }
             return Err(DeclarationIdentityError::PathAlreadyDeclared {
                 path,
                 established_occurrence: self
@@ -1115,15 +1316,23 @@ impl DefTable {
         self.lookup_path(canonical_path).map(|id| self.kind(id))
     }
 
-    /// Whether this source module already contributed declaration rows.
+    /// Whether this source module already contributed rows for its source
+    /// items.
     ///
     /// Registry mirrors can re-parse source that the module graph already
     /// inventoried. They are lookup adapters, not a second source authority;
     /// callers use this predicate to avoid claiming a second set of spans for
-    /// the same declarations.
+    /// the same declarations. A registry-loaded extern declares a row with an
+    /// empty span before the module's source is read; it is not a source item
+    /// and does not count.
     #[must_use]
-    pub(crate) fn module_has_declarations(&self, module: ModuleId) -> bool {
-        self.defs.iter().any(|row| row.module == Some(module))
+    pub(crate) fn module_has_source_declarations(&self, module: ModuleId) -> bool {
+        self.defs.iter().any(|row| {
+            row.module == Some(module)
+                && row
+                    .site
+                    .is_some_and(|site| site.item_start != site.item_end)
+        })
     }
 
     /// Every source declaration with its establishing occurrence, in mint

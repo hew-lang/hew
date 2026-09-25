@@ -190,7 +190,7 @@ pub fn classify_element_with(
         Ty::Char | Ty::I32 | Ty::U32 => VecElementToken::I32,
         Ty::I64 | Ty::U64 | Ty::Isize | Ty::Usize | Ty::Duration => VecElementToken::I64,
         Ty::Named {
-            builtin: Some(crate::builtin_type::BuiltinType::Instant),
+            head: crate::TypeHead::Builtin(crate::builtin_type::BuiltinType::Instant),
             ..
         } => VecElementToken::I64,
         Ty::F32 => VecElementToken::F32,
@@ -208,8 +208,8 @@ pub fn classify_element_with(
         // fell through to the user-nominal lookup, which has no `Option`
         // `TypeDef`, and the element was rejected as unclassifiable (#2737).
         Ty::Named {
-            builtin:
-                Some(
+            head:
+                crate::TypeHead::Builtin(
                     crate::builtin_type::BuiltinType::Option
                     | crate::builtin_type::BuiltinType::Result,
                 ),
@@ -220,18 +220,21 @@ pub fn classify_element_with(
         // drop-only (its descriptor carries a null clone thunk). Keeping both
         // off the plain pointer lane lets Vec teardown own the slot close.
         Ty::Named {
-            builtin:
-                Some(
+            head:
+                crate::TypeHead::Builtin(
                     crate::builtin_type::BuiltinType::Sink
                     | crate::builtin_type::BuiltinType::Stream,
                 ),
             ..
         } => VecElementToken::Layout,
+        // An actor handle is one `*mut HewActor` word. `RemotePid<T>` is an
+        // inline aggregate and takes a different element ABI.
         Ty::Named {
-            builtin: Some(b), ..
-        } if b.lowers_as_pointer_vec_element() => VecElementToken::Ptr,
+            head: crate::TypeHead::Actor(_),
+            ..
+        } => VecElementToken::Ptr,
         Ty::Named {
-            builtin: Some(crate::builtin_type::BuiltinType::Vec),
+            head: crate::TypeHead::Builtin(crate::builtin_type::BuiltinType::Vec),
             args,
             ..
         } if args
@@ -241,8 +244,8 @@ pub fn classify_element_with(
             VecElementToken::Ptr
         }
         Ty::Named {
-            builtin:
-                Some(
+            head:
+                crate::TypeHead::Builtin(
                     crate::builtin_type::BuiltinType::Vec
                     | crate::builtin_type::BuiltinType::HashMap
                     | crate::builtin_type::BuiltinType::HashSet,
@@ -250,7 +253,7 @@ pub fn classify_element_with(
             ..
         } => VecElementToken::Layout,
         Ty::Function { .. } | Ty::Closure { .. } => VecElementToken::Ptr,
-        Ty::Named { name, args, .. } => match nominal_indirect(name, args) {
+        Ty::Named { head, args } => match nominal_indirect(head.registry_key(), args) {
             Some(true) => VecElementToken::Ptr,
             Some(false) => VecElementToken::Layout,
             None => return None,
@@ -462,8 +465,8 @@ pub fn resolve_runtime_symbol(
     // construction is ever admitted for that element. Pinning the exclusion
     // at the authority (not as a codegen-side special case) keeps
     // construction and every element op congruent by construction, mirroring
-    // the existing actor-handle precedent
-    // (`BuiltinType::lowers_as_pointer_vec_element`).
+    // the existing actor-handle precedent (the `TypeHead::Actor` arm of
+    // `classify_element_with`).
     let is_owned = profile.is_owned && profile.abi != Some(VecElementToken::Ptr);
 
     if profile.is_function_like {
@@ -567,11 +570,7 @@ mod tests {
     /// (`dedup-semantic-boundary`).
     #[test]
     fn shared_classifier_agrees_on_composite_instantiations() {
-        let composite = Ty::Named {
-            builtin: None,
-            name: "W".to_string(),
-            args: vec![Ty::I64],
-        };
+        let composite = Ty::named_for_test("W", vec![Ty::I64]);
         // A registered inline record/enum → layout-descriptor element.
         assert_eq!(
             classify_element_with(&composite, &|_, _| Some(false)),
@@ -591,8 +590,7 @@ mod tests {
         // rejected as unclassifiable, `Vec<Option<T>>` NYI (#2737 Bug B).
         for builtin in [BuiltinType::Option, BuiltinType::Result] {
             let ty = Ty::Named {
-                builtin: Some(builtin),
-                name: builtin.canonical_name().to_string(),
+                head: crate::TypeHead::Builtin(builtin),
                 args: vec![Ty::I64, Ty::I64],
             };
             assert_eq!(

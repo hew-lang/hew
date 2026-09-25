@@ -23,21 +23,17 @@ impl FileReadHandleKind {
     #[must_use]
     pub fn matches(self, ty: &ResolvedTy) -> bool {
         match (self, ty) {
-            (
-                Self::Nominal,
-                ResolvedTy::Named {
-                    name,
-                    args,
-                    builtin: None,
-                    ..
-                },
-            ) => crate::ffi_contracts::extern_owned_resource_result(FileReadOp::Open.c_symbol())
-                .is_some_and(|contract| name == contract.resource_type && args.is_empty()),
+            (Self::Nominal, ResolvedTy::Named { head, args, .. }) => {
+                crate::ffi_contracts::extern_owned_resource_result(FileReadOp::Open.c_symbol())
+                    .is_some_and(|contract| {
+                        head.registry_key() == contract.resource_type && args.is_empty()
+                    })
+            }
             (
                 Self::Stream,
                 ResolvedTy::Named {
                     args,
-                    builtin: Some(BuiltinType::Stream),
+                    head: crate::TypeHead::Builtin(BuiltinType::Stream),
                     is_opaque: false,
                     ..
                 },
@@ -149,9 +145,14 @@ impl FileReadOp {
 impl RuntimeCallFamily {
     /// Admit file operations only through their exact shipped source declaration.
     /// The checker separately proves the module's canonical source provenance.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of the extern declaration is matched independently"
+    )]
     #[must_use]
     pub fn matches_file_read_extern(
         self,
+        defs: &crate::DefTable,
         module: &str,
         declaration: &str,
         symbol: &str,
@@ -179,7 +180,7 @@ impl RuntimeCallFamily {
             && symbol == self.c_symbol()
             && declaration == format!("{module}.{symbol}")
             && self.semantic_contract().is_some_and(|contract| {
-                contract.matches_signature(params, result)
+                contract.matches_signature(defs, params, result)
                     && consuming.len() == contract.arguments.len()
                     && consuming
                         .iter()
@@ -197,14 +198,10 @@ mod tests {
 
     #[test]
     fn file_resource_extern_authority_requires_the_exact_owner_and_transfer_signature() {
-        let owner = ResolvedTy::Named {
-            name: "std.fs.FileReadStream".into(),
-            args: vec![],
-            builtin: None,
-            is_opaque: true,
-        };
+        let owner = ResolvedTy::opaque_for_test("std.fs.FileReadStream", vec![]);
         let family = RuntimeCallFamily::FileRead(FileReadOp::Close);
         assert!(family.matches_file_read_extern(
+            &crate::DefTable::new(),
             "std.fs",
             "std.fs.hew_file_read_stream_close",
             family.c_symbol(),
@@ -213,6 +210,7 @@ mod tests {
             &[true]
         ));
         assert!(!family.matches_file_read_extern(
+            &crate::DefTable::new(),
             "std.fs",
             "other.hew_file_read_stream_close",
             family.c_symbol(),
@@ -221,6 +219,7 @@ mod tests {
             &[true]
         ));
         assert!(!family.matches_file_read_extern(
+            &crate::DefTable::new(),
             "std.fs",
             "std.fs.hew_file_read_stream_close",
             family.c_symbol(),
@@ -229,6 +228,7 @@ mod tests {
             &[false]
         ));
         assert!(!family.matches_file_read_extern(
+            &crate::DefTable::new(),
             "std.fs",
             "std.fs.hew_file_read_stream_close",
             family.c_symbol(),
@@ -238,6 +238,7 @@ mod tests {
         ));
         let valid = RuntimeCallFamily::FileRead(FileReadOp::IsValid);
         assert!(valid.matches_file_read_extern(
+            &crate::DefTable::new(),
             "std.fs",
             "std.fs.hew_file_read_stream_is_valid",
             valid.c_symbol(),
@@ -246,6 +247,7 @@ mod tests {
             &[false]
         ));
         assert!(!valid.matches_file_read_extern(
+            &crate::DefTable::new(),
             "std.fs",
             "std.fs.hew_file_read_stream_is_valid",
             valid.c_symbol(),

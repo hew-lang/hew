@@ -197,7 +197,7 @@ impl LowerCtx {
             let owner = self
                 .checker_expr_ty_if_present(&span)
                 .and_then(|ty| match ty {
-                    ResolvedTy::Named { name, .. } => Some(name),
+                    ResolvedTy::Named { head, .. } => Some(head.registry_key()),
                     _ => None,
                 });
             let contextual_name = owner.map_or_else(
@@ -433,19 +433,13 @@ impl LowerCtx {
                 // resolution consistent with the rest of the pipeline.
                 let checker_key = self.mk_key(&span);
                 let resolved_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                    ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
-                        name: "std.text.regex.Pattern".to_string(),
-                        args: Vec::new(),
-                        builtin: None,
-                        is_opaque: false,
-                    })
+                    ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::named_path(
+                        &self.defs,
+                        "std.text.regex.Pattern",
+                        Vec::new(),
+                    ))
                 } else {
-                    ResolvedTy::Named {
-                        name: "std.text.regex.Pattern".to_string(),
-                        args: Vec::new(),
-                        builtin: None,
-                        is_opaque: false,
-                    }
+                    ResolvedTy::named_path(&self.defs, "std.text.regex.Pattern", Vec::new())
                 };
                 // W4.047 P1.2: prove the typed handoff agrees with the live
                 // path at this fail-open regex-literal site (no behaviour change).
@@ -480,7 +474,7 @@ impl LowerCtx {
                     Some(ty) => match ResolvedTy::from_ty(&ty) {
                         Ok(
                             resolved @ ResolvedTy::Named {
-                                builtin: Some(BuiltinType::ActorHandle),
+                                head: hew_types::TypeHead::Actor(_),
                                 ..
                             },
                         ) => (HirExprKind::ActorSelf, resolved),
@@ -798,21 +792,11 @@ impl LowerCtx {
                                     span.clone(),
                                     "checker-authoritative struct-variant result type failed boundary conversion",
                                 ));
-                                ResolvedTy::Named {
-                                    name: type_name.clone(),
-                                    args: Vec::new(),
-                                    builtin: None,
-                                    is_opaque: false,
-                                }
+                                ResolvedTy::named_path(&self.defs, &type_name, Vec::new())
                             }
                         }
                     } else {
-                        ResolvedTy::Named {
-                            name: type_name.clone(),
-                            args: Vec::new(),
-                            builtin: None,
-                            is_opaque: false,
-                        }
+                        ResolvedTy::named_path(&self.defs, &type_name, Vec::new())
                     };
                     (
                         HirExprKind::MachineVariantCtor {
@@ -842,10 +826,14 @@ impl LowerCtx {
                         .get(&self.mk_key(&span))
                         .and_then(|ty| match ty {
                             Ty::Named {
-                                name,
-                                builtin: None,
+                                head:
+                                    head @ (hew_types::TypeHead::Nominal(_)
+                                    | hew_types::TypeHead::Param(_)
+                                    | hew_types::TypeHead::Unresolved(_)),
                                 ..
-                            } if self.record_registry.contains_key(name) => Some(name.clone()),
+                            } if self.record_registry.contains_key(head.registry_key()) => {
+                                Some(head.registry_key().to_string())
+                            }
                             _ => None,
                         })
                         .unwrap_or_else(|| self.canonical_current_module_record_name(name));
@@ -904,13 +892,16 @@ impl LowerCtx {
                         .get(&self.mk_key(&span))
                         .and_then(|ty| match ty {
                             Ty::Named {
-                                name: recorded,
-                                builtin: None,
+                                head:
+                                    head @ (hew_types::TypeHead::Nominal(_)
+                                    | hew_types::TypeHead::Param(_)
+                                    | hew_types::TypeHead::Unresolved(_)),
                                 ..
-                            } if recorded.contains('.') => {
+                            } if head.registry_key().contains('.') => {
+                                let recorded = head.registry_key();
                                 let short = hew_types::short_name(recorded);
                                 (short == name.as_str() || self.record_registry.contains_key(short))
-                                    .then(|| recorded.clone())
+                                    .then(|| recorded.to_string())
                             }
                             _ => None,
                         })
@@ -928,12 +919,7 @@ impl LowerCtx {
                             fields: hir_fields,
                             base: hir_base,
                         },
-                        ResolvedTy::Named {
-                            name: result_name,
-                            args: resolved_type_args,
-                            builtin: None,
-                            is_opaque: false,
-                        },
+                        ResolvedTy::named_path(&self.defs, &result_name, resolved_type_args),
                     )
                 }
             }
@@ -1088,19 +1074,15 @@ impl LowerCtx {
                         )
                     }
                     ResolvedTy::Named {
-                        name,
-                        builtin: Some(BuiltinType::Vec),
+                        head: head @ hew_types::TypeHead::Builtin(BuiltinType::Vec),
                         args,
                         ..
                     } if matches!(args.first(), Some(ResolvedTy::Task(_))) => {
                         let ResolvedTy::Task(output_ty) = args[0].clone() else {
                             unreachable!("matched a vector of task handles")
                         };
-                        let results_ty = ResolvedTy::named_builtin(
-                            name.clone(),
-                            BuiltinType::Vec,
-                            vec![(*output_ty).clone()],
-                        );
+                        let results_ty =
+                            ResolvedTy::named_builtin(BuiltinType::Vec, vec![(*output_ty).clone()]);
                         let block = self.lower_vector_await(
                             inner_hir,
                             &output_ty,
@@ -1358,7 +1340,9 @@ impl LowerCtx {
                     // MIR `assign` arm recognises and lowers to
                     // `hew_hashmap_insert_layout`.
 
-                    if let ResolvedTy::Named { name, builtin, .. } = &container.ty {
+                    if let ResolvedTy::Named { head, .. } = &container.ty {
+                        let name = head.registry_key();
+                        let builtin = head.builtin();
                         let callee_name = format!("{name}::at");
                         if !matches!(builtin, Some(BuiltinType::Vec | BuiltinType::HashMap))
                             && self.fn_registry.contains_key(&callee_name)
@@ -1465,7 +1449,7 @@ impl LowerCtx {
                         let checker_ty = self.checker_expr_ty_if_present(&span);
                         let checker_selects_type = matches!(
                             &checker_ty,
-                            Some(ResolvedTy::Named { name, .. }) if name == &canonical_type
+                            Some(ResolvedTy::Named { head, .. }) if head.registry_key() == canonical_type
                         );
                         if checker_selects_type {
                             if let Some((type_name, variant_idx, HirVariantKind::Unit)) =

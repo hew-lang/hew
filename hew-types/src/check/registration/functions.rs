@@ -554,11 +554,8 @@ impl Checker {
                                 let consumes_receiver = m.consumes_self;
                                 let returns_receiver_identity =
                                     Self::trait_receiver_identity_is_structurally_valid(&m);
-                                let concrete_self = Ty::Named {
-                                    builtin: None,
-                                    name: type_name.clone(),
-                                    args: self_type_args.clone(),
-                                };
+                                let concrete_self =
+                                    self.named_ty_for_key(type_name, self_type_args.clone());
                                 let (params, return_type) = if let Some(sig) =
                                     self.fn_sigs.get(&trait_method_key).cloned()
                                 {
@@ -1308,15 +1305,10 @@ impl Checker {
                     &signature.type_params.iter().cloned().collect(),
                 )
                 .map(|ty| {
-                    super::resolve_member_ty(
-                        ty,
-                        self.current_module.as_deref(),
-                        &self.type_defs,
-                        &|name| {
-                            self.user_opaque_type_names.contains(name)
-                                || self.module_registry.is_handle_type(name)
-                        },
-                    )
+                    super::restore_member_opacity(ty, &|name| {
+                        self.user_opaque_type_names.contains(name)
+                            || self.module_registry.is_handle_type(name)
+                    })
                 })
             };
             let Ok(params) = signature
@@ -1346,7 +1338,7 @@ impl Checker {
                 && family
                     .source_intrinsic_declaration()
                     .is_none_or(|expected| expected == key)
-                && contract.matches_signature(&params, &result)
+                && contract.matches_signature(&self.defs, &params, &result)
         });
         if !signature_matches {
             self.errors.push(TypeError {
@@ -1517,12 +1509,14 @@ impl Checker {
             |(expr, _)| matches!(expr, Expr::Ident(name) if name.name.as_str() == "self"),
         );
         let returns_self_type = match return_type {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } if name == "Self"
-                || self.strict_names_same_owner(name, *builtin, type_name, None) =>
+            Ty::Named { head, args }
+                if *head == crate::TypeHead::self_param()
+                    || self.strict_names_same_owner(
+                        head.registry_key(),
+                        head.builtin(),
+                        type_name,
+                        None,
+                    ) =>
             {
                 self.current_self_type
                     .as_ref()
@@ -1674,11 +1668,8 @@ impl Checker {
                 .as_ref()
                 .map(|(_, args)| args.clone())
                 .unwrap_or_default();
-            let receiver = Ty::from_name(&type_identity).unwrap_or_else(|| Ty::Named {
-                name: type_identity.clone(),
-                args: receiver_args,
-                builtin: None,
-            });
+            let receiver = Ty::from_name(&type_identity)
+                .unwrap_or_else(|| self.named_ty_for_key(&type_identity, receiver_args));
             self.trait_impl_method_binders.insert(
                 declaration_id,
                 crate::type_facts::ImplMethodBinders {
@@ -2311,16 +2302,7 @@ impl Checker {
         let subst_map: HashMap<String, Ty> = trait_names
             .iter()
             .zip(impl_names.iter())
-            .map(|(t, u)| {
-                (
-                    (*t).to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: (*u).to_string(),
-                        args: vec![],
-                    },
-                )
-            })
+            .map(|(t, u)| ((*t).to_string(), Ty::param(u)))
             .collect();
         ty.substitute_named_params_parallel(&subst_map)
     }
@@ -2329,14 +2311,7 @@ impl Checker {
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
-                generic_bindings.insert(
-                    tp.name.to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: tp.name.to_string(),
-                        args: vec![],
-                    },
-                );
+                generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
             }
         }
         if !generic_bindings.is_empty() {

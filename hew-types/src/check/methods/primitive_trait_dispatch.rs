@@ -338,32 +338,36 @@ impl Checker {
         let receiver_resolved = self.subst.resolve(receiver_arg);
         match self_arg {
             // Bare impl type parameter: bind to the receiver arg (consistently).
-            Ty::Named { name, args, .. } if args.is_empty() && impl_params.contains(name) => {
+            Ty::Named {
+                head: crate::TypeHead::Param(param),
+                args,
+            } if args.is_empty() && impl_params.iter().any(|p| p == param.spelling.as_str()) => {
+                let name = param.spelling.as_str();
                 if let Some(existing) = subst.get(name) {
                     return *existing == receiver_resolved;
                 }
-                subst.insert(name.clone(), receiver_resolved);
+                subst.insert(name.to_string(), receiver_resolved);
                 true
             }
             // Constructed / concrete-nominal `Self` type: same constructor, then
             // recurse. An unbound receiver var unifies with a fully-concrete one.
             Ty::Named {
-                name: s_name,
-                builtin: s_builtin,
-                args: s_args,
+                head, args: s_args, ..
             } => {
+                let s_name = head.registry_key();
+                let s_builtin = head.builtin();
                 if matches!(receiver_resolved, Ty::Var(_)) {
                     return !Self::ty_contains_impl_param(self_arg, impl_params)
                         && self.try_unify_with_owner_identity(&receiver_resolved, self_arg);
                 }
                 let Ty::Named {
-                    name: r_name,
-                    builtin: r_builtin,
-                    args: r_args,
+                    head, args: r_args, ..
                 } = &receiver_resolved
                 else {
                     return false;
                 };
+                let r_name = head.registry_key();
+                let r_builtin = head.builtin();
                 if s_name != r_name || s_builtin != r_builtin || s_args.len() != r_args.len() {
                     return false;
                 }
@@ -389,7 +393,8 @@ impl Checker {
     /// inference of the receiver's element type.
     pub(super) fn ty_contains_impl_param(ty: &Ty, impl_params: &HashSet<String>) -> bool {
         match ty {
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 impl_params.contains(name)
                     || args
                         .iter()

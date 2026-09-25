@@ -399,7 +399,7 @@ impl Checker {
         self.generic_ctx.push(
             type_params
                 .iter()
-                .map(|param| (param.clone(), Ty::named(param, vec![])))
+                .map(|param| (param.clone(), Ty::param(param)))
                 .collect(),
         );
         let mut holes = Vec::new();
@@ -1064,11 +1064,7 @@ impl Checker {
         let mut hole_vars = Vec::new();
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
 
         for item in &td.body {
@@ -1084,7 +1080,7 @@ impl Checker {
                         |module| format!("{module}.{}", td.name),
                     );
                     let return_type =
-                        self.variant_nominal_ty(declaration_name.clone(), enum_return_args.clone());
+                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
@@ -1385,11 +1381,7 @@ impl Checker {
             self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
 
         for item in &td.body {
@@ -1406,7 +1398,7 @@ impl Checker {
                         |module| format!("{module}.{}", td.name),
                     );
                     let return_type =
-                        self.variant_nominal_ty(declaration_name.clone(), enum_return_args.clone());
+                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
@@ -1558,21 +1550,13 @@ impl Checker {
         // Build the return type for constructors: `R` or `R<T1, T2, …>`
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
         let declaration_name = self.current_module_identity().map_or_else(
             || rd.name.to_string(),
             |module| format!("{module}.{}", rd.name),
         );
-        let return_type = Ty::Named {
-            builtin: None,
-            name: declaration_name.clone(),
-            args: enum_return_args,
-        };
+        let return_type = self.named_ty_for_key(&declaration_name, enum_return_args);
 
         let mut fields: HashMap<String, Ty> = HashMap::new();
         let mut field_order: Vec<String> = Vec::new();
@@ -1673,11 +1657,7 @@ impl Checker {
             || type_name.to_string(),
             |module| format!("{module}.{type_name}"),
         );
-        let self_ty = Ty::Named {
-            builtin: None,
-            name: canonical_identity.clone(),
-            args: vec![],
-        };
+        let self_ty = self.named_ty_for_key(&canonical_identity, vec![]);
         let bytes_ty = Ty::Bytes;
 
         let Some((is_wire_struct, is_serial_wire_enum, layout_entry)) =
@@ -2044,26 +2024,14 @@ impl Checker {
         }
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
         let machine_identity = self.declaration_identity(md.name.name.as_str());
-        let machine_ty = Ty::Named {
-            builtin: None,
-            name: machine_identity.clone(),
-            args: machine_generic_args.clone(),
-        };
+        let machine_ty = self.named_ty_for_key(&machine_identity, machine_generic_args.clone());
 
         let event_type_name = format!("{}Event", md.name);
         let event_identity = self.declaration_identity(&event_type_name);
-        let event_ty = Ty::Named {
-            builtin: None,
-            name: event_identity.clone(),
-            args: machine_generic_args.clone(),
-        };
+        let event_ty = self.named_ty_for_key(&event_identity, machine_generic_args.clone());
 
         // Build state variants
         let mut variants = HashMap::new();

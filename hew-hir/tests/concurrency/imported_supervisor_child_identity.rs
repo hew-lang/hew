@@ -11,8 +11,8 @@ use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 const WORKER_MODULE: &str = "imported_supervisor_child_support.worker";
 const NAMED_WORKER_MODULE: &str = "services.workers";
 
-fn child_handle(name: &str) -> hew_types::ResolvedTy {
-    hew_types::ResolvedTy::named_builtin(name, hew_types::BuiltinType::ActorHandle, Vec::new())
+fn child_handle(defs: &hew_types::DefTable, name: &str) -> hew_types::ResolvedTy {
+    hew_types::ResolvedTy::named_actor_path(defs, name, Vec::new())
 }
 
 fn file_import_program(
@@ -257,7 +257,7 @@ fn file_imported_supervisor_child_and_protocol_share_full_actor_identity() {
     assert_eq!(pool.children.len(), 1);
     assert_eq!(
         pool.children[0].ty,
-        child_handle(&imported.qualified_name())
+        child_handle(&output.module.defs, &imported.qualified_name())
     );
 }
 
@@ -332,7 +332,7 @@ fn named_and_aliased_supervisor_children_use_the_imported_actor_identity() {
         );
         assert_eq!(
             supervisor(&output, "App").children[0].ty,
-            child_handle("services.workers.Worker")
+            child_handle(&output.module.defs, "services.workers.Worker")
         );
     }
 }
@@ -346,7 +346,7 @@ fn whole_module_supervisor_child_uses_the_imported_actor_identity() {
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert_eq!(
         supervisor(&output, "App").children[0].ty,
-        child_handle("services.workers.Worker")
+        child_handle(&output.module.defs, "services.workers.Worker")
     );
 }
 
@@ -394,7 +394,7 @@ fn file_imported_supervisor_resolves_its_same_file_actor_by_exact_owner() {
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert_eq!(
         supervisor(&output, "Inner").children[0].ty,
-        child_handle(&format!("{WORKER_MODULE}.Worker"))
+        child_handle(&output.module.defs, &format!("{WORKER_MODULE}.Worker"))
     );
 }
 
@@ -409,7 +409,7 @@ fn root_actor_keeps_authority_over_same_leaf_named_import_in_hir() {
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert_eq!(
         supervisor(&output, "App").children[0].ty,
-        child_handle("Worker")
+        child_handle(&output.module.defs, "Worker")
     );
     assert!(output.module.items.iter().any(|item| matches!(
         item,

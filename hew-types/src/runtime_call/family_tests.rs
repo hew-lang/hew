@@ -4,11 +4,10 @@ use super::*;
 use strum::IntoEnumIterator;
 
 fn named_type(name: &str, builtin: Option<crate::BuiltinType>) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: name.to_string(),
-        args: Vec::new(),
-        builtin,
-        is_opaque: false,
+    match builtin {
+        Some(crate::BuiltinType::ActorHandle) => ResolvedTy::actor_for_test(name, Vec::new()),
+        Some(builtin) => ResolvedTy::named_builtin(builtin, Vec::new()),
+        None => ResolvedTy::user_for_test(name, Vec::new()),
     }
 }
 
@@ -16,28 +15,22 @@ fn named_type(name: &str, builtin: Option<crate::BuiltinType>) -> ResolvedTy {
 fn utf8_decode_result_contract_requires_exact_nominal_error_identity() {
     let exact_error = named_type("std.encoding.utf8.Utf8Error", None);
     let exact_result = ResolvedTy::Named {
-        name: "Result".to_string(),
         args: vec![ResolvedTy::String, exact_error.clone()],
-        builtin: Some(crate::BuiltinType::Result),
+        head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
         is_opaque: false,
     };
     assert!(RuntimeVariantResultKind::Utf8Decode.matches(&exact_result));
 
     let lookalike_error = named_type("application.Utf8Error", None);
     let lookalike_result = ResolvedTy::Named {
-        name: "Result".to_string(),
         args: vec![ResolvedTy::String, lookalike_error],
-        builtin: Some(crate::BuiltinType::Result),
+        head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
         is_opaque: false,
     };
     assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&lookalike_result));
 
-    let user_result = ResolvedTy::Named {
-        name: "application.Result".to_string(),
-        args: vec![ResolvedTy::String, exact_error],
-        builtin: None,
-        is_opaque: false,
-    };
+    let user_result =
+        ResolvedTy::named_for_test("application.Result", vec![ResolvedTy::String, exact_error]);
     assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&user_result));
 }
 
@@ -70,19 +63,27 @@ fn new_text_runtime_families_publish_closed_semantic_effects() {
     assert!(lossy.failures.is_empty());
 
     assert!(decode.matches_signature(
+        &crate::DefTable::new(),
         &[ResolvedTy::Bytes],
         &ResolvedTy::Named {
-            name: "Result".to_string(),
             args: vec![
                 ResolvedTy::String,
                 named_type("std.encoding.utf8.Utf8Error", None),
             ],
-            builtin: Some(crate::BuiltinType::Result),
-            is_opaque: false,
+            head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
+            is_opaque: false
         },
     ));
-    assert!(!decode.matches_signature(&[ResolvedTy::String], &ResolvedTy::String));
-    assert!(lossy.matches_signature(&[ResolvedTy::Bytes], &ResolvedTy::String));
+    assert!(!decode.matches_signature(
+        &crate::DefTable::new(),
+        &[ResolvedTy::String],
+        &ResolvedTy::String
+    ));
+    assert!(lossy.matches_signature(
+        &crate::DefTable::new(),
+        &[ResolvedTy::Bytes],
+        &ResolvedTy::String
+    ));
 
     let byte_len = RuntimeCallFamily::StringByteLen
         .semantic_contract()
@@ -109,17 +110,23 @@ fn fixed_array_update_preserves_length_and_element_ownership() {
     let family = RuntimeCallFamily::Array(ArrayValueOp::Set);
     let contract = family.semantic_contract().unwrap();
     let arguments = [array.clone(), ResolvedTy::I64, ResolvedTy::String];
-    assert!(contract.matches_signature(&arguments, &array));
+    assert!(contract.matches_signature(&crate::DefTable::new(), &arguments, &array));
     assert!(!contract.matches_signature(
+        &crate::DefTable::new(),
         &arguments,
         &ResolvedTy::Array(Box::new(ResolvedTy::String), 3)
     ));
-    assert!(!contract.matches_signature(&[array.clone(), ResolvedTy::I64, ResolvedTy::I64], &array));
     assert!(!contract.matches_signature(
+        &crate::DefTable::new(),
+        &[array.clone(), ResolvedTy::I64, ResolvedTy::I64],
+        &array
+    ));
+    assert!(!contract.matches_signature(
+        &crate::DefTable::new(),
         &[array.clone(), ResolvedTy::U64, ResolvedTy::String],
         &array
     ));
-    assert!(!contract.matches_signature(&arguments, &ResolvedTy::Unit));
+    assert!(!contract.matches_signature(&crate::DefTable::new(), &arguments, &ResolvedTy::Unit));
 
     // Updating replaces the array owner; the index is copied and an
     // owning element follows its copy-or-move value boundary.

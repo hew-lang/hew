@@ -104,11 +104,7 @@ impl Checker {
         _span: &Span,
     ) -> RecordCloneAdmissibility {
         use TypeDefKind::{Enum, Record, Struct};
-        let receiver_ty = Ty::Named {
-            name: name.to_string(),
-            args: type_args.to_vec(),
-            builtin: None,
-        };
+        let receiver_ty = self.named_ty_for_key(name, type_args.to_vec());
         if self.registry.is_resource(name) {
             return RecordCloneAdmissibility::AffineValue {
                 type_name: name.to_string(),
@@ -258,11 +254,9 @@ impl Checker {
                     }
                 }
             }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
                     return None;
                 }
@@ -298,26 +292,26 @@ impl Checker {
                 }
                 if self.registry.is_resource(name) {
                     return Some(CloneCapabilityBlocker::Affine {
-                        type_name: name.clone(),
+                        type_name: name.to_string(),
                         marker: ResourceMarker::Resource,
                         member: member.to_string(),
                     });
                 }
                 if self.registry.is_linear(name) {
                     return Some(CloneCapabilityBlocker::Affine {
-                        type_name: name.clone(),
+                        type_name: name.to_string(),
                         marker: ResourceMarker::Linear,
                         member: member.to_string(),
                     });
                 }
                 if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.user_opaque_type_names.contains(name.as_str())
+                    || self.user_opaque_type_names.contains(name)
                 {
                     // The carrier's own capability is canonical. In particular,
                     // Receiver<T> is one non-cloneable endpoint regardless of T;
                     // walking T first made diagnostics and semantics payload-dependent.
                     return Some(CloneCapabilityBlocker::Opaque {
-                        type_name: name.clone(),
+                        type_name: name.to_string(),
                         member: member.to_string(),
                     });
                 }
@@ -594,12 +588,9 @@ impl Checker {
         // through each concrete member.
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-                ..
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 if skip_channel_handles
                     && matches!(
                         builtin,
@@ -615,9 +606,9 @@ impl Checker {
                 }
                 // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
                 if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.user_opaque_type_names.contains(name.as_str())
+                    || self.user_opaque_type_names.contains(name)
                 {
-                    return Some(name.clone());
+                    return Some(name.to_string());
                 }
                 // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`).
                 for arg in args {
@@ -675,13 +666,17 @@ impl Checker {
     /// non-clonable through a generic seam.
     pub(in crate::check) fn type_param_template_clone_capability(&self, ty: &Ty) -> Option<bool> {
         let Ty::Named {
-            name,
+            head:
+                head @ (crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_)),
             args,
-            builtin: None,
+            ..
         } = ty
         else {
             return None;
         };
+        let name = head.registry_key();
         if !args.is_empty() || !self.is_type_param_in_scope(name) {
             return None;
         }

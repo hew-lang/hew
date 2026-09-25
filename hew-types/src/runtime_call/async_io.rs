@@ -22,8 +22,8 @@ impl IoHandleKind {
             Self::Connection => "std.net.Connection",
             Self::Listener => "std.net.Listener",
         };
-        matches!(ty, ResolvedTy::Named { name, args, builtin: None, .. }
-            if name == expected && args.is_empty())
+        matches!(ty, ResolvedTy::Named { head, args, .. }
+            if head.registry_key() == expected && args.is_empty())
     }
 
     #[must_use]
@@ -196,9 +196,14 @@ impl AsyncIoOp {
 
 impl RuntimeCallFamily {
     /// The checker must first establish canonical module source provenance.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of the extern declaration is matched independently"
+    )]
     #[must_use]
     pub fn matches_async_io_extern(
         self,
+        defs: &crate::DefTable,
         module: &str,
         declaration: &str,
         symbol: &str,
@@ -222,7 +227,7 @@ impl RuntimeCallFamily {
         module == owner
             && symbol == op.c_symbol()
             && declaration == format!("{owner}.{symbol}")
-            && op.contract().matches_signature(params, result)
+            && op.contract().matches_signature(defs, params, result)
             && consuming.len() == params.len()
             && consuming.iter().all(|consumes| !consumes)
     }
@@ -233,12 +238,7 @@ mod tests {
     use super::*;
 
     fn handle(name: &str) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: name.into(),
-            args: vec![],
-            builtin: None,
-            is_opaque: true,
-        }
+        ResolvedTy::opaque_for_test(name, vec![])
     }
 
     #[test]
@@ -283,6 +283,7 @@ mod tests {
             let borrowed = vec![false; params.len()];
             assert!(
                 family.matches_async_io_extern(
+                    &crate::DefTable::new(),
                     module,
                     &declaration,
                     op.c_symbol(),
@@ -293,6 +294,7 @@ mod tests {
                 "{op:?}"
             );
             assert!(!family.matches_async_io_extern(
+                &crate::DefTable::new(),
                 "user.net",
                 &declaration,
                 op.c_symbol(),
@@ -301,6 +303,7 @@ mod tests {
                 &borrowed
             ));
             assert!(!family.matches_async_io_extern(
+                &crate::DefTable::new(),
                 module,
                 "other.declaration",
                 op.c_symbol(),
@@ -309,6 +312,7 @@ mod tests {
                 &borrowed
             ));
             assert!(!family.matches_async_io_extern(
+                &crate::DefTable::new(),
                 module,
                 &declaration,
                 op.c_symbol(),
@@ -317,6 +321,7 @@ mod tests {
                 &borrowed
             ));
             assert!(!family.matches_async_io_extern(
+                &crate::DefTable::new(),
                 module,
                 &declaration,
                 op.c_symbol(),
@@ -326,9 +331,11 @@ mod tests {
             ));
         }
         let forged = handle("user.Connection");
-        assert!(!AsyncIoOp::TcpRead
-            .contract()
-            .matches_signature(&[forged], &ResolvedTy::Bytes));
+        assert!(!AsyncIoOp::TcpRead.contract().matches_signature(
+            &crate::DefTable::new(),
+            &[forged],
+            &ResolvedTy::Bytes
+        ));
     }
 
     #[test]
@@ -337,10 +344,18 @@ mod tests {
         let connection = handle("std.net.Connection");
         let contract = AsyncIoOp::TcpAccept.contract();
         let instantiated = contract
-            .instantiate(std::slice::from_ref(&listener), &connection)
+            .instantiate(
+                &crate::DefTable::new(),
+                std::slice::from_ref(&listener),
+                &connection,
+            )
             .unwrap();
         assert_eq!(instantiated.result_ty, connection);
-        assert!(!contract.matches_signature(std::slice::from_ref(&listener), &listener));
+        assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
+            std::slice::from_ref(&listener),
+            &listener
+        ));
         assert_eq!(contract.arguments[0].effect, RuntimeArgumentEffect::Borrow);
         assert_eq!(
             AsyncIoOp::TcpAccept.argument_loan(),

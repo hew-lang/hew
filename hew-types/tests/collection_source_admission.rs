@@ -39,11 +39,7 @@ fn set_snapshot_has_the_canonical_element_result_and_dispatch() {
         output.expr_types[&site],
         Ty::builtin_named(
             hew_types::BuiltinType::Vec,
-            vec![Ty::Named {
-                name: "Member".into(),
-                args: vec![],
-                builtin: None,
-            }]
+            vec![Ty::named_in(&output.defs, "Member", vec![])]
         )
     );
     assert!(

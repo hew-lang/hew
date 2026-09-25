@@ -98,14 +98,13 @@ impl LowerCtx {
 
     pub(super) fn actor_handle_identity(ty: &ResolvedTy) -> Option<&str> {
         let ResolvedTy::Named {
-            name,
-            builtin: Some(BuiltinType::ActorHandle),
+            head: head @ hew_types::TypeHead::Actor(_),
             ..
         } = ty
         else {
             return None;
         };
-        Some(name)
+        Some(head.registry_key())
     }
 
     /// Lower an `Expr::SpawnLambdaActor` to an

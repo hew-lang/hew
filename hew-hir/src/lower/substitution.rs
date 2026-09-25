@@ -597,18 +597,22 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
     subst: &HashMap<String, ResolvedTy, S>,
 ) -> ResolvedTy {
     match ty {
-        ResolvedTy::Named { name, args, .. } if args.is_empty() && subst.contains_key(name) => {
-            subst[name].clone()
+        // Only a binder is substituted: a nominal of the same spelling is a
+        // different type.
+        ResolvedTy::Named {
+            head: head @ (hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)),
+            args,
+            ..
+        } if args.is_empty() && subst.contains_key(head.registry_key()) => {
+            subst[head.registry_key()].clone()
         }
         ResolvedTy::Named {
-            name,
+            head,
             args,
-            builtin,
             is_opaque,
         } => ResolvedTy::Named {
-            name: name.clone(),
+            head: *head,
             args: args.iter().map(|a| substitute_ty(a, subst)).collect(),
-            builtin: *builtin,
             is_opaque: *is_opaque,
         },
         ResolvedTy::Tuple(items) => {
@@ -685,7 +689,8 @@ pub(super) fn contains_abstract_symbol(
             .any(|(_, _, params)| params.iter().any(|p| p == name))
     };
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
             if args.is_empty() && is_type_param(name) {
                 return true;
             }

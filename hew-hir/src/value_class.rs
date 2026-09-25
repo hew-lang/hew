@@ -108,13 +108,16 @@ impl LifecycleRegistry {
     #[must_use]
     pub fn opaque_resource_for_ty(&self, ty: &ResolvedTy) -> Option<&OpaqueResourceLifecycle> {
         let ResolvedTy::Named {
-            name,
-            builtin: None,
+            head:
+                head @ (hew_types::TypeHead::Nominal(_)
+                | hew_types::TypeHead::Param(_)
+                | hew_types::TypeHead::Unresolved(_)),
             ..
         } = ty
         else {
             return None;
         };
+        let name = head.registry_key();
         self.opaque_resources_by_name
             .get(name)
             .and_then(|declaration| self.opaque_resource(declaration))
@@ -263,15 +266,11 @@ pub fn lookup_type_marker_for_ty(
     ty: &ResolvedTy,
     type_classes: &TypeClassTable,
 ) -> Option<ResourceMarker> {
-    let ResolvedTy::Named {
-        name,
-        args,
-        builtin,
-        ..
-    } = ty
-    else {
+    let ResolvedTy::Named { head, args, .. } = ty else {
         return None;
     };
+    let name = head.registry_key();
+    let builtin = head.builtin();
 
     if let Some(builtin) = builtin {
         // Builtin ownership is an identity fact, not a spelling convention.
@@ -366,15 +365,10 @@ fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedType
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             collect_named_type_components(elem, components);
         }
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } => {
+        ResolvedTy::Named { head, args, .. } => { let name = head.registry_key(); let builtin = head.builtin();
             components.push(NamedTypeComponent {
-                name: name.clone(),
-                builtin: *builtin,
+                name: name.to_string(),
+                builtin,
                 has_args: !args.is_empty(),
             });
             for arg in args {
@@ -467,7 +461,7 @@ mod tests {
         let ty = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".to_string(),
-                args: vec![ResolvedTy::named_user("Foo", Vec::new())],
+                args: vec![ResolvedTy::named_for_test("Foo", Vec::new())],
                 assoc_bindings: Vec::new(),
             }],
         };
@@ -481,11 +475,11 @@ mod tests {
             traits: vec![ResolvedTraitBound {
                 trait_name: "OuterTrait".to_string(),
                 args: vec![ResolvedTy::Tuple(vec![
-                    ResolvedTy::named_user("Foo", Vec::new()),
+                    ResolvedTy::named_for_test("Foo", Vec::new()),
                     ResolvedTy::TraitObject {
                         traits: vec![ResolvedTraitBound {
                             trait_name: "InnerTrait".to_string(),
-                            args: vec![ResolvedTy::named_user("Bar", Vec::new())],
+                            args: vec![ResolvedTy::named_for_test("Bar", Vec::new())],
                             assoc_bindings: Vec::new(),
                         }],
                     },
@@ -503,9 +497,8 @@ mod tests {
     #[test]
     fn named_type_components_preserve_builtin_discriminator_and_arg_shape() {
         let ty = ResolvedTy::named_builtin(
-            "Vec",
             BuiltinType::Vec,
-            vec![ResolvedTy::named_user("Foo", Vec::new())],
+            vec![ResolvedTy::named_for_test("Foo", Vec::new())],
         );
 
         let components = named_type_components(&ty);
@@ -529,11 +522,7 @@ mod tests {
             BuiltinType::DownReason,
             BuiltinType::DownNotification,
         ] {
-            let ty = ResolvedTy::named_builtin(
-                format!("std.link_monitor.{}", builtin.canonical_name()),
-                builtin,
-                Vec::new(),
-            );
+            let ty = ResolvedTy::named_builtin(builtin, Vec::new());
             assert_eq!(
                 lookup_type_marker_for_ty(&ty, &table),
                 Some(ResourceMarker::BitCopy),
@@ -548,7 +537,7 @@ mod tests {
 
         let table = TypeClassTable::default();
         for name in ["DownNotification", "user.DownNotification"] {
-            let ty = ResolvedTy::named_user(name, Vec::new());
+            let ty = ResolvedTy::user_for_test(name, Vec::new());
             assert_eq!(lookup_type_marker_for_ty(&ty, &table), None);
         }
     }
@@ -561,13 +550,14 @@ mod tests {
 
         let mut table = TypeClassTable::default();
         // Registered under a distinct bare declaration identity.
-        let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::named_user("Box", vec![])]);
+        let bare_key =
+            crate::monomorph::mangle("Holder", &[ResolvedTy::named_for_test("Box", vec![])]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
 
         // Probe with a QUALIFIED payload. It must not select the bare key.
-        let qualified = ResolvedTy::named_user(
+        let qualified = ResolvedTy::named_for_test(
             "Holder",
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
         );
         assert_eq!(
             lookup_type_marker_for_ty(&qualified, &table),
@@ -593,7 +583,7 @@ mod tests {
         table.insert("Key".to_string(), (ResourceMarker::None, None));
 
         // A QUALIFIED origin must remain distinct from bare `Key<string>`.
-        let qualified = ResolvedTy::named_user("keyed.Key", vec![ResolvedTy::String]);
+        let qualified = ResolvedTy::named_for_test("keyed.Key", vec![ResolvedTy::String]);
         assert_eq!(
             lookup_type_marker_for_ty(&qualified, &table),
             Some(ResourceMarker::None),
@@ -614,9 +604,9 @@ mod tests {
         // concrete-key path must NOT match the `Holder$$i64` entry. With no
         // outer-name `Holder` entry either, the lookup yields None. Pins that
         // shortening collapses qualifiers, not distinct payloads.
-        let qualified = ResolvedTy::named_user(
+        let qualified = ResolvedTy::named_for_test(
             "Holder",
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
         );
         assert_eq!(lookup_type_marker_for_ty(&qualified, &table), None);
         // Sanity: the unused variant keeps the linter honest.

@@ -38,11 +38,7 @@ fn bind_occurs_check_through_named_type() {
     // Binding v to Named("Vec", [Var(v)]) should fail the occurs check.
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
-    let ty = Ty::Named {
-        builtin: None,
-        name: "Vec".into(),
-        args: vec![Ty::Var(v)],
-    };
+    let ty = Ty::named_for_test("Vec", vec![Ty::Var(v)]);
     let result = bind(&mut subst, v, &ty);
     assert!(matches!(result, Err(UnifyError::OccursCheck { .. })));
 }
@@ -263,16 +259,8 @@ fn unify_trait_objects_different_assoc_bindings_rejects() {
 #[test]
 fn unify_machine_types_different_names() {
     let mut subst = fresh_subst();
-    let a = Ty::Named {
-        builtin: None,
-        name: "TrafficLight".into(),
-        args: vec![],
-    };
-    let b = Ty::Named {
-        builtin: None,
-        name: "DoorLock".into(),
-        args: vec![],
-    };
+    let a = Ty::named_for_test("TrafficLight", vec![]);
+    let b = Ty::named_for_test("DoorLock", vec![]);
     assert!(matches!(
         unify(&mut subst, &a, &b),
         Err(UnifyError::Mismatch { .. })
@@ -283,16 +271,8 @@ fn unify_machine_types_different_names() {
 fn unify_machine_with_named_same_name_no_args() {
     // Machine interops with bare Named of the same name (no type args).
     let mut subst = fresh_subst();
-    let machine = Ty::Named {
-        builtin: None,
-        name: "Sensor".into(),
-        args: vec![],
-    };
-    let named = Ty::Named {
-        builtin: None,
-        name: "Sensor".into(),
-        args: vec![],
-    };
+    let machine = Ty::named_for_test("Sensor", vec![]);
+    let named = Ty::named_for_test("Sensor", vec![]);
     assert!(unify(&mut subst, &machine, &named).is_ok());
     // Reverse direction too.
     assert!(unify(&mut subst, &named, &machine).is_ok());
@@ -301,16 +281,8 @@ fn unify_machine_with_named_same_name_no_args() {
 #[test]
 fn unify_machine_with_named_different_name() {
     let mut subst = fresh_subst();
-    let machine = Ty::Named {
-        builtin: None,
-        name: "Sensor".into(),
-        args: vec![],
-    };
-    let named = Ty::Named {
-        builtin: None,
-        name: "Actuator".into(),
-        args: vec![],
-    };
+    let machine = Ty::named_for_test("Sensor", vec![]);
+    let named = Ty::named_for_test("Actuator", vec![]);
     assert!(unify(&mut subst, &machine, &named).is_err());
 }
 
@@ -318,16 +290,8 @@ fn unify_machine_with_named_different_name() {
 fn unify_machine_with_named_with_args_fails() {
     // Machine only matches Named with empty args.
     let mut subst = fresh_subst();
-    let machine = Ty::Named {
-        builtin: None,
-        name: "Sensor".into(),
-        args: vec![],
-    };
-    let named = Ty::Named {
-        builtin: None,
-        name: "Sensor".into(),
-        args: vec![Ty::I32],
-    };
+    let machine = Ty::named_for_test("Sensor", vec![]);
+    let named = Ty::named_for_test("Sensor", vec![Ty::I32]);
     assert!(unify(&mut subst, &machine, &named).is_err());
 }
 
@@ -336,36 +300,23 @@ fn unify_machine_with_named_with_args_fails() {
 // ===========================================================================
 
 #[test]
-fn unify_qualified_and_bare_named() {
-    // "json.Value" should unify with "Value"
+fn unify_qualified_and_bare_named_declarations_stay_distinct() {
+    // "json.Value" and a bare "Value" are two declarations: heads compare by
+    // identity, never by leaf (R5).
     let mut subst = fresh_subst();
-    let a = Ty::Named {
-        builtin: None,
-        name: "json.Value".into(),
-        args: vec![],
-    };
-    let b = Ty::Named {
-        builtin: None,
-        name: "Value".into(),
-        args: vec![],
-    };
-    assert!(unify(&mut subst, &a, &b).is_ok());
+    let a = Ty::named_for_test("json.Value", vec![]);
+    let b = Ty::named_for_test("Value", vec![]);
+    assert!(unify(&mut subst, &a, &b).is_err());
+    let same = Ty::named_for_test("json.Value", vec![]);
+    assert!(unify(&mut subst, &a, &same).is_ok());
 }
 
 #[test]
 fn unify_qualified_different_modules_same_bare_name_fails() {
     // "auth.User" vs "billing.User" — both qualified, different modules.
     let mut subst = fresh_subst();
-    let a = Ty::Named {
-        builtin: None,
-        name: "auth.User".into(),
-        args: vec![],
-    };
-    let b = Ty::Named {
-        builtin: None,
-        name: "billing.User".into(),
-        args: vec![],
-    };
+    let a = Ty::named_for_test("auth.User", vec![]);
+    let b = Ty::named_for_test("billing.User", vec![]);
     assert!(unify(&mut subst, &a, &b).is_err());
 }
 
@@ -373,18 +324,12 @@ fn unify_qualified_different_modules_same_bare_name_fails() {
 fn unify_qualified_with_type_args() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
-    let a = Ty::Named {
-        builtin: None,
-        name: "collections.Map".into(),
-        args: vec![Ty::String, Ty::Var(v)],
-    };
-    let b = Ty::Named {
-        builtin: None,
-        name: "Map".into(),
-        args: vec![Ty::String, Ty::I64],
-    };
+    let a = Ty::named_for_test("collections.Map", vec![Ty::String, Ty::Var(v)]);
+    let b = Ty::named_for_test("collections.Map", vec![Ty::String, Ty::I64]);
     assert!(unify(&mut subst, &a, &b).is_ok());
     assert_eq!(subst.resolve(&Ty::Var(v)), Ty::I64);
+    let bare = Ty::named_for_test("Map", vec![Ty::String, Ty::I64]);
+    assert!(unify(&mut subst, &a, &bare).is_err());
 }
 
 // ===========================================================================
@@ -394,16 +339,8 @@ fn unify_qualified_with_type_args() {
 #[test]
 fn unify_named_type_arity_mismatch() {
     let mut subst = fresh_subst();
-    let a = Ty::Named {
-        builtin: None,
-        name: "Result".into(),
-        args: vec![Ty::I32, Ty::String],
-    };
-    let b = Ty::Named {
-        builtin: None,
-        name: "Result".into(),
-        args: vec![Ty::I32],
-    };
+    let a = Ty::named_for_test("Result", vec![Ty::I32, Ty::String]);
+    let b = Ty::named_for_test("Result", vec![Ty::I32]);
     assert!(matches!(
         unify(&mut subst, &a, &b),
         Err(UnifyError::ArityMismatch { .. })
@@ -610,11 +547,7 @@ fn unify_function_with_tuple_fails() {
 #[test]
 fn unify_named_with_primitive_fails() {
     let mut subst = fresh_subst();
-    let named = Ty::Named {
-        builtin: None,
-        name: "Vec".into(),
-        args: vec![Ty::I32],
-    };
+    let named = Ty::named_for_test("Vec", vec![Ty::I32]);
     assert!(matches!(
         unify(&mut subst, &named, &Ty::I32),
         Err(UnifyError::Mismatch { .. })

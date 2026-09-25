@@ -465,9 +465,8 @@ impl Verifier {
                 }
                 let expected_expr_ty = if matches!(expr.kind, HirExprKind::TryWidthCast { .. }) {
                     ResolvedTy::Named {
-                        name: "Option".to_string(),
                         args: vec![to_ty.clone()],
-                        builtin: Some(BuiltinType::Option),
+                        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
                         is_opaque: false,
                     }
                 } else {
@@ -856,8 +855,8 @@ impl Verifier {
                     }
                 }
                 match &expr.ty {
-                    ResolvedTy::Named { name, args, .. }
-                        if name == "Generator" && args.len() == 2 =>
+                    ResolvedTy::Named { head, args, .. }
+                        if head.registry_key() == "Generator" && args.len() == 2 =>
                     {
                         if args[0] != *yield_ty || args[1] != *return_ty {
                             self.diagnostics.push(self.diagnostic(

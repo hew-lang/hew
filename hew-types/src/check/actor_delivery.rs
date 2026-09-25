@@ -36,7 +36,7 @@ impl Checker {
     /// answer. Both views derive alike, and both admit these two.
     fn declared_admission(&self, target: &Ty) -> SendPolicy {
         let declared = target.as_local_actor_ref().and_then(|actor| match actor {
-            Ty::Named { name, .. } => self.actor_overflow_policies.get(name),
+            Ty::Named { head, .. } => self.actor_overflow_policies.get(head.registry_key()),
             _ => None,
         });
         match declared {
@@ -120,7 +120,7 @@ impl Checker {
                 delivery::sender_type(target_ty, policy)
             };
         };
-        let on_full_ty = delivery::nominal(delivery::ON_FULL_TYPE, Vec::new());
+        let on_full_ty = delivery::nominal(crate::KnownDecl::OnFull, Vec::new());
         self.check_against(&value.0, &value.1, &on_full_ty);
         let policy = match &value.0 {
             Expr::ContextVariant(variant) if variant.record.is_none() => {
@@ -156,8 +156,8 @@ impl Checker {
             return Ty::Error;
         }
         if policy == SendPolicy::ReplaceLatest {
-            let permits_replacement = matches!(target_ty.as_local_actor_ref(), Some(Ty::Named { name, .. })
-                if matches!(self.actor_overflow_policies.get(name), Some(hew_parser::ast::OverflowPolicy::Coalesce { .. })));
+            let permits_replacement = matches!(target_ty.as_local_actor_ref(), Some(Ty::Named { head, .. })
+                if matches!(self.actor_overflow_policies.get(head.registry_key()), Some(hew_parser::ast::OverflowPolicy::Coalesce { .. })));
             if !permits_replacement {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
@@ -216,11 +216,8 @@ impl Checker {
             ));
         }
         let message_ty = match ty {
-            Ty::Named { name, args, .. }
-                if args.len() == 1
-                    && (name == delivery::FAILURE_TYPE
-                        || self.published_bare_type_qualified(name).as_deref()
-                            == Some(delivery::FAILURE_TYPE)) =>
+            Ty::Named { head, args }
+                if args.len() == 1 && *head == crate::KnownDecl::SendFailure.head() =>
             {
                 &args[0]
             }
@@ -229,8 +226,17 @@ impl Checker {
         let (target, payload, old_policy) = delivery::message_parts(message_ty)?;
         if let Some((method_id, params, success, failure)) = delivery::request_parts(payload) {
             return Some(self.check_request_recovery(
-                receiver, message_ty, target, old_policy, method_id, params, success, failure,
-                method, args, span,
+                receiver,
+                message_ty,
+                target,
+                old_policy,
+                method_id.spelling.as_str(),
+                params,
+                success,
+                failure,
+                method,
+                args,
+                span,
             ));
         }
         if message_ty != ty {
@@ -519,7 +525,7 @@ impl Checker {
         if policy != SendPolicy::Reject {
             return completion;
         }
-        self.register_request_protocol(method_id);
+        let request_head = self.register_request_protocol(method_id);
         let (success, error) = completion.as_result().unwrap();
         let Ty::Named { args, .. } = error else {
             unreachable!()
@@ -537,7 +543,7 @@ impl Checker {
         let request = delivery::message_type(
             target.clone(),
             delivery::request_type(
-                method_id,
+                request_head,
                 Ty::Tuple(params),
                 success.clone(),
                 failure.clone(),
@@ -554,10 +560,10 @@ impl Checker {
     /// pre-coercion type, before sealing the runtime wrapper.
     fn request_signature(&self, method: &str, target: &Ty) -> Option<(Vec<Ty>, Ty)> {
         let signature = self.fn_sigs.get(method)?;
-        let Ty::Named { name, args, .. } = target.as_local_actor_ref()? else {
+        let Ty::Named { head, args } = target.as_local_actor_ref()? else {
             return None;
         };
-        let declaration = self.type_defs.get(name)?;
+        let declaration = self.type_defs.get(head.registry_key())?;
         let substitutions = declaration
             .type_params
             .iter()
@@ -578,8 +584,8 @@ impl Checker {
     /// receive declaration; its parameters preserve the concrete signature.
     /// Register it here so later specialization consumes checker facts even
     /// when the request has crossed a binding or generic function boundary.
-    fn register_request_protocol(&mut self, method_id: &str) {
-        self.defs.request_protocol(method_id);
+    fn register_request_protocol(&mut self, method_id: &str) -> crate::NominalHead {
+        let id = self.defs.request_protocol(method_id);
         self.type_defs
             .entry(method_id.to_string())
             .or_insert_with(|| super::TypeDef {
@@ -594,6 +600,7 @@ impl Checker {
                 doc_comment: None,
                 is_indirect: false,
             });
+        crate::NominalHead::new(crate::NominalId::from_minted_declaration(id), method_id)
     }
 
     #[allow(
@@ -635,7 +642,7 @@ impl Checker {
             if method_id == crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID {
                 self.expect_type(target, &destination, &argument.1);
             } else {
-                let Some(Ty::Named { name, .. }) = destination.as_local_actor_ref() else {
+                let Some(Ty::Named { head, .. }) = destination.as_local_actor_ref() else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &argument.1,
@@ -644,7 +651,8 @@ impl Checker {
                     return Ty::Error;
                 };
                 let handler = method_id.rsplit("::").next().unwrap_or(method_id);
-                destination_method = crate::actor_protocol::qualified_handler_name(name, handler);
+                destination_method =
+                    crate::actor_protocol::qualified_handler_name(head.registry_key(), handler);
                 let signature = self.request_signature(&destination_method, &destination);
                 let compatible = signature.is_some_and(|(parameters, reply)| {
                     Ty::Tuple(parameters) == *params
@@ -659,7 +667,7 @@ impl Checker {
             }
         }
         self.mark_expr_moved(&receiver.0, &receiver.1);
-        self.register_request_protocol(&destination_method);
+        let destination_head = self.register_request_protocol(&destination_method);
         self.actor_delivery_calls.insert(
             SpanKey::in_module(span, self.current_module_idx),
             ActorDeliveryCall::Resume {
@@ -673,7 +681,7 @@ impl Checker {
             delivery::message_type(
                 destination,
                 delivery::request_type(
-                    &destination_method,
+                    destination_head,
                     params.clone(),
                     success.clone(),
                     failure.clone(),
@@ -690,7 +698,13 @@ impl Checker {
     }
 
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {
-        if matches!(ty, Ty::Named { name, builtin: None, .. } if matches!(name.as_str(), delivery::MESSAGE_TYPE | delivery::SENDER_TYPE | delivery::POLICY_VIEW_TYPE | delivery::REQUEST_TYPE))
+        let sealed = [
+            crate::KnownDecl::Message,
+            crate::KnownDecl::ActorMailbox,
+            crate::KnownDecl::ActorPolicy,
+            crate::KnownDecl::ActorRequest,
+        ];
+        if matches!(ty, Ty::Named { head, .. } if sealed.iter().any(|known| known.head() == *head))
         {
             self.report_error(TypeErrorKind::InvalidOperation, span,
                 "actor message and view fields are sealed; use receive calls, `mailbox`, `policy`, `.retry` and `.to`".to_string());

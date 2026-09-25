@@ -646,9 +646,10 @@ impl Checker {
     /// stdlib/builtin handle (drop type / handle type). Used to suppress the
     /// unused-binding lint: such a binding is meaningful even when never read.
     fn is_raii_handle_ty(&self, ty: &Ty) -> bool {
-        let Ty::Named { name, .. } = ty else {
+        let Ty::Named { head, .. } = ty else {
             return false;
         };
+        let name = head.registry_key();
         self.registry.is_resource(name)
             || self.registry.is_linear(name)
             || self.canonical_owned_handle_type_name(name).is_some()
@@ -677,9 +678,12 @@ impl Checker {
     fn is_uninhabited(&self, ty: &Ty) -> bool {
         match self.subst.resolve(ty) {
             Ty::Never => true,
-            Ty::Named { ref name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
-                definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-            }),
+            Ty::Named { head, .. } => {
+                self.lookup_type_def(head.registry_key())
+                    .is_some_and(|definition| {
+                        definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                    })
+            }
             _ => false,
         }
     }

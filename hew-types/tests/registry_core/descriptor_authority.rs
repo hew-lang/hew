@@ -68,40 +68,20 @@ fn canonical_string_slice() {
 
 #[test]
 fn canonical_string_bare_named() {
-    let ty = ResolvedTy::Named {
-        name: "Point".into(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    let ty = ResolvedTy::named_for_test("Point", vec![]);
     assert_eq!(ty.canonical_string(), "Point");
 }
 
 #[test]
 fn canonical_string_generic_named() {
-    let ty = ResolvedTy::Named {
-        name: "Pair".into(),
-        args: vec![ResolvedTy::I64, ResolvedTy::String],
-        builtin: None,
-        is_opaque: false,
-    };
+    let ty = ResolvedTy::named_for_test("Pair", vec![ResolvedTy::I64, ResolvedTy::String]);
     assert_eq!(ty.canonical_string(), "Pair<i64,string>");
 }
 
 #[test]
 fn canonical_string_nested_generic() {
-    let inner = ResolvedTy::Named {
-        name: "Option".into(),
-        args: vec![ResolvedTy::String],
-        builtin: None,
-        is_opaque: false,
-    };
-    let outer = ResolvedTy::Named {
-        name: "Vec".into(),
-        args: vec![inner],
-        builtin: None,
-        is_opaque: false,
-    };
+    let inner = ResolvedTy::named_for_test("Option", vec![ResolvedTy::String]);
+    let outer = ResolvedTy::named_for_test("Vec", vec![inner]);
     assert_eq!(outer.canonical_string(), "Vec<Option<string>>");
 }
 
@@ -229,12 +209,7 @@ fn is_native_wire_false_for_non_native_types() {
         ResolvedTy::Tuple(vec![ResolvedTy::I32]),
         ResolvedTy::Array(Box::new(ResolvedTy::I32), 4),
         ResolvedTy::Slice(Box::new(ResolvedTy::I32)),
-        ResolvedTy::Named {
-            name: "Point".into(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        },
+        ResolvedTy::named_for_test("Point", vec![]),
         ResolvedTy::Function {
             capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![],
@@ -259,30 +234,20 @@ fn is_native_wire_false_for_non_native_types() {
 
 #[test]
 fn strict_generic_args_accepts_matching_arity() {
-    let ty = Ty::Named {
-        builtin: None,
-        name: "Pair".into(),
-        args: vec![Ty::I64, Ty::String],
-    };
+    let ty = Ty::named_for_test("Pair", vec![Ty::I64, Ty::String]);
     let result = ResolvedTy::from_ty_strict_generic_args(&ty, 2);
     assert_eq!(
         result,
-        Ok(ResolvedTy::Named {
-            name: "Pair".into(),
-            args: vec![ResolvedTy::I64, ResolvedTy::String],
-            builtin: None,
-            is_opaque: false,
-        })
+        Ok(ResolvedTy::named_for_test(
+            "Pair",
+            vec![ResolvedTy::I64, ResolvedTy::String]
+        ))
     );
 }
 
 #[test]
 fn strict_generic_args_rejects_too_few_args() {
-    let ty = Ty::Named {
-        builtin: None,
-        name: "Pair".into(),
-        args: vec![],
-    };
+    let ty = Ty::named_for_test("Pair", vec![]);
     let result = ResolvedTy::from_ty_strict_generic_args(&ty, 2);
     assert_eq!(
         result,
@@ -295,11 +260,7 @@ fn strict_generic_args_rejects_too_few_args() {
 
 #[test]
 fn strict_generic_args_rejects_too_many_args() {
-    let ty = Ty::Named {
-        builtin: None,
-        name: "Box".into(),
-        args: vec![Ty::I32, Ty::Bool],
-    };
+    let ty = Ty::named_for_test("Box", vec![Ty::I32, Ty::Bool]);
     let result = ResolvedTy::from_ty_strict_generic_args(&ty, 1);
     assert_eq!(
         result,
@@ -326,11 +287,7 @@ fn strict_generic_args_passes_through_non_named_types() {
 #[test]
 fn strict_generic_args_propagates_boundary_errors_from_args() {
     let var = TypeVar::fresh();
-    let ty = Ty::Named {
-        builtin: None,
-        name: "Box".into(),
-        args: vec![Ty::Var(var)],
-    };
+    let ty = Ty::named_for_test("Box", vec![Ty::Var(var)]);
     let result = ResolvedTy::from_ty_strict_generic_args(&ty, 1);
     assert_eq!(result, Err(BoundaryError::UnresolvedInference { var }));
 }

@@ -642,7 +642,7 @@ pub fn runtime_variant_shape_refs(
     }
     let ResolvedTy::Named {
         args,
-        builtin: Some(BuiltinType::Option),
+        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
         ..
     } = &error_len.ty
     else {
@@ -1054,12 +1054,10 @@ pub fn collection_value_dependencies(
         if matches!(
             &ty,
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorHandle),
+                head: hew_types::TypeHead::Actor(_),
                 ..
             }
-        ) || matches!(&ty, ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::ActorFn), args, ..
-        } if args.len() == 2)
+        ) || matches!(&ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn), args, .. } if args.len() == 2)
         {
             // An actor handle's type arguments are the actor declaration's own,
             // and an anonymous actor's are its protocol: neither is an embedded
@@ -1071,7 +1069,7 @@ pub fn collection_value_dependencies(
             // with no owned fields: a bit copy is its complete recipe.
             continue;
         }
-        if matches!(&ty, ResolvedTy::Named { builtin: Some(kind), .. }
+        if matches!(&ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(kind), .. }
             if kind.is_encoding_value())
         {
             // A managed encoding value carries its own copy and release

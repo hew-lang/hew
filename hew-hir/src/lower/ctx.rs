@@ -336,20 +336,23 @@ impl LowerCtx {
     pub(super) fn checked_span_user_resource_type(&self, span: &Span) -> Option<String> {
         let ty = self.checked_ty(span)?;
         let ResolvedTy::Named {
-            name,
-            builtin: None,
+            head:
+                head @ (hew_types::TypeHead::Nominal(_)
+                | hew_types::TypeHead::Param(_)
+                | hew_types::TypeHead::Unresolved(_)),
             ..
         } = ty
         else {
             return None;
         };
+        let name = head.registry_key();
         self.type_facts
             .get(&hew_types::TypeInstanceKey(ty.clone()))
             .filter(|facts| {
                 facts.class == hew_types::ValueClass::AffineResource
                     && facts.clone == hew_types::CloneKind::None
             })
-            .map(|_| name.clone())
+            .map(|_| name.to_string())
     }
 
     pub(super) fn checked_span_is_user_resource(&self, span: &Span) -> bool {
@@ -582,7 +585,8 @@ impl LowerCtx {
     /// at the outer non-generic callsite where `type_args` is `[]`.
     pub(super) fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
         match ty {
-            ResolvedTy::Named { name, args, .. } => {
+            ResolvedTy::Named { head, args, .. } => {
+                let name = head.registry_key();
                 if self.is_type_param_symbol(name) {
                     return true;
                 }
@@ -724,7 +728,7 @@ impl LowerCtx {
                 let qualified = self.qualify_current_module_record_ty(resolved);
                 let named = parameters
                     .iter()
-                    .map(|name| ResolvedTy::named_user(name.clone(), vec![]))
+                    .map(|name| ResolvedTy::param(name))
                     .collect::<Vec<_>>();
                 substitute_type_params(&qualified, parameters, &named)
             }

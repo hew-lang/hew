@@ -69,11 +69,7 @@ fn item_declares_name(item: &Item, name: &str) -> bool {
 }
 
 fn generic_param(name: &str) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args: vec![],
-    }
+    Ty::param(name)
 }
 
 fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_type: &Ty) {

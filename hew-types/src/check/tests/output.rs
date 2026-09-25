@@ -62,11 +62,7 @@ fn expr_output_contract_rechecks_normalized_unresolved_subset() {
     let mut expr_types = HashMap::from([(
         span.clone(),
         Ty::Tuple(vec![
-            Ty::Named {
-                builtin: None,
-                name: "Sender".to_string(),
-                args: vec![Ty::Var(sender_var)],
-            },
+            Ty::named_for_test("Sender", vec![Ty::Var(sender_var)]),
             Ty::Var(covered_var),
         ]),
     )]);

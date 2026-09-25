@@ -180,12 +180,7 @@ fn unit_function(
 }
 
 fn choice_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Choice".to_string(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_for_test("Choice", Vec::new())
 }
 
 fn empty_choice_block(choice: &ResolvedTy) -> SemBlock {
@@ -1980,12 +1975,7 @@ fn verifier_refuses_an_own_kind_the_class_table_contradicts() {
 #[test]
 fn verifier_refuses_a_value_whose_type_the_class_rule_cannot_decide() {
     let mut function = own_kind_function(OwnKind::None, OwnKind::None);
-    let undecidable = ResolvedTy::Named {
-        name: "Conn".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    let undecidable = ResolvedTy::named_for_test("Conn", vec![]);
     function.blocks[0].ops[0].results[0].ty = undecidable.clone();
     function.blocks[1].args[0].ty = undecidable;
     let diagnostics = verify_module(&module(vec![function]));

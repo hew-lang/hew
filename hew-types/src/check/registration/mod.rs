@@ -123,16 +123,20 @@ fn extern_signature_description(
 /// erased rather than compared.
 fn extern_contract_nominal_identity(checker: &Checker, ty: &Ty) -> Ty {
     match ty {
-        Ty::Named { name, args, .. } => Ty::Named {
-            name: checker
-                .extern_signature_nominal_owner(name)
-                .unwrap_or_else(|| name.clone()),
-            args: args
-                .iter()
-                .map(|arg| extern_contract_nominal_identity(checker, arg))
-                .collect(),
-            builtin: None,
-        },
+        Ty::Named {
+            head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Unresolved(_)),
+            args,
+        } => {
+            let name = head.registry_key();
+            checker.named_ty_for_key(
+                &checker
+                    .extern_signature_nominal_owner(name)
+                    .unwrap_or_else(|| name.to_string()),
+                args.iter()
+                    .map(|arg| extern_contract_nominal_identity(checker, arg))
+                    .collect(),
+            )
+        }
         _ => ty.map_children_pub(&|child| extern_contract_nominal_identity(checker, child)),
     }
 }
@@ -210,24 +214,6 @@ pub(in crate::check) enum TraitRefScope<'a> {
     Declaring { module: &'a str },
 }
 
-/// Context for canonicalizing trait-vs-impl signature types to a single
-/// defining-module-qualified identity before comparison
-/// (`check_impl_method_against_trait`). Carries only borrowed predicates so the
-/// recursion holds no `&self` borrow across the later mutable error reporting.
-struct TraitSigCanonCtx<'a> {
-    /// In-scope module short names; a `module.Name` whose `module` is here is an
-    /// explicit, unambiguous identity that keeps its qualifier.
-    modules: &'a std::collections::HashSet<String>,
-    /// The trait's defining module, used to qualify a bare type name written in
-    /// the trait declaration. `None` for a root/local trait.
-    trait_owner: Option<&'a str>,
-    /// Whether a `{owner}.{bare}` spelling is a registered type def.
-    defines_qualified: &'a dyn Fn(&str) -> bool,
-    /// Whether a bare name shadows one of the impl scope's own types (then it
-    /// keeps the bare identity rather than being qualified to the trait owner).
-    is_local: &'a dyn Fn(&str) -> bool,
-}
-
 /// Import-free projection generated from the owning declarations in
 /// `std/builtins.hew` and `std/link_monitor.hew`.
 const MONITOR_REF_HEW: &str = include_str!(concat!(env!("OUT_DIR"), "/monitor_ref.hew"));
@@ -300,12 +286,12 @@ fn is_intrinsic_floor_module(module: Option<&str>) -> bool {
 fn exact_source_nominal_matches(ty: &Ty, qualified: &str, declaring_module: Option<&str>) -> bool {
     matches!(
         ty,
-        Ty::Named { name, args, .. }
+        Ty::Named { head, args }
             if args.is_empty()
                 && crate::ffi_contracts::source_nominal_matches_qualified(
                     qualified,
                     declaring_module,
-                    name,
+                    head.registry_key(),
                 )
     )
 }
@@ -347,9 +333,10 @@ fn imported_source_result_matches(
     module_import_bindings: &HashMap<ImportBindingKey, String>,
     import_type_name_aliases: &HashMap<ImportBindingKey, String>,
 ) -> bool {
-    let Ty::Named { name, args, .. } = ty else {
+    let Ty::Named { head, args } = ty else {
         return false;
     };
+    let name = head.registry_key();
     if !args.is_empty() {
         return false;
     }
@@ -389,7 +376,7 @@ fn imported_source_result_matches(
     if let Some(source_identity) = import_type_name_aliases.get(&(
         Some(producer_module.clone()),
         declaration.declaring_file,
-        name.clone(),
+        name.to_string(),
     )) {
         if imported_result_surface_matches(declaration, source_identity, qualified) {
             return true;

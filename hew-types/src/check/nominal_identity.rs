@@ -188,34 +188,29 @@ impl Checker {
             self.canonicalize_registry_signature(child, canonical_owner, binders)
         });
         let crate::ty::Ty::Named {
-            name,
+            head: crate::TypeHead::Unresolved(spelling),
             args,
-            builtin,
         } = mapped
         else {
             return mapped;
         };
-        if args.is_empty() && binders.contains(&name) {
-            return crate::ty::Ty::Named {
-                name,
-                args,
-                builtin,
-            };
+        let spelling = spelling.as_str();
+        if args.is_empty() && binders.iter().any(|binder| binder == spelling) {
+            return crate::ty::Ty::param(spelling);
         }
         let name = self
             .resolve_nominal_declaration(
                 NominalOrigin::RegistrySignature { canonical_owner },
-                &name,
+                spelling,
             )
-            .unwrap_or(name);
-        crate::ty::Ty::Named {
-            builtin: builtin.or_else(|| {
-                self.resolved_builtin_type(&name)
-                    .filter(|kind| kind.is_encoding_value())
-            }),
-            name,
-            args,
+            .unwrap_or_else(|| spelling.to_string());
+        if let Some(kind) = self
+            .resolved_builtin_type(&name)
+            .filter(|kind| kind.is_encoding_value())
+        {
+            return crate::ty::Ty::named_head(crate::TypeHead::Builtin(kind), args);
         }
+        self.named_ty_for_key(&name, args)
     }
 
     /// The canonical identity of an extern signature's nominal type, resolved
@@ -224,5 +219,132 @@ impl Checker {
     /// the lexical producer.
     pub(super) fn extern_signature_nominal_owner(&self, name: &str) -> Option<String> {
         self.resolve_nominal_declaration(NominalOrigin::Lexical, name)
+    }
+}
+
+impl Checker {
+    /// The nominal head a string registry key names: the declaration the key
+    /// was minted under, rendered as the key.
+    ///
+    /// TRANSITION(A1 commit 3): deleted when the registries are keyed by
+    /// identity and every carrier holds the head `Scope::resolve` returned.
+    pub(super) fn nominal_head_for_key(&self, key: &str) -> Option<crate::NominalHead> {
+        let id = self.lookup_declaration(key)?;
+        Some(crate::NominalHead::new(
+            crate::NominalId::from_minted_declaration(id),
+            self.defs.path(id),
+        ))
+    }
+
+    /// The named type a string registry key names: its declared nominal, or
+    /// the builtin the key spells when no declaration claims it.
+    ///
+    /// TRANSITION(A1 commit 3): see [`Self::nominal_head_for_key`].
+    pub(super) fn named_ty_for_key(&self, key: &str, args: Vec<Ty>) -> Ty {
+        if let Some(primitive) = Ty::from_name(key).filter(|_| args.is_empty()) {
+            return primitive;
+        }
+        // An import alias spelling projects to its declaration's owner.
+        let canonical = self.canonical_nominal_name(key);
+        let key = canonical.as_deref().unwrap_or(key);
+        if let Some(nominal) = self.nominal_head_for_key(key) {
+            return Ty::named_head(self.head_of_declaration(nominal.id), args);
+        }
+        if let Some(builtin) = crate::builtin_type::lookup_builtin_type(key) {
+            return Ty::named_head(crate::TypeHead::Builtin(builtin), args);
+        }
+        // A trait written in type position names the trait's declaration; a
+        // handler-style trait becomes the actor handle it types.
+        if let Some(id) = self
+            .lookup_declaration(&self.trait_ref_lookup_key(key))
+            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
+        {
+            return Ty::named_head(
+                crate::TypeHead::Nominal(crate::NominalHead::new(
+                    crate::NominalId::from_minted_declaration(id),
+                    self.defs.path(id),
+                )),
+                args,
+            );
+        }
+        Ty::Named {
+            head: crate::TypeHead::Unresolved(crate::Symbol::intern(key)),
+            args,
+        }
+    }
+
+    /// The head a declared nominal names in this run.
+    pub(super) fn head_of_declaration(&self, nominal: crate::NominalId) -> crate::TypeHead {
+        if let Some(known) = self.known_declaration(nominal) {
+            return known.head();
+        }
+        // A shipped encoding value is its builtin only in the exact shipped
+        // source; a user module spelled the same keeps its own nominal.
+        if let Some(builtin) = self
+            .resolved_builtin_type(self.defs.path(nominal.declaration()))
+            .filter(|builtin| builtin.is_encoding_value())
+        {
+            return crate::TypeHead::Builtin(builtin);
+        }
+        crate::TypeHead::of_declaration(&self.defs, nominal)
+    }
+}
+
+impl Checker {
+    /// The known `std.builtins` declaration a nominal is. The embedded
+    /// builtin run re-declares the cursors at its own root; those rows are
+    /// the same declarations (TRANSITION(P2): deleted with that run, B1).
+    fn known_declaration(&self, nominal: crate::NominalId) -> Option<crate::KnownDecl> {
+        crate::KnownDecl::of(nominal).or_else(|| {
+            let declaration = nominal.declaration();
+            (self.checking_embedded_builtins
+                && self.defs.module(declaration) == self.defs.root_module())
+            .then(|| crate::KnownDecl::from_leaf(self.defs.name(declaration)))
+            .flatten()
+            .filter(|known| {
+                matches!(
+                    known,
+                    crate::KnownDecl::VecIter | crate::KnownDecl::HashMapIter
+                )
+            })
+        })
+    }
+
+    /// The file the checker is currently reading, for the spelling boundary.
+    pub(super) fn scope_site(&self) -> Option<super::scope::ScopeSite> {
+        Some(super::scope::ScopeSite {
+            file: self.current_declaration_module()?,
+            span_file: self.current_module_idx,
+        })
+    }
+
+    /// The head a written type path names, resolved through `Scope`.
+    pub(super) fn resolve_type_path_head(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<crate::TypeHead> {
+        let site = self.scope_site()?;
+        match self.scopes.resolve(
+            &self.env,
+            site,
+            super::scope::Namespace::Type,
+            &path.segments,
+        ) {
+            Ok(super::scope::Resolution::Nominal(id)) => {
+                Some(self.known_declaration(id).map_or_else(
+                    || {
+                        crate::TypeHead::Nominal(crate::NominalHead::new(
+                            id,
+                            self.defs.path(id.declaration()),
+                        ))
+                    },
+                    crate::KnownDecl::head,
+                ))
+            }
+            Ok(super::scope::Resolution::Builtin(builtin)) => {
+                Some(crate::TypeHead::Builtin(builtin))
+            }
+            _ => None,
+        }
     }
 }

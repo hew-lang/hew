@@ -258,15 +258,19 @@ fn prove_instantiation_releases(
     proven: &mut HashSet<DefId>,
 ) -> Result<(), (Span, String)> {
     for (machine, site) in sites {
-        let ResolvedTy::Named { name, args, .. } = machine else {
+        let ResolvedTy::Named { head, args, .. } = machine else {
             continue;
         };
-        let event = ResolvedTy::Named {
-            name: format!("{name}Event"),
-            args: args.clone(),
-            builtin: None,
-            is_opaque: false,
+        let name = head.registry_key();
+        // TRANSITION(A1 commit 4): the companion event is found by its minted
+        // spelling until it is an owner member of the machine (A428).
+        let Some(event_nominal) = output.defs.lookup_nominal(&format!("{name}Event")) else {
+            continue;
         };
+        let event = ResolvedTy::named_user(
+            crate::NominalHead::new(event_nominal, output.defs.path(event_nominal.declaration())),
+            args.clone(),
+        );
         for ty in [machine, &event] {
             for resource in released_resources(ty, output, cache) {
                 let Some(close) = resource_closes.get(&resource).copied() else {
@@ -308,16 +312,16 @@ fn collect_released_resources(
         return;
     }
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
             for arg in args {
                 collect_released_resources(arg, output, found, seen);
             }
-            let Some(declaration) = output.type_fact_context.declarations().get(name.as_str())
-            else {
+            let Some(declaration) = output.type_fact_context.declarations().get(name) else {
                 return;
             };
             if declaration.builtin.is_none() && declaration.marker == DeclarationMarker::Resource {
-                found.insert(name.clone());
+                found.insert(name.to_string());
             }
             for member in &declaration.members {
                 let member = crate::value_class::substitute(member, &declaration.type_params, args);
@@ -351,9 +355,10 @@ fn unstageable_field(
     output: &TypeCheckOutput,
     facts: &mut TypeFactService,
 ) -> Option<(String, String, ResolvedTy)> {
-    let ResolvedTy::Named { name, args, .. } = machine else {
+    let ResolvedTy::Named { head, args, .. } = machine else {
         return None;
     };
+    let name = head.registry_key();
     let definition = output.type_defs.get(name)?;
     let mut states: Vec<_> = definition.variants.iter().collect();
     states.sort_by(|left, right| left.0.cmp(right.0));
@@ -385,8 +390,9 @@ fn collect_instantiations(
     found: &mut Vec<ResolvedTy>,
 ) {
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
-            if name == &shape.type_name
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
+            if name == shape.type_name
                 && args.len() == shape.type_params.len()
                 && !args.iter().any(|arg| is_abstract(arg, output))
             {
@@ -419,17 +425,12 @@ fn collect_instantiations(
 fn is_abstract(ty: &ResolvedTy, output: &TypeCheckOutput) -> bool {
     match ty {
         ResolvedTy::TypeParam { .. } => true,
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin: None,
-            ..
-        } if args.is_empty() => {
+        ResolvedTy::Named { head, args, .. } if args.is_empty() && head.is_user() => {
             !output
                 .type_fact_context
                 .declarations()
-                .contains_key(name.as_str())
-                && !output.type_defs.contains_key(name.as_str())
+                .contains_key(head.registry_key())
+                && !output.type_defs.contains_key(head.registry_key())
         }
         ResolvedTy::Named { args, .. } => args.iter().any(|arg| is_abstract(arg, output)),
         ResolvedTy::Tuple(elements) => elements.iter().any(|element| is_abstract(element, output)),

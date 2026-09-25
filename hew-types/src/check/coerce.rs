@@ -339,40 +339,6 @@ impl Checker {
         self.subst.resolve(then_ty)
     }
 
-    /// Reject the issue #2651 nominal collision at the type boundary: a
-    /// root-local type conflated with an unrelated import (`Widget` vs
-    /// `widgeti8.Widget`) is structurally equal under the permissive suffix rule
-    /// `unify` uses, yet names two DISTINCT definitions. Detect it compare-only —
-    /// no name is rewritten and no variable is bound, so nothing leaks into a
-    /// `Subst` binding or the downstream checker→HIR/MIR name handoff (the
-    /// record-layout registry keeps single-module references bare on purpose).
-    /// Resolve existing substitutions first, then inspect every corresponding
-    /// nominal node even when another generic argument remains unresolved. A
-    /// genuine same-def alias (`Box` ↔ `nestbox.Box`, prelude
-    /// `MonitorError` ↔ `link_monitor.MonitorError`, builtin `HashSet` ↔
-    /// `collections.HashSet`) is owner-identical and passes straight through to
-    /// `unify`; a real structural mismatch is not suffix-equal and is left for
-    /// `unify` to report (preserving its coercion-recovery paths). Returns `true`
-    /// (and reports the mismatch) exactly when it intercepts the collision.
-    fn reject_nominal_owner_conflict(&mut self, expected: &Ty, actual: &Ty, span: &Span) -> bool {
-        let expected_resolved = self.subst.resolve(expected);
-        let actual_resolved = self.subst.resolve(actual);
-        if !self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
-            return false;
-        }
-        let (expected_label, actual_label) =
-            disambiguate_mismatch_labels(&expected_resolved, &actual_resolved);
-        self.report_error(
-            TypeErrorKind::Mismatch {
-                expected: expected_label.clone(),
-                actual: actual_label.clone(),
-            },
-            span,
-            format!("type mismatch: expected `{expected_label}`, found `{actual_label}`"),
-        );
-        true
-    }
-
     /// Run a non-diagnostic unification probe without bypassing nominal-owner
     /// identity. Callers that use unification for inference, coercion trials,
     /// or associated-type projection must route through this helper; raw
@@ -381,32 +347,24 @@ impl Checker {
     pub(super) fn try_unify_with_owner_identity(&mut self, expected: &Ty, actual: &Ty) -> bool {
         let expected_resolved = self.normalize_for_use(expected);
         let actual_resolved = self.normalize_for_use(actual);
-        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved)
-            || self.callable_erasure_loses_obligation(&expected_resolved, &actual_resolved)
-        {
+        if self.callable_erasure_loses_obligation(&expected_resolved, &actual_resolved) {
             return false;
         }
         crate::unify::coerce(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
     }
 
-    /// Run invariant unification against an isolated substitution while
-    /// retaining the checker's nominal-owner authority.
+    /// Run invariant unification against an isolated substitution.
     ///
     /// Callable joins use a trial substitution spanning every parameter and
     /// the return type. A failed relation restores the trial to its state at
     /// entry, so this helper is safe for other speculative invariant probes.
-    pub(super) fn try_unify_invariant_with_owner_identity(
-        &self,
+    pub(super) fn try_unify_invariant(
         subst: &mut crate::ty::Substitution,
         expected: &Ty,
         actual: &Ty,
     ) -> bool {
         let expected_resolved = subst.resolve(expected);
         let actual_resolved = subst.resolve(actual);
-        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
-            return false;
-        }
-
         let snapshot = subst.snapshot();
         if crate::unify::unify(subst, &expected_resolved, &actual_resolved).is_ok() {
             true
@@ -433,9 +391,6 @@ impl Checker {
         actual: &Ty,
     ) -> bool {
         let expected_resolved = self.normalize_for_use(expected);
-        if self.nominal_owner_conflict(&expected_resolved, actual) {
-            return false;
-        }
         unify(&mut self.subst, &expected_resolved, actual).is_ok()
     }
 
@@ -484,11 +439,7 @@ impl Checker {
         let actual_projected = self.normalize_for_use(actual);
         let expected = &expected_projected;
         let actual = &actual_projected;
-        // Reject the issue #2651 nominal collision at the type boundary before
-        // unification would silently accept it; see `reject_nominal_owner_conflict`.
-        if self.reject_nominal_owner_conflict(expected, actual, span)
-            || self.reject_callable_erasure(expected, actual, span)
-        {
+        if self.reject_callable_erasure(expected, actual, span) {
             return;
         }
         // Snapshot substitution so partial bindings are rolled back on failure
@@ -539,14 +490,16 @@ impl Checker {
             ) {
                 if let (
                     Ty::Named {
-                        name: trait_name, ..
+                        head: trait_head, ..
                     },
                     Ty::Named {
-                        name: concrete_name,
+                        head: concrete_head,
                         ..
                     },
                 ) = (expected_inner, actual_inner)
                 {
+                    let trait_name = trait_head.registry_key();
+                    let concrete_name = concrete_head.registry_key();
                     // Only a true trait-implementation narrowing is admitted.
                     // Identical inner names would have unified above; reaching
                     // here with equal names means a generic-arg mismatch that
@@ -735,12 +688,19 @@ impl Checker {
             .join("+");
 
         let canonical_type_name = match concrete_type {
-            Ty::Named { builtin: None, .. } => self
+            Ty::Named {
+                head:
+                    crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            } => self
                 .flat_file_import_type_owner(type_name)
                 .or_else(|| self.canonical_nominal_name(type_name))
                 .unwrap_or_else(|| type_name.to_string()),
             Ty::Named {
-                builtin: Some(_), ..
+                head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
+                ..
             } => type_name.to_string(),
             _ => self
                 .canonical_nominal_name(type_name)
@@ -831,8 +791,9 @@ fn concrete_type_name_for_dyn(ty: &Ty) -> Option<String> {
     if let Some(canonical) = defaulted.canonical_lowering_name() {
         return Some(canonical.to_string());
     }
-    if let Ty::Named { name, .. } = &defaulted {
-        return Some(name.clone());
+    if let Ty::Named { head, .. } = &defaulted {
+        let name = head.registry_key();
+        return Some(name.to_string());
     }
     None
 }
@@ -926,7 +887,7 @@ fn disambiguate_mismatch_labels(expected: &Ty, actual: &Ty) -> (String, String) 
     }
     let qualify = |ty: &Ty, label: &str| {
         let Ty::Named {
-            builtin: Some(kind),
+            head: crate::TypeHead::Builtin(kind),
             ..
         } = ty
         else {

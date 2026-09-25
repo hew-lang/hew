@@ -129,6 +129,13 @@ pub enum TypeHead {
     Builtin(BuiltinType),
     /// A generic binder.
     Param(ParamHead),
+    /// A spelling no declaration was found for in the scope that wrote it:
+    /// the module registry's signature mirror and the checker's interim key
+    /// resolution produce it, and HIR's own type resolution qualifies it.
+    ///
+    /// TRANSITION(A1 commit 3, A2): deleted when every type is resolved
+    /// through `Scope` and the registry reads the checker's signatures.
+    Unresolved(hew_parser::ast::Symbol),
 }
 
 /// A nominal identity with the spelling it renders as.
@@ -139,12 +146,24 @@ pub struct NominalHead {
     pub spelling: hew_parser::ast::Symbol,
 }
 
-/// A generic binder identity with its declared spelling.
+/// A generic binder.
+///
+/// TRANSITION(A1 commit 3): a binder is identified by its spelling until the
+/// signature tables carry their owner's `TypeParamId`s; the head kind alone
+/// already keeps a binder from resolving to a same-spelled nominal.
 #[derive(Debug, Clone, Copy)]
 pub struct ParamHead {
-    pub id: crate::def_table::TypeParamId,
-    /// Display only; never compared.
     pub spelling: hew_parser::ast::Symbol,
+}
+
+impl NominalHead {
+    #[must_use]
+    pub fn new(id: crate::NominalId, spelling: &str) -> Self {
+        Self {
+            id,
+            spelling: hew_parser::ast::Symbol::intern(spelling),
+        }
+    }
 }
 
 /// The discriminant and identity a head is compared by.
@@ -153,7 +172,8 @@ enum HeadIdentity {
     Nominal(crate::NominalId),
     Actor(crate::NominalId),
     Builtin(BuiltinType),
-    Param(crate::def_table::TypeParamId),
+    Param(hew_parser::ast::Symbol),
+    Unresolved(hew_parser::ast::Symbol),
 }
 
 impl TypeHead {
@@ -162,8 +182,75 @@ impl TypeHead {
             Self::Nominal(head) => HeadIdentity::Nominal(head.id),
             Self::Actor(head) => HeadIdentity::Actor(head.id),
             Self::Builtin(builtin) => HeadIdentity::Builtin(builtin),
-            Self::Param(head) => HeadIdentity::Param(head.id),
+            Self::Param(head) => HeadIdentity::Param(head.spelling),
+            Self::Unresolved(spelling) => HeadIdentity::Unresolved(spelling),
         }
+    }
+
+    /// The abstract `Self` binder of a trait declaration.
+    #[must_use]
+    pub fn self_param() -> Self {
+        Self::Param(ParamHead {
+            spelling: hew_parser::ast::sym::SELF_TYPE,
+        })
+    }
+
+    /// The head a declared nominal names: a std declaration that is a
+    /// compiler builtin is that builtin, every other declaration its own
+    /// nominal rendered by its path.
+    #[must_use]
+    pub fn of_declaration(defs: &crate::DefTable, nominal: crate::NominalId) -> Self {
+        if let Some(known) = crate::KnownDecl::of(nominal) {
+            return known.head();
+        }
+        let declaration = nominal.declaration();
+        let path = defs.path(declaration);
+        if defs.module(declaration) != defs.root_module() {
+            if let Some(builtin) = BuiltinType::from_source_declaration(path) {
+                return Self::Builtin(builtin);
+            }
+        }
+        Self::Nominal(NominalHead::new(nominal, path))
+    }
+
+    /// A generic binder spelled `spelling`.
+    #[must_use]
+    pub fn param(spelling: &str) -> Self {
+        Self::Param(ParamHead {
+            spelling: hew_parser::ast::Symbol::intern(spelling),
+        })
+    }
+
+    /// The name a string-keyed registry filed this head's declaration under.
+    ///
+    /// TRANSITION(A1 commit 3): deleted when the registries are keyed by the
+    /// head's identity.
+    #[must_use]
+    pub fn registry_key(self) -> &'static str {
+        match self {
+            Self::Builtin(builtin) => builtin
+                .source_owned_path()
+                .or_else(|| crate::builtin_enums::monomorphic_canonical_name(builtin))
+                .unwrap_or_else(|| builtin.canonical_name()),
+            _ => self.spelling(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_param(self) -> bool {
+        matches!(self, Self::Param(_))
+    }
+
+    #[must_use]
+    pub fn is_actor(self) -> bool {
+        matches!(self, Self::Actor(_))
+    }
+
+    /// Whether this head names a source-declared nominal or a binder, the
+    /// set a `builtin: None` carrier used to mean.
+    #[must_use]
+    pub fn is_user(self) -> bool {
+        matches!(self, Self::Nominal(_) | Self::Param(_))
     }
 
     /// The spelling this head renders as in diagnostics and dumps.
@@ -173,14 +260,21 @@ impl TypeHead {
             Self::Nominal(head) | Self::Actor(head) => head.spelling.as_str(),
             Self::Builtin(builtin) => builtin.canonical_name(),
             Self::Param(head) => head.spelling.as_str(),
+            Self::Unresolved(spelling) => spelling.as_str(),
         }
     }
 
-    /// The builtin this head is, when it is one.
+    /// The builtin this head is, when it is one. An actor head reports the
+    /// handle builtin, so a discriminator that reads the builtin sees an
+    /// actor handle.
+    ///
+    /// TRANSITION(A1 commit 3): the actor arm is deleted when every such
+    /// discriminator matches `TypeHead::Actor`.
     #[must_use]
     pub fn builtin(self) -> Option<BuiltinType> {
         match self {
             Self::Builtin(builtin) => Some(builtin),
+            Self::Actor(_) => Some(BuiltinType::ActorHandle),
             _ => None,
         }
     }
@@ -224,7 +318,8 @@ impl Ord for TypeHead {
                 HeadIdentity::Nominal(id) => (0, id.declaration().index_u32(), 0),
                 HeadIdentity::Actor(id) => (1, id.declaration().index_u32(), 0),
                 HeadIdentity::Builtin(builtin) => (2, builtin as u32, 0),
-                HeadIdentity::Param(id) => (3, id.owner.index_u32(), u32::from(id.index)),
+                HeadIdentity::Param(_) => (3, 0, 0),
+                HeadIdentity::Unresolved(_) => (4, 0, 0),
             }
         }
         self.spelling()
@@ -324,15 +419,12 @@ pub enum Ty {
     /// Slice: `[T]`
     Slice(Box<Ty>),
 
-    /// Named types (structs, enums, actors, type params)
+    /// Named types: declared nominals, actor handles, compiler builtins and
+    /// generic binders, told apart by their head's identity.
     Named {
-        /// Type name
-        name: String,
+        head: TypeHead,
         /// Generic type arguments
         args: Vec<Ty>,
-        /// Compiler-known builtin discriminator, when this name comes from a
-        /// canonical builtin source rather than user-defined source.
-        builtin: Option<BuiltinType>,
     },
 
     /// Function type: `fn(T1, T2) -> R`
@@ -422,6 +514,98 @@ pub enum Ty {
 
     /// Error recovery — a type that unifies with anything
     Error,
+}
+
+/// Constructors for hand-built types in tests.
+#[cfg(any(test, feature = "test"))]
+impl Ty {
+    /// A declared nominal minted in this thread's fixture table, rendered as
+    /// `path`. Two fixture types with one path are one identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn named_for_test(path: &str, args: Vec<Ty>) -> Ty {
+        if args.is_empty() {
+            if let Some(primitive) = Ty::from_name(path) {
+                return primitive;
+            }
+        }
+        if let Some(builtin) = lookup_builtin_type(path) {
+            return Ty::named_head(TypeHead::Builtin(builtin), args);
+        }
+        if let Some(known) = crate::KnownDecl::ALL
+            .into_iter()
+            .find(|known| known.path() == path)
+        {
+            return Ty::named_head(known.head(), args);
+        }
+        Ty::Named {
+            head: TypeHead::Nominal(NominalHead::new(crate::NominalId::for_test(path), path)),
+            args,
+        }
+    }
+
+    /// The declared nominal a checker's table established at `path`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the table has no declaration at `path`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn named_in(defs: &crate::DefTable, path: &str, args: Vec<Ty>) -> Ty {
+        let nominal = defs
+            .lookup_nominal(path)
+            .unwrap_or_else(|| panic!("no declaration `{path}` in the table"));
+        Ty::Named {
+            head: TypeHead::Nominal(NominalHead::new(nominal, defs.path(nominal.declaration()))),
+            args,
+        }
+    }
+
+    /// The handle type of the actor a checker's table established at `path`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn actor_in(defs: &crate::DefTable, path: &str, args: Vec<Ty>) -> Ty {
+        match Ty::named_in(defs, path, args) {
+            Ty::Named {
+                head: TypeHead::Nominal(actor),
+                args,
+            } => Ty::actor_handle(actor, args),
+            other => other,
+        }
+    }
+
+    /// A user declaration at `path` in this thread's fixture table, even
+    /// when its spelling matches a builtin's.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn user_for_test(path: &str, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            head: TypeHead::Nominal(NominalHead::new(crate::NominalId::for_test(path), path)),
+            args,
+        }
+    }
+
+    /// A spelling the registry mirror extracted and has not resolved.
+    ///
+    /// TRANSITION(A1 commit 3): deleted with [`TypeHead::Unresolved`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn unresolved_for_test(spelling: &str, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            head: TypeHead::Unresolved(hew_parser::ast::Symbol::intern(spelling)),
+            args,
+        }
+    }
+
+    /// The handle type of a fixture actor.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn actor_for_test(path: &str, args: Vec<Ty>) -> Ty {
+        Ty::actor_handle(
+            NominalHead::new(crate::NominalId::for_test(path), path),
+            args,
+        )
+    }
 }
 
 /// A substitution mapping type variables to concrete types.
@@ -767,7 +951,7 @@ impl Ty {
             // An anonymous actor's handle has no nominal: it reads like the
             // `fn` type it mirrors.
             Ty::Named {
-                builtin: Some(BuiltinType::ActorFn),
+                head: crate::TypeHead::Builtin(BuiltinType::ActorFn),
                 args,
                 ..
             } if args.len() == 2 => {
@@ -791,8 +975,8 @@ impl Ty {
                 }
                 Ok(())
             }
-            Ty::Named { name, args, .. } => {
-                write!(f, "{name}")?;
+            Ty::Named { head, args } => {
+                f.write_str(head.spelling())?;
                 if !args.is_empty() {
                     write!(f, "<")?;
                     for (i, arg) in args.iter().enumerate() {
@@ -951,7 +1135,7 @@ impl Ty {
     #[must_use]
     pub fn type_name(&self) -> Option<&str> {
         match self {
-            Ty::Named { name, .. } => Some(name),
+            Ty::Named { head, .. } => Some(head.registry_key()),
             _ => None,
         }
     }
@@ -1073,11 +1257,10 @@ impl Ty {
     /// ride the `Named` carrier, so every consumer that reads a nominal's name
     /// reads the actor's own identity.
     #[must_use]
-    pub fn actor_handle(name: impl Into<String>, args: Vec<Ty>) -> Ty {
+    pub fn actor_handle(actor: NominalHead, args: Vec<Ty>) -> Ty {
         Ty::Named {
-            name: name.into(),
+            head: TypeHead::Actor(actor),
             args,
-            builtin: Some(BuiltinType::ActorHandle),
         }
     }
 
@@ -1088,7 +1271,10 @@ impl Ty {
     #[must_use]
     pub fn actor_handle_of(actor: &Ty) -> Ty {
         match actor {
-            Ty::Named { name, args, .. } => Ty::actor_handle(name.clone(), args.clone()),
+            Ty::Named {
+                head: TypeHead::Nominal(actor) | TypeHead::Actor(actor),
+                args,
+            } => Ty::actor_handle(*actor, args.clone()),
             _ => Ty::Error,
         }
     }
@@ -1122,7 +1308,7 @@ impl Ty {
     pub fn as_supervisor_pool(&self) -> Option<(&Ty, &Ty)> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::SupervisorPool),
+                head: crate::TypeHead::Builtin(BuiltinType::SupervisorPool),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
@@ -1148,7 +1334,7 @@ impl Ty {
     pub fn as_actor_fn(&self) -> Option<(&Ty, &Ty)> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::ActorFn),
+                head: crate::TypeHead::Builtin(BuiltinType::ActorFn),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
@@ -1179,17 +1365,14 @@ impl Ty {
     /// Construct the completion envelope with its inferred sealed request.
     #[must_use]
     pub fn actor_error_with_request(error: Ty, request: Ty) -> Ty {
-        crate::actor_delivery::nominal(
-            crate::actor_delivery::ACTOR_ERROR_TYPE,
-            vec![error, request],
-        )
+        crate::actor_delivery::nominal(crate::KnownDecl::ActorError, vec![error, request])
     }
 
     /// Construct `Never` — the uninhabited stdlib enum that stands in for an
     /// `ActorError` parameter a call site can never produce.
     #[must_use]
     pub fn never_type() -> Ty {
-        crate::actor_delivery::nominal(crate::actor_delivery::NEVER_TYPE, Vec::new())
+        crate::actor_delivery::nominal(crate::KnownDecl::Never, Vec::new())
     }
 
     /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
@@ -1241,8 +1424,7 @@ impl Ty {
     #[must_use]
     pub fn monitor_ref() -> Ty {
         Ty::Named {
-            builtin: Some(BuiltinType::MonitorRef),
-            name: "std.link_monitor.MonitorRef".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::MonitorRef),
             args: vec![],
         }
     }
@@ -1296,7 +1478,7 @@ impl Ty {
     pub fn as_option(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::Option),
+                head: crate::TypeHead::Builtin(BuiltinType::Option),
                 args,
                 ..
             } if args.len() == 1 => Some(&args[0]),
@@ -1309,7 +1491,7 @@ impl Ty {
     pub fn as_result(&self) -> Option<(&Ty, &Ty)> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::Result),
+                head: crate::TypeHead::Builtin(BuiltinType::Result),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
@@ -1322,7 +1504,7 @@ impl Ty {
     pub fn as_child_ref(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::ChildRef),
+                head: crate::TypeHead::Builtin(BuiltinType::ChildRef),
                 args,
                 ..
             } if args.len() == 1 => Some(&args[0]),
@@ -1339,7 +1521,7 @@ impl Ty {
     pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::ActorHandle),
+                head: crate::TypeHead::Actor(_),
                 ..
             } => Some(self),
             _ => None,
@@ -1351,23 +1533,21 @@ impl Ty {
     /// child template name their actor this way.
     #[must_use]
     pub fn actor_handle_nominal(&self) -> Option<Ty> {
-        let (name, args) = self.actor_handle_identity()?;
+        let (actor, args) = self.actor_handle_identity()?;
         Some(Ty::Named {
-            name: name.to_string(),
+            head: TypeHead::Nominal(actor),
             args: args.to_vec(),
-            builtin: None,
         })
     }
 
-    /// The declaration name and type arguments of an actor handle.
+    /// The actor declaration and type arguments of an actor handle.
     #[must_use]
-    pub fn actor_handle_identity(&self) -> Option<(&str, &[Ty])> {
+    pub fn actor_handle_identity(&self) -> Option<(NominalHead, &[Ty])> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::ActorHandle),
-                name,
+                head: TypeHead::Actor(actor),
                 args,
-            } => Some((name.as_str(), args.as_slice())),
+            } => Some((*actor, args.as_slice())),
             _ => None,
         }
     }
@@ -1377,7 +1557,7 @@ impl Ty {
     pub fn as_remote_pid(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::RemotePid),
+                head: crate::TypeHead::Builtin(BuiltinType::RemotePid),
                 args,
                 ..
             } if args.len() == 1 => Some(&args[0]),
@@ -1406,7 +1586,7 @@ impl Ty {
             || matches!(
                 self,
                 Ty::Named {
-                    builtin: Some(BuiltinType::ActorFn),
+                    head: crate::TypeHead::Builtin(BuiltinType::ActorFn),
                     ..
                 }
             )
@@ -1414,8 +1594,9 @@ impl Ty {
 
     fn as_single_arg_builtin_named(&self, kind: BuiltinNamedType) -> Option<&Ty> {
         match self {
-            Ty::Named { builtin, args, .. }
-                if builtin_named_type_from_builtin(*builtin) == Some(kind) && args.len() == 1 =>
+            Ty::Named { head, args }
+                if builtin_named_type_from_builtin(head.builtin()) == Some(kind)
+                    && args.len() == 1 =>
             {
                 Some(&args[0])
             }
@@ -1440,7 +1621,7 @@ impl Ty {
     pub fn as_generator(&self) -> Option<(&Ty, &Ty)> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::Generator),
+                head: crate::TypeHead::Builtin(BuiltinType::Generator),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
@@ -1453,7 +1634,7 @@ impl Ty {
     pub fn as_range(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::Range),
+                head: crate::TypeHead::Builtin(BuiltinType::Range),
                 args,
                 ..
             } if args.len() == 1 => Some(&args[0]),
@@ -1461,41 +1642,51 @@ impl Ty {
         }
     }
 
-    /// Canonicalize known named builtins to their shared spelling before
-    /// constructing `Ty::Named`.
-    #[must_use]
-    pub fn named(name: impl Into<String>, args: Vec<Ty>) -> Ty {
-        Ty::Named {
-            name: name.into(),
-            args,
-            builtin: None,
-        }
-    }
-
     #[must_use]
     pub fn builtin_named(kind: BuiltinType, args: Vec<Ty>) -> Ty {
         Ty::Named {
-            name: kind.canonical_name().to_string(),
             args,
-            builtin: Some(kind),
+            head: crate::TypeHead::Builtin(kind),
         }
     }
 
+    /// A named type with `head`; a bare `CancellationToken` is its own
+    /// primitive carrier.
     #[must_use]
-    pub fn normalize_named(name: String, args: Vec<Ty>) -> Ty {
-        let name = match Self::canonical_named_builtin(&name) {
-            Some(canonical) if canonical != name => canonical.to_string(),
-            _ => name,
-        };
-        let builtin = lookup_builtin_type(&name);
-        if builtin == Some(BuiltinType::CancellationToken) && args.is_empty() {
+    pub fn named_head(head: TypeHead, args: Vec<Ty>) -> Ty {
+        if head == TypeHead::Builtin(BuiltinType::CancellationToken) && args.is_empty() {
             return Ty::CancellationToken;
         }
-        Ty::Named {
-            name,
-            args,
-            builtin,
+        Ty::Named { head, args }
+    }
+
+    /// A named type the module registry spelled but did not resolve.
+    ///
+    /// TRANSITION(A2): see [`TypeHead::Unresolved`].
+    #[must_use]
+    pub fn registry_named(spelling: &str, args: Vec<Ty>) -> Ty {
+        match lookup_builtin_type(spelling) {
+            Some(builtin) => Ty::named_head(TypeHead::Builtin(builtin), args),
+            None => Ty::Named {
+                head: TypeHead::Unresolved(hew_parser::ast::Symbol::intern(spelling)),
+                args,
+            },
         }
+    }
+
+    /// The head of a named type.
+    #[must_use]
+    pub fn head(&self) -> Option<TypeHead> {
+        match self {
+            Ty::Named { head, .. } => Some(*head),
+            _ => None,
+        }
+    }
+
+    /// The builtin a named type's head is, when it is one.
+    #[must_use]
+    pub fn named_builtin(&self) -> Option<BuiltinType> {
+        self.head().and_then(TypeHead::builtin)
     }
 
     /// Check if this is a numeric type (integer or float).
@@ -1551,7 +1742,7 @@ impl Ty {
         matches!(
             self,
             Ty::Named {
-                builtin: Some(BuiltinType::Instant),
+                head: crate::TypeHead::Builtin(BuiltinType::Instant),
                 ..
             }
         )
@@ -1673,13 +1864,8 @@ impl Ty {
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(&mut *f).collect()),
             Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),
             Ty::Slice(elem) => Ty::Slice(Box::new(f(elem))),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
+            Ty::Named { head, args } => Ty::Named {
+                head: *head,
                 args: args.iter().map(&mut *f).collect(),
             },
             Ty::Function {
@@ -1769,7 +1955,7 @@ impl Ty {
     /// in this type.
     #[must_use]
     pub fn mentions_named_param(&self, param_name: &str) -> bool {
-        matches!(self, Ty::Named { name, args, .. } if args.is_empty() && name == param_name)
+        self.as_param_named(param_name)
             || self.any_child(&|child| child.mentions_named_param(param_name))
     }
 
@@ -1777,7 +1963,7 @@ impl Ty {
     /// Used to resolve generic fields/methods on instantiated types.
     #[must_use]
     pub fn substitute_named_param(&self, param_name: &str, replacement: &Ty) -> Ty {
-        if matches!(self, Ty::Named { name, args, .. } if args.is_empty() && name == param_name) {
+        if self.as_param_named(param_name) {
             return replacement.clone();
         }
         self.map_children(&mut |child| child.substitute_named_param(param_name, replacement))
@@ -1794,15 +1980,41 @@ impl Ty {
     /// the replacement). Composites recurse structurally.
     #[must_use]
     pub fn substitute_named_params_parallel(&self, map: &HashMap<String, Ty>) -> Ty {
-        if let Ty::Named { name, args, .. } = self {
+        if let Ty::Named {
+            head: head @ (TypeHead::Param(_) | TypeHead::Unresolved(_)),
+            args,
+        } = self
+        {
             if args.is_empty() {
                 return map
-                    .get(name.as_str())
+                    .get(head.spelling())
                     .cloned()
                     .unwrap_or_else(|| self.clone());
             }
         }
         self.map_children(&mut |child| child.substitute_named_params_parallel(map))
+    }
+
+    /// Whether this is the generic binder spelled `param_name`. Only a binder
+    /// head matches: a nominal of the same spelling is a different type.
+    ///
+    /// TRANSITION(A1 commit 3): an unresolved spelling also matches, until
+    /// every binder is minted as a parameter head with its owner's id.
+    fn as_param_named(&self, param_name: &str) -> bool {
+        matches!(
+            self,
+            Ty::Named { head: head @ (TypeHead::Param(_) | TypeHead::Unresolved(_)), args }
+                if args.is_empty() && head.spelling() == param_name
+        )
+    }
+
+    /// The generic binder spelled `spelling`.
+    #[must_use]
+    pub fn param(spelling: &str) -> Ty {
+        Ty::Named {
+            head: TypeHead::param(spelling),
+            args: Vec::new(),
+        }
     }
 }
 
@@ -1830,28 +2042,27 @@ impl fmt::Display for UserFacingTy<'_> {
 /// `ActorError<Never>` when written bare, so an uninhabited error argument is
 /// elided rather than shown as `ActorError<Never>`.
 fn source_spelling(ty: &Ty) -> Ty {
-    let Ty::Named {
-        name,
-        args,
-        builtin,
-    } = ty
-    else {
+    let Ty::Named { head, args } = ty else {
         return ty.clone();
     };
     let mut args: Vec<Ty> = args.iter().map(source_spelling).collect();
-    if name == crate::actor_delivery::ACTOR_ERROR_TYPE
-        && matches!(args.as_slice(), [Ty::Named { name, .. }] if name == "Never")
+    let never = crate::KnownDecl::Never.head();
+    if *head == crate::KnownDecl::ActorError.head()
+        && matches!(args.as_slice(), [Ty::Named { head, .. }] if *head == never)
     {
         args.clear();
     }
-    Ty::Named {
-        name: name
-            .strip_prefix("std.builtins.")
-            .unwrap_or(name)
-            .to_string(),
-        args,
-        builtin: *builtin,
-    }
+    let head = match *head {
+        TypeHead::Nominal(nominal) => {
+            let rendered = nominal.spelling.as_str();
+            TypeHead::Nominal(NominalHead::new(
+                nominal.id,
+                rendered.strip_prefix("std.builtins.").unwrap_or(rendered),
+            ))
+        }
+        other => other,
+    };
+    Ty::Named { head, args }
 }
 
 #[cfg(test)]
@@ -1863,9 +2074,8 @@ mod tests {
         assert_eq!(
             Ty::monitor_ref(),
             Ty::Named {
-                builtin: Some(BuiltinType::MonitorRef),
-                name: "std.link_monitor.MonitorRef".to_string(),
-                args: vec![],
+                head: crate::TypeHead::Builtin(BuiltinType::MonitorRef),
+                args: vec![]
             }
         );
     }
@@ -1949,19 +2159,8 @@ mod tests {
     fn test_substitute_named_param() {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
-            ret: Box::new(Ty::Tuple(vec![
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-                Ty::I32,
-            ])),
+            params: vec![Ty::param("T")],
+            ret: Box::new(Ty::Tuple(vec![Ty::param("T"), Ty::I32])),
         };
 
         let substituted = ty.substitute_named_param("T", &Ty::String);
@@ -1996,11 +2195,7 @@ mod tests {
     fn test_borrow_substitute_named_param_recurses_through_pointee() {
         // `&T` with `T := string` must become `&string`.
         let borrow = Ty::Borrow {
-            pointee: Box::new(Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }),
+            pointee: Box::new(Ty::param("T")),
         };
 
         let substituted = borrow.substitute_named_param("T", &Ty::String);
@@ -2019,11 +2214,7 @@ mod tests {
         // nested generic pointee: `&Vec<$v>` with `$v := i32` becomes `&Vec<i32>`.
         let v = TypeVar::fresh();
         let borrow = Ty::Borrow {
-            pointee: Box::new(Ty::Named {
-                builtin: None,
-                name: "Vec".to_string(),
-                args: vec![Ty::Var(v)],
-            }),
+            pointee: Box::new(Ty::named_for_test("Vec", vec![Ty::Var(v)])),
         };
 
         let result = borrow.substitute(v, &Ty::I32);
@@ -2031,11 +2222,7 @@ mod tests {
         assert_eq!(
             result,
             Ty::Borrow {
-                pointee: Box::new(Ty::Named {
-                    builtin: None,
-                    name: "Vec".to_string(),
-                    args: vec![Ty::I32],
-                }),
+                pointee: Box::new(Ty::named_for_test("Vec", vec![Ty::I32])),
             }
         );
     }
@@ -2069,14 +2256,7 @@ mod tests {
             "fn(i32, bool) -> string"
         );
         assert_eq!(
-            format!(
-                "{}",
-                Ty::Named {
-                    builtin: None,
-                    name: "Vec".to_string(),
-                    args: vec![Ty::I32],
-                }
-            ),
+            format!("{}", Ty::named_for_test("Vec", vec![Ty::I32])),
             "Vec<i32>"
         );
     }
@@ -2104,20 +2284,12 @@ mod tests {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![
-                Ty::Named {
-                    builtin: None,
-                    name: "Vec".to_string(),
-                    args: vec![Ty::I64],
-                },
+                Ty::named_for_test("Vec", vec![Ty::I64]),
                 Ty::Tuple(vec![Ty::Bool, Ty::I64]),
             ],
             ret: Box::new(Ty::result(
                 Ty::I64,
-                Ty::Named {
-                    builtin: None,
-                    name: "HashMap".to_string(),
-                    args: vec![Ty::String, Ty::I64],
-                },
+                Ty::named_for_test("HashMap", vec![Ty::String, Ty::I64]),
             )),
         };
 
@@ -2160,22 +2332,11 @@ mod tests {
     fn test_materialize_literal_defaults() {
         let ty = Ty::Tuple(vec![
             Ty::IntLiteral,
-            Ty::Named {
-                builtin: None,
-                name: "Option".to_string(),
-                args: vec![Ty::FloatLiteral],
-            },
+            Ty::named_for_test("Option", vec![Ty::FloatLiteral]),
         ]);
         assert_eq!(
             ty.materialize_literal_defaults(),
-            Ty::Tuple(vec![
-                Ty::I64,
-                Ty::Named {
-                    builtin: None,
-                    name: "Option".to_string(),
-                    args: vec![Ty::F64],
-                },
-            ])
+            Ty::Tuple(vec![Ty::I64, Ty::named_for_test("Option", vec![Ty::F64]),])
         );
     }
 
@@ -2242,19 +2403,11 @@ mod tests {
     #[test]
     fn test_substitute_nested() {
         let v = TypeVar::fresh();
-        let ty = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::Tuple(vec![Ty::Var(v), Ty::Bool])],
-        };
+        let ty = Ty::named_for_test("Vec", vec![Ty::Tuple(vec![Ty::Var(v), Ty::Bool])]);
         let result = ty.substitute(v, &Ty::String);
         assert_eq!(
             result,
-            Ty::Named {
-                builtin: None,
-                name: "Vec".to_string(),
-                args: vec![Ty::Tuple(vec![Ty::String, Ty::Bool])],
-            }
+            Ty::named_for_test("Vec", vec![Ty::Tuple(vec![Ty::String, Ty::Bool])])
         );
     }
 
@@ -2328,20 +2481,13 @@ mod tests {
 
     // --- substitute_named_params_parallel ---
 
+    /// A generic binder: substitution replaces parameter heads only.
     fn named(n: &str) -> Ty {
-        Ty::Named {
-            builtin: None,
-            name: n.to_string(),
-            args: vec![],
-        }
+        Ty::param(n)
     }
 
     fn named_with_args(n: &str, args: Vec<Ty>) -> Ty {
-        Ty::Named {
-            builtin: None,
-            name: n.to_string(),
-            args,
-        }
+        Ty::named_for_test(n, args)
     }
 
     #[test]

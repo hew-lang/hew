@@ -695,7 +695,7 @@ impl Checker {
             // distinct declarations.
             let namespace =
                 crate::check::NominalNamespace::for_import(decl.path.segments.is_empty());
-            if !self.defs.module_has_declarations(primary) {
+            if !self.defs.module_has_source_declarations(primary) {
                 for (index, (item, span)) in items.iter().enumerate() {
                     let module = decl
                         .resolved_item_source_paths
@@ -1836,41 +1836,27 @@ impl Checker {
     /// actually declares (`{module}.{name}` present in `type_defs`) is
     /// qualified; otherwise the bare name is preserved (#2208).
     pub(super) fn qualify_colliding_reply_ty(&self, ty: &Ty, module_short: &str) -> Ty {
-        let Ty::Named {
-            name,
-            args,
-            builtin,
-        } = ty
-        else {
+        let Ty::Named { head, args } = ty else {
             return ty.clone();
         };
-        let args = args
+        let args: Vec<Ty> = args
             .iter()
             .map(|arg| self.qualify_colliding_reply_ty(arg, module_short))
             .collect();
-        if builtin.is_some()
-            || name.contains('.')
-            || !self.cross_module_colliding_record_names.contains(name)
-        {
-            return Ty::Named {
-                name: name.clone(),
-                args,
-                builtin: *builtin,
-            };
-        }
+        // A resolved head already names its declaration; only a spelling the
+        // registry mirror left unresolved can still collide across modules.
+        let crate::TypeHead::Unresolved(spelling) = head else {
+            return Ty::Named { head: *head, args };
+        };
+        let name = spelling.as_str();
         let qualified = format!("{module_short}.{name}");
-        if self.type_defs.contains_key(&qualified) {
-            Ty::Named {
-                name: qualified,
-                args,
-                builtin: None,
-            }
+        if !name.contains('.')
+            && self.cross_module_colliding_record_names.contains(name)
+            && self.type_defs.contains_key(&qualified)
+        {
+            self.named_ty_for_key(&qualified, args)
         } else {
-            Ty::Named {
-                name: name.clone(),
-                args,
-                builtin: *builtin,
-            }
+            self.named_ty_for_key(name, args)
         }
     }
 

@@ -260,17 +260,14 @@ impl LowerCtx {
     /// checker. Both stages preserve the same concrete envelope identity.
     pub(super) fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
         let mut resolved = self.resolve_named_type_ref_inner(name, args);
-        if let ResolvedTy::Named {
-            name,
-            args,
-            builtin: None,
-            ..
-        } = &mut resolved
-        {
-            if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE {
+        if let ResolvedTy::Named { head, args, .. } = &mut resolved {
+            if *head == hew_types::KnownDecl::ActorError.head() {
                 args.resize_with(args.len().max(2), || {
                     ResolvedTy::named_user(
-                        hew_types::actor_delivery::NEVER_TYPE.to_string(),
+                        hew_types::NominalHead::new(
+                            hew_types::KnownDecl::Never.nominal(),
+                            hew_types::KnownDecl::Never.path(),
+                        ),
                         Vec::new(),
                     )
                 });
@@ -309,7 +306,7 @@ impl LowerCtx {
             && !name.contains('.')
             && self.declared_type_is_opaque(name)
         {
-            return ResolvedTy::named_opaque(name.to_string(), args);
+            return ResolvedTy::named_opaque_path(&self.defs, name, args);
         }
         if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
@@ -335,7 +332,7 @@ impl LowerCtx {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
-                    return ResolvedTy::named_opaque(qualified, args);
+                    return ResolvedTy::named_opaque_path(&self.defs, &qualified, args);
                 }
             }
         }
@@ -391,9 +388,9 @@ impl LowerCtx {
                 return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
             if self.declared_type_is_opaque(&canonical) {
-                return ResolvedTy::named_opaque(canonical, args);
+                return ResolvedTy::named_opaque_path(&self.defs, &canonical, args);
             }
-            return ResolvedTy::named_user(canonical, args);
+            return ResolvedTy::named_path(&self.defs, &canonical, args);
         }
 
         // A declaration authored in the current source scope outranks both an
@@ -405,7 +402,7 @@ impl LowerCtx {
             && self.current_scope_declares_source_type(name, current_module_is_file_import)
             && !self.declared_type_is_opaque(name)
         {
-            return ResolvedTy::named_user(name.to_string(), args);
+            return ResolvedTy::named_path(&self.defs, name, args);
         }
 
         // Named/glob imports are source bindings, not aliases only. Resolve
@@ -449,7 +446,7 @@ impl LowerCtx {
             && crate::builtin_type_classes::builtin_type_registration(type_name).is_none()
             && !self.declared_type_is_opaque(name)
         {
-            return ResolvedTy::named_user(name.to_string(), args);
+            return ResolvedTy::named_path(&self.defs, name, args);
         }
 
         // Generated monomorphic enum annotations use the same exact source
@@ -466,9 +463,9 @@ impl LowerCtx {
             current_module_is_file_import,
         ) {
             return if let Some(builtin) = builtin_hint {
-                ResolvedTy::named_builtin(canonical, builtin, args)
+                ResolvedTy::named_builtin(builtin, args)
             } else {
-                ResolvedTy::named_user(canonical, args)
+                ResolvedTy::named_path(&self.defs, canonical, args)
             };
         }
 
@@ -480,15 +477,7 @@ impl LowerCtx {
             // under its canonical source identity. The prelude publishes the
             // bare spelling without an import alias, so mint that identity here
             // rather than handing the catalog's bare presentation name on.
-            let canonical = registration
-                .builtin
-                .classifies_by_declaration()
-                .then(|| hew_types::canonical_source_owned_lifecycle_name(registration.builtin))
-                .flatten();
-            match canonical {
-                Some(canonical) => ResolvedTy::named_builtin(canonical, registration.builtin, args),
-                None => ResolvedTy::named_builtin(registration.name(), registration.builtin, args),
-            }
+            ResolvedTy::named_builtin(registration.builtin, args)
         } else if let Some(builtin) = self.qualified_source_builtin(name) {
             Self::resolved_source_builtin_ty(name, builtin, args)
         } else if name.contains('.') && self.declared_type_is_opaque(name) {
@@ -497,7 +486,7 @@ impl LowerCtx {
             // classifier fails closed on the handle even when its short name
             // collides with a user record/enum of the same name. See
             // `LowerCtx::declared_type_is_opaque`.
-            ResolvedTy::named_opaque(name.to_string(), args)
+            ResolvedTy::named_opaque_path(&self.defs, name, args)
         } else if name.contains('.') {
             // Module-qualified user type (`widgeti64.Widget`). Preserve the
             // full `{module}.{name}` identity so MIR layout keys and field
@@ -509,19 +498,19 @@ impl LowerCtx {
             // per-module layout (keyed by `HirTypeDecl::qualified_name()`) win
             // over the bare last-write-wins entry once MIR keys by it. A bare
             // reference (single-module program) keeps its short name unchanged.
-            ResolvedTy::named_user(name.to_string(), args)
+            ResolvedTy::named_path(&self.defs, name, args)
         } else if let Some(registration) =
             crate::builtin_type_classes::builtin_type_registration(type_name)
         {
-            ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
+            ResolvedTy::named_builtin(registration.builtin, args)
         } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name)
             .filter(|builtin| !builtin.requires_source_import())
         {
-            ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
+            ResolvedTy::named_builtin(builtin, args)
         } else if self.declared_type_is_opaque(name) {
-            ResolvedTy::named_opaque(name.to_string(), args)
+            ResolvedTy::named_opaque_path(&self.defs, name, args)
         } else {
-            ResolvedTy::named_user(type_name.to_string(), args)
+            ResolvedTy::named_path(&self.defs, type_name, args)
         }
     }
 
@@ -562,9 +551,9 @@ impl LowerCtx {
             && self.root_visible_source_type_short_names.contains(name)
         {
             return Some(if self.declared_type_is_opaque(name) {
-                ResolvedTy::named_opaque(name.to_string(), args)
+                ResolvedTy::named_opaque_path(&self.defs, name, args)
             } else {
-                ResolvedTy::named_user(name.to_string(), args)
+                ResolvedTy::named_path(&self.defs, name, args)
             });
         }
 
@@ -575,9 +564,9 @@ impl LowerCtx {
                     return Some(Self::resolved_source_builtin_ty(&qualified, builtin, args));
                 }
                 return Some(if self.declared_type_is_opaque(&qualified) {
-                    ResolvedTy::named_opaque(qualified, args)
+                    ResolvedTy::named_opaque_path(&self.defs, &qualified, args)
                 } else {
-                    ResolvedTy::named_user(qualified, args)
+                    ResolvedTy::named_path(&self.defs, &qualified, args)
                 });
             }
         }
@@ -683,90 +672,43 @@ impl LowerCtx {
             other => other,
         };
         let ResolvedTy::Named {
-            name,
+            head,
             args,
-            builtin,
             is_opaque,
         } = ty
         else {
             return ty;
         };
-        let mut args: Vec<ResolvedTy> = args
+        let args: Vec<ResolvedTy> = args
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
-        if let Some(expected) = builtin.filter(|kind| kind.is_encoding_value()) {
+        let name = head.registry_key();
+        if let Some(expected) = head.builtin().filter(|kind| kind.is_encoding_value()) {
             if let Some(checked) = self
-                .checked_encoding_type(&name, &args)
+                .checked_encoding_type(name, &args)
                 .filter(|ty| ty.is_builtin(expected))
             {
                 return checked;
             }
         }
-        if matches!(builtin, Some(BuiltinType::ChildRef)) {
-            if let [ResolvedTy::Named {
-                name: actor_name, ..
-            }] = args.as_mut_slice()
-            {
-                if let Some(qualified) = self
-                    .imported_actor_rewrites
-                    .as_ref()
-                    .and_then(|rewrites| rewrites.get(actor_name))
-                {
-                    actor_name.clone_from(qualified);
-                }
-            }
-        }
-        // An actor is the type of its handle: the handle's own nominal is the
-        // actor declaration, and the discriminator is that declaration's
-        // representation authority. Qualify the name the way a source record's
-        // is qualified, and keep the handle — the source-declaration rule below
-        // strips an unproven presentation marker, which this is not.
-        if matches!(builtin, Some(BuiltinType::ActorHandle)) {
-            let mut actor_name = name;
-            if let Some(qualified) = self
-                .imported_actor_rewrites
-                .as_ref()
-                .and_then(|rewrites| rewrites.get(&actor_name))
-            {
-                actor_name.clone_from(qualified);
-            } else if !actor_name.contains('.') {
-                let canonical = self.canonical_current_module_record_name(&actor_name);
-                if self.actor_type_names.contains(&canonical) {
-                    actor_name = canonical;
-                }
-            }
+        // A resolved head already names its declaration; `Ty::Named` carries
+        // no opacity bit, so restore it from the declaration registry here.
+        let hew_types::TypeHead::Unresolved(_) = head else {
+            let is_opaque = is_opaque || (head.is_user() && self.declared_type_is_opaque(name));
             return ResolvedTy::Named {
-                name: actor_name,
+                head,
                 args,
-                builtin,
                 is_opaque,
             };
-        }
+        };
+        // TRANSITION(A1): a spelling HIR's own type resolution left unresolved
+        // is qualified to its declaration; deleted by B1 with that resolver.
+        let name = name.to_string();
         let current_module_is_file_import = self
             .current_module_name
             .as_deref()
             .is_some_and(|module| self.file_import_module_names.contains(module));
-        // Synthetic iterator cursors have no user-selectable constructor
-        // authority: the checker stamps them only while lowering a compiler
-        // `into_iter` result. Preserve that exact discriminator even when the
-        // source scope declares the same leaf; the user nominal arrives with
-        // `builtin: None` and remains distinct below.
-        if let Some(cursor @ (BuiltinType::VecIter | BuiltinType::HashMapIter)) = builtin {
-            return ResolvedTy::named_builtin(cursor.canonical_name(), cursor, args);
-        }
-        // A checker compatibility marker is representation metadata, not a
-        // license to replace a declaration selected from the current source
-        // scope.  This is especially important for generic prelude names:
-        // `type Result { .. }` is a user record even when an actor-dispatch
-        // side table still presents its reply as `Ty::Named(Result, builtin)`.
-        //
-        // Canonical standard-library declarations have already taken the
-        // exact-provenance path below (the `std.*` owner check), so this only
-        // removes an unproven presentation marker.  Preserve the source
-        // owner's complete identity rather than returning a bare leaf, so the
-        // same rule also keeps package-local `module.Result` nominally
-        // distinct from prelude `Result`.
         if !name.contains('.')
             && self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
@@ -777,131 +719,42 @@ impl LowerCtx {
                 }
             }
             if self.declared_type_is_opaque(&canonical) {
-                return ResolvedTy::named_opaque(canonical, args);
+                return ResolvedTy::named_opaque_path(&self.defs, &canonical, args);
             }
-            return ResolvedTy::named_user(canonical, args);
+            return ResolvedTy::named_path(&self.defs, &canonical, args);
         }
-        if let Some(canonical) = self.canonical_monomorphic_builtin_enum_name(
-            &name,
-            builtin,
-            current_module_is_file_import,
-        ) {
-            return match builtin {
-                Some(builtin) => ResolvedTy::named_builtin(canonical, builtin, args),
-                None => ResolvedTy::named_user(canonical.to_string(), args),
-            };
+        if let Some(canonical) =
+            self.canonical_monomorphic_builtin_enum_name(&name, None, current_module_is_file_import)
+        {
+            return ResolvedTy::named_path(&self.defs, canonical, args);
         }
         if !name.contains('.')
             && self.current_module_name.is_none()
             && self.declared_type_is_opaque(&name)
         {
-            return ResolvedTy::named_opaque(name, args);
+            return ResolvedTy::named_opaque_path(&self.defs, &name, args);
         }
         if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
-                if self
-                    .current_module_name
-                    .as_deref()
-                    .is_some_and(|module| module.starts_with("std."))
-                {
-                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
-                    }
+                if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                    return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                 }
                 if self.declared_type_is_opaque(&qualified) {
-                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
-                    }
-                    return ResolvedTy::named_opaque(qualified, args);
+                    return ResolvedTy::named_opaque_path(&self.defs, &qualified, args);
                 }
             }
         }
-        // `Ty::Named` intentionally has no opacity bit, so checker-authored
-        // expression facts lose that half of a root source declaration's
-        // identity when converted through `ResolvedTy::from_ty`. Restore it
-        // from the declaration registry at this single checker→HIR
-        // normalisation funnel. Builtin provenance remains authoritative:
-        // only a `builtin: None` bare root name can acquire the user-opaque
-        // discriminator.
-        let is_opaque = is_opaque
-            // `Ty::Named` has no opacity bit even when the checker preserved an
-            // exact qualified identity. Restore that declaration fact for any
-            // checker-authored qualified opaque name as well as the bare root
-            // case below. This matters for aggregate package modules that
-            // re-surface a source file: their copied function bodies carry the
-            // aggregate-qualified opaque identity (for example
-            // `http.ResponseHandle`), which is harvested as an exact opaque
-            // key but otherwise reached MIR as an ordinary user type.
-            || (builtin.is_none()
-                && self.declared_type_is_opaque(&name))
-            || (builtin.is_none()
-                && self.current_module_name.is_none()
-                && !name.contains('.')
-                && self.declared_type_is_opaque(&name));
-        // Checker expression facts for a flat-file-imported return type can
-        // retain the root-visible bare spelling. Project it through the same
-        // declaration map source annotations use before MIR observes the
-        // nominal, preserving the defining file's qualified layout identity.
-        if builtin.is_none() && !name.contains('.') && self.current_module_name.is_none() {
+        if !name.contains('.') && self.current_module_name.is_none() {
             if let Some(canonical) = self.file_import_root_type_aliases.get(&name) {
-                return self.qualify_current_module_record_ty(ResolvedTy::Named {
-                    name: canonical.clone(),
-                    args,
-                    builtin: None,
-                    is_opaque,
-                });
+                return self.qualify_current_module_record_ty(ResolvedTy::named_path(
+                    &self.defs, canonical, args,
+                ));
             }
         }
-        if let Some(builtin) = builtin {
-            // Checker-authored runtime signatures may retain the bare
-            // presentation name for a source-owned lifecycle carrier. When
-            // this scope has an exact import binding, restore that declaration
-            // identity before the builtin early-return below. The binding is
-            // checker-published from canonical source provenance, so a user
-            // same-leaf type cannot acquire lifecycle authority here.
-            if !name.contains('.')
-                && hew_types::lookup_source_owned_lifecycle_type(&name) == Some(builtin)
-            {
-                if let Some(imported) = self.import_type_name_aliases.get(&(
-                    self.current_module_name.clone(),
-                    self.current_module_idx,
-                    name.clone(),
-                )) {
-                    if self.qualified_source_builtin(imported) == Some(builtin) {
-                        return Self::resolved_source_builtin_ty(imported, builtin, args);
-                    }
-                }
-            }
-            if !name.contains('.') {
-                // Preserve the checker-authored presentation identity. Runtime
-                // classification is carried exclusively by `builtin`; a
-                // renamed builtin must remain renamed across this boundary.
-                return ResolvedTy::Named {
-                    name,
-                    args,
-                    builtin: Some(builtin),
-                    is_opaque: false,
-                };
-            }
-            if self.qualified_source_builtin(&name) == Some(builtin) {
-                return Self::resolved_source_builtin_ty(&name, builtin, args);
-            }
-            return ResolvedTy::named_user(name, args);
+        if self.declared_type_is_opaque(&name) {
+            return ResolvedTy::named_opaque_path(&self.defs, &name, args);
         }
-        if is_opaque {
-            return ResolvedTy::Named {
-                name,
-                args,
-                builtin: None,
-                is_opaque,
-            };
-        }
-        // Named imports are real source bindings, not catalog aliases. Project
-        // their bare spelling to the exact source owner before normalising the
-        // nominal. An unchanged checker-authored `builtin: None` remains user
-        // owned below; HIR must not manufacture representation authority from
-        // a bare spelling in the runtime catalog.
         if !name.contains('.')
             && !self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
@@ -910,50 +763,21 @@ impl LowerCtx {
                 self.current_module_idx,
                 name.clone(),
             )) {
-                return self.qualify_current_module_record_ty(ResolvedTy::named_user(
-                    imported.clone(),
+                return self.qualify_current_module_record_ty(ResolvedTy::named_path(
+                    &self.defs,
+                    &imported.clone(),
                     args,
                 ));
             }
         }
         let canonical = self.canonical_current_module_record_name(&name);
-        // Checker facts inside an imported stdlib module can retain a lexical
-        // module binding (`net.NetError`) while the declaration and its
-        // signatures use the exact owner (`std.net.NetError`).  Normalize that
-        // owner before the unchanged-name compatibility path so produced-value
-        // joins, layouts, and call signatures agree on one nominal identity.
-        // `qualified_source_builtin` remains provenance-gated, so this cannot
-        // grant a user package a std carrier merely from its spelling.
-        if canonical.contains('.') {
-            if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                return Self::resolved_source_builtin_ty(&canonical, builtin, args);
-            }
+        if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+            return Self::resolved_source_builtin_ty(&canonical, builtin, args);
         }
-        if canonical == name {
-            if name.contains('.') {
-                if let Some(builtin) = self.qualified_source_builtin(&name) {
-                    return Self::resolved_source_builtin_ty(&name, builtin, args);
-                }
-            }
-            // The checker-authored builtin discriminator is authoritative.
-            // An unchanged `builtin: None` identity must not be reclassified
-            // through the bare spelling catalog: a user `Vec<T>` is not the
-            // runtime vector merely because its leaf name collides. The
-            // qualified branch above is narrower: it requires exact canonical
-            // stdlib source provenance before recovering a compatibility
-            // spelling such as `stream.Sink`.
-            ResolvedTy::Named {
-                name,
-                args,
-                builtin,
-                is_opaque,
-            }
-        } else if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-            Self::resolved_source_builtin_ty(&canonical, builtin, args)
-        } else if self.declared_type_is_opaque(&canonical) {
-            ResolvedTy::named_opaque(canonical, args)
+        if self.declared_type_is_opaque(&canonical) {
+            ResolvedTy::named_opaque_path(&self.defs, &canonical, args)
         } else {
-            ResolvedTy::named_user(canonical, args)
+            ResolvedTy::named_path(&self.defs, &canonical, args)
         }
     }
 
@@ -1106,9 +930,8 @@ impl LowerCtx {
             return None;
         }
         Some(ResolvedTy::Named {
-            name: name.to_string(),
             args: Vec::new(),
-            builtin: Some(builtin),
+            head: hew_types::TypeHead::Builtin(builtin),
             is_opaque: declaration.is_opaque,
         })
     }
@@ -1192,18 +1015,11 @@ impl LowerCtx {
     /// presentation name. A lifecycle record needs both facts: its qualified
     /// source name selects the nominal layout, while `builtin` selects the ABI.
     pub(super) fn resolved_source_builtin_ty(
-        source_name: &str,
+        _source_name: &str,
         builtin: BuiltinType,
         args: Vec<ResolvedTy>,
     ) -> ResolvedTy {
-        let name = if source_name.contains('.')
-            && hew_types::lookup_source_owned_lifecycle_type(source_name) == Some(builtin)
-        {
-            source_name
-        } else {
-            builtin.canonical_name()
-        };
-        ResolvedTy::named_builtin(name, builtin, args)
+        ResolvedTy::named_builtin(builtin, args)
     }
 
     /// Opacity belongs to the checker declaration at this exact identity.
@@ -1295,7 +1111,7 @@ impl LowerCtx {
                     // Checker expression facts retain abstract binders as named
                     // types until monomorphisation. Annotations must use the same
                     // representation while keeping lexical binders ahead of aliases.
-                    return ResolvedTy::named_user(name.clone(), Vec::new());
+                    return ResolvedTy::param(name);
                 }
                 if let Some(alias) = self.type_alias_for_name(name).cloned() {
                     return self.instantiate_type_alias(&alias, &args, &ty.1);
@@ -1320,7 +1136,7 @@ impl LowerCtx {
                 // the injected constructor's body and signature; callers have
                 // the same checker-proven canonical type.
                 if name == "NodeConfig" && args.is_empty() {
-                    return ResolvedTy::named_user("std.builtins.NodeConfig", vec![]);
+                    return ResolvedTy::named_path(&self.defs, "std.builtins.NodeConfig", vec![]);
                 }
                 match name.as_str() {
                     "i8" => ResolvedTy::I8,
@@ -1396,7 +1212,7 @@ impl LowerCtx {
             TypeExpr::Fallible { success, error } => {
                 let success = self.lower_type(success);
                 let error = self.lower_type(error);
-                ResolvedTy::named_builtin("Result", BuiltinType::Result, vec![success, error])
+                ResolvedTy::named_builtin(BuiltinType::Result, vec![success, error])
             }
             TypeExpr::Tuple(elems) if elems.is_empty() => ResolvedTy::Unit,
             TypeExpr::Tuple(elems) => {
@@ -1406,7 +1222,7 @@ impl LowerCtx {
                 ResolvedTy::Array(Box::new(self.lower_type(element)), *size)
             }
             TypeExpr::Slice(elem) => {
-                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![self.lower_type(elem)])
+                ResolvedTy::named_builtin(BuiltinType::Vec, vec![self.lower_type(elem)])
             }
             TypeExpr::Function {
                 capabilities,
@@ -1429,7 +1245,6 @@ impl LowerCtx {
                     _ => ResolvedTy::Tuple(resolved),
                 };
                 ResolvedTy::named_builtin(
-                    BuiltinType::ActorFn.canonical_name(),
                     BuiltinType::ActorFn,
                     vec![msg, Box::new(self.lower_type(return_type)).as_ref().clone()],
                 )
@@ -1567,27 +1382,22 @@ impl LowerCtx {
 
     pub(super) fn resolved_vec_ty(elem_ty: ResolvedTy) -> ResolvedTy {
         ResolvedTy::Named {
-            name: "Vec".to_string(),
             args: vec![elem_ty],
-            builtin: Some(BuiltinType::Vec),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
             is_opaque: false,
         }
     }
 
     pub(super) fn resolved_vec_iter_ty(elem_ty: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![elem_ty])
+        ResolvedTy::named_builtin(BuiltinType::VecIter, vec![elem_ty])
     }
 
     pub(super) fn resolved_hashmap_iter_ty(key_ty: ResolvedTy, val_ty: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            "HashMapIter",
-            BuiltinType::HashMapIter,
-            vec![key_ty, val_ty],
-        )
+        ResolvedTy::named_builtin(BuiltinType::HashMapIter, vec![key_ty, val_ty])
     }
 
     pub(super) fn resolved_option_ty(elem_ty: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![elem_ty])
+        ResolvedTy::named_builtin(BuiltinType::Option, vec![elem_ty])
     }
 
     /// Register one concrete instantiation of a generic enum in the
@@ -1631,12 +1441,10 @@ impl LowerCtx {
         // instantiations, including nested ones inside the type args.
         let mut worklist: Vec<ResolvedTy> = vec![resolved.clone()];
         while let Some(ty) = worklist.pop() {
-            let ResolvedTy::Named {
-                ref name, ref args, ..
-            } = ty
-            else {
+            let ResolvedTy::Named { head, ref args, .. } = ty else {
                 continue;
             };
+            let name = head.registry_key();
             // Only act if this enum has type params and this call provides args.
             let Some(type_params) = self.enum_type_params.get(name).cloned() else {
                 continue;
@@ -1665,7 +1473,7 @@ impl LowerCtx {
             };
             let key = EnumMonoKey {
                 origin,
-                origin_name: name.clone(),
+                origin_name: name.to_string(),
                 type_args: args.clone(),
             };
             // Build the substituted variant list from the unsubstituted HIR

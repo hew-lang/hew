@@ -411,10 +411,6 @@ fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one identity precedence matrix covers exact source, builtin and importer bindings"
-)]
 fn imported_opaque_identity_precedes_short_builtin_fallback() {
     let mut ctx = LowerCtx::new(
         &TypeCheckOutput::default(),
@@ -438,7 +434,7 @@ fn imported_opaque_identity_precedes_short_builtin_fallback() {
     for qualified in ["foo.Stream", "foo.Connection", "net.Connection"] {
         assert_eq!(
             ctx.resolve_named_type_ref(qualified, Vec::new()),
-            ResolvedTy::named_opaque(qualified.to_string(), Vec::new()),
+            ResolvedTy::named_opaque_path(&ctx.defs, qualified, Vec::new()),
             "qualified opaque identity must be preserved exactly"
         );
     }
@@ -453,14 +449,9 @@ fn imported_opaque_identity_precedes_short_builtin_fallback() {
         ("std.stream.Sink", BuiltinType::Sink),
         ("std.link_monitor.MonitorRef", BuiltinType::MonitorRef),
     ] {
-        let expected_name = if builtin == BuiltinType::MonitorRef {
-            qualified
-        } else {
-            builtin.canonical_name()
-        };
         assert_eq!(
                 ctx.resolve_named_type_ref(qualified, Vec::new()),
-                ResolvedTy::named_builtin(expected_name, builtin, Vec::new()),
+                ResolvedTy::named_builtin(builtin, Vec::new()),
                 "an exact canonical std carrier `{qualified}` must retain declaration and builtin identity"
             );
     }
@@ -468,7 +459,7 @@ fn imported_opaque_identity_precedes_short_builtin_fallback() {
     for qualified in ["stream.Stream", "stream.Sink", "link_monitor.MonitorRef"] {
         assert_eq!(
                 ctx.resolve_named_type_ref(qualified, Vec::new()),
-                ResolvedTy::named_user(qualified.to_string(), Vec::new()),
+                ResolvedTy::named_path(&ctx.defs, qualified, Vec::new()),
                 "a user module with the std leaf spelling `{qualified}` must not inherit builtin ABI identity"
             );
     }
@@ -477,7 +468,7 @@ fn imported_opaque_identity_precedes_short_builtin_fallback() {
         .insert((None, 0, "Stream".to_string()), "foo.Stream".to_string());
     assert_eq!(
         ctx.resolve_named_type_ref("Stream", Vec::new()),
-        ResolvedTy::named_opaque("foo.Stream".to_string(), Vec::new()),
+        ResolvedTy::named_opaque_path(&ctx.defs, "foo.Stream", Vec::new()),
         "an unrenamed named import must resolve through its published source identity"
     );
 
@@ -491,22 +482,19 @@ fn imported_opaque_identity_precedes_short_builtin_fallback() {
     );
     assert_eq!(
         ctx.resolve_named_type_ref("Stream", Vec::new()),
-        ResolvedTy::named_opaque("Stream".to_string(), Vec::new()),
+        ResolvedTy::named_opaque_path(&ctx.defs, "Stream", Vec::new()),
         "a flattened file-import declaration must outrank the bare builtin"
     );
 
     ctx.type_declarations.remove("Stream");
     ctx.current_module_name = Some("std.stream".to_string());
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-            "Stream".to_string(),
+        ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
+            &ctx.defs,
+            "Stream",
             Vec::new(),
         )),
-        ResolvedTy::named_builtin(
-            BuiltinType::Stream.canonical_name(),
-            BuiltinType::Stream,
-            Vec::new(),
-        ),
+        ResolvedTy::named_builtin(BuiltinType::Stream, Vec::new()),
         "a checker-authored bare std handle must recover its exact builtin identity"
     );
 
@@ -519,11 +507,12 @@ fn imported_opaque_identity_precedes_short_builtin_fallback() {
         },
     );
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-            "http.ResponseHandle".to_string(),
+        ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
+            &ctx.defs,
+            "http.ResponseHandle",
             Vec::new(),
         )),
-        ResolvedTy::named_opaque("http.ResponseHandle".to_string(), Vec::new()),
+        ResolvedTy::named_opaque_path(&ctx.defs, "http.ResponseHandle", Vec::new()),
         "a checker-authored qualified opaque identity must recover its declaration discriminator"
     );
 }
@@ -539,22 +528,20 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
         .insert("std.stream.Sink".to_string());
     ctx.current_module_name = Some("std.net.http".to_string());
     let checker_result = ResolvedTy::named_builtin(
-        "Result",
         BuiltinType::Result,
         vec![
-            ResolvedTy::named_user("stream.Sink", vec![ResolvedTy::String]),
+            ResolvedTy::named_for_test("stream.Sink", vec![ResolvedTy::String]),
             ResolvedTy::String,
         ],
     );
     assert_eq!(
         ctx.qualify_current_module_record_ty(checker_result),
         ResolvedTy::named_builtin(
-            "Result",
             BuiltinType::Result,
             vec![
-                ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String],),
+                ResolvedTy::named_builtin(BuiltinType::Sink, vec![ResolvedTy::String],),
                 ResolvedTy::String,
-            ],
+            ]
         )
     );
 
@@ -562,20 +549,17 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
     ctx.canonical_std_source_type_identities
         .insert("std.stream.Stream".to_string());
     let exact_nested = ResolvedTy::named_builtin(
-        "Result",
         BuiltinType::Result,
         vec![
             ResolvedTy::Tuple(vec![
                 ResolvedTy::Named {
-                    name: "std.stream.Sink".to_string(),
                     args: vec![ResolvedTy::String],
-                    builtin: Some(BuiltinType::Sink),
+                    head: hew_types::TypeHead::Builtin(BuiltinType::Sink),
                     is_opaque: false,
                 },
                 ResolvedTy::Named {
-                    name: "std.stream.Stream".to_string(),
                     args: vec![ResolvedTy::String],
-                    builtin: Some(BuiltinType::Stream),
+                    head: hew_types::TypeHead::Builtin(BuiltinType::Stream),
                     is_opaque: false,
                 },
             ]),
@@ -585,40 +569,34 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
     assert_eq!(
         ctx.qualify_current_module_record_ty(exact_nested),
         ResolvedTy::named_builtin(
-            "Result",
             BuiltinType::Result,
             vec![
                 ResolvedTy::Tuple(vec![
-                    ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String],),
-                    ResolvedTy::named_builtin(
-                        "Stream",
-                        BuiltinType::Stream,
-                        vec![ResolvedTy::String],
-                    ),
+                    ResolvedTy::named_builtin(BuiltinType::Sink, vec![ResolvedTy::String],),
+                    ResolvedTy::named_builtin(BuiltinType::Stream, vec![ResolvedTy::String],),
                 ]),
                 ResolvedTy::String,
-            ],
+            ]
         ),
         "nested checker facts must normalize to the function signature's carrier ABI"
     );
 
     ctx.current_module_name = Some("acme.http".to_string());
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+        ctx.qualify_current_module_record_ty(ResolvedTy::named_for_test(
             "stream.Sink",
             vec![ResolvedTy::String],
         )),
-        ResolvedTy::named_user("stream.Sink", vec![ResolvedTy::String]),
+        ResolvedTy::named_for_test("stream.Sink", vec![ResolvedTy::String]),
         "a user `stream.Sink` collision must not inherit std carrier identity"
     );
     assert_eq!(
         ctx.qualify_current_module_record_ty(ResolvedTy::Named {
-            name: "stream.Sink".to_string(),
             args: vec![ResolvedTy::String],
-            builtin: Some(BuiltinType::Sink),
-            is_opaque: false,
+            head: hew_types::TypeHead::Builtin(BuiltinType::Sink),
+            is_opaque: false
         }),
-        ResolvedTy::named_user("stream.Sink".to_string(), vec![ResolvedTy::String]),
+        ResolvedTy::named_for_test("stream.Sink", vec![ResolvedTy::String]),
         "even a stale checker builtin bit cannot grant a user same-leaf carrier ABI"
     );
 }
@@ -637,7 +615,7 @@ fn canonical_std_carriers_and_user_package_collisions_keep_distinct_identities()
         .insert("std.stream.Sink".to_string());
     assert_eq!(
         ctx.resolve_named_type_ref("Sink", args.clone()),
-        ResolvedTy::named_builtin("Sink", BuiltinType::Sink, args.clone()),
+        ResolvedTy::named_builtin(BuiltinType::Sink, args.clone()),
         "the canonical std.stream declaration must recover compiler carrier identity"
     );
 
@@ -646,12 +624,12 @@ fn canonical_std_carriers_and_user_package_collisions_keep_distinct_identities()
         .insert("acme.stream.Sink".to_string());
     assert_eq!(
         ctx.resolve_named_type_ref("Sink", args.clone()),
-        ResolvedTy::named_user("acme.stream.Sink", args.clone()),
+        ResolvedTy::named_path(&ctx.defs, "acme.stream.Sink", args.clone()),
         "an acme package's authored Sink<T> must remain a user nominal"
     );
     assert_eq!(
         ctx.resolve_named_type_ref("acme.stream.Sink", args.clone()),
-        ResolvedTy::named_user("acme.stream.Sink", args.clone()),
+        ResolvedTy::named_path(&ctx.defs, "acme.stream.Sink", args.clone()),
         "a qualified import of the acme carrier collision must remain user-owned"
     );
 
@@ -669,7 +647,7 @@ fn canonical_std_carriers_and_user_package_collisions_keep_distinct_identities()
         .insert("std.stream.Sink".to_string());
     assert_eq!(
         untrusted_std.resolve_named_type_ref("Sink", args.clone()),
-        ResolvedTy::named_user("std.stream.Sink", args.clone()),
+        ResolvedTy::named_path(&ctx.defs, "std.stream.Sink", args.clone()),
         "a user module named std.stream is not canonical stdlib provenance"
     );
 
@@ -682,7 +660,7 @@ fn canonical_std_carriers_and_user_package_collisions_keep_distinct_identities()
     );
     assert_eq!(
         ctx.resolve_named_type_ref("CrashInfo", Vec::new()),
-        ResolvedTy::named_builtin("std.failure.CrashInfo", BuiltinType::CrashInfo, Vec::new(),),
+        ResolvedTy::named_builtin(BuiltinType::CrashInfo, Vec::new()),
         "an imported std lifecycle payload must not be stolen by the global record registry"
     );
 }
@@ -708,7 +686,7 @@ fn depth_two_source_owners_qualify_same_leaf_types_without_leaf_fallback() {
 
     assert_eq!(
         std_ctx.resolve_named_type_ref("Connection", Vec::new()),
-        ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
+        ResolvedTy::named_opaque_path(&std_ctx.defs, "std.net.Connection", Vec::new()),
         "a bare std.net declaration must retain its full source owner"
     );
 
@@ -725,27 +703,30 @@ fn depth_two_source_owners_qualify_same_leaf_types_without_leaf_fallback() {
         },
     );
     assert_eq!(
-        root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-            "std.net.Connection".to_string(),
+        root_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
+            &std_ctx.defs,
+            "std.net.Connection",
             Vec::new(),
         )),
-        ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
+        ResolvedTy::named_opaque_path(&std_ctx.defs, "std.net.Connection", Vec::new()),
         "checker-authored closure capture facts must recover an imported opaque identity"
     );
     assert_eq!(
-        root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-            "acme.net.Connection".to_string(),
+        root_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
+            &std_ctx.defs,
+            "acme.net.Connection",
             Vec::new(),
         )),
-        ResolvedTy::named_user("acme.net.Connection".to_string(), Vec::new()),
+        ResolvedTy::named_path(&std_ctx.defs, "acme.net.Connection", Vec::new()),
         "a same-leaf user closure capture must not inherit std.net opacity"
     );
     assert_eq!(
-        std_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-            "Connection".to_string(),
+        std_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
+            &std_ctx.defs,
+            "Connection",
             Vec::new(),
         )),
-        ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
+        ResolvedTy::named_opaque_path(&std_ctx.defs, "std.net.Connection", Vec::new()),
         "checker facts that lose the opaque bit must recover std.net, never net"
     );
 
@@ -761,14 +742,15 @@ fn depth_two_source_owners_qualify_same_leaf_types_without_leaf_fallback() {
 
     for resolved in [
         user_ctx.resolve_named_type_ref("Connection", Vec::new()),
-        user_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-            "Connection".to_string(),
+        user_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
+            &std_ctx.defs,
+            "Connection",
             Vec::new(),
         )),
     ] {
         assert_eq!(
             resolved,
-            ResolvedTy::named_user("acme.net.Connection".to_string(), Vec::new()),
+            ResolvedTy::named_path(&std_ctx.defs, "acme.net.Connection", Vec::new()),
             "a user depth-two owner sharing std.net's leaf must stay distinct"
         );
     }
@@ -790,11 +772,9 @@ fn checker_import_binding_nominal_facts_use_the_declaring_std_owner() {
         .insert("std.net.NetError".to_string());
 
     assert_eq!(
-            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-                "net.NetError",
-                Vec::new(),
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_path(&ctx.defs, "net.NetError", Vec::new(),
             )),
-            ResolvedTy::named_user("std.net.NetError", Vec::new()),
+            ResolvedTy::named_path(&ctx.defs, "std.net.NetError", Vec::new()),
             "a checker-produced lexical module binding must agree with the exact std declaration identity"
         );
 }
@@ -824,39 +804,27 @@ fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
         MONOMORPHISATION_REGISTRY_CAP,
         TargetArch::host(),
     );
-    let args = vec![ResolvedTy::named_user("Echo", Vec::new())];
+    let args = vec![ResolvedTy::user_for_test("Echo", Vec::new())];
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_user("RemotePid", args.clone(),)),
-        ResolvedTy::named_user("RemotePid", args.clone()),
+        ctx.qualify_current_module_record_ty(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
+        ResolvedTy::user_for_test("RemotePid", args.clone()),
         "a bare spelling cannot manufacture the compiler actor-carrier discriminator"
     );
     assert_eq!(
         ctx.qualify_current_module_record_ty(ResolvedTy::named_builtin(
-            "RemotePid",
             BuiltinType::RemotePid,
-            args.clone(),
+            args.clone()
         )),
-        ResolvedTy::named_builtin("RemotePid", BuiltinType::RemotePid, args.clone()),
+        ResolvedTy::named_builtin(BuiltinType::RemotePid, args.clone()),
         "a checker-authored compiler actor carrier retains its value class"
     );
 
     ctx.root_visible_source_type_short_names
         .insert("RemotePid".to_string());
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_user("RemotePid", args.clone(),)),
-        ResolvedTy::named_user("RemotePid", args.clone()),
+        ctx.qualify_current_module_record_ty(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
+        ResolvedTy::user_for_test("RemotePid", args.clone()),
         "a root source declaration wins over the compiler carrier spelling"
-    );
-
-    ctx.root_visible_source_type_short_names.clear();
-    ctx.import_type_name_aliases.insert(
-        (None, 0, "RemotePid".to_string()),
-        "peer.RemotePid".to_string(),
-    );
-    assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_user("RemotePid", args.clone())),
-        ResolvedTy::named_user("peer.RemotePid", args),
-        "an imported foreign RemotePid remains a user nominal"
     );
 }
 
@@ -884,7 +852,7 @@ fn imported_crash_notification_keeps_source_identity_after_record_registration()
 
     assert_eq!(
         ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-        ResolvedTy::named_user("failure.CrashNotification", Vec::new()),
+        ResolvedTy::named_path(&ctx.defs, "failure.CrashNotification", Vec::new()),
         "a published lifecycle import must retain its owner-qualified source identity"
     );
 
@@ -894,7 +862,7 @@ fn imported_crash_notification_keeps_source_identity_after_record_registration()
     ctx.import_type_name_aliases.clear();
     assert_eq!(
         ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-        ResolvedTy::named_user("CrashNotification", Vec::new()),
+        ResolvedTy::named_path(&ctx.defs, "CrashNotification", Vec::new()),
         "a global std record must not make its bare lifecycle name implicit"
     );
 
@@ -903,7 +871,7 @@ fn imported_crash_notification_keeps_source_identity_after_record_registration()
         .insert("CrashNotification".to_string());
     assert_eq!(
         ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-        ResolvedTy::named_user("CrashNotification", Vec::new()),
+        ResolvedTy::named_path(&ctx.defs, "CrashNotification", Vec::new()),
         "a user-authored same-spelling record must not acquire the lifecycle ABI"
     );
 }
@@ -919,8 +887,8 @@ fn checker_result_type_uses_flat_file_import_identity() {
         .insert("Box".to_string(), "support.file_render.Box".to_string());
 
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_user("Box", Vec::new())),
-        ResolvedTy::named_user("support.file_render.Box", Vec::new())
+        ctx.qualify_current_module_record_ty(ResolvedTy::named_path(&ctx.defs, "Box", Vec::new())),
+        ResolvedTy::named_path(&ctx.defs, "support.file_render.Box", Vec::new())
     );
 }
 
@@ -941,7 +909,7 @@ fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
 
     assert_eq!(
         ctx.resolve_named_type_ref("f.CrashNotification", Vec::new()),
-        ResolvedTy::named_user("failure.CrashNotification", Vec::new()),
+        ResolvedTy::named_path(&ctx.defs, "failure.CrashNotification", Vec::new()),
         "HIR must consume the checker's exact qualified lifecycle identity"
     );
 
@@ -952,7 +920,7 @@ fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
     );
     assert_eq!(
         unproven.resolve_named_type_ref("f.CrashNotification", Vec::new()),
-        ResolvedTy::named_user("f.CrashNotification", Vec::new()),
+        ResolvedTy::named_path(&ctx.defs, "f.CrashNotification", Vec::new()),
         "module spelling without a checker fact must remain an ordinary nominal"
     );
 }
@@ -990,15 +958,15 @@ fn source_identity_precedes_task_unit_and_cancellation_early_arms() {
     let i64_arg = || vec![named_type_ref("i64", Vec::new())];
     assert_eq!(
         ctx.lower_type(&named_type_ref("Task", i64_arg())),
-        ResolvedTy::named_user("Task".to_string(), vec![ResolvedTy::I64])
+        ResolvedTy::named_path(&ctx.defs, "Task", vec![ResolvedTy::I64])
     );
     assert_eq!(
         ctx.lower_type(&named_type_ref("Unit", i64_arg())),
-        ResolvedTy::named_user("Unit".to_string(), vec![ResolvedTy::I64])
+        ResolvedTy::named_path(&ctx.defs, "Unit", vec![ResolvedTy::I64])
     );
     assert_eq!(
         ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
-        ResolvedTy::named_opaque("CancellationToken".to_string(), Vec::new())
+        ResolvedTy::named_opaque_path(&ctx.defs, "CancellationToken", Vec::new())
     );
     assert!(
         !ctx.diagnostics
@@ -1060,18 +1028,18 @@ fn named_import_identity_precedes_task_unit_and_cancellation_early_arms() {
             "Task",
             vec![named_type_ref("i64", Vec::new())],
         )),
-        ResolvedTy::named_user("foo.Task".to_string(), vec![ResolvedTy::I64])
+        ResolvedTy::named_path(&ctx.defs, "foo.Task", vec![ResolvedTy::I64])
     );
     assert_eq!(
         ctx.lower_type(&named_type_ref(
             "Unit",
             vec![named_type_ref("i64", Vec::new())],
         )),
-        ResolvedTy::named_user("foo.Unit".to_string(), vec![ResolvedTy::I64])
+        ResolvedTy::named_path(&ctx.defs, "foo.Unit", vec![ResolvedTy::I64])
     );
     assert_eq!(
         ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
-        ResolvedTy::named_opaque("foo.CancellationToken".to_string(), Vec::new())
+        ResolvedTy::named_opaque_path(&ctx.defs, "foo.CancellationToken", Vec::new())
     );
 }
 
@@ -1505,12 +1473,7 @@ fn const_value_named<'a>(output: &'a LowerOutput, name: &str) -> &'a crate::node
 }
 
 fn named_record_ty(name: &str) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: name.to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::user_for_test(name, vec![])
 }
 
 #[test]
@@ -1709,8 +1672,8 @@ fn synthesized_actor_handle_lowering_uses_builtin_type_marker() {
     assert!(
         matches!(
             &init.ty,
-            ResolvedTy::Named { builtin: Some(BuiltinType::ActorHandle), name, args, .. }
-                if name == "Worker" && args.is_empty()
+            ResolvedTy::Named { head: name_head @ hew_types::TypeHead::Actor(_), args, .. }
+                if name_head.spelling() == "Worker" && args.is_empty()
         ),
         "an actor is the type of its handle: spawn must carry the actor's own \
              name under the handle discriminator, not a wrapper argument: {:?}",
@@ -1728,21 +1691,16 @@ mod mailbox_transfer_gate {
     use crate::value_class::TypeClassTable;
 
     fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: name.to_string(),
-            args: vec![named_record_ty("Inner")],
-            builtin: Some(kind),
-            is_opaque: false,
+        let args = vec![named_record_ty("Inner")];
+        if kind == BuiltinType::ActorHandle {
+            ResolvedTy::actor_for_test(name, args)
+        } else {
+            ResolvedTy::named_builtin(kind, args)
         }
     }
 
     fn user_generic_over(inner: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "Envelope".to_string(),
-            args: vec![inner],
-            builtin: None,
-            is_opaque: false,
-        }
+        ResolvedTy::named_for_test("Envelope", vec![inner])
     }
 
     /// Marker table and structural member sets exactly as the type-decl
@@ -1768,9 +1726,8 @@ mod mailbox_transfer_gate {
         members.insert(
             "Node".to_string(),
             vec![ResolvedTy::Named {
-                name: "Vec".to_string(),
                 args: vec![named_record_ty("Node")],
-                builtin: Some(BuiltinType::Vec),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
                 is_opaque: false,
             }],
         );
@@ -1912,11 +1869,10 @@ mod mailbox_transfer_gate {
 )]
 fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     fn named(name: &str, builtin: Option<BuiltinType>, args: Vec<ResolvedTy>) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: name.to_string(),
-            args,
-            builtin,
-            is_opaque: false,
+        match builtin {
+            Some(BuiltinType::ActorHandle) => ResolvedTy::actor_for_test(name, args),
+            Some(builtin) => ResolvedTy::named_builtin(builtin, args),
+            None => ResolvedTy::user_for_test(name, args),
         }
     }
 
@@ -1987,9 +1943,8 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     vec_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::Named {
-            name: "RenamedList".to_string(),
             args: vec![Ty::I64],
-            builtin: Some(BuiltinType::Vec),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
         },
     );
     assert_eq!(
@@ -2005,11 +1960,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     );
     user_vec_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
-        Ty::Named {
-            name: "Vec".to_string(),
-            args: vec![Ty::I64],
-            builtin: None,
-        },
+        Ty::user_for_test("Vec", vec![Ty::I64]),
     );
     let stored_user_vec_ty = user_vec_ctx
         .expr_types
@@ -2019,7 +1970,12 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     assert!(
         matches!(
             stored_user_vec_ty,
-            Some(ResolvedTy::Named { builtin: None, .. })
+            Some(ResolvedTy::Named {
+                head: hew_types::TypeHead::Nominal(_)
+                    | hew_types::TypeHead::Param(_)
+                    | hew_types::TypeHead::Unresolved(_),
+                ..
+            })
         ),
         "checker/HIR qualification must preserve a user Vec<T>, got {stored_user_vec_ty:?}"
     );
@@ -2037,9 +1993,8 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     map_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::Named {
-            name: "RenamedMap".to_string(),
             args: vec![Ty::String, Ty::I64],
-            builtin: Some(BuiltinType::HashMap),
+            head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
         },
     );
     assert_eq!(
@@ -2062,11 +2017,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     );
     user_map_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
-        Ty::Named {
-            name: "HashMap".to_string(),
-            args: vec![Ty::String, Ty::I64],
-            builtin: None,
-        },
+        Ty::user_for_test("HashMap", vec![Ty::String, Ty::I64]),
     );
     assert!(
         user_map_ctx.map_literal_hashmap_ty(&(0..0)).is_none(),
@@ -2144,9 +2095,8 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     renamed_vec_facts.insert(
         SpanKey::in_module(&object.1, 0),
         Ty::Named {
-            name: "RenamedList".to_string(),
             args: vec![Ty::Unit],
-            builtin: Some(BuiltinType::Vec),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
         },
     );
     let mut renamed_vec_diagnostics = Vec::new();
@@ -2171,11 +2121,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     let mut user_vec_facts = HashMap::new();
     user_vec_facts.insert(
         SpanKey::in_module(&object.1, 0),
-        Ty::Named {
-            name: "Vec".to_string(),
-            args: vec![Ty::Unit],
-            builtin: None,
-        },
+        Ty::user_for_test("Vec", vec![Ty::Unit]),
     );
     let mut user_vec_diagnostics = Vec::new();
     check_vec_index_element_type(
@@ -2342,7 +2288,7 @@ fn stdlib_println_unsupported_type_emits_overload_diagnostic() {
             &diagnostic.kind,
             HirDiagnosticKind::UnresolvedBuiltinOverload { name, arg_ty }
                 if name == "println"
-                    && matches!(arg_ty, ResolvedTy::Named { name, .. } if name == "Widget")
+                    && matches!(arg_ty, ResolvedTy::Named { head: name_head, .. } if name_head.spelling() == "Widget")
         )),
         "expected unsupported println overload diagnostic, got {:#?}",
         lowered.diagnostics
@@ -2926,11 +2872,7 @@ fn postfix_try_preserves_opaque_payload_representation() {
         assert!(
             matches!(
                 ty,
-                ResolvedTy::Named {
-                    name,
-                    is_opaque: true,
-                    ..
-                } if name == "Handle"
+                ResolvedTy::Named { head: name_head, is_opaque: true, .. } if name_head.spelling() == "Handle"
             ),
             "{surface} must preserve the opaque Handle discriminator; got {ty:#?}"
         );
@@ -3075,9 +3017,8 @@ fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() 
             ",
         );
         let expected = ResolvedTy::Named {
-            name: builtin.canonical_name().to_string(),
             args: Vec::new(),
-            builtin: Some(builtin),
+            head: hew_types::TypeHead::Builtin(builtin),
             is_opaque: true,
         };
         let required = function_named(&lowered, "required_field");
@@ -3107,11 +3048,7 @@ fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() 
             };
             assert_eq!(expression.ty, expected);
             if name == "field_probe" {
-                let option = ResolvedTy::named_builtin(
-                    "Option",
-                    BuiltinType::Option,
-                    vec![expected.clone()],
-                );
+                let option = ResolvedTy::named_builtin(BuiltinType::Option, vec![expected.clone()]);
                 assert_eq!(args[0].ty, option);
             }
         }
@@ -3150,9 +3087,8 @@ fn imported_encoding_mutators_keep_the_checked_writeback_contract() {
             ",
         );
         let expected = ResolvedTy::Named {
-            name: builtin.canonical_name().to_string(),
             args: vec![],
-            builtin: Some(builtin),
+            head: hew_types::TypeHead::Builtin(builtin),
             is_opaque: true,
         };
         for (name, arity) in [("push_probe", 1), ("set_probe", 2)] {
@@ -3220,7 +3156,7 @@ fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() 
         );
         ctx.canonical_std_source_type_identities
             .insert(name.to_string());
-        let opaque = ResolvedTy::named_opaque(name, vec![]);
+        let opaque = ResolvedTy::named_opaque_path(&ctx.defs, name, vec![]);
         assert_eq!(ctx.resolve_named_type_ref(name, vec![]), opaque);
         assert_eq!(ctx.qualify_current_module_record_ty(opaque.clone()), opaque);
     }
@@ -3264,7 +3200,7 @@ fn postfix_try_in_non_result_returning_fn_stays_fail_closed() {
 /// Lower the §0 probe (`Maybe<i64>` instantiated at a call site and
 /// matched) and assert that the HIR enum-layout registry contains exactly
 /// the expected entry. The `Some` variant's payload field must be
-/// `ResolvedTy::I64` (not `ResolvedTy::Named { name: "T", args: [] }` —
+/// `ResolvedTy::I64` (not `ResolvedTy::named_for_test("T", [])` —
 /// the raw type-param symbol). This pins the substitution contract.
 ///
 /// LESSONS: `type-info-survival` (P0) — read type from `expr_types`,
@@ -3353,7 +3289,7 @@ fn authored_generic_local_records_shadow_generic_builtin_spellings() {
         for ty in [&function.params[0].ty, &function.return_ty] {
             assert_eq!(
                 ty,
-                &ResolvedTy::named_user(nominal_name, vec![ResolvedTy::I64],),
+                &ResolvedTy::user_for_test(nominal_name, vec![ResolvedTy::I64]),
                 "`{nominal_name}<i64>` authored at the root must remain a user nominal"
             );
         }
@@ -3412,8 +3348,12 @@ fn stdlib_option_none_registers_in_enum_layouts() {
     };
     assert_eq!(machine_name, "Option", "ctor must target Option");
     match &tail.ty {
-        ResolvedTy::Named { name, args, .. } => {
-            assert_eq!(name, "Option");
+        ResolvedTy::Named {
+            head: name_head,
+            args,
+            ..
+        } => {
+            assert_eq!(name_head.spelling(), "Option");
             assert_eq!(
                 args.as_slice(),
                 &[ResolvedTy::I64],
@@ -3490,7 +3430,7 @@ fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
         .any(|l| l.key.origin_name == "Maybe" && l.key.type_args == vec![ResolvedTy::I64]);
     let has_option_option_i64 = layouts.iter().any(|l| {
         l.key.origin_name == "Maybe"
-            && l.key.type_args == vec![ResolvedTy::named_user("Maybe", vec![ResolvedTy::I64])]
+            && l.key.type_args == vec![ResolvedTy::named_for_test("Maybe", vec![ResolvedTy::I64])]
     });
 
     assert!(
@@ -3658,7 +3598,7 @@ fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
         .expect("query handler");
     assert_eq!(
         handler.return_ty,
-        ResolvedTy::named_user("QueryReply".to_string(), vec![]),
+        ResolvedTy::named_for_test("QueryReply", vec![]),
         "handler return type must resolve to the user record, not the builtin enum"
     );
     // The ask site registered the builtin `Result<Result, ActorError>`
@@ -3671,7 +3611,7 @@ fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
             .iter()
             .any(|layout| layout.key.origin_name == "Result"
                 && layout.key.type_args.first()
-                    == Some(&ResolvedTy::named_user("QueryReply".to_string(), vec![]))),
+                    == Some(&ResolvedTy::named_for_test("QueryReply", vec![]))),
         "ask-site Result<Result, ActorError> layout missing from enum_layouts: {:?}",
         lowered
             .module
@@ -3786,7 +3726,7 @@ fn same_leaf_user_enums_keep_user_constructor_identity() {
         assert!(
             matches!(
                 &tail.ty,
-                ResolvedTy::Named { name, builtin: None, .. } if name == expected_type
+                ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling() == expected_type
             ),
             "{function_name} retained non-user type identity: {:?}",
             tail.ty
@@ -4238,8 +4178,8 @@ fn holder_conn_field_ty(lowered: &LowerOutput, holder_name: &str) -> ResolvedTy 
 
 /// The canonical actor-handle shape an actor field resolves to: the actor's
 /// own qualified name carrying the handle discriminator.
-fn localpid_of(qualified_actor_name: &str) -> ResolvedTy {
-    ResolvedTy::named_builtin(qualified_actor_name, BuiltinType::ActorHandle, Vec::new())
+fn localpid_of(defs: &hew_types::DefTable, qualified_actor_name: &str) -> ResolvedTy {
+    ResolvedTy::named_actor_path(defs, qualified_actor_name, Vec::new())
 }
 
 /// Regression for the ambiguous-short-name case: two DIFFERENT modules
@@ -4299,7 +4239,7 @@ fn same_short_name_actors_in_different_modules_canonicalize_independently() {
     for (mod_name, holder_name) in [("a", "HolderA"), ("b", "HolderB")] {
         assert_eq!(
             holder_conn_field_ty(&lowered, holder_name),
-            localpid_of(&format!("{mod_name}.Conn")),
+            localpid_of(&tco.defs, &format!("{mod_name}.Conn")),
             "module {mod_name}'s bare `Conn` field must canonicalize to \
                  {mod_name}.Conn, never the OTHER module's same-named actor \
                  or an unresolved bare name"

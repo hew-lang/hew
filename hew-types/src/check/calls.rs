@@ -162,8 +162,8 @@ impl Checker {
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
-            Ty::Named { name, args, .. }
-                if self.strict_nominal_identity(name)
+            Ty::Named { head, args }
+                if self.strict_nominal_identity(head.registry_key())
                     == self.strict_nominal_identity(type_name)
                     && args.len() == arity =>
             {
@@ -179,14 +179,10 @@ impl Checker {
     /// display spelling again would lose renamed builtin presentations or
     /// retag a same-spelling source declaration.
     pub(super) fn variant_nominal_from_expected(expected: &Ty, args: Vec<Ty>) -> Option<Ty> {
-        let Ty::Named { name, builtin, .. } = expected else {
+        let Ty::Named { head, .. } = expected else {
             return None;
         };
-        Some(Ty::Named {
-            name: name.clone(),
-            args,
-            builtin: *builtin,
-        })
+        Some(Ty::Named { head: *head, args })
     }
 
     fn lower_turbofish_elem(
@@ -230,8 +226,7 @@ impl Checker {
             self.lower_turbofish_elem(constructor_name, expected_arity, supplied_args, span)?;
         let resolved_args: Vec<Ty> = lowered.iter().map(|ty| self.subst.resolve(ty)).collect();
         let result_ty = Ty::Named {
-            builtin: Some(builtin),
-            name: constructor_name.to_string(),
+            head: crate::TypeHead::Builtin(builtin),
             args: resolved_args,
         };
         match builtin {
@@ -799,13 +794,13 @@ impl Checker {
         } {
             self.check_arity(args, 0, &format!("`{name}.new`"), span);
             let Ty::Named {
-                name: expected_name,
+                head,
                 args: expected_args,
-                ..
             } = &resolved_expected
             else {
                 return None;
             };
+            let expected_name = head.registry_key();
             if expected_name != name || expected_args.len() != arity {
                 return None;
             }
@@ -818,8 +813,7 @@ impl Checker {
                 return Some(Ty::Error);
             }
             let result_ty = Ty::Named {
-                builtin: Some(builtin),
-                name: name.to_string(),
+                head: crate::TypeHead::Builtin(builtin),
                 args: resolved_args.clone(),
             };
             if !resolved_args.iter().any(|arg| matches!(arg, Ty::Var(_))) {
@@ -858,13 +852,13 @@ impl Checker {
                 // Expected-type path: infer element type from the surrounding
                 // `Vec<T>` annotation.
                 let Ty::Named {
-                    name,
+                    head,
                     args: vec_args,
-                    ..
                 } = &resolved_expected
                 else {
                     return None;
                 };
+                let name = head.registry_key();
                 if name != "Vec" || vec_args.len() != 1 {
                     return None;
                 }
@@ -876,8 +870,7 @@ impl Checker {
                 // expected type as-is (both are valid deferred placeholders).
                 let result_ty = if type_args.is_some() {
                     Ty::Named {
-                        builtin: Some(crate::BuiltinType::Vec),
-                        name: "Vec".to_string(),
+                        head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                         args: vec![elem_ty],
                     }
                 } else {
@@ -939,8 +932,7 @@ impl Checker {
             // already has the correct Vec<T> shape).
             let result_ty = if type_args.is_some() {
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    name: "Vec".to_string(),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                     args: vec![self.subst.resolve(&elem_ty)],
                 }
             } else {
@@ -1477,7 +1469,7 @@ impl Checker {
     /// the same string every `{owner}::{member}` registry key is built from.
     fn current_actor_type_name(&self) -> Option<&str> {
         match self.current_actor_type.as_ref()? {
-            Ty::Named { name, .. } => Some(name.as_str()),
+            Ty::Named { head, .. } => Some(head.registry_key()),
             _ => None,
         }
     }
@@ -1764,6 +1756,7 @@ impl Checker {
             .ok()?;
         let result = ResolvedTy::from_ty(&self.subst.resolve(&signature.return_type)).ok()?;
         (family.matches_encoding_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1771,6 +1764,7 @@ impl Checker {
             &result,
             &contract.consuming_params,
         ) || family.matches_file_read_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1778,6 +1772,7 @@ impl Checker {
             &result,
             &contract.consuming_params,
         ) || family.matches_tcp_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1785,6 +1780,7 @@ impl Checker {
             &result,
             &contract.consuming_params,
         ) || family.matches_async_io_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1968,7 +1964,7 @@ impl Checker {
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            let result_ty = self.variant_nominal_ty(type_name, resolved_args);
+            let result_ty = self.variant_nominal_ty(&type_name, resolved_args);
             return result_ty;
         }
 
@@ -2030,8 +2026,7 @@ impl Checker {
                     }
                 }
                 let result_ty = Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    name: "Vec".to_string(),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                     args: vec![resolved_elem],
                 };
                 self.record_type(span, &result_ty);
@@ -2102,8 +2097,8 @@ impl Checker {
                 let resolved = self.subst.resolve(&actor_ty);
                 // Supervisor close uses the tree's terminal contract, which
                 // tears down every child before returning.
-                if let Some(Ty::Named { name, .. }) = resolved.as_local_actor_ref() {
-                    if self.supervisor_children.contains_key(name) {
+                if let Some(Ty::Named { head, .. }) = resolved.as_local_actor_ref() {
+                    if self.supervisor_children.contains_key(head.registry_key()) {
                         if func_name == "close" {
                             self.record_direct_call_target(
                                 span,
@@ -2166,7 +2161,7 @@ impl Checker {
                         // forms feed the same HIR identity lowering below.
                         Ty::Array(inner, _) => self.expect_type(&elem, &inner, span),
                         Ty::Named {
-                            builtin: Some(crate::BuiltinType::Vec),
+                            head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                             args,
                             ..
                         } if args.len() == 1 => self.expect_type(&elem, &args[0], span),
@@ -2256,11 +2251,11 @@ impl Checker {
 
                 // Accept local actor handles as supervisor handles.
                 if let Some(Ty::Named {
-                    name: sup_name,
+                    head: sup_head,
                     args: sup_args,
-                    ..
                 }) = sup_ty_resolved.as_local_actor_ref()
                 {
+                    let sup_name = sup_head.registry_key();
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // `supervisor_child` builtin indexes into the static slot space.
                         let statics = &sup_children.statics;
@@ -2500,7 +2495,7 @@ impl Checker {
             if resolved_fn_name == "len" {
                 if let Some(Ty::Named {
                     args,
-                    builtin: Some(crate::BuiltinType::HashSet),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
                     ..
                 }) = applied_sig.params.first().map(|ty| self.subst.resolve(ty))
                 {
@@ -2607,7 +2602,7 @@ impl Checker {
             if matches!(
                 &resolved_func_ty,
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::ActorFn),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
                     ..
                 }
             ) {
@@ -2847,7 +2842,7 @@ impl Checker {
             // the handle's message type (M). The message must be Send (crosses actor boundary).
             Ty::Named {
                 args: ref type_args,
-                builtin: Some(crate::BuiltinType::ActorFn),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
                 ..
             } if type_args.len() == 2 => {
                 self.check_lambda_actor_call(&resolved, type_args, args, span, None)
@@ -2855,10 +2850,15 @@ impl Checker {
             // A delivery view over a lambda handle: `mailbox(handle, ..)` and
             // `policy(handle, ..)` carry the same `(msg)` call surface the
             // handle has, and decide only how the submission is admitted.
-            Ty::Named { builtin: None, .. }
-                if crate::actor_delivery::sender_parts(&resolved)
-                    .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
-                    .is_some_and(|(target, _)| target.as_actor_fn().is_some()) =>
+            Ty::Named {
+                head:
+                    crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            } if crate::actor_delivery::sender_parts(&resolved)
+                .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
+                .is_some_and(|(target, _)| target.as_actor_fn().is_some()) =>
             {
                 let one_way = crate::actor_delivery::sender_parts(&resolved).is_some();
                 let (target, policy) = crate::actor_delivery::sender_parts(&resolved)

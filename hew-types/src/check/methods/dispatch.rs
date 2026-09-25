@@ -309,7 +309,7 @@ impl Checker {
                             .iter()
                             .map(|ty| self.subst.resolve(ty))
                             .collect();
-                        return self.variant_nominal_ty(type_name, resolved_args);
+                        return self.variant_nominal_ty(&type_name, resolved_args);
                     }
                 }
                 if !self.module_fn_exports.contains(&key) {
@@ -570,19 +570,18 @@ impl Checker {
         };
         let resolved = match &resolved {
             Ty::Named {
-                name,
+                head,
                 args: type_args,
-                ..
             } if crate::method_resolution::lookup_named_method_sig(
                 &self.type_defs,
                 &self.fn_sigs,
-                name,
+                head.registry_key(),
                 type_args,
                 method,
             )
             .is_none() =>
             {
-                self.alias_target_for_instance(name, type_args)
+                self.alias_target_for_instance(head.registry_key(), type_args)
                     .unwrap_or(resolved)
             }
             _ => resolved,
@@ -631,7 +630,8 @@ impl Checker {
         }
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
-        if let Ty::Named { name, .. } = &resolved {
+        if let Ty::Named { head, .. } = &resolved {
+            let name = head.registry_key();
             self.warn_if_blocking_handle_method(name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
@@ -646,7 +646,7 @@ impl Checker {
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
-                        builtin: Some(_),
+                        head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
                         ..
                     }
             )
@@ -658,7 +658,7 @@ impl Checker {
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
-                        builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                        head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
                         ..
                     }
             );
@@ -666,7 +666,7 @@ impl Checker {
                 && matches!(
                     &resolved,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Vec | BuiltinType::HashMap),
+                        head: crate::TypeHead::Builtin(BuiltinType::Vec | BuiltinType::HashMap),
                         ..
                     }
                 )
@@ -772,7 +772,7 @@ impl Checker {
             // Vec methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Vec),
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
                     args: type_args,
                     ..
                 },
@@ -781,7 +781,7 @@ impl Checker {
             // HashMap methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::HashMap),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                     args: type_args,
                     ..
                 },
@@ -790,7 +790,7 @@ impl Checker {
             // HashSet methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::HashSet),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                     args: type_args,
                     ..
                 },
@@ -800,7 +800,7 @@ impl Checker {
                 // can refine an earlier `IntLiteral` element before we validate lowerability.
                 let original_type_args = match &receiver_ty {
                     Ty::Named {
-                        builtin: Some(BuiltinType::HashSet),
+                        head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                         args,
                         ..
                     } => args.as_slice(),
@@ -811,7 +811,7 @@ impl Checker {
             // Rc<T> methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Rc),
+                    head: crate::TypeHead::Builtin(BuiltinType::Rc),
                     args: type_args,
                     ..
                 },
@@ -820,7 +820,7 @@ impl Checker {
             // Weak<T> methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Weak),
+                    head: crate::TypeHead::Builtin(BuiltinType::Weak),
                     args: type_args,
                     ..
                 },
@@ -833,7 +833,7 @@ impl Checker {
             // boundary, so the receiver lowers as a bare `i64` nanos timestamp.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Instant),
+                    head: crate::TypeHead::Builtin(BuiltinType::Instant),
                     ..
                 },
                 _,
@@ -1322,7 +1322,7 @@ impl Checker {
                 // is `close`, which tears its tree down.
                 let supervisor = matches!(
                     resolved.as_actor_handle(),
-                    Some(Ty::Named { name, .. }) if self.supervisor_children.contains_key(name)
+                    Some(Ty::Named { head, .. }) if self.supervisor_children.contains_key(head.registry_key())
                 );
                 if method == "stop" && resolved.as_actor_handle().is_some() && !supervisor {
                     if !self.check_arity(args, 0, "`stop`", span) {
@@ -1338,8 +1338,8 @@ impl Checker {
                 // `send` resolves through the reference type's own method.
                 let has_user_send_handler = if method == "send" {
                     resolved.as_local_actor_ref().and_then(|inner| {
-                        if let Ty::Named { name, .. } = inner {
-                            Some(name.clone())
+                        if let Ty::Named { head, .. } = inner { let name = head.registry_key();
+                            Some(name.to_string())
                         } else {
                             None
                         }
@@ -1377,8 +1377,8 @@ impl Checker {
                     let actor_hint = resolved
                         .as_local_actor_ref()
                         .and_then(|inner| {
-                            if let Ty::Named { name, .. } = inner {
-                                Some(name.clone())
+                            if let Ty::Named { head, .. } = inner {
+                                Some(head.registry_key().to_string())
                             } else {
                                 None
                             }
@@ -1434,11 +1434,11 @@ impl Checker {
                 // Fall through to actor receive-fn dispatch on the inner type.
                 let inner = resolved.as_local_actor_ref().unwrap();
                 if let Ty::Named {
-                    name: actor_name,
+                    head,
                     args: actor_type_args,
-                    ..
                 } = inner
                 {
+                    let actor_name = head.registry_key();
                     // An annotation-derived `Account` actor-handle type carries
                     // the actor's bare name directly; resolve it to the
                     // registered actor identity (current module's actor, root actor, or a
@@ -1448,13 +1448,13 @@ impl Checker {
                         .fn_sigs
                         .contains_key(&format!("{actor_name}::{method}"))
                     {
-                        actor_name.clone()
+                        actor_name.to_string()
                     } else if let BareActorResolution::Resolved(identity) =
                         self.resolve_bare_actor_identity(actor_name)
                     {
                         identity
                     } else {
-                        actor_name.clone()
+                        actor_name.to_string()
                     };
                     let method_key = format!("{actor_identity}::{method}");
                     // A plain (non-receive) `fn` on the actor lands in `fn_sigs` under the
@@ -1637,7 +1637,7 @@ impl Checker {
             // separate `.recv()`.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::ActorFn),
+                    head: crate::TypeHead::Builtin(BuiltinType::ActorFn),
                     args: type_args,
                     ..
                 },
@@ -1652,7 +1652,7 @@ impl Checker {
             // .next() returns Option<yielded type>.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Generator),
+                    head: crate::TypeHead::Builtin(BuiltinType::Generator),
                     args: type_args,
                     ..
                 },
@@ -1695,7 +1695,7 @@ impl Checker {
             // now codegen will fail if the type is actually used.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Stream),
+                    head: crate::TypeHead::Builtin(BuiltinType::Stream),
                     args: type_args,
                     ..
                 },
@@ -1704,7 +1704,7 @@ impl Checker {
             // Sink<T> methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Sink),
+                    head: crate::TypeHead::Builtin(BuiltinType::Sink),
                     args: type_args,
                     ..
                 },
@@ -1814,7 +1814,7 @@ impl Checker {
             // an unconstrained `(0..n).rev()` exactly as a bare range would.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Range),
+                    head: crate::TypeHead::Builtin(BuiltinType::Range),
                     args: range_args,
                     ..
                 },
@@ -1856,15 +1856,16 @@ impl Checker {
             // User-defined struct/actor methods from type_defs
             (
                 Ty::Named {
-                    name,
+                    head,
                     args: type_args,
-                    builtin,
                 },
                 _,
             ) => {
+                let name = head.registry_key();
+                let builtin = &head.builtin();
                 let canonical_receiver_name = self
                     .canonical_nominal_name(name)
-                    .unwrap_or_else(|| name.clone());
+                    .unwrap_or_else(|| name.to_string());
                 // Builtin `Result<T, E>` / `Option<T>` receivers (e.g. the
                 // `Result<T, AskError>` wrapper an actor ask produces) resolve
                 // their methods against the origin-based stdlib snapshot ONLY,
@@ -1938,7 +1939,7 @@ impl Checker {
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::ActorInstance {
-                                actor_name: name.clone(),
+                                actor_name: name.to_string(),
                             },
                         );
                         // Every arg crosses the mailbox boundary; record the
@@ -1960,7 +1961,7 @@ impl Checker {
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::NamedTypeInstance {
-                            type_name: name.clone(),
+                            type_name: name.to_string(),
                         },
                     );
                     // Machine method dispatch: `.step()` and `.state_name()` on a
@@ -2216,9 +2217,14 @@ impl Checker {
                             // positional keys on a miss — a bare spelling here
                             // would silently change the encoded schema.
                             let mut value_source = self.subst.resolve(&resolved);
-                            if let Ty::Named { name: nominal, .. } = &mut value_source {
-                                if *nominal != canonical_receiver_name {
-                                    nominal.clone_from(&canonical_receiver_name);
+                            if let Ty::Named { head, .. } = &mut value_source {
+                                if head.registry_key() != canonical_receiver_name {
+                                    if let Some(canonical) = self
+                                        .named_ty_for_key(&canonical_receiver_name, Vec::new())
+                                        .head()
+                                    {
+                                        *head = canonical;
+                                    }
                                 }
                             }
                             if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
@@ -2361,7 +2367,7 @@ impl Checker {
                 //    1 → record StaticTraitDispatch rewrite
                 let bounds_for_type_param = self.current_function.as_ref().and_then(|fn_name| {
                     self.fn_sigs.get(fn_name).and_then(|sig| {
-                        if sig.type_params.contains(name) {
+                        if sig.type_params.iter().any(|param| param == name) {
                             sig.type_param_bounds.get(name).cloned()
                         } else {
                             None
@@ -2447,7 +2453,7 @@ impl Checker {
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::NamedTypeInstance {
-                                type_name: name.clone(),
+                                type_name: name.to_string(),
                             },
                         );
                         if trait_sig.consumes_receiver {
@@ -2479,7 +2485,7 @@ impl Checker {
                             span,
                             MethodCallRewrite::StaticTraitDispatch {
                                 target,
-                                receiver_type_param: name.clone(),
+                                receiver_type_param: name.to_string(),
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
                                 consumes_receiver: trait_sig.consumes_receiver,
                                 returns_receiver_identity: trait_sig.returns_receiver_identity,
@@ -2520,21 +2526,25 @@ impl Checker {
                 }
                 // `clone` on a user-defined named type: intercept before
                 // `UndefinedMethod` for admissible records.
-                // This arm handles the (Ty::Named { builtin: None, .. }, "clone")
+                // This arm handles the (Ty::Named { head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. }, "clone")
                 // case where `try_resolve_named_method` found no `clone` in fn_sigs.
                 if method == "clone" && args.is_empty() {
                     if let Ty::Named {
-                        name,
+                        head:
+                            head @ (crate::TypeHead::Nominal(_)
+                            | crate::TypeHead::Param(_)
+                            | crate::TypeHead::Unresolved(_)),
                         args: type_args,
-                        builtin: None,
+                        ..
                     } = &resolved
                     {
+                        let name = head.registry_key();
                         match self.record_clone_admissibility(name, type_args, span) {
                             RecordCloneAdmissibility::Admissible => {
                                 self.record_method_call_rewrite(
                                     span,
                                     MethodCallRewrite::RecordCloneInplace {
-                                        record_name: name.clone(),
+                                        record_name: name.to_string(),
                                     },
                                 );
                                 // Bare-seed monomorphic records only; a generic
@@ -2542,9 +2552,9 @@ impl Checker {
                                 // and seeded from the `RecordCloneInplace` walk
                                 // in codegen (see the sibling clone intercept).
                                 if type_args.is_empty()
-                                    && !self.user_clone_record_seeds.contains(name)
+                                    && !self.user_clone_record_seeds.iter().any(|seed| seed == name)
                                 {
-                                    self.user_clone_record_seeds.push(name.clone());
+                                    self.user_clone_record_seeds.push(name.to_string());
                                 }
                                 return resolved;
                             }
@@ -2608,7 +2618,7 @@ impl Checker {
                                 self.record_method_call_rewrite(
                                     span,
                                     MethodCallRewrite::RecordCloneInplace {
-                                        record_name: name.clone(),
+                                        record_name: name.to_string(),
                                     },
                                 );
                                 return resolved;
@@ -2644,7 +2654,9 @@ impl Checker {
                     && matches!(
                         resolved,
                         Ty::Named {
-                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                            head: crate::TypeHead::Builtin(
+                                BuiltinType::Option | BuiltinType::Result
+                            ),
                             ..
                         }
                     ) {

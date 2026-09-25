@@ -9,9 +9,8 @@ use std::collections::BTreeMap;
 
 pub fn value(format: EncodingFormat) -> ResolvedTy {
     ResolvedTy::Named {
-        name: format.builtin().canonical_name().to_string(),
+        head: hew_types::TypeHead::Builtin(format.builtin()),
         args: vec![],
-        builtin: Some(format.builtin()),
         is_opaque: true,
     }
 }
@@ -118,15 +117,20 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture assembles the whole encoding call and its drop plan"
+)]
 pub fn operation(family: RuntimeCallFamily) -> sir::SemModule {
     let owner = value(family.encoding_format().unwrap());
+    let defs = hew_types::DefTable::new();
     let contract = family.semantic_contract().unwrap();
     let params = contract
         .arguments
         .iter()
-        .map(|arg| arg.ty.resolve(Some(&owner)).unwrap())
+        .map(|arg| arg.ty.resolve(&defs, Some(&owner)).unwrap())
         .collect::<Vec<_>>();
-    let signature = contract.instantiate(&params, &owner).unwrap();
+    let signature = contract.instantiate(&defs, &params, &owner).unwrap();
     let mut module = skeleton(params, signature.result_ty.clone());
     let own = sir::OwnKind::of_class(
         module.type_facts[&hew_types::TypeInstanceKey(signature.result_ty.clone())].class,

@@ -16,8 +16,7 @@ fn facts(source: &str) -> TypeFactService {
 fn vector_cursor_uses_its_source_record_fields_and_recursive_copy() {
     let mut service = facts("fn main() -> i64 { 0 }");
     for element in [ResolvedTy::I64, ResolvedTy::String] {
-        let cursor =
-            ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![element.clone()]);
+        let cursor = ResolvedTy::named_builtin(BuiltinType::VecIter, vec![element.clone()]);
         let (instance, fields) = service.record_fields(&cursor).unwrap();
         assert_eq!(
             service.defs().path(instance.nominal.declaration()),
@@ -28,7 +27,7 @@ fn vector_cursor_uses_its_source_record_fields_and_recursive_copy() {
             vec![
                 (
                     "vec".to_string(),
-                    ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![element])
+                    ResolvedTy::named_builtin(BuiltinType::Vec, vec![element])
                 ),
                 ("idx".to_string(), ResolvedTy::I64),
             ]
@@ -43,9 +42,8 @@ fn vector_cursor_uses_its_source_record_fields_and_recursive_copy() {
 #[test]
 fn same_spelling_user_record_does_not_select_the_builtin_cursor() {
     let service = facts("type VecIter<T> { tail: T, head: i64, } fn main() -> i64 { 0 }");
-    let user = ResolvedTy::named_user("VecIter", vec![ResolvedTy::String]);
-    let builtin =
-        ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![ResolvedTy::String]);
+    let user = ResolvedTy::named_path(service.defs(), "VecIter", vec![ResolvedTy::String]);
+    let builtin = ResolvedTy::named_builtin(BuiltinType::VecIter, vec![ResolvedTy::String]);
     let (user_instance, fields) = service.record_fields(&user).unwrap();
     let (builtin_instance, _) = service.record_fields(&builtin).unwrap();
     assert_ne!(user_instance, builtin_instance);
@@ -60,7 +58,7 @@ fn same_spelling_user_record_does_not_select_the_builtin_cursor() {
 
 #[test]
 fn record_contract_requires_a_declaration_and_exact_arity() {
-    let cursor = ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![ResolvedTy::I64]);
+    let cursor = ResolvedTy::named_builtin(BuiltinType::VecIter, vec![ResolvedTy::I64]);
     let empty = TypeFactService::new(
         TypeFactContext::default(),
         std::collections::BTreeMap::default(),
@@ -68,10 +66,10 @@ fn record_contract_requires_a_declaration_and_exact_arity() {
     assert!(empty.record_fields(&cursor).is_err());
     let service = facts("enum Item { Empty, } #[opaque] type Handle {} fn main() -> i64 { 0 }");
     for ty in [
-        ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![]),
-        ResolvedTy::named_user("Missing", vec![]),
-        ResolvedTy::named_user("Item", vec![]),
-        ResolvedTy::named_opaque("Handle", vec![]),
+        ResolvedTy::named_builtin(BuiltinType::VecIter, vec![]),
+        ResolvedTy::named_path(service.defs(), "Missing", vec![]),
+        ResolvedTy::named_path(service.defs(), "Item", vec![]),
+        ResolvedTy::named_opaque_path(service.defs(), "Handle", vec![]),
     ] {
         assert!(service.record_fields(&ty).is_err(), "{ty:?}");
     }
@@ -83,8 +81,8 @@ fn record_marker_belongs_to_the_container_declaration() {
     let mut service = facts(
         "#[resource] type Handle { id: i64 } type Wrapper<T> { value: T } fn main() -> i64 { 0 }",
     );
-    let handle = ResolvedTy::named_user("Handle", vec![]);
-    let wrapper = ResolvedTy::named_user("Wrapper", vec![handle.clone()]);
+    let handle = ResolvedTy::named_path(service.defs(), "Handle", vec![]);
+    let wrapper = ResolvedTy::named_path(service.defs(), "Wrapper", vec![handle.clone()]);
     assert_eq!(service.require(&handle).unwrap().clone, CloneKind::None);
     assert_eq!(service.require(&wrapper).unwrap().clone, CloneKind::None);
     assert_eq!(
@@ -96,10 +94,10 @@ fn record_marker_belongs_to_the_container_declaration() {
         DeclarationMarker::None
     );
     assert!(service
-        .declaration_marker(&ResolvedTy::named_user("Wrapper", vec![]))
+        .declaration_marker(&ResolvedTy::named_path(service.defs(), "Wrapper", vec![]))
         .is_err());
     assert!(service
-        .declaration_marker(&ResolvedTy::named_user("Missing", vec![]))
+        .declaration_marker(&ResolvedTy::named_path(service.defs(), "Missing", vec![]))
         .is_err());
 }
 
@@ -120,7 +118,7 @@ fn value_capabilities_preserve_selected_methods_and_derived_defaults() {
         fn main() -> i64 { 0 }
     ",
     );
-    let key = ResolvedTy::named_user("Key", vec![]);
+    let key = ResolvedTy::named_path(service.defs(), "Key", vec![]);
     let mut methods = Vec::new();
     for capability in [Hash, Eq] {
         let selection: hew_types::ValueMethodSelection =
@@ -132,7 +130,7 @@ fn value_capabilities_preserve_selected_methods_and_derived_defaults() {
         };
         assert!(type_args.is_empty());
         methods.push(*method);
-        let plain = ResolvedTy::named_user("Plain", vec![]);
+        let plain = ResolvedTy::named_path(service.defs(), "Plain", vec![]);
         let derived = service
             .capability_plan(&plain, capability)
             .unwrap()
@@ -144,7 +142,7 @@ fn value_capabilities_preserve_selected_methods_and_derived_defaults() {
     assert_ne!(methods[0], methods[1]);
     assert!(service.require(&key).unwrap().hash);
     assert!(service.require(&key).unwrap().eq);
-    let hash_only = ResolvedTy::named_user("HashOnly", vec![]);
+    let hash_only = ResolvedTy::named_path(service.defs(), "HashOnly", vec![]);
     assert!(matches!(
         service
             .capability_plan(&hash_only, Hash)
@@ -172,8 +170,16 @@ fn value_capabilities_infer_impl_binders_and_concrete_specialization() {
         fn main() -> i64 { 0 }
     ",
     );
-    let generic = ResolvedTy::named_user("Key", vec![ResolvedTy::Bool, ResolvedTy::I64]);
-    let exact = ResolvedTy::named_user("Key", vec![ResolvedTy::I64, ResolvedTy::String]);
+    let generic = ResolvedTy::named_path(
+        service.defs(),
+        "Key",
+        vec![ResolvedTy::Bool, ResolvedTy::I64],
+    );
+    let exact = ResolvedTy::named_path(
+        service.defs(),
+        "Key",
+        vec![ResolvedTy::I64, ResolvedTy::String],
+    );
     let Some(User {
         method: generic_method,
         type_args,
@@ -214,7 +220,7 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
         ValueMethodPlan::Derived,
     };
     let mut service = facts("type Vec { id: i64 } enum Choice { Empty } fn main() -> i64 { 0 }");
-    let user = ResolvedTy::named_user("Vec", vec![]);
+    let user = ResolvedTy::named_path(service.defs(), "Vec", vec![]);
     assert_eq!(
         service
             .capability_plan(&user, Hash)
@@ -224,8 +230,8 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
     );
     for ty in [
         ResolvedTy::Tuple(vec![ResolvedTy::I64]),
-        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
-        ResolvedTy::named_user("Choice", vec![]),
+        ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::I64]),
+        ResolvedTy::named_path(service.defs(), "Choice", vec![]),
     ] {
         assert_eq!(service.capability_plan(&ty, Hash).unwrap(), None, "{ty:?}");
         assert!(!service.require(&ty).unwrap().hash);
@@ -235,7 +241,10 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
             .capability_plan(&ResolvedTy::TypeParam { name: "T".into() }, capability)
             .is_err());
         assert!(service
-            .capability_plan(&ResolvedTy::named_user("elsewhere.Vec", vec![]), capability)
+            .capability_plan(
+                &ResolvedTy::named_path(service.defs(), "elsewhere.Vec", vec![]),
+                capability
+            )
             .is_err());
     }
 }
@@ -255,7 +264,10 @@ fn value_capabilities_keep_generic_selection_when_specialization_is_registered_f
         method: generic,
         type_args,
     }) = service
-        .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::Bool]), Hash)
+        .capability_plan(
+            &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::Bool]),
+            Hash,
+        )
         .unwrap()
         .map(|selection| selection.plan().clone())
     else {
@@ -266,7 +278,10 @@ fn value_capabilities_keep_generic_selection_when_specialization_is_registered_f
         method: exact,
         type_args,
     }) = service
-        .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::I64]), Hash)
+        .capability_plan(
+            &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]),
+            Hash,
+        )
         .unwrap()
         .map(|selection| selection.plan().clone())
     else {
@@ -290,7 +305,7 @@ fn value_capabilities_refuse_unresolved_method_binders_independently() {
         fn main() -> i64 { 0 }
     ",
     );
-    let key = ResolvedTy::named_user("Key", vec![]);
+    let key = ResolvedTy::named_path(service.defs(), "Key", vec![]);
     assert_eq!(
         service.capability_plan(&key, Hash),
         Err(ClassError::TypeParam { name: "T".into() })
@@ -324,7 +339,7 @@ fn value_capabilities_derive_substituted_records_without_authorizing_opaque_hash
         fn main() -> i64 { 0 }
     ",
     );
-    let key = ResolvedTy::named_user("Key", vec![ResolvedTy::I64]);
+    let key = ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]);
     assert_eq!(
         service
             .capability_plan(&key, Hash)
@@ -333,7 +348,7 @@ fn value_capabilities_derive_substituted_records_without_authorizing_opaque_hash
         Some(Derived)
     );
     assert!(service.require(&key).unwrap().hash);
-    let opaque = ResolvedTy::named_opaque("Handle", vec![]);
+    let opaque = ResolvedTy::named_opaque_path(service.defs(), "Handle", vec![]);
     assert_eq!(service.capability_plan(&opaque, Hash).unwrap(), None);
     assert!(!service.require(&opaque).unwrap().hash);
 }
@@ -365,7 +380,7 @@ fn value_capabilities_keep_trait_identity_when_a_lookalike_method_is_registered_
     let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
     assert_eq!(
         service
-            .capability_plan(&ResolvedTy::named_user("Key", vec![]), Hash)
+            .capability_plan(&ResolvedTy::named_path(service.defs(), "Key", vec![]), Hash)
             .unwrap()
             .map(|selection| selection.plan().clone()),
         Some(User {
@@ -385,10 +400,10 @@ fn value_capabilities_substitute_nested_impl_patterns_and_refuse_a_nonmatching_r
         fn main() -> i64 { 0 }
     ",
     );
-    let nested = ResolvedTy::named_user(
+    let nested = ResolvedTy::named_path(
+        service.defs(),
         "Key",
         vec![ResolvedTy::named_builtin(
-            "Vec",
             BuiltinType::Vec,
             vec![ResolvedTy::I64],
         )],
@@ -402,7 +417,10 @@ fn value_capabilities_substitute_nested_impl_patterns_and_refuse_a_nonmatching_r
     };
     assert_eq!(type_args, vec![ResolvedTy::I64]);
     assert!(service
-        .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::I64]), Hash)
+        .capability_plan(
+            &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]),
+            Hash
+        )
         .is_err());
 }
 
@@ -425,7 +443,7 @@ fn derived_value_capabilities_compose_selected_member_methods_independently() {
         fn main() -> i64 { 0 }
     ",
     );
-    let leaf = ResolvedTy::named_user("Leaf", vec![]);
+    let leaf = ResolvedTy::named_path(service.defs(), "Leaf", vec![]);
     for capability in [Hash, Eq] {
         assert!(matches!(
             service
@@ -434,7 +452,7 @@ fn derived_value_capabilities_compose_selected_member_methods_independently() {
                 .map(|selection| selection.plan().clone()),
             Some(User { .. })
         ));
-        let wrapper = ResolvedTy::named_user("Wrapper", vec![leaf.clone()]);
+        let wrapper = ResolvedTy::named_path(service.defs(), "Wrapper", vec![leaf.clone()]);
         assert_eq!(
             service
                 .capability_plan(&wrapper, capability)
@@ -446,12 +464,19 @@ fn derived_value_capabilities_compose_selected_member_methods_independently() {
         assert!(row.hash && row.eq);
         assert_eq!(
             service
-                .capability_plan(&ResolvedTy::named_user("Unsupported", vec![]), capability)
+                .capability_plan(
+                    &ResolvedTy::named_path(service.defs(), "Unsupported", vec![]),
+                    capability
+                )
                 .unwrap(),
             None
         );
     }
-    let eq_only = ResolvedTy::named_user("Wrapper", vec![ResolvedTy::named_user("EqLeaf", vec![])]);
+    let eq_only = ResolvedTy::named_path(
+        service.defs(),
+        "Wrapper",
+        vec![ResolvedTy::named_path(service.defs(), "EqLeaf", vec![])],
+    );
     assert_eq!(
         service
             .capability_plan(&eq_only, Eq)
@@ -464,8 +489,8 @@ fn derived_value_capabilities_compose_selected_member_methods_independently() {
     assert!(row.eq && !row.hash);
     for container in [
         ResolvedTy::Tuple(vec![leaf.clone()]),
-        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![leaf]),
-        ResolvedTy::named_user("Choice", vec![]),
+        ResolvedTy::named_builtin(BuiltinType::Vec, vec![leaf]),
+        ResolvedTy::named_path(service.defs(), "Choice", vec![]),
     ] {
         assert_eq!(
             service
@@ -505,8 +530,8 @@ fn selected_value_methods_require_impl_and_method_where_obligations() {
         ret: Box::new(ResolvedTy::I64),
     };
     for (name, capability) in [("Inline", Hash), ("Where", Hash), ("Method", Eq)] {
-        let good = ResolvedTy::named_user(name, vec![ResolvedTy::I64]);
-        let bad = ResolvedTy::named_user(name, vec![non_hash.clone()]);
+        let good = ResolvedTy::user_for_test(name, vec![ResolvedTy::I64]);
+        let bad = ResolvedTy::user_for_test(name, vec![non_hash.clone()]);
         assert!(matches!(
             service
                 .capability_plan(&good, capability)
@@ -521,7 +546,7 @@ fn selected_value_methods_require_impl_and_method_where_obligations() {
     // an explicit refusal even when a live checker could establish it.
     assert!(service
         .capability_plan(
-            &ResolvedTy::named_user("Custom", vec![ResolvedTy::I64]),
+            &ResolvedTy::named_path(service.defs(), "Custom", vec![ResolvedTy::I64]),
             Hash
         )
         .is_err());
@@ -539,8 +564,8 @@ fn a_user_hash_method_does_not_expand_the_admitted_collection_shapes() {
     ",
     );
     for ty in [
-        ResolvedTy::named_user("Choice", vec![]),
-        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
+        ResolvedTy::named_path(service.defs(), "Choice", vec![]),
+        ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::I64]),
     ] {
         assert_eq!(service.capability_plan(&ty, Hash).unwrap(), None);
         assert!(!service.require(&ty).unwrap().hash);
@@ -571,7 +596,10 @@ fn concrete_comparisons_and_capability_queries_select_the_same_eq_specialization
     let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
     assert_eq!(
         service
-            .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::I64]), Eq)
+            .capability_plan(
+                &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]),
+                Eq
+            )
             .unwrap()
             .map(|selection| selection.plan().clone()),
         Some(User {

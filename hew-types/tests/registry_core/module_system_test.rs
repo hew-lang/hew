@@ -267,11 +267,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     // shortens the qualifier back to bare on the non-colliding layout lookup.
     assert_eq!(
         inferred,
-        &vec![Ty::Named {
-            builtin: None,
-            name: "myapp.widgets.Label".to_string(),
-            args: vec![],
-        }]
+        &vec![Ty::named_in(&output.defs, "myapp.widgets.Label", vec![])]
     );
 }
 
@@ -656,8 +652,11 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         .expect("take_alpha sig must be registered");
     let param = sig.params.first().expect("take_alpha has one param");
     match param {
-        Ty::Named { name, .. } => assert_eq!(
-            name, "pkg.alpha.Value",
+        Ty::Named {
+            head: name_head, ..
+        } => assert_eq!(
+            name_head.spelling(),
+            "pkg.alpha.Value",
             "param type must carry the module qualifier into the resolved sig"
         ),
         other => panic!("expected Ty::Named, got {other:?}"),
@@ -819,7 +818,9 @@ fn same_bare_name_member_field_binds_to_own_module_identity() {
                 .get(holder_key)
                 .unwrap_or_else(|| panic!("{holder_key} must register its own qualified def"));
             match holder.fields.get("w") {
-                Some(Ty::Named { name, .. }) => name.clone(),
+                Some(Ty::Named {
+                    head: name_head, ..
+                }) => name_head.spelling().to_string(),
                 other => panic!("{holder_key}.w must be a Ty::Named, got {other:?}"),
             }
         };

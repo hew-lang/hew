@@ -274,6 +274,10 @@ impl Scopes {
     }
 
     /// Bind an enum's variants in declaration order.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an enum declares more than `u32::MAX` variants.
     pub fn declare_variants(&mut self, nominal: NominalId, variants: &[Symbol]) {
         for (index, name) in variants.iter().enumerate() {
             self.variants.insert(

@@ -56,7 +56,8 @@ fn spawn_returns_the_actor_type() {
             .unwrap_or(Ty::Unit)
     });
     assert_eq!(
-        ty.actor_handle_identity(),
+        ty.actor_handle_identity()
+            .map(|(head, args)| (head.spelling.as_str(), args)),
         Some(("Counter", &[][..])),
         "expected the Counter actor handle, got {ty:?}"
     );
@@ -68,7 +69,7 @@ fn spawn_returns_the_actor_type() {
 fn actor_handle_is_send_sync_copy() {
     use hew_types::traits::{MarkerTrait, TraitRegistry};
     let reg = TraitRegistry::new();
-    let ty = Ty::actor_handle("Counter", vec![]);
+    let ty = Ty::actor_for_test("Counter", vec![]);
     for marker in [
         MarkerTrait::Send,
         MarkerTrait::Sync,
@@ -90,11 +91,7 @@ fn actor_handle_is_send_sync_copy() {
 fn remote_pid_is_send_sync_copy() {
     use hew_types::traits::{MarkerTrait, TraitRegistry};
     let reg = TraitRegistry::new();
-    let ty = Ty::remote_pid(Ty::Named {
-        builtin: None,
-        name: "Counter".into(),
-        args: vec![],
-    });
+    let ty = Ty::remote_pid(Ty::named_for_test("Counter", vec![]));
     for marker in [
         MarkerTrait::Send,
         MarkerTrait::Sync,
@@ -121,12 +118,8 @@ fn actor_handle_and_remote_pid_do_not_unify() {
     // silent unify would be a miscompile.
     use hew_types::ty::Substitution;
     use hew_types::unify::unify;
-    let actor_nominal = Ty::Named {
-        builtin: None,
-        name: "Worker".into(),
-        args: vec![],
-    };
-    let actor_handle = Ty::actor_handle("Worker", vec![]);
+    let actor_nominal = Ty::named_for_test("Worker", vec![]);
+    let actor_handle = Ty::actor_for_test("Worker", vec![]);
     let remote_pid = Ty::remote_pid(actor_nominal);
 
     let mut subst = Substitution::new();
@@ -178,20 +171,24 @@ fn remote_pid_registered_in_builtin_names() {
 
 #[test]
 fn ty_actor_handle_helper() {
-    let ty = Ty::actor_handle("Msg", vec![]);
-    assert_eq!(ty.actor_handle_identity(), Some(("Msg", &[][..])));
+    let ty = Ty::actor_for_test("Msg", vec![]);
+    assert_eq!(
+        ty.actor_handle_identity()
+            .map(|(head, args)| (head.spelling.as_str(), args)),
+        Some(("Msg", &[][..]))
+    );
     assert!(ty.as_actor_handle().is_some());
     assert_eq!(ty.as_remote_pid(), None);
 }
 
 #[test]
 fn ty_remote_pid_helper() {
-    let inner = Ty::Named {
-        builtin: None,
-        name: "Msg".into(),
-        args: vec![],
-    };
+    let inner = Ty::named_for_test("Msg", vec![]);
     let ty = Ty::remote_pid(inner.clone());
     assert_eq!(ty.as_remote_pid(), Some(&inner));
-    assert_eq!(ty.actor_handle_identity(), None);
+    assert_eq!(
+        ty.actor_handle_identity()
+            .map(|(head, args)| (head.spelling.as_str(), args)),
+        None
+    );
 }

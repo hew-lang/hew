@@ -228,7 +228,10 @@ impl<'a> InstanceService<'a> {
                 .collect(),
             ResolvedTy::Named {
                 args,
-                builtin: Some(hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap),
+                head:
+                    hew_types::TypeHead::Builtin(
+                        hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap,
+                    ),
                 ..
             } => args
                 .iter()
@@ -271,7 +274,7 @@ impl<'a> InstanceService<'a> {
                                 &field.name,
                             )?;
                             let source_builtin = match &source {
-                                ResolvedTy::Named { builtin, .. } => *builtin,
+                                ResolvedTy::Named { head, .. } => head.builtin(),
                                 _ => None,
                             };
                             let builtin_argument = source_builtin

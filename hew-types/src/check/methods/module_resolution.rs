@@ -85,13 +85,13 @@ impl Checker {
             .get(&key)
             .ok_or_else(|| "runtime handler argument has no checked type".to_string())?;
         let Ty::Named {
-            name,
-            builtin: Some(BuiltinType::ActorHandle),
+            head: crate::TypeHead::Actor(actor),
             ..
         } = self.subst.resolve(ty)
         else {
             return Err("runtime handler requires a concrete actor handle".to_string());
         };
+        let name = actor.spelling.to_string();
         let canonical = self.canonical_nominal_name(&name).unwrap_or(name.clone());
         let protocol = self
             .actor_protocol_descriptors

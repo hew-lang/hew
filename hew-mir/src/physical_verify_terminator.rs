@@ -1068,11 +1068,7 @@ pub(crate) fn verify_terminator(
                 .ok_or_else(|| PhysicalError::new("stream receive has no stream input"))?;
             if recipe.ty != *element
                 || slot(*result)?.ty
-                    != ResolvedTy::named_builtin(
-                        "Option",
-                        BuiltinType::Option,
-                        vec![element.clone()],
-                    )
+                    != ResolvedTy::named_builtin(BuiltinType::Option, vec![element.clone()])
             {
                 return Err(PhysicalError::new(
                     "stream receive changes its element type",
@@ -1158,7 +1154,7 @@ pub(crate) fn verify_terminator(
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
             if !operation
                 .contract()
-                .matches_signature(&arguments, &slot(*result)?.ty)
+                .matches_signature(&module.defs, &arguments, &slot(*result)?.ty)
             {
                 return Err(PhysicalError::new(
                     "native I/O inputs or result differ from the operation contract",
@@ -1544,7 +1540,7 @@ pub(crate) fn verify_terminator(
                 }
                 hew_types::WireCodecDirection::FromJson
                 | hew_types::WireCodecDirection::FromYaml => {
-                    matches!(output, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
+                    matches!(output, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args == &[plan.ty.clone(), ResolvedTy::String])
                 }
             };
             if !valid_result {
@@ -1766,7 +1762,7 @@ pub(crate) fn verify_terminator(
                 } else {
                     &ResolvedTy::Unit
                 });
-            let signature = contract.instantiate(&parameter_types, result_type)
+            let signature = contract.instantiate(&module.defs, &parameter_types, result_type)
                 .map_err(|reason| PhysicalError::new(format!("physical runtime action {action:?} signature disagrees with its semantic contract: {reason}")))?;
             if &signature.result_ty != result_type {
                 return Err(PhysicalError::new(format!("physical runtime action {action:?} result type disagrees with its semantic contract")));
@@ -1892,7 +1888,7 @@ pub(crate) fn verify_terminator(
                     let option_glue = variant_glue(module, error_len)?;
                     let option_is_i64 = matches!(
                         &option_glue.ty,
-                        ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Option), args, .. }
+                        ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Option), args, .. }
                             if args.as_slice() == [ResolvedTy::I64]
                     );
                     let field_is = |fields: &[PhysicalValueRecipe], ty: &ResolvedTy| {

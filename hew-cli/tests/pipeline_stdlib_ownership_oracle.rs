@@ -29,7 +29,7 @@ fn main() -> i64 {
     var source = pipeline.run(pipeline.from(__FRAMES__));
     var i: i64 = 0;
     while i < __FRAMES__ {
-        let item: pipeline.PipelineItemI64 = PipelineItemI64 {
+        let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 {
             value: i,
             label: f"normal-owned-{i}",
             crash_stage: false,
@@ -56,7 +56,7 @@ fn cancellation_source(frames: usize) -> String {
         r#"import std.pipeline;
 
 fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
-    PipelineItemI64 { value: value, label: label, crash_stage: false }
+    pipeline.PipelineItemI64 { value: value, label: label, crash_stage: false }
 }
 
 fn main() -> i64 {
@@ -127,7 +127,7 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < __FRAMES__ {
         var source = pipeline.run(pipeline.from(1));
-        let item: pipeline.PipelineItemI64 = PipelineItemI64 {
+        let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 {
             value: i,
             label: f"crash-owned-{i}",
             crash_stage: true,
@@ -158,7 +158,7 @@ fn main() -> i64 {
     var source = pipeline.run(pipeline.from(__FRAMES__));
     var i: i64 = 0;
     while i < __FRAMES__ {
-        let item: pipeline.PipelineItemI64 = PipelineItemI64 {
+        let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 {
             value: i,
             label: f"drain-owned-{i}",
             crash_stage: false,

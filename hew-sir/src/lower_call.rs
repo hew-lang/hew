@@ -449,7 +449,7 @@ impl Builder<'_, '_> {
             || !matches!(
                 self.ty(&expression.ty),
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Vec),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
                     ..
                 }
             )
@@ -1383,7 +1383,7 @@ impl Builder<'_, '_> {
         };
         let handler_ty = self.ty(&handler.ty);
         if handler_ty
-            .actor_handle_instance(&self.service.module.defs)
+            .actor_handle_instance()
             .is_none_or(|instance| instance.nominal.declaration() != endpoints.actor)
         {
             return Err("actor ingress target differs from its resolved declaration".into());
@@ -1581,7 +1581,7 @@ impl Builder<'_, '_> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let instantiated = contract
-            .resolve_types(&source_types, &self.ty(&expr.ty))
+            .resolve_types(&self.service.module.defs, &source_types, &self.ty(&expr.ty))
             .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
         let parameter_types = &instantiated.arguments;
         // Runtime mutations release receiver-typed contents inside the call.

@@ -505,7 +505,7 @@ impl TraitRegistry {
         marker: MarkerTrait,
         visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
-        if matches!(ty, Ty::Named { name, args, builtin: None } if args.is_empty() && (visiting.type_param_bound)(name, marker))
+        if matches!(ty, Ty::Named { head: crate::TypeHead::Param(param), args } if args.is_empty() && (visiting.type_param_bound)(param.spelling.as_str(), marker))
         {
             return true;
         }
@@ -544,7 +544,7 @@ impl TraitRegistry {
             | Ty::Char
             | Ty::Duration
             | Ty::Named {
-                builtin: Some(BuiltinType::Instant),
+                head: crate::TypeHead::Builtin(BuiltinType::Instant),
                 ..
             }
             | Ty::Unit
@@ -604,7 +604,7 @@ impl TraitRegistry {
             // Local actor references are immutable identities, not resources:
             // Send + Sync + Frozen + Copy + Clone + Debug.
             Ty::Named {
-                builtin: Some(BuiltinType::ChildRef | BuiltinType::ActorHandle),
+                head: crate::TypeHead::Builtin(BuiltinType::ChildRef) | crate::TypeHead::Actor(_),
                 ..
             } => matches!(
                 marker,
@@ -618,7 +618,10 @@ impl TraitRegistry {
 
             // Key-backed node identity values are immutable inline aggregates.
             Ty::Named {
-                builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
+                head:
+                    crate::TypeHead::Builtin(
+                        BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid,
+                    ),
                 ..
             } => matches!(
                 marker,
@@ -638,7 +641,7 @@ impl TraitRegistry {
             // iff T: Send. Sink clones a producer handle; a Stream has one
             // consumer. Both are resources: release publishes EOF.
             Ty::Named {
-                builtin: Some(kind @ (BuiltinType::Stream | BuiltinType::Sink)),
+                head: crate::TypeHead::Builtin(kind @ (BuiltinType::Stream | BuiltinType::Sink)),
                 args,
                 ..
             } if args.len() == 1 => match marker {
@@ -657,7 +660,7 @@ impl TraitRegistry {
             //   cloning; `close(handle)` is how a program stops the actor.
             // Resource: yes — the handle carries the actor's lifecycle.
             Ty::Named {
-                builtin: Some(BuiltinType::ActorFn),
+                head: crate::TypeHead::Builtin(BuiltinType::ActorFn),
                 args,
                 ..
             } if args.len() == 2 => match marker {
@@ -687,11 +690,10 @@ impl TraitRegistry {
             }
 
             // Named types: check all fields
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args } => {
+                // TRANSITION(A1 commit 3): the registry is keyed by name.
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 // Affine declarations are never bitwise-copyable, even when
                 // their representation is a single pointer/integer or all of
                 // their visible fields are Copy. Their declaration carries one
@@ -795,7 +797,7 @@ impl TraitRegistry {
                 // obligation; the result is decided by the non-recursive
                 // members. (Direct infinite-size cycles are rejected by
                 // `cycle.rs`; this only keeps the derivation total.)
-                if !visiting.visiting.insert(name.clone()) {
+                if !visiting.visiting.insert(name.to_string()) {
                     return true;
                 }
                 // Record types: value types declared with `record`. Markers are
@@ -1024,10 +1026,11 @@ impl TraitRegistry {
     /// `Wrapper<i64>` that holds a `NoSend` field to be granted Send — a
     /// data-race / UAF soundness hole.
     fn is_type_param_placeholder(&self, parent_name: &str, ty: &Ty, marker: MarkerTrait) -> bool {
+        // Only a binder head is a placeholder: a nominal field that merely
+        // shares a binder's spelling is a concrete type (rule R6).
         let Ty::Named {
-            builtin: None,
+            head: crate::TypeHead::Param(param),
             args,
-            name: field_name,
         } = ty
         else {
             return false;
@@ -1035,17 +1038,10 @@ impl TraitRegistry {
         if !args.is_empty() {
             return false;
         }
-        // Primary path: authoritative declared-param list.
-        if let Some(params) = self.type_params.get(parent_name) {
-            return params.iter().any(|p| p == field_name);
-        }
-        // Fallback heuristic: treat as placeholder iff no concrete evidence
-        // exists (no type_fields entry, no negative impl for this marker).
-        !self.type_fields.contains_key(field_name.as_str())
-            && !self
-                .negative_impls
-                .get(field_name.as_str())
-                .is_some_and(|s| s.contains(&marker))
+        let _ = marker;
+        self.type_params
+            .get(parent_name)
+            .is_none_or(|params| params.iter().any(|p| p == param.spelling.as_str()))
     }
 }
 
@@ -1071,11 +1067,7 @@ mod tests {
     #[test]
     fn child_ref_is_a_copyable_local_actor_reference() {
         let registry = TraitRegistry::new();
-        let child_ref = Ty::child_ref(Ty::Named {
-            builtin: None,
-            name: "Worker".to_string(),
-            args: vec![],
-        });
+        let child_ref = Ty::child_ref(Ty::named_for_test("Worker", vec![]));
         for marker in [
             MarkerTrait::Send,
             MarkerTrait::Frozen,
@@ -1096,11 +1088,7 @@ mod tests {
     fn test_named_type_with_fields() {
         let mut registry = TraitRegistry::new();
         registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
-        let point = Ty::Named {
-            builtin: None,
-            name: "Point".to_string(),
-            args: vec![],
-        };
+        let point = Ty::named_for_test("Point", vec![]);
         assert!(registry.is_send(&point));
         assert!(registry.implements_marker(&point, MarkerTrait::Copy));
     }
@@ -1120,11 +1108,7 @@ mod tests {
             "LinearHandle",
             "module.LinearHandle",
         ] {
-            let ty = Ty::Named {
-                builtin: None,
-                name: name.to_string(),
-                args: vec![],
-            };
+            let ty = Ty::named_for_test(name, vec![]);
             assert!(
                 !registry.implements_marker(&ty, MarkerTrait::Copy),
                 "affine declaration `{name}` must move despite its scalar representation"
@@ -1137,11 +1121,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_type("Handle".to_string(), vec![Ty::I32]);
         registry.register_negative_impl("Handle".to_string(), MarkerTrait::Send);
-        let handle = Ty::Named {
-            builtin: None,
-            name: "Handle".to_string(),
-            args: vec![],
-        };
+        let handle = Ty::named_for_test("Handle", vec![]);
         assert!(!registry.is_send(&handle));
     }
 
@@ -1193,11 +1173,7 @@ mod tests {
     fn test_struct_with_send_fields_is_sync() {
         let mut registry = TraitRegistry::new();
         registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
-        let point = Ty::Named {
-            builtin: None,
-            name: "Point".to_string(),
-            args: vec![],
-        };
+        let point = Ty::named_for_test("Point", vec![]);
         assert!(registry.is_sync(&point));
     }
 
@@ -1232,8 +1208,7 @@ mod tests {
     fn test_vec_is_send_when_element_is_send() {
         let registry = TraitRegistry::new();
         let vec_i32 = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args: vec![Ty::I32],
         };
         assert!(registry.is_send(&vec_i32));
@@ -1247,8 +1222,7 @@ mod tests {
     fn test_hashmap_is_send_when_elements_are_send() {
         let registry = TraitRegistry::new();
         let map = Ty::Named {
-            builtin: Some(BuiltinType::HashMap),
-            name: "HashMap".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::HashMap),
             args: vec![Ty::String, Ty::I32],
         };
         assert!(registry.is_send(&map));
@@ -1259,8 +1233,7 @@ mod tests {
     fn test_hashset_is_send_when_element_is_send() {
         let registry = TraitRegistry::new();
         let set = Ty::Named {
-            builtin: Some(BuiltinType::HashSet),
-            name: "HashSet".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::HashSet),
             args: vec![Ty::String],
         };
         assert!(registry.is_send(&set));
@@ -1277,11 +1250,7 @@ mod tests {
             pointee: Box::new(Ty::I32),
             is_mutable: false,
         };
-        let set_ptr = Ty::Named {
-            builtin: None,
-            name: "HashSet".to_string(),
-            args: vec![ptr],
-        };
+        let set_ptr = Ty::named_for_test("HashSet", vec![ptr]);
         assert!(!registry.is_send(&set_ptr));
     }
 
@@ -1291,16 +1260,8 @@ mod tests {
         // must remain non-Send even after the HashSet Send-marker fix, exercising
         // the element-propagation path with Rc rather than a raw pointer.
         let registry = TraitRegistry::new();
-        let rc_i32 = Ty::Named {
-            builtin: None,
-            name: "Rc".to_string(),
-            args: vec![Ty::I32],
-        };
-        let set_rc = Ty::Named {
-            builtin: None,
-            name: "HashSet".to_string(),
-            args: vec![rc_i32],
-        };
+        let rc_i32 = Ty::named_for_test("Rc", vec![Ty::I32]);
+        let set_rc = Ty::named_for_test("HashSet", vec![rc_i32]);
         assert!(!registry.is_send(&set_rc));
         assert!(!registry.is_sync(&set_rc));
     }
@@ -1313,14 +1274,9 @@ mod tests {
         // structural marker. The enum is NOT Copy (heap-owning Vec field) but
         // the derivation must terminate to report that.
         let mut registry = TraitRegistry::new();
-        let reply = Ty::Named {
-            builtin: None,
-            name: "RedisReply".to_string(),
-            args: vec![],
-        };
+        let reply = Ty::named_for_test("RedisReply", vec![]);
         let vec_of_reply = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args: vec![reply.clone()],
         };
         registry.register_type("RedisReply".to_string(), vec![vec_of_reply]);
@@ -1413,11 +1369,7 @@ mod tests {
             pointee: Box::new(Ty::I32),
             is_mutable: false,
         };
-        let vec_ptr = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![ptr],
-        };
+        let vec_ptr = Ty::named_for_test("Vec", vec![ptr]);
         assert!(!registry.is_send(&vec_ptr));
     }
 
@@ -1427,16 +1379,14 @@ mod tests {
 
     fn stream_of(elem: Ty) -> Ty {
         Ty::Named {
-            builtin: Some(BuiltinType::Stream),
-            name: "Stream".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Stream),
             args: vec![elem],
         }
     }
 
     fn sink_of(elem: Ty) -> Ty {
         Ty::Named {
-            builtin: Some(BuiltinType::Sink),
-            name: "Sink".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Sink),
             args: vec![elem],
         }
     }
@@ -1454,8 +1404,7 @@ mod tests {
         assert!(registry.is_sync(&sink_i64), "Sink<i64> must be Sync");
 
         let rc_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Rc),
-            name: "Rc".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc),
             args: vec![Ty::I64],
         };
         let stream_rc = stream_of(rc_i64.clone());
@@ -1503,18 +1452,13 @@ mod tests {
     fn struct_holding_stream_of_rc_is_not_send() {
         let mut registry = TraitRegistry::new();
         let rc_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Rc),
-            name: "Rc".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc),
             args: vec![Ty::I64],
         };
         let stream_rc = stream_of(rc_i64);
         // type Worker { half: Stream<Rc<i64>>; id: i64 }
         registry.register_type("Worker".to_string(), vec![stream_rc, Ty::I64]);
-        let worker = Ty::Named {
-            builtin: None,
-            name: "Worker".to_string(),
-            args: vec![],
-        };
+        let worker = Ty::named_for_test("Worker", vec![]);
         assert!(
             !registry.is_send(&worker),
             "Worker holding Stream<Rc<i64>> must NOT be Send"
@@ -1581,19 +1525,11 @@ mod tests {
         // Simulates: type Box<T> { v: T }
         // Registration stores the field as Ty::Named { name: "T" } — the type
         // parameter placeholder.
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
         registry.register_type("Box".to_string(), vec![t_param]);
 
         // Box<i64> — T instantiated to i64
-        let box_i64 = Ty::Named {
-            builtin: None,
-            name: "Box".to_string(),
-            args: vec![Ty::I64],
-        };
+        let box_i64 = Ty::named_for_test("Box", vec![Ty::I64]);
         assert!(
             registry.is_send(&box_i64),
             "Box<i64> must be Send (T = i64 is Send)"
@@ -1606,18 +1542,10 @@ mod tests {
     fn user_generic_enum_with_send_arg_is_send() {
         let mut registry = TraitRegistry::new();
         // Simulates: enum Tree<T> { Leaf(T); Empty }
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
         registry.register_type("Tree".to_string(), vec![t_param]);
 
-        let tree_i64 = Ty::Named {
-            builtin: None,
-            name: "Tree".to_string(),
-            args: vec![Ty::I64],
-        };
+        let tree_i64 = Ty::named_for_test("Tree", vec![Ty::I64]);
         assert!(
             registry.is_send(&tree_i64),
             "Tree<i64> must be Send (T = i64 is Send)"
@@ -1629,19 +1557,11 @@ mod tests {
     #[test]
     fn user_generic_struct_with_concrete_and_param_fields_is_send() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
         // type Msg<T> { payload: T; id: i64 }
         registry.register_type("Msg".to_string(), vec![t_param, Ty::I64]);
 
-        let msg_i64 = Ty::Named {
-            builtin: None,
-            name: "Msg".to_string(),
-            args: vec![Ty::I64],
-        };
+        let msg_i64 = Ty::named_for_test("Msg", vec![Ty::I64]);
         assert!(registry.is_send(&msg_i64), "Msg<i64> must be Send");
     }
 
@@ -1655,24 +1575,15 @@ mod tests {
     #[test]
     fn user_generic_struct_with_rc_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
         registry.register_type("Box".to_string(), vec![t_param]);
 
         // Box<Rc<i64>> — Rc is explicitly not-Send
         let rc_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Rc),
-            name: "Rc".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc),
             args: vec![Ty::I64],
         };
-        let box_rc = Ty::Named {
-            builtin: None,
-            name: "Box".to_string(),
-            args: vec![rc_i64],
-        };
+        let box_rc = Ty::named_for_test("Box", vec![rc_i64]);
         assert!(
             !registry.is_send(&box_rc),
             "Box<Rc<i64>> must NOT be Send — Rc is not Send"
@@ -1687,23 +1598,14 @@ mod tests {
     #[test]
     fn user_generic_struct_with_stream_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
         registry.register_type("Box".to_string(), vec![t_param]);
 
         let rc_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Rc),
-            name: "Rc".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc),
             args: vec![Ty::I64],
         };
-        let box_stream = Ty::Named {
-            builtin: None,
-            name: "Box".to_string(),
-            args: vec![stream_of(rc_i64)],
-        };
+        let box_stream = Ty::named_for_test("Box", vec![stream_of(rc_i64)]);
         assert!(
             !registry.is_send(&box_stream),
             "Box<Stream<Rc<i64>>> must NOT be Send — the element is not Send"
@@ -1716,17 +1618,12 @@ mod tests {
     fn concrete_struct_holding_stream_of_rc_is_not_send() {
         let mut registry = TraitRegistry::new();
         let rc_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Rc),
-            name: "Rc".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc),
             args: vec![Ty::I64],
         };
         // type Holder { half: Stream<Rc<i64>>; value: i64 }
         registry.register_type("Holder".to_string(), vec![stream_of(rc_i64), Ty::I64]);
-        let holder = Ty::Named {
-            builtin: None,
-            name: "Holder".to_string(),
-            args: vec![],
-        };
+        let holder = Ty::named_for_test("Holder", vec![]);
         assert!(
             !registry.is_send(&holder),
             "Holder (Stream<Rc<i64>> field) must NOT be Send"
@@ -1739,11 +1636,7 @@ mod tests {
     fn concrete_struct_with_all_send_fields_still_send_after_generic_fix() {
         let mut registry = TraitRegistry::new();
         registry.register_type("Point".to_string(), vec![Ty::I64, Ty::I64]);
-        let point = Ty::Named {
-            builtin: None,
-            name: "Point".to_string(),
-            args: vec![],
-        };
+        let point = Ty::named_for_test("Point", vec![]);
         assert!(
             registry.is_send(&point),
             "Point (i64 fields) must remain Send"
@@ -1766,42 +1659,22 @@ mod tests {
     #[test]
     fn negative_impl_field_not_laundered_by_generic_wrapper() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
-        let no_send = Ty::Named {
-            builtin: None,
-            name: "NoSend".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
+        let no_send = Ty::named_for_test("NoSend", vec![]);
         // NoSend is a concrete type explicitly opted out of Send.
         registry.register_negative_impl("NoSend".to_string(), MarkerTrait::Send);
         // type Wrapper<T> { hidden: NoSend; value: T }
         registry.register_type("Wrapper".to_string(), vec![no_send, t_param]);
 
-        let wrapper_i64 = Ty::Named {
-            builtin: None,
-            name: "Wrapper".to_string(),
-            args: vec![Ty::I64],
-        };
+        let wrapper_i64 = Ty::named_for_test("Wrapper", vec![Ty::I64]);
         assert!(
             !registry.is_send(&wrapper_i64),
             "Wrapper<i64> must NOT be Send: it holds a NoSend field (registered negative impl)"
         );
         // Positive control: a wrapper with a genuine param field only IS Send.
-        let t_only = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_only = Ty::param("T");
         registry.register_type("PureWrapper".to_string(), vec![t_only]);
-        let pure_i64 = Ty::Named {
-            builtin: None,
-            name: "PureWrapper".to_string(),
-            args: vec![Ty::I64],
-        };
+        let pure_i64 = Ty::named_for_test("PureWrapper", vec![Ty::I64]);
         assert!(
             registry.is_send(&pure_i64),
             "PureWrapper<i64> (no NoSend field) must remain Send"
@@ -1814,26 +1687,14 @@ mod tests {
     #[test]
     fn negative_impl_is_marker_scoped_not_global() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
-        let bad_sync = Ty::Named {
-            builtin: None,
-            name: "BadSync".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
+        let bad_sync = Ty::named_for_test("BadSync", vec![]);
         // BadSync has a negative Sync fact but NOT a negative Send fact.
         registry.register_negative_impl("BadSync".to_string(), MarkerTrait::Sync);
         // type Container<T> { bad: BadSync; item: T }
         registry.register_type("Container".to_string(), vec![bad_sync, t_param]);
 
-        let container_i64 = Ty::Named {
-            builtin: None,
-            name: "Container".to_string(),
-            args: vec![Ty::I64],
-        };
+        let container_i64 = Ty::named_for_test("Container", vec![Ty::I64]);
         // Must fail Sync (BadSync has negative Sync fact, must not be skipped).
         assert!(
             !registry.implements_marker(&container_i64, MarkerTrait::Sync),
@@ -1854,20 +1715,12 @@ mod tests {
     #[test]
     fn register_type_params_positive_all_send_fields() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
         // type Envelope<T> { id: i64; payload: T }
         registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
         registry.register_type_params("Envelope".to_string(), vec!["T".to_string()]);
 
-        let env_string = Ty::Named {
-            builtin: None,
-            name: "Envelope".to_string(),
-            args: vec![Ty::String],
-        };
+        let env_string = Ty::named_for_test("Envelope", vec![Ty::String]);
         assert!(
             registry.is_send(&env_string),
             "Envelope<String> must be Send: i64 and String are both Send"
@@ -1883,24 +1736,15 @@ mod tests {
     #[test]
     fn register_type_params_negative_non_send_arg() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
         registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
         registry.register_type_params("Envelope".to_string(), vec!["T".to_string()]);
 
         let rc_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Rc),
-            name: "Rc".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc),
             args: vec![Ty::I64],
         };
-        let env_rc = Ty::Named {
-            builtin: None,
-            name: "Envelope".to_string(),
-            args: vec![rc_i64],
-        };
+        let env_rc = Ty::named_for_test("Envelope", vec![rc_i64]);
         assert!(
             !registry.is_send(&env_rc),
             "Envelope<Rc<i64>> must NOT be Send: Rc is not Send"
@@ -1929,32 +1773,19 @@ mod tests {
         registry.register_type(
             "ConcreteBad".to_string(),
             vec![Ty::Named {
-                builtin: Some(BuiltinType::Rc),
-                name: "Rc".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::Rc),
                 args: vec![Ty::I64],
             }],
         );
 
-        let t_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
-        let concrete_bad = Ty::Named {
-            builtin: None,
-            name: "ConcreteBad".to_string(),
-            args: vec![],
-        };
+        let t_param = Ty::param("T");
+        let concrete_bad = Ty::named_for_test("ConcreteBad", vec![]);
         // type Wrapper<T> { bad: ConcreteBad; item: T }
         registry.register_type("Wrapper".to_string(), vec![concrete_bad, t_param]);
         // Declare T as the only type parameter; ConcreteBad is NOT a param.
         registry.register_type_params("Wrapper".to_string(), vec!["T".to_string()]);
 
-        let wrapper_i64 = Ty::Named {
-            builtin: None,
-            name: "Wrapper".to_string(),
-            args: vec![Ty::I64],
-        };
+        let wrapper_i64 = Ty::named_for_test("Wrapper", vec![Ty::I64]);
         assert!(
             !registry.is_send(&wrapper_i64),
             "Wrapper<i64> must NOT be Send: ConcreteBad field holds Rc<i64> (not Send)"
@@ -1996,11 +1827,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
 
         // --- module a: type Collision<T> { value: T } ---
-        let t_a_param = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_a_param = Ty::param("T");
         registry.register_type("Collision".to_string(), vec![t_a_param]);
         registry.register_type_params("Collision".to_string(), vec!["T".to_string()]);
         // Simulate alias_type_markers("Collision", "a.Collision") when module a
@@ -2009,8 +1836,7 @@ mod tests {
 
         // --- module b: type T { rc: Rc<i64> } (concrete, NOT Send) ---
         let rc_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Rc),
-            name: "Rc".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc),
             args: vec![Ty::I64],
         };
         registry.register_type("T".to_string(), vec![rc_i64]);
@@ -2019,11 +1845,7 @@ mod tests {
 
         // --- module b: type Collision<U> { hidden: T } ---
         // Field "T" here refers to b's concrete type, not a type parameter.
-        let t_b_field = Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        };
+        let t_b_field = Ty::param("T");
         // last-write-wins: overwrites a's fields.
         registry.register_type("Collision".to_string(), vec![t_b_field]);
         // last-write-wins (the fix): overwrites a's stale params ["T"] with ["U"].
@@ -2033,11 +1855,7 @@ mod tests {
 
         // b.Collision<i64>: field "T" is NOT in params ["U"] → checked directly
         // → T has Rc<i64> → NOT Send. This is the laundering hole test.
-        let b_collision_i64 = Ty::Named {
-            builtin: None,
-            name: "b.Collision".to_string(),
-            args: vec![Ty::I64],
-        };
+        let b_collision_i64 = Ty::named_for_test("b.Collision", vec![Ty::I64]);
         assert!(
             !registry.is_send(&b_collision_i64),
             "b.Collision<i64> must NOT be Send: field 'T' is concrete (holds Rc<i64>). \
@@ -2046,11 +1864,7 @@ mod tests {
 
         // a.Collision<i64>: params ["T"] snapshotted when a was aliased;
         // field "T" IS in params → placeholder → args sweep checks i64 → Send ✓.
-        let a_collision_i64 = Ty::Named {
-            builtin: None,
-            name: "a.Collision".to_string(),
-            args: vec![Ty::I64],
-        };
+        let a_collision_i64 = Ty::named_for_test("a.Collision", vec![Ty::I64]);
         assert!(
             registry.is_send(&a_collision_i64),
             "a.Collision<i64> must be Send: field T is a genuine type param (= i64 here)"

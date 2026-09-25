@@ -174,20 +174,24 @@ fn collection_operation_module(family: hew_types::RuntimeCallFamily) -> SemModul
     let mut arguments = vec![ResolvedTy::String];
     if kind == BuiltinType::HashMap {
         arguments.push(ResolvedTy::named_builtin(
-            "Vec",
             BuiltinType::Vec,
             vec![ResolvedTy::String],
         ));
     }
-    let receiver = ResolvedTy::named_builtin(kind.canonical_name(), kind, arguments);
+    let receiver = ResolvedTy::named_builtin(kind, arguments);
     let contract = family.semantic_contract().unwrap();
     let params = contract
         .arguments
         .iter()
-        .map(|argument| argument.ty.resolve(Some(&receiver)).unwrap())
+        .map(|argument| {
+            argument
+                .ty
+                .resolve(&hew_types::DefTable::new(), Some(&receiver))
+                .unwrap()
+        })
         .collect::<Vec<_>>();
     let result_ty = contract
-        .instantiate(&params, &ResolvedTy::Unit)
+        .instantiate(&hew_types::DefTable::new(), &params, &ResolvedTy::Unit)
         .unwrap()
         .result_ty;
     let mut module = scalar_entry_module();
@@ -532,15 +536,10 @@ fn fixed_array_repeat_emits_constant_size_glue_and_no_array_stack_temporary() {
 #[test]
 fn canonical_maps_and_sets_use_the_target_pointer_carrier() {
     let map = ResolvedTy::named_builtin(
-        "HashMap",
         hew_types::BuiltinType::HashMap,
         vec![ResolvedTy::String, ResolvedTy::I64],
     );
-    let set = ResolvedTy::named_builtin(
-        "HashSet",
-        hew_types::BuiltinType::HashSet,
-        vec![ResolvedTy::String],
-    );
+    let set = ResolvedTy::named_builtin(hew_types::BuiltinType::HashSet, vec![ResolvedTy::String]);
     for triple in [
         "x86_64-unknown-linux-gnu",
         "x86_64-pc-windows-msvc",
@@ -551,14 +550,9 @@ fn canonical_maps_and_sets_use_the_target_pointer_carrier() {
         assert_eq!(target.layout(&map), Some(pointer), "{triple}");
         assert_eq!(target.layout(&set), Some(pointer), "{triple}");
     }
-    let lookalike = ResolvedTy::Named {
-        name: "HashMap".into(),
-        args: vec![ResolvedTy::String, ResolvedTy::I64],
-        builtin: None,
-        is_opaque: false,
-    };
+    let lookalike = ResolvedTy::user_for_test("HashMap", vec![ResolvedTy::String, ResolvedTy::I64]);
     assert!(physical_target_for_types("x86_64-unknown-linux-gnu", [&lookalike]).is_err());
-    let wrong_arity = ResolvedTy::named_builtin("HashSet", hew_types::BuiltinType::HashSet, vec![]);
+    let wrong_arity = ResolvedTy::named_builtin(hew_types::BuiltinType::HashSet, vec![]);
     assert!(physical_target_for_types("x86_64-unknown-linux-gnu", [&wrong_arity]).is_err());
 }
 

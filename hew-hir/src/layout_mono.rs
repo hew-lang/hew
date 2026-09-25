@@ -378,7 +378,11 @@ pub fn run_layout_mono_pass(
             .collect();
         let type_args: Vec<ResolvedTy> = type_params
             .iter()
-            .map(|param| ResolvedTy::named_user(param, vec![]))
+            .map(|param| ResolvedTy::Named {
+                head: hew_types::TypeHead::param(param),
+                args: Vec::new(),
+                is_opaque: false,
+            })
             .collect();
         let Some((_, fields)) = crate::lower::synthetic_cursor_layout(spec.builtin, &type_args)
         else {
@@ -799,15 +803,11 @@ impl Discovery<'_> {
             // Enqueue nested args first so `Box<Pair<i64,bool>>` reaches
             // through both `Box<...>` and `Pair<i64,bool>`.
             collect_named_children(&t, &mut worklist);
-            let ResolvedTy::Named {
-                name,
-                args,
-                builtin,
-                ..
-            } = &t
-            else {
+            let ResolvedTy::Named { head, args, .. } = &t else {
                 continue;
             };
+            let name = head.registry_key();
+            let builtin = head.builtin();
             let decl_key = match builtin {
                 Some(hew_types::BuiltinType::HashMapIter) => "@synthetic.HashMapIter",
                 _ => name,
@@ -837,7 +837,7 @@ impl Discovery<'_> {
                 ArgClass::ResidualDefect(residual) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::UnresolvedLayoutTypeParamPostMono {
-                            type_name: name.clone(),
+                            type_name: name.to_string(),
                             residual_var: residual,
                         },
                         span.clone(),
@@ -1220,8 +1220,8 @@ fn abstract_in_ty(ty: &ResolvedTy, all_type_params: &HashSet<String>) -> bool {
     let mut worklist = vec![ty.clone()];
     while let Some(ty) = worklist.pop() {
         if matches!(ty, ResolvedTy::TypeParam { .. })
-            || matches!(&ty, ResolvedTy::Named { name, args, .. }
-                if args.is_empty() && all_type_params.contains(name))
+            || matches!(&ty, ResolvedTy::Named { head, args, .. }
+                if args.is_empty() && all_type_params.contains(head.registry_key()))
         {
             return true;
         }
@@ -1232,9 +1232,10 @@ fn abstract_in_ty(ty: &ResolvedTy, all_type_params: &HashSet<String>) -> bool {
 
 fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<String> {
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
             if args.is_empty() && residual_domain.contains(name) {
-                return Some(name.clone());
+                return Some(name.to_string());
             }
             args.iter().find_map(|a| residual_in_ty(a, residual_domain))
         }
@@ -1295,7 +1296,7 @@ mod tests {
         }))]);
         assert!(abstract_in_ty(&nested, &names));
         assert!(!abstract_in_ty(
-            &ResolvedTy::named_user("Payload", vec![]),
+            &ResolvedTy::named_for_test("Payload", vec![]),
             &names,
         ));
     }
@@ -1335,7 +1336,7 @@ mod tests {
                 id: ItemId(1),
                 type_params: vec!["T".to_string()],
                 symbol_class: crate::mono::SymbolClass::Function,
-                fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
+                fields: vec![("item".to_string(), ResolvedTy::param("T"))],
             },
         );
         let enum_decls = HashMap::new();
@@ -1346,9 +1347,9 @@ mod tests {
             id: ItemId(1),
             type_params: vec!["T".to_string()],
             symbol_class: crate::mono::SymbolClass::Function,
-            fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
+            fields: vec![("item".to_string(), ResolvedTy::param("T"))],
         };
-        let qualified_arg = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let qualified_arg = ResolvedTy::named_for_test("lmonobox.Box", vec![]);
         disc.register_record("Holder", &decl, &[qualified_arg], &(0..0));
 
         assert_eq!(disc.new_records.len(), 1, "one layout registered");
@@ -1359,7 +1360,7 @@ mod tests {
         );
         assert_eq!(
             layout.key.type_args,
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
             "the dedup key's type-arg spine must retain canonical names"
         );
         // The field type keeps the substituted canonical payload too.
@@ -1367,7 +1368,7 @@ mod tests {
             layout.fields,
             vec![(
                 "item".to_string(),
-                ResolvedTy::named_user("lmonobox.Box", vec![])
+                ResolvedTy::named_for_test("lmonobox.Box", vec![])
             )],
         );
     }
@@ -1391,7 +1392,7 @@ mod tests {
             },
             HirVariant {
                 name: "Cons".to_string(),
-                kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                kind: HirVariantKind::Tuple(vec![ResolvedTy::param("T")]),
             },
         ];
         for is_indirect in [true, false] {
@@ -1427,7 +1428,7 @@ mod tests {
                 variants: vec![
                     HirVariant {
                         name: "Filled".to_string(),
-                        kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                        kind: HirVariantKind::Tuple(vec![ResolvedTy::param("T")]),
                     },
                     HirVariant {
                         name: "Empty".to_string(),
@@ -1446,7 +1447,7 @@ mod tests {
             variants: vec![
                 HirVariant {
                     name: "Filled".to_string(),
-                    kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                    kind: HirVariantKind::Tuple(vec![ResolvedTy::param("T")]),
                 },
                 HirVariant {
                     name: "Empty".to_string(),
@@ -1454,7 +1455,7 @@ mod tests {
                 },
             ],
         };
-        let qualified_arg = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let qualified_arg = ResolvedTy::named_for_test("lmonobox.Box", vec![]);
         disc.register_enum("Slot", &decl, &[qualified_arg], &(0..0));
 
         assert_eq!(disc.new_enums.len(), 1, "one layout registered");
@@ -1465,13 +1466,13 @@ mod tests {
         );
         assert_eq!(
             layout.key.type_args,
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
             "the dedup key's type-arg spine must retain canonical names"
         );
         // The substituted variant payload keeps the qualified spelling too.
         assert_eq!(
             layout.variants[0].field_tys,
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
         );
     }
 }

@@ -8,11 +8,7 @@ use hew_types::ty::{Substitution, TraitObjectBound, Ty, TypeVar};
 // ---------------------------------------------------------------------------
 
 fn named(n: &str) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: n.to_string(),
-        args: vec![],
-    }
+    Ty::named_for_test(n, vec![])
 }
 
 // ===========================================================================
@@ -68,11 +64,7 @@ fn display_named_no_args() {
 
 #[test]
 fn display_named_multiple_args() {
-    let ty = Ty::Named {
-        builtin: None,
-        name: "HashMap".to_string(),
-        args: vec![Ty::String, Ty::I64],
-    };
+    let ty = Ty::named_for_test("HashMap", vec![Ty::String, Ty::I64]);
     assert_eq!(ty.to_string(), "HashMap<string, i64>");
 }
 
@@ -207,11 +199,7 @@ fn display_trait_object_multi_trait_with_args() {
 
 #[test]
 fn display_machine() {
-    let ty = Ty::Named {
-        builtin: None,
-        name: "MyMachine".to_string(),
-        args: vec![],
-    };
+    let ty = Ty::named_for_test("MyMachine", vec![]);
     assert_eq!(ty.to_string(), "MyMachine");
 }
 
@@ -363,9 +351,13 @@ fn canonical_lowering_name_round_trips_through_from_name() {
 fn actor_handle_accessor() {
     // An actor handle carries the actor's own name and type args directly
     // (D489: an actor is the type of its handle).
-    let ty = Ty::actor_handle("Counter", vec![]);
+    let ty = Ty::actor_for_test("Counter", vec![]);
     assert_eq!(ty.as_actor_handle(), Some(&ty));
-    assert_eq!(ty.actor_handle_identity(), Some(("Counter", &[][..])));
+    assert_eq!(
+        ty.actor_handle_identity()
+            .map(|(head, args)| (head.spelling.as_str(), args)),
+        Some(("Counter", &[][..]))
+    );
 
     // RemotePid<T> is a distinct remote handle — NOT a local actor handle.
     assert_eq!(Ty::remote_pid(Ty::Bool).as_actor_handle(), None);
@@ -382,27 +374,15 @@ fn actor_handle_accessor() {
 #[test]
 fn accessor_wrong_arity_returns_none() {
     // Option with wrong number of args
-    let bad_option = Ty::Named {
-        builtin: None,
-        name: "Option".to_string(),
-        args: vec![Ty::I32, Ty::Bool],
-    };
+    let bad_option = Ty::named_for_test("Option", vec![Ty::I32, Ty::Bool]);
     assert_eq!(bad_option.as_option(), None);
 
     // Result with wrong arity
-    let bad_result = Ty::Named {
-        builtin: None,
-        name: "Result".to_string(),
-        args: vec![Ty::I32],
-    };
+    let bad_result = Ty::named_for_test("Result", vec![Ty::I32]);
     assert_eq!(bad_result.as_result(), None);
 
     // Generator with wrong arity
-    let bad_gen = Ty::Named {
-        builtin: None,
-        name: "Generator".to_string(),
-        args: vec![Ty::I32],
-    };
+    let bad_gen = Ty::named_for_test("Generator", vec![Ty::I32]);
     assert_eq!(bad_gen.as_generator(), None);
 
     // An actor handle has no fixed arity to guard: its args are the actor's
@@ -412,25 +392,13 @@ fn accessor_wrong_arity_returns_none() {
     // only for the builtins with a fixed arg count.
 
     // Stream/Sink with wrong arity
-    let bad_stream = Ty::Named {
-        builtin: None,
-        name: "Stream".to_string(),
-        args: vec![],
-    };
+    let bad_stream = Ty::named_for_test("Stream", vec![]);
     assert_eq!(bad_stream.as_stream(), None);
-    let bad_sink = Ty::Named {
-        builtin: None,
-        name: "Sink".to_string(),
-        args: vec![Ty::I32, Ty::Bool],
-    };
+    let bad_sink = Ty::named_for_test("Sink", vec![Ty::I32, Ty::Bool]);
     assert_eq!(bad_sink.as_sink(), None);
 
     // Range with wrong arity
-    let bad_range = Ty::Named {
-        builtin: None,
-        name: "Range".to_string(),
-        args: vec![],
-    };
+    let bad_range = Ty::named_for_test("Range", vec![]);
     assert_eq!(bad_range.as_range(), None);
 }
 
@@ -440,25 +408,18 @@ fn accessor_wrong_arity_returns_none() {
 
 #[test]
 fn normalize_named_produces_named() {
-    let ty = Ty::normalize_named("Foo".to_string(), vec![Ty::I32]);
-    assert_eq!(
-        ty,
-        Ty::Named {
-            builtin: None,
-            name: "Foo".to_string(),
-            args: vec![Ty::I32],
-        }
-    );
+    let ty = Ty::named_for_test("Foo", vec![Ty::I32]);
+    assert_eq!(ty, Ty::named_for_test("Foo", vec![Ty::I32]));
 }
 
 #[test]
 fn normalize_named_canonicalizes_builtin_spellings() {
     assert_eq!(
-        Ty::normalize_named("stream.Stream".to_string(), vec![Ty::Bytes]),
+        Ty::named_for_test("stream.Stream", vec![Ty::Bytes]),
         Ty::stream(Ty::Bytes)
     );
     assert_eq!(
-        Ty::normalize_named("stream.Sink".to_string(), vec![Ty::String]),
+        Ty::named_for_test("stream.Sink", vec![Ty::String]),
         Ty::sink(Ty::String)
     );
 }
@@ -653,12 +614,7 @@ fn contains_var_in_trait_object() {
 #[test]
 fn contains_var_in_named_machine_and_error() {
     let v = TypeVar(5050);
-    assert!(!Ty::Named {
-        builtin: None,
-        name: "M".to_string(),
-        args: vec![],
-    }
-    .contains_var(v));
+    assert!(!Ty::param("M").contains_var(v));
     assert!(!Ty::Error.contains_var(v));
 }
 
@@ -789,20 +745,9 @@ fn substitute_in_function() {
 #[test]
 fn substitute_in_named_machine_is_identity() {
     let v = TypeVar(6060);
-    let ty = Ty::Named {
-        builtin: None,
-        name: "SM".to_string(),
-        args: vec![],
-    };
+    let ty = Ty::named_for_test("SM", vec![]);
     let result = ty.substitute(v, &Ty::I32);
-    assert_eq!(
-        result,
-        Ty::Named {
-            builtin: None,
-            name: "SM".to_string(),
-            args: vec![],
-        }
-    );
+    assert_eq!(result, Ty::named_for_test("SM", vec![]));
 }
 
 #[test]
@@ -1085,17 +1030,6 @@ fn apply_subst_named_machine_unchanged() {
     let mut subst = Substitution::new();
     subst.insert(v, &Ty::I32).unwrap();
 
-    let ty = Ty::Named {
-        builtin: None,
-        name: "SM".to_string(),
-        args: vec![],
-    };
-    assert_eq!(
-        ty.apply_subst(&subst),
-        Ty::Named {
-            builtin: None,
-            name: "SM".to_string(),
-            args: vec![],
-        }
-    );
+    let ty = Ty::named_for_test("SM", vec![]);
+    assert_eq!(ty.apply_subst(&subst), Ty::named_for_test("SM", vec![]));
 }

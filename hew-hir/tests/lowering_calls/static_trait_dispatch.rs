@@ -834,7 +834,8 @@ fn example() -> string {
 }
 "#;
     let output = lower(src);
-    let expected_args = vec![hew_types::ResolvedTy::named_user(
+    let expected_args = vec![hew_types::ResolvedTy::named_path(
+        &output.module.defs,
         "Wrapper",
         vec![hew_types::ResolvedTy::I64],
     )];

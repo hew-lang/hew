@@ -265,16 +265,15 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
     }
     match ty {
         ResolvedTy::Named {
-            name,
+            head,
             args,
-            builtin,
             is_opaque,
+            ..
         } => {
             let args = args.into_iter().map(shorten_named_arg_qualifiers).collect();
             ResolvedTy::Named {
-                name,
+                head,
                 args,
-                builtin,
                 is_opaque,
             }
         }
@@ -581,25 +580,31 @@ pub fn substitute_type_params(
             }
         }
         ResolvedTy::Named {
-            name,
+            head,
             args: named_args,
-            builtin,
             is_opaque,
+            ..
         } => {
-            // Bare type-parameter reference (e.g. `T`) — substitute.
-            if named_args.is_empty() {
+            let name = head.registry_key();
+            // Bare type-parameter reference (e.g. `T`) — substitute. A nominal
+            // of the same spelling is a different type.
+            if named_args.is_empty()
+                && matches!(
+                    head,
+                    hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)
+                )
+            {
                 if let Some(idx) = params.iter().position(|p| p == name) {
                     return args[idx].clone();
                 }
             }
             // Otherwise descend into the args so `Vec<T>` becomes `Vec<i64>`.
             ResolvedTy::Named {
-                name: name.clone(),
+                head: *head,
                 args: named_args
                     .iter()
                     .map(|a| substitute_type_params(a, params, args))
                     .collect(),
-                builtin: *builtin,
                 is_opaque: *is_opaque,
             }
         }
@@ -884,7 +889,8 @@ pub(crate) fn contains_recursive_polymorphic_self(
     current_args: &[ResolvedTy],
 ) -> bool {
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
             if name == origin_name && args.as_slice() != current_args {
                 // Diverging only when the occurrence's args strictly contain
                 // some element of current_args — i.e., the args are growing.
@@ -956,13 +962,13 @@ mod tests {
 
     #[test]
     fn mangle_nested_named() {
-        let label = ResolvedTy::named_user("Label", vec![]);
+        let label = ResolvedTy::named_for_test("Label", vec![]);
         assert_eq!(mangle("describe", &[label]), "describe$$Label");
     }
 
     #[test]
     fn mangle_module_qualified_encodes_colons() {
-        let ty = ResolvedTy::named_user("widgets::Label", vec![]);
+        let ty = ResolvedTy::named_for_test("widgets::Label", vec![]);
         assert_eq!(mangle("describe", &[ty]), "describe$$widgets$mLabel");
     }
 
@@ -984,7 +990,7 @@ mod tests {
     fn substitute_replaces_bare_type_param() {
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::named_user("T", vec![]);
+        let ty = ResolvedTy::param("T");
         assert_eq!(substitute_type_params(&ty, &params, &args), ResolvedTy::I64);
     }
 
@@ -993,14 +999,11 @@ mod tests {
         // Vec<T> with T=i64 -> Vec<i64>
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::named_builtin(
-            "Vec",
-            hew_types::BuiltinType::Vec,
-            vec![ResolvedTy::named_user("T", vec![])],
-        );
+        let ty =
+            ResolvedTy::named_builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::param("T")]);
         assert_eq!(
             substitute_type_params(&ty, &params, &args),
-            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::I64])
+            ResolvedTy::named_builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::I64])
         );
     }
 
@@ -1008,7 +1011,7 @@ mod tests {
     fn substitute_leaves_unrelated_named_alone() {
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::named_user("Label", vec![]);
+        let ty = ResolvedTy::named_for_test("Label", vec![]);
         assert_eq!(substitute_type_params(&ty, &params, &args), ty);
     }
 
@@ -1031,14 +1034,11 @@ mod tests {
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
         let builtin = hew_types::BuiltinType::Option;
-        let ty = ResolvedTy::named_builtin(
-            builtin.canonical_name(),
-            builtin,
-            vec![ResolvedTy::TypeParam { name: "T".into() }],
-        );
+        let ty =
+            ResolvedTy::named_builtin(builtin, vec![ResolvedTy::TypeParam { name: "T".into() }]);
         assert_eq!(
             substitute_type_params(&ty, &params, &args),
-            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, vec![ResolvedTy::I64])
+            ResolvedTy::named_builtin(builtin, vec![ResolvedTy::I64])
         );
     }
 
@@ -1127,9 +1127,9 @@ mod tests {
         // substitutes to Tree<Tree<i64>>.  The occurrence has args=[Tree<i64>]
         // which nest `Tree` itself → diverging layout chain, must reject.
         let current_args = vec![ResolvedTy::I64];
-        let field_ty = ResolvedTy::named_user(
+        let field_ty = ResolvedTy::named_for_test(
             "Tree",
-            vec![ResolvedTy::named_user("Tree", vec![ResolvedTy::I64])],
+            vec![ResolvedTy::named_for_test("Tree", vec![ResolvedTy::I64])],
         );
         assert!(contains_recursive_polymorphic_self(
             &field_ty,
@@ -1142,8 +1142,8 @@ mod tests {
     fn recursive_polymorphic_self_ignores_matching_args() {
         // Box<T> with field `next: Box<T>` — same args, not a
         // polymorphic-recursion hazard (the layout converges).
-        let current_args = vec![ResolvedTy::named_user("T", vec![])];
-        let field_ty = ResolvedTy::named_user("Box", vec![ResolvedTy::named_user("T", vec![])]);
+        let current_args = vec![ResolvedTy::param("T")];
+        let field_ty = ResolvedTy::named_for_test("Box", vec![ResolvedTy::param("T")]);
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
             "Box",
@@ -1157,8 +1157,8 @@ mod tests {
         // The field `value: T` substitutes to `value: Box<i64>`.
         // Box<i64>'s args are [i64], which do NOT contain `Box` → finite,
         // must admit (not reject).
-        let current_args = vec![ResolvedTy::named_user("Box", vec![ResolvedTy::I64])];
-        let field_ty = ResolvedTy::named_user("Box", vec![ResolvedTy::I64]);
+        let current_args = vec![ResolvedTy::named_for_test("Box", vec![ResolvedTy::I64])];
+        let field_ty = ResolvedTy::named_for_test("Box", vec![ResolvedTy::I64]);
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
             "Box",
@@ -1171,13 +1171,13 @@ mod tests {
         // Box<Box<Box<i64>>> — outer Box has current_args=[Box<Box<i64>>].
         // Field substitutes to Box<Box<i64>>. Its args are [Box<i64>].
         // Box<i64>'s args are [i64] — no `Box` appears in [i64] → finite.
-        let current_args = vec![ResolvedTy::named_user(
+        let current_args = vec![ResolvedTy::named_for_test(
             "Box",
-            vec![ResolvedTy::named_user("Box", vec![ResolvedTy::I64])],
+            vec![ResolvedTy::named_for_test("Box", vec![ResolvedTy::I64])],
         )];
-        let field_ty = ResolvedTy::named_user(
+        let field_ty = ResolvedTy::named_for_test(
             "Box",
-            vec![ResolvedTy::named_user("Box", vec![ResolvedTy::I64])],
+            vec![ResolvedTy::named_for_test("Box", vec![ResolvedTy::I64])],
         );
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
@@ -1194,9 +1194,9 @@ mod tests {
         // This mirrors the integration test shape where the inner arg is
         // hardcoded rather than a type param.
         let current_args = vec![ResolvedTy::I64];
-        let field_ty = ResolvedTy::named_user(
+        let field_ty = ResolvedTy::named_for_test(
             "Grow",
-            vec![ResolvedTy::named_user("Grow", vec![ResolvedTy::I64])],
+            vec![ResolvedTy::named_for_test("Grow", vec![ResolvedTy::I64])],
         );
         assert!(contains_recursive_polymorphic_self(
             &field_ty,
@@ -1213,7 +1213,8 @@ mod tests {
         // the args must contain `Pair` itself to be flagged.
         let current_args = vec![ResolvedTy::I64, ResolvedTy::String];
         // Pair<i64, string> — same args as current, must not be flagged.
-        let field_ty = ResolvedTy::named_user("Pair", vec![ResolvedTy::I64, ResolvedTy::String]);
+        let field_ty =
+            ResolvedTy::named_for_test("Pair", vec![ResolvedTy::I64, ResolvedTy::String]);
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
             "Pair",
@@ -1230,7 +1231,7 @@ mod tests {
                 origin: ItemId(0),
                 declaration: DefId::for_test("id"),
                 linker_symbol: "id".into(),
-                type_args: vec![ResolvedTy::named_user(format!("T{i}"), vec![])],
+                type_args: vec![ResolvedTy::named_for_test(&format!("T{i}"), vec![])],
             };
             if reg.insert(key).is_err() {
                 overflowed = true;
@@ -1310,8 +1311,8 @@ mod tests {
         // Module qualification is declaration identity: `fs.IoError` and a
         // root `IoError` must produce distinct generic enum monomorphs.
         let mut reg = EnumLayoutRegistry::with_cap(8);
-        let bare_err = ResolvedTy::named_user("IoError", vec![]);
-        let qualified_err = ResolvedTy::named_user("fs.IoError", vec![]);
+        let bare_err = ResolvedTy::named_for_test("IoError", vec![]);
+        let qualified_err = ResolvedTy::named_for_test("fs.IoError", vec![]);
         assert_eq!(
             reg.insert(
                 result_key(qualified_err.clone()),
@@ -1337,7 +1338,7 @@ mod tests {
         );
         assert_eq!(
             entries[0].key.type_args[1],
-            ResolvedTy::named_user("fs.IoError", vec![])
+            ResolvedTy::named_for_test("fs.IoError", vec![])
         );
         assert_eq!(
             entries[1].mangled_name,
@@ -1349,13 +1350,16 @@ mod tests {
     fn shorten_named_arg_qualifiers_preserves_nested_qualified_payload() {
         // The compatibility helper recursively preserves identity through
         // every nested payload shape.
-        let nested = ResolvedTy::named_user(
+        let nested = ResolvedTy::named_for_test(
             "Result",
             vec![
-                ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("fs.Foo", vec![])]),
+                ResolvedTy::named_for_test(
+                    "Vec",
+                    vec![ResolvedTy::named_for_test("fs.Foo", vec![])],
+                ),
                 ResolvedTy::Tuple(vec![
-                    ResolvedTy::Slice(Box::new(ResolvedTy::named_user("net.Conn", vec![]))),
-                    ResolvedTy::Array(Box::new(ResolvedTy::named_user("io.Buf", vec![])), 4),
+                    ResolvedTy::Slice(Box::new(ResolvedTy::named_for_test("net.Conn", vec![]))),
+                    ResolvedTy::Array(Box::new(ResolvedTy::named_for_test("io.Buf", vec![])), 4),
                 ]),
             ],
         );
@@ -1376,12 +1380,12 @@ mod tests {
             EnumMonoKey {
                 origin: ItemId(12),
                 origin_name: "Option".into(),
-                type_args: vec![ResolvedTy::named_user("Vec", vec![elem])],
+                type_args: vec![ResolvedTy::named_for_test("Vec", vec![elem])],
             }
         }
         let mut reg = EnumLayoutRegistry::with_cap(8);
-        let qualified = ResolvedTy::named_user("fs.Foo", vec![]);
-        let bare = ResolvedTy::named_user("Foo", vec![]);
+        let qualified = ResolvedTy::named_for_test("fs.Foo", vec![]);
+        let bare = ResolvedTy::named_for_test("Foo", vec![]);
         assert_eq!(
             reg.insert(
                 option_vec_key(qualified.clone()),
@@ -1402,11 +1406,14 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(
             entries[0].mangled_name,
-            mangle("Option", &[ResolvedTy::named_user("Vec", vec![qualified])])
+            mangle(
+                "Option",
+                &[ResolvedTy::named_for_test("Vec", vec![qualified])]
+            )
         );
         assert_eq!(
             entries[1].mangled_name,
-            mangle("Option", &[ResolvedTy::named_user("Vec", vec![bare])])
+            mangle("Option", &[ResolvedTy::named_for_test("Vec", vec![bare])])
         );
     }
 

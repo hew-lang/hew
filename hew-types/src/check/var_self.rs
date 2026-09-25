@@ -240,11 +240,9 @@ impl Checker {
         visiting: &mut std::collections::HashSet<String>,
     ) -> bool {
         match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 if self.registry.is_resource(name) || self.registry.is_linear(name) {
                     return true;
                 }
@@ -259,7 +257,7 @@ impl Checker {
                 }
                 match self.registry.member_types(name) {
                     Some(members) => {
-                        if !visiting.insert(name.clone()) {
+                        if !visiting.insert(name.to_string()) {
                             return false;
                         }
                         let members = members.to_vec();

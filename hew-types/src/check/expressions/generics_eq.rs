@@ -29,21 +29,11 @@ impl Checker {
         generic_param_names: &HashMap<u32, String>,
     ) -> Ty {
         match ty {
-            Ty::Var(v) => generic_param_names.get(&v.0).map_or_else(
-                || ty.clone(),
-                |name| Ty::Named {
-                    builtin: None,
-                    name: name.clone(),
-                    args: vec![],
-                },
-            ),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
+            Ty::Var(v) => generic_param_names
+                .get(&v.0)
+                .map_or_else(|| ty.clone(), |name| Ty::param(name)),
+            Ty::Named { head, args } => Ty::Named {
+                head: *head,
                 args: args
                     .iter()
                     .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
@@ -247,13 +237,17 @@ impl Checker {
 
     pub(super) fn current_type_param_name(&self, ty: &Ty) -> Option<String> {
         let Ty::Named {
-            name,
+            head:
+                head @ (crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_)),
             args,
-            builtin: None,
+            ..
         } = ty
         else {
             return None;
         };
+        let name = head.registry_key();
         if !args.is_empty() {
             return None;
         }
@@ -263,14 +257,14 @@ impl Checker {
             .rev()
             .any(|frame| frame.bounds.contains_key(name))
         {
-            return Some(name.clone());
+            return Some(name.to_string());
         }
         let fn_name = self.current_function.as_ref()?;
         self.fn_sigs.get(fn_name).and_then(|sig| {
             sig.type_params
                 .iter()
                 .any(|param_name| param_name == name)
-                .then_some(name.clone())
+                .then(|| name.to_string())
         })
     }
 
@@ -332,7 +326,14 @@ impl Checker {
         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
             // Preserve the exact top-level user-method dispatch route. Nested
             // user methods are selected recursively by TypeFactService.
-            if let Ty::Named { builtin: None, .. } = left_resolved {
+            if let Ty::Named {
+                head:
+                    crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            } = left_resolved
+            {
                 if let Some((method, _)) =
                     self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
                 {
@@ -346,7 +347,12 @@ impl Checker {
             self.record_eq_requirement(left_resolved, expr_span);
             return;
         }
-        if let Ty::Named { builtin: None, .. } = left_resolved {
+        if let Ty::Named {
+            head:
+                crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_),
+            ..
+        } = left_resolved
+        {
             if let Some((method, _)) =
                 self.trait_impl_method_declaration(left_resolved, "Ord", "lt")
             {
@@ -370,15 +376,19 @@ impl Checker {
             let aggregate = match ty {
                 Ty::Tuple(_)
                 | Ty::Named {
-                    builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                    head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
                     ..
                 } => true,
-                Ty::Named { name, .. } => self.type_defs.get(name).is_some_and(|definition| {
-                    matches!(
-                        definition.kind,
-                        TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
-                    )
-                }),
+                Ty::Named { head, .. } => {
+                    self.type_defs
+                        .get(head.registry_key())
+                        .is_some_and(|definition| {
+                            matches!(
+                                definition.kind,
+                                TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                            )
+                        })
+                }
                 _ => false,
             };
             aggregate.then(|| ty.user_facing().to_string())

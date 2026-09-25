@@ -289,10 +289,15 @@ fn a_call_on_a_handle_completes_with_a_unit_result() {
     assert_eq!(success, &crate::Ty::Unit, "{call:?}");
     // The handler declares no `fails`, so the error can never be `Failed`: the
     // failure and rejection parameters are both the uninhabited `Never`.
-    let crate::Ty::Named { name, args, .. } = failure else {
+    let crate::Ty::Named {
+        head: name_head,
+        args,
+        ..
+    } = failure
+    else {
         panic!("completion error is not nominal: {failure:?}");
     };
-    assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
+    assert_eq!(name_head.spelling(), crate::KnownDecl::ActorError.path());
     assert_eq!(
         args.as_slice(),
         [crate::Ty::never_type(), crate::Ty::never_type()],

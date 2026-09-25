@@ -90,8 +90,8 @@ fn call_site_type_args_records_symbolic_inner_calls() {
         v.iter().any(|t| {
             matches!(
                 t,
-                hew_types::ResolvedTy::Named { name, args, .. }
-                    if args.is_empty() && (name == "U" || name == "T")
+                hew_types::ResolvedTy::Named { head: name_head, args, .. }
+                    if args.is_empty() && (name_head.spelling() == "U" || name_head.spelling() == "T")
             )
         })
     });

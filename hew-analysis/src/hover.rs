@@ -862,11 +862,7 @@ fn find_pattern_binding_type(
             captures
                 .iter()
                 .find(|c| c.as_str() == word)
-                .map(|_| Ty::Named {
-                    builtin: None,
-                    name: "string".to_string(),
-                    args: vec![],
-                })
+                .map(|_| Ty::String)
         }
         Pattern::NominalPath { path, payload } => match payload.as_ref() {
             None => None,
@@ -986,9 +982,10 @@ fn constructor_payload_tys(
     pattern_name: &str,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<Vec<Ty>> {
-    let Ty::Named { name, args, .. } = source_ty else {
+    let Ty::Named { head, args, .. } = source_ty else {
         return None;
     };
+    let name = head.registry_key();
     let type_def = method_resolution::lookup_type_def(type_defs, name)?;
     let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
     let VariantDef::Tuple(payload_tys) = type_def.variants.get(short_name)? else {
@@ -1003,9 +1000,10 @@ fn struct_pattern_field_ty(
     field_name: &str,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<Ty> {
-    let Ty::Named { name, args, .. } = source_ty else {
+    let Ty::Named { head, args, .. } = source_ty else {
         return None;
     };
+    let name = head.registry_key();
     let type_def = method_resolution::lookup_type_def(type_defs, name)?;
     let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
     if let Some(VariantDef::Struct(fields)) = type_def.variants.get(short_name) {
@@ -1042,17 +1040,20 @@ fn iterable_element_type(iterable_ty: &Ty) -> Option<Ty> {
     match iterable_ty {
         Ty::Array(inner, _) | Ty::Slice(inner) => Some((**inner).clone()),
         Ty::Named {
-            builtin: Some(BuiltinType::Range),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Range),
             args,
             ..
         } if args.len() == 1 => args.first().cloned(),
         Ty::Named {
-            builtin: Some(BuiltinType::Stream | BuiltinType::Generator | BuiltinType::Vec),
+            head:
+                hew_types::TypeHead::Builtin(
+                    BuiltinType::Stream | BuiltinType::Generator | BuiltinType::Vec,
+                ),
             args,
             ..
         } => args.first().cloned(),
         Ty::Named {
-            builtin: Some(BuiltinType::HashMap),
+            head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
             args,
             ..
         } if args.len() >= 2 => Some(Ty::Tuple(vec![args[0].clone(), args[1].clone()])),

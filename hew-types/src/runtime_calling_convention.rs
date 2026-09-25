@@ -310,8 +310,8 @@ impl RuntimeCallingConvention {
     #[must_use]
     pub fn for_ty_with_layout(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Self {
         match ty {
-            Ty::Named { name, .. } => {
-                if let Some(td) = type_defs.get(name) {
+            Ty::Named { head, .. } => {
+                if let Some(td) = type_defs.get(head.registry_key()) {
                     if td.is_indirect {
                         Self::Pointer
                     } else {
@@ -474,16 +474,8 @@ mod tests {
         // because it has no access to `TypeDef.is_indirect`. Both
         // route to `LayoutDescriptor`; callers that need the
         // `Pointer` upgrade must use `for_ty_with_layout`.
-        let vec_i32 = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::I32],
-        };
-        let user_record = Ty::Named {
-            builtin: None,
-            name: "Connection".to_string(),
-            args: vec![],
-        };
+        let vec_i32 = Ty::named_for_test("Vec", vec![Ty::I32]);
+        let user_record = Ty::named_for_test("Connection", vec![]);
         assert_eq!(
             RuntimeCallingConvention::for_ty(&vec_i32),
             RuntimeCallingConvention::LayoutDescriptor,
@@ -523,11 +515,7 @@ mod tests {
         let (name, td) = make_type_def("Vec", true);
         type_defs.insert(name, td);
 
-        let vec_i32 = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::I32],
-        };
+        let vec_i32 = Ty::named_for_test("Vec", vec![Ty::I32]);
         assert_eq!(
             RuntimeCallingConvention::for_ty_with_layout(&vec_i32, &type_defs),
             RuntimeCallingConvention::Pointer,
@@ -545,11 +533,7 @@ mod tests {
         let (name, td) = make_type_def("Connection", false);
         type_defs.insert(name, td);
 
-        let connection = Ty::Named {
-            builtin: None,
-            name: "Connection".to_string(),
-            args: vec![],
-        };
+        let connection = Ty::named_for_test("Connection", vec![]);
         assert_eq!(
             RuntimeCallingConvention::for_ty_with_layout(&connection, &type_defs),
             RuntimeCallingConvention::LayoutDescriptor,
@@ -562,11 +546,7 @@ mod tests {
         // Fail-closed: an unresolved nominal cannot be silently
         // treated as a pointer just because we lack a TypeDef entry.
         let type_defs = std::collections::HashMap::new();
-        let unknown = Ty::Named {
-            builtin: None,
-            name: "UnknownType".to_string(),
-            args: vec![],
-        };
+        let unknown = Ty::named_for_test("UnknownType", vec![]);
         assert_eq!(
             RuntimeCallingConvention::for_ty_with_layout(&unknown, &type_defs),
             RuntimeCallingConvention::LayoutDescriptor,
@@ -666,11 +646,7 @@ mod tests {
             Ty::TraitObject { traits: vec![] },
             Ty::Task(Box::new(Ty::I32)),
             Ty::AssocType {
-                base: Box::new(Ty::Named {
-                    builtin: None,
-                    name: "I".to_string(),
-                    args: vec![],
-                }),
+                base: Box::new(Ty::param("I")),
                 trait_name: "Iterator".into(),
                 assoc_name: "Item".into(),
             },

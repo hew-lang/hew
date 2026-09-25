@@ -196,7 +196,7 @@ fn type_has_is_empty(ty: &Ty) -> bool {
         || matches!(
             ty,
             Ty::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashSet),
+                head: crate::TypeHead::Builtin(BuiltinType::Vec | BuiltinType::HashSet),
                 ..
             }
         )

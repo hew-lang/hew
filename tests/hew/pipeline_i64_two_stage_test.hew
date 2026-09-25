@@ -5,7 +5,7 @@ import std.pipeline;
 import std.testing;
 
 fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
-    PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
+    pipeline.PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
 }
 
 actor PushProbe {

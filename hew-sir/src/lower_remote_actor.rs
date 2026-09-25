@@ -9,7 +9,7 @@ impl Builder<'_, '_> {
     /// The actor a `RemotePid<A>` names and its member with wire codecs.
     fn remote_member(&mut self, receiver: &HirExpr) -> Result<(crate::ActorId, u32), String> {
         let ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::RemotePid),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid),
             args,
             ..
         } = self.ty(&receiver.ty)

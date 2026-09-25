@@ -272,16 +272,12 @@ impl LowerCtx {
         ty: ResolvedTy,
         decl_module: Option<&str>,
     ) -> ResolvedTy {
-        if let ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } = &ty
-        {
+        if let ResolvedTy::Named { head, args, .. } = &ty {
+            let name = head.registry_key();
+            let builtin = head.builtin();
             if builtin.is_none() && !self.current_fn_type_params.contains(name) {
                 let actor_name = if self.actor_type_names.contains(name) {
-                    Some(name.clone())
+                    Some(name.to_string())
                 } else if !name.contains('.') {
                     decl_module.and_then(|module| {
                         let qualified = format!("{module}.{name}");
@@ -294,12 +290,7 @@ impl LowerCtx {
                 };
 
                 if let Some(actor_name) = actor_name {
-                    return ResolvedTy::Named {
-                        name: actor_name,
-                        args: args.clone(),
-                        builtin: Some(BuiltinType::ActorHandle),
-                        is_opaque: false,
-                    };
+                    return ResolvedTy::named_actor_path(&self.defs, &actor_name, args.clone());
                 }
             }
         }
@@ -554,9 +545,8 @@ impl LowerCtx {
         }
 
         let generator_ty = ResolvedTy::Named {
-            name: "Generator".to_string(),
             args: vec![yield_ty.clone(), gen_return_ty.clone()],
-            builtin: Some(hew_types::BuiltinType::Generator),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
             is_opaque: false,
         };
         let gen_block_expr = HirExpr {

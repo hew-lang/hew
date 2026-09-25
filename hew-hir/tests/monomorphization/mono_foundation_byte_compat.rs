@@ -23,13 +23,13 @@ use hew_hir::monomorph::mangle as legacy_mangle;
 use hew_types::ResolvedTy;
 
 fn sample_resolved_tys() -> Vec<Vec<ResolvedTy>> {
-    let int_named = ResolvedTy::named_user("Int", vec![]);
-    let vec_int = ResolvedTy::named_user("Vec", vec![ResolvedTy::I32]);
-    let nested = ResolvedTy::named_user(
+    let int_named = ResolvedTy::named_for_test("Int", vec![]);
+    let vec_int = ResolvedTy::named_for_test("Vec", vec![ResolvedTy::I32]);
+    let nested = ResolvedTy::named_for_test(
         "Vec",
-        vec![ResolvedTy::named_user("Vec", vec![ResolvedTy::Bool])],
+        vec![ResolvedTy::named_for_test("Vec", vec![ResolvedTy::Bool])],
     );
-    let module_qualified = ResolvedTy::named_user(
+    let module_qualified = ResolvedTy::named_for_test(
         "std::collections::HashMap",
         vec![ResolvedTy::String, ResolvedTy::I64],
     );

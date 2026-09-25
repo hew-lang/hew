@@ -905,7 +905,7 @@ fn named_scalar(ty: &ResolvedTy) -> Option<(&'static str, u32)> {
 
 fn type_name(ty: &ResolvedTy) -> String {
     match ty {
-        ResolvedTy::Named { name, .. } => name.clone(),
+        ResolvedTy::Named { head, .. } => head.registry_key().to_string(),
         ResolvedTy::Tuple(_) => "tuple".to_owned(),
         other => format!("{other:?}"),
     }

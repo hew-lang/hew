@@ -612,10 +612,12 @@ pub(crate) fn evaluation_sequence(evaluation_order: &[usize], len: usize) -> Vec
 fn declared_type_param_name<'a>(ty: &'a ResolvedTy, declared: &[String]) -> Option<&'a str> {
     match ty {
         ResolvedTy::TypeParam { name } => Some(name.as_str()),
-        ResolvedTy::Named { name, args, .. }
-            if args.is_empty() && declared.iter().any(|param| param == name) =>
-        {
-            Some(name.as_str())
+        ResolvedTy::Named {
+            head: head @ (hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)),
+            args,
+            ..
+        } if args.is_empty() && declared.iter().any(|param| param == head.registry_key()) => {
+            Some(head.registry_key())
         }
         _ => None,
     }
@@ -694,7 +696,7 @@ fn concrete_variant_shape(
     module: &HirModule,
     enum_ty: &ResolvedTy,
 ) -> Result<(bool, Vec<SemVariant>), String> {
-    let ResolvedTy::Named { args, builtin, .. } = enum_ty else {
+    let ResolvedTy::Named { args, head, .. } = enum_ty else {
         return Err(format!(
             "`{}` is not a checker-resolved named enum",
             enum_ty.user_facing()
@@ -712,7 +714,7 @@ fn concrete_variant_shape(
     {
         return concrete_user_variant_shape(module, enum_ty);
     }
-    builtin.map_or_else(
+    head.builtin().map_or_else(
         || concrete_user_variant_shape(module, enum_ty),
         |builtin| concrete_builtin_variant_shape(enum_ty, args, builtin),
     )
@@ -723,7 +725,8 @@ fn concrete_builtin_variant_shape(
     args: &[ResolvedTy],
     builtin: hew_types::BuiltinType,
 ) -> Result<(bool, Vec<SemVariant>), String> {
-    if let ResolvedTy::Named { name, .. } = enum_ty {
+    if let ResolvedTy::Named { head, .. } = enum_ty {
+        let name = head.registry_key();
         if args.is_empty()
             && hew_types::builtin_enums::has_exact_monomorphic_builtin_enum_identity(
                 name,
@@ -1463,7 +1466,9 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     matches!(
         ty,
         ResolvedTy::Named {
-            builtin: None,
+            head: hew_types::TypeHead::Nominal(_)
+                | hew_types::TypeHead::Param(_)
+                | hew_types::TypeHead::Unresolved(_),
             is_opaque: true,
             ..
         }
@@ -1477,7 +1482,7 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
 /// a checker-discovered one names the producers that mint the handle, and an
 /// authored one is the `close` HIR admitted as the type's own release.
 fn is_checked_opaque_resource(module: &HirModule, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Named { builtin: None, is_opaque: true, args, .. } if args.is_empty())
+    matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_), is_opaque: true, args, .. } if args.is_empty())
         && (crate::resource::authored_opaque_lifecycle(module, ty).is_some()
             || module
                 .type_classes

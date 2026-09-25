@@ -916,8 +916,11 @@ fn callable_join_rejects_nested_foreign_owner_without_binding_either_order() {
         checker.local_type_defs.insert("Widget".to_string());
         checker.source_type_defs.insert("Widget".to_string());
         let speculative = TypeVar::fresh();
-        let local = Ty::named("Carrier", vec![Ty::named("Widget", vec![])]);
-        let foreign = Ty::named("Carrier", vec![Ty::named("foreign.Widget", vec![])]);
+        let local = Ty::named_for_test("Carrier", vec![Ty::named_for_test("Widget", vec![])]);
+        let foreign = Ty::named_for_test(
+            "Carrier",
+            vec![Ty::named_for_test("foreign.Widget", vec![])],
+        );
         let left = invariant_test_callable(vec![Ty::Var(speculative), local], Ty::Bool);
         let right = invariant_test_callable(vec![Ty::I64, foreign], Ty::Bool);
         let (left, right) = if reverse {
@@ -936,21 +939,6 @@ fn callable_join_rejects_nested_foreign_owner_without_binding_either_order() {
             "a failed callable join must discard earlier parameter inference"
         );
     }
-}
-
-#[test]
-fn callable_join_accepts_bare_alias_for_current_owner() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.current_module = Some("owner".to_string());
-    checker.local_type_defs.insert("Widget".to_string());
-    checker.source_type_defs.insert("Widget".to_string());
-    let bare = Ty::named("Widget", vec![]);
-    let qualified = Ty::named("owner.Widget", vec![]);
-    let left = invariant_test_callable(vec![bare.clone()], bare);
-    let right = invariant_test_callable(vec![qualified.clone()], qualified);
-
-    assert!(checker.join_callable_types(&left, &right).is_some());
-    assert!(checker.join_callable_types(&right, &left).is_some());
 }
 
 #[test]

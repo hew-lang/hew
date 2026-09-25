@@ -948,48 +948,28 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
     let machine_td = &output.type_defs["Lifecycle"];
     assert_eq!(machine_td.type_params, vec!["T".to_string()]);
     match &machine_td.variants["Loaded"] {
-        hew_types::VariantDef::Struct(fields) => assert_eq!(
-            fields,
-            &vec![(
-                "value".to_string(),
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            )]
-        ),
+        hew_types::VariantDef::Struct(fields) => {
+            assert_eq!(fields, &vec![("value".to_string(), Ty::param("T"),)]);
+        }
         other => panic!("expected Loaded to be a struct variant, got: {other:?}"),
     }
 
     let event_td = &output.type_defs["LifecycleEvent"];
     assert_eq!(event_td.type_params, vec!["T".to_string()]);
     match &event_td.variants["Load"] {
-        hew_types::VariantDef::Struct(fields) => assert_eq!(
-            fields,
-            &vec![(
-                "value".to_string(),
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            )]
-        ),
+        hew_types::VariantDef::Struct(fields) => {
+            assert_eq!(fields, &vec![("value".to_string(), Ty::param("T"),)]);
+        }
         other => panic!("expected Load to be a struct variant, got: {other:?}"),
     }
 
     assert_eq!(
         machine_td.methods["step"].params,
-        vec![Ty::Named {
-            builtin: None,
-            name: "LifecycleEvent".to_string(),
-            args: vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
-        }]
+        vec![Ty::named_in(
+            &output.defs,
+            "LifecycleEvent",
+            vec![Ty::param("T")]
+        )]
     );
 }
 
@@ -1146,20 +1126,12 @@ fn imported_machine_unit_state_constructor_resolves() {
     );
     assert_eq!(
         output.fn_sigs["Red"].return_type,
-        Ty::Named {
-            builtin: None,
-            name: "lights.Traffic".to_string(),
-            args: vec![],
-        },
+        Ty::named_for_test("lights.Traffic", vec![]),
         "an imported state constructor must return the exact machine identity"
     );
     assert_eq!(
         output.type_defs["lights.Traffic"].methods["step"].params,
-        vec![Ty::Named {
-            builtin: None,
-            name: "lights.TrafficEvent".to_string(),
-            args: vec![],
-        }],
+        vec![Ty::named_for_test("lights.TrafficEvent", vec![])],
         "an imported step method must accept the exact companion event identity"
     );
 }

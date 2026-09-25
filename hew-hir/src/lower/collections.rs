@@ -83,7 +83,7 @@ impl LowerCtx {
         match result_ty {
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::Vec),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
                 ..
             } if args.len() == 1 => Some((Self::resolved_vec_ty(args[0].clone()), args[0].clone())),
             ResolvedTy::Array(elem_ty, len) => {

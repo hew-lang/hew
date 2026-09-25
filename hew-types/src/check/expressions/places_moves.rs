@@ -83,7 +83,8 @@ impl Checker {
         let mut parent = self.subst.resolve(&binding.ty);
         let mut owner = None;
         for (depth, step) in path.iter().enumerate() {
-            if matches!(&parent, Ty::Named { name, .. } if self.registry.is_resource(name)) {
+            if matches!(&parent, Ty::Named { head, .. } if self.registry.is_resource(head.registry_key()))
+            {
                 owner = Some(depth);
             }
             let selected = match &parent {
@@ -99,7 +100,8 @@ impl Checker {
     /// not itself owned by a nested `#[resource]`.
     pub(super) fn carries_resource_handle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
         match ty {
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 if self.registry.is_resource(name) {
                     return false;
                 }
@@ -122,7 +124,7 @@ impl Checker {
                 let Some(members) = self.registry.member_types(name) else {
                     return false;
                 };
-                if !visiting.insert(name.clone()) {
+                if !visiting.insert(name.to_string()) {
                     return false;
                 }
                 let carries = members
@@ -266,9 +268,10 @@ impl Checker {
     }
 
     pub(super) fn project_named_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
-        let Ty::Named { name, args, .. } = parent else {
+        let Ty::Named { head, args } = parent else {
             return None;
         };
+        let name = head.registry_key();
         let definition = self.type_defs.get(name)?;
         if definition.type_params.len() != args.len() {
             return None;
@@ -288,7 +291,8 @@ impl Checker {
     pub(super) fn independent_record_or_tuple_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
         match parent {
             Ty::Tuple(items) => items.get(field.parse::<usize>().ok()?).cloned(),
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 let declaration = crate::value_class::ClassDeclarations::declared_type(
                     &self.class_declarations(),
                     name,
@@ -533,11 +537,9 @@ impl Checker {
     ) -> bool {
         match ty {
             Ty::CancellationToken => true,
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
                     || Self::qualified_name_resolves_to_transferring_builtin(name)
                     || self.registry.is_resource(name)
@@ -553,7 +555,7 @@ impl Checker {
                 }
                 // A builtin carries no user member set to descend into, and its
                 // ownership verdict is already decided above.
-                if builtin.is_some() || !visiting.insert(name.clone()) {
+                if builtin.is_some() || !visiting.insert(name.to_string()) {
                     return false;
                 }
                 let members: Vec<Ty> = self
@@ -683,7 +685,7 @@ impl Checker {
                 if matches!(
                     ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                        head: crate::TypeHead::Builtin(BuiltinType::Rc | BuiltinType::Weak),
                         ..
                     }
                 ) {

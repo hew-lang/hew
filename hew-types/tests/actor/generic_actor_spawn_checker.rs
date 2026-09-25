@@ -45,7 +45,7 @@ fn main() {
     let (actor_name, actor_args) = handle_ty
         .actor_handle_identity()
         .unwrap_or_else(|| panic!("expected an actor handle, got {handle_ty:?}"));
-    assert_eq!(actor_name, "Buffer");
+    assert_eq!(actor_name.spelling.as_str(), "Buffer");
     assert_eq!(actor_args.len(), 1, "Buffer<i64> should have 1 type arg");
     assert!(
         matches!(&actor_args[0], Ty::I64),

@@ -265,9 +265,8 @@ mod tests {
         checker.registry.register_type(
             "hew.replynonsend.Reply".to_string(),
             vec![Ty::Named {
-                name: "Rc".to_string(),
                 args: vec![Ty::I64],
-                builtin: Some(BuiltinType::Rc),
+                head: crate::TypeHead::Builtin(BuiltinType::Rc),
             }],
         );
         checker.module_import_bindings.insert(
@@ -278,22 +277,20 @@ mod tests {
             (None, 0, "replynonsend".to_string()),
             "hew.replynonsend".to_string(),
         );
-        let bare_reply = Ty::Named {
-            name: "Reply".to_string(),
-            args: Vec::new(),
-            builtin: None,
-        };
+        let bare_reply = Ty::named_for_test("Reply", Vec::new());
 
         let send = checker
             .send_gate_reply_ty("replysend.Producer::make", &bare_reply)
             .expect("an exact replysend binding and marker row must resolve");
-        assert!(matches!(send, Ty::Named { ref name, .. } if name == "hew.replysend.Reply"));
+        assert!(matches!(send, Ty::Named { head, .. } if head.spelling() == "hew.replysend.Reply"));
         assert!(checker.registry.implements_marker(&send, MarkerTrait::Send));
 
         let non_send = checker
             .send_gate_reply_ty("replynonsend.Producer::make", &bare_reply)
             .expect("an exact replynonsend binding and marker row must resolve");
-        assert!(matches!(non_send, Ty::Named { ref name, .. } if name == "hew.replynonsend.Reply"));
+        assert!(
+            matches!(non_send, Ty::Named { head, .. } if head.spelling() == "hew.replynonsend.Reply")
+        );
         assert!(!checker
             .registry
             .implements_marker(&non_send, MarkerTrait::Send));
@@ -303,76 +300,6 @@ mod tests {
                 .send_gate_reply_ty("missing.Producer::make", &bare_reply)
                 .is_none(),
             "a missing lexical module binding must not fall back to bare Reply"
-        );
-    }
-
-    #[test]
-    fn qualified_method_receiver_restores_only_its_own_return_identity() {
-        fn empty_type_def(name: &str) -> TypeDef {
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: name.to_string(),
-                type_params: Vec::new(),
-                bounds: HashMap::new(),
-                fields: HashMap::new(),
-                field_order: Vec::new(),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                is_indirect: false,
-            }
-        }
-
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        for identity in [
-            "net.Listener",
-            "net.Connection",
-            "foo.Listener",
-            "foo.Connection",
-        ] {
-            checker
-                .type_defs
-                .insert(identity.to_string(), empty_type_def(identity));
-        }
-        let bare_connection = Ty::Named {
-            name: "Connection".to_string(),
-            args: Vec::new(),
-            builtin: None,
-        };
-
-        assert_eq!(
-            checker.qualify_method_return_to_receiver_owner("net.Listener", &bare_connection,),
-            Ty::Named {
-                name: "net.Connection".to_string(),
-                args: Vec::new(),
-                builtin: None,
-            },
-            "a `net.Listener` method's module-local `Connection` return must regain `net` ownership",
-        );
-        assert_eq!(
-            checker.qualify_method_return_to_receiver_owner("foo.Listener", &bare_connection,),
-            Ty::Named {
-                name: "foo.Connection".to_string(),
-                args: Vec::new(),
-                builtin: None,
-            },
-            "a foreign same-short-name method result must retain its own source owner",
-        );
-
-        let foreign_connection = Ty::Named {
-            name: "foo.Connection".to_string(),
-            args: Vec::new(),
-            builtin: None,
-        };
-        assert_eq!(
-            checker.qualify_method_return_to_receiver_owner("net.Listener", &foreign_connection,),
-            foreign_connection,
-            "an already-qualified foreign result is authoritative and must not be rewritten",
-        );
-        assert_eq!(
-            checker.qualify_method_return_to_receiver_owner("Listener", &bare_connection,),
-            bare_connection,
-            "a root-local receiver has no module owner to project onto its result",
         );
     }
 
@@ -491,8 +418,8 @@ mod tests {
             SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
-                key_ty: Ty::normalize_named("K".to_string(), vec![]),
-                val_ty: Ty::normalize_named("V".to_string(), vec![]),
+                key_ty: Ty::param("K"),
+                val_ty: Ty::param("V"),
                 source_module: None,
                 type_param_bounds: HashMap::from([
                     ("K".into(), vec!["Hash".into(), "Eq".into()]),
@@ -521,8 +448,8 @@ mod tests {
             SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
-                key_ty: Ty::normalize_named("K".to_string(), vec![]),
-                val_ty: Ty::normalize_named("V".to_string(), vec![]),
+                key_ty: Ty::param("K"),
+                val_ty: Ty::param("V"),
                 source_module: None,
                 type_param_bounds: HashMap::from([
                     ("K".into(), vec!["Eq".into()]),
@@ -557,12 +484,7 @@ mod tests {
             ));
         let span = 80..90;
 
-        checker.record_resolved_hashmap_call(
-            "insert",
-            &Ty::normalize_named("K".to_string(), vec![]),
-            &Ty::normalize_named("V".to_string(), vec![]),
-            &span,
-        );
+        checker.record_resolved_hashmap_call("insert", &Ty::param("K"), &Ty::param("V"), &span);
 
         assert!(
             checker.errors.is_empty(),
@@ -690,11 +612,7 @@ mod tests {
         let span = 90..100;
         // Nest Ty::Error inside a Vec element to exercise the contains_error() path,
         // not just a bare Ty::Error match.
-        let elem_ty = Ty::Named {
-            builtin: None,
-            name: "Result".into(),
-            args: vec![Ty::Error, Ty::I64],
-        };
+        let elem_ty = Ty::named_for_test("Result", vec![Ty::Error, Ty::I64]);
         checker.deferred_vec_admission.insert(
             SpanKey::in_module(&span, 0),
             DeferredVecAdmission {

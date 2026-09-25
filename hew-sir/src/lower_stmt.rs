@@ -195,7 +195,7 @@ impl Builder<'_, '_> {
                 )),
                 ResolvedTy::Bytes => Some(hew_types::RuntimeCallFamily::BytesSet),
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Vec),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
                     ..
                 } => Some(hew_types::RuntimeCallFamily::Vector(
                     hew_types::runtime_call::VecValueOp::Set,

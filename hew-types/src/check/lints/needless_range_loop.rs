@@ -330,7 +330,7 @@ fn is_lintable_collection(ty: &Ty) -> bool {
     matches!(
         ty,
         Ty::Named {
-            builtin: Some(BuiltinType::Vec),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             ..
         }
     )
@@ -338,7 +338,7 @@ fn is_lintable_collection(ty: &Ty) -> bool {
 
 fn vec_element_type(ty: &Ty) -> Option<&Ty> {
     let Ty::Named {
-        builtin: Some(BuiltinType::Vec),
+        head: crate::TypeHead::Builtin(BuiltinType::Vec),
         args,
         ..
     } = ty

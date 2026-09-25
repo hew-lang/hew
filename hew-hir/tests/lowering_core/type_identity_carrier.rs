@@ -216,8 +216,11 @@ fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
         .expect("root `read` function must lower");
     let param = read_fn.params.first().expect("read has one param");
     match &param.ty {
-        ResolvedTy::Named { name, .. } => assert_eq!(
-            name, "bank.Widget",
+        ResolvedTy::Named {
+            head: name_head, ..
+        } => assert_eq!(
+            name_head.spelling(),
+            "bank.Widget",
             "qualified annotation must keep its module qualifier into HIR, not strip to bare"
         ),
         other => panic!("expected ResolvedTy::Named, got {other:?}"),
@@ -227,22 +230,21 @@ fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
 #[test]
 fn checked_member_types_preserve_nominal_opacity_through_hir() {
     use hew_types::BuiltinType;
-    let option = |inner| ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![inner]);
-    let vector = |inner| ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![inner]);
+    let option = |inner| ResolvedTy::named_builtin(BuiltinType::Option, vec![inner]);
+    let vector = |inner| ResolvedTy::named_builtin(BuiltinType::Vec, vec![inner]);
 
     for (definition, name, expected) in [
         (
             "#[opaque] type Handle {}",
             "Handle",
-            ResolvedTy::named_opaque("Handle", vec![]),
+            ResolvedTy::opaque_for_test("Handle", vec![]),
         ),
         (
             "import std.encoding.json;",
             "json.Value",
             ResolvedTy::Named {
-                name: "std.encoding.json.Value".into(),
                 args: vec![],
-                builtin: Some(BuiltinType::JsonValue),
+                head: hew_types::TypeHead::Builtin(BuiltinType::JsonValue),
                 is_opaque: true,
             },
         ),
@@ -250,9 +252,8 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             "import std.encoding.yaml;",
             "yaml.Value",
             ResolvedTy::Named {
-                name: "std.encoding.yaml.Value".into(),
                 args: vec![],
-                builtin: Some(BuiltinType::YamlValue),
+                head: hew_types::TypeHead::Builtin(BuiltinType::YamlValue),
                 is_opaque: true,
             },
         ),
@@ -301,7 +302,10 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
         };
         assert_eq!(params, std::slice::from_ref(&expected));
         assert_eq!(ret.as_ref(), &expected);
-        assert_eq!(published[3], ResolvedTy::named_user("Value", vec![]));
+        assert_eq!(
+            published[3],
+            ResolvedTy::named_path(&checked.defs, "Value", vec![])
+        );
 
         let payload = find_type(&hir, "Payload");
         let mut variants: Vec<_> = payload.variants.iter().collect();

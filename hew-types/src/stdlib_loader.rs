@@ -729,11 +729,7 @@ fn type_expr_to_ty_with_params_and_context(
                     if type_args.as_ref().is_none_or(Vec::is_empty)
                         && type_params.contains(param) =>
                 {
-                    Ty::Named {
-                        builtin: None,
-                        name: param.to_string(),
-                        args: vec![],
-                    }
+                    Ty::param(param)
                 }
                 // Option<T> → Ty::option() helper
                 "Option" => {
@@ -747,7 +743,7 @@ fn type_expr_to_ty_with_params_and_context(
                             ));
                         }
                     }
-                    Ty::normalize_named("Option".to_string(), vec![])
+                    Ty::registry_named("Option", vec![])
                 }
                 // Result<O, E> → Ty::result() helper
                 "Result" => {
@@ -769,7 +765,7 @@ fn type_expr_to_ty_with_params_and_context(
                             );
                         }
                     }
-                    Ty::normalize_named("Result".to_string(), vec![])
+                    Ty::registry_named("Result", vec![])
                 }
                 // Canonical named builtins — do NOT module-qualify.
                 builtin if Ty::is_named_builtin(builtin) => {
@@ -788,11 +784,11 @@ fn type_expr_to_ty_with_params_and_context(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    Ty::normalize_named(builtin.to_string(), args)
+                    Ty::registry_named(builtin, args)
                 }
                 // Qualified handle type like "json.Value"
-                n if n.contains('.') => Ty::normalize_named(
-                    n.to_string(),
+                n if n.contains('.') => Ty::registry_named(
+                    n,
                     type_args
                         .as_ref()
                         .map(|args| {
@@ -810,8 +806,8 @@ fn type_expr_to_ty_with_params_and_context(
                         .unwrap_or_default(),
                 ),
                 // Unqualified type name — qualify with module short name
-                other => Ty::normalize_named(
-                    format!("{module_short}.{other}"),
+                other => Ty::registry_named(
+                    &format!("{module_short}.{other}"),
                     type_args
                         .as_ref()
                         .map(|args| {
@@ -862,8 +858,8 @@ fn type_expr_to_ty_with_params_and_context(
             )),
             *size,
         ),
-        TypeExpr::Slice(element) => Ty::normalize_named(
-            "Vec".to_string(),
+        TypeExpr::Slice(element) => Ty::registry_named(
+            "Vec",
             vec![type_expr_to_ty_with_params_and_context(
                 &element.0,
                 module_short,
@@ -1474,7 +1470,7 @@ mod tests {
             .expect("parse_request is a public wrapper");
         assert_eq!(
             parse_request.return_type,
-            Ty::named("http.AsyncRequest", vec![]),
+            Ty::unresolved_for_test("http.AsyncRequest", vec![]),
         );
 
         // Negative control: a module that owns itself keeps its own short
@@ -2101,7 +2097,7 @@ mod tests {
 
         assert_eq!(
             type_expr_to_ty(&texpr, "mymod"),
-            Ty::normalize_named("Vec".to_string(), vec![Ty::I32]),
+            Ty::registry_named("Vec", vec![Ty::I32]),
             "slice annotations must alias to Vec<T> in registry-loaded signatures"
         );
     }
@@ -2136,7 +2132,7 @@ mod tests {
         );
         assert_eq!(
             info.wrapper_fns[0].params,
-            vec![Ty::normalize_named("Vec".to_string(), vec![Ty::I32])],
+            vec![Ty::registry_named("Vec", vec![Ty::I32])],
             "slice parameter should be loaded as a Vec alias"
         );
     }

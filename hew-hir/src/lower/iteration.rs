@@ -42,7 +42,7 @@ impl LowerCtx {
     pub(super) fn resolved_option_elem_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
             args,
-            builtin: Some(BuiltinType::Option),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Option),
             ..
         } = ty
         else {
@@ -104,14 +104,17 @@ impl LowerCtx {
         span: &Span,
     ) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
-            name,
+            head:
+                head @ (hew_types::TypeHead::Nominal(_)
+                | hew_types::TypeHead::Param(_)
+                | hew_types::TypeHead::Unresolved(_)),
             args,
-            builtin: None,
             ..
         } = iter_ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let callee = crate::node::HirImplBlock::method_symbol(name, "next");
         let sig = self.fn_sigs.get(&callee).cloned()?;
         if !sig.requires_mutable_receiver {
@@ -143,7 +146,7 @@ impl LowerCtx {
     ) -> Option<(ResolvedTy, ForIterNextCall)> {
         if let ResolvedTy::Named {
             args,
-            builtin: Some(BuiltinType::VecIter),
+            head: hew_types::TypeHead::Builtin(BuiltinType::VecIter),
             ..
         } = iter_ty
         {
@@ -215,14 +218,17 @@ impl LowerCtx {
         span: &Span,
     ) -> Option<(HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall)> {
         let ResolvedTy::Named {
-            name,
+            head:
+                head @ (hew_types::TypeHead::Nominal(_)
+                | hew_types::TypeHead::Param(_)
+                | hew_types::TypeHead::Unresolved(_)),
             args,
-            builtin: None,
             ..
         } = &iterable.ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let callee = crate::node::HirImplBlock::method_symbol(name, "into_iter");
         if !self.fn_sigs.contains_key(&callee) {
             return None;
@@ -336,9 +342,8 @@ impl LowerCtx {
         self.push_scope();
         let temp_name = format!("__hew_into_iter_src_{}", self.ids.binding().0);
         let src_ty = ResolvedTy::Named {
-            name: "HashMap".to_string(),
             args: vec![key_ty.clone(), val_ty.clone()],
-            builtin: Some(BuiltinType::HashMap),
+            head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
             is_opaque: false,
         };
         let temp_binding = self.bind(temp_name.clone(), src_ty, false, span.clone());
@@ -1260,7 +1265,7 @@ impl LowerCtx {
         {
             if let ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::Vec),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
                 ..
             } = lowered_iterable.ty.clone()
             {
@@ -1288,7 +1293,7 @@ impl LowerCtx {
         let (iter_init, iter_ty, elem_ty, next_call) = match lowered_iterable.ty.clone() {
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::Vec),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
                 ..
             } if args.len() == 1 => {
                 let elem_ty = args[0].clone();
@@ -1303,7 +1308,7 @@ impl LowerCtx {
             }
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::HashMap),
+                head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
                 ..
             } if args.len() >= 2 => {
                 // `for (k, v) in m` over a HashMap builds a `HashMapIter`
@@ -1339,7 +1344,7 @@ impl LowerCtx {
             }
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::HashSet),
+                head: hew_types::TypeHead::Builtin(BuiltinType::HashSet),
                 ..
             } if !args.is_empty() => {
                 // `for x in s` over a HashSet snapshots the set's elements into
@@ -1392,7 +1397,7 @@ impl LowerCtx {
             }
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::VecIter),
+                head: hew_types::TypeHead::Builtin(BuiltinType::VecIter),
                 ..
             } if args.len() == 1 => {
                 // VecIter is already an iterator object; consuming it drives
@@ -1407,7 +1412,7 @@ impl LowerCtx {
             }
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::Stream),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Stream),
                 ..
             } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
@@ -1447,7 +1452,7 @@ impl LowerCtx {
             // `.next()` per iteration; the binding's scope-exit drop frees it.
             ResolvedTy::Named {
                 ref args,
-                builtin: Some(BuiltinType::Generator),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Generator),
                 ..
             } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
@@ -1512,13 +1517,17 @@ impl LowerCtx {
                 self.register_option_layout(&elem_ty, &iterable.1, "generic Iterator::next");
                 let target_label = match &iter_ty {
                     ResolvedTy::Named {
-                        builtin: Some(builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter)),
+                        head:
+                            hew_types::TypeHead::Builtin(
+                                builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter),
+                            ),
                         ..
                     } => crate::node::HirImplBlock::method_symbol(
                         injected_builtin_impl_symbol_owner(builtin.canonical_name()),
                         "next",
                     ),
-                    ResolvedTy::Named { name, .. } => {
+                    ResolvedTy::Named { head, .. } => {
+                        let name = head.registry_key();
                         crate::node::HirImplBlock::method_symbol(name, "next")
                     }
                     _ => String::new(),

@@ -306,32 +306,33 @@ impl LowerCtx {
                 span,
             ),
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::NodeId),
+                head: hew_types::TypeHead::Builtin(BuiltinType::NodeId),
                 ..
             } => self.build_catalog_call("hew_node_id_display", vec![value], span),
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::Location),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Location),
                 ..
             } => self.build_catalog_call("hew_location_display", vec![value], span),
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::RemotePid),
+                head: hew_types::TypeHead::Builtin(BuiltinType::RemotePid),
                 ..
             } => self.build_catalog_call("hew_remote_pid_display", vec![value], span),
-            ResolvedTy::Named { name, args, .. } => {
+            ResolvedTy::Named { head, args, .. } => {
+                let name = head.registry_key();
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
                 // dispatch; a concrete user type calls its `impl Display` fmt
                 // symbol directly (byte-identical to the pre-#1565 path).
                 if self.current_fn_type_params.contains(name) {
-                    let type_param_name = name.clone();
+                    let type_param_name = name;
                     return self.build_display_static_dispatch(
                         value,
                         display_target,
-                        type_param_name,
+                        type_param_name.to_string(),
                         span,
                     );
                 }
-                let name = name.clone();
+                let name = name.to_string();
                 let type_args = args.clone();
                 self.dispatch_display_to_named_impl(&name, &type_args, &method_name, value, span)
             }

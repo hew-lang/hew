@@ -111,7 +111,7 @@ impl Checker {
             || matches!(resolved_expected, Ty::TraitObject { .. })
             || matches!(
                 &resolved_expected,
-                Ty::Named { name, .. } if self.type_aliases.contains_key(name)
+                Ty::Named { head, .. } if self.type_aliases.contains_key(head.registry_key())
             )
         {
             return resolved_expected;
@@ -445,14 +445,15 @@ impl Checker {
             Some(actor_ty) => self.subst.resolve(actor_ty),
             None => return None,
         };
-        let Ty::Named { name, .. } = actor_ty else {
+        let Ty::Named { head, .. } = actor_ty else {
             return None;
         };
+        let name = head.registry_key();
         let actor_name = self
             .type_defs
-            .get(&name)
+            .get(name)
             .filter(|def| def.kind == TypeDefKind::Actor)
-            .map_or(name, |def| def.name.clone());
+            .map_or_else(|| name.to_string(), |def| def.name.clone());
         Some(format!("{actor_name}::{}", method.0))
     }
 
@@ -1621,7 +1622,8 @@ impl Checker {
                     let obj_ty = self.synthesize(&object.0, &object.1);
                     self.place_base_depth -= 1;
                     let resolved = self.subst.resolve(&obj_ty);
-                    if let Ty::Named { name, .. } = &resolved {
+                    if let Ty::Named { head, .. } = &resolved {
+                        let name = head.registry_key();
                         let root_is_mutable = self
                             .assignment_root_binding_name(&target.0)
                             .is_some_and(|root| {
@@ -1917,7 +1919,7 @@ impl Checker {
                 if matches!(
                     resolved_iter_ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Stream),
+                        head: crate::TypeHead::Builtin(BuiltinType::Stream),
                         ..
                     }
                 ) {
@@ -1949,12 +1951,12 @@ impl Checker {
                     }
                     Ty::Slice(inner) => (**inner).clone(),
                     Ty::Named {
-                        builtin: Some(BuiltinType::Range),
+                        head: crate::TypeHead::Builtin(BuiltinType::Range),
                         args,
                         ..
                     } if args.len() == 1 => args[0].clone(),
                     Ty::Named {
-                        builtin: Some(BuiltinType::Stream),
+                        head: crate::TypeHead::Builtin(BuiltinType::Stream),
                         args,
                         ..
                     } => {
@@ -2026,7 +2028,7 @@ impl Checker {
                         }
                     }
                     Ty::Named {
-                        builtin: Some(BuiltinType::Vec),
+                        head: crate::TypeHead::Builtin(BuiltinType::Vec),
                         args,
                         ..
                     } => {
@@ -2065,7 +2067,7 @@ impl Checker {
                     }
                     Ty::Named {
                         args,
-                        builtin: Some(BuiltinType::VecIter),
+                        head: crate::TypeHead::Builtin(BuiltinType::VecIter),
                         ..
                     } if !args.is_empty() => {
                         let elem = args[0].clone();
@@ -2076,7 +2078,7 @@ impl Checker {
                         }
                     }
                     Ty::Named {
-                        builtin: Some(BuiltinType::HashMap),
+                        head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                         args,
                         ..
                     } if args.len() >= 2 => {
@@ -2125,7 +2127,7 @@ impl Checker {
                         Ty::Tuple(vec![key_ty, val_ty])
                     }
                     Ty::Named {
-                        builtin: Some(BuiltinType::HashSet),
+                        head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                         args,
                         ..
                     } if !args.is_empty() => {

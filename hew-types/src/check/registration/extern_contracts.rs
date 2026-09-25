@@ -103,11 +103,9 @@ impl Checker {
     /// declaration used by field annotations and ordinary callable signatures.
     pub(super) fn resolve_extern_signature_nominals(&self, ty: &Ty) -> Ty {
         match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 // The callable consumes source values, including fields from
                 // peer files assembled into this module. Resolve their registered
                 // declaration rather than substituting the ABI contract's file
@@ -117,13 +115,14 @@ impl Checker {
                         .then(|| self.extern_nominal_imported_owner(name))
                         .flatten()
                 });
-                Ty::Named {
-                    name: resolved.unwrap_or_else(|| name.clone()),
-                    args: args
-                        .iter()
-                        .map(|arg| self.resolve_extern_signature_nominals(arg))
-                        .collect(),
-                    builtin: *builtin,
+                let args = args
+                    .iter()
+                    .map(|arg| self.resolve_extern_signature_nominals(arg))
+                    .collect();
+                if builtin.is_some() || head.is_param() {
+                    Ty::Named { head: *head, args }
+                } else {
+                    self.named_ty_for_key(&resolved.unwrap_or_else(|| name.to_string()), args)
                 }
             }
             _ => ty.map_children_pub(&|child| self.resolve_extern_signature_nominals(child)),

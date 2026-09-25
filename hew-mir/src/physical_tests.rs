@@ -2133,8 +2133,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
 
 fn collection_parameter_fixture() -> PhysicalModule {
     let collection = |kind: BuiltinType, args| ResolvedTy::Named {
-        name: kind.canonical_name().to_string(),
-        builtin: Some(kind),
+        head: hew_types::TypeHead::Builtin(kind),
         args,
         is_opaque: false,
     };
@@ -2657,7 +2656,7 @@ fn verifier_rejects_foreign_vector_and_extraction_descriptors() {
             .iter()
             .find(|glue| {
                 matches!(&glue.ty,
-                ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Option), args, .. }
+                ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Option), args, .. }
                     if args == &[ResolvedTy::I64])
             })
             .unwrap()

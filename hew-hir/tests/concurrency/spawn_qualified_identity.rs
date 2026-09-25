@@ -119,7 +119,7 @@ fn collect_spawns(expr: &HirExpr, spawns: &mut Vec<(String, ResolvedTy)>) {
 /// an actor is the type of its handle, so the handle carries the actor's
 /// nominal identity directly rather than wrapping it in a separate carrier).
 fn actor_handle_name(defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<String> {
-    ty.actor_handle_instance(defs)
+    ty.actor_handle_instance()
         .map(|instance| defs.path(instance.nominal.declaration()).to_string())
 }
 

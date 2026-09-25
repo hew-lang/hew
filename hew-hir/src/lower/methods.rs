@@ -177,7 +177,6 @@ impl LowerCtx {
                 match ResolvedTy::from_ty(&elem_ty) {
                     Ok(elem_ty) => {
                         let stream_ty = ResolvedTy::named_builtin(
-                            "Stream",
                             hew_types::BuiltinType::Stream,
                             vec![elem_ty],
                         );
@@ -772,7 +771,7 @@ impl LowerCtx {
                 };
                 let element = match self.checked_ty(&receiver.1) {
                     Some(ResolvedTy::Named {
-                        builtin: Some(actual),
+                        head: hew_types::TypeHead::Builtin(actual),
                         args,
                         ..
                     }) if *actual == expected && args.len() == 1 => args[0].clone(),
@@ -891,7 +890,7 @@ impl LowerCtx {
                     });
                 let reply_ty = match &ret_ty {
                     ResolvedTy::Named {
-                        builtin: Some(BuiltinType::Result),
+                        head: hew_types::TypeHead::Builtin(BuiltinType::Result),
                         args,
                         ..
                     } => args.first().cloned(),
@@ -1494,12 +1493,7 @@ impl LowerCtx {
                     .expr_types
                     .get(&key)
                     .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-                    .unwrap_or_else(|| ResolvedTy::Named {
-                        name: record_name.clone(),
-                        args: vec![],
-                        builtin: None,
-                        is_opaque: false,
-                    });
+                    .unwrap_or_else(|| ResolvedTy::named_path(&self.defs, &record_name, vec![]));
                 let sym = format!("__hew_record_clone_inplace_{record_name}");
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 (

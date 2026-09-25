@@ -5379,7 +5379,6 @@ mod tests {
     #[test]
     fn shutdown_skips_self_join() {
         use std::sync::Arc;
-        use std::time::Instant;
         let _g = SCHED_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5430,15 +5429,11 @@ mod tests {
         // Release the spawned thread to call hew_sched_shutdown.
         barrier.wait();
 
-        // Poll for completion — 2 s timeout detects deadlock.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !done.load(Ordering::Acquire) && Instant::now() < deadline {
+        // Poll for completion; a self-join deadlock never completes, and the
+        // test runner's timeout reports it.
+        while !done.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(
-            done.load(Ordering::Acquire),
-            "hew_sched_shutdown deadlocked on self-join"
-        );
 
         // A later caller owns and joins the finished self handle before freeing
         // the runtime.
@@ -5452,7 +5447,6 @@ mod tests {
     #[test]
     fn shutdown_releases_worker_handles_while_join_pending() {
         use std::sync::Arc;
-        use std::time::Instant;
 
         let _g = SCHED_TEST_MUTEX
             .lock()
@@ -5501,37 +5495,27 @@ mod tests {
             shutdown_done2.store(true, Ordering::Release);
         });
 
-        let deadline = Instant::now() + Duration::from_secs(2);
         while {
             // SAFETY: the scheduler remains installed until cleanup below.
             let sched = unsafe { &*sched_ptr };
             !sched.shutdown.load(Ordering::Acquire)
-        } && Instant::now() < deadline
-        {
+        } {
             thread::sleep(Duration::from_millis(10));
         }
 
-        let touch_succeeded = {
+        // worker_handles must stay accessible while shutdown joins a blocked
+        // worker; a join that held them would keep this poll spinning.
+        {
             // SAFETY: the scheduler remains installed until cleanup below.
             let sched = unsafe { &*sched_ptr };
-            let mut touched = false;
-            while Instant::now() < deadline {
-                if sched
-                    .worker_handles
-                    .try_access(|handles| assert!(handles.is_empty()))
-                    .is_some()
-                {
-                    touched = true;
-                    break;
-                }
+            while sched
+                .worker_handles
+                .try_access(|handles| assert!(handles.is_empty()))
+                .is_none()
+            {
                 thread::sleep(Duration::from_millis(10));
             }
-            touched
-        };
-        assert!(
-            touch_succeeded,
-            "worker_handles must stay accessible while shutdown joins a blocked worker"
-        );
+        }
         assert!(
             !shutdown_done.load(Ordering::Acquire),
             "shutdown should still be waiting on the worker join during the concurrent touch"

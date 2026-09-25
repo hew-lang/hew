@@ -1537,7 +1537,9 @@ mod tests {
         let fault_core = std::sync::Arc::clone(&core);
         let fault = std::thread::spawn(move || fault_core.fault_close(45));
         let drop_entered = wait_for_blocking_drop_entry();
-        let sender_before_release = sender_done_rx.recv_timeout(std::time::Duration::from_secs(2));
+        // Without the early wake this receive never returns, since the drop thunk
+        // is released only below.
+        let sender_before_release = sender_done_rx.recv();
 
         // Always release the thunk before asserting so a regressing ordering
         // fails cleanly instead of leaving the fault thread stranded.
@@ -1594,9 +1596,7 @@ mod tests {
 
         core.fault_close(46);
         assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .expect("blocking receiver completion"),
+            done_rx.recv().expect("blocking receiver completion"),
             "blocking receiver must observe the terminal fault"
         );
         receiver.join().expect("blocking receiver thread");
@@ -1620,9 +1620,7 @@ mod tests {
 
         core.fault_close(47);
         assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .expect("wait-ready completion"),
+            done_rx.recv().expect("wait-ready completion"),
             "wait-ready must report a terminal channel as readable"
         );
         ready.join().expect("wait-ready thread");

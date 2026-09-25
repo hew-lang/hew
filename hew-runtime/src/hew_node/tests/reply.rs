@@ -34,7 +34,7 @@ fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
             7,
             ptr::null_mut(),
             0,
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u64>(),
         )
     };

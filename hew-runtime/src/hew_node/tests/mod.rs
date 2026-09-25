@@ -13,7 +13,14 @@ mod reply;
 mod swim;
 mod two_process;
 
+/// Ask deadline for tests whose outcome IS the timeout: no reply can ever
+/// arrive, so a late-firing deadline on a loaded host still reports Timeout.
 const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
+
+/// Ask deadline for tests whose outcome is a reply or a typed rejection: it
+/// never fires, so that outcome cannot turn into Timeout on a loaded host.
+/// The test runner's timeout is the hang guard.
+const NO_ASK_DEADLINE_MS: u64 = u64::MAX;
 
 fn test_node_id(route_slot: u16) -> crate::node_identity::NodeId {
     let mut bytes = [0_u8; 16];
@@ -1037,7 +1044,6 @@ fn start_authorized_quic_mesh_pair(id_a: u16, id_b: u16) -> (TestNode, u16, Test
         make_mutually_pinned_mesh_tls(&format!("node-{id_a}"), &format!("node-{id_b}"));
     let (node_a, port_a) =
         start_authorized_quic_mesh_node(id_a, tls_a, spki_a.clone(), id_b, spki_b.clone());
-    thread::sleep(Duration::from_millis(50));
     let (node_b, port_b) = start_authorized_quic_mesh_node(id_b, tls_b, spki_b, id_a, spki_a);
     (node_a, port_a, node_b, port_b)
 }
@@ -1122,7 +1128,7 @@ unsafe fn connect_with_retry(initiator: *mut HewNode, responder_addr: &CString) 
 
 /// Poll until both connection managers report at least one active connection.
 unsafe fn wait_for_handshake(node1: *mut HewNode, node2: *mut HewNode) {
-    let ok = (0..80).any(|i| {
+    let ok = (0..).any(|i| {
         // SAFETY: node1 and node2 pointers are valid for the duration of the test.
         let ready = unsafe {
             let mgr1 = &*(*node1).conn_mgr;
@@ -1162,7 +1168,7 @@ unsafe fn wait_for_handshake(node1: *mut HewNode, node2: *mut HewNode) {
 /// that normally lands in a few milliseconds; reaching it means the
 /// transition never happened, which is a genuine failure, not flake.
 unsafe fn wait_for_member_state_at_least(observer: *mut HewNode, subject: u16, min_state: i32) {
-    let ok = (0..200).any(|i| {
+    let ok = (0..).any(|i| {
         // SAFETY: observer's cluster is live for the duration of the test.
         let state =
             unsafe { crate::cluster::hew_cluster_member_state((*observer).cluster, subject) };

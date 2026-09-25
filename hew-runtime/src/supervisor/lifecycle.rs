@@ -828,36 +828,12 @@ mod tests {
         OwnedDeferredSupervisorSpawnFailureGuard
     }
 
-    fn wait_for_condition(
-        timeout: std::time::Duration,
-        mut condition: impl FnMut() -> bool,
-    ) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            if condition() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    /// Poll `condition` until it holds. The pass condition is the event
+    /// itself; the test runner's timeout is the only hang guard.
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        while !condition() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        condition()
-    }
-
-    fn defer_state_transition(
-        actor: *mut HewActor,
-        target_state: HewActorState,
-        delay: std::time::Duration,
-    ) -> std::thread::JoinHandle<()> {
-        let actor_addr = actor as usize;
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            // SAFETY: the test keeps the actor allocation alive until this
-            // state transition runs.
-            unsafe {
-                (*(actor_addr as *mut HewActor))
-                    .actor_state
-                    .store(target_state as i32, Ordering::Release);
-            }
-        })
     }
 
     unsafe extern "C-unwind" fn noop_child_dispatch(
@@ -1408,8 +1384,9 @@ mod tests {
 
             started.wait();
             actor::hew_actor_trap(child, 1);
+            hew_supervisor_restart_await_blocking(sup, 0);
             assert!(
-                test_wait_for_restart(sup, 1, 2_000) >= 1,
+                *(*sup).restart_epoch.0.lock_or_recover() >= 1,
                 "a supervisor restart must complete while live metrics reset runs"
             );
             resetter.join().expect("metrics resetter must not panic");
@@ -1490,11 +1467,15 @@ mod tests {
                 );
             }
 
-            let freed = wait_for_condition(std::time::Duration::from_secs(2), || {
-                !actor::is_actor_live_with_id(child_id, child)
+            // The supervisor has dispatched every forged send once its mailbox
+            // is empty and it is idle again.
+            wait_until(|| {
+                crate::mailbox::hew_mailbox_len((*self_actor).mailbox.cast()) == 0
+                    && (*self_actor).actor_state.load(Ordering::Acquire)
+                        == HewActorState::Idle as i32
             });
             assert!(
-                !freed,
+                actor::is_actor_live_with_id(child_id, child),
                 "a user-queue send of a reserved system value freed a LIVE \
                  supervised child (use-after-free)"
             );
@@ -1518,14 +1499,9 @@ mod tests {
                 0,
                 FaultRecord::NONE.as_raw(),
             );
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live_with_id(child_id, child)
-                }),
-                "the supervision path must be live: an event delivered on the \
-                 SYSTEM channel must reclaim the child, otherwise the forgery \
-                 assertions above prove nothing"
-            );
+            // The supervision path must be live: an event delivered on the SYSTEM channel must
+            // reclaim the child, otherwise the forgery assertions above prove nothing.
+            wait_until(|| !actor::is_actor_live_with_id(child_id, child));
 
             hew_supervisor_stop(sup);
         }
@@ -1571,12 +1547,8 @@ mod tests {
             assert!((*child).state_clone_fn.is_none());
 
             actor::hew_actor_send(child, 77, ptr::null_mut(), 0);
-            assert!(
-                wait_for_condition(Duration::from_secs(2), || {
-                    BORROWED_NORMAL_DISPATCH_COUNT.load(Ordering::Acquire) == 1
-                }),
-                "legacy borrowed actor must complete an ordinary user dispatch"
-            );
+            // Legacy borrowed actor must complete an ordinary user dispatch.
+            wait_until(|| BORROWED_NORMAL_DISPATCH_COUNT.load(Ordering::Acquire) == 1);
             assert!(
                 !(*child).state_drop_consumed.load(Ordering::Acquire),
                 "normal dispatch must not fabricate crash-escrow consumption"
@@ -1844,14 +1816,8 @@ mod tests {
                 .send(hew_local_pid_supervisor_stop(token))
                 .expect("stop completion receiver");
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while crate::lifetime::local_handles::current_supervisor_counts_for_test().0 != 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "stop did not retire route"
-            );
-            std::thread::yield_now();
-        }
+        // Stop retires the route before it waits for the pinned use.
+        wait_until(|| crate::lifetime::local_handles::current_supervisor_counts_for_test().0 == 0);
         assert!(matches!(
             done_rx.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
@@ -1930,14 +1896,8 @@ mod tests {
             crate::scheduler::hew_runtime_cleanup();
             done_tx.send(()).expect("cleanup completion receiver");
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while crate::lifetime::local_handles::current_supervisor_counts_for_test().0 != 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "cleanup did not retire supervisor routes"
-            );
-            std::thread::yield_now();
-        }
+        // Cleanup retires the supervisor routes before it waits for the pin.
+        wait_until(|| crate::lifetime::local_handles::current_supervisor_counts_for_test().0 == 0);
         assert!(matches!(
             done_rx.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
@@ -2063,35 +2023,22 @@ mod tests {
                 actor_id: child_id,
                 ..HewExecutionContext::default()
             });
-            let unblock = defer_state_transition(
-                child,
-                HewActorState::Stopped,
-                std::time::Duration::from_millis(200),
-            );
-
-            let start = std::time::Instant::now();
+            // The child stays Running until after the stop returns, so a stop
+            // that waited for the current dispatch thread could never return;
+            // a deferred stop returns with the tree still live.
             hew_supervisor_stop(sup);
-            let elapsed = start.elapsed();
-
-            unblock.join().unwrap();
-
             assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live_with_id(child_id, child)
-                }),
-                "child actor should be freed asynchronously after deferred supervisor stop"
+                actor::is_actor_live_with_id(child_id, child),
+                "child-owned supervisor stop should return immediately instead of waiting for the current dispatch thread"
             );
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live_with_id(self_id, self_actor)
-                }),
-                "supervisor self actor should be freed asynchronously after deferred stop"
-            );
+            (*child)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
 
-            assert!(
-                elapsed < std::time::Duration::from_millis(100),
-                "child-owned supervisor stop should return immediately instead of waiting for the current dispatch thread, took {elapsed:?}"
-            );
+            // Child actor should be freed asynchronously after deferred supervisor stop.
+            wait_until(|| !actor::is_actor_live_with_id(child_id, child));
+            // Supervisor self actor should be freed asynchronously after deferred stop.
+            wait_until(|| !actor::is_actor_live_with_id(self_id, self_actor));
         }
     }
 
@@ -2119,29 +2066,20 @@ mod tests {
                 actor_id: child_id,
                 ..HewExecutionContext::default()
             });
-            let start = std::time::Instant::now();
+            // Terminate is still running on this thread, so a stop that waited
+            // for it here could never return.
             hew_supervisor_stop(sup);
-            let elapsed = start.elapsed();
+            assert!(
+                actor::is_actor_live_with_id(child_id, child),
+                "reentrant supervisor stop should defer instead of spinning inside terminate"
+            );
 
             child_ref.terminate_finished.store(true, Ordering::Release);
 
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live_with_id(child_id, child)
-                }),
-                "child should be released after deferred supervisor stop"
-            );
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live_with_id(self_id, self_actor)
-                }),
-                "supervisor self actor should be released after deferred stop"
-            );
-
-            assert!(
-                elapsed < std::time::Duration::from_secs(1),
-                "reentrant supervisor stop should defer instead of spinning inside terminate, took {elapsed:?}"
-            );
+            // Child should be released after deferred supervisor stop.
+            wait_until(|| !actor::is_actor_live_with_id(child_id, child));
+            // Supervisor self actor should be released after deferred stop.
+            wait_until(|| !actor::is_actor_live_with_id(self_id, self_actor));
         }
     }
 
@@ -2177,12 +2115,8 @@ mod tests {
             });
             hew_supervisor_stop(sup);
 
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    crate::lifetime::live_actors::deferred_teardown_thread_count() == 1
-                }),
-                "deferred supervisor owner must be registered before shutdown"
-            );
+            // Deferred supervisor owner must be registered before shutdown.
+            wait_until(|| crate::lifetime::live_actors::deferred_teardown_thread_count() == 1);
 
             crate::scheduler::hew_sched_shutdown();
             crate::lifetime::live_actors::drain_deferred_teardown_threads();
@@ -2359,71 +2293,34 @@ mod tests {
                 actor_id: (*child).id,
                 ..HewExecutionContext::default()
             });
-            // Deferred-teardown windows widened 10x (200/250ms -> 2000/2500ms)
-            // so a second stop returning under full-suite CI load still lands
-            // well inside the window the deferred teardown owns the tree. This
-            // asserts real thread scheduling, which the in-process simtime seam
-            // can't fake; the deterministic fix (gate the transition on a
-            // released signal, assert ordering not wall-clock) is the v0.5.5
-            // de-flake (#39). The relative invariant below is unchanged.
-            let self_unblock = defer_state_transition(
-                self_actor,
-                HewActorState::Stopped,
-                std::time::Duration::from_secs(2),
-            );
-            let child_unblock = defer_state_transition(
-                child,
-                HewActorState::Stopped,
-                std::time::Duration::from_millis(2_500),
-            );
-
+            // The deferred teardown owns the tree until the test lets both
+            // actors reach Stopped, so the second stop can only return by not
+            // racing into teardown ownership.
             hew_supervisor_stop(sup);
 
-            let finished = std::sync::Arc::new(AtomicBool::new(false));
-            let elapsed_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let finished_clone = std::sync::Arc::clone(&finished);
-            let elapsed_clone = std::sync::Arc::clone(&elapsed_ms);
             let sup_addr = sup as usize;
             let second = std::thread::spawn(move || {
-                let start = std::time::Instant::now();
                 hew_supervisor_stop(sup_addr as *mut HewSupervisor);
-                let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                elapsed_clone.store(elapsed, Ordering::Release);
-                finished_clone.store(true, Ordering::Release);
             });
-
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(5), || {
-                    finished.load(Ordering::Acquire)
-                }),
-                "second stop caller should return while deferred teardown owns the supervisor"
-            );
-            assert!(
-                elapsed_ms.load(Ordering::Acquire) < 1_000,
-                "second stop caller should not race into teardown ownership"
-            );
+            second.join().unwrap();
             assert_eq!(
                 locked_roster!(sup).child_supervisors.len(),
                 1,
                 "deferred teardown must not mutate child supervisor vectors before self actor quiesces"
             );
 
-            second.join().unwrap();
-            self_unblock.join().unwrap();
-            child_unblock.join().unwrap();
+            (*self_actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            (*child)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
 
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live_with_id(child_id, child)
-                }),
-                "child actor should still be released after the deferred winner completes"
-            );
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live_with_id(self_id, self_actor)
-                }),
-                "supervisor self actor should still be released after the deferred winner completes"
-            );
+            // Child actor should still be released after the deferred winner completes.
+            wait_until(|| !actor::is_actor_live_with_id(child_id, child));
+            // Supervisor self actor should still be released after the deferred winner
+            // completes.
+            wait_until(|| !actor::is_actor_live_with_id(self_id, self_actor));
         }
     }
 
@@ -3690,18 +3587,11 @@ mod tests {
             notify_restart(sup);
             notified.wait();
 
-            // Bounded teeth: poll for the awaiting thread to finish. WITHOUT the
-            // recheck the awaiting call returns SUSPEND with an orphaned waiter and
-            // (in a real run) the continuation never wakes; here the thread still
-            // finishes (it returns SUSPEND rather than parking a real coroutine),
-            // so the verdict is the rc + empty-registry assertion below, while this
-            // bounded wait guarantees the test itself never hangs.
-            let joined =
-                wait_for_condition(std::time::Duration::from_secs(5), || awaiting.is_finished());
-            assert!(
-                joined,
-                "awaiting thread must finish — a lost wakeup would hang it"
-            );
+            // WITHOUT the recheck the awaiting call returns SUSPEND with an
+            // orphaned waiter and (in a real run) the continuation never wakes;
+            // here the thread still finishes (it returns SUSPEND rather than
+            // parking a real coroutine), so the verdict is the rc +
+            // empty-registry assertion below.
             let rc = awaiting.join().expect("awaiting thread panicked");
 
             *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = None;
@@ -3734,12 +3624,9 @@ mod tests {
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
 
-            let start = std::time::Instant::now();
+            // A live role with no fault pending under it returns at once: with
+            // nothing to wait for, a barrier that blocked would never return.
             hew_supervisor_restart_await_blocking(sup, 0);
-            assert!(
-                start.elapsed() < std::time::Duration::from_millis(100),
-                "a live role with no fault pending under it must return at once"
-            );
 
             // Open and attribute a record exactly as a supervised crash does,
             // without running one: the barrier's input is the record, so this
@@ -3756,20 +3643,19 @@ mod tests {
             });
 
             // The role still reads Live, so only the open record can be holding
-            // the barrier. Without the record it would have returned by now, as
-            // phase one just measured.
+            // the barrier. WHY a window: nothing reports that the waiter has
+            // parked, so this leg can pass vacuously on a slow host. WHAT the
+            // real fix is: a parked-waiter count on the restart barrier.
+            std::thread::sleep(std::time::Duration::from_millis(300));
             assert!(
-                !wait_for_condition(std::time::Duration::from_millis(300), || awaiting
-                    .is_finished()),
+                !awaiting.is_finished(),
                 "an open record under a live role must hold the barrier"
             );
 
             crate::exit_status::settle_supervised_fault(record, FaultRuling::Handled);
 
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(5), || awaiting.is_finished()),
-                "the ruling must release the barrier"
-            );
+            // The ruling must release the barrier.
+            wait_until(|| awaiting.is_finished());
             awaiting.join().expect("awaiting thread panicked");
 
             hew_supervisor_stop(sup);
@@ -3823,12 +3709,8 @@ mod tests {
 
             actor::hew_actor_trap(child, 1);
 
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(10), || {
-                    hew_supervisor_child_get(sup, 0).tag == 2
-                }),
-                "a declined restart must settle the slot Dead"
-            );
+            // A declined restart must settle the slot Dead.
+            wait_until(|| hew_supervisor_child_get(sup, 0).tag == 2);
             let settled = hew_supervisor_child_get(sup, 0);
             assert_eq!(
                 settled.reason,
@@ -3891,13 +3773,9 @@ mod tests {
 
             actor::hew_actor_trap(child, 1);
 
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(10), || {
-                    hew_supervisor_child_get(sup, 0).tag == 2
-                }),
-                "a role whose restart could not be armed must settle Dead, not sit \
-                 on Transient waiting for a timer that was never armed"
-            );
+            // A role whose restart could not be armed must settle Dead, not sit on Transient
+            // waiting for a timer that was never armed.
+            wait_until(|| hew_supervisor_child_get(sup, 0).tag == 2);
             let settled = hew_supervisor_child_get(sup, 0);
             assert_eq!(
                 settled.reason,
@@ -3932,12 +3810,8 @@ mod tests {
 
             actor::hew_actor_trap(child, 1);
 
-            assert!(
-                wait_for_condition(std::time::Duration::from_secs(10), || {
-                    hew_supervisor_child_get(sup, 0).tag == 2
-                }),
-                "a breaker decline must settle the slot Dead"
-            );
+            // A breaker decline must settle the slot Dead.
+            wait_until(|| hew_supervisor_child_get(sup, 0).tag == 2);
             let settled = hew_supervisor_child_get(sup, 0);
             assert_eq!(
                 settled.reason,
@@ -4032,14 +3906,10 @@ mod tests {
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
             (*sup).running.store(0, Ordering::Release);
-            let start = std::time::Instant::now();
 
+            // A permanently-Dead child returns immediately: nothing will ever
+            // change it, so a barrier that blocked would never return.
             hew_supervisor_restart_await_blocking(sup, 0);
-
-            assert!(
-                start.elapsed() < std::time::Duration::from_millis(100),
-                "a permanently-Dead child must return immediately, not block"
-            );
 
             (*sup).running.store(1, Ordering::Release);
             hew_supervisor_stop(sup);

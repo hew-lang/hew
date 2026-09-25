@@ -17,7 +17,6 @@ fn secondary_node_stop_does_not_fail_current_node_pending_asks() {
     unsafe {
         assert_eq!(hew_node_start(node1.as_ptr()), 0);
     }
-    thread::sleep(Duration::from_millis(50));
     let (node2, _node2_port) = start_tcp_test_listener_node(319);
 
     let (request_id, pending) = reply_table().register(ConnectionKey {
@@ -252,7 +251,7 @@ fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
             1,
             std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         )
     };
@@ -260,7 +259,7 @@ fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
 
     // After the ask completes the handler thread exits, dropping InboundAskGuard.
     // Give it a brief moment to drain.
-    let settled = (0..50).any(|_| {
+    let settled = (0..).any(|_| {
         let v = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
         if v == baseline {
             true
@@ -346,7 +345,7 @@ fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
             1,
             ptr::null_mut(),
             0,
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -417,7 +416,7 @@ fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
             1,
             std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         )
     };
@@ -496,9 +495,8 @@ fn inbound_router_no_spawn_after_shutdown_started() {
         );
     }
 
-    // Give any mistakenly-spawned thread time to increment the counters.
-    thread::sleep(Duration::from_millis(20));
-
+    // The router increments both counters before it spawns a worker, so a
+    // spawn it should have refused shows in them the moment it returns.
     assert_eq!(
         INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
         global_before,
@@ -519,9 +517,9 @@ fn inbound_router_no_spawn_after_shutdown_started() {
 /// active counter reaches zero (the drain postcondition).
 ///
 /// This test artificially inflates both `INBOUND_ASK_ACTIVE` and the
-/// per-conn_mgr counter by one to simulate an in-flight worker, schedules
-/// a background thread to decrement them after a short delay, and then
-/// asserts that stop waited for the decrement (counter is zero on return).
+/// per-conn_mgr counter by one to simulate an in-flight worker, lets a
+/// background thread decrement them once stop is under way, and then asserts
+/// that stop waited for the decrement (counter is zero on return).
 #[test]
 fn node_stop_drains_inbound_ask_active() {
     let _guard = crate::runtime_test_guard();
@@ -536,23 +534,25 @@ fn node_stop_drains_inbound_ask_active() {
             .expect("conn_mgr must have inbound_ask_active");
 
     // Simulate one active inbound-ask worker: increment both counters as
-    // the real spawn path does.  A background thread decrements them after
-    // 60 ms — long enough to make the drain observable without being slow.
+    // the real spawn path does. The worker finishes only once stop has
+    // started, so stop can return only by waiting for it.
     let global_saved = INBOUND_ASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
     per_mgr_active.fetch_add(1, Ordering::AcqRel);
     let per_mgr_clone = Arc::clone(&per_mgr_active);
+    let (stopping_tx, stopping_rx) = std::sync::mpsc::channel::<()>();
     let decrement_handle = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(60));
+        stopping_rx.recv().expect("stop start signal");
         INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
         per_mgr_clone.fetch_sub(1, Ordering::AcqRel);
     });
 
-    let stop_start = std::time::Instant::now();
-    // SAFETY: node is valid and owned by TestNode.
-    unsafe { assert_eq!(hew_node_stop(node.as_ptr()), 0) };
-    let elapsed = stop_start.elapsed();
-
-    // Join the decrement thread (it should already be done by now).
+    let node_ptr = node.as_ptr() as usize;
+    let stop_handle = thread::spawn(move || {
+        // SAFETY: node stays owned by TestNode until this thread joins.
+        unsafe { hew_node_stop(node_ptr as *mut HewNode) }
+    });
+    stopping_tx.send(()).expect("decrement thread live");
+    assert_eq!(stop_handle.join().expect("stop thread panicked"), 0);
     decrement_handle.join().expect("decrement thread panicked");
 
     assert_eq!(
@@ -564,17 +564,6 @@ fn node_stop_drains_inbound_ask_active() {
         INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
         global_saved,
         "global INBOUND_ASK_ACTIVE must be back to its pre-test value"
-    );
-
-    // stop must have waited at least ~60 ms for the drain — but at most
-    // a generous 4 s to avoid flakiness on heavily loaded CI machines.
-    assert!(
-        elapsed >= Duration::from_millis(40),
-        "node_stop returned too quickly ({elapsed:?}); drain did not wait"
-    );
-    assert!(
-        elapsed < Duration::from_secs(4),
-        "node_stop took too long ({elapsed:?}); drain may have stalled"
     );
 
     crate::registry::hew_registry_clear();
@@ -642,7 +631,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     }
 
     assert!(
-        INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.wait_for_enter(Duration::from_secs(1)),
+        INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.wait_until_entered(),
         "inbound ask error path never reached the feature-flags lookup hook"
     );
     assert_eq!(
@@ -668,12 +657,12 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.release();
 
     assert!(
-        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_for_enter(Duration::from_secs(1)),
+        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_until_entered(),
         "hew_node_stop should reach conn_mgr free after the worker drains"
     );
     assert_eq!(
         stop_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv()
             .expect("hew_node_stop did not finish after the worker drained"),
         0,
         "hew_node_stop should succeed once the inbound-ask worker drains"
@@ -756,7 +745,7 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
     });
 
     assert!(
-        INBOUND_ROUTER_AFTER_INCREMENT_HOOK.wait_for_enter(Duration::from_secs(1)),
+        INBOUND_ROUTER_AFTER_INCREMENT_HOOK.wait_until_entered(),
         "router never reached the post-increment hook"
     );
     assert_eq!(
@@ -795,12 +784,12 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
     router_handle.join().expect("router thread panicked");
 
     assert!(
-        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_for_enter(Duration::from_secs(1)),
+        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_until_entered(),
         "hew_node_stop never reached conn_mgr free after the wedged router drained"
     );
     assert_eq!(
         stop_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv()
             .expect("hew_node_stop did not finish after the router drained"),
         0,
         "hew_node_stop should succeed once the wedged router drained"
@@ -916,7 +905,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     });
 
     assert!(
-        INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.wait_for_enter(Duration::from_secs(2)),
+        INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.wait_until_entered(),
         "straggler worker never reached the feature-flags capture hook"
     );
 

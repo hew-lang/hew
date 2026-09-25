@@ -145,6 +145,16 @@ impl TestGate {
         state.entered
     }
 
+    /// Block until the gate is hit and report whether it was; the test
+    /// runner's timeout is the hang guard.
+    pub(super) fn wait_until_entered(&self) -> bool {
+        let mut state = self.state.lock_or_recover();
+        while !matches!(state.mode, TestGateMode::Disabled) && !state.entered {
+            state = self.cond.wait_or_recover(state);
+        }
+        state.entered
+    }
+
     pub(super) fn reset(&self) {
         let mut state = self.state.lock_or_recover();
         *state = TestGateState::default();

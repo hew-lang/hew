@@ -24,8 +24,6 @@ impl Drop for SpawnPublicationHookGuard {
     }
 }
 
-static LAST_NATIVE_ASK_REPLY_CHANNEL: AtomicPtr<reply_channel::HewReplyChannel> =
-    AtomicPtr::new(ptr::null_mut());
 static SEND_BY_ID_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 static ASK_SEND_BY_ID_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
@@ -159,31 +157,31 @@ fn system_dispatch_is_reachable_only_by_the_system_channel() {
         hew_actor_send(actor, 4242, ptr::null_mut(), 0);
     }
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(5), || {
-            SYS_PROBE_SEEN.load(Ordering::Acquire) == 1
-        }),
-        "a signal sent on the SYSTEM channel must reach the system dispatch \
-             entry point"
+    wait_until(|| SYS_PROBE_SEEN.load(Ordering::Acquire) >= 1);
+    assert_eq!(
+        SYS_PROBE_SEEN.load(Ordering::Acquire),
+        1,
+        "a signal sent on the SYSTEM channel must reach the system dispatch entry point once"
     );
     assert_eq!(
         SYS_PROBE_LAST_KIND.load(Ordering::Acquire),
         crate::mailbox_header::HewSysMsg::Down.as_i32(),
         "the system handler must receive the typed discriminant it was sent"
     );
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(5), || {
-            USER_PROBE_SEEN
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_slice()
-                == [4242]
-        }),
-        "the user handler must see the application message and NOTHING else: \
-             a SYSTEM-queue signal must never be downgraded onto it (saw {:?})",
+    wait_until(|| {
+        !USER_PROBE_SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    });
+    assert_eq!(
         USER_PROBE_SEEN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_slice(),
+        [4242],
+        "the user handler must see the application message and NOTHING else: \
+         a SYSTEM-queue signal must never be downgraded onto it"
     );
 
     // SAFETY: actor is live and tracked; stop then free it exactly once.
@@ -238,20 +236,15 @@ fn user_queue_system_values_never_reach_the_system_dispatch() {
         unsafe { hew_actor_send(actor, msg_type, ptr::null_mut(), 0) };
     }
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(5), || {
-            USER_PROBE_SEEN
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len()
-                == forged.len()
-        }),
-        "every user-queue send must reach the application handler, whatever \
-             its value (saw {:?})",
+    // Every user-queue send must reach the application handler, whatever
+    // its value.
+    wait_until(|| {
         USER_PROBE_SEEN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    );
+            .len()
+            >= forged.len()
+    });
 
     let mut seen = USER_PROBE_SEEN
         .lock()
@@ -308,14 +301,12 @@ fn shutdown_signal_stops_the_actor_and_bypasses_the_system_dispatch() {
     // SAFETY: actor is live; stop enqueues the Shutdown signal.
     unsafe { hew_actor_stop(actor) };
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(5), || {
-            // SAFETY: actor remains tracked until the free below.
-            let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-            state == HewActorState::Stopped as i32
-        }),
-        "the shutdown signal must drive the actor to a clean terminal Stopped"
-    );
+    // The shutdown signal must drive the actor to a clean terminal Stopped.
+    wait_until(|| {
+        // SAFETY: actor remains tracked until the free below.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        state == HewActorState::Stopped as i32
+    });
     assert_eq!(
         SYS_PROBE_SEEN.load(Ordering::Acquire),
         0,
@@ -368,13 +359,9 @@ fn user_msg_type_minus_one_reaches_handler_and_does_not_terminate() {
     // SAFETY: actor is a valid live actor pointer returned by spawn.
     unsafe { hew_actor_send(actor, -1, ptr::null_mut(), 0) };
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(2), || {
-            USER_MINUS_ONE_HANDLED.load(Ordering::Acquire)
-        }),
-        "a user-queue message with msg_type == -1 must reach the handler, \
-             not be intercepted as a shutdown signal"
-    );
+    // A user-queue message with msg_type == -1 must reach the handler, not be intercepted as a
+    // shutdown signal.
+    wait_until(|| USER_MINUS_ONE_HANDLED.load(Ordering::Acquire));
 
     // The actor must still be alive — no spurious sentinel-driven self-stop.
     // SAFETY: actor remains tracked until the explicit free below.
@@ -451,12 +438,8 @@ fn stop_of_running_actor_is_observed_even_when_node_allocation_fails() {
         hew_actor_send(actor, 1, ptr::null_mut(), 0);
         hew_actor_send(actor, 2, ptr::null_mut(), 0);
     }
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            STOP_PROBE_STARTED.load(Ordering::Acquire)
-        }),
-        "handler should begin running before the stop is issued"
-    );
+    // Handler should begin running before the stop is issued.
+    wait_until(|| STOP_PROBE_STARTED.load(Ordering::Acquire));
 
     // Release the dispatch spin only once the stop has actually been
     // latched, so the actor is stopped while Running.
@@ -464,13 +447,8 @@ fn stop_of_running_actor_is_observed_even_when_node_allocation_fails() {
     let mailbox_addr = unsafe { (*actor).mailbox } as usize;
     let release_handle = std::thread::spawn(move || {
         let mb = mailbox_addr as *mut HewMailbox;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            // SAFETY: `mb` stays valid until the test joins this thread.
-            let latched = unsafe { mailbox::mailbox_stop_requested(mb) };
-            if latched || std::time::Instant::now() >= deadline {
-                break;
-            }
+        // SAFETY: `mb` stays valid until the test joins this thread.
+        while !unsafe { mailbox::mailbox_stop_requested(mb) } {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         STOP_PROBE_RELEASE.store(true, Ordering::Release);
@@ -496,14 +474,12 @@ fn stop_of_running_actor_is_observed_even_when_node_allocation_fails() {
 
     // The stop was observed despite the poisoned allocator: the actor
     // reaches a clean terminal Stopped state...
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(2), || {
-            // SAFETY: actor remains tracked until the explicit free below.
-            let s = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-            s == HewActorState::Stopped as i32
-        }),
-        "a Running actor must observe its own stop even when node allocation fails"
-    );
+    // A Running actor must observe its own stop even when node allocation fails.
+    wait_until(|| {
+        // SAFETY: actor remains tracked until the explicit free below.
+        let s = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        s == HewActorState::Stopped as i32
+    });
     // ...and the queued second message was never dispatched, because the
     // loop-top stop check ran before the receive.
     assert!(
@@ -631,7 +607,8 @@ fn cleanup_waits_for_atomic_actor_publication() {
         unsafe { cleanup_all_actors() };
         cleanup_done_thread.store(true, Ordering::Release);
     });
-    std::thread::sleep(std::time::Duration::from_millis(25));
+    // Cleanup closes the publication gate and then waits for the held spawn.
+    wait_until(|| !crate::lifetime::local_handles::current_publication_open_for_test());
     assert!(!cleanup_done.load(Ordering::Acquire));
 
     release.wait();
@@ -672,13 +649,10 @@ fn local_pid_operations_resolve_stable_actor_identity() {
         HewError::Ok as i32
     );
 
-    assert!(wait_for_condition(
-        std::time::Duration::from_secs(1),
-        || {
-            // SAFETY: actor remains live until the free immediately below.
-            (unsafe { (*actor).actor_state.load(Ordering::Acquire) }) == HewActorState::Idle as i32
-        }
-    ));
+    wait_until(|| {
+        // SAFETY: actor remains live until the free immediately below.
+        (unsafe { (*actor).actor_state.load(Ordering::Acquire) }) == HewActorState::Idle as i32
+    });
     // SAFETY: scheduler drained the message and actor is idle.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
     assert_eq!(
@@ -761,21 +735,26 @@ fn actor_identity_pin_blocks_reclamation_until_guard_drop() {
     let actor_id = unsafe { (*actor).id };
     let pin = live_actors::pin_actor_by_id(actor_id).expect("live actor pin");
 
-    let free_started = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let free_started_thread = std::sync::Arc::clone(&free_started);
+    // Free pauses after retiring the actor, immediately before its pin drain.
+    let free_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let free_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let _free_hook = install_free_post_retire_registration_hook_for_test(
+        actor_id,
+        std::sync::Arc::clone(&free_entered),
+        std::sync::Arc::clone(&free_release),
+    );
     let free_done = std::sync::Arc::new(AtomicBool::new(false));
     let free_done_thread = std::sync::Arc::clone(&free_done);
     let actor_addr = actor as usize;
     let free = std::thread::spawn(move || {
-        free_started_thread.wait();
         // SAFETY: the actor remains pinned until the main thread releases it.
         let status = unsafe { hew_actor_free(actor_addr as *mut HewActor) };
         free_done_thread.store(true, Ordering::Release);
         status
     });
 
-    free_started.wait();
-    std::thread::sleep(std::time::Duration::from_millis(25));
+    free_entered.wait();
+    free_release.wait();
     assert!(
         !free_done.load(Ordering::Acquire),
         "actor free must wait for the identity pin"
@@ -1324,37 +1303,23 @@ unsafe extern "C-unwind" fn drain_trap_on_stop_dispatch(
     std::ptr::null_mut()
 }
 
-fn wait_for_condition(timeout: std::time::Duration, mut condition: impl FnMut() -> bool) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if condition() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+/// Poll `condition` until it holds. The pass condition is the event itself;
+/// the test runner's timeout is the only hang guard.
+fn wait_until(mut condition: impl FnMut() -> bool) {
+    while !condition() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    condition()
 }
 
-fn defer_state_transition(
-    actor: *mut HewActor,
-    target_state: HewActorState,
-    delay: std::time::Duration,
-) -> std::thread::JoinHandle<()> {
-    let actor_addr = actor as usize;
-    std::thread::spawn(move || {
-        std::thread::sleep(delay);
-        // SAFETY: the test keeps the actor allocation alive until the
-        // background transition fires.
-        unsafe {
-            (*(actor_addr as *mut HewActor))
-                .actor_state
-                .store(target_state as i32, Ordering::Release);
-        }
-    })
+/// A drain returns as soon as its actors settle, so these tests pass it a
+/// deadline no passing run reaches; the test runner's timeout is the hang
+/// guard.
+fn unbounded_drain_deadline() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(24 * 60 * 60)
 }
 
-fn wait_for_actor_quiescent(actor: *mut HewActor, timeout: std::time::Duration) -> bool {
-    wait_for_condition(timeout, || {
+fn wait_for_actor_quiescent(actor: *mut HewActor) {
+    wait_until(|| {
         // SAFETY: tests only call this while the actor allocation is still live.
         let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
         actor_free_state_is_quiescent(state)
@@ -1369,9 +1334,6 @@ unsafe extern "C-unwind" fn native_self_stop_without_reply_dispatch(
     _size: usize,
     _borrow_mode: i32,
 ) -> *mut c_void {
-    let ch =
-        crate::execution_context::hew_get_reply_channel().cast::<reply_channel::HewReplyChannel>();
-    LAST_NATIVE_ASK_REPLY_CHANNEL.store(ch, Ordering::Release);
     hew_actor_self_stop();
 
     std::ptr::null_mut()
@@ -2746,12 +2708,9 @@ fn send_by_id_concurrent_no_deadlock() {
     }
 
     let expected = thread_count * sends_per_thread;
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(2), || {
-            SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire) == expected
-        }),
-        "scheduler should drain all by-id sends without deadlocking"
-    );
+    // Scheduler should drain all by-id sends without deadlocking.
+    wait_until(|| SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire) >= expected);
+    assert_eq!(SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire), expected);
 
     // SAFETY: actor remains live until teardown below.
     unsafe {
@@ -4523,18 +4482,14 @@ fn ask_by_id_concurrent_with_sends_completes_without_leaking_channels() {
     }
 
     let expected = (ask_threads * asks_per_thread) + (send_threads * sends_per_thread);
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(2), || {
-            ASK_SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire) == expected
-        }),
-        "scheduler should drain mixed by-id ask/send traffic without deadlocking"
+    // Scheduler should drain mixed by-id ask/send traffic without deadlocking.
+    wait_until(|| ASK_SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire) >= expected);
+    assert_eq!(
+        ASK_SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire),
+        expected
     );
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "concurrent by-id asks should release all reply channels"
-    );
+    // Concurrent by-id asks should release all reply channels.
+    wait_until(|| reply_channel::active_channel_count() == 0);
 
     // SAFETY: actor remains live until teardown below.
     unsafe {
@@ -4634,7 +4589,6 @@ fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
     let runtime = NativeSchedulerGuard::new();
 
     assert_eq!(reply_channel::active_channel_count(), 0);
-    LAST_NATIVE_ASK_REPLY_CHANNEL.store(ptr::null_mut(), Ordering::Release);
 
     // SAFETY: null state and dispatch function are valid for actor spawn.
     let actor = unsafe {
@@ -4661,32 +4615,9 @@ fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
             .expect("native ask waiter should report its result");
     });
 
-    let reply_is_null = match rx.recv_timeout(std::time::Duration::from_secs(1)) {
-        Ok(reply_is_null) => reply_is_null,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
-            if !ch.is_null() {
-                // SAFETY: this is the captured in-flight reply channel from the stalled ask.
-                unsafe {
-                    let _ = crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0);
-                }
-            }
-            let recovered = rx
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .expect("manual fallback reply should unblock a stalled self-stop ask");
-            ask_thread
-                .join()
-                .expect("native ask waiter thread should not panic after cleanup");
-            assert!(
-                recovered,
-                "manual fallback reply should still resolve self-stop asks as null"
-            );
-            panic!(
-                "native hew_actor_ask should resolve null after self-stop without manual cleanup"
-            );
-        }
-        Err(err) => panic!("native ask waiter thread disconnected unexpectedly: {err:?}"),
-    };
+    let reply_is_null = rx
+        .recv()
+        .expect("native ask waiter should report its result");
 
     ask_thread
         .join()
@@ -4704,20 +4635,14 @@ fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
             || actor_state == HewActorState::Stopped as i32,
         "self-stop ask should leave the actor in teardown, got state {actor_state}"
     );
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            // SAFETY: `actor` remains allocated and owned by this test while
-            // we poll its atomic state.
-            unsafe { (*actor).actor_state.load(Ordering::Acquire) == HewActorState::Stopped as i32 }
-        }),
-        "self-stop ask should eventually drive the actor to Stopped"
-    );
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "self-stop ask cleanup should release the native reply channel",
-    );
+    // Self-stop ask should eventually drive the actor to Stopped.
+    wait_until(|| {
+        // SAFETY: `actor` remains allocated and owned by this test while
+        // we poll its atomic state.
+        unsafe { (*actor).actor_state.load(Ordering::Acquire) == HewActorState::Stopped as i32 }
+    });
+    // Self-stop ask cleanup should release the native reply channel.
+    wait_until(|| reply_channel::active_channel_count() == 0);
 
     // SAFETY: actor is stopped and owned by this test.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
@@ -4746,12 +4671,8 @@ fn native_ask_successful_reply_returns_value_without_duplicate_cleanup() {
     // SAFETY: successful ask replies are malloc-allocated.
     unsafe { crate::mem::buf_free(reply) };
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "successful native asks should leave no live reply channels",
-    );
+    // Successful native asks should leave no live reply channels.
+    wait_until(|| reply_channel::active_channel_count() == 0);
 
     // SAFETY: actor is idle and owned by this test.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
@@ -4780,21 +4701,14 @@ fn native_ask_timeout_rejects_late_reply_after_blocking_dispatch() {
         reply.is_null(),
         "timed native asks should reject replies that only arrive after the timeout"
     );
-    // These bounds only stop a hang; each wait returns once it holds.
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(30), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "timed-out native asks should release late-reply channels after cancellation",
-    );
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(30), || {
-            // SAFETY: actor remains owned by this test while waiting for dispatch to finish.
-            let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-            state == HewActorState::Idle as i32 || state == HewActorState::Stopped as i32
-        }),
-        "late-reply dispatch should finish after the timeout path",
-    );
+    // Timed-out native asks release late-reply channels after cancellation.
+    wait_until(|| reply_channel::active_channel_count() == 0);
+    // Late-reply dispatch should finish after the timeout path.
+    wait_until(|| {
+        // SAFETY: actor remains owned by this test while waiting for dispatch to finish.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        state == HewActorState::Idle as i32 || state == HewActorState::Stopped as i32
+    });
 
     // SAFETY: actor is quiescent and owned by this test.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
@@ -4831,20 +4745,14 @@ fn native_ask_reply_then_trap_returns_value_without_duplicate_crash_reply() {
     // SAFETY: successful ask replies are malloc-allocated.
     unsafe { crate::mem::buf_free(reply) };
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            // SAFETY: actor remains owned by this test while we poll its state.
-            let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-            state == HewActorState::Crashed as i32
-        }),
-        "reply-then-trap dispatch should still transition the actor to Crashed",
-    );
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "trap-after-reply asks should not double-complete or leak reply channels",
-    );
+    // Reply-then-trap dispatch should still transition the actor to Crashed.
+    wait_until(|| {
+        // SAFETY: actor remains owned by this test while we poll its state.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        state == HewActorState::Crashed as i32
+    });
+    // Trap-after-reply asks should not double-complete or leak reply channels.
+    wait_until(|| reply_channel::active_channel_count() == 0);
 
     // SAFETY: actor is quiescent and owned by this test.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
@@ -4918,14 +4826,13 @@ fn native_self_stop_then_crash_publishes_crashed_and_notifies_supervisor() {
     // state alone and then reading the error in a separate step is what
     // holds the runtime to that: if publication ever moved back after the
     // CAS, this read would see the `0` default rather than tolerate it.
-    assert!(
-            wait_for_condition(std::time::Duration::from_secs(2), || {
-                // SAFETY: actor remains owned by this test while we poll its state.
-                let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-                state == HewActorState::Crashed as i32
-            }),
-            "self-stop-then-crash must publish Crashed; the actor must not be stranded in Stopping/Crashing",
-        );
+    // Self-stop-then-crash must publish Crashed; the actor must not be
+    // stranded in Stopping/Crashing.
+    wait_until(|| {
+        // SAFETY: actor remains owned by this test while we poll its state.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        state == HewActorState::Crashed as i32
+    });
     assert_ne!(
         // SAFETY: actor is owned by this test.
         unsafe { hew_actor_get_error(actor) },
@@ -5098,14 +5005,9 @@ fn native_ask_timeout_sets_timeout_error() {
         "timed-out ask must report Timeout"
     );
 
-    // Let the late-reply dispatch finish and free the actor cleanly. The
-    // bound only stops a hang; the wait returns once the channel is gone.
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(30), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "late-reply channel must be released after cancellation",
-    );
+    // Let the late-reply dispatch finish and free the actor cleanly: the
+    // late-reply channel is released after cancellation.
+    wait_until(|| reply_channel::active_channel_count() == 0);
     // SAFETY: actor was spawned above and all channels are drained.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
     drop(runtime);
@@ -5117,7 +5019,6 @@ fn native_ask_orphaned_sets_orphaned_ask_error() {
     let _guard = crate::runtime_test_guard();
     let runtime = NativeSchedulerGuard::new();
 
-    LAST_NATIVE_ASK_REPLY_CHANNEL.store(ptr::null_mut(), Ordering::Release);
     // SAFETY: null state + valid dispatch.
     let actor = unsafe {
         hew_actor_spawn(
@@ -5145,20 +5046,7 @@ fn native_ask_orphaned_sets_orphaned_ask_error() {
         tx.send((is_null, err)).expect("sender should be live");
     });
 
-    let (is_null, err) = if let Ok(v) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
-        v
-    } else {
-        // Fallback: manually unblock a stalled ask (test environment artefact).
-        let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !ch.is_null() {
-            // SAFETY: ch was retrieved from the atomic; hew_reply takes ownership.
-            unsafe {
-                let _ = crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0);
-            }
-        }
-        rx.recv_timeout(std::time::Duration::from_secs(1))
-            .expect("fallback reply should unblock ask")
-    };
+    let (is_null, err) = rx.recv().expect("ask thread should report its result");
     handle.join().expect("ask thread must not panic");
 
     assert!(is_null, "orphaned ask must return null");
@@ -5168,12 +5056,8 @@ fn native_ask_orphaned_sets_orphaned_ask_error() {
         "orphaned ask must report OrphanedAsk"
     );
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "orphaned ask must release its reply channel"
-    );
+    // Orphaned ask must release its reply channel.
+    wait_until(|| reply_channel::active_channel_count() == 0);
     // SAFETY: actor has self-stopped; all channels are released.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
     drop(runtime);
@@ -5294,7 +5178,6 @@ fn native_ask_bounded_actor_orphan_sets_orphaned_ask_error() {
     let _guard = crate::runtime_test_guard();
     let runtime = NativeSchedulerGuard::new();
 
-    LAST_NATIVE_ASK_REPLY_CHANNEL.store(ptr::null_mut(), Ordering::Release);
     // capacity=8: plenty of room for the ask message, so the send succeeds
     // and the discriminant is the orphaned reply channel.
     // SAFETY: null state + valid dispatch are valid spawn args.
@@ -5325,19 +5208,7 @@ fn native_ask_bounded_actor_orphan_sets_orphaned_ask_error() {
         tx.send((is_null, err)).expect("sender should be live");
     });
 
-    let (is_null, err) = if let Ok(v) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
-        v
-    } else {
-        let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !ch.is_null() {
-            // SAFETY: ch was retrieved from the atomic; hew_reply takes ownership.
-            unsafe {
-                let _ = crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0);
-            }
-        }
-        rx.recv_timeout(std::time::Duration::from_secs(1))
-            .expect("fallback reply should unblock ask")
-    };
+    let (is_null, err) = rx.recv().expect("ask thread should report its result");
     handle.join().expect("ask thread must not panic");
 
     assert!(is_null, "bounded-actor orphaned ask must return null");
@@ -5347,12 +5218,8 @@ fn native_ask_bounded_actor_orphan_sets_orphaned_ask_error() {
         "bounded-actor orphaned ask must report OrphanedAsk, not MailboxFull"
     );
 
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            reply_channel::active_channel_count() == 0
-        }),
-        "orphaned ask on bounded actor must release its reply channel"
-    );
+    // Orphaned ask on bounded actor must release its reply channel.
+    wait_until(|| reply_channel::active_channel_count() == 0);
     // SAFETY: actor has self-stopped; all channels are released.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
     drop(runtime);
@@ -6178,45 +6045,27 @@ fn free_current_actor_from_dispatch_is_deferred() {
             actor_id: (*actor).id,
             ..HewExecutionContext::default()
         });
-        let unblock = defer_state_transition(
-            actor,
-            HewActorState::Stopped,
-            std::time::Duration::from_millis(200),
-        );
-
         let rc = hew_actor_free(actor);
         // Logical proof that the current-thread free DEFERRED instead of
         // tearing the actor down synchronously: the actor must still be live
         // the instant free returns. The real teardown runs on a background
-        // thread that waits for the actor to reach a terminal state (driven
-        // by `unblock` ~200 ms from now), so a deferred free leaves the actor
-        // live here while a synchronous free would already have freed it.
-        // This replaces a wall-clock `elapsed < 100ms` bound that coverage
-        // instrumentation and load could inflate past the threshold.
+        // thread that waits for the actor to reach a terminal state, which
+        // this test publishes only after reading liveness.
         let live_immediately_after = is_actor_live(actor);
-
-        unblock.join().unwrap();
-
-        let freed = wait_for_condition(std::time::Duration::from_secs(2), || !is_actor_live(actor));
-        if !freed && is_actor_live(actor) {
-            (*actor)
-                .actor_state
-                .store(HewActorState::Stopped as i32, Ordering::Release);
-            assert_eq!(hew_actor_free(actor), 0);
-        }
+        (*actor)
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Release);
 
         assert_eq!(
             rc, 0,
             "current-thread frees should defer instead of timing out"
         );
         assert!(
-                live_immediately_after,
-                "current-thread free should defer: the actor must still be live the instant free returns, with teardown deferred to a background thread"
-            );
-        assert!(
-            freed,
-            "actor should be freed asynchronously after dispatch unwinds"
+            live_immediately_after,
+            "current-thread free should defer: the actor must still be live the instant free returns, with teardown deferred to a background thread"
         );
+        // The actor is freed asynchronously after dispatch unwinds.
+        wait_until(|| !is_actor_live(actor));
     }
 }
 
@@ -6256,7 +6105,9 @@ fn cleanup_all_actors_waits_for_deferred_free_threads() {
         });
 
         cleanup_started.wait();
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Cleanup takes the deferred handle before joining it, and the join
+        // cannot finish while terminate is still running.
+        wait_until(|| live_actors::deferred_teardown_thread_count() == 0);
         assert!(
             !cleanup_done.load(Ordering::Acquire),
             "cleanup_all_actors must wait for deferred self-free threads"
@@ -6327,7 +6178,7 @@ fn drain_actors_all_drain_cleans_registries() {
 
     let outcome = drain_actors(
         &[actor_one_id, actor_two_id, actor_three_id],
-        std::time::Instant::now() + std::time::Duration::from_secs(1),
+        unbounded_drain_deadline(),
     );
     assert_eq!(outcome, DrainOutcome::Drained);
     assert!(!is_actor_live(actor_one));
@@ -6374,12 +6225,8 @@ fn drain_actors_partial_drain_with_timeout() {
 
     // SAFETY: stubborn_actor is a valid live actor pointer returned by spawn.
     unsafe { hew_actor_send(stubborn_actor, 1, ptr::null_mut(), 0) };
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            DRAIN_BUSY_LOOP_STARTED.load(Ordering::Acquire)
-        }),
-        "busy loop actor should begin running before drain starts"
-    );
+    // Busy loop actor should begin running before drain starts.
+    wait_until(|| DRAIN_BUSY_LOOP_STARTED.load(Ordering::Acquire));
 
     let outcome = drain_actors(
         &[stubborn_actor_id, helper_actor_id, spare_actor_id],
@@ -6406,10 +6253,8 @@ fn drain_actors_partial_drain_with_timeout() {
     );
 
     DRAIN_BUSY_LOOP_RELEASE.store(true, Ordering::Release);
-    assert!(
-        wait_for_actor_quiescent(stubborn_actor, std::time::Duration::from_secs(5)),
-        "busy actor should become quiescent after releasing the loop"
-    );
+    // The busy actor becomes quiescent after releasing the loop.
+    wait_for_actor_quiescent(stubborn_actor);
     // SAFETY: stubborn_actor is quiescent after the wait above.
     let free_rc = unsafe { hew_actor_free(stubborn_actor) };
     assert_eq!(free_rc, 0);
@@ -6431,12 +6276,8 @@ fn drain_actors_crashed_during_drain_reports_crashed() {
 
     // SAFETY: actor is a valid live actor pointer returned by spawn.
     unsafe { hew_actor_send(actor, 1, ptr::null_mut(), 0) };
-    assert!(
-        wait_for_condition(std::time::Duration::from_secs(1), || {
-            DRAIN_TRAP_ON_STOP_STARTED.load(Ordering::Acquire)
-        }),
-        "trap-on-stop actor should begin running before drain starts"
-    );
+    // Trap-on-stop actor should begin running before drain starts.
+    wait_until(|| DRAIN_TRAP_ON_STOP_STARTED.load(Ordering::Acquire));
 
     // Release the dispatch spin only once drain_actors has actually called
     // hew_actor_stop AND the out-of-band stop has been latched on the
@@ -6452,24 +6293,15 @@ fn drain_actors_crashed_during_drain_reports_crashed() {
     let mailbox_addr = unsafe { (*actor).mailbox } as usize;
     let release_handle = std::thread::spawn(move || {
         let mb = mailbox_addr as *mut HewMailbox;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            // SAFETY: `mb` is the live actor's mailbox; it stays valid until
-            // the test joins this thread and frees the actor below.
-            let stop_latched = unsafe { mailbox::mailbox_stop_requested(mb) };
-            if stop_latched || std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::hint::spin_loop();
+        // SAFETY: `mb` is the live actor's mailbox; it stays valid until
+        // the test joins this thread and frees the actor below.
+        while !unsafe { mailbox::mailbox_stop_requested(mb) } {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         DRAIN_TRAP_ON_STOP_RELEASE.store(true, Ordering::Release);
     });
 
-    let outcome = drain_actors(
-        &[actor_id],
-        std::time::Instant::now() + std::time::Duration::from_secs(2),
-    );
+    let outcome = drain_actors(&[actor_id], unbounded_drain_deadline());
 
     release_handle
         .join()
@@ -6519,10 +6351,7 @@ fn drain_actors_with_pending_timer_cancels_timer() {
     );
     assert_eq!(crate::timer_periodic::timer_count_for_actor(actor), 1);
 
-    let outcome = drain_actors(
-        &[actor_id],
-        std::time::Instant::now() + std::time::Duration::from_secs(1),
-    );
+    let outcome = drain_actors(&[actor_id], unbounded_drain_deadline());
     assert_eq!(outcome, DrainOutcome::Drained);
     assert!(
         !is_actor_live(actor),
@@ -6565,10 +6394,7 @@ fn drain_actors_with_active_link_removes_link() {
 
     // Drain only `actor_one`. The peer side of the link must be cleared
     // even though `actor_two` is being drained in the same batch.
-    let outcome = drain_actors(
-        &[actor_one_id, actor_two_id],
-        std::time::Instant::now() + std::time::Duration::from_secs(1),
-    );
+    let outcome = drain_actors(&[actor_one_id, actor_two_id], unbounded_drain_deadline());
     assert_eq!(outcome, DrainOutcome::Drained);
     assert!(!is_actor_live(actor_one));
     assert!(!is_actor_live(actor_two));
@@ -6618,10 +6444,7 @@ fn drain_actors_with_active_monitor_removes_monitor() {
         "observer actor should have a monitor entry"
     );
 
-    let outcome = drain_actors(
-        &[monitored_id, observer_id],
-        std::time::Instant::now() + std::time::Duration::from_secs(1),
-    );
+    let outcome = drain_actors(&[monitored_id, observer_id], unbounded_drain_deadline());
     assert_eq!(outcome, DrainOutcome::Drained);
     assert!(!is_actor_live(monitored));
     assert!(!is_actor_live(observer));
@@ -7178,18 +7001,19 @@ fn free_current_actor_from_terminate_is_deferred() {
             ..HewExecutionContext::default()
         });
 
-        let start = std::time::Instant::now();
+        // Terminate is still running on this thread, so a free that waited
+        // for it here could never return; a deferred free returns with the
+        // actor still live.
         let rc = hew_actor_free(actor);
-        let elapsed = start.elapsed();
+        let live_immediately_after = is_actor_live(actor);
 
         a.terminate_finished.store(true, Ordering::Release);
-
-        let _ = wait_for_condition(std::time::Duration::from_secs(2), || !is_actor_live(actor));
+        wait_until(|| !is_actor_live(actor));
 
         assert_eq!(rc, 0, "reentrant terminate frees should still succeed");
         assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "reentrant free should defer instead of spin-waiting in terminate, took {elapsed:?}"
+            live_immediately_after,
+            "reentrant free should defer instead of spin-waiting in terminate"
         );
     }
 }

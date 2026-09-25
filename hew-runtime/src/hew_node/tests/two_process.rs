@@ -227,11 +227,9 @@ fn run_two_process_ask_dead_client_helper() {
             TWO_PROCESS_REGISTRY_MSG_TYPE,
             (&raw const send_value).cast::<c_void>().cast_mut(),
             std::mem::size_of::<u32>(),
-            // Generous, not `TEST_REMOTE_ASK_TIMEOUT_MS`: the server frees
-            // the target only after confirming this process's gossip
-            // resolution, so allow for that round trip plus the rejection's
-            // own trip back, rather than a latency-sensitive small window.
-            10_000,
+            // The rejection is the outcome, so the ask has no deadline to
+            // race it.
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         )
     };
@@ -277,7 +275,6 @@ fn run_two_process_ask_server_helper(
         usize,
         i32,
     ) -> *mut c_void,
-    hold_after_observed: Duration,
 ) {
     // The inbound-ask path decodes the request and encodes the reply via the
     // registered codec (fail-closed), keyed by the target actor's dispatch.
@@ -311,7 +308,14 @@ fn run_two_process_ask_server_helper(
         wait_for_two_process_ask_observed(Duration::from_secs(30)),
         "ask server did not observe remote ask"
     );
-    thread::sleep(hold_after_observed);
+    // Hold the connection until the client has its outcome, so stopping this
+    // node can never turn a late reply or a late Timeout into a dropped
+    // connection.
+    let done_file = std::env::var(TWO_PROCESS_DONE_FILE_ENV).expect("done file env");
+    assert!(
+        wait_for_marker_file(std::path::Path::new(&done_file), Duration::from_secs(30)),
+        "ask client never reported its outcome"
+    );
 
     // SAFETY: actor and node are owned by this helper process.
     unsafe {
@@ -346,16 +350,12 @@ fn run_two_process_ask_echo_client_helper() {
             TWO_PROCESS_REGISTRY_MSG_TYPE,
             (&raw const send_value).cast::<c_void>().cast_mut(),
             std::mem::size_of::<u32>(),
-            // 10s, not 1s: this checks the echo VALUE (== 42), not latency.
-            // The reply round-trips across an OS process boundary over
-            // loopback TCP, which the in-process simtime seam can't fake; on
-            // a fully loaded CI runner the server's reply can lag well past
-            // 1s, staling a correct echo into a null. A genuine no-reply
-            // still fails (null) within the bound. Root de-flake: #1963.
-            10_000,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         )
     };
+    let done_file = std::env::var(TWO_PROCESS_DONE_FILE_ENV).expect("done file env");
+    std::fs::write(&done_file, "1").expect("write done file");
     assert!(
         status == AskError::None as i32,
         "two-process echo ask returned null"
@@ -395,8 +395,10 @@ fn run_two_process_ask_timeout_client_helper() {
             std::mem::size_of::<u32>(),
         )
     };
+    let done_file = std::env::var(TWO_PROCESS_DONE_FILE_ENV).expect("done file env");
+    std::fs::write(&done_file, "1").expect("write done file");
     // The deterministic invariant is the typed OUTCOME: a server that never
-    // replies (the timeout-server holds past the ask deadline) must surface
+    // replies (the timeout-server holds until the client has its outcome) must surface
     // `AskError::Timeout` with a null reply. Elapsed wall time is NOT asserted
     // — under load the 250ms ask deadline can fire later, but the OUTCOME is
     // load-independent. The ask's own timeout is the hang ceiling; a genuine
@@ -500,7 +502,6 @@ fn remote_ask_two_process_echo_server_helper() {
         TWO_PROCESS_REGISTRY_SERVER_NODE,
         TWO_PROCESS_ASK_ECHO_NAME,
         ask_probe_dispatch,
-        Duration::ZERO,
     );
 }
 
@@ -529,7 +530,6 @@ fn remote_ask_two_process_timeout_server_helper() {
         TWO_PROCESS_REGISTRY_SERVER_NODE,
         TWO_PROCESS_ASK_TIMEOUT_NAME,
         blocked_ask_probe_dispatch,
-        Duration::from_millis(1_750),
     );
 }
 
@@ -642,6 +642,8 @@ fn run_two_process_remote_ask_case(
     let ready_dir = tempfile::tempdir().expect("ready tempdir");
     let ready_file = ready_dir.path().join("ask-server-ready");
     let ready_file_s = ready_file.to_string_lossy().into_owned();
+    let done_file = ready_dir.path().join("ask-client-done");
+    let done_file_s = done_file.to_string_lossy().into_owned();
 
     // Broker a real Noise key exchange (D110) so both nodes admit Strict.
     let (server_keyfile, server_pub_hex, client_keyfile, client_pub_hex) =
@@ -652,6 +654,7 @@ fn run_two_process_remote_ask_case(
         server_role,
         &[
             (TWO_PROCESS_READY_FILE_ENV, ready_file_s),
+            (TWO_PROCESS_DONE_FILE_ENV, done_file_s.clone()),
             (TWO_PROCESS_KEYFILE_ENV, server_keyfile),
             (TWO_PROCESS_PEER_PUBKEY_ENV, client_pub_hex),
         ],
@@ -663,6 +666,7 @@ fn run_two_process_remote_ask_case(
         client_role,
         &[
             (TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string()),
+            (TWO_PROCESS_DONE_FILE_ENV, done_file_s),
             (TWO_PROCESS_KEYFILE_ENV, client_keyfile),
             (TWO_PROCESS_PEER_PUBKEY_ENV, server_pub_hex),
         ],
@@ -687,7 +691,7 @@ fn two_process_remote_ask_echo_double_returns_42() {
 
 #[cfg(feature = "encryption")]
 #[test]
-fn two_process_remote_ask_timeout_returns_timeout_under_1500ms() {
+fn two_process_remote_ask_timeout_returns_timeout() {
     run_two_process_remote_ask_case(
         "hew_node::tests::two_process::remote_ask_two_process_timeout_server_helper",
         "ask_timeout_server",

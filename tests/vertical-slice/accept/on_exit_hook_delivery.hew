@@ -22,6 +22,8 @@ actor Watcher {
         let _id = note.actor_id;
         println("exit-hook-fired");
     }
+
+    receive fn ping() {}
 }
 
 fn main() -> i64 {
@@ -31,7 +33,9 @@ fn main() -> i64 {
     match linked {
         .Ok(_) => {
             let _ = crasher.crash();
-            sleep(100ms);
+            // The crash queued the exit notification before the failed call
+            // returned, so the hook runs before this call is served.
+            let _ = watcher.ping();
             0
         },
         .Err(_) => 2,

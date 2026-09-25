@@ -1,10 +1,16 @@
 // Nonblocking submissions exercise the bounded mailbox; a completion call observes its drain.
+import std.stream;
+
 actor MailboxWorker {
     var processed: i64,
 
     mailbox 4 overflow drop_new,
+    // Holds the actor until its gate opens, so the flood behind it must
+    // overflow the bounded mailbox.
+    receive fn hold(gate: stream.Stream<i64>) {
+        gate.recv();
+    }
     receive fn process(value: i32) {
-        sleep(20ms);
         processed = processed + 1;
     }
     receive fn report() -> i64 {
@@ -23,9 +29,12 @@ fn main() -> i64 {
     let sup = spawn MailboxSupervisor;
     let w = sup.w1;
     let inbox = mailbox(w, on_full: .DropNewest);
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let _ = inbox.hold(gate);
     for i in 0 .. 20 {
         let _ = inbox.process(i);
     }
+    release.send(1).expect("release");
     let result = w.report();
     let final_count = match result {
         .Ok(value) => value,

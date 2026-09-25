@@ -17,7 +17,7 @@ fn contains_header(headers: Vec<(string, string)>, name: string, value: string) 
 fn check_http_listener_released(address: string) {
     // tiny_http wakes its detached accept thread on close; socket release
     // follows when that thread observes the close request.
-    for _ in 0..1000 {
+    loop {
         match http.listen(address) {
             .Ok(server) => {
                 server.close();
@@ -26,7 +26,6 @@ fn check_http_listener_released(address: string) {
             .Err(_) => sleep(1ms),
         }
     }
-    panic("HTTP listener was not released");
 }
 
 fn check_invalid_address(address: string) {

@@ -52,10 +52,7 @@ fn main() {
     let watcher = spawn Watcher(audit: audit);
     let observation = watcher.watch(target).expect("watch target");
     let _ = target.fail();
-    for _ in 0 .. 1000 {
-        if watcher.counts().expect("hook outcomes") == 11 {
-            break;
-        }
+    while watcher.counts().expect("hook outcomes") != 11 {
         sleep(1ms);
     }
     println(f"hooks {watcher.counts().expect("hook outcomes")}");

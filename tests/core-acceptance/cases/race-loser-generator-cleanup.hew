@@ -1,18 +1,31 @@
 // The losing generator operand is cancelled and closed, observed through its
 // own `defer`, before the race expression returns. The winner stays usable.
+// The losing operand parks on a gate nothing feeds after reporting that it
+// holds its generator, and only then does the winner complete.
+import std.stream;
+
 gen fn holds(label: string) -> string {
     defer println("closed " + label);
     yield label;
     yield "done";
 }
-fn produce(label: string, delay: duration) -> Generator<string, ()> {
+fn produce(label: string, parked: stream.Stream<i64>) -> Generator<string, ()> {
+    parked.recv();
     let values = holds(label);
     let _first = values.next();
-    sleep(delay);
+    values
+}
+fn produce_after(label: string, parked: stream.Sink<i64>, gate: stream.Stream<i64>) -> Generator<string, ()> {
+    let values = holds(label);
+    let _first = values.next();
+    parked.send(1).expect("parked");
+    gate.recv();
     values
 }
 fn main() {
-    let winner = race { produce("loser", 5s), produce("winner", 20ms) };
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
+    let winner = race { produce_after("loser", parked_tx, gate), produce("winner", parked) };
     println("selected");
     match winner.next() {
         .Some(value) => println(value),

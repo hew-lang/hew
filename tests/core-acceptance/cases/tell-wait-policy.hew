@@ -32,7 +32,6 @@ fn main() {
         .Ok(_) => {},
         .Err(_) => panic("driver ask failed"),
     }
-    sleep(50ms);
     match sink.total() {
         .Ok(n) => println(f"delivered {n}"),
         .Err(_) => panic("count ask failed"),

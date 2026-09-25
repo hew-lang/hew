@@ -12,13 +12,14 @@
 //! deadline does NOT run the body. A regression that runs the body on the
 //! success path, or skips it on the timeout path, fails the exact value.
 
+import std.stream;
 import std.testing;
 
 actor Deadliner {
     var fired: i64 = 0,
 
-    // The scoped child sleeps a fixed long duration; the deadline is short, so
-    // the deadline wins and the body runs (fired = 7). The scoped child is a
+    // The scoped child never finishes on its own, so the deadline wins and the
+    // body runs (fired = 7). The scoped child is a
     // zero-arg unit fork-block (the supported anonymous form), so this fixture
     // exercises only the `SuspendingScopeDeadline` carrier, not the value-task
     // await path.
@@ -33,8 +34,8 @@ actor Deadliner {
         return fired;
     }
 
-    // The scoped child sleeps a short duration and the deadline is long, so the
-    // scope completes before the deadline and the body is skipped (fired = 0).
+    // The scoped child finishes at once and the deadline is long, so the scope
+    // completes before the deadline and the body is skipped (fired = 0).
     receive fn run_work_wins() -> i64 {
         scope within 200ms {
             fork {
@@ -47,9 +48,9 @@ actor Deadliner {
     }
 
     // Nested scope-deadlines, each with its own scope token + arbiter. The INNER
-    // scope's child sleeps 100ms against a 20ms deadline (the inner deadline wins,
-    // its body adds 1). The OUTER scope's child sleeps 10ms against a 200ms
-    // deadline (the outer work wins, the outer body is skipped). Proves nested
+    // scope's child never finishes on its own (the inner deadline wins, its body
+    // adds 1). The OUTER scope's child finishes at once against a 200ms deadline
+    // (the outer work wins, the outer body is skipped). Proves nested
     // SuspendingScopeDeadline arbiters compose: the inner arbiter resumes the
     // handler, then the outer scope's own join/deadline race runs independently.
     receive fn run_nested() -> i64 {
@@ -72,18 +73,18 @@ actor Deadliner {
     }
 }
 
+// Parks on a pipe whose sink it keeps, so only cancellation ends it.
 fn nap_long() {
-    sleep(100ms);
+    let (_keep, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    gate.recv();
 }
 
-fn nap_short() {
-    sleep(10ms);
-}
+fn nap_short() {}
 
 #[test]
 fn deadline_body_runs_when_timeout_wins() {
     let d = spawn Deadliner(fired: 0);
-    // Work takes 100ms, deadline is 20ms → the deadline wins and the body runs.
+    // The work never finishes on its own → the deadline wins and the body runs.
     match d.run_timeout_wins() {
         .Ok(v) => testing.assert_eq(v, 7),
         .Err(_) => testing.assert_true(false),
@@ -93,8 +94,8 @@ fn deadline_body_runs_when_timeout_wins() {
 #[test]
 fn deadline_body_skipped_when_work_finishes_first() {
     let d = spawn Deadliner(fired: 0);
-    // Work takes 10ms, deadline is 200ms → the scope completes first and the
-    // body is skipped, so `fired` stays 0.
+    // The work finishes at once, deadline is 200ms → the scope completes first
+    // and the body is skipped, so `fired` stays 0.
     match d.run_work_wins() {
         .Ok(v) => testing.assert_eq(v, 0),
         .Err(_) => testing.assert_true(false),
@@ -104,8 +105,8 @@ fn deadline_body_skipped_when_work_finishes_first() {
 #[test]
 fn nested_scope_deadlines_each_take_their_own_branch() {
     let d = spawn Deadliner(fired: 0);
-    // Inner deadline (20ms) wins over its 100ms child → inner body adds 1.
-    // Outer work (10ms) wins over its 200ms deadline → outer body skipped.
+    // Inner deadline (20ms) wins over its parked child → inner body adds 1.
+    // Outer work finishes before its 200ms deadline → outer body skipped.
     // Exactly 1 proves the inner timeout fired and the outer skipped — a swapped
     // branch (101, 100, or 0) would fail.
     match d.run_nested() {

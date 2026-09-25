@@ -10,9 +10,11 @@ import std.testing;
 actor Worker {
     var running: bool = true,
     var ticks: i64 = 0,
+    var calls: i64 = 0,
 
     #[every(25ms)]
     receive fn tick() {
+        calls += 1;
         if !running {
             return;
         }
@@ -26,27 +28,39 @@ actor Worker {
     receive fn total() -> i64 {
         ticks
     }
+
+    receive fn call_count() -> i64 {
+        calls
+    }
+}
+
+fn ticks_of(worker: Worker) -> i64 {
+    match worker.total() {
+        .Ok(n) => n,
+        .Err(_) => panic("total ask failed"),
+    }
+}
+
+fn calls_of(worker: Worker) -> i64 {
+    match worker.call_count() {
+        .Ok(n) => n,
+        .Err(_) => panic("call count ask failed"),
+    }
 }
 
 #[test]
 fn halt_message_prevents_more_periodic_work() {
-    let worker = spawn Worker(running: true, ticks: 0);
-    sleep(250ms);
-    let before = worker.total();
+    let worker = spawn Worker(running: true, ticks: 0, calls: 0);
+    while ticks_of(worker) < 2 {
+        sleep(10ms);
+    }
     let _ = worker.halt();
-    sleep(150ms);
-    let after = worker.total();
-    sleep(150ms);
-    let final = worker.total();
-    match before {
-        .Ok(n) => testing.assert_true(n >= 2),
-        .Err(_) => testing.assert_true(false),
+    // Ticks after `halt` still run, so wait for two of them and check that
+    // neither counted.
+    let halted_ticks = ticks_of(worker);
+    let halted_calls = calls_of(worker);
+    while calls_of(worker) < halted_calls + 2 {
+        sleep(10ms);
     }
-    match after {
-        .Ok(a) => match final {
-            .Ok(f) => testing.assert_eq(a, f),
-            .Err(_) => testing.assert_true(false),
-        },
-        .Err(_) => testing.assert_true(false),
-    }
+    testing.assert_eq(ticks_of(worker), halted_ticks);
 }

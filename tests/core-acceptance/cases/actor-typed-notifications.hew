@@ -61,24 +61,16 @@ fn main() {
     let watcher = spawn Watcher;
     let observation = watcher.watch(target).expect("watch target");
     let _ = target.fail();
-    for _ in 0 .. 1000 {
-        if watcher.counts().expect("hook outcomes") == 11 {
-            break;
-        }
+    while watcher.counts().expect("hook outcomes") != 11 {
         sleep(1ms);
     }
-    assert(watcher.counts().expect("hook outcomes") == 11);
     observation.close();
     let normal_target = spawn Target;
     let normal_observation = watcher.watch_normal(normal_target).expect("watch normal target");
     close(normal_target);
-    for _ in 0 .. 1000 {
-        if watcher.counts().expect("normal hook outcome") == 12 {
-            break;
-        }
+    while watcher.counts().expect("normal hook outcome") != 12 {
         sleep(1ms);
     }
-    assert(watcher.counts().expect("normal hook outcome") == 12);
     normal_observation.close();
     close(watcher);
     println("typed EXIT and DOWN retain actor and monitor identities");

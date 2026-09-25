@@ -1,6 +1,7 @@
 //! Coalesce regression: integer keys replace in place and keep the newest
 //! payload without growing the logical queue beyond capacity.
 
+import std.stream;
 import std.testing;
 
 actor IntCoalescer {
@@ -9,8 +10,13 @@ actor IntCoalescer {
 
     mailbox 1 overflow coalesce(id) fallback drop_new,
 
-    receive fn update(id: i64, value: i64, pause: duration) {
-        sleep(pause);
+    // Holds the actor: reports that it is running, then waits for its gate.
+    receive fn hold(started: stream.Sink<i64>, gate: stream.Stream<i64>) {
+        started.send(1).expect("started");
+        gate.recv();
+    }
+
+    receive fn update(id: i64, value: i64) {
         processed = processed + 1;
         latest = value;
     }
@@ -28,15 +34,17 @@ actor IntCoalescer {
 fn coalesce_int_key_latest_wins() {
     let worker = spawn IntCoalescer(processed: 0, latest: -1);
     let intake = mailbox(worker);
-    let _ = intake.update(0, 0, 150ms);
-    sleep(20ms);
-    let _ = intake.update(7, 1, 0ns);
-    let _ = intake.update(7, 2, 0ns);
-    let _ = intake.update(7, 3, 0ns);
-    let _ = intake.update(7, 4, 0ns);
-    sleep(350ms);
+    let (started_tx, started) = stream.pipe(1).expect("started");
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let _ = intake.hold(started_tx, gate);
+    started.recv();
+    let _ = intake.update(7, 1);
+    let _ = intake.update(7, 2);
+    let _ = intake.update(7, 3);
+    let _ = intake.update(7, 4);
+    release.send(1).expect("release");
     match worker.count() {
-        .Ok(value) => testing.assert_eq(value, 2),
+        .Ok(value) => testing.assert_eq(value, 1),
         .Err(_) => testing.assert_true(false),
     }
     match worker.value() {

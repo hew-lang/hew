@@ -1,7 +1,8 @@
 // Acceptance fixture (#1739 / #1735): owned-string ask reply + `after` timeout.
 //
 // Design intent — exercise the cancel-before-delivery leg functionally:
-//   - SlowWorker.label() sleeps 50 ms before returning an owned `string`.
+//   - SlowWorker.label() waits on a gate main opens only after the select,
+//     then returns an owned `string`.
 //   - The select gives the ask arm a 10 ms deadline, so the `after` arm always
 //     wins and the worker's owned reply lands on the already-cancelled channel
 //     (the `hew_reply` false leg). The channel's registered destructor reaps
@@ -12,20 +13,29 @@
 // Exit-code contract: the `after` arm returns 7, so main exits 7 — proving the
 // program completes past the abandoned-owned-reply teardown rather than
 // crashing or hanging.
-actor SlowWorker {
-    receive fn label() -> string {
+import std.stream;
 
-        // Reply arrives well after the 10 ms deadline → cancel leg.
-        sleep(50ms);
+actor SlowWorker {
+    var gate: stream.Stream<i64>,
+
+    receive fn label() -> string {
+        // Reply arrives only after the deadline → cancel leg.
+        gate.recv();
         "late-owned-reply".to_upper()
     }
+
+    receive fn ping() {}
 }
 
 fn main() -> i64 {
-    let slow = spawn SlowWorker;
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let slow = spawn SlowWorker(gate: gate);
     let outcome = select {
         reply from slow.label() => 1,
         after 10ms => 7,
     };
+    // Let the late reply land, then wait for its handler to finish.
+    release.send(1).expect("release");
+    slow.ping().expect("ping");
     outcome
 }

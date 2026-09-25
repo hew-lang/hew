@@ -1,6 +1,7 @@
 //! Coalesce regression: string keys preserve the latest same-key payload while
 //! a distinct key survives the bounded-mailbox flood.
 
+import std.stream;
 import std.testing;
 
 actor StringCoalescer {
@@ -10,8 +11,13 @@ actor StringCoalescer {
 
     mailbox 2 overflow coalesce(symbol) fallback drop_new,
 
-    receive fn update(symbol: string, value: i64, pause: duration) {
-        sleep(pause);
+    // Holds the actor: reports that it is running, then waits for its gate.
+    receive fn hold(started: stream.Sink<i64>, gate: stream.Stream<i64>) {
+        started.send(1).expect("started");
+        gate.recv();
+    }
+
+    receive fn update(symbol: string, value: i64) {
         processed = processed + 1;
         if symbol == "one" {
             latest_one = value;
@@ -37,16 +43,18 @@ actor StringCoalescer {
 fn coalesce_string_key_latest_wins_and_distinct_keys_survive() {
     let worker = spawn StringCoalescer(processed: 0, latest_one: -1, latest_two: -1);
     let intake = mailbox(worker);
-    let _ = intake.update("active", 0, 150ms);
-    sleep(20ms);
-    let _ = intake.update("one", 1, 0ns);
-    let _ = intake.update("two", 20, 0ns);
-    let _ = intake.update("one", 2, 0ns);
-    let _ = intake.update("one", 3, 0ns);
-    let _ = intake.update("one", 4, 0ns);
-    sleep(400ms);
+    let (started_tx, started) = stream.pipe(1).expect("started");
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let _ = intake.hold(started_tx, gate);
+    started.recv();
+    let _ = intake.update("one", 1);
+    let _ = intake.update("two", 20);
+    let _ = intake.update("one", 2);
+    let _ = intake.update("one", 3);
+    let _ = intake.update("one", 4);
+    release.send(1).expect("release");
     match worker.count() {
-        .Ok(value) => testing.assert_eq(value, 3),
+        .Ok(value) => testing.assert_eq(value, 2),
         .Err(_) => testing.assert_true(false),
     }
     match worker.one() {

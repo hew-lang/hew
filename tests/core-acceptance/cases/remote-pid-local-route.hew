@@ -165,15 +165,14 @@ fn main() -> i64 {
         .Err(_) => return 7,
     }
     var outcome: i64 = 0;
-    for _ in 0..200 {
+    while outcome == 0 {
         outcome = match watcher.outcome() {
             .Ok(value) => value,
             .Err(_) => -1,
         };
-        if outcome != 0 {
-            break;
+        if outcome == 0 {
+            sleep(1ms);
         }
-        sleep(10ms);
     }
     println(f"down {outcome}");
     // The stopped actor answers as a dead one, and a send to it is refused.

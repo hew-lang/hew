@@ -13,6 +13,5 @@ fn main() {
     tx.close();
     let w = spawn Worker;
     let _ = w.deliver((rx, 99));
-    sleep(100ms);
     println("done");
 }

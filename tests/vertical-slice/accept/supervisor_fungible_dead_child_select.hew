@@ -22,45 +22,26 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w1;
-    // Crash until the child is PERMANENTLY dead, observing the effect rather
-    // than assuming a fixed number of sleeps reaches it. A wall-clock loop is
-    // load-sensitive: under a busy machine the restarts had not yet exhausted
-    // the budget when the asks below ran, and the fixture asserted its sentinel
-    // against a LIVE child.
-    var attempts: i64 = 0;
-    var dead = false;
-    while attempts < 30 && !dead {
-        let alive = match w.get_value() {
-            .Ok(_) => true,
-            .Err(_) => false,
-        };
-        if alive {
-            let _ = w.crash_me();
-            sleep(120ms);
-        } else {
-            dead = true;
-        }
-        attempts = attempts + 1;
-    }
-    // Make a failed precondition legible: the stdout diff then names the reason
-    // instead of only showing a wrong sentinel.
-    if !dead {
-        println("PRECONDITION_CHILD_STILL_ALIVE");
-    }
-    sleep(200ms);
+    // The budget is one restart, so the second crash leaves the role
+    // permanently dead; each `await_restart` waits for the ruling on the crash
+    // its own call already observed.
+    let _ = w.crash_me();
+    let _ = await_restart sup.w1;
+    let _ = w.crash_me();
+    let _ = await_restart sup.w1;
 
     // Single-shot ask to a permanently-dead child: recoverable Err, NOT a trap.
     let ask_code = match w.get_value() {
         .Ok(_) => 1,
         .Err(_) => 20,
     };
-    // A terminal error is a completion, not an indefinitely pending source.
+    // A terminal error is a completion, not an indefinitely pending source:
+    // a pending one would hang this selection.
     let select_code = select {
         reply from w.get_value() => match reply {
             .Ok(value) => value,
             .Err(_) => 25,
         },
-        after 100ms => 500,
     };
     let sentinel = if ask_code == 20 && select_code == 25 {
         46

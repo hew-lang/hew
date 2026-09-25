@@ -1,9 +1,8 @@
 // cut-select-waitset — the live non-blocking actor `select{}`.
 //
-// `Coordinator.race_two` runs a `select{}` over two actor-ask arms (plus a
-// safety-net `after` deadline) from INSIDE a handler. The select registers each
-// arm's readiness observer on a shared await-cancel arbiter, arms the deadline
-// on the global timer wheel, and `coro.suspend`s — freeing the worker. The first
+// `Coordinator.race_two` runs a `select{}` over two actor-ask arms from INSIDE
+// a handler. The select registers each arm's readiness observer on a shared
+// await-cancel arbiter and `coro.suspend`s — freeing the worker. The first
 // arm to become ready wins the arbiter and RESUMES the coordinator; the losing
 // arm is cancelled.
 //
@@ -13,9 +12,11 @@
 // lone worker (it would spin on the readiness flags while the worker that must
 // run the askees is the very one it pins).
 //
-// `Fast` replies immediately (no sleep) and always wins; `Slow` sleeps 50ms and
-// always loses — its channel is cancelled on the winning edge. The `after 500ms`
-// arm is a safety net that must NOT fire under normal load (500ms >> 50ms).
+// `Fast` replies immediately and always wins; `Slow` waits on a gate that
+// stays shut for the whole select, so it always loses — its channel is
+// cancelled on the winning edge.
+import std.stream;
+
 actor Fast {
     let tag: i64,
     receive fn compute(n: i64) -> i64 {
@@ -24,8 +25,9 @@ actor Fast {
 }
 
 actor Slow {
+    var gate: stream.Stream<i64>,
     receive fn compute(n: i64) -> i64 {
-        sleep(50ms);
+        gate.recv();
         n
     }
 }
@@ -43,7 +45,6 @@ actor Coordinator {
                 .Ok(value) => value,
                 .Err(_) => -7,
             },
-            after 500ms => -7,
         };
         winner
     }
@@ -51,11 +52,12 @@ actor Coordinator {
 
 fn main() {
     let f = spawn Fast(tag: 100);
-    let s = spawn Slow;
+    // Nothing is sent on the gate; dropping its sink at exit lets Slow finish.
+    let (_shut, gate) = stream.pipe(1).expect("gate");
+    let s = spawn Slow(gate: gate);
     let c = spawn Coordinator(fast: f, slow: s);
-    // Fast.compute(7) = 7 + 100 = 107; it replies before Slow wakes, so the
-    // select binds 107. The Slow arm is the loser (cancelled); the deadline
-    // never fires.
+    // Fast.compute(7) = 7 + 100 = 107; Slow cannot reply, so the select binds
+    // 107. The Slow arm is the loser (cancelled).
     let r = c.race_two(7);
     match r {
         .Ok(v) => println(f"winner={v}"),

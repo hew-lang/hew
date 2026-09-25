@@ -4,6 +4,8 @@
 // own cancellation marker, which leaves the close fault as the surviving
 // failure: a cancellation is a request, and a cleanup that genuinely failed
 // during it is not something the request answers for.
+import std.stream;
+
 #[resource]
 type Conn { fd: i64, }
 
@@ -14,18 +16,21 @@ impl Conn {
     }
 }
 
-fn cancelled() -> i64 {
+fn cancelled(parked: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
     let conn = Conn { fd: 9 };
-    sleep(5s);
+    parked.send(1).expect("parked");
+    gate.recv();
     conn.fd
 }
 
-fn winner() -> i64 {
-    sleep(1ms);
+fn winner(parked: stream.Stream<i64>) -> i64 {
+    parked.recv();
     7
 }
 
 fn main() {
-    let picked = race { winner(), cancelled() };
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
+    let picked = race { winner(parked), cancelled(parked_tx, gate) };
     println(f"picked {picked}");
 }

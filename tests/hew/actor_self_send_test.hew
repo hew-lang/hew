@@ -38,13 +38,29 @@ actor Pump {
     }
 }
 
+fn total_of_counter(c: Counter) -> i64 {
+    match c.total() {
+        .Ok(n) => n,
+        .Err(_) => panic("total ask failed"),
+    }
+}
+
+fn total_of_pump(p: Pump) -> i64 {
+    match p.total() {
+        .Ok(n) => n,
+        .Err(_) => panic("total ask failed"),
+    }
+}
+
 #[test]
 fn self_send_drives_bounded_recursion_to_exact_terminal() {
     let c = spawn Counter;
     let _ = c.go();
-    // The self-sends drain through the mailbox; the ask serialises behind them.
-    // sleep gives the bounded self-send chain time to complete before observing.
-    sleep(100ms);
+    // The self-sends drain through the mailbox. Once the count reaches the
+    // bound no further self-send is queued, so an overshoot shows here.
+    while total_of_counter(c) < 3 {
+        sleep(1ms);
+    }
     match c.total() {
         .Ok(n) => testing.assert_eq(n, 3),
         .Err(_) => testing.assert_true(false),
@@ -55,7 +71,9 @@ fn self_send_drives_bounded_recursion_to_exact_terminal() {
 fn self_send_with_higher_bound_reaches_that_bound() {
     let p = spawn Pump;
     let _ = p.go();
-    sleep(100ms);
+    while total_of_pump(p) < 7 {
+        sleep(1ms);
+    }
     match p.total() {
         .Ok(n) => testing.assert_eq(n, 7),
         .Err(_) => testing.assert_true(false),

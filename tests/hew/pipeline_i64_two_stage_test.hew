@@ -201,7 +201,7 @@ fn admission_reply_waits_for_downstream_post_send_barrier() {
         .Ok(admitted) => testing.assert_true(admitted),
         .Err(_) => testing.assert_true(false),
     }
-    let _ = runner.start(3, "blocked-three");
+    let _ = mailbox(runner).start(3, "blocked-three");
     wait_for_attempts(control, 3);
     match control.post_sends() {
         .Ok(value) => testing.assert_eq(value, 2),
@@ -304,9 +304,9 @@ fn graceful_shutdown_drains_queued_owned_items() {
     let first = spawn PushRunner(source: source, probe: first_probe);
     let second = spawn PushRunner(source: source, probe: second_probe);
     let third = spawn PushRunner(source: source, probe: third_probe);
-    let _ = first.start(4, "drain-one");
-    let _ = second.start(5, "drain-two");
-    let _ = third.start(6, "drain-three");
+    let _ = mailbox(first).start(4, "drain-one");
+    let _ = mailbox(second).start(5, "drain-two");
+    let _ = mailbox(third).start(6, "drain-three");
     let _ = control.release();
     let _ = control.release();
     let _ = control.release();

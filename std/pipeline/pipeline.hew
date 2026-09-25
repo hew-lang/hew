@@ -140,7 +140,16 @@ pub actor StageI64 {
             panic("pipeline S1 stage crash");
         }
         let transformed = PipelineItemI64 { value: item.value * 2, label: item.label + ":stage", crash_stage: false };
-        let _ = next.push(transformed);
+        // Admission is the sink's mailbox accepting the item, not the sink
+        // finishing it: the sink may be waiting on a permit, so a completion
+        // call here would hold the stage behind it. The submission still waits
+        // for a free seat, which is the capacity-one barrier.
+        match mailbox(next, on_full: .Wait).push(transformed) {
+            .Ok(_) => {},
+            .Err(_) => {
+                return false;
+            },
+        }
         match control.mark_stage_post_send() {
             .Ok(_) => true,
             .Err(_) => false,

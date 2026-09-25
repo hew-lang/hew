@@ -39,6 +39,5 @@ fn main() {
     scope { let t = fork worker(); await t; };
     let keeper = spawn Keeper(holder: Holder { ticket: Ticket { id: 3 }, label: "actor" });
     let _ = keeper.report();
-    sleep(50ms);
     println("done");
 }

@@ -44,7 +44,7 @@ compatibility shims over one default runtime:
 - Session reset hooks: `hew-runtime/src/session.rs:36-61` owns `RESET_HOOKS`
   and fires hooks in registration order.
 - wasm32 process driver:
-  `hew-runtime/src/wasm_driver.rs` owns the single-threaded timer wheel and
+  `hew-runtime/src/driver.rs` owns the single-threaded timer wheel and
   readiness step the parked root runs inline.
 
 ## Pinned `Runtime` field set
@@ -87,7 +87,7 @@ Field meanings:
   `hew-runtime/src/scheduler.rs::Scheduler`: worker handles, global queue,
   local queues, stealers, parkers, worker-count metadata, and the native
   shutdown flag. wasm32 has no worker threads: the process itself is the
-  driver (`hew-runtime/src/wasm_driver.rs`).
+  driver (`hew-runtime/src/driver.rs`).
 - `LiveActorsState` owns the `HashMap<ActorId, ActorPtr>` currently held in
   `hew-runtime/src/lifetime/live_actors.rs`. `DeferredActorFreeThreads` is
   native-only but must still be owned by the runtime on native targets because
@@ -230,7 +230,7 @@ hooks without hidden process globals.
 
 Decision criteria before claiming multi-runtime WASM support:
 
-1. `hew-runtime/src/wasm_driver.rs` owns all run-queue, actor, and reset
+1. `hew-runtime/src/driver.rs` owns all run-queue, actor, and reset
    state through `Runtime`, not module statics.
 2. No WASM exported `*_with_runtime` symbol ignores a non-null runtime handle.
 3. Timer and bridge metadata are per-runtime or explicitly proven immutable.

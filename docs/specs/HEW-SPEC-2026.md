@@ -6727,6 +6727,7 @@ refuses the name it does not know rather than dropping it.
 | `#[ignore]` | `#[test]` function | Discovered but not run. |
 | `#[should_panic]` | `#[test]` function | The test passes only if the body traps. |
 | `#[serial]` | `#[test]` function | Runs alone, never concurrently with another test. |
+| `#[real_time]` | `#[test]` function | Runs on the threaded scheduler with the host clock instead of the deterministic single-thread driver and virtual clock. |
 | `#[on(kind)]` | actor member `fn` | Lifecycle hook; `kind` is one of `start`, `stop`, `crash`, `exit`, `down` (§9.1.2). |
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |

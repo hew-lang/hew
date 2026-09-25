@@ -148,12 +148,16 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
 /// Run every actor to a stop and reclaim the runtime, returning a non-zero
 /// status when shutdown itself failed.
 ///
-/// Natively this is the shutdown phase machine waiting on the worker threads.
-/// wasm32 has no worker to wait for: the process drains its own run queue and
-/// timer wheel until nothing is left to run.
+/// Natively this is the shutdown phase machine; on the single-thread driver it
+/// runs inline, the driver doing the work the workers would. wasm32 has no
+/// shutdown machine: the process drains its ready list and due timers until
+/// nothing is left to run.
 fn drain_to_quiescence() -> i32 {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if crate::driver::active() {
+            crate::driver::run_to_quiescence();
+        }
         crate::shutdown::hew_shutdown_initiate_implicit(0);
         let status = crate::shutdown::hew_shutdown_wait();
         crate::scheduler::hew_runtime_cleanup_after_main();
@@ -161,7 +165,8 @@ fn drain_to_quiescence() -> i32 {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        crate::wasm_driver::drain_to_quiescence()
+        crate::driver::run_to_quiescence();
+        0
     }
 }
 

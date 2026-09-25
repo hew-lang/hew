@@ -661,6 +661,36 @@ pub struct TestArgs {
     /// memory pressure from concurrent compilation tasks.
     #[arg(long, short = 'j', value_name = "N")]
     pub jobs: Option<std::num::NonZeroUsize>,
+    /// Schedule of each deterministic test's first run.
+    #[arg(long, value_enum, default_value = "fifo")]
+    pub schedule: TestSchedule,
+    /// Seed of every deterministic test (hex `0x..` or decimal); defaults to a
+    /// stable hash of each test's identity.
+    #[arg(long, value_name = "N", value_parser = parse_seed)]
+    pub seed: Option<u64>,
+    /// Also run each deterministic test under N random schedules.
+    #[arg(long, value_name = "N", default_value = "0")]
+    pub schedules: u32,
+}
+
+/// How the deterministic driver orders a test's participants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TestSchedule {
+    /// In the order they became ready.
+    Fifo,
+    /// A seeded uniform pick at every step.
+    Random,
+}
+
+fn parse_seed(value: &str) -> Result<u64, String> {
+    let parsed = match value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => value.parse(),
+    };
+    parsed.map_err(|_| format!("`{value}` is not a decimal or 0x-prefixed hex seed"))
 }
 
 // ---------------------------------------------------------------------------

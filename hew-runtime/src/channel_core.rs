@@ -57,7 +57,7 @@ use crate::wake::{HewWaker, OwnedWaker};
 /// Native shutdown publishes a phase rather than a wake edge, so a blocked
 /// producer polls it. The wasm32 driver has no phase to publish: the thread
 /// that would drain the ring is the one this producer hands the process back
-/// to, and [`crate::wasm_driver::step`] fails closed on its own once nothing is
+/// to, and [`crate::driver::step`] fails closed on its own once nothing is
 /// left that could run.
 fn send_abandoned_by_shutdown() -> bool {
     #[cfg(not(target_arch = "wasm32"))]

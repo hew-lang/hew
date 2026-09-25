@@ -2,9 +2,9 @@
 //!
 //! Activation is the same code everywhere ([`crate::activation`]); publishing a
 //! queue entry and waking whoever will run it is not. The native scheduler
-//! pushes onto the work-stealing queue and wakes a parked worker; wasm32 has no
-//! worker, so the entry goes on the driver's queue and the process itself runs
-//! it at the next readiness step.
+//! pushes onto the work-stealing queue and wakes a parked worker; on the
+//! single-thread driver (always on wasm32) the entry joins the driver's ready
+//! list and the process itself runs it at a later step.
 
 use crate::activation::SchedulerQueueEntry;
 use crate::actor::HewActor;
@@ -28,8 +28,10 @@ pub(crate) fn sched_enqueue_owned(entry: SchedulerQueueEntry) {
 pub(crate) use crate::activation::enqueue_resume_by_incarnation;
 
 fn publish(entry: SchedulerQueueEntry) {
+    if crate::driver::active() {
+        crate::driver::publish_queue_entry(entry);
+        return;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     crate::scheduler::publish_queue_entry(entry);
-    #[cfg(target_arch = "wasm32")]
-    crate::wasm_driver::publish_queue_entry(entry);
 }

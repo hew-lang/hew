@@ -344,6 +344,22 @@ pub(crate) fn run_binary_with_timeout(
     run_command_captured(&mut command, timeout)
 }
 
+/// Execute a native binary with bounded wall-clock time under an explicit
+/// driver configuration: `Some` sets `HEW_DETERMINISTIC`, `None` removes it so
+/// the program runs on the threaded scheduler.
+pub(crate) fn run_binary_with_driver(
+    binary: &Path,
+    timeout: Duration,
+    deterministic: Option<&str>,
+) -> Result<BinaryRunOutcome, String> {
+    let mut command = Command::new(binary);
+    match deterministic {
+        Some(config) => command.env("HEW_DETERMINISTIC", config),
+        None => command.env_remove("HEW_DETERMINISTIC"),
+    };
+    run_command_captured(&mut command, timeout)
+}
+
 /// Execute an arbitrary command with bounded wall-clock time, capturing output.
 ///
 /// Identical to [`run_binary_with_timeout`] but accepts a pre-configured

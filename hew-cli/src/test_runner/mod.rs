@@ -210,6 +210,15 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             compile_paths: &compile_paths,
             timeout,
             jobs: requested_jobs(args.jobs),
+            schedules: runner::ScheduleOptions {
+                schedule: match args.schedule {
+                    crate::args::TestSchedule::Fifo => runner::Schedule::Fifo,
+                    crate::args::TestSchedule::Random => runner::Schedule::Random,
+                },
+                seed: args.seed,
+                explore: args.schedules,
+            },
+            root: &root,
         },
     );
     output::output_results(&summary, use_color, format, &root);
@@ -365,6 +374,7 @@ mod partition_tests {
             ignored: false,
             should_panic: false,
             serial: false,
+            real_time: false,
         };
         assert_eq!(
             test_identity(&test, Path::new("/repo")),

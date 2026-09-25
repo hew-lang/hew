@@ -143,7 +143,9 @@ fn test_run_argv_missing_command_preserves_real_error() {
     }
 }
 
+// A subprocess exits on the host clock, not the deterministic driver's.
 #[test]
+#[real_time]
 fn test_child_drop_reaps_running_process() {
     let pid_path = f"tests/hew/_process_drop_{datetime.now_nanos()}.pid";
     cleanup_file(pid_path);

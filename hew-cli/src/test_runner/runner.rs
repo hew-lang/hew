@@ -232,6 +232,82 @@ pub struct TestRunOptions<'a> {
     pub compile_paths: &'a TestCompilePaths,
     pub timeout: Duration,
     pub jobs: usize,
+    pub schedules: ScheduleOptions,
+    /// Directory test identities (`path::name`) are relative to.
+    pub root: &'a Path,
+}
+
+/// How the single-thread driver orders a deterministic test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Schedule {
+    /// Participants run in the order they became ready.
+    Fifo,
+    /// Each pick is a seeded uniform choice over the ready participants.
+    Random,
+}
+
+impl Schedule {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fifo => "fifo",
+            Self::Random => "random",
+        }
+    }
+}
+
+/// Schedule selection for every deterministic test in a run.
+#[derive(Debug, Clone, Copy)]
+pub struct ScheduleOptions {
+    /// The schedule of each test's first run.
+    pub schedule: Schedule,
+    /// Overrides the per-test seed (a stable hash of the test's identity).
+    pub seed: Option<u64>,
+    /// Additional `random` schedules explored after the first run.
+    pub explore: u32,
+}
+
+/// One execution of a compiled test: a driver schedule and seed, or the
+/// threaded runtime for a `#[real_time]` test.
+#[derive(Debug, Clone, Copy)]
+struct Execution {
+    driver: Option<(Schedule, u64)>,
+}
+
+impl Execution {
+    fn environment(self) -> Option<String> {
+        self.driver
+            .map(|(schedule, seed)| format!("schedule={},seed={seed:#x}", schedule.as_str()))
+    }
+}
+
+/// The seed of the `index`th explored schedule: a splitmix64 output over the
+/// test's base seed, so the sequence is fixed per test and independent of the
+/// other tests in the run.
+fn explored_seed(base: u64, index: u32) -> u64 {
+    let mut z = base.wrapping_add(u64::from(index + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Every execution one test gets: the first run under the selected schedule,
+/// then the explored `random` schedules. A `#[real_time]` test runs once on
+/// the threaded runtime.
+fn executions(test: &TestCase, options: &TestRunOptions<'_>) -> Vec<Execution> {
+    if test.real_time {
+        return vec![Execution { driver: None }];
+    }
+    let schedules = options.schedules;
+    let base = schedules
+        .seed
+        .unwrap_or_else(|| super::stable_hash(&super::test_identity(test, options.root)));
+    let mut runs = vec![Execution {
+        driver: Some((schedules.schedule, base)),
+    }];
+    runs.extend((0..schedules.explore).map(|index| Execution {
+        driver: Some((Schedule::Random, explored_seed(base, index))),
+    }));
+    runs
 }
 
 /// Run a set of test cases.
@@ -284,12 +360,7 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                 continue;
             }
 
-            let result = run_single_test(
-                test,
-                options.ffi_lib,
-                options.compile_paths,
-                options.timeout,
-            );
+            let result = run_single_test(test, options);
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
                 TestOutcome::Failed(_) => failed += 1,
@@ -379,19 +450,9 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                         let _serial_guard = serial_gate
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        run_single_test(
-                            &task.test,
-                            options.ffi_lib,
-                            options.compile_paths,
-                            options.timeout,
-                        )
+                        run_single_test(&task.test, options)
                     } else {
-                        run_single_test(
-                            &task.test,
-                            options.ffi_lib,
-                            options.compile_paths,
-                            options.timeout,
-                        )
+                        run_single_test(&task.test, options)
                     };
                     result_slots
                         .lock()
@@ -487,15 +548,10 @@ fn compile_test(
     })
 }
 
-fn run_single_test(
-    test: &TestCase,
-    ffi_lib: Option<&str>,
-    compile_paths: &TestCompilePaths,
-    timeout: Duration,
-) -> TestResult {
+fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult {
     let start = std::time::Instant::now();
 
-    let artifact = match compile_test(test, ffi_lib, compile_paths) {
+    let artifact = match compile_test(test, options.ffi_lib, options.compile_paths) {
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -515,74 +571,119 @@ fn run_single_test(
         }
     };
 
-    // Execute the compiled binary with a timeout.
-    let run_result = crate::process::run_binary_with_timeout(&artifact.binary_path, timeout);
+    let runs = executions(test, options);
+    let mut first_output = None;
+    let mut first_failure: Option<(Execution, TestFailure, String)> = None;
+    let mut failed_runs = 0usize;
+    for execution in &runs {
+        let (outcome, output) = judge_run(
+            test,
+            crate::process::run_binary_with_driver(
+                &artifact.binary_path,
+                options.timeout,
+                execution.environment().as_deref(),
+            ),
+            options.timeout,
+        );
+        match outcome {
+            TestOutcome::Failed(failure) => {
+                failed_runs += 1;
+                if first_failure.is_none() {
+                    first_failure = Some((*execution, failure, output));
+                }
+            }
+            TestOutcome::Passed | TestOutcome::Ignored => {
+                first_output.get_or_insert(output);
+            }
+        }
+    }
 
     let duration = start.elapsed();
+    let Some((execution, failure, output)) = first_failure else {
+        return TestResult {
+            test: test.clone(),
+            outcome: TestOutcome::Passed,
+            output: first_output.unwrap_or_default(),
+            duration,
+        };
+    };
+    let message = match execution.driver {
+        None => failure.message,
+        Some((schedule, seed)) => {
+            let mut message = failure.message.trim_end().to_string();
+            if runs.len() > 1 {
+                message.push_str(&format!(
+                    "\nfailed on {failed_runs} of {} schedules",
+                    runs.len()
+                ));
+            }
+            message.push_str(&format!(
+                "\nschedule {}, seed {seed:#x}\nreproduce: hew test {} --filter {} --schedule {} --seed {seed:#x}",
+                schedule.as_str(),
+                test.file,
+                test.name,
+                schedule.as_str(),
+            ));
+            message
+        }
+    };
+    TestResult {
+        test: test.clone(),
+        outcome: TestOutcome::failed(failure.kind, message),
+        output,
+        duration,
+    }
+}
+
+/// Decide one execution's outcome, returning it with the captured stdout.
+fn judge_run(
+    test: &TestCase,
+    run_result: Result<crate::process::BinaryRunOutcome, String>,
+    timeout: Duration,
+) -> (TestOutcome, String) {
     match run_result {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
             if test.should_panic {
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::failed(
+                (
+                    TestOutcome::failed(
                         TestFailureKind::Runtime,
                         "expected test to panic, but it completed successfully",
                     ),
-                    output: stdout,
-                    duration,
-                }
+                    stdout,
+                )
             } else {
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::Passed,
-                    output: stdout,
-                    duration,
-                }
+                (TestOutcome::Passed, stdout)
             }
         }
         Ok(crate::process::BinaryRunOutcome::Failed { stdout, stderr, .. }) => {
             if test.should_panic {
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::Passed,
-                    output: stdout,
-                    duration,
-                }
+                (TestOutcome::Passed, stdout)
             } else {
                 let msg = if stderr.is_empty() {
                     "test exited with non-zero status".to_string()
                 } else {
                     stderr
                 };
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::failed(TestFailureKind::Runtime, msg),
-                    output: stdout,
-                    duration,
-                }
+                (TestOutcome::failed(TestFailureKind::Runtime, msg), stdout)
             }
         }
-        Ok(crate::process::BinaryRunOutcome::Timeout) => TestResult {
-            test: test.clone(),
-            outcome: TestOutcome::failed(
+        Ok(crate::process::BinaryRunOutcome::Timeout) => (
+            TestOutcome::failed(
                 TestFailureKind::Timeout,
                 format!(
                     "test timed out after {}",
                     crate::process::format_timeout(timeout)
                 ),
             ),
-            output: String::new(),
-            duration,
-        },
-        Err(e) => TestResult {
-            test: test.clone(),
-            outcome: TestOutcome::failed(
+            String::new(),
+        ),
+        Err(e) => (
+            TestOutcome::failed(
                 TestFailureKind::Launch,
                 format!("cannot execute test binary: {e}"),
             ),
-            output: String::new(),
-            duration,
-        },
+            String::new(),
+        ),
     }
 }
 
@@ -591,6 +692,12 @@ mod tests {
     use super::super::discovery;
     use super::*;
     use std::sync::OnceLock;
+
+    const FIFO_ONCE: ScheduleOptions = ScheduleOptions {
+        schedule: Schedule::Fifo,
+        seed: None,
+        explore: 0,
+    };
 
     fn require_codegen() -> bool {
         test_toolchain_lib().is_some()
@@ -741,6 +848,8 @@ mod tests {
                 compile_paths: cargo_test_compile_paths(),
                 timeout,
                 jobs: 1,
+                schedules: FIFO_ONCE,
+                root: Path::new("/"),
             },
         );
         drop(source_dir);
@@ -760,6 +869,8 @@ mod tests {
                 compile_paths: cargo_test_compile_paths(),
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 1,
+                schedules: FIFO_ONCE,
+                root: Path::new("/"),
             },
         )
     }
@@ -1055,6 +1166,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
+                real_time: false,
             },
             TestCase {
                 name: "beta".into(),
@@ -1069,6 +1181,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
+                real_time: false,
             },
             TestCase {
                 name: "gamma".into(),
@@ -1083,6 +1196,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
+                real_time: false,
             },
         ];
 
@@ -1104,6 +1218,8 @@ fn test_timeout() {
                 compile_paths: &unused_paths,
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 2,
+                schedules: FIFO_ONCE,
+                root: Path::new("/"),
             },
         );
         let names: Vec<_> = summary

@@ -190,6 +190,16 @@ path`) are deleted; a literal meets its expected type only when its path
   on a type parameter is refused (w4a); the fixture moved to `reject/` with a
   control without the same-spelled nominal.
 
+- Oracle target corrected: `identity_w2b` runs and prints `7`. The plan's
+  "refused … missing `dup`" was the audit's control row; under R2 a user
+  trait spelled `Clone` with an impl is a satisfied ordinary bound, like the
+  `Klone` control. The predicate `Clone` still admits a plain record.
+- `impl` method obligations (`value_method_obligations`) read predicates
+  through `bound_marker`.
+- Added `identity_w1b` (L0 never created it) with a one-trait control that
+  passes; the two-trait program is a known failure until HIR emits one body
+  per declaration. The w1a/w1c/w1d ratchet reasons now name that B1 cause.
+
 ## DefTable contract changes
 
 - `DefTable::module_has_declarations` becomes `module_has_source_declarations`:

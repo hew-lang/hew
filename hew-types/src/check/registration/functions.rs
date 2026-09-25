@@ -1621,21 +1621,13 @@ impl Checker {
                 {
                     return None;
                 }
-                let identity = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-                let obligation = if self
-                    .lang_items
-                    .get(crate::LANG_ITEM_DISPLAY)
-                    .is_some_and(|binding| self.defs.path(binding.trait_id) == identity)
-                    || identity == "Display"
-                {
-                    crate::type_facts::ImplMethodObligation::Display
-                } else {
-                    match MarkerTrait::from_name(&identity)? {
-                        MarkerTrait::Serializable => {
-                            crate::type_facts::ImplMethodObligation::Serializable
-                        }
-                        marker => crate::type_facts::ImplMethodObligation::Marker(marker),
+                let obligation = match self.bound_marker(&bound.path.to_string())? {
+                    // TRANSITION(P1): deleted by A1 commit 2
+                    MarkerTrait::Display => crate::type_facts::ImplMethodObligation::Display,
+                    MarkerTrait::Serializable => {
+                        crate::type_facts::ImplMethodObligation::Serializable
                     }
+                    marker => crate::type_facts::ImplMethodObligation::Marker(marker),
                 };
                 obligations.push((name.to_string(), obligation));
             }

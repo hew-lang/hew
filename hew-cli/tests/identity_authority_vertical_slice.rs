@@ -128,17 +128,21 @@ fn identity_w2a_user_trait_named_send_is_not_the_predicate() {
     }
 }
 
-/// W2 (R4 structural witness + R2): `Q`'s `dup` witnesses a user trait
-/// spelled `Clone`, not the `Clone` predicate; `f<T: Clone>` must refuse `Q`
-/// for missing the predicate's own witness.
+/// W2 (R2): a user trait spelled `Clone` is an ordinary trait, so
+/// `f<T: Clone>(Q)` with `impl Clone for Q { fn dup }` calls the user `dup`
+/// exactly as the renamed `Klone` control does; the predicate `Clone` still
+/// admits a plain record (D522).
 #[test]
 fn identity_w2b_user_trait_named_clone_is_not_the_predicate() {
-    let (ok, combined) = check_reject_fixture("identity_w2b");
-    assert!(
-        !ok,
-        "target: refused \"`Q` does not implement trait `Clone` ... missing `dup`\"; \
-         got success:\n{combined}"
-    );
+    for fixture in [
+        "identity_w2b",
+        "identity_w2b_control",
+        "identity_w2b_predicate",
+    ] {
+        let (ok, stdout) = run_accept_fixture(fixture);
+        assert!(ok, "{fixture} must run to completion");
+        assert_eq!(stdout, "7\n", "{fixture}");
+    }
 }
 
 /// W2 (R2, Ord/PartialOrd): a user `Ord` predicate-shaped bound must not
@@ -192,6 +196,23 @@ fn identity_w9a_machine_event_collision_names_the_machine() {
         "target note: \"machine Slot declares its event type SlotEvent here\"; \
          got:\n{combined}"
     );
+}
+
+/// W1 (R1): two traits' `tag` methods on a struct and on a primitive, plus
+/// each trait's default, resolve by owner through bounds. The one-trait
+/// control holds today; the two-trait program needs HIR to emit one body per
+/// declaration (B1).
+#[test]
+fn identity_w1b_trait_methods_of_one_name_resolve_by_owner() {
+    for fixture in ["identity_w1b_control", "identity_w1b"] {
+        let (ok, stdout) = run_accept_fixture(fixture);
+        let expected = std::fs::read_to_string(
+            repo_root().join(format!("tests/vertical-slice/accept/{fixture}.expected")),
+        )
+        .expect("read expected output");
+        assert!(ok, "{fixture} must run to completion");
+        assert_eq!(stdout, expected, "{fixture}");
+    }
 }
 
 /// W1 (dot-call, ambiguity): two traits declaring the same method name with

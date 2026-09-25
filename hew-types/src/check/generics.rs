@@ -1293,7 +1293,7 @@ impl Checker {
     /// The compiler predicate a bound spelling names (R2). A predicate has no
     /// declaration, so a declared trait of the same spelling is an ordinary
     /// trait; `Display` is the marker only as the prelude's own declaration.
-    pub(super) fn bound_marker(&self, bound: &str) -> Option<MarkerTrait> {
+    pub(in crate::check) fn bound_marker(&self, bound: &str) -> Option<MarkerTrait> {
         let marker = MarkerTrait::from_name(bound)?;
         match self.trait_key_id(&self.trait_ref_lookup_key(bound)) {
             None => Some(marker),

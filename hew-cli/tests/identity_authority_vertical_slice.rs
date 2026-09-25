@@ -95,23 +95,19 @@ fn identity_w3b_closure_shadows_fn() {
     );
 }
 
-/// W4 (R6 type parameters): a type parameter must never resolve to a
-/// nominal of the same spelling; `g<T>(x: T) { x.v }` must be refused.
+/// W4 (R6 type parameters): a type parameter never resolves to a nominal
+/// of the same spelling, so `g<T>(x: T) { x.v }` is refused beside
+/// `type T { v: i64 }` exactly as it is without one.
 #[test]
 fn identity_w4a_type_param_never_shadowed_by_nominal() {
-    let (ok, stdout) = run_accept_fixture("identity_w4a");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/identity_w4a.expected"),
-    )
-    .expect("read identity_w4a.expected");
-    // Target (R6): refused "cannot access field `v` on type parameter `T`".
-    // Currently accepted and prints the field, so this assertion captures
-    // today's (wrong) accept as a known failure against the target refusal.
-    assert!(ok, "identity_w4a currently runs to completion (pre-fix)");
-    assert_eq!(
-        stdout, expected,
-        "pre-fix baseline for R6; the target behaviour is a refusal, not this output"
-    );
+    for fixture in ["identity_w4a", "identity_w4a_control"] {
+        let (ok, combined) = check_reject_fixture(fixture);
+        assert!(!ok, "{fixture} must be refused; got success:\n{combined}");
+        assert!(
+            combined.contains("cannot access field `v` on type parameter `T`"),
+            "{fixture}: R6 diagnostic expected; got:\n{combined}"
+        );
+    }
 }
 
 /// W2 (R2 predicates by identity, D554-2): a user trait spelled `Send` is an
@@ -120,12 +116,16 @@ fn identity_w4a_type_param_never_shadowed_by_nominal() {
 /// matches the predicate by spelling and unsoundly accepts the send.
 #[test]
 fn identity_w2a_user_trait_named_send_is_not_the_predicate() {
-    let (ok, combined) = check_reject_fixture("identity_w2a");
-    assert!(
-        !ok,
-        "target: refused `cannot send dyn Send to actor: type is not Send`; \
-         got success:\n{combined}"
-    );
+    for (fixture, trait_name) in [("identity_w2a", "Send"), ("identity_w2a_control", "Pinger")] {
+        let (ok, combined) = check_reject_fixture(fixture);
+        assert!(!ok, "{fixture} must be refused; got success:\n{combined}");
+        assert!(
+            combined.contains(&format!(
+                "cannot send `dyn {trait_name}` to actor: type is not Send"
+            )),
+            "{fixture}: expected the Send refusal; got:\n{combined}"
+        );
+    }
 }
 
 /// W2 (R4 structural witness + R2): `Q`'s `dup` witnesses a user trait
@@ -158,6 +158,15 @@ fn identity_w2b_ord_predicate_bound_not_implied_by_spelling() {
         "E_SIR_UNSUPPORTED is a compiler-limitation failure, not the target \
          source diagnostic (plans/identity-authority-final.md section 6): \n{combined}"
     );
+    assert!(
+        combined.contains("does not implement trait `PartialOrd`"),
+        "the user `Ord` must not imply the user `PartialOrd`; got:\n{combined}"
+    );
+    // Negative control: the predicates themselves keep `Ord` implying
+    // `PartialOrd`.
+    let (ok, stdout) = run_accept_fixture("identity_w2b_ord_control");
+    assert!(ok, "predicate Ord must satisfy PartialOrd");
+    assert_eq!(stdout, "5\n");
 }
 
 /// W11 (compiler-minted spelling as a string): a machine's companion event
@@ -316,8 +325,12 @@ fn identity_w3e_user_println_shadows_builtin() {
 fn identity_w4b_pattern_name_must_match_scrutinee_type() {
     let (ok, combined) = check_reject_fixture("identity_w4b");
     assert!(
-        !ok,
+        !ok && combined.contains("pattern names `Other`, scrutinee is `Point`"),
         "target: refused \"pattern names `Other`, scrutinee is `Point`\"; \
-         got success:\n{combined}"
+         got:\n{combined}"
     );
+    // Negative control: the scrutinee's own name still destructures.
+    let (ok, stdout) = run_accept_fixture("identity_w4b_control");
+    assert!(ok, "Point {{ x, .. }} must match a Point");
+    assert_eq!(stdout, "1\n");
 }

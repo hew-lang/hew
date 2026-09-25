@@ -588,7 +588,7 @@ impl Checker {
     ) {
         let ty = self.subst.resolve(ty);
         let boundary_ty = self.normalize_for_use(&ty);
-        if !self.type_satisfies_trait_bound(&boundary_ty, "Send") {
+        if !self.type_is_send(&boundary_ty) {
             self.report_invalid_actor_send(&ty, error_span);
         }
         if self.ty_contains_affine_actor_transfer(&ty) {

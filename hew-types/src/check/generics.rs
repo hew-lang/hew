@@ -105,6 +105,7 @@ impl Checker {
                     .iter()
                     .map(|bound| crate::ty::TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
                         args: bound
                             .args
                             .iter()
@@ -505,7 +506,7 @@ impl Checker {
                 || (!self.type_decls_registered
                     && bounds
                         .iter()
-                        .any(|bound| MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)))
+                        .any(|bound| self.bound_marker(bound) == Some(MarkerTrait::Eq)))
             {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
                     type_param: param_name.clone(),
@@ -596,7 +597,7 @@ impl Checker {
             // yet. Carry its Eq demand through the same instantiation graph as
             // an ordinary comparison. Bare parameters still need their declared
             // bound in the active scope.
-            if MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)
+            if self.bound_marker(bound) == Some(MarkerTrait::Eq)
                 && !matches!(resolved_arg, Ty::Named { args, head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. } if args.is_empty())
                 && Self::ty_mentions_type_params(
                     resolved_arg,
@@ -625,13 +626,13 @@ impl Checker {
             );
             // A Display bound fails because nothing renders the type, so name
             // the impl the program is missing rather than its absent methods.
-            let suggestions = if MarkerTrait::from_name(bound) == Some(MarkerTrait::Display) {
+            let suggestions = if self.bound_marker(bound) == Some(MarkerTrait::Display) {
                 vec![format!(
                     "write `impl {bound_display} for {} {{ fn fmt(...) -> string {{ ... }} }}`, \
                      or render the parts that already have one",
                     resolved_arg.user_facing()
                 )]
-            } else if MarkerTrait::from_name(bound) == Some(MarkerTrait::Serializable) {
+            } else if self.bound_marker(bound) == Some(MarkerTrait::Serializable) {
                 vec![
                     "only scalars, `Vec`, `HashMap`, `HashSet` and `Option` of serializable \
                      values, and `#[wire]` types with tagged fields have a wire encoding"
@@ -1106,7 +1107,7 @@ impl Checker {
         // already uses. The structural marker derivation would grant it to
         // `Vec<i64>`, tuples and records, none of which have an impl for HIR to
         // call, so `println([1, 2])` reached lowering with no symbol.
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Display) {
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Display) {
             // An unresolved or already-errored type says nothing about Display;
             // reporting it here would cascade a second diagnostic onto the
             // first failure (`require_display_impl` guards the same way).
@@ -1120,7 +1121,7 @@ impl Checker {
         // record whose fields all clone has one - the clone thunk HIR calls -
         // so deriving the bound structurally keeps one authority for that fact
         // instead of demanding an empty `impl Clone for T {}` alongside it.
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Clone) {
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Clone) {
             if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
                 return true;
             }
@@ -1142,19 +1143,13 @@ impl Checker {
                 .parameter_clone_kind(ty)
                 .is_some_and(|clone| clone != crate::type_facts::CloneKind::None);
         }
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Serializable) {
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Serializable) {
             return self.satisfies_serializable(ty);
         }
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Send) {
-            return self.registry.implements_marker_with_bounds(
-                ty,
-                MarkerTrait::Send,
-                &|name, marker| {
-                    marker == MarkerTrait::Send && self.type_param_carries_bound(name, trait_name)
-                },
-            );
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Send) {
+            return self.type_is_send(ty);
         }
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Eq)
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Eq)
             && !Self::ty_mentions_type_params(
                 ty,
                 &self
@@ -1187,12 +1182,14 @@ impl Checker {
                         | crate::BuiltinType::RemotePid,
                     ),
                 ..
-            } if MarkerTrait::from_name(trait_name).is_some() => MarkerTrait::from_name(trait_name)
+            } if self.bound_marker(trait_name).is_some() => self
+                .bound_marker(trait_name)
                 .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
             Ty::Named {
                 head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
                 ..
-            } if MarkerTrait::from_name(trait_name).is_some() => MarkerTrait::from_name(trait_name)
+            } if self.bound_marker(trait_name).is_some() => self
+                .bound_marker(trait_name)
                 .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
             Ty::Named { head, .. } => {
                 let name = head.registry_key();
@@ -1241,7 +1238,7 @@ impl Checker {
                         return true;
                     }
                 }
-                if let Some(marker) = MarkerTrait::from_name(trait_name) {
+                if let Some(marker) = self.bound_marker(trait_name) {
                     self.registry.implements_marker(ty, marker)
                 } else {
                     false
@@ -1283,17 +1280,39 @@ impl Checker {
             .any(|b| self.bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name))
     }
 
+    /// Whether `ty` satisfies the compiler's `Send` predicate: the actor
+    /// boundary asks this of the predicate itself, never of a trait spelled
+    /// `Send` (R2).
+    pub(in crate::check) fn type_is_send(&self, ty: &Ty) -> bool {
+        self.registry
+            .implements_marker_with_bounds(ty, MarkerTrait::Send, &|name, marker| {
+                marker == MarkerTrait::Send && self.type_param_carries_bound(name, "Send")
+            })
+    }
+
+    /// The compiler predicate a bound spelling names (R2). A predicate has no
+    /// declaration, so a declared trait of the same spelling is an ordinary
+    /// trait; `Display` is the marker only as the prelude's own declaration.
+    pub(super) fn bound_marker(&self, bound: &str) -> Option<MarkerTrait> {
+        let marker = MarkerTrait::from_name(bound)?;
+        match self.trait_key_id(&self.trait_ref_lookup_key(bound)) {
+            None => Some(marker),
+            Some(declared) => (marker == MarkerTrait::Display
+                && self
+                    .lang_items
+                    .get(crate::LANG_ITEM_DISPLAY)
+                    .is_some_and(|binding| binding.trait_id == declared))
+            .then_some(marker),
+        }
+    }
+
     fn bound_implies_trait(&self, bound: &str, trait_name: &str) -> bool {
         let canonical_bound = self.trait_defs_key_for_bound(bound);
         let canonical_trait = self.trait_defs_key_for_bound(trait_name);
-        let (bound_owner, bound_leaf) = canonical_bound
-            .rsplit_once('.')
-            .unwrap_or(("", canonical_bound.as_str()));
-        let (trait_owner, trait_leaf) = canonical_trait
-            .rsplit_once('.')
-            .unwrap_or(("", canonical_trait.as_str()));
+        // `Ord` implies `PartialOrd` only between the predicates themselves.
         canonical_bound == canonical_trait
-            || (bound_leaf == "Ord" && trait_leaf == "PartialOrd" && bound_owner == trait_owner)
+            || (self.bound_marker(bound) == Some(MarkerTrait::Ord)
+                && self.bound_marker(trait_name) == Some(MarkerTrait::PartialOrd))
     }
 
     /// Check an already-selected type identity against an already-selected trait

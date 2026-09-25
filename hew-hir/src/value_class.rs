@@ -448,6 +448,7 @@ mod tests {
         let ty = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Display".to_string(),
+                trait_id: None,
                 args: Vec::new(),
                 assoc_bindings: Vec::new(),
             }],
@@ -461,6 +462,7 @@ mod tests {
         let ty = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".to_string(),
+                trait_id: None,
                 args: vec![ResolvedTy::named_for_test("Foo", Vec::new())],
                 assoc_bindings: Vec::new(),
             }],
@@ -474,11 +476,13 @@ mod tests {
         let ty = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "OuterTrait".to_string(),
+                trait_id: None,
                 args: vec![ResolvedTy::Tuple(vec![
                     ResolvedTy::named_for_test("Foo", Vec::new()),
                     ResolvedTy::TraitObject {
                         traits: vec![ResolvedTraitBound {
                             trait_name: "InnerTrait".to_string(),
+                            trait_id: None,
                             args: vec![ResolvedTy::named_for_test("Bar", Vec::new())],
                             assoc_bindings: Vec::new(),
                         }],

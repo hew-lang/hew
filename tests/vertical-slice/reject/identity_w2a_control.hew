@@ -1,0 +1,9 @@
+trait Pinger { fn ping(self) -> i64; }
+type P { r: Rc<i64> }
+impl Pinger for P { fn ping(self) -> i64 { self.r.get() } }
+actor W { receive fn take(p: dyn Pinger) -> i64 { p.ping() } }
+fn main() {
+    let w = spawn W;
+    let d: dyn Pinger = P { r: Rc.new(5) };
+    println(w.take(d).unwrap_or(-1));
+}

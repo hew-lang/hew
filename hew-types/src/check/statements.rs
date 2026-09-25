@@ -1237,7 +1237,6 @@ impl Checker {
                             path: one_path,
                             payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
                         } if one_path.segments.len() == 1 => {
-                            let pat_name = &one_path.to_string();
                             let type_name = resolved_val_ty.type_name();
                             match type_name {
                                 Some(tn) => {
@@ -1249,41 +1248,9 @@ impl Checker {
                                                 TypeDefKind::Record | TypeDefKind::Struct
                                             ) =>
                                         {
-                                            // The pattern's written constructor name must
-                                            // resolve to the SAME product type as the RHS.
-                                            // `let Other { x } = Point { .. }` must NOT be
-                                            // admitted as an irrefutable destructure just
-                                            // because `Other` and `Point` share a field
-                                            // shape — the written `Other` constructor would
-                                            // otherwise never be enforced (see PR #2003).
-                                            let pat_key = self
-                                                .canonical_nominal_name(pat_name)
-                                                .unwrap_or_else(|| pat_name.clone());
-                                            let rhs_key = self
-                                                .canonical_nominal_name(tn)
-                                                .unwrap_or_else(|| tn.to_string());
-                                            let pat_td = self.lookup_type_def(&pat_key);
-                                            let matches_rhs =
-                                                pat_td.as_ref().is_some_and(|_| pat_key == rhs_key);
-                                            if !matches_rhs {
-                                                // Report a mismatch and still return `None`
-                                                // (no *additional* refutable-let error): the
-                                                // reported error already fails compilation, and
-                                                // bind_pattern runs below for error recovery.
-                                                self.report_error(
-                                                    TypeErrorKind::Mismatch {
-                                                        expected: pat_name.clone(),
-                                                        actual: td.name.clone(),
-                                                    },
-                                                    &pattern.1,
-                                                    format!(
-                                                        "let-destructuring pattern names \
-                                                         type `{pat_name}`, but the value \
-                                                         has type `{}`",
-                                                        td.name
-                                                    ),
-                                                );
-                                            }
+                                            // The pattern's name must be the value's
+                                            // declaration; `bind_pattern` below
+                                            // refuses any other (R5).
                                             // A record pattern always matches its
                                             // own type, but a field pattern can
                                             // still fail: `let Wrap { inner:
@@ -1298,7 +1265,6 @@ impl Checker {
                                         None => {
                                             // Unknown type — checker already reported; allow
                                             // bind_pattern to run for error recovery.
-                                            let _ = pat_name;
                                             None
                                         }
                                     }

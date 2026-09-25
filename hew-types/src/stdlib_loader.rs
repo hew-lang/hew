@@ -942,6 +942,7 @@ fn type_expr_to_ty_with_params_and_context(
                 .iter()
                 .map(|bound| crate::ty::TraitObjectBound {
                     trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                    trait_id: None,
                     args: vec![],
                     assoc_bindings: vec![],
                 })

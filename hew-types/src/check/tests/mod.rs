@@ -525,6 +525,7 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
     let ty = Ty::TraitObject {
         traits: vec![crate::ty::TraitObjectBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![Ty::Var(original)],
             assoc_bindings: vec![],
         }],

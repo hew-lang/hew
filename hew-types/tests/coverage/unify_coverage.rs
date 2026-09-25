@@ -152,6 +152,7 @@ fn unify_pointer_pointee_mismatch() {
 fn trait_bound(name: &str, args: Vec<Ty>) -> TraitObjectBound {
     TraitObjectBound {
         trait_name: name.to_string(),
+        trait_id: None,
         args,
         assoc_bindings: vec![],
     }
@@ -160,6 +161,7 @@ fn trait_bound(name: &str, args: Vec<Ty>) -> TraitObjectBound {
 fn trait_bound_with_assoc(name: &str, assoc_name: &str, assoc_ty: Ty) -> TraitObjectBound {
     TraitObjectBound {
         trait_name: name.to_string(),
+        trait_id: None,
         args: vec![],
         assoc_bindings: vec![(assoc_name.to_string(), assoc_ty)],
     }

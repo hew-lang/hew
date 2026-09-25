@@ -171,6 +171,25 @@ path`) are deleted; a literal meets its expected type only when its path
   w1c, w1d and the f-string Display of a specialised impl need HIR to lower by
   declaration (lane B1).
 
+## Predicates, patterns and type parameters by identity (R2, R5, R6)
+
+- `hew-types/src/check/generics.rs` `bound_marker`: a bound spelled like a
+  compiler predicate is that predicate only when no declared trait answers
+  to the spelling (`Display` only as the prelude's declaration). `Ord`
+  implies `PartialOrd` only between the predicates (w2b_ord refused).
+- `TraitObjectBound.trait_id` / `ResolvedTraitBound.trait_id`: a `dyn` bound
+  carries the declared trait it names; `traits.rs` never treats a declared
+  trait as a marker, and the actor boundary asks the `Send` predicate itself
+  (`type_is_send`), so `dyn Send` of a user trait is not Send (w2a refused).
+  Equality still ignores `trait_id` until HIR lowers `dyn` types from the
+  checker (TRANSITION).
+- `hew-types/src/check/patterns.rs`: a record pattern's name must resolve to
+  the scrutinee's declaration (w4b refused). The let-only spelling check in
+  `statements.rs` is deleted; the binder owns the rule in every position.
+- `hew-types/src/check/expressions/synthesize_spawn_forms.rs`: a field access
+  on a type parameter is refused (w4a); the fixture moved to `reject/` with a
+  control without the same-spelled nominal.
+
 ## DefTable contract changes
 
 - `DefTable::module_has_declarations` becomes `module_has_source_declarations`:

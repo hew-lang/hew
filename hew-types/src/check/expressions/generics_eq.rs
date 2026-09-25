@@ -95,6 +95,7 @@ impl Checker {
                     .iter()
                     .map(|bound| crate::ty::TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
                         args: bound
                             .args
                             .iter()

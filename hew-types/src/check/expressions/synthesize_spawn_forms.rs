@@ -328,6 +328,22 @@ impl Checker {
                 args,
                 ..
             } if args.len() == 1 && matches!(field, "start" | "end") => args[0].clone(),
+            // A type parameter is never the nominal that shares its spelling
+            // (R6): it has no fields to project.
+            Ty::Named {
+                head: crate::TypeHead::Param(param),
+                ..
+            } => {
+                self.report_error(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!(
+                        "cannot access field `{field}` on type parameter `{}`",
+                        param.spelling
+                    ),
+                );
+                Ty::Error
+            }
             Ty::Named { head, args } => {
                 let name = head.registry_key();
                 // A role retains the child's complete type after substituting

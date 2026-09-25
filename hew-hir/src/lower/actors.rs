@@ -232,6 +232,7 @@ impl LowerCtx {
             .collect();
         hew_types::ResolvedTraitBound {
             trait_name: tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+            trait_id: None,
             args,
             assoc_bindings,
         }

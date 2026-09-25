@@ -656,6 +656,7 @@ impl LowerCtx {
                         .into_iter()
                         .map(|bound| ResolvedTraitBound {
                             trait_name: bound.trait_name,
+                            trait_id: bound.trait_id,
                             args: bound
                                 .args
                                 .into_iter()

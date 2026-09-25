@@ -56,6 +56,7 @@ fn substitute_descends_into_trait_object_args() {
     let ty = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Into".to_string(),
+            trait_id: None,
             args: vec![named("T")],
             assoc_bindings: vec![],
         }],
@@ -80,6 +81,7 @@ fn substitute_descends_into_trait_object_assoc_bindings() {
     let ty = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![("Item".to_string(), named("T"))],
         }],

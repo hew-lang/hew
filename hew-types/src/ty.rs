@@ -100,10 +100,18 @@ impl fmt::Display for TypeVar {
 }
 
 /// A single trait bound in a trait object.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// TRANSITION(A1 commit 4): equality and hashing ignore `trait_id` while HIR
+/// still lowers `dyn` types from syntax without it; B1 lowers them from the
+/// checker's types and the derive returns.
+#[derive(Debug, Clone)]
 pub struct TraitObjectBound {
     /// Trait name
     pub trait_name: String,
+    /// The declared trait the bound names; `None` for a compiler predicate
+    /// (`Send`, `Clone`), which has no declaration. A declared trait is never
+    /// a predicate, whatever its spelling (R2).
+    pub trait_id: Option<crate::DefId>,
     /// Type arguments
     pub args: Vec<Ty>,
     /// Associated-type bindings projected on this trait object bound.
@@ -111,6 +119,24 @@ pub struct TraitObjectBound {
     /// Stored sorted by associated-type name at type-resolution boundaries so
     /// equality, hashing, display, and vtable-key construction are canonical.
     pub assoc_bindings: Vec<(String, Ty)>,
+}
+
+impl PartialEq for TraitObjectBound {
+    fn eq(&self, other: &Self) -> bool {
+        self.trait_name == other.trait_name
+            && self.args == other.args
+            && self.assoc_bindings == other.assoc_bindings
+    }
+}
+
+impl Eq for TraitObjectBound {}
+
+impl std::hash::Hash for TraitObjectBound {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.trait_name.hash(state);
+        self.args.hash(state);
+        self.assoc_bindings.hash(state);
+    }
 }
 
 /// The identity a named type's head resolves to.
@@ -1915,6 +1941,7 @@ impl Ty {
                     .iter()
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
                         args: bound.args.iter().map(&mut *f).collect(),
                         assoc_bindings: bound
                             .assoc_bindings

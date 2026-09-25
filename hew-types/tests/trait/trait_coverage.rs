@@ -527,6 +527,7 @@ fn trait_object_checks_super_traits() {
     let obj = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Drawable".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![],
         }],

@@ -128,6 +128,7 @@ fn display_trait_object_single_no_args() {
     let ty = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Display".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![],
         }],
@@ -140,6 +141,7 @@ fn display_trait_object_single_with_args() {
     let ty = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![Ty::I32],
             assoc_bindings: vec![],
         }],
@@ -152,6 +154,7 @@ fn display_trait_object_single_with_multiple_args() {
     let ty = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Converter".to_string(),
+            trait_id: None,
             args: vec![Ty::I32, Ty::String],
             assoc_bindings: vec![],
         }],
@@ -165,11 +168,13 @@ fn display_trait_object_multi_trait() {
         traits: vec![
             TraitObjectBound {
                 trait_name: "Display".to_string(),
+                trait_id: None,
                 args: vec![],
                 assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Debug".to_string(),
+                trait_id: None,
                 args: vec![],
                 assoc_bindings: vec![],
             },
@@ -184,11 +189,13 @@ fn display_trait_object_multi_trait_with_args() {
         traits: vec![
             TraitObjectBound {
                 trait_name: "Into".to_string(),
+                trait_id: None,
                 args: vec![Ty::String],
                 assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Clone".to_string(),
+                trait_id: None,
                 args: vec![],
                 assoc_bindings: vec![],
             },
@@ -595,6 +602,7 @@ fn contains_var_in_trait_object() {
     let ty = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Foo".to_string(),
+            trait_id: None,
             args: vec![Ty::Var(v)],
             assoc_bindings: vec![],
         }],
@@ -604,6 +612,7 @@ fn contains_var_in_trait_object() {
     let ty_no_var = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Foo".to_string(),
+            trait_id: None,
             args: vec![Ty::I32],
             assoc_bindings: vec![],
         }],
@@ -693,11 +702,13 @@ fn substitute_in_trait_object() {
         traits: vec![
             TraitObjectBound {
                 trait_name: "Foo".to_string(),
+                trait_id: None,
                 args: vec![Ty::Var(v)],
                 assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Bar".to_string(),
+                trait_id: None,
                 args: vec![Ty::I32, Ty::Var(v)],
                 assoc_bindings: vec![],
             },
@@ -710,11 +721,13 @@ fn substitute_in_trait_object() {
             traits: vec![
                 TraitObjectBound {
                     trait_name: "Foo".to_string(),
+                    trait_id: None,
                     args: vec![Ty::String],
                     assoc_bindings: vec![],
                 },
                 TraitObjectBound {
                     trait_name: "Bar".to_string(),
+                    trait_id: None,
                     args: vec![Ty::I32, Ty::String],
                     assoc_bindings: vec![],
                 },
@@ -988,6 +1001,7 @@ fn apply_subst_through_trait_object() {
     let ty = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Iter".to_string(),
+            trait_id: None,
             args: vec![Ty::Var(v)],
             assoc_bindings: vec![],
         }],
@@ -997,6 +1011,7 @@ fn apply_subst_through_trait_object() {
         Ty::TraitObject {
             traits: vec![TraitObjectBound {
                 trait_name: "Iter".to_string(),
+                trait_id: None,
                 args: vec![Ty::Char],
                 assoc_bindings: vec![],
             }],

@@ -139,6 +139,7 @@ fn canonical_string_trait_object_single_bound() {
     let ty = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".into(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![],
         }],
@@ -152,11 +153,13 @@ fn canonical_string_trait_object_multiple_bounds() {
         traits: vec![
             ResolvedTraitBound {
                 trait_name: "Send".into(),
+                trait_id: None,
                 args: vec![],
                 assoc_bindings: vec![],
             },
             ResolvedTraitBound {
                 trait_name: "Sync".into(),
+                trait_id: None,
                 args: vec![],
                 assoc_bindings: vec![],
             },
@@ -170,6 +173,7 @@ fn canonical_string_trait_object_with_type_arg() {
     let ty = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".into(),
+            trait_id: None,
             args: vec![ResolvedTy::I32],
             assoc_bindings: vec![],
         }],

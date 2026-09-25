@@ -52,6 +52,7 @@ fn nested_type_fragments_distinguish_former_collision_pairs() {
     let iterator_i64 = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![("Item".to_string(), ResolvedTy::I64)],
         }],
@@ -59,6 +60,7 @@ fn nested_type_fragments_distinguish_former_collision_pairs() {
     let iterator_string = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![("Item".to_string(), ResolvedTy::String)],
         }],
@@ -138,6 +140,7 @@ fn type_family(depth: usize) -> Vec<ResolvedTy> {
                 ResolvedTy::TraitObject {
                     traits: vec![ResolvedTraitBound {
                         trait_name: "Iterator".to_string(),
+                        trait_id: None,
                         args: vec![ty.clone()],
                         assoc_bindings: vec![("Item".to_string(), ty.clone())],
                     }],

@@ -893,7 +893,8 @@ impl TraitRegistry {
             // registered super-traits → returns false for `MarkerTrait::Send`.
             Ty::TraitObject { traits } => traits.iter().any(|bound| {
                 // Direct bound: `dyn T + Marker` — marker appears in the list.
-                if bound.trait_name == marker.to_string() {
+                // A declared trait spelled like the marker is not the marker.
+                if bound.trait_id.is_none() && bound.trait_name == marker.to_string() {
                     return true;
                 }
                 // Super-trait lookup: `dyn Drawable` where Drawable: Marker.
@@ -1478,11 +1479,13 @@ mod tests {
             traits: vec![
                 TraitObjectBound {
                     trait_name: "Handler".to_string(),
+                    trait_id: None,
                     args: vec![],
                     assoc_bindings: vec![],
                 },
                 TraitObjectBound {
                     trait_name: "Send".to_string(),
+                    trait_id: None,
                     args: vec![],
                     assoc_bindings: vec![],
                 },
@@ -1501,6 +1504,7 @@ mod tests {
         let dyn_no_send = Ty::TraitObject {
             traits: vec![TraitObjectBound {
                 trait_name: "Handler".to_string(),
+                trait_id: None,
                 args: vec![],
                 assoc_bindings: vec![],
             }],

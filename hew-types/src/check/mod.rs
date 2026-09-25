@@ -406,6 +406,7 @@ pub(crate) fn restore_member_opacity(
                 .into_iter()
                 .map(|bound| crate::resolved_ty::ResolvedTraitBound {
                     trait_name: bound.trait_name,
+                    trait_id: bound.trait_id,
                     args: bound.args.into_iter().map(resolve).collect(),
                     assoc_bindings: bound
                         .assoc_bindings

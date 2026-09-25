@@ -188,14 +188,51 @@ pub enum ResolvedTy {
 }
 
 /// A single trait bound in a resolved trait object.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// TRANSITION(A1 commit 4): comparisons ignore `trait_id`; see
+/// [`crate::ty::TraitObjectBound`].
+#[derive(Debug, Clone)]
 pub struct ResolvedTraitBound {
     /// Trait name
     pub trait_name: String,
+    /// See [`crate::ty::TraitObjectBound::trait_id`].
+    pub trait_id: Option<crate::DefId>,
     /// Resolved type arguments
     pub args: Vec<ResolvedTy>,
     /// Resolved associated-type bindings, sorted by associated-type name.
     pub assoc_bindings: Vec<(String, ResolvedTy)>,
+}
+
+impl ResolvedTraitBound {
+    fn comparison_key(&self) -> (&String, &Vec<ResolvedTy>, &Vec<(String, ResolvedTy)>) {
+        (&self.trait_name, &self.args, &self.assoc_bindings)
+    }
+}
+
+impl PartialEq for ResolvedTraitBound {
+    fn eq(&self, other: &Self) -> bool {
+        self.comparison_key() == other.comparison_key()
+    }
+}
+
+impl Eq for ResolvedTraitBound {}
+
+impl PartialOrd for ResolvedTraitBound {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ResolvedTraitBound {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.comparison_key().cmp(&other.comparison_key())
+    }
+}
+
+impl std::hash::Hash for ResolvedTraitBound {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.comparison_key().hash(state);
+    }
 }
 
 /// Reasons a checker-internal [`Ty`] cannot cross the boundary as a
@@ -888,6 +925,7 @@ impl ResolvedTy {
     ) -> Result<ResolvedTraitBound, BoundaryError> {
         Ok(ResolvedTraitBound {
             trait_name: bound.trait_name.clone(),
+            trait_id: bound.trait_id,
             args: Self::convert_vec(&bound.args, type_params)?,
             assoc_bindings: bound
                 .assoc_bindings
@@ -970,6 +1008,7 @@ impl ResolvedTy {
                     .iter()
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
                         args: bound.args.iter().map(Self::to_ty).collect(),
                         assoc_bindings: bound
                             .assoc_bindings
@@ -1739,6 +1778,7 @@ mod tests {
         let ty = Ty::TraitObject {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
+                trait_id: None,
                 args: vec![Ty::I32],
                 assoc_bindings: vec![],
             }],
@@ -1746,6 +1786,7 @@ mod tests {
         let expected = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".into(),
+                trait_id: None,
                 args: vec![ResolvedTy::I32],
                 assoc_bindings: vec![],
             }],
@@ -1759,6 +1800,7 @@ mod tests {
         let ty = Ty::TraitObject {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
+                trait_id: None,
                 args: vec![Ty::Var(var)],
                 assoc_bindings: vec![],
             }],

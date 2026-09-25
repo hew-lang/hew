@@ -660,6 +660,7 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
                 .iter()
                 .map(|bound| hew_types::ResolvedTraitBound {
                     trait_name: bound.trait_name.clone(),
+                    trait_id: bound.trait_id,
                     args: bound.args.iter().map(|a| substitute_ty(a, subst)).collect(),
                     assoc_bindings: bound
                         .assoc_bindings

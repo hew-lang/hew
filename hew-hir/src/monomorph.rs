@@ -329,6 +329,7 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
                 .into_iter()
                 .map(|b| hew_types::ResolvedTraitBound {
                     trait_name: b.trait_name,
+                    trait_id: b.trait_id,
                     args: b
                         .args
                         .into_iter()

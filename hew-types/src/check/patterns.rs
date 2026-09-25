@@ -181,6 +181,20 @@ pub(super) enum VariantPayloadShape {
 }
 
 impl Checker {
+    /// Whether a record pattern's type name resolves to the scrutinee's own
+    /// declaration. A scrutinee that is not a resolved nominal is left to the
+    /// other pattern checks.
+    fn record_pattern_names_scrutinee(&self, name: &str, ty: &Ty) -> bool {
+        let Ty::Named { head, .. } = self.subst.resolve(ty) else {
+            return true;
+        };
+        // An undeclared scrutinee type is reported by the field binding below.
+        if !matches!(head, crate::TypeHead::Nominal(_)) || self.type_def_view().of(head).is_none() {
+            return true;
+        }
+        self.named_ty_for_key(name, Vec::new()).head() == Some(head)
+    }
+
     /// Enumerate `(variant_name, payload_shape)` for an enum-like scrutinee
     /// type: builtin `Option` / `Result`, user enums, and machine state
     /// enums. Returns `None` for non-enum types.
@@ -1150,6 +1164,24 @@ impl Checker {
                         format!(
                             "struct-variant pattern `{name}` does not belong to scrutinee type `{expected}`"
                         ),
+                    );
+                    self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    return;
+                }
+                // A record pattern names its type, and that type must be the
+                // scrutinee's declaration (R5): `Other { x, .. }` never
+                // matches a `Point` by field shape.
+                if !self.names_struct_variant_of(name, ty)
+                    && !self.record_pattern_names_scrutinee(name, ty)
+                {
+                    let expected = ty.user_facing().to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: expected.clone(),
+                            actual: name.clone(),
+                        },
+                        span,
+                        format!("pattern names `{name}`, scrutinee is `{expected}`"),
                     );
                     self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     return;

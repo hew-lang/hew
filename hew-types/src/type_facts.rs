@@ -1644,6 +1644,7 @@ mod tests {
                 ResolvedTy::TraitObject {
                     traits: vec![ResolvedTraitBound {
                         trait_name: "Show".to_string(),
+                        trait_id: None,
                         args: vec![],
                         assoc_bindings: vec![],
                     }],
@@ -1985,6 +1986,7 @@ mod tests {
             ResolvedTy::TraitObject {
                 traits: vec![ResolvedTraitBound {
                     trait_name: "Show".to_string(),
+                    trait_id: None,
                     args: vec![],
                     assoc_bindings: vec![],
                 }],
@@ -2102,6 +2104,7 @@ mod tests {
         let dyn_show = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Show".to_string(),
+                trait_id: None,
                 args: vec![],
                 assoc_bindings: vec![],
             }],

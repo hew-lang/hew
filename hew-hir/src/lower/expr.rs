@@ -1828,6 +1828,7 @@ impl LowerCtx {
                 }
                 resolved_bounds.push(hew_types::ResolvedTraitBound {
                     trait_name: name.to_string(),
+                    trait_id: None,
                     args: vec![],
                     assoc_bindings,
                 });

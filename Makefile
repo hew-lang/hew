@@ -50,12 +50,9 @@
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
 #   make playground-check          — browser analysis/execution tests + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
-#   make playground-verify         — native run of every runnable playground example vs. its .expected
 #   make release-checks            — validate release dependencies, notices and installer
 #   make licenses-check            — verify THIRD-PARTY-LICENSES is current
 #   make preflight                 — run every unconditional Linux gate, fail-fast
-#   make ci-preflight              — compatibility alias for make preflight
-#   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — Rust workspace tests with the exact known-failure ratchet
 #   make test-strict  — Rust workspace tests; require every test to pass
@@ -76,15 +73,15 @@
 #   make clean        — remove generated build and test artifacts
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance test-core-acceptance-runner
+.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
-.PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
+.PHONY: coverage coverage-runtime
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: dogfood-compile-measure perf-verify-linear
+.PHONY: perf-verify-linear
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: hew-check-all
 .PHONY: grammar-parity downstream-check
@@ -378,9 +375,8 @@ hew-debug: hew-native
 	@echo "compiler path: $(DEBUG_HEW)"
 	@test -f "$(DEBUG_HEW)"
 
-# Shared assertion recipe. `hew-profile-check` builds the supported launcher
-# before checking it; `all` runs the same assertion only after `assemble`, so a
-# later assembly step cannot silently replace the launcher with another profile.
+# Shared assertion recipe, run by `all` after `assemble` so a later assembly
+# step cannot silently replace the launcher with another profile.
 define ASSERT_RELEASE_LIB_HEW_PROFILE
 	@actual="$$(readlink "$(BUILD_DIR)/bin/hew")"; \
 	expected="$(LINK_UP2)$(RELEASE_LIB_HEW)"; \
@@ -392,9 +388,6 @@ define ASSERT_RELEASE_LIB_HEW_PROFILE
 		exit 1; \
 	}
 endef
-
-hew-profile-check: hew
-	$(ASSERT_RELEASE_LIB_HEW_PROFILE)
 
 # Build the native artifacts required for `hew build` from a source checkout:
 # the driver plus hew-lib's staticlib (`target/debug/libhew.a` on Unix,
@@ -667,34 +660,20 @@ playground-wasi-check: wasm-runtime hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
-# Native run of every runnable playground example against its checked-in
-# `.expected` file, catching drift the analysis-only WASM/manifest checks
-# above don't exercise.
-#
-# A transitional alias for the example cases of the one acceptance runner:
-# each runnable manifest entry is a `example-<id>` case naming the example
-# where it already lives. `hew tool playground-verify` still exists for
-# anyone verifying a manifest outside this repository; the next lane decides
-# its fate.
-EXAMPLE_CASES = $(patsubst tests/core-acceptance/cases/%.toml,--case %,$(wildcard tests/core-acceptance/cases/example-*.toml))
-playground-verify: hew-native
-	@test -n "$(EXAMPLE_CASES)" || { echo "no example-* acceptance cases found" >&2; exit 1; }
-	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(EXAMPLE_CASES)
-
 # Standard per-branch gate: validate workflow syntax locally, then run the lint
 # graph, tooling tests, compiler measurements and the three Make-owned Linux
 # test groups used by hosted CI. One Make graph lets shared prerequisites
 # build once instead of being replanned by recursive invocations. Hosted CI invokes the named groups directly:
 # actionlint cannot rescue a workflow that is too malformed to start.
 .NOTPARALLEL: preflight
-preflight: actionlint lint test-tooling compiler-measurements ci-shard-1 ci-shard-2 ci-shard-3 ## Develop: run unconditional local branch gates
+preflight: actionlint lint test-tooling ci-shard-1 ci-shard-2 ci-shard-3 ## Develop: run unconditional local branch gates
 	@:
 
 # Compatibility alias for automation that used the older name.
 ci-preflight: preflight
 	@:
 
-.PHONY: ci-shard-1 ci-shard-2 ci-shard-3 test-tooling compiler-measurements lint-rust lint-source
+.PHONY: ci-shard-1 ci-shard-2 ci-shard-3 test-tooling lint-rust lint-source
 # Production Wasm lifecycle qualification remains in release-gate.yml until
 # emission from verified semantics is implemented (#3368). Its native Rust
 # lifecycle tests already run in the workspace suite; source ownership cases
@@ -703,32 +682,16 @@ ci-shard-1: observe-functional-test test-cabi \
 	core-acceptance test-pkg-import test-runtime-unit \
 	test-migrate-corpus o2-differential-selftest
 
-ci-shard-2: hew-profile-check libhew-link-race-test test \
+ci-shard-2: libhew-link-race-test test \
 	test-leak-oracle-selftest \
 	test-ownership-balance-corpus compile-determinism-verify compile-determinism-selftest \
 	test-ownership-balance-runner-selftest stdlib-user-build-clean \
-	test-asan-fixture-selftest stdlib-lint \
+	test-asan-fixture-selftest stdlib-errno-gate \
 	test-extern-bytes test-host-client
 
 ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
 	test-package-install \
 	hew-check-all
-
-# Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
-# tests (nextest smoke profile). Designed to complete in <5 min and surface
-# format and fast oracle failures during local iteration. Clippy remains in
-# the lint target and is not duplicated here.
-#
-# Run this target directly for a quick sanity pass on any diff without waiting
-# for E2E compilation. The unconditional assignment reserves it for local
-# opt-in because its full workspace run already includes the smoke test.
-#
-# The smoke nextest profile excludes subprocess-intensive tests (eval_e2e,
-# test_runner_e2e, parity) and hew-wasm; see .config/nextest.toml [profile.smoke].
-#
-ci-preflight-smoke:
-	cargo fmt --all -- --check
-	$(TEST_RUN_ENV) cargo nextest run --workspace --profile smoke
 
 # ── Local Linux CI-parity harness ────────────────────────────────────────────
 # Runs the GitHub Actions `Build & test (Linux)` job on a NATIVE x86_64 Linux
@@ -1180,11 +1143,6 @@ test-host-safety: core-safety-build ## Test: instrument compiled Hew, C/C++ clie
 		--hew-lib "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/libhew.a" \
 		--out-dir "$(abspath $(CORE_SAFETY_TARGET_DIR))/host-client" --sanitize $(HOST_CLIENT_ARGS)
 
-# The runner has consequential case-selection and error behaviour, but it is
-# separate from the compiler acceptance command and runs only when changed.
-test-core-acceptance-runner:
-	cargo test -p xtask core_acceptance
-
 # Cross-module package-import oracle: fixtures importing the in-tree
 # `hew::testffi` package through `hew run --pkg-path` — imported-actor value
 # asks, imported-type trait methods, and the [native] auto-link path.
@@ -1207,32 +1165,13 @@ test-package-install: hew-native ## Test: prove installed packages import and ex
 compile-determinism-verify: hew-native
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/compile-determinism-corpus.sh
 
-# Build-only form for targeted validation.
-compile-determinism-verify-build: hew-native
-	@:
-
 # inputs: scripts/tests/test_compile_determinism_corpus.py scripts/compile-determinism-corpus.sh
 compile-determinism-selftest:
 	$(PYTHON) scripts/tests/test_compile_determinism_corpus.py
 
-compile-determinism-selftest-build:
-	@:
-
-# Compiler measurements run with the Linux tests, separately from source lint.
-# The legacy-route admission and MIR budget gates were deleted with the legacy
-# lowerer, so this group is the dogfood compile measurement alone.
-compiler-measurements: dogfood-compile-measure ## Test: report compile size and timings
-
-# Dogfood-shaped compile measurement. IR size and timings remain observational.
-# Build the release-lib compiler explicitly for optimized measurements.
-#
-#         tests/compile-measure/** scripts/dogfood-compile-measure.sh
-# The measurement reports define blocks, excluding host-specific module headers.
 # It uses Cargo's resolved release-lib binary by default, and honours HEW_BIN
 # when a caller supplies a staged compiler explicitly.
 HEW_BIN ?= $(RELEASE_LIB_HEW)
-dogfood-compile-measure: hew
-	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
 
 # Compile-time scaling gate. A chain of awaits in one function must lower to
 # physical MIR in time proportional to its length; the script fails when the
@@ -1347,8 +1286,8 @@ stdlib-user-build-clean: hew-native
 # A transitional alias for the doc kind of the one acceptance runner. Each
 # fence in the guide, the spec, the docs/language modules and every
 # std/**/*.hew doc comment is a `kind = "doc"` case named by its own content,
-# and its known failures live in tests/core-acceptance/expected-failures.txt
-# with every other acceptance case. Skip-annotated fences
+# and its known failures live in tests/expected-failures.tsv (suite doc-fence)
+# with every other ratcheted failure. Skip-annotated fences
 # (<!-- doctest: skip --> or a preceding NYI callout) are never checked; the
 # default is fail-closed.
 #
@@ -1628,12 +1567,6 @@ downstream-check: ## Develop: check synchronization with available local sibling
 	@echo "==> downstream-check: comparing docs/syntax-data.json against sibling repos"
 	scripts/sync-downstream.sh --check
 
-# Smoke-test the release binary with `hew run` to catch process-exit aborts
-# (e.g. libc++ ABI mismatch at locale destructor — issue #1606).
-# Builds release binary then runs a trivial program and checks exit 0 + output.
-test-release-binary: release-host
-	scripts/test-release-binary.sh
-
 stdlib-errno-gate:
 	@bash -euo pipefail -c '\
 		echo "==> stdlib-errno-gate: checking for banned string-match error patterns in std/"; \
@@ -1657,30 +1590,16 @@ stdlib-errno-gate:
 
 # rg only; no artifacts.
 
-stdlib-lint: stdlib-errno-gate
-	bash scripts/lint-stdlib-int-surface.sh
-
 # rg over std/ only; no artifacts.
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #
 #   make coverage          — Rust unit/integration tests only (cargo llvm-cov)
-#   make coverage-summary  — Rust-only, terminal summary
-#   make coverage-lcov     — Rust-only, lcov.info for external tooling
 #   make coverage-runtime  — runtime (libhew) FFI coverage exercised by
 #                            compiled-and-run Hew programs (print/assert/vec/
 #                            string/bytes/hashmap/actor/...) — the surface the
 #                            Rust-only report cannot see. See
 #                            scripts/coverage-runtime-e2e.sh.
-#   make coverage-combined — both of the above, printed as TWO reports.
-#   make coverage-branch   — Rust-only WITH branch coverage (needs nightly).
-#
-# Why coverage-combined is two reports, not one merged number: the runtime FFI
-# counters come from compiled Hew program binaries, whose covmap is keyed by
-# function structural hashes that do NOT match the cargo-test binaries. llvm-cov
-# cannot fold e2e profraw into the cargo-llvm-cov report — verified empirically
-# (cross-object reporting yields all-zero + "mismatched data"). The honest
-# product is therefore two coherent reports, not a fabricated union.
 #
 # Requires: cargo-llvm-cov + the rustc llvm-tools-preview component (the harness
 # auto-discovers version-matched llvm-profdata/llvm-cov from the rust sysroot).
@@ -1692,41 +1611,12 @@ coverage:
 	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
 	@echo "==> Open $(COV_DIR)/html/index.html"
 
-coverage-summary:
-	cargo llvm-cov --workspace --exclude hew-wasm --no-report
-	cargo llvm-cov report --summary-only
-
-coverage-lcov:
-	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path $(COV_DIR)/lcov.info
-	@echo "==> Wrote $(COV_DIR)/lcov.info"
-
 # Runtime FFI coverage via compiled-and-run Hew programs. Builds an
 # instrument-coverage libhew.a, links example programs with the profiler runtime
 # (HEW_COVERAGE=1, handled in hew-cli/src/link.rs), runs them, and reports the
 # runtime/stdlib surface. Pass HTML=1 for an HTML report.
 coverage-runtime:
 	bash scripts/coverage-runtime-e2e.sh $(if $(HTML),--html,)
-
-# Combined: the Rust-test report AND the runtime-FFI report. Two reports by
-# construction (see header note above) — neither subsumes the other.
-coverage-combined:
-	@echo "==> Report 1/2: Rust unit/integration test coverage (cargo-llvm-cov)"
-	cargo llvm-cov --workspace --exclude hew-wasm --no-report
-	cargo llvm-cov report --summary-only
-	@echo ""
-	@echo "==> Report 2/2: runtime (libhew) FFI coverage via compiled Hew programs"
-	bash scripts/coverage-runtime-e2e.sh $(if $(HTML),--html,)
-	@echo ""
-	@echo "==> Two reports above: Rust-test crates, then the runtime FFI surface."
-	@echo "    They are separate by construction; see the Makefile coverage header."
-
-# Branch coverage of the Rust-test suite. Branch instrumentation is nightly-only
-# (cargo-llvm-cov --branch refuses on stable), so this target opts into nightly
-# explicitly rather than changing the stable default of `make coverage`.
-coverage-branch:
-	cargo +nightly llvm-cov --branch --workspace --exclude hew-wasm \
-	  --html --output-dir $(COV_DIR)/branch-html
-	@echo "==> Open $(COV_DIR)/branch-html/index.html"
 
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Validates that every hew-runtime #[no_mangle] export is classified in

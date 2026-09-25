@@ -151,7 +151,8 @@ unsafe extern "C-unwind" fn counting_dispatch(
 // WINDOWS-TODO: install a VEH fatal boundary that emits the same stable
 // diagnostic/status contract as the Unix async-signal-safe handler; until then
 // the platform-default termination cannot satisfy this exact death-test oracle.
-#[cfg_attr(windows, ignore)]
+// Tracked as a windows row in tests/expected-failures.tsv rather than an
+// ignore, so recovery is detected automatically.
 #[test]
 #[allow(
     clippy::too_many_lines,

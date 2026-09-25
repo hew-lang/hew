@@ -1,17 +1,13 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use serde_json::Value;
 
 mod core_acceptance;
 mod ratchet;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
-const DEFERRED_BLOCK_START: &str = "```json sandbox-fixtures-deferred";
-const DEFERRED_BLOCK_END: &str = "```";
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -28,20 +24,6 @@ enum Mode {
 struct Options {
     mode: Mode,
     fixtures_dir: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeferredManifest {
-    deferred: Vec<DeferredFixture>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct DeferredFixture {
-    fixture: String,
-    feature: String,
-    #[serde(default)]
-    compiler_version: Option<String>,
-    reason: String,
 }
 
 #[derive(Debug)]
@@ -126,24 +108,16 @@ fn run_sandbox_fixtures(options: &Options) -> Result<()> {
     let repo_root = workspace_root()?;
     std::env::set_var("HEWPATH", &repo_root);
 
-    let deferred = if options.mode == Mode::Probe {
-        BTreeMap::new()
-    } else {
-        load_deferred_manifest(&options.fixtures_dir)?
-    };
     let fixtures = discover_fixtures(&options.fixtures_dir)?;
-    validate_deferred_entries(&fixtures, &deferred)?;
 
     let mut failures = Vec::new();
     let mut compiled = 0usize;
-    let mut deferred_count = 0usize;
     let mut diagnostics_only = 0usize;
 
     for fixture in fixtures {
-        match process_fixture(&fixture, &options.mode, deferred.get(&fixture.name)) {
+        match process_fixture(&fixture, &options.mode) {
             Ok(status) => match status {
                 FixtureStatus::Compiled => compiled += 1,
-                FixtureStatus::Deferred => deferred_count += 1,
                 FixtureStatus::DiagnosticsOnly => diagnostics_only += 1,
                 FixtureStatus::Ignored => {}
             },
@@ -151,9 +125,7 @@ fn run_sandbox_fixtures(options: &Options) -> Result<()> {
         }
     }
 
-    println!(
-        "sandbox fixtures: {compiled} compiled, {deferred_count} deferred, {diagnostics_only} diagnostics-only"
-    );
+    println!("sandbox fixtures: {compiled} compiled, {diagnostics_only} diagnostics-only");
 
     if failures.is_empty() {
         Ok(())
@@ -220,61 +192,6 @@ fn workspace_root() -> Result<PathBuf> {
         .ok_or_else(|| "xtask manifest should have a workspace parent".to_string())
 }
 
-fn load_deferred_manifest(fixtures_dir: &Path) -> Result<BTreeMap<String, DeferredFixture>> {
-    let readme_path = fixtures_dir.join("README.md");
-    let readme = fs::read_to_string(&readme_path)
-        .map_err(|err| format!("read {}: {err}", readme_path.display()))?;
-    let json = extract_deferred_json(&readme).ok_or_else(|| {
-        format!(
-            "{} is missing the {DEFERRED_BLOCK_START:?} fenced block",
-            readme_path.display()
-        )
-    })?;
-    let manifest: DeferredManifest = serde_json::from_str(&json)
-        .map_err(|err| format!("parse deferred fixture block: {err}"))?;
-
-    let mut deferred = BTreeMap::new();
-    for entry in manifest.deferred {
-        if entry.fixture.is_empty() {
-            return Err("deferred fixture entries require a fixture id".to_string());
-        }
-        if entry.feature.is_empty() || entry.reason.is_empty() {
-            return Err(format!(
-                "deferred fixture {} requires feature and reason",
-                entry.fixture
-            ));
-        }
-        if let Some(version) = &entry.compiler_version {
-            if !version.starts_with("handcrafted-pending-") {
-                return Err(format!(
-                    "deferred fixture {} marker must start with handcrafted-pending-",
-                    entry.fixture
-                ));
-            }
-        }
-        if deferred.insert(entry.fixture.clone(), entry).is_some() {
-            return Err("duplicate deferred fixture entry".to_string());
-        }
-    }
-    Ok(deferred)
-}
-
-fn extract_deferred_json(readme: &str) -> Option<String> {
-    let mut in_block = false;
-    let mut lines = Vec::new();
-    for line in readme.lines() {
-        if in_block {
-            if line.trim() == DEFERRED_BLOCK_END {
-                return Some(lines.join("\n"));
-            }
-            lines.push(line);
-        } else if line.trim() == DEFERRED_BLOCK_START {
-            in_block = true;
-        }
-    }
-    None
-}
-
 fn discover_fixtures(fixtures_dir: &Path) -> Result<Vec<FixtureDir>> {
     let mut fixtures = Vec::new();
     for entry in fs::read_dir(fixtures_dir)
@@ -299,46 +216,17 @@ fn discover_fixtures(fixtures_dir: &Path) -> Result<Vec<FixtureDir>> {
     Ok(fixtures)
 }
 
-fn validate_deferred_entries(
-    fixtures: &[FixtureDir],
-    deferred: &BTreeMap<String, DeferredFixture>,
-) -> Result<()> {
-    let fixture_names: BTreeSet<_> = fixtures
-        .iter()
-        .map(|fixture| fixture.name.as_str())
-        .collect();
-    for name in deferred.keys() {
-        if !fixture_names.contains(name.as_str()) {
-            return Err(format!("deferred fixture {name} does not exist"));
-        }
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Copy)]
 enum FixtureStatus {
     Compiled,
-    Deferred,
     DiagnosticsOnly,
     Ignored,
 }
 
-fn process_fixture(
-    fixture: &FixtureDir,
-    mode: &Mode,
-    deferred: Option<&DeferredFixture>,
-) -> Result<FixtureStatus> {
-    if *mode != Mode::Probe {
-        if let Some(entry) = deferred {
-            return process_deferred_fixture(fixture, mode, entry);
-        }
-    }
-
+fn process_fixture(fixture: &FixtureDir, mode: &Mode) -> Result<FixtureStatus> {
     if !fixture.has_main {
         if fixture.has_bytecode {
-            return Err(
-                "bytecode fixture has no main.hew and is not listed as deferred".to_string(),
-            );
+            return Err("bytecode fixture has no main.hew".to_string());
         }
         return Ok(FixtureStatus::Ignored);
     }
@@ -445,49 +333,6 @@ fn record_trace(fixture: &FixtureDir, bytecode_path: &Path) -> Result<()> {
         .map_err(|err| format!("parse the recorded trace: {err}"))?;
     write_json_if_changed(&trace_path, &trace)?;
     Ok(())
-}
-
-fn process_deferred_fixture(
-    fixture: &FixtureDir,
-    mode: &Mode,
-    entry: &DeferredFixture,
-) -> Result<FixtureStatus> {
-    if !fixture.has_bytecode {
-        println!("DEFERRED {} {} (no bytecode)", fixture.name, entry.feature);
-        return Ok(FixtureStatus::Deferred);
-    }
-
-    let marker = entry.compiler_version.as_ref().ok_or_else(|| {
-        format!(
-            "deferred fixture {} has bytecode but no compiler_version marker",
-            fixture.name
-        )
-    })?;
-    let bytecode_path = fixture.path.join("bytecode.json");
-    let mut current = read_json(&bytecode_path)?;
-    let Some(object) = current.as_object_mut() else {
-        return Err("bytecode.json root must be an object".to_string());
-    };
-
-    match object.get("compiler_version").and_then(Value::as_str) {
-        Some(version) if version == marker => {}
-        Some(version) if mode == &Mode::Update && version.contains("-fixture") => {
-            object.insert(
-                "compiler_version".to_string(),
-                Value::String(marker.clone()),
-            );
-            write_json_if_changed(&bytecode_path, &current)?;
-        }
-        Some(version) => {
-            return Err(format!(
-                "deferred compiler_version must be {marker:?}, got {version:?}"
-            ));
-        }
-        None => return Err("bytecode.json is missing compiler_version".to_string()),
-    }
-
-    println!("DEFERRED {} {}", fixture.name, entry.feature);
-    Ok(FixtureStatus::Deferred)
 }
 
 fn read_json(path: &Path) -> Result<Value> {

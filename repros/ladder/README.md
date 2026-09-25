@@ -38,11 +38,10 @@ a deliberate refusal; `limit` is the limitation channel (exit 3,
 `compiler limitation:`) and `ice` the internal channel (exit 4,
 `internal compiler error:`) — the final path cannot lower the probe. Every
 non-`accept` outcome is pinned by path, and by code where the check emits
-exactly one, in `scripts/hew-corpus-expected-failures.txt`
-(`# ── repros/ladder/ ──`) so the repo-wide corpus sweep does not flag it as a
-regression. A `reject` row is not a bug to fix — it is the behaviour the citing
-section quotes. A `limit` or `ice` row is: the checker admitted the program and
-a later stage refused it.
+exactly one, in `tests/expected-failures.tsv` (suite `corpus`) so the
+repo-wide corpus sweep does not flag it as a regression. A `reject` row is not
+a bug to fix — it is the behaviour the citing section quotes. A `limit` or
+`ice` row is: the checker admitted the program and a later stage refused it.
 
 | probe                      | outcome | cited by `docs/internal/ir-ladder.md`                              |
 | -------------------------- | ------- | ------------------------------------------------------------------ |

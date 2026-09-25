@@ -39,7 +39,7 @@ fi
 
 case "$STEP" in
 all) TARGET=preflight ;;
-preflight | lint | ci-shard-1 | ci-shard-2 | ci-shard-3 | core-acceptance | test-pkg-import | test-hew-ratchet | test-stdlib-ratchet | sandbox-parity)
+preflight | lint | ci-shard-1 | ci-shard-2 | ci-shard-3 | core-acceptance | test-pkg-import | test-hew-ratchet | sandbox-parity)
     TARGET="$STEP"
     ;;
 *)

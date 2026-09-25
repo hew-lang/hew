@@ -95,10 +95,9 @@ directly and does not define a competing build graph. See the
 | Strict Rust       | `make test-strict`            | Selected Rust tests with no known-failure allowance                                                                               | medium |
 | Native acceptance | `make core-acceptance`        | Retained source/ABI cases with their specified outcomes at O0 and O2                                                              | medium |
 | Native safety     | `make core-safety`            | Instrumented ownership and lifecycle cases                                                                                        | medium |
-| Stdlib type-check | `make test-stdlib-ratchet`    | `std/` type-check sweep; unexpected failures are fatal                                                                            | medium |
 | Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers                                                                                           | medium |
 | Runtime (no-net)  | `make test-runtime-unit`      | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile)                                      | fast   |
-| Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt`                                          | medium |
+| Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `tests/expected-failures.tsv` (suite `hew-suite`)                                  | medium |
 | Grammar parity    | `make grammar-parity`         | Vertical-slice accept fixtures, `std/**`, `examples/**` parsed with the pinned tree-sitter-hew grammar; fails on any `ERROR` node | fast   |
 
 Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipeline` for compiler iteration. Run `make test` before opening a PR.

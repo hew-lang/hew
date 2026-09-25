@@ -1036,7 +1036,9 @@ fn run_server(port: string, scenario: string) {
             scenario_server_monitor_leak(kx, "monitor_leak_high", 50);
         } else {
             if scenario == "repoint_preserves_ref" {
-                sleep(1s);
+                // Re-point only after the client holds its captured ref and has
+                // seeded the original actor.
+                let _ = wait_for_file(f"{kx}/client.seeded");
                 // Registering the name again re-points it to the new actor.
                 let s2: HashMap<string, string> = HashMap.new();
                 let kv2 = spawn KeyValue(store: s2);
@@ -1068,7 +1070,8 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result.Ok(_) => {},
     }
-    sleep(200ms);
+    // The ask follows both sends on the same route, so the actor sees them
+    // first.
     let ask1 = kv.ask(KvReq.GetKey("hello"), 5000);
     match ask1 {
         Result.Err(_) => {
@@ -1513,7 +1516,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
-fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
+fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>, kx: string) -> i64 {
     let seeded = kv.ask(KvReq.Put(KvPut { key: "owner", val: "original" }), 5000);
     match seeded {
         Result.Err(_) => {
@@ -1522,6 +1525,7 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result.Ok(_) => {},
     }
+    publish_atomic(kx, "client.seeded", "1");
     var attempts: i64 = 0;
     loop {
         let current: Result<RemotePid<KeyValue>, LookupError> = Node.lookup("kv");
@@ -2272,7 +2276,7 @@ fn run_client(port: string, scenario: string) -> i64 {
                                         scenario_partition_ask(kv)
                                     } else {
                                         if scenario == "repoint_preserves_ref" {
-                                            scenario_repoint_preserves_ref(kv)
+                                            scenario_repoint_preserves_ref(kv, kx)
                                         } else {
                                             if scenario == "monitor_watcher_node_death" {
                                                 scenario_client_watcher_node_death(kv)

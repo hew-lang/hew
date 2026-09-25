@@ -221,8 +221,8 @@ fn select_in_handler_binds_first_ready_arm_under_both_pools() {
     // cut-select-waitset: a `select{}` inside an actor handler suspends the
     // racing continuation on a readiness waitset instead of busy-polling the
     // worker in `hew_select_first`. `Fast.compute(7)` (7 + 100) replies
-    // immediately and wins; the `Slow` arm (sleeps 50ms) is the loser
-    // (cancelled); the `after 500ms` safety net never fires. The single-worker
+    // immediately and wins; the `Slow` arm (parked on a gate that stays shut)
+    // is the loser (cancelled). The single-worker
     // run is the worker-freeing proof: a blocking `hew_select_first` would
     // deadlock the lone worker (it would spin on the readiness flags while
     // pinning the very worker that must run the askees). The exact value (107)

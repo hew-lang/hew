@@ -81,8 +81,9 @@ fn main() {
     // `fork` starts the watcher concurrently: an ordinary call would wait for
     // the handler to finish before `main` reaches the owner below, and the
     // watcher cannot finish until the owner publishes.
-    fork obs.watch(rx);
+    let watching = fork obs.watch(rx);
     let owner = spawn Owner;
     let _ = owner.drive(tx);
-    sleep(300ms);
+    // The watcher reports every transition and the close before `main` ends.
+    let _ = await watching;
 }

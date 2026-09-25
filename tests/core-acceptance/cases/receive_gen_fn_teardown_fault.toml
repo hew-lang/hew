@@ -1,0 +1,10 @@
+[[case]]
+id = "receive_gen_fn_teardown_fault"
+intent = "A `receive gen fn` producer that is torn down (its actor stopped) while its stream is live and undrained must fault-close the stream — the consumer observes the fault on the next resume, not a hang and not a silent EOF."
+source = "../vertical-slice/accept/receive_gen_fn_teardown_fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "0\n1\n2\n3\n4\n5\n6\n7\n8\noverflow=9\n"
+exit = 0

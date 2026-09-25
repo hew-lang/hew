@@ -1,0 +1,13 @@
+fn make_holder(label: string) -> fn() -> i64 {
+    || label.len()
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let h = make_holder("per-iteration-flat-owned-string");
+        total = total + h();
+        i = i + 1;
+    }
+    total
+}

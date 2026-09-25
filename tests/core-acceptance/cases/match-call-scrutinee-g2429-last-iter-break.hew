@@ -1,0 +1,17 @@
+fn f() -> Result<string, string> {
+    .Ok("g2429-scribble-payload".to_upper())
+}
+
+fn main() {
+    var i = 0;
+    while i < 3 {
+        match f() {
+            .Ok(b) => {
+                print("o");
+                if i == 2 { break; }
+            }
+            .Err(e) => { print("e"); }
+        }
+        i = i + 1;
+    }
+}

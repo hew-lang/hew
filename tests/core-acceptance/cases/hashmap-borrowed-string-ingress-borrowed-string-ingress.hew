@@ -1,0 +1,31 @@
+fn bump(var counts: HashMap<string, i64>, category: string) -> HashMap<string, i64> {
+    let next = match counts.get(category) { .Some(old) => old + 1, .None => 1 };
+    counts.insert(category, next);
+    counts
+}
+
+fn store_value(var labels: HashMap<i64, string>, id: i64, label: string) -> HashMap<i64, string> {
+    labels.insert(id, label);
+    labels
+}
+
+fn add_member(var members: HashSet<string>, name: string) -> HashSet<string> {
+    members.insert(name);
+    members
+}
+
+fn main() {
+    var counts: HashMap<string, i64> = HashMap.new();
+    for raw in " coffee , rent , coffee ".split(",") {
+        counts = bump(counts, raw.trim());
+    }
+    var labels: HashMap<i64, string> = HashMap.new();
+    var members: HashSet<string> = HashSet.new();
+    labels = store_value(labels, 1, "label".to_upper());
+    labels = store_value(labels, 1, "relabel".to_upper());
+    members = add_member(members, "member".to_upper());
+    members = add_member(members, "member".to_upper());
+    let coffee = match counts.get("coffee") { .Some(n) => n, .None => -1 };
+    let label = match labels.get(1) { .Some(s) => s, .None => "absent" };
+    print(f"{coffee}|{counts.len()}|{label}|{members.len()}");
+}

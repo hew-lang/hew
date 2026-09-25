@@ -1,0 +1,10 @@
+import std.encoding.xml;
+fn parse_result(s: string) -> Result<xml.Node, string> {
+if xml.is_wellformed(s) { .Ok(xml.parse(s).expect("well-formed checked")) } else { .Err("not well-formed") }
+}
+fn main() {
+match parse_result("<a><b>hi</b></a>") {
+.Ok(node) => { println(node.to_string()); node.close(); }
+.Err(message) => println(message),
+}
+}

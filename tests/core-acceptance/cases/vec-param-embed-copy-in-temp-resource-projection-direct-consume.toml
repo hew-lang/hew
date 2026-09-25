@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-resource-projection-direct-consume"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `resource_projection_direct_consume_high` (resource projection direct consume has flat leak slope, resource projection direct consume preserves the poisoned caller) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-resource-projection-direct-consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

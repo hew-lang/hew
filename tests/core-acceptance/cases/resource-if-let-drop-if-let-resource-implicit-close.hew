@@ -1,0 +1,14 @@
+import std.stream;
+import std.fs;
+fn main() -> i64 {
+    fs.write("/tmp/hew-if-let-resource-oracle.txt", "frame").expect("write");
+    for i in 0..50 {
+        if let .Ok(input) = stream.open("/tmp/hew-if-let-resource-oracle.txt") {
+            let _ = input.try_recv();
+            println("closed");
+        } else {
+            return 70;
+        }
+    }
+    0
+}

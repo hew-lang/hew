@@ -1,0 +1,14 @@
+type Rec { field: [i64] }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var xs: [[i64]] = [];
+        let r = Rec { field: [i, i + 1, i + 2] };
+        xs.push(r.field);
+        total = total + xs[0].len() + r.field.len();
+        i = i + 1;
+    }
+    total
+}

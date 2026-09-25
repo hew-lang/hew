@@ -1,0 +1,10 @@
+fn h(s: string) -> i64 { s.len() }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let s = "a" + "b";
+        total = total + h(s);
+    }
+    if total != 50 * 2 { return 82; }
+    0
+}

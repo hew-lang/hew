@@ -1,0 +1,23 @@
+type Holder {
+    counts: Vec<i64>,
+}
+fn make_holder(n: i64) -> fn() -> i64 {
+    var counts: Vec<i64> = Vec.new();
+    counts.push(10);
+    counts.push(20);
+    let h = Holder { counts: counts };
+    || h.counts.len() + n
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let f = make_holder(i);
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 20300 { return 93; }
+    0
+}

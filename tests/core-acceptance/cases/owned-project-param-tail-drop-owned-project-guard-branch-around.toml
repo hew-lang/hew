@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-project-param-tail-drop-owned-project-guard-branch-around"
+intent = "Leak and poisoned-allocator oracle for owned record/tuple project matches over by-value parameters. Shape `owned_project_guard_branch_around_scribble` (guard branch around is clean under malloc scribble, guard branch around leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-project-param-tail-drop-owned-project-guard-branch-around.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "guard-branch-around-ok\n"
+exit = 0

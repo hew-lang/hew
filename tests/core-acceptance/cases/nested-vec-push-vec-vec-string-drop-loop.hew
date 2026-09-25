@@ -1,0 +1,17 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var rows: Vec<Vec<string>> = [];
+        var cur: Vec<string> = [];
+        cur.push("per-iteration-row-element-one");
+        cur.push("per-iteration-row-element-two");
+        rows.push(cur);
+        cur.clear();
+        cur.push("per-iteration-row-element-three");
+        rows.push(cur);
+        total = total + rows.len() + rows[0].len();
+        i = i + 1;
+    }
+    total
+}

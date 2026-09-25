@@ -1,0 +1,20 @@
+fn put(var counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {
+    key = ("fresh" + "-key").to_upper();
+    counts.insert(key, amount);
+    return counts.len();
+}
+
+fn run_cycle() -> i64 {
+    let counts: HashMap<string, i64> = HashMap.new();
+    let a = put(counts, "caller" + "-a", 1);
+    let b = put(counts, "caller" + "-b", 2);
+    return a + b;
+}
+
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames { total = total + run_cycle(); }
+    return total;
+}
+
+fn main() -> i64 { if run_loop(50) > 0 { 0 } else { 1 } }

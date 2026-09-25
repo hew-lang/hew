@@ -1,0 +1,59 @@
+import std.pipeline;
+
+fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
+    PipelineItemI64 { value: value, label: label, crash_stage: false }
+}
+
+fn main() -> i64 {
+    var source = pipeline.run(pipeline.from(0));
+    let control = match source.control_handle() {
+        .Ok(value) => value,
+        .Err(_) => { return 10; },
+    };
+
+    // Occupy Source with one checked push before selecting another. The
+    // selected request is then queued but cannot dispatch, so the timeout
+    // deterministically exercises native request withdrawal instead of racing
+    // the scheduler to decide whether the losing call has begun its handler.
+    var i: i64 = 0;
+    while i < 50 {
+        let blocker = fork { source.push(item(-i - 1, f"blocker-{i}")) };
+        var attempts: i64 = 0;
+        while attempts < i + 1 {
+            match control.attempts() {
+                .Ok(value) => { attempts = value; },
+                .Err(_) => { return 11; },
+            }
+            if attempts < i + 1 {
+            }
+        }
+        let outcome = select {
+            reply from source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") { 1 } else { -1 },
+            after 1ms => 0,
+        };
+        if outcome != 0 {
+            return 15;
+        }
+        let _ = control.release();
+        match await blocker {
+            .Ok(admitted) => { if !admitted { return 12; } },
+            .Err(_) => { return 13; },
+        }
+        var posts: i64 = 0;
+        while posts < i + 1 {
+            match control.post_sends() {
+                .Ok(value) => { posts = value; },
+                .Err(_) => { return 16; },
+            }
+            if posts < i + 1 {
+            }
+        }
+        println("cancelled");
+        i = i + 1;
+    }
+
+    match source.shutdown(50) {
+        .Ok(drained) => if drained { 0 } else { 17 },
+        .Err(_) => 18,
+    }
+}

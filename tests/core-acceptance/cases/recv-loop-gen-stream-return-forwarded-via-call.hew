@@ -1,0 +1,22 @@
+actor Maker {
+    receive gen fn items() -> string {
+        yield "escaped";
+        yield "rest";
+    }
+}
+fn wrap(v: string) -> string {
+    return v;
+}
+fn first(m: Maker) -> string {
+    for v in m.items() {
+        return wrap(v);
+    }
+    "none"
+}
+fn main() {
+    println("before");
+    let m = spawn Maker;
+    let s = first(m);
+    println(s);
+    println("after");
+}

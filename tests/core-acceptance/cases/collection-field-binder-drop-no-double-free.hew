@@ -1,0 +1,14 @@
+type Pair { a: i64, b: Vec<i64> }
+
+fn main() {
+    var inner: Vec<i64> = Vec.new();
+    inner.push(10);
+    inner.push(20);
+    let p = Pair { a: 5, b: inner };
+    let n = p.b.len();
+    var ns: Vec<i64> = Vec.new();
+    ns.push(7);
+    let sum = p.a + n + ns[0];
+    print(sum);
+    print("OK");
+}

@@ -1,0 +1,21 @@
+actor Tagger {
+    let unused: i64,
+    receive fn tag() -> string {
+        "constant-reply-value-heap"
+    }
+}
+
+fn main() -> i64 {
+    let t = spawn Tagger(unused: 0);
+    var i: i64 = 0;
+    var sink: i64 = 0;
+    while i < 50 {
+        let r = t.tag();
+        match r {
+            .Ok(s) => { sink = sink + s.len(); },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    if sink > 0 { 0 } else { 1 }
+}

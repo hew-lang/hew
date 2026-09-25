@@ -1,0 +1,34 @@
+type Bundle { text: string, data: bytes }
+#[resource] type Witness { fd: i64 }
+impl Witness { fn close(consume self) { println("closed"); } }
+fn make_nested(label: string) -> fn() -> i64 { || label.len() }
+fn helper_normal() -> i64 {
+    let text = "helper-string".to_upper();
+    let data = "helper-bytes".to_bytes();
+    let bundle = Bundle {
+        text: "helper-record".to_upper(),
+        data: "helper-record-bytes".to_bytes(),
+    };
+    let witness = Witness { fd: 7 };
+    let nested = make_nested("helper-nested".to_upper());
+    let table = HashMap.new<string, i64>();
+    text.len() + data.len() + bundle.text.len() + bundle.data.len()
+        + witness.fd + nested() + table.len()
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: Gate,
+    receive fn go(frames: i64) -> i64 {
+        let _ = gate.tick();
+        for _ in 0..frames {
+            if helper_normal() < 0 { panic("impossible"); }
+            println("completed");
+        }
+        frames
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = runner.go(50);
+}

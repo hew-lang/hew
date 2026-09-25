@@ -1,0 +1,34 @@
+actor VecIterCrasher {
+    receive fn boom() {
+        let root = Rc.new(41);
+        var values: Vec<Rc<i64>> = Vec.new();
+        values.push(root);
+
+        let crash = |incoming: VecIter<Rc<i64>>| {
+            let _ = incoming;
+            panic("vec-iter-closure-trap");
+            let _ = 0;
+        };
+        crash(values.iter());
+        // The call's failure edge owns `values`; the later suspend state
+        // owns `moved`. Releasing `moved` on the failure edge would release
+        // an uninitialized destination after the closure traps.
+        let moved = values;
+        sleep(1ms);
+        let _ = moved.len();
+    }
+}
+
+actor VecIterProbe {
+    receive fn ping() -> i64 { 0 }
+}
+
+fn main() -> i64 {
+    let crasher = spawn VecIterCrasher;
+    let probe = spawn VecIterProbe;
+    let _ = crasher.boom();
+    match probe.ping() {
+        .Ok(value) => value,
+        .Err(_) => 1,
+    }
+}

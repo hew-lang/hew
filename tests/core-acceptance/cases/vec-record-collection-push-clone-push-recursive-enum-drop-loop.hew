@@ -1,0 +1,18 @@
+enum Reply {
+    Nil,
+    Num(i64),
+    Arr([Reply]),
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var xs: [Reply] = [];
+        xs.push(Reply.Num(7));
+        xs.push(Reply.Arr([Reply.Nil, Reply.Num(9)]));
+        total = total + xs.len();
+        i = i + 1;
+    }
+    total
+}

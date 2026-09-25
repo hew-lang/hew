@@ -1,0 +1,10 @@
+[[case]]
+id = "let-else-call-scrutinee-g2429-single-letelse"
+intent = "From-call `let … else` scrutinee enum-payload leak oracle (#2429 class). Shape `g2429_single_letelse_scribble` (single from call letelse no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/let-else-call-scrutinee-g2429-single-letelse.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "m"
+exit = 0

@@ -1,0 +1,17 @@
+actor Slow {
+    var value: i64 = 1,
+    #[on(stop)] fn stopping() {
+        sleep(1ms);
+        println(f"stopped {value}");
+    }
+    receive fn get() -> i64 { value }
+}
+
+fn main() {
+    let a0 = spawn Slow;
+    close(a0);
+    let a1 = spawn Slow;
+    close(a1);
+    let a2 = spawn Slow;
+    close(a2);
+}

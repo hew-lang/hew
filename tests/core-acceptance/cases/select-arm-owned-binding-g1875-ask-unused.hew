@@ -1,0 +1,19 @@
+actor StringWorker {
+    receive fn get_string(n: i64) -> string {
+        to_string(n)
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn StringWorker;
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 50 {
+        let r = select {
+            _reply from w.get_string(i) => 1,
+        };
+        total = total + r;
+        i = i + 1;
+    }
+    if total == 50 { 0 } else { 1 }
+}

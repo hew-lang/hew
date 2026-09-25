@@ -1,0 +1,43 @@
+enum Slot {
+    Filled(i64),
+    Empty,
+}
+
+fn step(items: Vec<string>, i: i64) -> (Vec<string>, Slot) {
+    if i < 2 {
+        (items, .Filled(i))
+    } else {
+        (items, .Empty)
+    }
+}
+
+fn run_case(frame: i64) -> i64 {
+    var items: Vec<string> = Vec.new();
+    items.push(f"left-{frame}");
+    items.push(f"right-{frame}");
+
+    var i = 0;
+    var done = false;
+    while !done {
+        let pair = step(items, i);
+        items = pair.0;
+        match pair.1 {
+            .Filled(tag) => {
+                if tag != i { return 81; }
+            },
+            .Empty => {
+                done = true;
+            },
+        }
+        i = i + 1;
+    }
+    items.len()
+}
+
+fn main() -> i64 {
+    for frame in 0..50 {
+        if run_case(frame) != 2 { return 82; }
+    }
+    print("OK");
+    0
+}

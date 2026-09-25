@@ -1,0 +1,10 @@
+[[case]]
+id = "recv-loop-carry-for-await-bytes-escape"
+intent = "Per-iteration recv-result drop on the loop back-edge. Shape `carry_for_await_bytes_escape` (carry for await bytes payload escape no uaf) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/recv-loop-carry-for-await-bytes-escape.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "before\nescaped-bytes-payload\nafter\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-hybrid-enum-text-transfer"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `hybrid_enum_text_transfer_high` (enum text borrows balance on native and wasm, hybrid enum text transfer has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-hybrid-enum-text-transfer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

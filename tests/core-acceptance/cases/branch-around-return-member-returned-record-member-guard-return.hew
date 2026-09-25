@@ -1,0 +1,21 @@
+type Parsed { pre: string, build: string, n: i64, }
+
+fn parse_or_bail(bail: bool, seed: string) -> Parsed {
+    let pre = seed + "-pre";
+    let build = seed + "-build";
+    if bail {
+        return Parsed { pre: "", build: "", n: 0 };
+    }
+    Parsed { pre: pre, build: build, n: 1 }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let p = parse_or_bail(true, "per-call-seed");
+        total = total + p.n;
+        i = i + 1;
+    }
+    total
+}

@@ -1,0 +1,16 @@
+indirect enum A { AEnd(i64), AWrap(B), }
+indirect enum B { BEnd(i64), BWrap(A), }
+fn depthA(a: A) -> i64 { match a { .AEnd(n) => n, .AWrap(b) => depthB(b) + 1, } }
+fn depthB(b: B) -> i64 { match b { .BEnd(n) => n, .BWrap(a) => depthA(a) + 1, } }
+fn run_loop() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        let v = A.AWrap(.BWrap(.AWrap(.BEnd(7))));
+        total = total + depthA(v);
+    }
+    total
+}
+fn main() {
+    let r = run_loop();
+    if r == 500 { print("ok"); } else { print("BAD"); }
+}

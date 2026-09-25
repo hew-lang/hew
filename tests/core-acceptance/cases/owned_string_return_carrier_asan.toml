@@ -2,7 +2,7 @@
 id = "owned_string_return_carrier_asan"
 intent = "Linux ASan/LSan oracle for one-share owned string return carriers."
 source = "../vertical-slice/accept/owned_string_return_carrier_asan.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

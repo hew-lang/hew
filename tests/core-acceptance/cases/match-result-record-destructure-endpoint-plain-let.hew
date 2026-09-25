@@ -1,0 +1,10 @@
+import std.net;
+
+fn main() {
+    let addr = "10.11.12.13:8080".to_upper();
+    let e = match net.parse_endpoint("oracle", addr) {
+        .Ok(x) => x,
+        .Err(err) => { panic(f"bad: {err}"); }
+    };
+    println(e.host);
+}

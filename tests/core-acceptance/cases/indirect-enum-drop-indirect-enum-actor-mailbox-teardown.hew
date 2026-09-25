@@ -1,0 +1,36 @@
+import std.stream;
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+fn sum(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), } }
+actor ProbeSink { 
+    receive fn hold(ready: stream.Sink<i64>, gate: stream.Stream<i64>) {
+        ready.send(1).expect("send");
+        // Park until teardown, so the owned trees below stay queued.
+        gate.recv();
+    }
+    receive fn take(t: Tree) { let _ = sum(t); }
+    receive fn tagged(tag: i64, t: Tree) { let _ = tag + sum(t); }
+}
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child sink: ProbeSink,
+}
+fn main() -> i64 {
+    let sup = spawn App;
+    let sink = sup.sink;
+    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (_shut, gate) = stream.pipe(1).expect("gate");
+    // Mailbox sends do not wait for the parked handler.
+    mailbox(sink, on_full: .Wait).hold(ready_tx, gate).expect("send");
+    let started = match ready_rx.recv() { .Some(n) => n, .None => 0, };
+    if started != 1 { print("BAD"); return 1; }
+    var i: i64 = 0;
+    while i < 50 {
+        mailbox(sink, on_full: .Wait).take(.Node(.Node(.Leaf(1), .Leaf(2)), .Node(.Leaf(3), .Leaf(4)))).expect("send");
+        mailbox(sink, on_full: .Wait).tagged(i, .Node(.Node(.Leaf(5), .Leaf(6)), .Node(.Leaf(7), .Leaf(8)))).expect("send");
+        i = i + 1;
+    }
+    supervisor_stop(sup);
+    print("ok");
+    0
+}

@@ -1,0 +1,9 @@
+fn carry(f: fn(i64) -> i64) -> fn(i64) -> i64 {
+    f
+}
+
+fn main() {
+    let double = |x: i64| x * 2;
+    let _copy = carry(double);
+    println(double(2));
+}

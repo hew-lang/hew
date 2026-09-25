@@ -1,0 +1,17 @@
+actor ProbeSink { 
+    var seen: i64,
+    receive fn take(label: string, early: bool) {
+        if early { seen = seen + 1; return }
+        seen = seen + 1;
+    }
+    receive fn count() -> i64 { seen }
+}
+fn main() -> i64 {
+    let sink = spawn ProbeSink(seen: 0);
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = sink.take("branch".to_upper(), i % 2 == 0);
+        i = i + 1;
+    }
+    match sink.count() { .Ok(n) => if n == 50 { 0 } else { 77 }, .Err(_) => 78 }
+}

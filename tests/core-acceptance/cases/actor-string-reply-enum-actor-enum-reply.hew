@@ -1,0 +1,35 @@
+enum Status {
+    Loaded(i64),
+    Described(string),
+}
+
+actor Describer {
+    let name: string,
+    receive fn describe(suffix: string, sel: i64) -> Status {
+        if sel % 2 == 0 {
+            .Loaded(sel)
+        } else {
+            .Described(name + suffix)
+        }
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Describer(name: "widget");
+    var i: i64 = 0;
+    var sink: i64 = 0;
+    while i < 50 {
+        let r = d.describe("-suffix", i);
+        match r {
+            .Ok(st) => {
+                match st {
+                    .Described(s) => { sink = sink + s.len(); },
+                    .Loaded(v) => { sink = sink + v; },
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    if sink > 0 { 0 } else { 1 }
+}

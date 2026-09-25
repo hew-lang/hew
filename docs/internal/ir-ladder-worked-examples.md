@@ -64,7 +64,7 @@ the §1.3 op set with no shape-specific rule of its own.
 
 Fixtures named below live under `repros/ladder/worked/` and are `P1-L3`
 deliverables; none exists on `main` today except where marked. Each is
-run by `make asan-fixtures` with its printed output and the zero-leak line
+run by `make core-safety` with its printed output and the zero-leak line
 as the oracle, and its `hew compile --dump-sir` output is diffed against
 the block in this file.
 
@@ -551,7 +551,7 @@ double close to `close 1`, `2`, `after`, `close 2`.
   `hew compile --dump-sir` on the fixture and diffs against the block here;
   a mismatch in any ownership op is a defect in the lane, not in the
   example, unless `ir-ladder.md` says otherwise.
-- A validator runs each fixture under `make asan-fixtures` and checks the
+- A validator runs each fixture under `make core-safety` and checks the
   printed output and the zero-leak line.
 - A refuter that finds a shape this file does not cover writes the shape as
   a W8 candidate in its report with the SIR it expects; the architect adds

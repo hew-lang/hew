@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-composite-temp-arg-string-named"
+intent = "Leak oracle for the caller-side drop of a fresh owned composite/string argument TEMPORARY (#2743). Shape `string_named_df` (string named canary does not double free, string named canary leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-composite-temp-arg-string-named.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

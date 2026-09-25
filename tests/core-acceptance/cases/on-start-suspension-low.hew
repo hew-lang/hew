@@ -1,0 +1,14 @@
+actor Slow { 
+    var value: i64 = 0, 
+    #[on(start)] fn started() {
+        sleep(5ms); 
+        value = 1; 
+  }
+    receive fn get() -> i64 { value }
+}
+
+fn main() {
+    let a0 = spawn Slow;
+    let a1 = spawn Slow;
+    let a2 = spawn Slow;
+}

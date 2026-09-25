@@ -1,0 +1,10 @@
+[[case]]
+id = "generic_spawn_unit"
+intent = "generic free-function task spawn via the TaskEntry adapter."
+source = "../vertical-slice/accept/generic_spawn_unit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

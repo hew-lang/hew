@@ -1,0 +1,24 @@
+enum Packet { 
+    Payload(string), 
+    Done, 
+
+ }
+fn next(i: i64, cap: i64) -> Packet {
+    if i < cap {
+        Packet.Payload("wl-backedge-payload".to_upper())
+    } else {
+        Packet.Done
+    }
+}
+fn main() -> i64 {
+    var i = 0;
+    var q = next(i, 50);
+    var total = 0;
+    while let Packet.Payload(s) = q {
+        let moved = s;
+        total = total + moved.len();
+        i = i + 1;
+        q = next(i, 50);
+    }
+    if total >= 0 { 0 } else { 1 }
+}

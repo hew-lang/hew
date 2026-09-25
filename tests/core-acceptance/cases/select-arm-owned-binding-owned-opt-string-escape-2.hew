@@ -1,0 +1,17 @@
+actor Maker {
+    receive fn make() -> Option<string> {
+        .Some("opt-escape-owned-reply".to_upper())
+    }
+}
+
+fn main() -> i64 {
+    let m = spawn Maker;
+    let x = select {
+        r from m.make() => r.expect("ask reply"),
+    };
+    match x {
+        .Some(s) => { print(s); }
+        .None => {}
+    }
+    0
+}

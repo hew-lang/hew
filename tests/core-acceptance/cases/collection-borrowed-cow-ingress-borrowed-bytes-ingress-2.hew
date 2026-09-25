@@ -1,0 +1,18 @@
+fn ingest(var store: HashMap<string, bytes>, payload: bytes) -> i64 {
+    store.insert("k" + "-heap", payload);
+    return store.len();
+}
+
+fn run_cycle() -> i64 {
+    let store: HashMap<string, bytes> = HashMap.new();
+    let payload = b"0123456789abcdef0123456789abcdef";
+    return ingest(store, payload);
+}
+
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames { total = total + run_cycle(); }
+    return total;
+}
+
+fn main() -> i64 { if run_loop(50) > 0 { 0 } else { 1 } }

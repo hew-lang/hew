@@ -1,0 +1,46 @@
+type Leaf {
+    s: string,
+    t: string,
+}
+
+type Mid {
+    x: string,
+    sub: Leaf,
+}
+
+type Outer {
+    mid: Mid,
+    c: string,
+}
+
+fn make_outer(k: i64) -> Outer {
+    Outer {
+        mid: Mid {
+            x: "mid-x-heap-payload".to_upper(),
+            sub: Leaf {
+                s: "leaf-s-heap-payload".to_upper(),
+                t: "leaf-t-heap-payload".to_upper(),
+            },
+        },
+        c: "outer-c-heap-payload".to_upper(),
+    }
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let o = make_outer(k);
+    let mid = o.mid;
+    let x = match mid {
+        Mid { x, sub: _ } => x.len(),
+    };
+    x
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

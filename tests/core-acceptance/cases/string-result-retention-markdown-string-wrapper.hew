@@ -1,0 +1,6 @@
+import std.encoding.markdown;
+fn main() {
+    for _ in 0..50 {
+        println(markdown.to_html("# retained-owner probe").len());
+    }
+}

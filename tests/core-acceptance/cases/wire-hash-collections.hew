@@ -1,0 +1,68 @@
+import std.encoding.wire;
+
+#[wire]
+type Feature {
+    enabled: bool @1,
+    note: string @2,
+}
+
+#[wire]
+type Registry {
+    features: HashMap<string, Feature> @1,
+    labels: HashMap<i64, string> @2,
+    names: HashSet<string> @3,
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 50 {
+        var features: HashMap<string, Feature> = HashMap.new();
+        features.insert("beta-" + "key", Feature { enabled: false, note: "later-" + "owned" });
+        features.insert("alpha-" + "key", Feature { enabled: true, note: "now-" + "owned" });
+
+        var labels: HashMap<i64, string> = HashMap.new();
+        labels.insert(2, "two-" + "owned");
+        labels.insert(1, "one-" + "owned");
+
+        var names: HashSet<string> = HashSet.new();
+        names.insert("gamma-" + "owned");
+        names.insert("alpha-" + "owned");
+
+        let registry = Registry { features: features, labels: labels, names: names };
+
+        let binary_back = Registry.decode(registry.encode());
+        if binary_back.features.len() != 2 { panic("binary features"); }
+        if binary_back.labels.len() != 2 { panic("binary labels"); }
+        if binary_back.names.len() != 2 { panic("binary names"); }
+
+        let json = registry.to_json();
+        match Registry.from_json(json) {
+            .Ok(json_back) => {
+                if json_back.features.len() != 2 { panic("json features"); }
+                if json_back.names.len() != 2 { panic("json names"); }
+            },
+            .Err(_) => { panic("json parse"); }
+        }
+
+        let yaml = registry.to_yaml();
+        match Registry.from_yaml(yaml) {
+            .Ok(yaml_back) => {
+                if yaml_back.labels.len() != 2 { panic("yaml labels"); }
+                if yaml_back.names.len() != 2 { panic("yaml names"); }
+            },
+            .Err(_) => { panic("yaml parse"); }
+        }
+
+        let bare_json = wire.to_json(registry.features);
+        match wire.from_json<HashMap<string, Feature>>(bare_json) {
+            .Ok(bare_back) => {
+                if bare_back.len() != 2 { panic("bare map"); }
+            },
+            .Err(_) => { panic("bare json parse"); }
+        }
+
+        if registry.features.len() != 2 { panic("serialization moved registry"); }
+        println(i);
+        i = i + 1;
+    }
+}

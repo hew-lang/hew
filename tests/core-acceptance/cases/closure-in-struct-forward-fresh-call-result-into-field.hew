@@ -1,0 +1,17 @@
+type Handler { action: fn(i64) -> i64, }
+fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| x + n }
+fn wrap(n: i64) -> fn(i64) -> i64 { make_adder(n) }
+fn make_handler(consume f: fn(i64) -> i64) -> Handler { Handler { action: f } }
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let h = make_handler(wrap(i));
+        total = total + h.action(1);
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 20100 { return 83; }
+    0
+}

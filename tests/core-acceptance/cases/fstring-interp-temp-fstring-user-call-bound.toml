@@ -1,0 +1,10 @@
+[[case]]
+id = "fstring-interp-temp-fstring-user-call-bound"
+intent = "Per-iteration leak / double-free oracle for f-string interpolation of a non-string value: the `Display::fmt` conversion temp (`hew_i64_to_string`) and — outside a moved/yielded position — the `hew_string_concat` join result must each be… Shape `fstring_user_call_bound_high` (fstring user call bound interp leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fstring-interp-temp-fstring-user-call-bound.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "v=tok0\nv=tok1\nv=tok2\nv=tok3\nv=tok4\nv=tok5\nv=tok6\nv=tok7\nv=tok8\nv=tok9\nv=tok10\nv=tok11\nv=tok12\nv=tok13\nv=tok14\nv=tok15\nv=tok16\nv=tok17\nv=tok18\nv=tok19\nv=tok20\nv=tok21\nv=tok22\nv=tok23\nv=tok24\nv=tok25\nv=tok26\nv=tok27\nv=tok28\nv=tok29\nv=tok30\nv=tok31\nv=tok32\nv=tok33\nv=tok34\nv=tok35\nv=tok36\nv=tok37\nv=tok38\nv=tok39\nv=tok40\nv=tok41\nv=tok42\nv=tok43\nv=tok44\nv=tok45\nv=tok46\nv=tok47\nv=tok48\nv=tok49\n"
+exit = 0

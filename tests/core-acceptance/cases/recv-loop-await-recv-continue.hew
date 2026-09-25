@@ -1,0 +1,27 @@
+import std.stream;
+
+actor AwaitRecvContinue {
+    receive fn run(unused: i64) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1024) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        tx.send("f0").expect("send");
+        tx.send("f1").expect("send");
+        tx.send("f2").expect("send");
+        tx.close();
+        var keep_going = true;
+        while keep_going {
+            let opt = rx.recv();
+            match opt {
+                .Some(item) => {
+                    println("got");
+                    continue;
+                },
+                .None => { keep_going = false; },
+            }
+        }
+    }
+}
+
+fn main() {
+    let w = spawn AwaitRecvContinue;
+    let _ = w.run(0);
+}

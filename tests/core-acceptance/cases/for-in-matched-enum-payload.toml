@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-matched-enum-payload"
+intent = "`for it in <matched enum collection payload>` drop oracle (hew-lang/hew#2725, site b). Shape `for_in_matched_enum_payload_high` (for in matched payload leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-matched-enum-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

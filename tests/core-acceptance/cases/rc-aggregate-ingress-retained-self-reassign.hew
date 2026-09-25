@@ -1,0 +1,14 @@
+fn frame(seed: i64) -> i64 {
+    var shared: Rc<i64> = Rc.new(seed);
+    shared = shared.clone();
+    shared.get()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        total = total + frame(seed);
+        println("frame");
+    }
+    total - 1225
+}

@@ -1,0 +1,17 @@
+#[resource]
+type Token { text: string }
+impl Token {
+    fn close(consume self) {
+        let _ = self.text.len();
+    }
+}
+fn take(consume token: Token) -> i64 {
+    token.text.len()
+}
+fn main() -> i64 {
+    let token = Token { text: "payload".to_upper() };
+    let transfer = "go".len() == 2;
+    var seen: i64 = 0;
+    if transfer { seen = take(token); }
+    if seen == 7 { 0 } else { 103 }
+}

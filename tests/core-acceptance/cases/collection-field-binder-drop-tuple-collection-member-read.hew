@@ -1,0 +1,20 @@
+fn make(n: i64) -> (Vec<i64>, i64) {
+    var inner: Vec<i64> = Vec.new();
+    inner.push(n);
+    inner.push(n + 1);
+    (inner, n)
+}
+
+fn build(n: i64) -> i64 {
+    let p = make(n);
+    p.0.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        total = total + build(i);
+    }
+    if total != 128 { return 63; }
+    0
+}

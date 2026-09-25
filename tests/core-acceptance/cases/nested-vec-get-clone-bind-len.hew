@@ -1,0 +1,17 @@
+fn frame() -> i64 {
+    var vv: [[i64]] = [];
+    vv.push([1, 2, 3]);
+    vv.push([4, 5, 6]);
+    let inner = vv[1];
+    inner.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + frame();
+        i = i + 1;
+    }
+    if total < 0 { 72 } else { 0 }
+}

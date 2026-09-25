@@ -2,7 +2,7 @@
 id = "vec_elem_store_owned_temp_no_leak"
 intent = "Owned-Vec element-store temp-leak fixture (Linux ASan/LSan arm of the macOS `vec_push_temp_leak_oracle.rs` slope oracle)."
 source = "../vertical-slice/accept/vec_elem_store_owned_temp_no_leak.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

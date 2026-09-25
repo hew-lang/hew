@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-conditional-local-record-handoff-2"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `conditional_local_record_handoff_high` (conditional local record nonconsuming edge has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-conditional-local-record-handoff-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,42 @@
+type Leaf {
+    text: string,
+}
+
+enum Payload {
+    Empty,
+    Hold(Leaf),
+}
+
+type Wrap {
+    payload: Payload,
+}
+
+actor Keeper {
+    var cur: Wrap,
+
+    receive fn rewrite() {
+        cur = Wrap { payload: cur.payload };
+    }
+
+    receive fn size() -> i64 {
+        match cur.payload {
+            Payload.Empty => 0,
+            Payload.Hold(leaf) => leaf.text.len(),
+        }
+    }
+}
+
+fn main() -> i64 {
+    let keeper = spawn Keeper(cur: Wrap {
+        payload: Payload.Hold(Leaf { text: "enum-alias".to_upper() }),
+    });
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = keeper.rewrite();
+        i = i + 1;
+    }
+    match keeper.size() {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    }
+}

@@ -1,0 +1,7 @@
+fn next() -> Result<string, string> { .Err("while-let-false".to_upper()) }
+fn one() {
+    while let .Ok(value) = next() { print(value); }
+}
+fn main() {
+    for i in 0..50 { one(); }
+}

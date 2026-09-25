@@ -1,0 +1,20 @@
+fn duplicate(value: string) -> (string, string) { (value, value) }
+fn duplicate_local() -> (string, string) {
+    let value = "local-" + "duplicate";
+    (value, value)
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let source = "return-" + "share";
+        let returned = duplicate(source);
+        let (left, right) = returned;
+        let local_returned = duplicate_local();
+        let (local_left, local_right) = local_returned;
+        total = total + source.len() + left.len() + right.len()
+            + local_left.len() + local_right.len();
+        i = i + 1;
+    }
+    total
+}

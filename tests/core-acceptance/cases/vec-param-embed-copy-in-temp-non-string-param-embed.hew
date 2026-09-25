@@ -1,0 +1,18 @@
+type Holder { items: Vec<string> }
+type Wrap { f: Option<Holder> }
+type MixedWrap { s: string, items: Vec<string> }
+
+fn pushParam(p: Holder) {
+    var v: Vec<Wrap> = [];
+    v.push(Wrap { f: .Some(p) });
+}
+
+fn pushMixed(p: string, h: Holder) {
+    var v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
+}
+
+fn main() {
+    pushParam(Holder { items: ["a"] });
+    pushMixed("s", Holder { items: ["b"] });
+}

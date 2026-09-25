@@ -1,0 +1,19 @@
+fn make_reader(n: i64) -> fn() -> i64 {
+    let label = "row-payload-seed".to_upper();
+    let f = || label.len() + n;
+    let after = label.len();
+    || f() + after
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let r = make_reader(i);
+        total = total + r();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 26300 { return 90; }
+    0
+}

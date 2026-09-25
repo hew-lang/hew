@@ -1,0 +1,17 @@
+#[resource]
+type Res { name: string }
+impl Res {
+    fn peek(self) -> i64 { self.name.len() }
+    fn close(consume self) { }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let r = Res { name: "abc" + "def" };
+        total = total + r.peek();
+        r.close();
+    }
+    if total != 50 * 6 { return 75; }
+    0
+}

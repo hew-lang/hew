@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-actor-handler-branch-selected-record-ingress"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `actor_handler_branch_selected_record_ingress_high` (branch selected record ingress retains only the selected paths) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-actor-handler-branch-selected-record-ingress.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

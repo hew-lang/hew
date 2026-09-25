@@ -1,0 +1,29 @@
+type Pair {
+    a: string,
+    b: string,
+}
+
+actor Swapper {
+    var pair: Pair,
+
+    receive fn swap() {
+        pair = Pair { a: pair.b, b: pair.a };
+    }
+
+    receive fn len_a() -> i64 {
+        pair.a.len()
+    }
+}
+
+fn main() -> i64 {
+    let s = spawn Swapper(pair: Pair { a: "left".to_upper(), b: "right-side".to_upper() });
+    var i: i64 = 0;
+    while i < 25 {
+        let _ = s.swap();
+        i = i + 1;
+    }
+    match s.len_a() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

@@ -1,0 +1,17 @@
+type Row { name: string, }
+
+fn run_cycle() -> i64 {
+    let rows: Vec<Row> = [ Row { name: "neg-alias-heap-name".to_upper() } ];
+    let r = rows[0];
+    var got: i64 = 0;
+    if r.name.len() > 0 { got = r.name.len(); }
+    got
+}
+
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames { total = total + run_cycle(); }
+    total
+}
+
+fn main() -> i64 { run_loop(50) }

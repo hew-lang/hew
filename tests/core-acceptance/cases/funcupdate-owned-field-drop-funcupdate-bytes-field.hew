@@ -1,0 +1,14 @@
+type ByteHolder {
+    buf: bytes,
+    count: i64,
+}
+
+fn main() -> i64 {
+    var h = ByteHolder { buf: "initial".to_bytes(), count: 0 };
+    var i: i64 = 0;
+    while i < 50 {
+        h = ByteHolder { buf: "loop-payload".to_bytes(), ..h };
+        i = i + 1;
+    }
+    h.count
+}

@@ -14,8 +14,8 @@
 // the declared state and never the dead instance's.
 //
 // Verified ASan/guard-malloc clean on the crash+restart path (no double-free,
-// no leak, no OOB) - see the on_crash_action_restart_real_crash gate in
-// scripts/asan-fixture-check.sh (Linux) and the macOS leaks oracle.
+// no leak, no OOB) - the on_crash_action_restart_real_crash case runs in the
+// core-acceptance `safety` suite.
 import std.failure;
 
 actor Worker {

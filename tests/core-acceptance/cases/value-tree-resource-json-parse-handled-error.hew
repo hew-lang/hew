@@ -1,0 +1,11 @@
+import std.encoding.json;
+fn main() -> i32 {
+    for _ in 0..50 {
+        let n = match json.parse("{") {
+            .Ok(_) => { return 1; }
+            .Err(_) => 7
+        };
+        println(f"{n}");
+    }
+    0
+}

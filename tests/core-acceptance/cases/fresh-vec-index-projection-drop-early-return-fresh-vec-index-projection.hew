@@ -1,0 +1,22 @@
+type Holder {
+    items: [string],
+}
+
+fn frame(flag: bool) -> i64 {
+    var v: [Holder] = [];
+    v.push(Holder { items: ["left", "right"] });
+    if flag {
+        return v[0].items.len();
+    }
+    99
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + frame(true);
+        i = i + 1;
+    }
+    if total == 100 { 0 } else { 73 }
+}

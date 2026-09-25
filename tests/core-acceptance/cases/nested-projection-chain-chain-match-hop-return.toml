@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-projection-chain-chain-match-hop-return"
+intent = "Nested-projection-chain ownership oracle — the compiled-binary pins for a MULTI-level field-projection alias chain. Shape `chain_match_hop_return_high` (match intermediate return leaf leak slope below tolerance, match intermediate return leaf no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-projection-chain-chain-match-hop-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

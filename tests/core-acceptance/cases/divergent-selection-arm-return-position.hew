@@ -1,0 +1,29 @@
+fn make() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    return v;
+}
+
+fn pick(c: bool) -> Vec<i64> {
+    let a = make();
+    let b = make();
+    match c { true => a, false => b }
+}
+
+fn probe(c: bool) -> i64 {
+    let out = pick(c);
+    out.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        total = total + probe(seed % 2 == 0);
+        println("frame");
+    }
+    match total >= 0 {
+        true => 0,
+        false => 1,
+    }
+}

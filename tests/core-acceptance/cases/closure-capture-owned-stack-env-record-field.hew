@@ -1,0 +1,21 @@
+type Holder {
+    left: string,
+    right: string,
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let h = Holder {
+            left: "left-payload".to_upper(),
+            right: "right-payload".to_upper(),
+        };
+        let f = || h.left.len() + h.right.len() + i;
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 24900 { return 95; }
+    0
+}

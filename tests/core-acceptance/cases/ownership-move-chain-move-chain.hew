@@ -1,0 +1,12 @@
+type Item { name: string, n: i64, }
+fn count_items(xs: Vec<Item>) -> i64 {
+let it = xs.iter();
+var total = 0;
+for _ in it { total = total + 1; }
+total
+}
+fn main() {
+var xs: Vec<Item> = Vec.new();
+xs.push(Item { name: "a", n: 1 });
+print(count_items(xs));
+}

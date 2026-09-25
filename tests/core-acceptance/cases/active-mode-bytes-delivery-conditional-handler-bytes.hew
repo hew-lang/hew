@@ -1,0 +1,23 @@
+actor ProbeSink {
+    receive fn take(data: bytes) { println("FORWARDED"); }
+}
+actor Router {
+    let sink: ProbeSink,
+    receive fn route(data: bytes, forward: bool) {
+        if forward {
+            let _ = sink.take(data);
+        } else {
+            let n = data.len();
+            println(n as i64);
+            println("LOCAL");
+        }
+    }
+}
+fn main() -> i64 {
+    let sink = spawn ProbeSink();
+    let router = spawn Router(sink: sink);
+    let _ = router.route(b"forward-owner", true);
+    let _ = router.route(b"local-owner", false);
+    println("DONE");
+    0
+}

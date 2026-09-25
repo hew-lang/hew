@@ -1,0 +1,15 @@
+fn ef(e: Result<string, string>) -> string {
+    match e {
+        .Ok(x) => { let s = x; s },
+        .Err(y) => y
+    }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let s = ef(.Ok("a" + "b"));
+        total = total + s.len();
+    }
+    if total != 50 * 2 { return 77; }
+    0
+}

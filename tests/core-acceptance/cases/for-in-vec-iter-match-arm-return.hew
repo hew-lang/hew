@@ -1,0 +1,32 @@
+fn make_vec() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("early" + "-alpha-padding-padding-padding");
+    v.push("early" + "-beta-padding-padding-padding");
+    v.push("early" + "-gamma-padding-padding-padding");
+    return v;
+}
+
+fn classify(n: i64) -> Result<i64, string> {
+    if n > 0 {
+        return .Err("classify" + "-boom");
+    }
+    return .Ok(n);
+}
+
+fn frame() {
+    for word in make_vec() {
+        match classify(word.len()) {
+            .Ok(v) => { }
+            .Err(e) => { return; }
+        }
+    }
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 50 {
+        frame();
+        i = i + 1;
+    }
+    print("OK");
+}

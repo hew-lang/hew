@@ -1,0 +1,20 @@
+enum Inner {  Full(Vec<i64>), Hollow }
+enum Outer {  Wrap(Inner), Bare }
+fn main() -> i64 {
+    let b = Outer.Wrap(Inner.Full(seed()));
+    var total = 0;
+    match b {
+        Outer.Wrap(Inner.Full(v)) => { total = v.len(); }
+        Outer.Wrap(Inner.Hollow) => {}
+        Outer.Bare => {}
+    }
+    total
+}
+
+fn seed() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v
+}

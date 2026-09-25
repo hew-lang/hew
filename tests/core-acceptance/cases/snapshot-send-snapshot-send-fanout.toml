@@ -1,0 +1,10 @@
+[[case]]
+id = "snapshot-send-snapshot-send-fanout"
+intent = "Compiled leak and poisoned-allocator oracle for actor snapshot sends. Shape `snapshot-send-fanout_high` (snapshot send fanout has flat leak slope, snapshot send fanout is scribble clean with exact output) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/snapshot-send-snapshot-send-fanout.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "50:50:50"
+exit = 0

@@ -1,0 +1,18 @@
+type Named { label: string }
+
+fn make(n: i64) -> Named {
+    Named { label: "a heap allocated label long enough to allocate" }
+}
+
+fn build(n: i64) -> i64 {
+    let r = make(n);
+    r.label.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        total = total + build(i);
+    }
+    0
+}

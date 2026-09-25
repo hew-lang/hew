@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-actor-handler-branch-to-two-state-fields"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `actor_handler_branch_to_two_state_fields_high` (branch to two state fields mints one source owner) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-actor-handler-branch-to-two-state-fields.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

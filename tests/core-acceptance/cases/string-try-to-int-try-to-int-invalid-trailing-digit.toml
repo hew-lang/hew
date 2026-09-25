@@ -1,0 +1,10 @@
+[[case]]
+id = "string-try-to-int-try-to-int-invalid-trailing-digit"
+intent = "Leak oracle for `std::string::try_to_int`. Shape `try_to_int_invalid_trailing_digit_high` (invalid digit early return has no per digit leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-try-to-int-try-to-int-invalid-trailing-digit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

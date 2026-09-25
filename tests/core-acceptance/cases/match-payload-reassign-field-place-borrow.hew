@@ -1,0 +1,28 @@
+enum Box { 
+    Full(Vec<i64>), 
+    Empty, 
+
+ }
+type Holder { b: Box, }
+
+fn main() -> i64 {
+    let h = Holder { b: Box.Full(seed()) };
+    var i = 0;
+    var sum = 0;
+    while i < 5 {
+        match h.b {
+            Box.Full(v) => { sum = sum + v.len(); }
+            Box.Empty => {}
+        }
+        i = i + 1;
+    }
+    sum
+}
+
+fn seed() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v
+}

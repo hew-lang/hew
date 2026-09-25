@@ -1,0 +1,31 @@
+import std.stream;
+
+// The replier cannot answer while `main` selects, and nothing is sent on `rx`,
+// so the `after` arm always wins and both losers are cancelled with their
+// owned bindings unbound. Closing the gate afterwards releases the replier.
+actor SlowReplier {
+    var gate: stream.Stream<i64>,
+    receive fn fetch() -> string {
+        gate.recv();
+        "after-wins-loser-reply".to_upper()
+    }
+}
+
+fn main() -> i64 {
+    let (open, gate) = stream.pipe(1).expect("gate");
+    let slow = spawn SlowReplier(gate: gate);
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    var timeouts: i64 = 0;
+    for _ in 0..50 {
+        let r = select {
+            _reply from slow.fetch() => 1,
+            _msg from rx.recv() => 2,
+            after 1ms => 0,
+        };
+        if r == 0 { timeouts = timeouts + 1; }
+    }
+    open.close();
+    tx.close();
+    rx.close();
+    if timeouts == 50 { 0 } else { 1 }
+}

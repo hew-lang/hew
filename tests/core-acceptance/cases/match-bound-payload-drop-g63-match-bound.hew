@@ -1,0 +1,21 @@
+fn make(n: i64) -> Option<string> {
+    if n > 0 { .Some("g63-match-heap-payload".to_upper()) } else { .None }
+}
+
+fn run_cycle(n: i64) -> i64 {
+    let opt = make(n);
+    var got: i64 = 0;
+    match opt {
+        .Some(s) => { if !s.is_empty() { got = 1; } }
+        .None => {}
+    }
+    got
+}
+
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames { total = total + run_cycle(i + 1); }
+    total
+}
+
+fn main() -> i64 { run_loop(50) }

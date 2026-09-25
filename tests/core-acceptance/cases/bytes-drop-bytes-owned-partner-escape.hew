@@ -1,0 +1,16 @@
+fn make_escape() -> bytes {
+    let source = "owned-escape-payload".to_bytes();
+    let alias = source;
+    let _len = alias.len();
+    source
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let escaped = make_escape();
+        total = total + escaped.len();
+        i = i + 1;
+    }
+    total
+}

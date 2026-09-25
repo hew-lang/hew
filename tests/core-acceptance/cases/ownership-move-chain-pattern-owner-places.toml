@@ -1,0 +1,10 @@
+[[case]]
+id = "ownership-move-chain-pattern-owner-places"
+intent = "Hard-cutover ownership regression: an owned `VecIter` yield obligation follows whole-local moves and is destroyed exactly once. Shape `pattern_owner_places` (match and if let payload owners use their real destinations) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/ownership-move-chain-pattern-owner-places.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "match\n"
+exit = 0

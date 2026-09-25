@@ -1,0 +1,25 @@
+import std.string;
+
+fn generic_str_sink<T>(s: string) {}
+
+actor ForkDriver { 
+    receive fn run_n(n: i64) -> i64 {
+        var i: i64 = 0;
+        while i < n {
+            let s = string.repeat("owned-heap-string-payload", 20);
+            scope {
+                fork { generic_str_sink<i64>(s) }
+            };
+            i = i + 1;
+        }
+        0
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn ForkDriver;
+    match d.run_n(100) {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

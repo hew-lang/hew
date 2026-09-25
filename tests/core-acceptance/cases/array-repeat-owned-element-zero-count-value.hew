@@ -1,0 +1,11 @@
+type Person { name: string }
+
+fn make() -> Person {
+    Person { name: "z" + "z" }
+}
+
+fn main() {
+    let ps = [make(); 0];
+    print(ps.len());
+    print("OK");
+}

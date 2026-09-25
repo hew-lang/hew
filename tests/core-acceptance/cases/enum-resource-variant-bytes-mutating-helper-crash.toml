@@ -1,0 +1,11 @@
+[[case]]
+id = "enum-resource-variant-bytes-mutating-helper-crash"
+intent = " Shape `bytes_mutating_helper_crash` (bytes runtime mutation then crash releases refreshed snapshot once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-resource-variant-bytes-mutating-helper-crash.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok=7\nhandled-crash\nsurvived\n"
+stderr = "hew: failure: UserPanic (212): crash after bytes.clear\nhew: actor crash in Runner.run (actor 2): UserPanic\n"
+exit = 1

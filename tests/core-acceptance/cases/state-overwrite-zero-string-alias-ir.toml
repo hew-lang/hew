@@ -1,0 +1,10 @@
+[[case]]
+id = "state-overwrite-zero-string-alias-ir"
+intent = "State-field overwrite leak oracles for collection, record, and enum actor state fields, plus alias-shape use-after-free pins. Shape `zero_string_alias_ir` (zero string aggregate alias emits no recursive retain code) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/state-overwrite-zero-string-alias-ir.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

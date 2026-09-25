@@ -1,0 +1,20 @@
+import std.string;
+type Leaf { label: string, n: i64 }
+type Wrapper { inner: (Option<Leaf>, i64), tag: string }
+type T { pair: (Wrapper, i64), churn: string }
+fn mk() -> T {
+    T {
+        pair: (Wrapper { inner: (.Some(Leaf { label: string.repeat("k", 32), n: 1 }), 9), tag: string.repeat("w", 32) }, 5),
+        churn: string.repeat("a", 32),
+    }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let r = mk();
+        total = total + r.churn.len();
+        i = i + 1;
+    }
+    total - total
+}

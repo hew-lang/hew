@@ -1,0 +1,19 @@
+type Inner { payload: Vec<i64> }
+type Outer { inner: Inner }
+
+fn build(n: i64) -> i64 {
+    var v: Vec<i64> = Vec.new();
+    v.push(n);
+    v.push(n + 1);
+    let pair = (Outer { inner: Inner { payload: v } }, n);
+    pair.1
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        total = total + build(i);
+    }
+    if total != 2016 { return 72; }
+    0
+}

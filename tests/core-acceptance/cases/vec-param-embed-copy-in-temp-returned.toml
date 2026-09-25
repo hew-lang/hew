@@ -1,0 +1,13 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-returned"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. The checker refuses the shape (callable storage return and capture stay fail closed on both targets) before it can reach code generation."
+source = "cases/vec-param-embed-copy-in-temp-returned.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+line = 2
+column = 5
+message = "cannot consume a value through borrowed parameter `f`"

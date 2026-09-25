@@ -1,0 +1,17 @@
+fn mk() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("own" + "-alpha");
+    v.push("own" + "-beta");
+    v.push("own" + "-gamma");
+    return v;
+}
+
+fn main() {
+    var sink: HashMap<i64, string> = HashMap.new();
+    for w in mk() {
+        sink.insert(1, w);
+        break;
+    }
+    print(sink.len());
+    print("OK");
+}

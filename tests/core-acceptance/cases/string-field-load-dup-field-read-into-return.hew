@@ -1,0 +1,19 @@
+import std.string;
+fn first_field(line: string) -> (string, i64) {
+    let parts: Vec<string> = line.split(",");
+    (parts[0], 1)
+}
+fn main() {
+    var lines: Vec<string> = Vec.new();
+    lines.push("alpha,x"); lines.push("beta,x"); lines.push("gamma,x");
+    lines.push("delta,x"); lines.push("epsilon,x"); lines.push("zeta,x");
+    var totals: HashMap<string, i64> = HashMap.new();
+    var counts: HashMap<string, i64> = HashMap.new();
+    let n = lines.len();
+    for i in 0 .. n {
+        let p = first_field(lines[i]);
+        totals.insert(p.0, p.1);
+        counts.insert(p.0, 1);
+    }
+    println("OK");
+}

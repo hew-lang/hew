@@ -1,0 +1,21 @@
+actor Greeter {
+    let name: string,
+    receive fn greet(suffix: string) -> string {
+        name + suffix
+    }
+}
+
+fn main() -> i64 {
+    let g = spawn Greeter(name: "widget");
+    var i: i64 = 0;
+    var sink: i64 = 0;
+    while i < 50 {
+        let r = g.greet("-suffix");
+        match r {
+            .Ok(s) => { sink = sink + s.len(); },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    if sink > 0 { 0 } else { 1 }
+}

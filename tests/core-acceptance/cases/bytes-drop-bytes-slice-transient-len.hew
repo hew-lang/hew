@@ -1,0 +1,10 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let b = "slice-transient-source-payload".to_bytes();
+        total = total + b[1..4].len();
+        i = i + 1;
+    }
+    total
+}

@@ -1,0 +1,10 @@
+fn f() -> Result<bytes, string> {
+    .Ok("g2429-single".to_bytes())
+}
+
+fn main() {
+    match f() {
+        .Ok(b) => { if b.len() == 12 { print("m"); } }
+        .Err(e) => { print("e"); }
+    }
+}

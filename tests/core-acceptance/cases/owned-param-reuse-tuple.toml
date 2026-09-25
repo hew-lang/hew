@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-param-reuse-tuple"
+intent = "Leak oracle for caller-side owned by-value param drop under REUSE. Shape `owned_param_reuse_tuple_high` (tuple param reuse does not double free, tuple param reuse leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-param-reuse-tuple.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

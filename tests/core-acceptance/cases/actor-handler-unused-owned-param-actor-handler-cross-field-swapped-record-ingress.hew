@@ -1,0 +1,36 @@
+type Inner { name: string }
+type Pair { left: Inner, right: Inner }
+actor Fan { 
+    var seen: i64,
+    var held: Pair,
+    receive fn route(label: string, other: string, count: i64) {
+        var j: i64 = 0;
+        while j < count {
+            let named = Inner { name: label };
+            let alternate = Inner { name: other };
+            let next = if j % 2 == 0 {
+                Pair { left: named, right: alternate }
+            } else {
+                Pair { left: alternate, right: named }
+            };
+            held = next;
+            j = j + 1;
+        }
+        seen = seen + 1;
+    }
+    receive fn total() -> i64 {
+        seen + held.left.name.len() + held.right.name.len()
+    }
+}
+fn main() -> i64 {
+    let fan = spawn Fan(
+        seen: 0,
+        held: Pair { left: Inner { name: "left" }, right: Inner { name: "right" } }
+    );
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = fan.route("named".to_upper(), "alternate".to_upper(), i % 5);
+        i = i + 1;
+    }
+    match fan.total() { .Ok(n) => if n > 50 { 0 } else { 91 }, .Err(_) => 92 }
+}

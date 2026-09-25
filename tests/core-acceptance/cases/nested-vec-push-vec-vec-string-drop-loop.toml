@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-vec-push-vec-vec-string-drop-loop"
+intent = "Nested-collection `Vec` push ownership oracles (hew-lang/hew#1722). Shape `vec_vec_string_drop_loop_high` (vec vec string outer drop no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-vec-push-vec-vec-string-drop-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 200

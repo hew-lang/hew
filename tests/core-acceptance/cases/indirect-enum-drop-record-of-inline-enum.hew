@@ -1,0 +1,15 @@
+enum Wrap { W(Tree), }
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+type Holder { tag: i64, wrap: Wrap }
+fn run_loop() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        let h = Holder { tag: 3, wrap: .W(.Node(.Leaf(1), .Leaf(2))) };
+        total = total + h.tag;
+    }
+    total
+}
+fn main() {
+    let r = run_loop();
+    if r == 150 { print("ok"); } else { print("BAD"); }
+}

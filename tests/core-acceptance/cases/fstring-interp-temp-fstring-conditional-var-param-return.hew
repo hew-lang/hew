@@ -1,0 +1,17 @@
+fn pick(var value: string, replace: bool) -> string {
+    if replace { value = "replacement"; }
+    value
+}
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 200 {
+        let owned = f"live-token-{i}";
+        println(f"carrier={pick(owned, false)}");
+        if owned.len() < 12 { return 80; }
+        total = total + i + i;
+        i = i + 1;
+    }
+    if total != 39800 { return 79; }
+    0
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "state-overwrite-enum-payload-alias"
+intent = "State-field overwrite leak oracles for collection, record, and enum actor state fields, plus alias-shape use-after-free pins. Shape `enum_payload_alias_high` (enum payload alias emits exact recursive retain and release, enum payload alias keeps recursive string leaf alive) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/state-overwrite-enum-payload-alias.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 10

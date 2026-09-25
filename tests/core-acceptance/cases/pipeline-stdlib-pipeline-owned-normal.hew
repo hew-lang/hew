@@ -1,0 +1,23 @@
+import std.pipeline;
+
+fn main() -> i64 {
+    var source = pipeline.run(pipeline.from(50));
+    var i: i64 = 0;
+    while i < 50 {
+        let item: pipeline.PipelineItemI64 = PipelineItemI64 {
+            value: i,
+            label: f"normal-owned-{i}",
+            crash_stage: false,
+        };
+        match source.push(item) {
+            .Ok(admitted) => { if !admitted { return 2; } },
+            .Err(_) => { return 3; },
+        }
+        println("normal");
+        i = i + 1;
+    }
+    match source.shutdown(50) {
+        .Ok(drained) => if drained { 0 } else { 4 },
+        .Err(_) => 5,
+    }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "branch-around-return-member-exactly-once-pin"
+intent = "Branch-around returned-member leak — slope oracles plus poisoned-allocator exactly-once pins. Shape `exactly_once_pin` (branch around return shapes run clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/branch-around-return-member-exactly-once-pin.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "6230301OK"
+exit = 0

@@ -1,0 +1,22 @@
+fn mk() -> bytes {
+    "escape-payload".to_bytes()
+}
+
+fn forward() -> bytes {
+    mk()
+}
+
+type Boxed {
+    payload: bytes,
+}
+
+fn main() {
+    let b = mk();
+    let named_len = b.len();
+    let fwd = forward();
+    let fwd_len = fwd.len();
+    let boxed = Boxed { payload: mk() };
+    let box_len = boxed.payload.len();
+    print(named_len + fwd_len + box_len);
+    print("OK");
+}

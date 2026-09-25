@@ -1,0 +1,31 @@
+fn next(i: i64) -> Result<string, string> {
+    if i < 4 { .Ok("edge-payload".to_upper()) } else { .Err("done".to_upper()) }
+}
+
+fn run_continue() {
+    var i = 0;
+    while let .Ok(value) = next(i) {
+        i = i + 1;
+        if value.len() > 0 { continue; }
+    }
+}
+
+fn run_break() {
+    var i = 0;
+    while let .Ok(value) = next(i) {
+        if value.len() > 0 { break; }
+    }
+}
+
+fn run_return() -> i64 {
+    while let .Ok(value) = next(0) {
+        if value.len() > 0 { return 1; }
+    }
+    0
+}
+
+fn main() {
+    run_continue();
+    run_break();
+    if run_return() == 1 { print("ok"); }
+}

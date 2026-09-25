@@ -1,0 +1,11 @@
+type CallableBox { f: fn(i64) -> i64 }
+
+fn store(f: fn(i64) -> i64) -> CallableBox {
+    CallableBox { f: f }
+}
+
+fn main() {
+    let double = |x: i64| x * 2;
+    let _boxed = store(double);
+    println(double(2));
+}

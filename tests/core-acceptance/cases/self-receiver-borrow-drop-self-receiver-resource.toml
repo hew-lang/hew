@@ -1,0 +1,10 @@
+[[case]]
+id = "self-receiver-borrow-drop-self-receiver-resource"
+intent = "Leak oracle for the caller-side drop of a value-receiver method's receiver (Shape A of #2753). Shape `self_receiver_resource_df` (resource receiver does not double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/self-receiver-borrow-drop-self-receiver-resource.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

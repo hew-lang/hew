@@ -1,0 +1,18 @@
+fn make_vec(n: i64) -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(n);
+    v.push(n * 2);
+    return v;
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        for x in make_vec(i) {
+            total = total + x;
+        }
+        i = i + 1;
+    }
+    total
+}

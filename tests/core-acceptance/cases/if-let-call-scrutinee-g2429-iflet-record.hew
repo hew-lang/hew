@@ -1,0 +1,18 @@
+type Row {
+    name: string,
+    id: i64,
+}
+
+fn f(n: i64) -> Option<Row> {
+    .Some(Row { name: "g2429-iflet-row".to_upper(), id: n })
+}
+
+fn main() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 50 {
+        if let .Some(r) = f(i) { total = total + r.id; }
+        i = i + 1;
+    }
+    if total >= 0 { 0 } else { 1 }
+}

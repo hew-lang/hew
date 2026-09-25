@@ -1,0 +1,19 @@
+fn make_counter(n: i64) -> fn() -> i64 {
+    var xs: Vec<i64> = Vec.new();
+    xs.push(10);
+    xs.push(20);
+    || xs.len() + n
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let f = make_counter(i);
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 20300 { return 92; }
+    0
+}

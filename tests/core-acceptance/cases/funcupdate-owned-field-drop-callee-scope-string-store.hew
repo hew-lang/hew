@@ -1,0 +1,16 @@
+import std.string;
+type Cfg { label: string, count: i64 }
+fn churn(seed: string) -> i64 {
+    var c = Cfg { label: seed, count: 0 };
+    c.label = string.repeat("b", 32);
+    c.label.len()
+}
+fn main() -> i64 {
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        acc = acc + churn(string.repeat("a", 32));
+        i = i + 1;
+    }
+    if acc > 0 { 0 } else { 1 }
+}

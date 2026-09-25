@@ -1,0 +1,22 @@
+type Inner {
+    value: string,
+}
+
+type Holder {
+    n: i64,
+    inner: Inner,
+}
+
+fn main() -> i64 {
+    let h = Holder {
+        n: 7,
+        inner: Inner { value: "scribble-heap-payload".to_upper() },
+    };
+    let x = match h {
+        Holder { n: x, inner: _ } => x,
+    };
+    if x == 7 {
+        print("k");
+    }
+    0
+}

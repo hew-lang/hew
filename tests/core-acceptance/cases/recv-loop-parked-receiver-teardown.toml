@@ -1,0 +1,10 @@
+[[case]]
+id = "recv-loop-parked-receiver-teardown"
+intent = "Per-iteration recv-result drop on the loop back-edge. Shape `parked_receiver_teardown` (parked for await receiver handoff has flat leak slope and no double free, parked receivers finish when the supervisor stops) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/recv-loop-parked-receiver-teardown.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "parked\nparked\nparked\n"
+exit = 0

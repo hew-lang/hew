@@ -1,0 +1,21 @@
+type SavedKey { value: string }
+
+fn borrowThenFree(key: string) -> i64 {
+    var saved: Vec<SavedKey> = [];
+    saved.push(SavedKey { value: key });
+    saved.len()
+}
+
+fn inspectTwice(key: string) -> i64 {
+    let first = borrowThenFree(key);
+    let second = borrowThenFree(key);
+    first + second + key.len()
+}
+
+fn main() -> i64 {
+    let key = "carrier-guard".to_upper();
+    print(inspectTwice(key));
+    print("|");
+    print(key);
+    0
+}

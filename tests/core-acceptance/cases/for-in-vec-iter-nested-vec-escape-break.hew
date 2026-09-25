@@ -1,0 +1,18 @@
+fn main() {
+    var vv: Vec<Vec<string>> = Vec.new();
+    var r: i64 = 0;
+    while r < 3 {
+        var row: Vec<string> = Vec.new();
+        row.push("brk" + "-alpha");
+        row.push("brk" + "-beta");
+        vv.push(row);
+        r = r + 1;
+    }
+    var sink: HashMap<i64, Vec<string>> = HashMap.new();
+    for inner in vv.iter() {
+        sink.insert(0, inner);
+        break;
+    }
+    print(sink.len());
+    print("OK");
+}

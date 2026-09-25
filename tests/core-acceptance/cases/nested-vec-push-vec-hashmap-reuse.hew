@@ -1,0 +1,21 @@
+fn main() {
+    var rows: Vec<HashMap<string, i64>> = [];
+    let key: string = "k";
+    var i: i64 = 0;
+    while i < 3 {
+        var m: HashMap<string, i64> = HashMap.new();
+        m.insert(clone key, i * 7);
+        rows.push(m);
+        i = i + 1;
+    }
+    var out: string = "";
+    for r in 0 .. rows.len() {
+        let row = rows[r];
+        match row.get(key) {
+            .Some(v) => { out = out + f"{v}" + "|"; },
+            .None => { out = out + "MISSING|"; },
+        }
+    }
+    print(out);
+    print("OK");
+}

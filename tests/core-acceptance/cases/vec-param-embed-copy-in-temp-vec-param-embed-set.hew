@@ -1,0 +1,17 @@
+type Wrap { f: Option<string> }
+
+fn setParam(p: string) -> i64 {
+    var v: Vec<Wrap> = [];
+    v.push(Wrap { f: .None });
+    v.set(0, Wrap { f: .Some(p) });
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..50 {
+        let p = f"item-{i}";
+        if setParam(p) != 1 { return 21; }
+        if p.len() < 6 { return 22; }
+    }
+    0
+}

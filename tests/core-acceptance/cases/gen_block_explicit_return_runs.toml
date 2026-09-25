@@ -1,0 +1,10 @@
+[[case]]
+id = "gen_block_explicit_return_runs"
+intent = "A `gen { return 1; }` block with no yield compiles and runs; checking alone accepts it today, but code generation refuses it."
+source = "../vertical-slice/accept/gen_block_explicit_return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,37 @@
+import std.stream;
+
+actor Sleeper {
+    receive fn work(ready: stream.Sink<i64>, gate: stream.Stream<i64>) {
+        var m: HashMap<string, string> = HashMap.new();
+        m.insert("key-alpha-long-enough-to-heap-allocate", "val-alpha-long-enough-to-heap-allocate");
+        m.insert("key-beta-long-enough-to-heap-allocate", "val-beta-long-enough-to-heap-allocate");
+        let taken = match m.remove("key-beta-long-enough-to-heap-allocate") {
+            .Some(s) => s,
+            .None => "MISS",
+        };
+        // Park with the owned local live; only teardown ends this wait.
+        ready.send(1).expect("ready");
+        gate.recv();
+        println(f"{taken.len()} {m.len()}");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+
+    child sleeper: Sleeper,
+}
+
+fn main() {
+    let sup = spawn App;
+    let s = sup.sleeper;
+    let (ready_tx, ready) = stream.pipe(1).expect("ready");
+    let (_shut, gate) = stream.pipe(1).expect("gate");
+    // A mailbox send does not wait for the handler, so it parks while the
+    // supervisor stops it.
+    mailbox(s, on_full: .Wait).work(ready_tx, gate).expect("send");
+    ready.recv();
+    supervisor_stop(sup);
+    println("stopped");
+}

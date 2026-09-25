@@ -1,0 +1,10 @@
+[[case]]
+id = "match-payload-reassign-two-field-move-binding"
+intent = "Projected-payload move-out UAF / double-free oracle (issue #2523). Shape `two_field_move_binding` (two field move out binding single free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-payload-reassign-two-field-move-binding.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 6

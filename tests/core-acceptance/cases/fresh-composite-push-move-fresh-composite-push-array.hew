@@ -1,0 +1,12 @@
+type Holder { items: Vec<string> }
+fn mkHolder(i: i64) -> Holder { Holder { items: [f"x{i % 10}", f"y{i % 10}"] } }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        var v: Vec<Holder> = [];
+        v.push(mkHolder(i));
+        total = total + v.len();
+    }
+    if total != 50 { return 71; }
+    0
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "link_monitor_value_monitor_in_actor"
+intent = "Value-needed monitor() INSIDE an actor receive handler — the real home of cooperative cancellation."
+source = "../vertical-slice/accept/link_monitor_value_monitor_in_actor.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

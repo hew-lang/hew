@@ -1,0 +1,11 @@
+import std.string;
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        match string.to_int("1234567") {
+            .Ok(value) => { total = total + value; },
+            .Err(_) => { return 91; },
+        }
+    }
+    if total == 61728350 { 0 } else { 92 }
+}

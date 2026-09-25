@@ -1,0 +1,62 @@
+import std.stream;
+
+fn drop_receiver_vec() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    tx.close();
+    let receivers: Vec<stream.Stream<i64>> = [rx];
+    if receivers.len() != 1 { panic("receiver Vec move"); }
+    println("receiver-vec-dropped");
+}
+
+fn main() {
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+    drop_receiver_vec();
+}

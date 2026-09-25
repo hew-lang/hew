@@ -1,0 +1,13 @@
+fn duplicate(value: bytes) -> (bytes, bytes) { (value, value) }
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let source = "return-share".to_bytes();
+        let returned = duplicate(source);
+        let (left, right) = returned;
+        total = total + source.len() + left.len() + right.len();
+        i = i + 1;
+    }
+    total
+}

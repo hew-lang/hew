@@ -1,0 +1,29 @@
+actor Consumer {
+    var seen: i64,
+    var last: string,
+    receive fn take(value: string) -> i64 { last = value; seen = seen + 1; seen }
+    receive fn total() -> i64 { if last.contains("FORWARD") { seen } else { -1 } }
+}
+actor Relay {
+    let consumer: Consumer,
+    var seen: i64,
+    receive fn forward(value: string) -> i64 {
+        let delivered = match consumer.take(value) { .Ok(n) => n, .Err(_) => -1 };
+        seen = seen + 1;
+        delivered
+    }
+    receive fn count() -> i64 { seen }
+}
+fn main() -> i64 {
+    let consumer = spawn Consumer(seen: 0, last: "seed");
+    let relay = spawn Relay(consumer: consumer, seen: 0);
+    var i: i64 = 0;
+    while i < 40 {
+        let delivered = match relay.forward("forward".to_upper()) { .Ok(n) => n, .Err(_) => -1 };
+        if delivered < 0 { return 82; }
+        i = i + 1;
+    }
+    let relayed = match relay.count() { .Ok(n) => n, .Err(_) => -1 };
+    let consumed = match consumer.total() { .Ok(n) => n, .Err(_) => -1 };
+    if relayed == 40 && consumed == 40 { 0 } else { 81 }
+}

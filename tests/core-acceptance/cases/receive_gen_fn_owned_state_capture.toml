@@ -1,0 +1,10 @@
+[[case]]
+id = "receive_gen_fn_owned_state_capture"
+intent = "An owned actor-state field is cloned into the receive-generator environment."
+source = "../vertical-slice/accept/receive_gen_fn_owned_state_capture.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "5\n"
+exit = 0

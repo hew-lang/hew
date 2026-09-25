@@ -1,0 +1,34 @@
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+fn sum(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), } }
+actor Scorer {
+    receive fn score(tag: i64, tree: Tree) -> i64 { tag + sum(tree) }
+}
+actor Coordinator {
+    let scorer: Scorer,
+    receive fn ask_score(tag: i64, tree: Tree) -> i64 {
+        match scorer.score(tag, tree) { .Ok(value) => value, .Err(_) => -1, }
+    }
+    receive fn select_score(tag: i64, tree: Tree) -> i64 {
+        select { reply from scorer.score(tag, tree) => reply.expect("ask reply"), after 5s => -2, }
+    }
+}
+fn main() -> i64 {
+    let scorer = spawn Scorer;
+    let coordinator = spawn Coordinator(scorer: scorer);
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let direct = match scorer.score(i, .Node(.Leaf(1), .Leaf(2))) { .Ok(value) => value, .Err(_) => -3, };
+        let selected = select { reply from scorer.score(i, .Node(.Leaf(3), .Leaf(4))) => reply.expect("ask reply"), after 5s => -4, };
+        let task_a = fork scorer.score(i, .Node(.Leaf(5), .Leaf(6)));
+        let task_b = fork scorer.score(i, .Node(.Leaf(7), .Leaf(8)));
+        let joined_a = match await task_a { .Ok(value) => value, .Err(_) => -7, };
+        let joined_b = match await task_b { .Ok(value) => value, .Err(_) => -8, };
+        let suspended_ask = match coordinator.ask_score(i, .Node(.Leaf(9), .Leaf(10))) { .Ok(value) => value, .Err(_) => -5, };
+        let suspended_select = match coordinator.select_score(i, .Node(.Leaf(11), .Leaf(12))) { .Ok(value) => value, .Err(_) => -6, };
+        total = total + direct + selected + joined_a + joined_b + suspended_ask + suspended_select;
+        i = i + 1;
+    }
+    if total == 11250 { print("ok"); } else { print("BAD"); }
+    0
+}

@@ -1,0 +1,34 @@
+fn make_vec() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("early" + "-alpha-padding-padding-padding");
+    v.push("early" + "-beta-padding-padding-padding");
+    v.push("early" + "-gamma-padding-padding-padding");
+    return v;
+}
+
+fn check(n: i64) -> Result<i64, string> {
+    if n > 0 {
+        return .Err("propagate" + "-boom");
+    }
+    return .Ok(n);
+}
+
+fn frame() -> Result<i64, string> {
+    for word in make_vec() {
+        let n = check(word.len())?;
+        return .Ok(n);
+    }
+    return .Ok(0);
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 50 {
+        match frame() {
+            .Ok(v) => { }
+            .Err(e) => { }
+        }
+        i = i + 1;
+    }
+    print("OK");
+}

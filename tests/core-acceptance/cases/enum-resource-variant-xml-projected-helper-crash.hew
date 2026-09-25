@@ -1,0 +1,52 @@
+import std.encoding.xml;
+
+enum Pair {
+    Both(xml.Node, string),
+    Nothing,
+}
+
+fn consume(consume pair: Pair, trigger: i64) -> i64 {
+    match pair {
+        Pair.Both(node, text) => {
+            node.close();
+            if trigger != 0 {
+                panic("crash after explicit close");
+            }
+            text.len()
+        },
+        Pair.Nothing => 0,
+    }
+}
+
+actor Helper {
+    receive fn ping() -> i64 {
+        7
+    }
+}
+
+actor Crasher {
+    let helper: Helper,
+
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match helper.ping() {
+            .Ok(value) => value,
+            .Err(_) => 0,
+        };
+        let pair = Pair.Both(xml.parse("<x/>").expect("well-formed literal"), "hi");
+        consume(pair, trigger) + seed
+    }
+}
+
+fn main() {
+    let helper = spawn Helper;
+    let crasher = spawn Crasher(helper: helper);
+    match crasher.run(0) {
+        .Ok(value) => println(f"ok={value}"),
+        .Err(_) => println("bad"),
+    }
+    match crasher.run(1) {
+        .Ok(value) => println(f"unexpected={value}"),
+        .Err(_) => println("handled-crash"),
+    }
+    println("survived");
+}

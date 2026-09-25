@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-forwarded-param"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `forwarded_param` (forwarded param survives without handler double drop) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-forwarded-param.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

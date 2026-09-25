@@ -1,0 +1,10 @@
+[[case]]
+id = "wire-cbor-codec-wire-cbor-enum-owned-round-trip"
+intent = "Wire CBOR codec ownership leak oracles: decode-owned field drop and the decode-failure partial free-on-error path. Shape `wire_cbor_enum_owned_round_trip_high` (enum owned payload round trip no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/wire-cbor-codec-wire-cbor-enum-owned-round-trip.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 50

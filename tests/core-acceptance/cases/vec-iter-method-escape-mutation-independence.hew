@@ -1,0 +1,14 @@
+fn main() {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    let c = v.iter();
+    v.push(99);
+    v.push(7);
+    v.push(13);
+    var n: i64 = 0;
+    for _x in c {
+        n = n + 1;
+    }
+    print(n);
+}

@@ -1,0 +1,47 @@
+import std.string;
+fn main() -> i64 {
+    var checks: i64 = 0;
+    for i in 0..50 {
+        match string.to_float("1234567") {
+            .Ok(value) => { if value != 1234567.0 { return 101; } checks = checks + 1; },
+            .Err(_) => { return 102; },
+        }
+        match string.to_float("12.5") {
+            .Ok(value) => { if value != 12.5 { return 103; } checks = checks + 1; },
+            .Err(_) => { return 104; },
+        }
+        match string.to_float("6e2") {
+            .Ok(value) => { if value != 600.0 { return 105; } checks = checks + 1; },
+            .Err(_) => { return 106; },
+        }
+        match string.to_float("-2.5E-1") {
+            .Ok(value) => { if value != -0.25 { return 107; } checks = checks + 1; },
+            .Err(_) => { return 108; },
+        }
+        match string.to_float("+.75") {
+            .Ok(value) => { if value != 0.75 { return 109; } checks = checks + 1; },
+            .Err(_) => { return 110; },
+        }
+        match string.to_float("4.") {
+            .Ok(value) => { if value != 4.0 { return 111; } checks = checks + 1; },
+            .Err(_) => { return 112; },
+        }
+        match string.to_float("1.2.3") {
+            .Ok(_) => { return 113; },
+            .Err(_) => { checks = checks + 1; },
+        }
+        match string.to_float("9e2ms") {
+            .Ok(_) => { return 114; },
+            .Err(_) => { checks = checks + 1; },
+        }
+        match string.to_float("1e2e3") {
+            .Ok(_) => { return 115; },
+            .Err(_) => { checks = checks + 1; },
+        }
+        match string.to_float("-") {
+            .Ok(_) => { return 116; },
+            .Err(_) => { checks = checks + 1; },
+        }
+    }
+    if checks == 500 { 0 } else { 117 }
+}

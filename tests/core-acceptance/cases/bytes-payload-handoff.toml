@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-payload-handoff"
+intent = "Exact ownership oracle for a retained local copy of a matched enum's `bytes` payload. Shape `bytes_payload_handoff_scribble` (high bytes payload handoffs do not double free or read poison, low and high bytes payload handoffs are exactly leak clean) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/bytes-payload-handoff.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

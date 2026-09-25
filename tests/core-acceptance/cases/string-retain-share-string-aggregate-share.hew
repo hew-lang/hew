@@ -1,0 +1,27 @@
+type Holder { payload: string, }
+fn make_holder() -> Holder {
+    let source = "returned-" + "holder";
+    let holder = Holder { payload: source };
+    let _len = source.len();
+    holder
+}
+fn store_then_return() -> string {
+    let source = "stored-" + "then-returned";
+    let holder = Holder { payload: source };
+    let _len = holder.payload.len();
+    source
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let source = "aggregate-" + "share";
+        let holder = Holder { payload: source };
+        let returned = make_holder();
+        let escaped = store_then_return();
+        total = total + source.len() + holder.payload.len()
+            + returned.payload.len() + escaped.len();
+        i = i + 1;
+    }
+    total
+}

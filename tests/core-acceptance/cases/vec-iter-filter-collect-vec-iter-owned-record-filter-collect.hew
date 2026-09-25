@@ -1,0 +1,33 @@
+import std.iter;
+
+type Claim {
+    run_id: string,
+    amount: i64,
+}
+
+fn retained_total(frame: i64) -> i64 {
+    var claims: Vec<Claim> = Vec.new();
+    claims.push(Claim { run_id: "discard", amount: -1 });
+    claims.push(Claim { run_id: "keep-a", amount: 20 });
+    claims.push(Claim { run_id: "keep-b", amount: 30 });
+    let cursor = claims.into_iter();
+    let retained = cursor.filter(|claim: Claim| claim.amount >= 20);
+    let collected = iter.collect(retained);
+    var total: i64 = 0;
+    for claim in collected {
+        total = total + claim.amount;
+    }
+    total
+}
+
+fn main() -> i64 {
+    var checksum: i64 = 0;
+    for frame in 0..50 {
+        let total = retained_total(frame);
+        if total != 50 { return 91; }
+        checksum = checksum + total;
+        print("frame");
+    }
+    if checksum != 50 * 50 { return 92; }
+    0
+}

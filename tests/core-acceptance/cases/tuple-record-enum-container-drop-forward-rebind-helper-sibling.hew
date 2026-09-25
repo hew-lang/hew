@@ -1,0 +1,31 @@
+type Holder {
+    items: Vec<string>,
+    tag: string,
+}
+
+fn helper(i: i64) -> i64 {
+    let pair: (Holder, Vec<string>) = (
+        Holder { items: ["transferred"], tag: "tag" },
+        ["left", "right"],
+    );
+    var owner = Holder { items: [], tag: "" };
+    owner = pair.0;
+    let rebound = owner;
+    if rebound.items[0] != "transferred"
+        || rebound.tag != "tag"
+        || pair.1[0] != "left"
+        || pair.1[1] != "right"
+        || pair.1.len() != 2 {
+        return -1000;
+    }
+    rebound.items[0].len() + rebound.tag.len() + pair.1[0].len() + pair.1[1].len() + pair.1.len() + i
+}
+
+fn main() -> i64 {
+    var checksum = 0;
+    for frame in 0..64 {
+        checksum = checksum + helper(frame);
+    }
+    println(f"checksum={checksum}");
+    if checksum == 3616 { 0 } else { 91 }
+}

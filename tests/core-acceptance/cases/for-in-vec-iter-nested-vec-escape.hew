@@ -1,0 +1,15 @@
+fn main() {
+    var vv: Vec<Vec<string>> = Vec.new();
+    var row: Vec<string> = Vec.new();
+    row.push("escape" + "-alpha");
+    row.push("escape" + "-beta");
+    vv.push(row);
+    var sink: HashMap<i64, Vec<string>> = HashMap.new();
+    var k: i64 = 0;
+    for inner in vv.iter() {
+        sink.insert(k, inner);
+        k = k + 1;
+    }
+    print(sink.len());
+    print("OK");
+}

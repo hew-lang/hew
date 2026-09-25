@@ -1,0 +1,57 @@
+import std.net.http.http_client;
+import std.net.http;
+
+actor Client { 
+    let url: string,
+    var complete: i64,
+
+    receive fn fetch(unused: i64) {
+        let _ = http_client.set_timeout(5000);
+        let response = http_client.get(url);
+        if response.status() != 200 {
+            panic("HTTP request retention response failed");
+        }
+        response.close();
+        complete = 1;
+    }
+
+    receive fn finished() -> i64 {
+        complete
+    }
+}
+
+fn main() {
+    match http.listen("127.0.0.1:0") {
+        .Ok(server) => {
+            let port = http.server_port(server);
+            let client = spawn Client(
+                url: f"http://127.0.0.1:{port}/retention",
+                complete: 0,
+            );
+            let _ = client.fetch(0);
+            let request = server.accept();
+            for _ in 0..50 {
+                let checksum = request.method().len()
+                    + request.path().len()
+                    + request.header("Host").len()
+                    + request.body("utf-8").len();
+                println(checksum);
+            }
+            match request.respond_text(200, "ok") {
+                .Ok(_) => {},
+                .Err(_) => panic("HTTP retention response failed"),
+            }
+            request.close();
+            match client.finished() {
+                .Ok(done) => {
+                    if done != 1 {
+                        panic("HTTP retention client stopped early");
+                    }
+                },
+                .Err(_) => panic("HTTP retention client failed"),
+            }
+            server.close();
+        },
+        .Err(_) => panic("HTTP retention listener failed"),
+    }
+}

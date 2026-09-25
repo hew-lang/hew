@@ -1,0 +1,34 @@
+type Holder {
+    g: Generator<i64, i64>,
+    label: string,
+}
+
+fn counter() -> Generator<i64, i64> {
+    gen {
+        yield 1;
+        yield 2;
+        return 0;
+    }
+}
+
+fn make_holder(k: i64) -> Holder {
+    Holder { g: counter(), label: "held-heap-payload".to_upper() }
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let h = make_holder(k);
+    let g = h.g;
+    var acc: i64 = 0;
+    for n in g { acc = acc + n; }
+    acc
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 6 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total >= 0 { 0 } else { 1 }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-collection-local-outer-iter"
+intent = "Nested-collection exactly-once ownership oracles for #2545 and #2546. Shape `local_outer_iter` (local outer iteration borrows each inner vec) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-collection-local-outer-iter.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 4

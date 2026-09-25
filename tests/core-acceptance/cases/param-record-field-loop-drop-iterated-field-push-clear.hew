@@ -1,0 +1,23 @@
+type Holder {
+    items: Vec<i64>,
+}
+
+fn main() {
+    var items: Vec<i64> = Vec.new();
+    items.push(40);
+    items.push(2);
+    var holder = Holder { items: items };
+    var seen: i64 = 0;
+    var total: i64 = 0;
+    for value in holder.items {
+        seen = seen + 1;
+        total = total + value;
+        if seen == 1 {
+            holder.items.push(7);
+        }
+        if seen == 2 {
+            holder.items.clear();
+        }
+    }
+    println(f"seen={seen} total={total} len={holder.items.len()}");
+}

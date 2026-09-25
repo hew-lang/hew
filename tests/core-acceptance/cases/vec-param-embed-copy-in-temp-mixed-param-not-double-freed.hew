@@ -1,0 +1,22 @@
+type Holder { items: Vec<string> }
+type MixedWrap { s: string, items: Vec<string> }
+
+fn pushMixed(p: string, h: Holder) -> i64 {
+    var v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
+    v.len()
+}
+
+fn main() -> i64 {
+    let p = "param-pin".to_upper();
+    let h = Holder { items: ["deep-pin".to_upper()] };
+    print(p.len());
+    print("|");
+    print(pushMixed(p, h));
+    print("|");
+    print(p);
+    print("|");
+    print(h.items.len());
+    print("|OK");
+    0
+}

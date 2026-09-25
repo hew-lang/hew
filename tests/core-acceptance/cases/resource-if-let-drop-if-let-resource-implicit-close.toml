@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-if-let-drop-if-let-resource-implicit-close"
+intent = "Leak and double-close oracle for resources bound by `if let`. Shape `if_let_resource_implicit_close_high` (if let resource implicit close has no leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/resource-if-let-drop-if-let-resource-implicit-close.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "closed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\nclosed\n"
+exit = 0

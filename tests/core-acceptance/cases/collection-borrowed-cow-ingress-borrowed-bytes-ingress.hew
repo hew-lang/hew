@@ -1,0 +1,12 @@
+fn ingest(var store: HashMap<string, bytes>, payload: bytes) -> i64 {
+    store.insert("k" + "-heap", payload);
+    return store.len();
+}
+
+fn main() {
+    let store: HashMap<string, bytes> = HashMap.new();
+    let payload = b"0123456789abcdef";
+    let n = ingest(store, payload);
+    let still = payload.len();
+    print(f"{n}|{still}");
+}

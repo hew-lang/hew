@@ -1,0 +1,45 @@
+type Claim {
+    run_id: string,
+    amount: i64,
+}
+
+type ClaimsLedger {
+    claims: Vec<Claim>,
+    terminal_runs: Vec<string>,
+}
+
+fn without_terminal_claims(ledger: ClaimsLedger) -> ClaimsLedger {
+    let terminal_runs = ledger.terminal_runs;
+    var claims: Vec<Claim> = Vec.new();
+    for claim in ledger.claims {
+        if !terminal_runs.contains(claim.run_id) {
+            claims.push(claim);
+        }
+    }
+    ClaimsLedger { claims: claims, terminal_runs: terminal_runs }
+}
+
+fn run_case(seed: i64) -> i64 {
+    var claims: Vec<Claim> = Vec.new();
+    claims.push(Claim { run_id: "r1", amount: 10 + seed });
+    claims.push(Claim { run_id: "r2", amount: 20 + seed });
+    claims.push(Claim { run_id: "r3", amount: 30 + seed });
+    var terminal: Vec<string> = Vec.new();
+    terminal.push("r2");
+    let ledger = ClaimsLedger { claims: claims, terminal_runs: terminal };
+    let pruned = without_terminal_claims(ledger);
+    var total: i64 = 0;
+    for claim in pruned.claims {
+        total = total + claim.amount;
+    }
+    total + pruned.claims.len() + pruned.terminal_runs.len()
+}
+
+fn main() -> i64 {
+    var checksum = 0;
+    for frame in 0..50 {
+        checksum = checksum + run_case(frame);
+        println("frame");
+    }
+    if checksum >= 0 { 0 } else { 91 }
+}

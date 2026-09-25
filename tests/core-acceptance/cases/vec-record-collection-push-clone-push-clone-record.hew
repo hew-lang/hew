@@ -1,0 +1,16 @@
+type Boxed {
+    payload: [i64],
+}
+
+fn main() {
+    var xs: [Boxed] = [];
+    let src = Boxed { payload: [10, 20] };
+    xs.push(src);
+    xs.push(src);
+    let a = xs[0];
+    let b = xs[1];
+    let s0 = src.payload[0];
+    let s1 = src.payload[1];
+    print(f"{a.payload[0]}|{a.payload[1]}|{b.payload[0]}|{b.payload[1]}|{s0}|{s1}");
+    print("OK");
+}

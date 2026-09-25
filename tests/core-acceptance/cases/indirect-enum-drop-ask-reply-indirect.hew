@@ -1,0 +1,23 @@
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+fn val(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => val(l) + val(r), } }
+actor SlowReplier {
+    receive fn fetch() -> Tree { Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) }
+}
+actor Driver {
+    var slow: SlowReplier,
+    receive fn run() -> i64 {
+        match slow.fetch() {
+            .Ok(t) => { val(t) }
+            .Err(e) => { let _ = e; 0 }
+        }
+    }
+}
+fn main() -> i64 {
+    let slow = spawn SlowReplier;
+    let driver = spawn Driver(slow: slow);
+    match driver.run() {
+        .Ok(v) => { print("${v}"); }
+        .Err(e) => { let _ = e; }
+    }
+    0
+}

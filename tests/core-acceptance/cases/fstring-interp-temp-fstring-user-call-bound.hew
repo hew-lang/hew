@@ -1,0 +1,13 @@
+fn mk(i: i64) -> string { f"tok{i}" }
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 50 {
+        let s = mk(i);
+        println(f"v={s}");
+        total = total + i;
+        i = i + 1;
+    }
+    if total != 1225 { return 89; }
+    0
+}

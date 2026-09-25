@@ -1,0 +1,16 @@
+import std.encoding.toml;
+fn main() -> i32 {
+    for _ in 0..50 {
+        var value = toml.array();
+        value = value.push(toml.from_int(7));
+        let child = value.array_get(0);
+        println(f"{child.get_int()}");
+        child.close();
+        value.close();
+        match toml.parse("=") {
+            .Ok(parsed) => { parsed.close(); return 1; }
+            .Err(_) => {}
+        }
+    }
+    0
+}

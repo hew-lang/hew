@@ -1,0 +1,18 @@
+#[opaque]
+type NodeHandle {}
+extern "C" {
+    fn hew_xml_parse(xml: string) -> NodeHandle;
+    fn hew_xml_to_string(node: NodeHandle) -> string;
+    fn hew_xml_free(node: NodeHandle);
+}
+fn h(s: string) -> i64 { s.len() }
+fn main() -> i64 {
+    let node = unsafe { hew_xml_parse("<root>payload</root>") };
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + h(unsafe { hew_xml_to_string(node) });
+    }
+    unsafe { hew_xml_free(node) };
+    if total != 50 * 20 { return 82; }
+    0
+}

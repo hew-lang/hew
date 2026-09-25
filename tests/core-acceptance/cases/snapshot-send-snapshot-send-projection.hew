@@ -1,0 +1,41 @@
+type Boxed {
+    payload: Vec<i64>,
+}
+
+type Envelope {
+    boxed: Boxed,
+}
+
+actor ProbeSink { 
+    var seen: i64,
+
+    receive fn take(value: Boxed, tag: i64) {
+        var v = value;
+        v.payload.push(tag);
+        if v.payload[2] == tag {
+            seen = seen + 1;
+        }
+    }
+
+    receive fn count() -> i64 {
+        seen
+    }
+}
+
+fn main() -> i64 {
+    let sink = spawn ProbeSink(seen: 0);
+    var sender_ok: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var value = Envelope { boxed: Boxed { payload: [1, 2] } };
+        let _ = sink.take(value.boxed, 7);
+        value.boxed.payload.push(9);
+        if value.boxed.payload[2] == 9 {
+            sender_ok = sender_ok + 1;
+        }
+        i = i + 1;
+    }
+    let seen = match sink.count() { .Ok(v) => v, .Err(_) => -1 };
+    print(f"{seen}:{sender_ok}");
+    0
+}

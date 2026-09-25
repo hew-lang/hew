@@ -1,5 +1,5 @@
-// Owned-Vec element-store temp-leak fixture (Linux ASan/LSan arm of the macOS
-// `vec_push_temp_leak_oracle.rs` slope oracle). A fresh, unbound aggregate
+// Owned-Vec element-store temp-leak fixture (the `vec-push-temp-*` safety
+// cases cover the same shapes). A fresh, unbound aggregate
 // rvalue used as a `Vec::push` / `Vec::set` element source is routed to the
 // MOVE-in siblings (`hew_vec_push_owned_move` / `hew_vec_set_owned_move`), so
 // the source temp's owned heap transfers into the slot and is freed exactly

@@ -1,17 +1,24 @@
 // Coalesce owned-payload leak/double-drop oracle (#2541).
 //
-// The worker's first update suspends while the mailbox fills. Repeated
-// same-key strings replace the queued payload in place. Under ASan/leak
-// execution, skipping the generated typed drop leaks each superseded string;
+// The worker's first update parks on a gate while the one-slot mailbox fills.
+// Repeated same-key strings replace the queued payload in place. Under
+// ASan/LSan, skipping the generated typed drop leaks each superseded string;
 // invoking it twice trips the allocator. A clean exit therefore proves the
 // superseded owned payloads are released exactly once.
+import std.stream;
+
 actor OwnedCoalescer {
     var processed: i64 = 0,
     var latest_len: i64 = -1,
+    var ready: stream.Sink<i64>,
+    var gate: stream.Stream<i64>,
 
     mailbox 1 overflow coalesce(id) fallback drop_new,
-    receive fn update(id: i64, payload: string, pause: duration) {
-        sleep(pause);
+    receive fn update(id: i64, payload: string, hold: bool) {
+        if hold {
+            ready.send(1).expect("ready");
+            gate.recv();
+        }
         processed = processed + 1;
         latest_len = payload.len() as i64;
     }
@@ -24,14 +31,16 @@ actor OwnedCoalescer {
 }
 
 fn main() -> i64 {
-    let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1);
-    let _ = worker.update(0, "active", 150ms);
-    sleep(20ms);
-    let _ = worker.update(9, "one", 0ns);
-    let _ = worker.update(9, "two-two", 0ns);
-    let _ = worker.update(9, "three-three-three", 0ns);
-    let _ = worker.update(9, "latest-payload", 0ns);
-    sleep(350ms);
+    let (ready_tx, ready) = stream.pipe(1).expect("ready");
+    let (open, gate) = stream.pipe(1).expect("gate");
+    let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1, ready: ready_tx, gate: gate);
+    mailbox(worker).update(0, "active", true).expect("submit");
+    ready.recv();
+    mailbox(worker).update(9, "one", false).expect("submit");
+    mailbox(worker).update(9, "two-two", false).expect("submit");
+    mailbox(worker).update(9, "three-three-three", false).expect("submit");
+    mailbox(worker).update(9, "latest-payload", false).expect("submit");
+    open.send(1).expect("open");
     let count = match worker.count() {
         .Ok(value) => value,
         .Err(_) => -1,
@@ -40,6 +49,7 @@ fn main() -> i64 {
         .Ok(value) => value,
         .Err(_) => -1,
     };
+    println(f"processed={count} latest_len={length}");
     if count == 2 && length == 14 {
         0
     } else {

@@ -1,0 +1,14 @@
+fn main() {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    let c = v.iter();
+    v = Vec.new();
+    v.push(1);
+    var sum: i64 = 0;
+    for x in c {
+        sum = sum + x;
+    }
+    print(sum);
+    print("OK");
+}

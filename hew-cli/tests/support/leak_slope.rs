@@ -1,6 +1,5 @@
 //! Shared leak-oracle slope harness — the single authority for the
-//! per-iteration leak-slope methodology the `*_leak_oracle.rs` integration
-//! tests build on.
+//! per-iteration leak-slope methodology the macOS allocator tests build on.
 //!
 //! ## Why slope, not single-shot exact-zero
 //!
@@ -65,22 +64,11 @@
 //! measuring nothing. It makes the gap visible in the run summary instead of
 //! invisible in a green tick.
 //!
-//! What genuinely covers generated-code leaks on Linux:
-//!
-//!   * `.github/workflows/nightly-sanitizers.yml` — the `compiled-fixture-asan`
-//!     job (ubuntu, `make asan-fixtures` → `scripts/asan-fixture-check.sh`)
-//!     builds an `ASan` `hew` and runs compiled `.hew` fixtures under
-//!     `LeakSanitizer`, so leaks in GENERATED code are caught, plus
-//!     `rust-runtime-asan` for `hew-runtime` itself. Both are scheduled daily,
-//!     not per-PR, and cover a fixed handful of fixtures rather than the shapes
-//!     enumerated here.
-//!   * The `hew-mir` / `hew-codegen-rs` unit suites, which run on every host and
-//!     pin drop EMISSION structurally rather than observing an allocator — see
-//!     `hew-mir/tests/lowering_expr/funcupdate_field_override_release.rs` for the
-//!     pattern. A shape whose ownership invariant can be stated as "which drop
-//!     instruction is emitted where" belongs there, because that assertion is
-//!     platform-independent and runs per-PR. That is the durable answer to a
-//!     leak bar that would otherwise live on one developer's laptop.
+//! What genuinely covers generated-code leaks on Linux: the core-acceptance
+//! `safety` suite (`make core-safety`) compiles every ownership case with an
+//! ASan-instrumented `hew` and runtime and runs it under `LeakSanitizer` at O0 and
+//! O2, so a leak, double free or use after free in GENERATED code fails the
+//! case. The source shapes these oracles once enumerated live there as cases.
 
 #![allow(
     dead_code,

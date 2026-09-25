@@ -1,0 +1,25 @@
+import std.stream;
+
+type Pipe {
+    sink: Sink<string>,
+    input: Stream<string>,
+}
+
+fn choose(c: bool) -> Pipe {
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    if c {
+        Pipe { sink: s1, input: r1 }
+    } else {
+        Pipe { sink: s2, input: r2 }
+    }
+}
+
+fn main() {
+    for i in 0..50 {
+        let selected = choose(i % 2 != 0);
+        selected.sink.close();
+        selected.input.close();
+        println("frame");
+    }
+}

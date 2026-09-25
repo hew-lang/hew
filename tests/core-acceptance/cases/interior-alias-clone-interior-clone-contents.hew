@@ -1,0 +1,14 @@
+type Row { name: string, }
+
+fn run() {
+    let rows: Vec<Row> = [ Row { name: "interior-clone-ok".to_upper() } ];
+    let first = rows.get(0);
+    match first {
+        .Some(r) => { let copied = r.name.to_upper(); print(copied); }
+        .None => { print("none"); }
+    }
+}
+
+fn main() {
+    run();
+}

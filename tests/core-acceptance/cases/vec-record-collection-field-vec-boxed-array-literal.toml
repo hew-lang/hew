@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-record-collection-field-vec-boxed-array-literal"
+intent = "Owned-element `Vec<record-with-collection-field>` array-literal leak oracle (v0.6-generic-direct-call). Shape `vec_boxed_array_literal` (vec boxed array literal exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-record-collection-field-vec-boxed-array-literal.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "10|20|30|40OK"
+exit = 0

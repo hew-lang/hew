@@ -1,0 +1,188 @@
+import std.stream;
+
+// Each receiver reports once it holds its first item, so the supervisor stops
+// receivers that are parked on their own pipe.
+actor Ready {
+    var tx: stream.Sink<i64>,
+    receive fn mark() {
+        tx.send(1).expect("ready");
+    }
+}
+
+actor ParkedReceiver {
+    receive fn run(index: i64, ready: Ready) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let payload = f"parked-direct-receiver-{index}";
+        tx.send(payload).expect("send");
+        for item in rx {
+            if item.len() <= 0 { panic("receiver payload"); }
+            println("parked");
+            ready.mark().expect("mark ready");
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child receiver0: ParkedReceiver,
+    child receiver1: ParkedReceiver,
+    child receiver2: ParkedReceiver,
+    child receiver3: ParkedReceiver,
+    child receiver4: ParkedReceiver,
+    child receiver5: ParkedReceiver,
+    child receiver6: ParkedReceiver,
+    child receiver7: ParkedReceiver,
+    child receiver8: ParkedReceiver,
+    child receiver9: ParkedReceiver,
+    child receiver10: ParkedReceiver,
+    child receiver11: ParkedReceiver,
+    child receiver12: ParkedReceiver,
+    child receiver13: ParkedReceiver,
+    child receiver14: ParkedReceiver,
+    child receiver15: ParkedReceiver,
+    child receiver16: ParkedReceiver,
+    child receiver17: ParkedReceiver,
+    child receiver18: ParkedReceiver,
+    child receiver19: ParkedReceiver,
+    child receiver20: ParkedReceiver,
+    child receiver21: ParkedReceiver,
+    child receiver22: ParkedReceiver,
+    child receiver23: ParkedReceiver,
+    child receiver24: ParkedReceiver,
+    child receiver25: ParkedReceiver,
+    child receiver26: ParkedReceiver,
+    child receiver27: ParkedReceiver,
+    child receiver28: ParkedReceiver,
+    child receiver29: ParkedReceiver,
+    child receiver30: ParkedReceiver,
+    child receiver31: ParkedReceiver,
+    child receiver32: ParkedReceiver,
+    child receiver33: ParkedReceiver,
+    child receiver34: ParkedReceiver,
+    child receiver35: ParkedReceiver,
+    child receiver36: ParkedReceiver,
+    child receiver37: ParkedReceiver,
+    child receiver38: ParkedReceiver,
+    child receiver39: ParkedReceiver,
+    child receiver40: ParkedReceiver,
+    child receiver41: ParkedReceiver,
+    child receiver42: ParkedReceiver,
+    child receiver43: ParkedReceiver,
+    child receiver44: ParkedReceiver,
+    child receiver45: ParkedReceiver,
+    child receiver46: ParkedReceiver,
+    child receiver47: ParkedReceiver,
+    child receiver48: ParkedReceiver,
+    child receiver49: ParkedReceiver,
+}
+
+fn main() {
+    let (ready_tx, ready_rx) = stream.pipe(50).expect("ready");
+    let ready = spawn Ready(tx: ready_tx);
+    let app = spawn App;
+    let receiver0 = app.receiver0;
+    mailbox(receiver0, on_full: .Wait).run(0, ready).expect("start receiver");
+    let receiver1 = app.receiver1;
+    mailbox(receiver1, on_full: .Wait).run(1, ready).expect("start receiver");
+    let receiver2 = app.receiver2;
+    mailbox(receiver2, on_full: .Wait).run(2, ready).expect("start receiver");
+    let receiver3 = app.receiver3;
+    mailbox(receiver3, on_full: .Wait).run(3, ready).expect("start receiver");
+    let receiver4 = app.receiver4;
+    mailbox(receiver4, on_full: .Wait).run(4, ready).expect("start receiver");
+    let receiver5 = app.receiver5;
+    mailbox(receiver5, on_full: .Wait).run(5, ready).expect("start receiver");
+    let receiver6 = app.receiver6;
+    mailbox(receiver6, on_full: .Wait).run(6, ready).expect("start receiver");
+    let receiver7 = app.receiver7;
+    mailbox(receiver7, on_full: .Wait).run(7, ready).expect("start receiver");
+    let receiver8 = app.receiver8;
+    mailbox(receiver8, on_full: .Wait).run(8, ready).expect("start receiver");
+    let receiver9 = app.receiver9;
+    mailbox(receiver9, on_full: .Wait).run(9, ready).expect("start receiver");
+    let receiver10 = app.receiver10;
+    mailbox(receiver10, on_full: .Wait).run(10, ready).expect("start receiver");
+    let receiver11 = app.receiver11;
+    mailbox(receiver11, on_full: .Wait).run(11, ready).expect("start receiver");
+    let receiver12 = app.receiver12;
+    mailbox(receiver12, on_full: .Wait).run(12, ready).expect("start receiver");
+    let receiver13 = app.receiver13;
+    mailbox(receiver13, on_full: .Wait).run(13, ready).expect("start receiver");
+    let receiver14 = app.receiver14;
+    mailbox(receiver14, on_full: .Wait).run(14, ready).expect("start receiver");
+    let receiver15 = app.receiver15;
+    mailbox(receiver15, on_full: .Wait).run(15, ready).expect("start receiver");
+    let receiver16 = app.receiver16;
+    mailbox(receiver16, on_full: .Wait).run(16, ready).expect("start receiver");
+    let receiver17 = app.receiver17;
+    mailbox(receiver17, on_full: .Wait).run(17, ready).expect("start receiver");
+    let receiver18 = app.receiver18;
+    mailbox(receiver18, on_full: .Wait).run(18, ready).expect("start receiver");
+    let receiver19 = app.receiver19;
+    mailbox(receiver19, on_full: .Wait).run(19, ready).expect("start receiver");
+    let receiver20 = app.receiver20;
+    mailbox(receiver20, on_full: .Wait).run(20, ready).expect("start receiver");
+    let receiver21 = app.receiver21;
+    mailbox(receiver21, on_full: .Wait).run(21, ready).expect("start receiver");
+    let receiver22 = app.receiver22;
+    mailbox(receiver22, on_full: .Wait).run(22, ready).expect("start receiver");
+    let receiver23 = app.receiver23;
+    mailbox(receiver23, on_full: .Wait).run(23, ready).expect("start receiver");
+    let receiver24 = app.receiver24;
+    mailbox(receiver24, on_full: .Wait).run(24, ready).expect("start receiver");
+    let receiver25 = app.receiver25;
+    mailbox(receiver25, on_full: .Wait).run(25, ready).expect("start receiver");
+    let receiver26 = app.receiver26;
+    mailbox(receiver26, on_full: .Wait).run(26, ready).expect("start receiver");
+    let receiver27 = app.receiver27;
+    mailbox(receiver27, on_full: .Wait).run(27, ready).expect("start receiver");
+    let receiver28 = app.receiver28;
+    mailbox(receiver28, on_full: .Wait).run(28, ready).expect("start receiver");
+    let receiver29 = app.receiver29;
+    mailbox(receiver29, on_full: .Wait).run(29, ready).expect("start receiver");
+    let receiver30 = app.receiver30;
+    mailbox(receiver30, on_full: .Wait).run(30, ready).expect("start receiver");
+    let receiver31 = app.receiver31;
+    mailbox(receiver31, on_full: .Wait).run(31, ready).expect("start receiver");
+    let receiver32 = app.receiver32;
+    mailbox(receiver32, on_full: .Wait).run(32, ready).expect("start receiver");
+    let receiver33 = app.receiver33;
+    mailbox(receiver33, on_full: .Wait).run(33, ready).expect("start receiver");
+    let receiver34 = app.receiver34;
+    mailbox(receiver34, on_full: .Wait).run(34, ready).expect("start receiver");
+    let receiver35 = app.receiver35;
+    mailbox(receiver35, on_full: .Wait).run(35, ready).expect("start receiver");
+    let receiver36 = app.receiver36;
+    mailbox(receiver36, on_full: .Wait).run(36, ready).expect("start receiver");
+    let receiver37 = app.receiver37;
+    mailbox(receiver37, on_full: .Wait).run(37, ready).expect("start receiver");
+    let receiver38 = app.receiver38;
+    mailbox(receiver38, on_full: .Wait).run(38, ready).expect("start receiver");
+    let receiver39 = app.receiver39;
+    mailbox(receiver39, on_full: .Wait).run(39, ready).expect("start receiver");
+    let receiver40 = app.receiver40;
+    mailbox(receiver40, on_full: .Wait).run(40, ready).expect("start receiver");
+    let receiver41 = app.receiver41;
+    mailbox(receiver41, on_full: .Wait).run(41, ready).expect("start receiver");
+    let receiver42 = app.receiver42;
+    mailbox(receiver42, on_full: .Wait).run(42, ready).expect("start receiver");
+    let receiver43 = app.receiver43;
+    mailbox(receiver43, on_full: .Wait).run(43, ready).expect("start receiver");
+    let receiver44 = app.receiver44;
+    mailbox(receiver44, on_full: .Wait).run(44, ready).expect("start receiver");
+    let receiver45 = app.receiver45;
+    mailbox(receiver45, on_full: .Wait).run(45, ready).expect("start receiver");
+    let receiver46 = app.receiver46;
+    mailbox(receiver46, on_full: .Wait).run(46, ready).expect("start receiver");
+    let receiver47 = app.receiver47;
+    mailbox(receiver47, on_full: .Wait).run(47, ready).expect("start receiver");
+    let receiver48 = app.receiver48;
+    mailbox(receiver48, on_full: .Wait).run(48, ready).expect("start receiver");
+    let receiver49 = app.receiver49;
+    mailbox(receiver49, on_full: .Wait).run(49, ready).expect("start receiver");
+    for _ in 0..50 {
+        ready_rx.recv();
+    }
+    supervisor_stop(app);
+}

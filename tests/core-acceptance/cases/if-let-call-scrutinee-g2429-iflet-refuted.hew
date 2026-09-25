@@ -1,0 +1,11 @@
+fn f() -> Option<string> { .None }
+
+fn main() -> i64 {
+    var misses = 0;
+    var i = 0;
+    while i < 50 {
+        if let .Some(b) = f() { misses = misses + b.len(); } else { misses = misses + 1; }
+        i = i + 1;
+    }
+    if misses == 50 { 0 } else { 1 }
+}

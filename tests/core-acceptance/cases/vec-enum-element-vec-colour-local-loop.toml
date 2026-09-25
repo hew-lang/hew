@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-enum-element-vec-colour-local-loop"
+intent = "`Vec<enum>` local scope-exit drop oracles: per-iteration leak slope for the direct-enum element class, plus an owned-route-intact pin and a poisoned-allocator no-double-free pin for the escape shapes. Shape `vec_colour_local_loop_high` (vec colour local loop no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-enum-element-vec-colour-local-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 150

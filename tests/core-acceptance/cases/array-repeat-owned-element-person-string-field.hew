@@ -1,0 +1,16 @@
+type Person { name: string }
+
+fn build() -> i64 {
+    let p = Person { name: "al" + "pha" };
+    let ps = [p; 3];
+    ps.len()
+}
+
+fn main() {
+    var total: i64 = 0;
+    for i in 0..8 {
+        total = total + build();
+    }
+    print(total);
+    print("OK");
+}

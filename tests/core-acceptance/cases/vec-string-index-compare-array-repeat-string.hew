@@ -1,0 +1,15 @@
+fn main() -> i64 {
+    let xs = ["hello"; 8];
+    if xs.len() != 8 { return 83; }
+    var hits: i64 = 0;
+    if xs[0] == "hello" { hits = hits + 1; }
+    if xs[1] == "hello" { hits = hits + 1; }
+    if xs[2] == "hello" { hits = hits + 1; }
+    if xs[3] == "hello" { hits = hits + 1; }
+    if xs[4] == "hello" { hits = hits + 1; }
+    if xs[5] == "hello" { hits = hits + 1; }
+    if xs[6] == "hello" { hits = hits + 1; }
+    if xs[7] == "hello" { hits = hits + 1; }
+    if hits != 8 { return 84; }
+    0
+}

@@ -1,0 +1,22 @@
+import std.encoding.json;
+fn main() -> i32 {
+    for _ in 0..50 {
+        let n = match json.parse("{\"n\":7}") {
+            .Ok(parsed) => {
+                match parsed.get_field("n") {
+                    .Ok(.Some(child)) => {
+                        match child.get_int() {
+                            .Ok(v) => v,
+                            .Err(_) => { return 1; }
+                        }
+                    }
+                    .Ok(.None) => { return 1; }
+                    .Err(_) => { return 1; }
+                }
+            }
+            .Err(_) => { return 1; }
+        };
+        println(f"{n}");
+    }
+    0
+}

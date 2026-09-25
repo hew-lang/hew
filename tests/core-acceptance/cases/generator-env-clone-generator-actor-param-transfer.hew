@@ -1,0 +1,22 @@
+actor Streamer {
+    receive gen fn emit(label: string, n: i64) -> i64 {
+        var i: i64 = 0;
+        while i < n {
+            yield i + label.len();
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer();
+    var total: i64 = 0;
+    var frame: i64 = 0;
+    while frame < 50 {
+        for value in streamer.emit("streamlabel".to_upper(), 3) {
+            total = total + value;
+        }
+        frame = frame + 1;
+    }
+    print(f"{frame}:{total}:OK");
+}

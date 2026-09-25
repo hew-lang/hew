@@ -1,0 +1,17 @@
+type Row { name: string, }
+
+fn make(n: i64) -> Option<Row> {
+    if n > 0 { .Some(Row { name: "g64-bare-fieldload".to_upper() }) } else { .None }
+}
+
+fn run() {
+    let opt = make(1);
+    match opt {
+        .Some(r) => { let name = r.name; if !name.is_empty() { print("m"); } }
+        .None => { print("e"); }
+    }
+}
+
+fn main() {
+    run();
+}

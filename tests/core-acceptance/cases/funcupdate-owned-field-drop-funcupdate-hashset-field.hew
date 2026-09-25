@@ -1,0 +1,18 @@
+type SetHolder {
+    s: HashSet<i64>,
+    tag: i64,
+}
+
+fn main() -> i64 {
+    var init: HashSet<i64> = HashSet<i64>.new();
+    init.insert(99);
+    var h = SetHolder { s: init, tag: 0 };
+    var i: i64 = 0;
+    while i < 50 {
+        var next: HashSet<i64> = HashSet<i64>.new();
+        next.insert(i);
+        h = SetHolder { s: next, ..h };
+        i = i + 1;
+    }
+    h.tag
+}

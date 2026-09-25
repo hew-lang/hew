@@ -1,0 +1,29 @@
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+actor Worker {
+    receive fn score(tag: i64, tree: Tree) -> i64 { tag }
+}
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child worker: Worker,
+}
+fn main() -> i64 {
+    let sup = spawn App;
+    let worker = sup.worker;
+    supervisor_stop(sup);
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let selected = select {
+            reply from worker.score(i, .Node(.Leaf(1), .Leaf(2))) => match reply {
+                .Ok(value) => value,
+                .Err(_) => 0 - 1,
+            },
+            after 1ms => i,
+        };
+        total = total + selected;
+        i = i + 1;
+    }
+    if total == -50 { print("ok"); } else { print("BAD"); }
+    0
+}

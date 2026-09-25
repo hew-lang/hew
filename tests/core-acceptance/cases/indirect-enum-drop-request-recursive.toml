@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-request-recursive"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `request_recursive_high` (indirect enum actor request carriers leak slope below tolerance, indirect enum actor request carriers no corruption under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-request-recursive.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

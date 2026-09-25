@@ -1,0 +1,56 @@
+type Payload {
+    label: string,
+    data: bytes,
+    pair: (string, i64),
+}
+
+indirect enum Tree {
+    Leaf(i64),
+    Node(Tree, Tree),
+}
+
+actor Streamer {
+    var state: string,
+    receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
+        yield payload.label.len() + payload.data.len()
+            + payload.pair.0.len() + state.len();
+        let tree_kind = match tree {
+            .Leaf(_) => 1,
+            .Node(_, _) => 2,
+        };
+        var i: i64 = 1;
+        loop {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+}
+
+type AppConfig { label: string }
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child streamer: Streamer(state: config.label),
+}
+
+fn main() {
+    let config = AppConfig { label: "actor-state".to_upper() };
+    let sup = spawn App(config: config);
+    let streamer = sup.streamer;
+    let payload = Payload {
+        label: "record-param".to_upper(),
+        data: "bytes-param".to_bytes(),
+        pair: ("tuple-param".to_upper(), 0),
+    };
+    let tree = Tree.Node(Tree.Leaf(0), Tree.Leaf(1));
+    let stream = streamer.endless(payload, tree);
+    let first = stream.recv();
+    match first {
+        .Some(value) => print(f"{value}:"),
+        .None => print("missing:"),
+    }
+    supervisor_stop(sup);
+    print("OK");
+}

@@ -1,0 +1,23 @@
+fn mk() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("ret" + "-alpha");
+    v.push("ret" + "-beta");
+    v.push("ret" + "-gamma");
+    return v;
+}
+
+fn frame() -> HashMap<i64, string> {
+    var sink: HashMap<i64, string> = HashMap.new();
+    for w in mk() {
+        sink.insert(1, w);
+        return sink;
+    }
+    return sink;
+}
+
+fn main() {
+    let sink = frame();
+    print(sink.len());
+    print(sink.get(1).unwrap_or("missing"));
+    print("OK");
+}

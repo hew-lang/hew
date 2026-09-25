@@ -1,0 +1,13 @@
+type Person { name: string }
+impl Person { fn tag(self) -> Person { self } }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let p = Person { name: "abc" + "def" };
+        let q = p.tag();
+        total = total + q.name.len();
+    }
+    if total != 50 * 6 { return 73; }
+    0
+}

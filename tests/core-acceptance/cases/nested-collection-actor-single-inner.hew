@@ -1,0 +1,20 @@
+actor Holder {
+    var rows: Vec<Vec<i64>>,
+
+    receive fn count() -> i64 {
+        rows.len()
+    }
+}
+
+fn main() -> i64 {
+    var rows: Vec<Vec<i64>> = Vec.new();
+    var inner: Vec<i64> = Vec.new();
+    inner.push(7);
+    inner.push(8);
+    rows.push(inner);
+    let holder = spawn Holder(rows: rows);
+    match holder.count() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

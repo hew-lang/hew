@@ -1,0 +1,21 @@
+type Node { id: i64, }
+
+fn frame(flag: bool) -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { id: 7 });
+    match flag {
+        true => {
+            let pair: (Rc<Node>, string) = (shared, "tag");
+            pair.1.len()
+        }
+        false => 0,
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        total = total + frame(seed % 2 == 0);
+        println("frame");
+    }
+    total - 75
+}

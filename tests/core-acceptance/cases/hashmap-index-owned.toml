@@ -1,0 +1,10 @@
+[[case]]
+id = "hashmap-index-owned"
+intent = "`HashMap` `m[k]` owned-value leak oracle (indexed-accessor convergence). Shape `hashmap_index_owned_high` (hashmap index owned value leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/hashmap-index-owned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 144

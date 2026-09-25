@@ -1,0 +1,19 @@
+fn build(n: i64) -> i64 {
+    var v: Vec<i64> = Vec.new();
+    v.push(n);
+    let p = (v, 7);
+    let items = p.0;
+    var i: i64 = 0;
+    while i < n {
+        i = i + 1;
+    }
+    items.len() + p.1
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..8 {
+        total = total + build(i);
+    }
+    if total == 64 { 0 } else { 115 }
+}

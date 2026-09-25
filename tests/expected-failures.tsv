@@ -9,6 +9,8 @@
 # passes is reported for cleanup, never a blocking failure (D555
 # amendment) — delete the row by hand once it recovers.
 
+acceptance	linux,macos,windows,freebsd	gen_block_explicit_return_runs	compile	#3615	a non-yielding gen block passes check but codegen fails closed with E_CODEGEN_FAIL_CLOSED
+acceptance	linux,macos,windows,freebsd	gen_block_final_expr_returns_runs	compile	#3615	a non-yielding gen block passes check but codegen fails closed with E_CODEGEN_FAIL_CLOSED
 corpus	*	docs/repros/final-core/own-generic-identity-transfer.hew	compile	#3598	tracked corpus refusal; see linked issue
 corpus	*	examples/v05/pipe_vec_element_fails.hew	compile	#3590	tracked corpus refusal; see linked issue
 corpus	*	examples/v05/vec_unsupported_method_fails.hew	compile	#3591	tracked corpus refusal; see linked issue
@@ -32,7 +34,6 @@ corpus	*	repros/ladder/state_reinit.hew	diagnostic:E_SIR_UNSUPPORTED	#3611	track
 corpus	*	repros/p0a_hashmap_string_vec_value.hew	compile	#3600	tracked corpus refusal; see linked issue
 corpus	*	repros/p0c_method_value_failclosed.hew	compile	#3601	tracked corpus refusal; see linked issue
 corpus	*	tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew	compile	#3612	tracked corpus refusal; see linked issue
-corpus	*	tests/ownership-balance/retained_hard_refusal.hew	compile	#3613	tracked corpus refusal; see linked issue
 corpus	*	tools/downstream/syntax-fixtures/syntax_test.hew	compile	#3614	tracked corpus refusal; see linked issue
 hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_append_cow_leaves_slice_intact	compile	#3578	tracked failure; see linked issue
 hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_clear_on_owner_leaves_slice_alive	compile	#3579	tracked failure; see linked issue

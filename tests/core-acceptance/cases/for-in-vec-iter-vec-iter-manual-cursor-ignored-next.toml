@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-vec-iter-vec-iter-manual-cursor-ignored-next"
+intent = "`for x in vec` cursor (`VecIter<T>`) scope-exit drop oracles: per-iteration leak slope plus a poisoned-allocator no-use-after-free pin for the place-source reuse shape (issue #1949). Shape `vec_iter_manual_cursor_ignored_next_50_frames` (vec iter manual cursor ignored next has zero leak endpoints) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-vec-iter-vec-iter-manual-cursor-ignored-next.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

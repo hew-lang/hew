@@ -1,0 +1,14 @@
+fn main() {
+    var vm: Vec<HashMap<string, i64>> = Vec.new();
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("escape" + "-key", 7);
+    vm.push(m);
+    var sink: HashMap<i64, HashMap<string, i64>> = HashMap.new();
+    var k: i64 = 0;
+    for inner in vm.iter() {
+        sink.insert(k, inner);
+        k = k + 1;
+    }
+    print(sink.len());
+    print("OK");
+}

@@ -1,0 +1,54 @@
+type Capture {
+    label_len: i64,
+    first: i64,
+    root: i64,
+    edge: i64,
+}
+
+gen fn rows(c: Capture) -> i64 {
+    yield c.label_len + c.first + c.root;
+    yield c.edge;
+}
+
+fn main() {
+    var completed: i64 = 0;
+    var suspended: i64 = 0;
+    var never_resumed: i64 = 0;
+    var anonymous: i64 = 0;
+    var i: i64 = 0;
+    while i < 128 {
+        let capture = Capture { label_len: 5, first: 3, root: i + 10, edge: i + 10 };
+        {
+            let g = rows(capture);
+            loop {
+                match g.next() {
+                    .Some(value) => { if value <= 0 { panic("control complete"); } },
+                    .None => { break; },
+                }
+            }
+        }
+        completed = completed + 1;
+        {
+            let g = rows(capture);
+            match g.next() {
+                .Some(value) => { if value <= 0 { panic("control suspend"); } },
+                .None => panic("control missing"),
+            }
+        }
+        suspended = suspended + 1;
+        { let _g = rows(capture); }
+        never_resumed = never_resumed + 1;
+        {
+            let g = gen { yield capture.root; };
+            loop {
+                match g.next() {
+                    .Some(value) => { if value <= 0 { panic("control anon"); } },
+                    .None => { break; },
+                }
+            }
+        }
+        anonymous = anonymous + 1;
+        i = i + 1;
+    }
+    print(f"{completed}:{suspended}:{never_resumed}:{anonymous}:OK");
+}

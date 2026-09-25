@@ -1,0 +1,20 @@
+fn make_two_shares(n: i64) -> fn() -> i64 {
+    let label = "row-payload-seed".to_upper();
+    let a = || label.len() + n;
+    let b = || label.len() + n;
+    let after = label.len();
+    || a() + b() + after
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let f = make_two_shares(i);
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 49400 { return 89; }
+    0
+}

@@ -1,0 +1,33 @@
+actor TwoVecs {
+    var x: Vec<i64>,
+    var y: Vec<i64>,
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn sum_x() -> i64 {
+        var s: i64 = 0;
+        for v in x { s = s + v; }
+        s
+    }
+}
+
+fn main() -> i64 {
+    var xs: Vec<i64> = Vec.new();
+    xs.push(1); xs.push(2); xs.push(3);
+    var ys: Vec<i64> = Vec.new();
+    ys.push(10); ys.push(20); ys.push(30); ys.push(40);
+    let a = spawn TwoVecs(x: xs, y: ys);
+    var i: i64 = 0;
+    while i < 25 {
+        let _ = a.flip();
+        i = i + 1;
+    }
+    match a.sum_x() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

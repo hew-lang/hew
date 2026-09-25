@@ -1,0 +1,10 @@
+[[case]]
+id = "http-ws-string-result-retention-http-response-strings"
+intent = "Darwin leak slopes for shipped HTTP/WebSocket string wrappers. Shape `http_response_strings_high` (shipped http response string wrappers have no per call leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/http-ws-string-result-retention-http-response-strings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n"
+exit = 0

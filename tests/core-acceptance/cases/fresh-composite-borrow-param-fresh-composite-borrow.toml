@@ -1,0 +1,10 @@
+[[case]]
+id = "fresh-composite-borrow-param-fresh-composite-borrow"
+intent = "Leak oracle for P3 — a fresh COMPOSITE call-result passed directly into a BORROWING parameter, with no user `let`. Shape `fresh_composite_borrow_df` (borrow fresh composite call does not double free, borrow fresh composite call leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fresh-composite-borrow-param-fresh-composite-borrow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,14 @@
+type Holder {
+    items: Vec<i64>,
+}
+
+fn main() {
+    var items: Vec<i64> = Vec.new();
+    items.push(40);
+    items.push(2);
+    var holder = Holder { items: items };
+    for value in holder.items {
+        println(f"{value}");
+        holder.items = Vec.new();
+    }
+}

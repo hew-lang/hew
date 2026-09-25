@@ -1,0 +1,13 @@
+type Node { id: i64, }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var shared: Rc<Node> = Rc.new(Node { id: 0 });
+    for seed in 0..50 {
+        let pair: (Rc<Node>, string) = (shared, "tag");
+        shared = Rc.new(Node { id: seed });
+        total = total + pair.1.len();
+        println("frame");
+    }
+    total - 150
+}

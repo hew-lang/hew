@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-drop-bytes-field-load-share"
+intent = "Bytes ownership leak oracles: sender-local scope-exit drop and actor-state-field overwrite drop. Shape `bytes_field_load_share_high` (bytes field load share no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/bytes-drop-bytes-field-load-share.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 232

@@ -1,0 +1,10 @@
+[[case]]
+id = "hashmap-overwrite-key-hashset-overwrite"
+intent = "`HashMap.insert` / `HashSet.insert` overwrite-path key leak oracles: a per-overwrite leak slope plus poisoned-allocator exactly-once pins for the vacant and overwrite paths (issue #2033). Shape `hashset_overwrite_high` (hashset overwrite no per frame key leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/hashmap-overwrite-key-hashset-overwrite.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

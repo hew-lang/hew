@@ -1,0 +1,24 @@
+type Rec {
+    name: string,
+}
+
+fn make(i: i64) -> Rec {
+    Rec { name: "payload-".to_upper() }
+}
+
+fn main() -> i64 {
+    var r: Rec = make(0);
+    var i: i64 = 0;
+    var acc: i64 = 0;
+    while i < 50 {
+        if i < 0 {
+            let moved: Rec = r;
+            acc = acc + moved.name.len();
+            r = make(i);
+        } else {
+            r = make(i);
+        }
+        i = i + 1;
+    }
+    acc + r.name.len()
+}

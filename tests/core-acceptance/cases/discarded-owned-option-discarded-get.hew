@@ -1,0 +1,6 @@
+fn main() {
+    var m: HashMap<string, string> = HashMap.new();
+    m.insert("k", "still-owned".to_upper());
+    m.get("k");
+    print(m["k"]);
+}

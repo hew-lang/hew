@@ -1,0 +1,14 @@
+actor Maker {
+    receive fn make() -> string {
+        "unused-owned-reply".to_upper()
+    }
+}
+
+fn main() -> i64 {
+    let m = spawn Maker;
+    let r = select {
+        _reply from m.make() => 7,
+    };
+    if r == 7 { print("k"); }
+    0
+}

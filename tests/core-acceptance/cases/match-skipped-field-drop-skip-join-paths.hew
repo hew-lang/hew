@@ -1,0 +1,42 @@
+type Inner {
+    value: string,
+}
+
+type Duo {
+    n: i64,
+    inner: Inner,
+    s: string,
+}
+
+fn make(n: i64) -> Duo {
+    Duo {
+        n: n,
+        inner: Inner { value: "join-inner-heap-payload".to_upper() },
+        s: "join-s-heap-payload".to_upper(),
+    }
+}
+
+fn run_cycle(k: i64) -> i64 {
+    if k - (k / 2) * 2 == 0 {
+        let d = make(k);
+        let x = match d {
+            Duo { n: x, inner: _, s: _ } => x,
+        };
+        return x + 1;
+    }
+    let e = make(k);
+    let z = match e {
+        Duo { n: _, inner: _, s: _ } => 1,
+    };
+    z
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

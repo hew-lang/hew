@@ -1,0 +1,24 @@
+enum Tag {
+    Named(string),
+    Anon,
+}
+fn make_tagger(n: i64) -> fn() -> i64 {
+    let t = Tag.Named("row-payload-seed".to_upper());
+    || match t {
+        Tag.Named(_) => 1 + n,
+        Tag.Anon => n,
+    }
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let f = make_tagger(i);
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 20100 { return 94; }
+    0
+}

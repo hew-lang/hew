@@ -1,0 +1,10 @@
+[[case]]
+id = "hashmap-borrowed-string-ingress-borrowed-string-ingress-2"
+intent = "Borrowed-`string` collection-ingress exactly-once oracle. Shape `borrowed_string_ingress_high` (borrowed string collection ingress leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/hashmap-borrowed-string-ingress-borrowed-string-ingress-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

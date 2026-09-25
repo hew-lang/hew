@@ -1,0 +1,7 @@
+[[case]]
+id = "ownership-balance-ph"
+intent = "Ownership-balance fixture. The ownership checker balances every obligation, so the program checks with no diagnostics."
+source = "fixtures/ownership-balance/pH.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"

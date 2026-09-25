@@ -1,0 +1,21 @@
+enum Msg { Empty, Batch([i64]) }
+
+fn frame(n: i64) -> i64 {
+    let m: Msg = if n % 2 == 0 { Msg.Batch([n, n + 1, n + 2]) } else { Msg.Empty };
+    var sum: i64 = 0;
+    match m {
+        Msg.Batch(items) => { sum = sum + items[0] + items.len(); },
+        Msg.Empty => { sum = sum + 1; },
+    }
+    sum
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + frame(i);
+        i = i + 1;
+    }
+    if total < 0 { 74 } else { 0 }
+}

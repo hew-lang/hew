@@ -1,0 +1,10 @@
+[[case]]
+id = "discarded-owned-option-discarded-hashmap-get"
+intent = "Leak and exactly-once guards for discarded caller-owned `Option<T>` results. Shape `discarded_hashmap_get_high` (discarded hashmap get has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/discarded-owned-option-discarded-hashmap-get.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

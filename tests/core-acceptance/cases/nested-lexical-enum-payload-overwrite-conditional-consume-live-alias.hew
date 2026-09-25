@@ -1,0 +1,29 @@
+enum Box {
+    Full(string),
+    Empty,
+}
+
+fn exercise(take: bool, i: i64) -> string {
+    var opt = Box.Full(f"conditional-consume-{i}");
+    match opt {
+        .Full(s) => {
+            opt = Box.Empty;
+            if take {
+                return s;
+            }
+            f"fallback-{i}"
+        },
+        .Empty => f"empty-{i}",
+    }
+}
+
+fn main() {
+    var total = 0;
+    for i in 0..50 {
+        total = total + exercise(i % 2 == 0, i).len();
+        println("frame");
+    }
+    if total == 0 {
+        panic("missing payload");
+    }
+}

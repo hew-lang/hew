@@ -1,0 +1,10 @@
+[[case]]
+id = "on_start_multi_suspension_resumes"
+intent = "#2269: a `#[on(start)]` hook with MULTIPLE suspension points must resume across every one, with state writes between suspends all preserved."
+source = "../vertical-slice/accept/on_start_multi_suspension_resumes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "111\n"
+exit = 0

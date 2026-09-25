@@ -1,0 +1,34 @@
+type HeapRow {
+    payload: [i64],
+    value: i64,
+}
+
+type Holder {
+    rows: Vec<HeapRow>,
+    total: i64,
+}
+
+fn make_rows(value: i64) -> Vec<HeapRow> {
+    [HeapRow { payload: [value, value + 1], value: value }]
+}
+
+fn replace_holder(old: Holder, next: Holder) -> Holder {
+    var current = old;
+    current = next;
+    current
+}
+
+fn churn() -> i64 {
+    var holder = Holder { rows: make_rows(0), total: 0 };
+    for i in 0..50 {
+        let next = Holder { rows: make_rows(i), total: i + 1 };
+        holder = replace_holder(holder, next);
+    }
+    holder.total
+}
+
+fn main() -> i64 {
+    let total = churn();
+    if total != 50 { return 82; }
+    0
+}

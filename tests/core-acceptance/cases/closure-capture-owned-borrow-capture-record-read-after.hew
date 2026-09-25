@@ -1,0 +1,28 @@
+type Claim {
+    item: string,
+    run_id: string,
+}
+fn make_probe(n: i64) -> fn() -> i64 {
+    let claim = Claim { item: "row-item".to_upper(), run_id: "row-run".to_upper() };
+    let matches_run = |t: string| t == claim.run_id;
+    let item_len = claim.item.len();
+    || {
+        var score: i64 = 0;
+        if matches_run("ROW-RUN") { score = score + 1; }
+        if matches_run("nope") { score = score + 100; }
+        score + item_len + n
+    }
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let f = make_probe(i);
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 21700 { return 87; }
+    0
+}

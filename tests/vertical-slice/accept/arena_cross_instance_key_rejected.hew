@@ -1,8 +1,8 @@
 import std.arena;
 
 fn main() {
-    let left: arena.Arena<string> = arena.new();
-    let right: arena.Arena<string> = arena.new();
+    var left: arena.Arena<string> = arena.new();
+    var right: arena.Arena<string> = arena.new();
 
     let left_key = left.insert("left");
     let right_key = right.insert("right");

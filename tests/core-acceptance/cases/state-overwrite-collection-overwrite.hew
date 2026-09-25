@@ -1,0 +1,34 @@
+actor Cache { 
+    var items: Vec<string>,
+    var index: HashMap<string, i64>,
+    var seen: HashSet<i64>,
+
+    receive fn refresh(round: i64) {
+        var next: Vec<string> = Vec.new();
+        next.push("entry");
+        items = next;
+        var m: HashMap<string, i64> = HashMap.new();
+        m.insert("k", round);
+        index = m;
+        var s: HashSet<i64> = HashSet.new();
+        s.insert(round);
+        seen = s;
+    }
+
+    receive fn size() -> i64 {
+        items.len()
+    }
+}
+
+fn main() -> i64 {
+    let c = spawn Cache(items: Vec.new(), index: HashMap.new(), seen: HashSet.new());
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = c.refresh(i);
+        i = i + 1;
+    }
+    match c.size() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

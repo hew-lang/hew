@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-in-struct-forward-fresh-call-result-into-field"
+intent = "Per-iteration leak / double-free oracle for the forwarded-fn-parameter → struct-field store shape (`fn make_handler(consume f: fn(i64)->i64) -> Handler { Handler { action: f } }`). Shape `forward_fresh_call_result_into_field_df` (forward fresh call result into field freed exactly once under malloc scribble, forward fresh call result into field leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/closure-in-struct-forward-fresh-call-result-into-field.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

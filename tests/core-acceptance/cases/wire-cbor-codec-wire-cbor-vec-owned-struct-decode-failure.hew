@@ -1,0 +1,16 @@
+#[wire]
+type Item { name: string @1, }
+#[wire]
+type BatchGood { items: Vec<Item> @1, tail: string @2, }
+#[wire]
+type BatchBad { items: Vec<Item> @1, tail: i64 @2, }
+
+fn main() -> i64 {
+    var xs: Vec<Item> = Vec.new();
+    xs.push(Item { name: "alpha-owned-element" });
+    xs.push(Item { name: "beta-owned-element" });
+    let g = BatchGood { items: xs, tail: "owned-tail-value" };
+    let raw = g.encode();
+    let bad = BatchBad.decode(raw);
+    bad.tail
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-record-collection-push-clone-push-recursive-enum-drop-loop"
+intent = "Owned-element `Vec<record/enum-with-collection-field>` COPY-IN push leak oracle. Shape `push_recursive_enum_drop_loop_high` (push recursive enum no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-record-collection-push-clone-push-recursive-enum-drop-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 100

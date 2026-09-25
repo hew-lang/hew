@@ -1,0 +1,10 @@
+[[case]]
+id = "fstring-interp-temp-fstring-2interp"
+intent = "Per-iteration leak / double-free oracle for f-string interpolation of a non-string value: the `Display::fmt` conversion temp (`hew_i64_to_string`) and — outside a moved/yielded position — the `hew_string_concat` join result must each be… Shape `fstring_2interp_high` (fstring two interp leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fstring-interp-temp-fstring-2interp.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "s0=0 s1=0\ns0=1 s1=1\ns0=2 s1=2\ns0=3 s1=3\ns0=4 s1=4\ns0=5 s1=5\ns0=6 s1=6\ns0=7 s1=7\ns0=8 s1=8\ns0=9 s1=9\ns0=10 s1=10\ns0=11 s1=11\ns0=12 s1=12\ns0=13 s1=13\ns0=14 s1=14\ns0=15 s1=15\ns0=16 s1=16\ns0=17 s1=17\ns0=18 s1=18\ns0=19 s1=19\ns0=20 s1=20\ns0=21 s1=21\ns0=22 s1=22\ns0=23 s1=23\ns0=24 s1=24\ns0=25 s1=25\ns0=26 s1=26\ns0=27 s1=27\ns0=28 s1=28\ns0=29 s1=29\ns0=30 s1=30\ns0=31 s1=31\ns0=32 s1=32\ns0=33 s1=33\ns0=34 s1=34\ns0=35 s1=35\ns0=36 s1=36\ns0=37 s1=37\ns0=38 s1=38\ns0=39 s1=39\ns0=40 s1=40\ns0=41 s1=41\ns0=42 s1=42\ns0=43 s1=43\ns0=44 s1=44\ns0=45 s1=45\ns0=46 s1=46\ns0=47 s1=47\ns0=48 s1=48\ns0=49 s1=49\n"
+exit = 0

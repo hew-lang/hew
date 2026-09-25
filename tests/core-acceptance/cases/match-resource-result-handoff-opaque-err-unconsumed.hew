@@ -1,0 +1,30 @@
+#[resource]
+#[opaque]
+type Handle {}
+impl Handle {
+    fn probe(self) -> i64 { 7 }
+    fn close(consume self) { unsafe { hew_deque_free(self) }; }
+}
+extern "C" {
+    fn hew_deque_new() -> Handle;
+    fn hew_deque_free(consume handle: Handle);
+}
+fn fresh() -> Handle { unsafe { hew_deque_new() } }
+
+fn make(ok: bool) -> Result<Handle, string> {
+    if ok { .Ok(fresh()) } else { .Err("handoff-error".to_upper()) }
+}
+fn run_once() -> i64 {
+    match make(false) {
+    .Ok(value) => { value.close(); return 75; },
+    .Err(_) => {},
+};
+    0
+}
+fn main() -> i64 {
+    for _ in 0..12 {
+        let status = run_once();
+        if status != 0 { return status; }
+    }
+    0
+}

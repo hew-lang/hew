@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-single-leaf"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `single_leaf_high` (indirect enum single leaf leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-single-leaf.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

@@ -1,0 +1,22 @@
+fn make_pair(base: i64) -> fn(i64) -> i64 {
+    let inner = |x: i64| x + base;
+    |y: i64| inner(y) + 1
+}
+fn make_counter() -> fn[var, clone]() -> i64 {
+    var count: i64 = 0;
+    capture(var count) || { count = count + 1; count }
+}
+fn pick<T>(consume x: T) -> T {
+    let get = move || x;
+    get()
+}
+fn main() {
+    let f = make_pair(100);
+    let a = f(10);
+    var c = make_counter();
+    let b = c() + c() + c();
+    let s = pick("captured");
+    let d = s.len();
+    print(a + b + d);
+    print("OK");
+}

@@ -1,0 +1,11 @@
+import std.string;
+fn main() -> i64 {
+    var checks: i64 = 0;
+    for i in 0..50 {
+        match string.to_float("1.25") {
+            .Ok(value) => { if value != 1.25 { return 91; } checks = checks + 1; },
+            .Err(_) => { return 91; },
+        }
+    }
+    if checks == 50 { 0 } else { 92 }
+}

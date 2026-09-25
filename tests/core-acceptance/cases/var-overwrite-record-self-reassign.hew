@@ -1,0 +1,14 @@
+type Rec {
+    name: string,
+    n: i64,
+}
+
+fn main() -> i64 {
+    var r: Rec = Rec { name: "keeper-".to_upper(), n: 0 };
+    var i: i64 = 0;
+    while i < 25 {
+        r = Rec { n: i, ..r };
+        i = i + 1;
+    }
+    r.name.len()
+}

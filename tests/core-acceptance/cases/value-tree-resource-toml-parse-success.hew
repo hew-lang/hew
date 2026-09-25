@@ -1,0 +1,17 @@
+import std.encoding.toml;
+fn main() -> i32 {
+    for _ in 0..50 {
+        let n = match toml.parse("n = 7") {
+            .Ok(parsed) => {
+                let child = parsed.get_field("n");
+                let n = child.get_int();
+                child.close();
+                parsed.close();
+                n
+            }
+            .Err(_) => { return 1; }
+        };
+        println(f"{n}");
+    }
+    0
+}

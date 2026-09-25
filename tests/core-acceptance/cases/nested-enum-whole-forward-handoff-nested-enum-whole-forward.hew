@@ -1,0 +1,114 @@
+enum Inner {
+    Text(string),
+    Empty,
+}
+
+enum Outer {
+    Wrap(Inner),
+    Empty,
+}
+
+enum Middle {
+    Wrap(Inner),
+    Empty,
+}
+
+enum DeepOuter {
+    Wrap(Middle),
+    Empty,
+}
+
+type Holder {
+    value: Inner,
+    sibling: i64,
+}
+
+enum RecordOuter {
+    Wrap(Holder),
+    Empty,
+}
+
+enum TupleOuter {
+    Wrap((Inner, i64)),
+    Empty,
+}
+
+fn whole(i: i64) -> i64 {
+    let outer = Outer.Wrap(Inner.Text(f"whole-{i}"));
+    match outer {
+        .Wrap(st) => {
+            let w = st;
+            match w {
+                .Text(s) => s.len(),
+                .Empty => 0,
+            }
+        },
+        .Empty => 0,
+    }
+}
+
+fn direct(i: i64) -> i64 {
+    let outer = Outer.Wrap(Inner.Text(f"direct-{i}"));
+    match outer {
+        .Wrap(st) => match st {
+            .Text(s) => s.len(),
+            .Empty => 0,
+        },
+        .Empty => 0,
+    }
+}
+
+fn depth_two(i: i64) -> i64 {
+    let outer = DeepOuter.Wrap(Middle.Wrap(Inner.Text(f"deep-{i}")));
+    match outer {
+        .Wrap(mid) => match mid {
+            .Wrap(st) => match st {
+                .Text(s) => s.len(),
+                .Empty => 0,
+            },
+            .Empty => 0,
+        },
+        .Empty => 0,
+    }
+}
+
+fn record_field(i: i64) -> i64 {
+    let outer = RecordOuter.Wrap(Holder {
+        value: Inner.Text(f"record-{i}"),
+        sibling: i,
+    });
+    match outer {
+        .Wrap(st) => {
+            let w = st.value;
+            match w {
+                .Text(s) => s.len() + st.sibling,
+                .Empty => st.sibling,
+            }
+        },
+        .Empty => 0,
+    }
+}
+
+fn tuple_field(i: i64) -> i64 {
+    let outer = TupleOuter.Wrap((Inner.Text(f"tuple-{i}"), i));
+    match outer {
+        .Wrap(st) => {
+            let w = st.0;
+            match w {
+                .Text(s) => s.len() + st.1,
+                .Empty => st.1,
+            }
+        },
+        .Empty => 0,
+    }
+}
+
+fn main() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        total = total + direct(i) + depth_two(i) + whole(i)
+            + record_field(i) + tuple_field(i);
+        println("frame");
+    }
+    if total > 0 { 0 } else { 91 }
+}

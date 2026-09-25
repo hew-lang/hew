@@ -1,0 +1,10 @@
+[[case]]
+id = "tuple-record-enum-container-drop-tuple-record-enum-transfer"
+intent = "Regression oracle for an owned record transferred out of a returned tuple. Shape `tuple_record_enum_transfer_high` (transferred record from tuple has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/tuple-record-enum-container-drop-tuple-record-enum-transfer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

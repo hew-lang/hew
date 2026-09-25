@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-enum-whole-forward-handoff-nested-enum-whole-forward"
+intent = "Exact ownership oracle for nested-enum payloads handed to a shorter-lived arm-local owner before a second match. Shape `nested_enum_whole_forward_scribble` (high whole forward handoffs do not double free or read poison, low and high whole forward handoffs are exactly leak clean) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-enum-whole-forward-handoff-nested-enum-whole-forward.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "init_suspension_resumes"
+intent = "#2269: a suspending `init()` constructor (no `#[on(start)]`) had the same discard bug."
+source = "../vertical-slice/accept/init_suspension_resumes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "init-before\ninit-after\n7\n"
+exit = 0

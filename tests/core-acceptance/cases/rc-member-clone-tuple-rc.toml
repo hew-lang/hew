@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-member-clone-tuple-rc"
+intent = "Ownership oracle for `Rc` members under structural clone. Shape `tuple_rc` (tuple with rc member clone balances) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-member-clone-tuple-rc.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

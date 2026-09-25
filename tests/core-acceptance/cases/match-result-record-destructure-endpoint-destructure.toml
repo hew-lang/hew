@@ -1,0 +1,10 @@
+[[case]]
+id = "match-result-record-destructure-endpoint-destructure"
+intent = "Match-result record ownership oracle for the panic-sibling join shape. Shape `endpoint_destructure` (match result record destructure exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-result-record-destructure-endpoint-destructure.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "10.11.12.13\n8080\n"
+exit = 0

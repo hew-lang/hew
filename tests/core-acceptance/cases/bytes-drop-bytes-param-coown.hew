@@ -1,0 +1,14 @@
+fn share_param(value: bytes) -> i64 {
+    let alias = value;
+    value.len() + alias.len()
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let payload = "param-coown-payload".to_bytes();
+        total = total + share_param(payload);
+        i = i + 1;
+    }
+    total
+}

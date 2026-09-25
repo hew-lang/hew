@@ -1,0 +1,58 @@
+type Holder {
+    items: Vec<string>,
+    tag: string,
+}
+
+enum Slot {
+    Filled(i64),
+    Empty,
+}
+
+fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
+    if i < 2 {
+        let next = Holder { items: h.items, tag: f"tag-{i}" };
+        (next, .Filled(i), 100 + i)
+    } else {
+        (h, .Empty, 100 + i)
+    }
+}
+
+fn run_case(seed: i64, fill: bool, exit_early: bool) -> i64 {
+    var owner = Holder { items: Vec.new(), tag: f"seed-{seed}" };
+    if fill {
+        owner.items.push("first");
+        owner.items.push("second");
+    }
+
+    var i = 0;
+    var checksum = 0;
+    var done = false;
+    while !done {
+        let pair = step(owner, i);
+        owner = pair.0;
+        checksum = checksum + pair.2;
+        match pair.1 {
+            .Filled(v) => {
+                checksum = checksum + v;
+                if exit_early {
+                    break;
+                }
+            },
+            .Empty => {
+                done = true;
+            },
+        }
+        i = i + 1;
+    }
+    checksum + owner.items.len() + owner.tag.len()
+}
+
+fn main() -> i64 {
+    var total = 0;
+    for frame in 0..50 {
+        total = total + run_case(frame, true, false);
+        total = total + run_case(frame, false, true);
+        println("frame");
+    }
+    if total >= 0 { 0 } else { 91 }
+}

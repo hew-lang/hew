@@ -1,0 +1,29 @@
+import std.stream;
+
+actor CarryContinueEscape {
+    receive fn run(unused: i64) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        tx.send("escaped").expect("send");
+        tx.close();
+        var carry = "init";
+        var keep_going = true;
+        println("before");
+        while keep_going {
+            let opt = rx.try_recv();
+            match opt {
+                .Some(item) => {
+                    carry = item;
+                    continue;
+                },
+                .None => { keep_going = false; },
+            }
+        }
+        println(carry);
+        println("after");
+    }
+}
+
+fn main() {
+    let w = spawn CarryContinueEscape;
+    let _ = w.run(0);
+}

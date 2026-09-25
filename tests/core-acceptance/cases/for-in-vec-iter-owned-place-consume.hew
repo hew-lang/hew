@@ -1,0 +1,11 @@
+fn main() {
+    var words: Vec<string> = Vec.new();
+    words.push("a" + "1");
+    words.push("b" + "2");
+    var counts: HashMap<string, i64> = HashMap.new();
+    for w in words {
+        counts.insert(w, 1);
+    }
+    print(counts.len());
+    print("OK");
+}

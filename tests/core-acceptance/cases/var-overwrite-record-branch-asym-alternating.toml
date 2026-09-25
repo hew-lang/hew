@@ -1,0 +1,10 @@
+[[case]]
+id = "var-overwrite-record-branch-asym-alternating"
+intent = "`var`-local overwrite leak oracles: reassigning an owned `var` in a loop must release the prior value, not just the final one (#53). Shape `record_branch_asym_alternating` (record branch asym alternating no double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/var-overwrite-record-branch-asym-alternating.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 8

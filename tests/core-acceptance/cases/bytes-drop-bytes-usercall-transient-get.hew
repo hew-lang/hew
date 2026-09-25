@@ -1,0 +1,13 @@
+fn mk() -> bytes { "usercall-get-transient-payload".to_bytes() }
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        match mk().get(0) {
+            .Some(_b) => { total = total + 1; }
+            .None => {}
+        }
+        i = i + 1;
+    }
+    total
+}

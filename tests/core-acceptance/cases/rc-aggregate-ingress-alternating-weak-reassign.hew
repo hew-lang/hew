@@ -1,0 +1,22 @@
+fn frame(flag: bool) -> i64 {
+    let rc = Rc.new(7);
+    var w: Weak<i64> = rc.downgrade();
+    let n = match flag {
+        true => {
+            let pair: (Weak<i64>, string) = (w, "tag");
+            pair.1.len()
+        }
+        false => 0,
+    };
+    w = rc.downgrade();
+    n + rc.get()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        total = total + frame(seed % 2 == 0);
+        println("frame");
+    }
+    total - 425
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-indirect-enum-actor-mailbox-teardown"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `indirect_enum_actor_mailbox_teardown_df` (indirect enum actor mailbox teardown leak slope below tolerance, indirect enum actor mailbox teardown no corruption under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-indirect-enum-actor-mailbox-teardown.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

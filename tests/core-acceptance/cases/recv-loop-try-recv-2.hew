@@ -1,0 +1,71 @@
+import std.stream;
+
+actor TryRecv {
+    receive fn run(unused: i64) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1024) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        tx.send("f0").expect("send");
+        tx.send("f1").expect("send");
+        tx.send("f2").expect("send");
+        tx.send("f3").expect("send");
+        tx.send("f4").expect("send");
+        tx.send("f5").expect("send");
+        tx.send("f6").expect("send");
+        tx.send("f7").expect("send");
+        tx.send("f8").expect("send");
+        tx.send("f9").expect("send");
+        tx.send("f10").expect("send");
+        tx.send("f11").expect("send");
+        tx.send("f12").expect("send");
+        tx.send("f13").expect("send");
+        tx.send("f14").expect("send");
+        tx.send("f15").expect("send");
+        tx.send("f16").expect("send");
+        tx.send("f17").expect("send");
+        tx.send("f18").expect("send");
+        tx.send("f19").expect("send");
+        tx.send("f20").expect("send");
+        tx.send("f21").expect("send");
+        tx.send("f22").expect("send");
+        tx.send("f23").expect("send");
+        tx.send("f24").expect("send");
+        tx.send("f25").expect("send");
+        tx.send("f26").expect("send");
+        tx.send("f27").expect("send");
+        tx.send("f28").expect("send");
+        tx.send("f29").expect("send");
+        tx.send("f30").expect("send");
+        tx.send("f31").expect("send");
+        tx.send("f32").expect("send");
+        tx.send("f33").expect("send");
+        tx.send("f34").expect("send");
+        tx.send("f35").expect("send");
+        tx.send("f36").expect("send");
+        tx.send("f37").expect("send");
+        tx.send("f38").expect("send");
+        tx.send("f39").expect("send");
+        tx.send("f40").expect("send");
+        tx.send("f41").expect("send");
+        tx.send("f42").expect("send");
+        tx.send("f43").expect("send");
+        tx.send("f44").expect("send");
+        tx.send("f45").expect("send");
+        tx.send("f46").expect("send");
+        tx.send("f47").expect("send");
+        tx.send("f48").expect("send");
+        tx.send("f49").expect("send");
+        tx.close();
+        var keep_going = true;
+        while keep_going {
+            let opt = rx.try_recv();
+            match opt {
+                .Some(item) => println(item),
+                .None => { keep_going = false; },
+            }
+        }
+    }
+}
+
+fn main() {
+    let w = spawn TryRecv;
+    let _ = w.run(0);
+}

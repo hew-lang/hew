@@ -74,8 +74,8 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance
-.PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance
+.PHONY: test-obligation-site-diff
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
@@ -684,9 +684,8 @@ ci-shard-1: observe-functional-test test-cabi \
 
 ci-shard-2: libhew-link-race-test test \
 	test-leak-oracle-selftest \
-	test-ownership-balance-corpus compile-determinism-verify compile-determinism-selftest \
-	test-ownership-balance-runner-selftest stdlib-user-build-clean \
-	test-asan-fixture-selftest stdlib-errno-gate \
+	compile-determinism-verify compile-determinism-selftest \
+	test-obligation-site-diff stdlib-user-build-clean stdlib-errno-gate \
 	test-extern-bytes test-host-client
 
 ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
@@ -1220,16 +1219,7 @@ test-hew-ratchet: hew-native ## Test: run compiled Hew suites against their ratc
 
 endif
 
-# Direct-call match carriers have a separate exact-count corpus because the
-# ordinary Hew suites do not pin ownership-verifier finding counts. Every fixture is checked
-# under inherited and HEW_*-scrubbed environments, and any count drift in
-# either direction fails.
-test-ownership-balance-corpus: hew-native hew
-	HEW_BIN="$(DEBUG_DIR)/hew" HEW_RELEASE_BIN="$(RELEASE_LIB_DIR)/hew" \
-		$(PYTHON) tests/ownership-balance/run.py
-
-test-ownership-balance-runner-selftest:
-	$(PYTHON) scripts/tests/test_ownership_balance_run.py
+test-obligation-site-diff:
 	$(PYTHON) scripts/tests/test_obligation_site_diff.py
 
 
@@ -1333,34 +1323,6 @@ asan:
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
 	LSAN_OPTIONS="$(ASAN_LSAN_OPTIONS)" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime $(ASAN_TEST_ARGS) -- $(ASAN_TEST_FILTER) --test-threads=1
-
-# ASan gate for compiled .hew fixture binaries (Linux/nightly toolchain required).
-#
-# Unlike `make asan` (which instruments the Rust runtime crate under test),
-# this target builds an ASan-instrumented copy of the full hew toolchain
-# (hew CLI + libhew.a) using nightly Rust, then compiles .hew leak-test
-# fixtures against that instrumented library and runs them under
-# ASAN_OPTIONS=detect_leaks=1.  This catches leaks in the GENERATED CODE
-# emitted by hew (the Vec<string> compare-temp leak and the owned array-repeat
-# clone leak were only caught by the macOS `leaks` oracle before this gate).
-#
-# Passes LLVM_VERSION through to the script if set (e.g. LLVM_VERSION=22).
-asan-fixtures: test-asan-fixture-selftest
-ifeq ($(shell uname -s),Darwin)
-	@echo "asan-fixtures: skipped on macOS — use the leaks oracle in hew-cli/tests/*_leak_oracle.rs"
-else
-	LLVM_VERSION=$(LLVM_VERSION) \
-	SANITIZER_RUST_TARGET=$(SANITIZER_RUST_TARGET) \
-	scripts/asan-fixture-check.sh
-endif
-
-# Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
-# sanitizer diagnostic must be accepted, while a bare non-zero probe exit must
-# stay red instead of certifying instrumentation that never reported a leak.
-test-asan-fixture-selftest:
-	scripts/asan-fixture-check.sh --selftest
-
-# Shell only; no artifacts.
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
 #
@@ -1787,7 +1749,6 @@ clean: ## Develop: remove generated build and test artifacts
 	cargo clean
 	rm -rf -- $(COV_DIR) \
 		"$(CURDIR)/.tmp/compile-out" \
-		"$(CURDIR)/.tmp/asan-fixture-out" \
 		"$(CURDIR)/.tmp/tool-tmp"
 	rm -f -- \
 		"$(CURDIR)/.tmp/pkg-import-actual.txt" \

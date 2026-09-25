@@ -1,0 +1,25 @@
+fn make_triple(k: i64) -> ((string, string), string) {
+    let a = "tuple-a-heap-payload".to_upper();
+    let b = "tuple-b-heap-payload".to_upper();
+    let c = "tuple-c-heap-payload".to_upper();
+    ((a, b), c)
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let t = make_triple(k);
+    let inner = t.0;
+    let x = match inner {
+        (a, _) => a.len(),
+    };
+    x
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

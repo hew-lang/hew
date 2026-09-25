@@ -1,0 +1,10 @@
+[[case]]
+id = "funcupdate-owned-field-drop-direct-string-self-store"
+intent = "Functional-update owned-field drop leak oracle. Shape `direct_string_self_store_high` (direct string field stores are clean under malloc scribble, direct string self store has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/funcupdate-owned-field-drop-direct-string-self-store.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

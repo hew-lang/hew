@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-env-drop-gen-transitive-capture-reassign-poisoned"
+intent = "Closure-environment scope-exit drop oracles: per-iteration leak slope plus poisoned-allocator no-double-free pins for the heap-env closure shapes this lane completes (nested env-of-env, type-parameterised owned capture, and the `BorrowMut`… Shape `gen_transitive_capture_reassign_poisoned` (generator transitive capture after reassignment does not double free, generator transitive capture after reassignment survives the poisoned allocator) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/closure-env-drop-gen-transitive-capture-reassign-poisoned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "total=19\n"
+exit = 0

@@ -1,0 +1,17 @@
+fn make_reader(label: string, n: i64) -> fn() -> i64 {
+    || label.len() + n
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let label = "row-payload-seed".to_upper();
+        let f = make_reader(label, i);
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(50);
+    if total != 2025 { return 98; }
+    0
+}

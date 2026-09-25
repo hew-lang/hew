@@ -1,0 +1,10 @@
+[[case]]
+id = "self-receiver-borrow-drop-self-receiver-record-vec"
+intent = "Leak oracle for the caller-side drop of a value-receiver method's receiver (Shape A of #2753). Shape `self_receiver_record_vec_high` (record vec receiver does not double free, record vec receiver leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/self-receiver-borrow-drop-self-receiver-record-vec.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

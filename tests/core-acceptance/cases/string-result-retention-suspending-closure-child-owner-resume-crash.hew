@@ -1,0 +1,55 @@
+type ChildBundle {
+    text: string,
+    data: bytes,
+}
+
+fn make_child_nested(label: string) -> fn() -> i64 {
+    || label.len()
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        1
+    }
+}
+
+actor Crasher {
+    let gate: Gate,
+
+    receive fn run() -> i64 {
+        let child = |child_gate: Gate| {
+            let child_string = "child-string-owner".to_upper();
+            let child_bytes = "child-bytes-owner".to_bytes();
+            let child_record = ChildBundle {
+                text: "child-record-owner".to_upper(),
+                data: "child-record-bytes".to_bytes(),
+            };
+            let child_nested = make_child_nested("child-nested-owner".to_upper());
+            let _ = match child_gate.tick() {
+                .Ok(n) => n,
+                .Err(_) => 0,
+            };
+            if child_string.len()
+                + child_bytes.len()
+                + child_record.text.len()
+                + child_record.data.len()
+                + child_nested()
+                >= 0 {
+                panic("crash after child-owner resume");
+            }
+            7
+        };
+        child(gate)
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    for _ in 0..1 {
+        let crasher = spawn Crasher(gate: gate);
+        match crasher.run() {
+            .Ok(_) => panic("child-owner crash unexpectedly returned"),
+            .Err(_) => println("restarted"),
+        }
+    }
+}

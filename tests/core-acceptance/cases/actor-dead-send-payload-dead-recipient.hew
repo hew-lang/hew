@@ -1,0 +1,43 @@
+type Parcel {
+    label: string,
+    tags: Vec<string>,
+}
+
+actor Sink {
+    receive fn take_string(payload: string) {
+        println(f"STRING:{payload}");
+    }
+
+    receive fn take_record(parcel: Parcel) {
+        println(f"RECORD:{parcel.label}");
+    }
+
+    receive fn take_vec(items: Vec<string>) {
+        println(f"VEC:{items.len()}");
+    }
+
+    receive fn die() -> i64 {
+        panic("sink crashed before any payload was sent")
+    }
+}
+
+fn parcel(n: i64) -> Parcel {
+    let tags: Vec<string> = [f"tag-{n}", "shared-heap-tag".to_upper()];
+    Parcel { label: f"parcel-{n}", tags: tags }
+}
+
+fn main() {
+    let sink = spawn Sink;
+    match sink.die() {
+        .Ok(_) => println("UNEXPECTED_REPLY"),
+        .Err(_) => println("SINK_DEAD"),
+    }
+    for i in 0..1000 {
+        let _ = sink.take_string(f"owned-payload-{i}".to_upper());
+        let _ = sink.take_record(parcel(i));
+        let items: Vec<string> = [f"item-{i}", "vector-heap-element".to_upper()];
+        let _ = sink.take_vec(items);
+        println(f"SENT:{i}");
+    }
+    println("DONE");
+}

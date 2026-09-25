@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-aggregate-ingress-array-element"
+intent = "Ownership oracle for an `Rc` / `Weak` handle moved into a VALUE aggregate. Shape `array_element_high` (array literal element does not over release, array literal element does not under release) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-aggregate-ingress-array-element.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

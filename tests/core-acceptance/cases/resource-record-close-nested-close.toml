@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-record-close-nested-close"
+intent = "Field-bearing `#[resource]` record `close()` oracle (spec §3.7.3 / §10(d)). Shape `nested_close` (resource record nested close fires on drop) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/resource-record-close-nested-close.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "before-scope-exit\nouter-closed\ninner-closed\n"
+exit = 0

@@ -1,0 +1,10 @@
+type Rec { field: [i64] }
+
+fn main() {
+    var xs: [[i64]] = [];
+    let r = Rec { field: [10, 20, 30] };
+    xs.push(r.field);
+    let clone_sum = xs[0][0] + xs[0][1] + xs[0][2];
+    let orig_sum = r.field[0] + r.field[1] + r.field[2];
+    println(f"{clone_sum},{orig_sum}");
+}

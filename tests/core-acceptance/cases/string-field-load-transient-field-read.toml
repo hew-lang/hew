@@ -1,0 +1,10 @@
+[[case]]
+id = "string-field-load-transient-field-read"
+intent = "Constant-leak / double-free oracle for reading a `string` field out of an owned aggregate (`r.field`, `t.0`). Shape `transient_field_read` (transient field read no over drop) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-field-load-transient-field-read.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "52OK"
+exit = 0

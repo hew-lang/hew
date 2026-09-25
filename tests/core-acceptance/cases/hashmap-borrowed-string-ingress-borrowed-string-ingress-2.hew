@@ -1,0 +1,26 @@
+fn store_key(var counts: HashMap<string, i64>, key: string, amount: i64) -> HashMap<string, i64> {
+    counts.insert(key, amount);
+    counts
+}
+
+fn store_member(var members: HashSet<string>, name: string) -> HashSet<string> {
+    members.insert(name);
+    members
+}
+
+fn run_cycle() -> i64 {
+    var counts: HashMap<string, i64> = HashMap.new();
+    var members: HashSet<string> = HashSet.new();
+    counts = store_key(counts, "key".to_upper(), 1);
+    counts = store_key(counts, "key".to_upper(), 2);
+    members = store_member(members, "member".to_upper());
+    counts.len() + members.len()
+}
+
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames { total = total + run_cycle(); }
+    total
+}
+
+fn main() -> i64 { if run_loop(50) > 0 { 0 } else { 1 } }

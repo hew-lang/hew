@@ -1,0 +1,26 @@
+type SetBox { words: HashSet<string> }
+
+fn make_box() -> SetBox {
+    var words: HashSet<string> = HashSet.new();
+    words.insert("field" + "-alpha-padding-padding");
+    words.insert("field" + "-beta-padding-padding");
+    words.insert("field" + "-gamma-padding-padding");
+    SetBox { words: words }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 50 {
+        let holder = make_box();
+        var total: i64 = 0;
+        var count: i64 = 0;
+        for word in holder.words {
+            total = total + word.len();
+            count = count + 1;
+        }
+        if count != 3 || holder.words.len() != 3 { return 91; }
+        println(total);
+        i = i + 1;
+    }
+    0
+}

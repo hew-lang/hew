@@ -1,0 +1,10 @@
+fn mk() -> bytes { "unnamed-usercall-transient-payload".to_bytes() }
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + mk().len();
+        i = i + 1;
+    }
+    total
+}

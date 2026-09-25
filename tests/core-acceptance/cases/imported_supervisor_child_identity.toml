@@ -1,0 +1,10 @@
+[[case]]
+id = "imported_supervisor_child_identity"
+intent = "A file import exposes its actor in the root surface while preserving the complete declaration identity used by actor and supervisor MIR layouts."
+source = "../vertical-slice/accept/imported_supervisor_child_identity.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 17

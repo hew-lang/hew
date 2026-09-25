@@ -1,0 +1,17 @@
+type Rec {
+    name: string,
+}
+
+fn make(i: i64) -> Rec {
+    Rec { name: "payload-" + "xyz" }
+}
+
+fn main() -> i64 {
+    var r: Rec = make(0);
+    var i: i64 = 0;
+    while i < 50 {
+        r = make(i);
+        i = i + 1;
+    }
+    r.name.len()
+}

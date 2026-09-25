@@ -1,0 +1,10 @@
+[[case]]
+id = "conditional-move-drop-vec-conditional-taken"
+intent = "Conditionally-moved collection locals — leak-slope oracles plus poisoned-allocator exactly-once pins (#2418). Shape `vec_conditional_taken_high` (vec conditional move taken no per call leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/conditional-move-drop-vec-conditional-taken.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 100

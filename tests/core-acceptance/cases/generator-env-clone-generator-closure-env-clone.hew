@@ -1,0 +1,129 @@
+type Capture {
+    label: string,
+    values: Vec<i64>,
+    root: Rc<i64>,
+    edge: Weak<i64>,
+}
+
+fn upgraded(edge: Weak<i64>) -> i64 {
+    match edge.upgrade() {
+        .Some(value) => value.get(),
+        .None => -1,
+    }
+}
+
+fn factory(consume c: Capture) -> fn() -> Generator<i64, ()> {
+    move || {
+        let captured = c;
+        gen {
+            yield captured.label.len() + captured.values[0] + captured.root.get();
+            yield upgraded(captured.edge);
+        }
+    }
+}
+
+fn closure_complete(root: Rc<i64>, i: i64) {
+    let capture = Capture {
+        label: "closure-" + f"{i}",
+        values: [5, 6],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let make = factory(capture);
+    let g = make();
+    if root.strong_count() != 3 || root.weak_count() != 2 {
+        panic("closure complete live counts");
+    }
+    loop {
+        match g.next() {
+            .Some(value) => { if value <= 0 { panic("closure complete value"); } },
+            .None => { break; },
+        }
+    }
+}
+
+fn closure_suspend(root: Rc<i64>, i: i64) {
+    let capture = Capture {
+        label: "closure-" + f"{i}",
+        values: [5, 6],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let make = factory(capture);
+    let g = make();
+    if root.strong_count() != 3 || root.weak_count() != 2 {
+        panic("closure suspend live counts");
+    }
+    match g.next() {
+        .Some(value) => { if value <= 0 { panic("closure suspend value"); } },
+        .None => panic("closure suspend missing value"),
+    }
+}
+
+fn closure_never(root: Rc<i64>, i: i64) {
+    let capture = Capture {
+        label: "closure-" + f"{i}",
+        values: [5, 6],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let make = factory(capture);
+    let _g = make();
+    if root.strong_count() != 3 || root.weak_count() != 2 {
+        panic("closure never live counts");
+    }
+}
+
+fn closure_repeat(root: Rc<i64>, i: i64) {
+    let capture = Capture {
+        label: "closure-" + f"{i}",
+        values: [5, 6],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let make = factory(capture);
+    var calls: i64 = 0;
+    while calls < 2 {
+        let g = make();
+        loop {
+            match g.next() {
+                .Some(value) => { if value <= 0 { panic("closure repeat value"); } },
+                .None => { break; },
+            }
+        }
+        calls = calls + 1;
+    }
+}
+
+fn main() {
+    var completed: i64 = 0;
+    var suspended: i64 = 0;
+    var never_resumed: i64 = 0;
+    var repeated: i64 = 0;
+    var i: i64 = 0;
+    while i < 128 {
+        let root = Rc.new(i + 20);
+        closure_complete(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("closure complete release counts");
+        }
+        completed = completed + 1;
+        closure_suspend(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("closure suspend release counts");
+        }
+        suspended = suspended + 1;
+        closure_never(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("closure never release counts");
+        }
+        never_resumed = never_resumed + 1;
+        closure_repeat(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("closure repeat release counts");
+        }
+        repeated = repeated + 1;
+        i = i + 1;
+    }
+    print(f"{completed}:{suspended}:{never_resumed}:{repeated}:OK");
+}

@@ -1,0 +1,21 @@
+import std.string;
+
+type Multi {
+    label: string,
+    items: Vec<i64>,
+    id: i64,
+}
+
+fn main() -> i64 {
+    var init: Vec<i64> = Vec.new();
+    init.push(0);
+    var m = Multi { label: string.repeat("z", 16), items: init, id: 0 };
+    var i: i64 = 0;
+    while i < 50 {
+        var next: Vec<i64> = Vec.new();
+        next.push(i);
+        m = Multi { label: string.repeat("y", 16), items: next, ..m };
+        i = i + 1;
+    }
+    m.id
+}

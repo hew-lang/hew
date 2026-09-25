@@ -1,0 +1,10 @@
+[[case]]
+id = "arena-stdlib-holder-insert-remove"
+intent = "Leak oracle for `std::arena::Arena<T>` with a heap-owning composite value. Shape `arena_stdlib_holder_insert_remove_high` (stdlib arena holder insert remove has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/arena-stdlib-holder-insert-remove.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1460\n"
+exit = 0

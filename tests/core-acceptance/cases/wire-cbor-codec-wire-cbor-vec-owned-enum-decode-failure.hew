@@ -1,0 +1,17 @@
+#[wire]
+enum Payload { Empty, Full(string), }
+#[wire]
+type BagGood { items: Vec<Payload> @1, tail: string @2, }
+#[wire]
+type BagBad { items: Vec<Payload> @1, tail: i64 @2, }
+
+fn main() -> i64 {
+    var xs: Vec<Payload> = Vec.new();
+    xs.push(Payload.Full("first-owned-element"));
+    xs.push(Payload.Empty);
+    xs.push(Payload.Full("second-owned-element"));
+    let g = BagGood { items: xs, tail: "owned-tail-value" };
+    let raw = g.encode();
+    let bad = BagBad.decode(raw);
+    bad.tail
+}

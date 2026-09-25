@@ -1,0 +1,20 @@
+type Holder { label: string }
+
+fn run(f: fn() -> i64) -> i64 { f() }
+
+fn make() -> Generator<i64, ()> {
+    var h = Holder { label: "first" + " value" };
+    h = Holder { label: "second" + " longer value" };
+    gen {
+        yield run(move || h.label.len());
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for value in make() {
+        total = total + value;
+    }
+    println(f"total={total}");
+    0
+}

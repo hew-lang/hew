@@ -1,0 +1,10 @@
+[[case]]
+id = "pipeline-stdlib-pipeline-owned-shutdown-drain"
+intent = "Ownership gates for the concrete `std::pipeline` S1 chain. Shape `pipeline_owned_shutdown_drain_high` (pipeline owned payload lifecycle edges do not double free, pipeline owned payload shutdown drain has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/pipeline-stdlib-pipeline-owned-shutdown-drain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "queued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\n"
+exit = 0

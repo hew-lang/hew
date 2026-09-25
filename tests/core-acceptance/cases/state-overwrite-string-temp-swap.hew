@@ -1,0 +1,27 @@
+actor TwoStrings {
+    var x: string,
+    var y: string,
+
+    receive fn flip() {
+        let t = x;
+        x = y;
+        y = t;
+    }
+
+    receive fn len_x() -> i64 {
+        x.len()
+    }
+}
+
+fn main() -> i64 {
+    let a = spawn TwoStrings(x: "left".to_upper(), y: "right-side".to_upper());
+    var i: i64 = 0;
+    while i < 25 {
+        let _ = a.flip();
+        i = i + 1;
+    }
+    match a.len_x() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

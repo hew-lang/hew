@@ -1,0 +1,25 @@
+type Item {
+    name: string,
+    value: i64,
+}
+actor Maker { 
+    receive gen fn items() -> Item {
+        var i: i64 = 0;
+        loop {
+            yield Item { name: f"it-{i }", value: i };
+            i = i + 1;
+        }
+    }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    let m = spawn Maker;
+    for it in m.items() {
+        total = total + it.value;
+        if it.value >= 200 {
+            break;
+        }
+    }
+    if total != 20100 { return 95; }
+    0
+}

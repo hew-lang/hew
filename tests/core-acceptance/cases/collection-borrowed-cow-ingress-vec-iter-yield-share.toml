@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-borrowed-cow-ingress-vec-iter-yield-share"
+intent = "Carrier-general collection-ingress exactly-once oracles: the borrowed `bytes` parameter, the REASSIGNED parameter generation, and the `VecIter` `string` yield binder. Shape `vec_iter_yield_share_high` (vec iter yield share leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/collection-borrowed-cow-ingress-vec-iter-yield-share.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

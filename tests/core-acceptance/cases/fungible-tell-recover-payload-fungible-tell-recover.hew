@@ -1,0 +1,25 @@
+actor Worker { 
+    var seen: i64,
+    receive fn take(s: string) {
+        if s.is_empty() { seen = seen; } else { seen = seen + 1; }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+
+    child w: Worker(seen: 0),
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w;
+    supervisor_stop(sup);
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = w.take("undelivered-heap-payload".to_upper());
+        i = i + 1;
+    }
+    0
+}

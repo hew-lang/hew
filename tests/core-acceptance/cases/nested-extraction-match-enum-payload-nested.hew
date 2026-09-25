@@ -1,0 +1,39 @@
+type Inner {
+    a: string,
+    b: string,
+}
+
+enum Wrap {
+    Item(Inner),
+    Nothing,
+}
+
+fn make_wrap(k: i64) -> Wrap {
+    Wrap.Item(Inner {
+        a: "wrap-a-heap-payload".to_upper(),
+        b: "wrap-b-heap-payload".to_upper(),
+    })
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let w = make_wrap(k);
+    let x = match w {
+        Wrap.Item(row) => {
+            match row {
+                Inner { a, b: _ } => a.len(),
+            }
+        }
+        Wrap.Nothing => 0,
+    };
+    x
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

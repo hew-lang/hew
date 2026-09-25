@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-mailbox-record-collection-mailbox-record-two-collections"
+intent = "Actor mailbox record-with-collection-field drop canary (hew-lang/hew#2722). Shape `mailbox_record_two_collections_high` (mailbox record two collections leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-mailbox-record-collection-mailbox-record-two-collections.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

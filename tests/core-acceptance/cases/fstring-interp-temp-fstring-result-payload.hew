@@ -1,0 +1,18 @@
+fn mkres(i: i64) -> Result<string, string> {
+    if i % 2 == 0 { .Ok(f"tok{i}") } else { .Err(f"bad{i}") }
+}
+fn main() -> i64 {
+    var i: i64 = 0;
+    var ok_total: i64 = 0;
+    var err_total: i64 = 0;
+    while i < 200 {
+        match mkres(i) {
+            .Ok(s) => { println(f"v={s}"); ok_total = ok_total + s.len(); }
+            .Err(e) => { println(f"e={e}"); err_total = err_total + e.len(); }
+        }
+        i = i + 1;
+    }
+    if ok_total != 545 { return 87; }
+    if err_total != 545 { return 86; }
+    0
+}

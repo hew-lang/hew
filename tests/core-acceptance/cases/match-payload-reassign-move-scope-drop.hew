@@ -1,0 +1,27 @@
+enum Box { 
+    Full(Vec<i64>), 
+    Empty, 
+
+ }
+
+fn main() -> i64 {
+    let b = Box.Full(seed());
+    var out = 0;
+    match b {
+        Box.Full(v) => {
+            out = v.len();
+            let w = v;
+            out = out + w.len();
+        }
+        Box.Empty => {}
+    }
+    out
+}
+
+fn seed() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v
+}

@@ -1,0 +1,35 @@
+import std.stream;
+
+actor Mover {
+    receive fn go(ready: stream.Sink<i64>, gate: stream.Stream<i64>) {
+        var xs: Vec<i64> = Vec.new();
+        xs.push(1);
+        xs.push(2);
+        xs.push(3);
+        let ys = xs;
+        // Park with the owned local live; only teardown ends this wait.
+        ready.send(1).expect("ready");
+        gate.recv();
+        println(f"{ys.len()}");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+
+    child mover: Mover,
+}
+
+fn main() {
+    let sup = spawn App;
+    let m = sup.mover;
+    let (ready_tx, ready) = stream.pipe(1).expect("ready");
+    let (_shut, gate) = stream.pipe(1).expect("gate");
+    // A mailbox send does not wait for the handler, so it parks while the
+    // supervisor stops it.
+    mailbox(m, on_full: .Wait).go(ready_tx, gate).expect("send");
+    ready.recv();
+    supervisor_stop(sup);
+    println("stopped");
+}

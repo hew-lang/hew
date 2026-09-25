@@ -1,0 +1,26 @@
+type Inner {
+    v: i64,
+}
+
+type Outer {
+    inner: Inner,
+    c: string,
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let o = Outer { inner: Inner { v: k }, c: "bound-string-heap".to_upper() };
+    let x = match o {
+        Outer { inner: _, c } => c.len(),
+    };
+    x
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total >= 0 { 0 } else { 1 }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "wire-cbor-codec-wire-cbor-anon-encode-temp"
+intent = "Wire CBOR codec ownership leak oracles: decode-owned field drop and the decode-failure partial free-on-error path. Shape `wire_cbor_anon_encode_temp_high` (anonymous encode temp round trip leaks exactly zero) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/wire-cbor-codec-wire-cbor-anon-encode-temp.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 201

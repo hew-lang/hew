@@ -1,0 +1,53 @@
+type Leaf {
+    s: string,
+    t: string,
+}
+
+type Mid {
+    leaf: Leaf,
+    x: string,
+}
+
+type Outer {
+    mid: Mid,
+    c: string,
+}
+
+type Holder {
+    held: Leaf,
+}
+
+fn make_outer(k: i64) -> Outer {
+    Outer {
+        mid: Mid {
+            leaf: Leaf {
+                s: "esc-s-heap-payload".to_upper(),
+                t: "esc-t-heap-payload".to_upper(),
+            },
+            x: "esc-x-heap-payload".to_upper(),
+        },
+        c: "esc-c-heap-payload".to_upper(),
+    }
+}
+
+fn deep(k: i64) -> Holder {
+    let o = make_outer(k);
+    let mid = o.mid;
+    let leaf = mid.leaf;
+    Holder { held: leaf }
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let h = deep(k);
+    h.held.s.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

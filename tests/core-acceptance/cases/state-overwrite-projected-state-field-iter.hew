@@ -1,0 +1,23 @@
+type Box {
+    v: Vec<i64>,
+}
+
+actor Summer {
+    var b: Box,
+
+    receive fn total() -> i64 {
+        var s: i64 = 0;
+        for v in b.v { s = s + v; }
+        s
+    }
+}
+
+fn main() -> i64 {
+    var bv: Vec<i64> = Vec.new();
+    bv.push(10); bv.push(20); bv.push(30); bv.push(40);
+    let a = spawn Summer(b: Box { v: bv });
+    match a.total() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

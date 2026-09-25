@@ -1,0 +1,29 @@
+type Profile {
+    name: string,
+    hits: i64,
+}
+
+actor Keeper {
+    var prof: Profile,
+
+    receive fn refresh() {
+        prof = prof;
+    }
+
+    receive fn name_len() -> i64 {
+        prof.name.len()
+    }
+}
+
+fn main() -> i64 {
+    let k = spawn Keeper(prof: Profile { name: "self-store-name".to_upper(), hits: 1 });
+    var i: i64 = 0;
+    while i < 25 {
+        let _ = k.refresh();
+        i = i + 1;
+    }
+    match k.name_len() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

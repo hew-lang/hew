@@ -1,8 +1,8 @@
 // ASan fixture gate: an actor-state `Stream<T>` field drained by its handler
 // is closed exactly once (#3218).
 //
-// This fixture is compiled against an ASan/LSan-instrumented libhew.a by
-// `scripts/asan-fixture-check.sh` and run with ASAN_OPTIONS=detect_leaks=1.
+// The core-acceptance `safety` suite (`make core-safety`) runs it under
+// ASan/LSan.
 //
 // The stream stays in its state seat for the whole actor lifetime: `recv`
 // borrows the seat, so the field keeps its own `StreamClose` drop authority

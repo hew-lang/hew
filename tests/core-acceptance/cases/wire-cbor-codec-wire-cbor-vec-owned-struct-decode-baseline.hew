@@ -1,0 +1,31 @@
+#[wire]
+type Item {  name: string @1 }
+#[wire]
+type BatchGood {  items: Vec<Item> @1, tail: string @2 }
+#[wire]
+type BatchBad {  items: Vec<Item> @1, tail: i64 @2 }
+
+actor Decoder { 
+    let seq: i64, 
+    receive fn decode_it(raw: bytes) -> i64 {
+        let bad = BatchBad.decode(raw);
+        bad.tail
+  }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var xs: Vec<Item> = Vec.new();
+        xs.push(Item { name: "alpha-owned-element" });
+        xs.push(Item { name: "beta-owned-element" });
+        let g = BatchBad { items: xs, tail: 7 };
+        let raw = g.encode();
+        let a = spawn Decoder(seq: i);
+        let r = a.decode_it(raw);
+        match r { .Ok(v) => { total = total + v; }, .Err(_) => { total = total + 1; }, }
+        i = i + 1;
+    }
+    total
+}

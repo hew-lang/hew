@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-associated-static-carriers"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `associated_static_carriers` (associated static param zero keeps record tuple and enum carriers) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-associated-static-carriers.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 3

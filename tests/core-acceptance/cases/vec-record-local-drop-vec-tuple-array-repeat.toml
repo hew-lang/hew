@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-record-local-drop-vec-tuple-array-repeat"
+intent = "Constant-leak oracle for `Vec<record>` and `Vec<tuple>` (`BitCopy` value-aggregate element) scope-exit release. Shape `vec_tuple_array_repeat` (vec tuple array repeat no leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-record-local-drop-vec-tuple-array-repeat.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

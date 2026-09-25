@@ -1,0 +1,22 @@
+import std.stream;
+
+actor ForAwaitStreamBytes {
+    receive fn run(unused: i64) {
+        let (sink, input) = match stream.pipe(1024) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let b = "frame-some-long-data".to_bytes();
+        var i: i64 = 0;
+        while i < 50 {
+            sink.send(b).expect("send");
+            i = i + 1;
+        }
+        sink.close();
+        for frame in input {
+            println("got");
+        }
+    }
+}
+
+fn main() {
+    let w = spawn ForAwaitStreamBytes;
+    let _ = w.run(0);
+}

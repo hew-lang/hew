@@ -1,0 +1,11 @@
+fn f() -> Result<bytes, string> { .Ok("g2429-iflet-bytes".to_bytes()) }
+
+fn main() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 50 {
+        if let .Ok(b) = f() { total = total + b.len(); }
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

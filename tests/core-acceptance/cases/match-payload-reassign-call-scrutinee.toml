@@ -1,0 +1,10 @@
+[[case]]
+id = "match-payload-reassign-call-scrutinee"
+intent = "Projected-payload move-out UAF / double-free oracle (issue #2523). Shape `call_scrutinee` (call scrutinee move reassign single free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-payload-reassign-call-scrutinee.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 6

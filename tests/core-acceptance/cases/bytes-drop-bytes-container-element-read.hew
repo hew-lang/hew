@@ -1,0 +1,15 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var values: Vec<((bytes, i64), bool)> = Vec.new();
+        let source = "container-read".to_bytes();
+        values.push(((source, 7), true));
+        let item = values[0];
+        let (inner, flag) = item;
+        let (payload, number) = inner;
+        if flag { total = total + payload.len() + number; }
+        i = i + 1;
+    }
+    total
+}

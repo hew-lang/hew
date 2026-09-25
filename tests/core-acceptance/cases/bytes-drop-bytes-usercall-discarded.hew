@@ -1,0 +1,9 @@
+fn mk() -> bytes { "usercall-discarded-transient-payload".to_bytes() }
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 50 {
+        mk();
+        i = i + 1;
+    }
+    i
+}

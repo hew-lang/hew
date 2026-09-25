@@ -11,8 +11,8 @@
 //! boundary; the actor builds it from scalar/`string` message args (both Send)
 //! and clones it internally. These tests assert the held VALUES are correct
 //! across stores; the leak / double-free freedom on the shutdown path is pinned
-//! by the differential `generic_record_clone_actor_shutdown_no_drop_leak`
-//! oracle (`hew-cli/tests/record_clone_generic_leak_oracle.rs`) under libgmalloc.
+//! by the `record-clone-generic-*` core-acceptance safety cases under
+//! ASan/LSan.
 
 import std.testing;
 

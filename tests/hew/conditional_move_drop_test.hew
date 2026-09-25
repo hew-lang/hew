@@ -10,7 +10,7 @@
 //! reaches its assertion proves the release fired no more than once on the
 //! exercised path; the leak direction is pinned by the MIR drop-plan tests
 //! in `hew-mir/tests/lowering_expr/conditional_move_drop.rs` and by the
-//! `conditional_move_drop_leak_oracle` measurements.
+//! `conditional-move-drop-*` core-acceptance safety cases.
 
 import std.testing;
 

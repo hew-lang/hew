@@ -18,8 +18,8 @@
 //! These tests verify correctness (not just non-crash): the new field value
 //! is the replacement, the non-overridden fields carry over intact, and the
 //! loop terminates with the expected state.  The no-leak property is verified
-//! out of band by `hew-cli/tests/funcupdate_owned_field_drop_leak_oracle.rs`
-//! which runs the compiled binary under `leaks --atExit` (macOS only).
+//! out of band by the `funcupdate-owned-field-drop-*` core-acceptance safety
+//! cases under ASan/LSan.
 
 import std.testing;
 

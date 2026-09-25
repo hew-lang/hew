@@ -2,7 +2,7 @@
 id = "enum_payload_call_loop_release"
 intent = "The fixture runs to completion and prints exactly its recorded output."
 source = "../vertical-slice/accept/enum_payload_call_loop_release.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

@@ -7,7 +7,7 @@
 // ends. A withheld release leaks one heap block per iteration; a second
 // release underflows a refcount the program still reads. Both directions are
 // invisible to stdout, so this fixture exists for the sanitizer gate:
-// `scripts/asan-fixture-check.sh` runs it under LSan.
+// the core-acceptance `safety` suite runs it under LSan.
 //
 // Four shapes, each repeated enough times that one leaked count per iteration
 // is unmissable:

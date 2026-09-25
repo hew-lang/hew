@@ -2,7 +2,7 @@
 id = "enum_resource_heap_sibling_asan"
 intent = "The fixture runs to completion and prints exactly its recorded output."
 source = "../vertical-slice/accept/enum_resource_heap_sibling_asan.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

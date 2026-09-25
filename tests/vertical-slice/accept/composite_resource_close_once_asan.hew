@@ -1,7 +1,7 @@
 // ASan fixture gate: a composite closes its resource leaf exactly once (#3070).
 //
-// This fixture is compiled against an ASan/LSan-instrumented libhew.a by
-// `scripts/asan-fixture-check.sh` and run with ASAN_OPTIONS=detect_leaks=1.
+// The core-acceptance `safety` suite (`make core-safety`) runs it under
+// ASan/LSan.
 //
 // Shapes covered, each looped so one bad exit edge is 64 findings:
 //

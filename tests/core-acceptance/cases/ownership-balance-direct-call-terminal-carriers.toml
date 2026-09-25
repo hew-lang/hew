@@ -1,0 +1,10 @@
+[[case]]
+id = "ownership-balance-direct-call-terminal-carriers"
+intent = "Ownership-balance fixture. Driven 200,000 times, it releases every obligation exactly once with no leak under ASan/LSan."
+source = "fixtures/ownership-balance/direct_call_terminal_carriers.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "done\n"
+exit = 0

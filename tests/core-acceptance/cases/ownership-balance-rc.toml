@@ -1,0 +1,10 @@
+[[case]]
+id = "ownership-balance-rc"
+intent = "Ownership-balance fixture. Driven 200,000 times, it releases every obligation exactly once with no leak under ASan/LSan."
+source = "fixtures/ownership-balance/rC.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "sec-1\ncred\nskipped\n"
+exit = 0

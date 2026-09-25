@@ -65,7 +65,6 @@
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-package-install — hew install -> Hew import consumer proof
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
-#   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make tsan         — run the nightly rust-runtime TSan test command locally
 #   make miri         — run the curated rust-runtime Miri allowlist locally
@@ -78,7 +77,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance test-core-acceptance-runner
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -701,7 +700,7 @@ ci-preflight: preflight
 # lifecycle tests already run in the workspace suite; source ownership cases
 # run through core acceptance and safety.
 ci-shard-1: observe-functional-test test-cabi \
-	core-acceptance test-pkg-import test-runtime-unit test-ux-examples \
+	core-acceptance test-pkg-import test-runtime-unit \
 	test-migrate-corpus o2-differential-selftest
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
@@ -713,7 +712,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 
 ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
 	test-package-install \
-	test-surface-examples hew-check-all
+	hew-check-all
 
 # Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
 # tests (nextest smoke profile). Designed to complete in <5 min and surface
@@ -1325,89 +1324,23 @@ o2-differential-selftest:
 stdlib-user-build-clean: hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-user-build-clean.py
 
-# Run every examples/ux and examples/progressive tutorial against its paired
-# .expected file. The shared runner fails closed on missing/orphan expectations,
-# nonzero exit status, timeout, output drift, empty inventory, and duplicate
-# admission. New examples therefore cannot disappear from the authority by
-# omitting their expectation.
+# examples/ux, examples/progressive, examples/v05/surfaces, examples/algos,
+# examples/datastruct and examples/net/http_await_service.hew are gated as
+# `example-ux-*`/`example-progressive-*`/`example-surface-*`/`example-algo-*`/
+# `example-datastruct-*` core-acceptance cases: each case's
+# `expected.stdout_file` points at the example's own paired `.expected`,
+# which stays the one authority for what the example prints. See
+# tests/core-acceptance/cases/example-*.toml.
 #
-# One inventory definition, shared by the gate and its regen seam: a corpus that
-# drifts between the two would gate one set of examples and re-record another.
-UX_EXAMPLE_INVENTORY = --label "ux + progressive tutorial" \
-	  --source-root examples/ux \
-	  --source-root examples/progressive
-
-test-ux-examples: hew-native test-example-expectations-selftest
-	@echo "==> Running ux + progressive tutorials against .expected"
-	@$(PYTHON) scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY)
-
-# Regen seam: driven only by an explicit
-# `make ux-examples-expect`, never by a
-# blanket regen. An example's output is its user-facing contract.
-ux-examples-expect: hew-native
-	@$(PYTHON) scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY) --write-expected
-
-# Artifacts only: the expectations self-test belongs to the gate.
-
-# Run every offline v0.5-surface example against its paired .expected file.
-# Three lanes:
-#   1. examples/v05/surfaces/*.hew — idiomatic single-file demos for the landed
-#      v0.5 surfaces (typed streams, regex captures, template, unicode). Pure,
-#      deterministic, no I/O.
-#   2. examples/net/http_await_service.hew — the async HTTP/1.1 flagship. It is
-#      LOOPBACK-only (127.0.0.1) so it needs no external network and is offline;
-#      its output is deterministic and was verified stable across repeated runs,
-#      so it is gated here too.
-#   3. examples/algos/*.hew and examples/datastruct/*.hew — the one-file
-#      algorithm and data-structure demos. Each is self-checking, prints a
-#      PASS/FAIL transcript, and is pure and offline, so its output is its
-#      contract. Together they add about forty seconds to this gate.
 # The TLS client (examples/net/tls_client.hew) is intentionally NOT gated: it
 # dials a real public host (example.com:443) — a genuine outbound network
 # dependency that cannot run offline — and additionally exercises a known TLS
 # data-plane ABI gap (it fails closed on a short write). It ships a paired
 # .expected for local diffing only. See examples/README.md for the rationale.
 #
-# The comparison merges stderr into stdout DELIBERATELY. An `.expected` file is
-# the example's whole observable contract: a shipped example that prints an
-# unannounced diagnostic is a defect whether the text lands on fd 1 or fd 2.
-# Splitting the streams would let a new compiler warning ride along unnoticed —
-# exactly the failure this lane exists to catch. A diagnostic an example is
-# supposed to print is recorded verbatim in its `.expected`, so the strictness
-# costs nothing legitimate.
-#
-# The shared runner treats the surface inventory as closed: missing or orphan
-# expectations, process failures, timeouts, and output drift all fail the gate.
-# `scanner_tokens.hew` is fully admitted with its repaired five-line output.
-#
 # examples/benchmarks/hew is deliberately absent: those programs exist to be
-# timed, and the slowest runs for minutes, well past the runner's per-source
-# deadline.
-#
-SURFACE_EXAMPLE_INVENTORY = --label "surface" \
-	  --source-root examples/v05/surfaces \
-	  --source-root examples/algos \
-	  --source-root examples/datastruct \
-	  --source examples/net/http_await_service.hew
-
-test-surface-examples: hew-native test-example-expectations-selftest
-	@echo "==> Running v0.5 surface examples against .expected"
-	@$(PYTHON) scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY)
-
-# Regen seam: see ux-examples-expect.
-surface-examples-expect: hew-native
-	@$(PYTHON) scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY) --write-expected
-
-# Artifacts only: the expectations self-test belongs to the gate.
-
-test-example-expectations-selftest:
-	@$(PYTHON) scripts/tests/test_example_expectations.py
-
-# Python only; no artifacts.
+# timed, and the slowest runs for minutes, well past a core-acceptance case's
+# per-source deadline.
 
 # Check ```hew fenced blocks in docs/ and std/ against hew check.
 #

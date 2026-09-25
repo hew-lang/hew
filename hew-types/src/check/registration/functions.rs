@@ -605,42 +605,24 @@ impl Checker {
                                     ..FnSig::default()
                                 };
                                 self.fn_sigs.insert(method_key, sig);
-                                let receiver_name = if self.registration_is_flat_file_import
-                                    || type_name.contains('.')
-                                {
-                                    type_name.clone()
-                                } else {
-                                    self.canonical_nominal_name(type_name).unwrap_or_else(|| {
-                                        self.current_module.as_ref().map_or_else(
-                                            || type_name.clone(),
-                                            |module| format!("{module}.{type_name}"),
-                                        )
-                                    })
-                                };
-                                let receiver_nominal = self
-                                    .require_declaration_path(&receiver_name, &m.span)
-                                    .map(crate::NominalId::from_minted_declaration);
-                                if let (
-                                    Ok(receiver_args),
-                                    Some((declaring_trait, _)),
-                                    Some(receiver_nominal),
-                                ) = (
-                                    self_type_args
-                                        .iter()
-                                        .map(ResolvedTy::from_ty)
-                                        .collect::<Result<Vec<_>, _>>(),
+                                // The materialized default belongs to the impl's
+                                // receiver identity: a declaration, a builtin or
+                                // a primitive's anchor row.
+                                let receiver = ResolvedTy::from_ty(
+                                    &self.named_ty_for_key(type_name, self_type_args.clone()),
+                                )
+                                .ok()
+                                .and_then(|ty| ty.impl_receiver_instance(&self.defs));
+                                if let (Some(receiver), Some((declaring_trait, _))) = (
+                                    receiver,
                                     self.trait_method_call_target_ids(
                                         &tb.path.to_string(),
                                         m.name.name.as_str(),
                                     ), // TRANSITION(P1): deleted by A1 commit 2
-                                    receiver_nominal,
                                 ) {
                                     let declaration = self.defs.mint_default_impl_body(
                                         declaring_trait,
-                                        &crate::NominalInstance {
-                                            nominal: receiver_nominal,
-                                            args: receiver_args,
-                                        },
+                                        &receiver,
                                         m.name.name,
                                     );
                                     // A materialized default is keyed exactly
@@ -656,18 +638,25 @@ impl Checker {
                                     );
                                     self.publish_impl_method_declaration_id(&keys, declaration);
                                 }
-                                self.publish_impl_method_sig(
-                                    type_name,
-                                    m.name.name.as_str(),
-                                    &FnSig {
-                                        param_names,
-                                        params,
-                                        return_type,
-                                        consumes_receiver,
-                                        returns_receiver_identity,
-                                        ..FnSig::default()
-                                    },
-                                );
+                                let sig = FnSig {
+                                    param_names,
+                                    params,
+                                    return_type,
+                                    consumes_receiver,
+                                    returns_receiver_identity,
+                                    ..FnSig::default()
+                                };
+                                // A primitive receiver dispatches through the
+                                // receiver-kind table, defaults included.
+                                if let Some(canonical) = primitive_key.clone() {
+                                    self.record_primitive_trait_impl_method(
+                                        canonical,
+                                        &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                        m.name.to_string(),
+                                        sig.clone(),
+                                    );
+                                }
+                                self.publish_impl_method_sig(type_name, m.name.name.as_str(), &sig);
                             }
                         }
                     }

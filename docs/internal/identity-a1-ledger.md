@@ -87,6 +87,29 @@ path`) are deleted; a literal meets its expected type only when its path
   binders are parameter heads and the record identity is the checker's head,
   never a same-spelled declaration (`type T = i64` beside `type Pair<T>`).
 
+## Type definitions keyed by declaration
+
+- `type_defs` is `HashMap<NominalId, TypeDef>` in the checker and in
+  `TypeCheckOutput`; `TypeDefView` reads it by head. A builtin's std
+  declaration is bound when the row is minted (`DefTable::bind_builtin_declaration`),
+  so `Vec`/`VecIter`/`Stream` heads reach their definitions by id.
+- `hew-types/src/check/registration/type_publication.rs`
+  `register_qualified_type_alias`: the copy of a bare-keyed definition onto a
+  qualified key is deleted. It copied a root `type Connection { .. }` onto
+  `std.net.Connection` once both spellings were one table; the qualified
+  spelling reaches the declaration's own row.
+- The same file's post-registration refresh passes read the module's own
+  declaration by its full path instead of the importer's bare spelling.
+- `hew-types/src/check/registration/functions.rs` `publish_impl_method_sig`:
+  the second write onto the qualified entry is deleted; bare and qualified
+  spellings are one row.
+- `hew-types/src/cycle.rs`: the actor-reference and recursive-value walks run
+  over `NominalId`s; paths are rendered only for diagnostics.
+- `hew-types/src/method_resolution.rs` and `hew-types/src/type_facts.rs` read
+  definitions through `TypeDefView`; a registry key that spells a builtin
+  reaches its std declaration only in method lookup (TRANSITION until the
+  catalog move), never in type facts.
+
 ## DefTable contract changes
 
 - `DefTable::module_has_declarations` becomes `module_has_source_declarations`:
@@ -123,6 +146,17 @@ path`) are deleted; a literal meets its expected type only when its path
   fabricates `std.text.semver` rather than a module the prelude already loads;
   tests that compared checker output with fixture identities read the
   checker's table (`Ty::named_in`, `ResolvedTy::named_path`).
+
+- Rewritten: `hew-hir` `imported_impl_lower` roots now `import shapes;` and
+  write `shapes.Foo { .. }`; a root without the import no longer sees the
+  module's `Foo` through the bare table (the R5/w4c change above).
+- Rewritten: `hew-analysis` `hover::tests::hover_finds_type_def` builds its
+  output with the checker; `signature_help` tests and `cycle::tests::*` use
+  fixture identities; `q297_stdlib_iterator_next_and_vec_iter_carry_mut_receiver_flag`
+  reads `std.builtins.VecIter`.
+- Deleted `validate_handle_types_no_field_overlap_prunes_bare_alias_twin` and
+  `validate_handle_types_no_field_overlap_qualified_alias_span_is_propagated`:
+  a bare alias twin of a definition no longer exists.
 
 ## Open, identity-rooted
 

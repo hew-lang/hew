@@ -2371,14 +2371,6 @@ impl Checker {
                 )
             })
             .collect();
-        if let Some(existing) = self.type_def_at(&qualified) {
-            for (method_name, method_sig) in &existing.methods {
-                published
-                    .methods
-                    .entry(method_name.clone())
-                    .or_insert_with(|| method_sig.clone());
-            }
-        }
         self.insert_type_def(&qualified, published.clone());
         if !self.type_def_spans.contains_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {

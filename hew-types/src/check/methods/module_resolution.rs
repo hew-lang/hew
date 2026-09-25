@@ -203,8 +203,11 @@ impl Checker {
                 .or_else(|| declared(key))
         };
         if let Some(id) = id {
-            // Re-registering a declaration rebuilds its members; the methods
-            // impls already published onto it stay.
+            // TRANSITION(A1 commit 3): WHY a declaration is re-registered after
+            // impls published methods onto it, and the rebuilt definition must
+            // keep them. WHEN the dispatch table owns methods, `td.methods` is
+            // deleted and this merge with it. WHAT: impl methods are dispatch
+            // rows keyed by head, never members of the definition.
             let mut def = def;
             if let Some(existing) = self.type_defs.get(&id) {
                 for (name, sig) in &existing.methods {

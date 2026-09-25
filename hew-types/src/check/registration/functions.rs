@@ -2036,19 +2036,9 @@ impl Checker {
         sig
     }
 
-    /// Publish one resolved impl-method signature onto every type-definition
-    /// entry a receiver can be spelled through.
-    ///
-    /// Two entries exist for a module-declared type: the BARE compatibility
-    /// entry (`Dog`) and the declaring module's exact entry (`gm.Dog`). A
-    /// receiver produced by the module's own constructor resolves through the
-    /// qualified entry, so a method published only onto the bare entry is
-    /// invisible and the call reports "no method" against the qualified type.
-    /// Explicit impl methods always published to both; materialised trait
-    /// defaults published only to the bare entry, which is why a trait default
-    /// declared in an imported module never resolved on its implementing type.
-    /// Both producers route through here so the two method classes cannot
-    /// drift apart again.
+    /// Publish one resolved impl-method signature onto the definition of the
+    /// declaration `type_name` names in the current module. Explicit impl
+    /// methods and materialised trait defaults both route through here.
     pub(super) fn publish_impl_method_sig(
         &mut self,
         type_name: &str,
@@ -2057,18 +2047,6 @@ impl Checker {
     ) {
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method_name.to_string(), sig.clone());
-        }
-        // The bare type table is a compatibility surface and is
-        // last-writer-wins across modules. Attach the method to the declaring
-        // module's exact type definition as well; qualified receivers must
-        // never recover methods through the polluted bare entry.
-        if !type_name.contains('.') {
-            if let Some(module) = self.current_module.clone() {
-                let qualified_type = format!("{module}.{type_name}");
-                if let Some(td) = self.type_def_at_mut(&qualified_type) {
-                    td.methods.insert(method_name.to_string(), sig.clone());
-                }
-            }
         }
     }
 

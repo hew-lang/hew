@@ -1,0 +1,10 @@
+[[case]]
+id = "linear_inherent_owned_string"
+intent = "A `#[linear]` type carrying an owned-string field, consumed via an inherent `consume self` method that hands the owned string out as the return value."
+source = "../vertical-slice/accept/linear_inherent_owned_string.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "txn\n"
+exit = 0

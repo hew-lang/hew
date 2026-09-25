@@ -24,9 +24,12 @@ actor Worker {
         txa.close();
         rxa.close();
     }
+
+    receive fn started() {}
 }
 
 fn main() {
-    let _w = spawn Worker;
-    sleep(50ms);
+    let w = spawn Worker;
+    // A completion call runs after the start hook, so it waits for the select.
+    w.started().expect("started");
 }

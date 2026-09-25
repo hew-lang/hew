@@ -183,7 +183,6 @@ fn main() {
     ok = ok && crash_and_wait_for_restart(exhausted);
     let _ = exhausted.crash_me();
     ok = ok && wait_for_unavailable(exhausted);
-    sleep(500ms);
     let exhausted_inline = match budget_sup.worker.work() {
         .Ok(_) => false,
         .Err(_) => true,
@@ -213,7 +212,6 @@ fn main() {
     let stopped = stop_sup.worker;
     let _ = stopped.stop_me();
     ok = ok && wait_for_unavailable(stopped);
-    sleep(200ms);
     let stopped_inline = match stop_sup.worker.work() {
         .Ok(_) => false,
         .Err(_) => true,
@@ -245,7 +243,6 @@ fn main() {
     ok = ok && crash_and_wait_for_restart(stale_pool_member);
     let _ = stale_pool_member.crash_me();
     ok = ok && wait_for_unavailable(stale_pool_member);
-    sleep(500ms);
     ok = ok && expect_unavailable(stale_pool_member);
     let pool_inline = match pool_sup.workers[0].work() {
         .Ok(_) => false,

@@ -14,7 +14,6 @@ actor Booter {
 
 fn main() {
   let b = spawn Booter;
-  sleep(200ms);
   match b.get() {
     .Ok(v) => println(v),
     .Err(_) => println("ask failed"),

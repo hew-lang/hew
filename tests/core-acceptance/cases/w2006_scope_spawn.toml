@@ -1,0 +1,10 @@
+[[case]]
+id = "w2006_scope_spawn"
+intent = "A `scope { fork ... }` body inside an actor handler runs its forked child to completion before the scope returns."
+source = "../vertical-slice/accept/w2006_scope_spawn.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "worker ran\nscope joined\n"
+exit = 0

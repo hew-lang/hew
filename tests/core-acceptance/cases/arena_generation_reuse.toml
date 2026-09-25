@@ -1,0 +1,10 @@
+[[case]]
+id = "arena_generation_reuse"
+intent = "Arena<T>: a removed slot is reused by the next insert, but the reused key receives a fresh generation so the old key stays closed."
+source = "../vertical-slice/accept/arena_generation_reuse.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "true\ntrue\ntrue\nB\n"
+exit = 0

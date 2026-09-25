@@ -1,0 +1,10 @@
+[[case]]
+id = "linear_inherent_consume"
+intent = "A `#[linear]` type's consuming method declared in a sibling inherent-impl block makes the type usable end to end: the value is constructed, the consume call dispatches, and the must-consume contract is satisfied."
+source = "../vertical-slice/accept/linear_inherent_consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "commit 1\n"
+exit = 0

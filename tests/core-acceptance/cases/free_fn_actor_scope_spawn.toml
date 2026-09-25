@@ -1,0 +1,10 @@
+[[case]]
+id = "free_fn_actor_scope_spawn"
+intent = "actor-handler scope{} can fork a no-argument unit-returning free function through the TaskEntry adapter."
+source = "../vertical-slice/accept/free_fn_actor_scope_spawn.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "free-fn task-entry\n"
+exit = 0

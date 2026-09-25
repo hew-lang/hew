@@ -9,6 +9,8 @@
 # passes is reported for cleanup, never a blocking failure (D555
 # amendment) — delete the row by hand once it recovers.
 
+acceptance	linux,macos,windows,freebsd	gen_block_explicit_return_runs	compile	#3615	a non-yielding gen block passes check but codegen fails closed with E_CODEGEN_FAIL_CLOSED
+acceptance	linux,macos,windows,freebsd	gen_block_final_expr_returns_runs	compile	#3615	a non-yielding gen block passes check but codegen fails closed with E_CODEGEN_FAIL_CLOSED
 corpus	*	docs/repros/final-core/own-generic-identity-transfer.hew	compile	#3598	tracked corpus refusal; see linked issue
 corpus	*	examples/v05/pipe_vec_element_fails.hew	compile	#3590	tracked corpus refusal; see linked issue
 corpus	*	examples/v05/vec_unsupported_method_fails.hew	compile	#3591	tracked corpus refusal; see linked issue

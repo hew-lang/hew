@@ -1,0 +1,10 @@
+[[case]]
+id = "arena_cross_instance_key_rejected"
+intent = "An arena key from one arena instance finds nothing in another: lookups, membership and removal miss, and each arena still finds its own key."
+source = "../vertical-slice/accept/arena_cross_instance_key_rejected.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "true\ntrue\ntrue\ntrue\nleft\nright\n"
+exit = 0

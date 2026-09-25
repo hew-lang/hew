@@ -1,0 +1,10 @@
+[[case]]
+id = "wrapping_saturating_as_cast"
+intent = ".wrapping_as_<W> and .saturating_as_<W> width conversion."
+source = "../vertical-slice/accept/wrapping_saturating_as_cast.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "wrapping_as_u8(300) = 44\nwrapping_as_i8(-200) = 56\nwrapping_as_i32(u8:200) = 200\nwrapping_as_u32(-1) = 4294967295\nsaturating_as_u8(300) = 255\nsaturating_as_u8(-5) = 0\nsaturating_as_u8(100) = 100\nsaturating_as_i8(200) = 127\nsaturating_as_i8(-200) = -128\nsaturating_as_i32(u8:200) = 200\nsaturating_as_u32(i32:100) = 100\nsaturating_as_u32(i32:-1) = 0\nsaturating_as_i32(u32:100) = 100\nsaturating_as_i32(u32:3000000000) = 2147483647\n"
+exit = 0

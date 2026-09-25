@@ -1,0 +1,10 @@
+[[case]]
+id = "identity_aggregates"
+intent = "Records, actors and trait implementations that share declaration identities run together without a crash or leak."
+source = "../vertical-slice/accept/identity_aggregates.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -62,4 +62,5 @@ the rest of the suite. `CORE_SAFETY_TARGET_DIR` selects the sanitizer build cach
 
 The cases describe the implemented language, not the entire language. Expand
 them as aggregate, resource and actor semantics become executable. Runner
-self-tests are separate: `make test-core-acceptance-runner`.
+self-tests live alongside the runner as ordinary `#[test]`s in `xtask`,
+covered by `make test`.

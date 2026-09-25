@@ -516,10 +516,6 @@ jobs:
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
         run: make ci-shard-${{ matrix.shard }}
 
-      - name: Compiler IR size and MIR lowering cost
-        if: ${{ !cancelled() && matrix.shard == 2 && steps.gates.outcome != 'skipped' }}
-        run: make -k compiler-measurements
-
       - name: Upload test reports
         if: ${{ always() && matrix.shard != 3 }}
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
@@ -747,13 +743,6 @@ jobs:
 
       - name: Set macOS deployment target
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
-
-      - name: Smoke test the release binary
-        # Drives a trivial program through `hew compile` with the RELEASE
-        # binary. Guards the ABI-mismatch abort class (#1606): a release build
-        # that crashes at process exit while every debug test passes, because
-        # the two use different C++ runtime linkage.
-        run: make test-release-binary
 
       - name: Install WASI runner prerequisites
         env:

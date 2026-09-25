@@ -331,7 +331,7 @@ validate_linux() {
         run_with_timeout "${TEST_TIMEOUT}" make test-opaque-resource-lifecycle-matrix-external
         run_with_timeout "${TEST_TIMEOUT}" make core-acceptance
         run_with_timeout "${TEST_TIMEOUT}" make test-hew-ratchet
-        run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-ratchet
+        run_with_timeout "${TEST_TIMEOUT}" make hew-check-all
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
         if ldd "${release_dir}/hew" 2>/dev/null | grep -qi 'llvm\|mlir'; then

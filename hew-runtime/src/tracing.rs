@@ -1857,6 +1857,12 @@ mod tests {
     fn channel_event_records_handle_addr_and_type() {
         let _guard = setup();
 
+        // The clock reads zero at the epoch instant itself; move past it so a
+        // populated timestamp is distinguishable from an unset one.
+        while monotonic_ns() == 0 {
+            std::hint::spin_loop();
+        }
+        let before = monotonic_ns();
         let fake_addr: u64 = 0xDEAD_BEEF_0000_0001;
         record_channel_event(fake_addr, SPAN_DUPLEX_CREATED);
 
@@ -1864,7 +1870,10 @@ mod tests {
         let events = drain_events(1);
         assert_eq!(events[0].event_type, SPAN_DUPLEX_CREATED);
         assert_eq!(events[0].actor_id, fake_addr);
-        assert_ne!(events[0].timestamp_ns, 0, "timestamp must be populated");
+        assert!(
+            events[0].timestamp_ns >= before,
+            "timestamp must be populated from the clock"
+        );
     }
 
     /// `drain_events_json` renders every channel `event_type` string

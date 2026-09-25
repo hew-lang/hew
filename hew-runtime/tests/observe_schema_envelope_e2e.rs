@@ -16,7 +16,6 @@
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use hew_runtime::profiler::{run_tcp_with_listener, ProfilerContext, OBSERVE_SCHEMA_VERSION};
 
@@ -55,9 +54,8 @@ fn profiler_api_responses_carry_observe_schema_version_envelope() {
         })
         .expect("spawn profiler server thread");
 
-    // Give the runtime a moment to wire up the listener loop before the
-    // first GET. 200 ms is the accept-loop poll cadence in `serve_loop`.
-    thread::sleep(Duration::from_millis(250));
+    // The listener is bound before the server thread starts, so the first
+    // GET queues in its backlog until the accept loop takes it.
 
     let base_url = format!("http://{addr}");
 

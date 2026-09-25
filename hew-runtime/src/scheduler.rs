@@ -5169,9 +5169,9 @@ mod tests {
         // read; cleanup detaches and drops it as its final step.
         install_scheduler_for_test(worker_less_scheduler_for_test());
 
-        // Start the global wheel so the ticker is running.
+        // Start the global wheel; the ticker is marked running before this
+        // returns.
         let _tw = crate::timer_periodic::global_wheel();
-        std::thread::sleep(std::time::Duration::from_millis(20));
 
         // The ticker may have been stopped by a parallel test that shares
         // the global wheel.  We can only assert the post-condition.
@@ -5712,10 +5712,13 @@ mod tests {
             cleanup_done2.store(true, Ordering::Release);
         });
 
-        // Cleanup is blocked inside the runtime-owned sweep joining the gated
-        // reaper: the runtime must still be installed (not detached up-front),
-        // and it must not have been dropped yet.
-        thread::sleep(Duration::from_millis(40));
+        // Cleanup takes the gated reaper's handle before joining it, so once
+        // the registry reads empty cleanup is blocked in that join: the runtime
+        // must still be installed (not detached up-front), and it must not have
+        // been dropped yet.
+        while crate::lifetime::live_actors::deferred_teardown_thread_count() != 0 {
+            thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             !cleanup_done.load(Ordering::Acquire),
             "cleanup must block in the runtime-owned sweep until the reaper is joined"
@@ -5795,9 +5798,12 @@ mod tests {
 
         let cleanup = thread::spawn(|| hew_runtime_cleanup());
 
-        // Cleanup is blocked before the root sweep. The runtime and root remain
-        // installed until the deferred handoff completes.
-        thread::sleep(Duration::from_millis(40));
+        // Cleanup takes the gated reaper's handle before joining it, so once
+        // the registry reads empty cleanup is blocked before the root sweep. The
+        // runtime and root remain installed until the deferred handoff completes.
+        while crate::lifetime::live_actors::deferred_teardown_thread_count() != 0 {
+            thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             !runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
             "runtime must stay installed through the supervisor-roots sweep"

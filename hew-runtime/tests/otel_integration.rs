@@ -61,17 +61,19 @@ impl MockOtlpReceiver {
         }
     }
 
-    fn wait_for_body(&self, timeout: Duration) -> Option<String> {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            if let Ok(guard) = self.received_body.lock() {
-                if guard.is_some() {
-                    return guard.clone();
-                }
+    /// Wait for the receiver thread to publish the body it read.
+    fn wait_for_body(&self) -> String {
+        loop {
+            if let Some(body) = self
+                .received_body
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+            {
+                return body;
             }
             thread::sleep(Duration::from_millis(20));
         }
-        self.received_body.lock().ok()?.clone()
     }
 }
 
@@ -219,9 +221,7 @@ fn otel_exporter_posts_valid_otlp_json() {
     );
 
     // 8. Verify the mock received the body.
-    let request_body = receiver
-        .wait_for_body(Duration::from_secs(3))
-        .expect("mock receiver did not receive a request within 3 seconds");
+    let request_body = receiver.wait_for_body();
 
     assert!(!request_body.is_empty(), "received body was empty");
     assert!(

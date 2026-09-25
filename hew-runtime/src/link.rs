@@ -1091,23 +1091,26 @@ mod tests {
                 std::sync::atomic::Ordering::Release,
             );
 
-            let free_started = Arc::new(AtomicBool::new(false));
+            // Free pauses after retiring the actor, immediately before it
+            // drains the pin `propagate` still holds.
+            let free_entered = Arc::new(Barrier::new(2));
+            let free_release = Arc::new(Barrier::new(2));
+            let _free_hook = crate::actor::install_free_post_retire_registration_hook_for_test(
+                (*linked_actor).id,
+                Arc::clone(&free_entered),
+                Arc::clone(&free_release),
+            );
             let free_done = Arc::new(AtomicBool::new(false));
             let linked_actor_addr = linked_actor as usize;
-            let free_started_thread = Arc::clone(&free_started);
             let free_done_thread = Arc::clone(&free_done);
             let free_handle = std::thread::spawn(move || {
-                free_started_thread.store(true, std::sync::atomic::Ordering::Release);
                 let rc = crate::actor::hew_actor_free(linked_actor_addr as *mut HewActor);
                 assert_eq!(rc, 0);
                 free_done_thread.store(true, std::sync::atomic::Ordering::Release);
             });
 
-            while !free_started.load(std::sync::atomic::Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-
-            std::thread::sleep(Duration::from_millis(50));
+            free_entered.wait();
+            free_release.wait();
             assert!(
                 !free_done.load(std::sync::atomic::Ordering::Acquire),
                 "hew_actor_free must wait until propagate_exit_to_links releases its actor pin"

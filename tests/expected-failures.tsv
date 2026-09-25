@@ -1,0 +1,60 @@
+# suite	platforms	id	expect	issue	reason
+#
+# The one expected-failure ledger for every ratcheted suite (nextest,
+# core-acceptance, hew-suite, corpus). One row per (suite, id); sorted
+# globally by (suite, id); no section headers, no wildcard platform on
+# core-acceptance rows (there are none here yet). `xtask ratchet check`
+# refuses an unlisted failure, an id that no longer exists in its suite,
+# and a row whose expect kind no longer matches. A row whose test now
+# passes is reported for cleanup, never a blocking failure (D555
+# amendment) — delete the row by hand once it recovers.
+
+corpus	*	docs/repros/final-core/own-generic-identity-transfer.hew	compile	#3598	tracked corpus refusal; see linked issue
+corpus	*	examples/v05/pipe_vec_element_fails.hew	compile	#3590	tracked corpus refusal; see linked issue
+corpus	*	examples/v05/vec_unsupported_method_fails.hew	compile	#3591	tracked corpus refusal; see linked issue
+corpus	*	hew-cli/tests/fixtures/main_entry_exit/non_error.hew	compile	#3592	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_async_await.hew	diagnostic:E_NO_ASYNC_FN	#3593	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew	compile	#3594	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_index_trait.hew	compile	#3595	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_machine_methods.hew	compile	#3596	tracked corpus refusal; see linked issue
+corpus	*	hew-observe/test-harness/observe_workload.hew	compile	#3597	tracked corpus refusal; see linked issue
+corpus	*	repros/03_hashmap_string_vec_value.hew	compile	#3599	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/bytes_clone.hew	compile	#3602	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/cap_move.hew	compile	#3603	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/closure_mut_share.hew	compile	#3604	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/cond_init.hew	diagnostic:E_SIR_UNSUPPORTED	#3605	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/lambda_send_twice.hew	diagnostic:E_SEND_RESULT_DROPPED	#3606	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/let_field_mut.hew	compile	#3607	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/res_param_consume.hew	compile	#3608	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/resource_early_close.hew	compile	#3609	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/resource_send2.hew	compile	#3610	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/state_reinit.hew	diagnostic:E_SIR_UNSUPPORTED	#3611	tracked corpus refusal; see linked issue
+corpus	*	repros/p0a_hashmap_string_vec_value.hew	compile	#3600	tracked corpus refusal; see linked issue
+corpus	*	repros/p0c_method_value_failclosed.hew	compile	#3601	tracked corpus refusal; see linked issue
+corpus	*	tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew	compile	#3612	tracked corpus refusal; see linked issue
+corpus	*	tests/ownership-balance/retained_hard_refusal.hew	compile	#3613	tracked corpus refusal; see linked issue
+corpus	*	tools/downstream/syntax-fixtures/syntax_test.hew	compile	#3614	tracked corpus refusal; see linked issue
+hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_append_cow_leaves_slice_intact	compile	#3578	tracked failure; see linked issue
+hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_clear_on_owner_leaves_slice_alive	compile	#3579	tracked failure; see linked issue
+hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_pop_cow_leaves_slice_intact	compile	#3580	tracked failure; see linked issue
+hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_push_cow_leaves_slice_intact	compile	#3581	tracked failure; see linked issue
+hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_set_cow_leaves_slice_intact	compile	#3582	tracked failure; see linked issue
+hew-suite	*	tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response_body_round_trips	runtime	#3583	tracked failure; see linked issue
+hew-suite	*	tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path	runtime	#3584	tracked failure; see linked issue
+hew-suite	*	tests/hew/net_scalar_failclosed_test.hew::test_http_client_set_timeout_panics_at_legacy_boundary	runtime	#3585	tracked failure; see linked issue
+hew-suite	*	tests/hew/owned_nested_aggregate_clone_drop_test.hew::test_vec_clone_drops_nested_bytes_leaf_cleanly	runtime	#3586	tracked failure; see linked issue
+hew-suite	*	tests/hew/pipeline_i64_two_stage_test.hew::admission_reply_waits_for_downstream_post_send_barrier	timeout	#3587	tracked failure; see linked issue
+hew-suite	*	tests/hew/pipeline_i64_two_stage_test.hew::cancelled_admission_settles_and_pipeline_continues	timeout	#3588	tracked failure; see linked issue
+hew-suite	*	tests/hew/pipeline_i64_two_stage_test.hew::graceful_shutdown_drains_queued_owned_items	timeout	#3589	tracked failure; see linked issue
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1a_inherent_wins_dot_call	failure	#3566	W1 (D554-1/R1): dot-call dispatch picks the last-registered impl instead of the inherent method
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1b_dot_ambiguous_trait_method_refused	failure	#3567	W1/R1: dot-call dispatch with two same-named trait methods and no inherent method silently picks the last-registered impl instead of refusing as ambiguous
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1c_inherent_wins_over_structural_trait	failure	#3568	W1/R4: same leaf mechanism as w1a, structural D509 witness case
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1d_disjoint_trait_methods_resolve_independently	failure	#3569	W1/R1: the checker conflates same-named methods across unrelated traits into one signature, refusing a program that declares two disjoint `size` methods on different traits
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w2a_user_trait_named_send_is_not_the_predicate	failure	#3570	W2/R2 (D554-2): a user trait spelled Send is matched as the Send marker by spelling; dyn Send unsoundly reaches an actor mailbox
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w2b_ord_predicate_bound_not_implied_by_spelling	failure	#3571	W2/R2: Ord/PartialOrd predicate implication is name-derived; current build fails closed with E_SIR_UNSUPPORTED rather than the target source diagnostic
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w2b_user_trait_named_clone_is_not_the_predicate	failure	#3572	W2/R2: a user trait spelled Clone is matched as the Clone marker by spelling
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w3a_user_fn_shadows_builtin	failure	#3573	W3/R3: user `len`/`to_string`/`assert_eq` declarations do not shadow the builtins; callee resolution picks the builtin regardless of scope
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w3b_closure_shadows_fn	failure	#3574	W3/R3: callee resolution does not consult the lexical scope before the module fn table, so a local closure fails to shadow a same-named fn
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w3e_user_println_shadows_builtin	failure	#3575	W3/R3: same family as w3a; a user `fn println` does not shadow the builtin `println`
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w4b_pattern_name_must_match_scrutinee_type	failure	#3576	W4/R6: pattern matching accepts a struct pattern whose name does not match the scrutinee's type and matches by field shape alone
+nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w9a_machine_event_collision_names_the_machine	failure	#3577	W11: the machine companion event (known_types, a String) cannot carry a DefId, so the duplicate-declaration note points at the user type instead of the owning machine

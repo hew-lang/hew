@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Execute every strict expected-failure ledger family, retaining evidence from
-# later families even if an earlier ledger reports stale accounting.
+# Execute every expected-failure ledger family on its schedule, retaining
+# evidence from later families even if an earlier one fails. A recovered row
+# is reported, never a blocking failure (D555 amendment), so this script's
+# only job is to run every ratcheted suite and surface real regressions —
+# `xtask ratchet check` already refuses an unlisted failure on every call.
 
 set -uo pipefail
-
-if [[ "${RATCHET_STRICT_RECOVERIES:-}" != "1" ]]; then
-    echo "error: ratchet accounting requires RATCHET_STRICT_RECOVERIES=1" >&2
-    exit 2
-fi
 
 make_command="${RATCHET_ACCOUNTING_MAKE:-${MAKE:-make}}"
 families=(

@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 mod core_acceptance;
-mod nextest_ratchet;
+mod ratchet;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const DEFERRED_BLOCK_START: &str = "```json sandbox-fixtures-deferred";
@@ -66,7 +66,7 @@ fn run() -> Result<()> {
             let options = parse_options(&args)?;
             run_sandbox_fixtures(&options)
         }
-        Some("nextest-ratchet") => nextest_ratchet::run(&args[1..]),
+        Some("ratchet") => ratchet::run(&args[1..]),
         Some("core-acceptance") => core_acceptance::run(&args[1..]),
         Some("runtime-declarations") => runtime_declarations(&args[1..]),
         Some("--help" | "-h") => {
@@ -111,7 +111,7 @@ fn usage() -> String {
         "",
         "commands:",
         "  sandbox-fixtures  update or validate sandbox bytecode fixtures",
-        "  nextest-ratchet   validate nextest JUnit against an exact failure ledger",
+        "  ratchet           check|issues against the unified expected-failure ledger",
         "  core-acceptance   run audited native cases at O0 and O2",
         "  runtime-declarations  write or check declaration-owned FFI metadata",
     ]

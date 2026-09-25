@@ -174,6 +174,9 @@ struct Options {
     hew_bin: PathBuf,
     timeout_seconds: Option<u64>,
     jobs: usize,
+    /// `Some((shard, total))` selects a stable 1-of-`total` slice of the
+    /// selected cases, sorted by id. `shard` is 0-based.
+    partition: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -224,7 +227,10 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     expand_doc_cases(&mut manifest, &root, run_dir.path())?;
     validate_manifest(&manifest, &root)?;
     let ratchet = load_expected_failures(&root, &manifest, current_platform())?;
-    let selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
+    let mut selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
+    if let Some(partition) = options.partition {
+        selected = partition_cases(selected, partition);
+    }
     let fingerprint = compiler_fingerprint(&options.hew_bin)?;
     let instrumentation_request = if options.suite == "safety" {
         if !cfg!(target_os = "linux") {
@@ -272,7 +278,10 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     }
 
     if !now_passing.is_empty() {
-        println!("core-acceptance: these cases pass but are listed in {EXPECTED_FAILURES_PATH}:");
+        println!(
+            "core-acceptance: these cases pass but are listed in {}:",
+            crate::ratchet::LEDGER_PATH
+        );
         for id in &now_passing {
             println!("  {id}");
         }
@@ -357,8 +366,6 @@ fn classify<'a>(verdicts: &[(&'a str, bool)], ratchet: &BTreeMap<String, String>
     out
 }
 
-const EXPECTED_FAILURES_PATH: &str = "tests/core-acceptance/expected-failures.txt";
-
 /// The platform names the ledger and the runner both spell, matching
 /// `std::env::consts::OS` on every supported host.
 const PLATFORMS: [&str; 4] = ["linux", "macos", "windows", "freebsd"];
@@ -383,98 +390,30 @@ fn current_platform() -> &'static str {
 /// otherwise the ledger accumulates rows that can never be retired. Two rows
 /// selecting the same case for the same platform are refused as an overlap,
 /// the same rule the nextest ratchet enforces.
+/// Reads `tests/expected-failures.tsv` through the shared ratchet parser
+/// (`suite = "acceptance"`; `safety` runs the same manifest's cases under
+/// the same rows) and refuses a row naming a case that no longer exists —
+/// a renamed or deleted case must take its row with it, otherwise the
+/// ledger accumulates rows that can never be retired.
 fn load_expected_failures(
     root: &Path,
     manifest: &Manifest,
     platform: &str,
 ) -> Result<BTreeMap<String, String>> {
-    let path = root.join(EXPECTED_FAILURES_PATH);
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(err) => return Err(format!("read {}: {err}", path.display())),
-    };
     let ids: std::collections::BTreeSet<&str> =
         manifest.cases.iter().map(|case| case.id.as_str()).collect();
-    let mut rows = BTreeMap::new();
-    let mut seen: std::collections::BTreeSet<(&str, String)> = std::collections::BTreeSet::new();
-    // A "# ── ... ──" section header resets sort order: rows are sorted by
-    // id within their own section, not across the whole file.
-    let mut last_id: Option<&str> = None;
-    for (number, line) in contents.lines().enumerate() {
-        let line = line.trim();
-        if line.starts_with("# ──") {
-            last_id = None;
-        }
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (platforms_field, rest) = line.split_once('\t').ok_or_else(|| {
-            format!(
-                "{}:{}: row has no platform column; prefix it with a comma-separated \
-                 platform list and a tab",
-                path.display(),
-                number + 1
-            )
-        })?;
-        let platforms: Vec<&str> = platforms_field.split(',').collect();
-        if platforms.iter().any(|item| item.is_empty()) {
+    let rows = crate::ratchet::rows_for(root, "acceptance", platform)?;
+    let mut out = BTreeMap::new();
+    for (id, row) in rows {
+        if !ids.contains(id.as_str()) {
             return Err(format!(
-                "{}:{}: row has an empty platform",
-                path.display(),
-                number + 1
+                "{}: {id} is not a core-acceptance case; delete the row with the case",
+                crate::ratchet::LEDGER_PATH
             ));
         }
-        if let Some(unknown) = platforms.iter().find(|item| !PLATFORMS.contains(item)) {
-            return Err(format!(
-                "{}:{}: unknown platform {unknown:?}; use one of {PLATFORMS:?} (no wildcard)",
-                path.display(),
-                number + 1
-            ));
-        }
-        let rest = rest.trim();
-        let (id, reason) = match rest.split_once('#') {
-            Some((id, reason)) => (id.trim(), reason.trim()),
-            None => (rest, ""),
-        };
-        if reason.is_empty() {
-            return Err(format!(
-                "{}:{}: {id} has no reason; give an issue or a one-line reason after #",
-                path.display(),
-                number + 1
-            ));
-        }
-        if !ids.contains(id) {
-            return Err(format!(
-                "{}:{}: {id} is not a core-acceptance case; delete the row with the case",
-                path.display(),
-                number + 1
-            ));
-        }
-        if let Some(previous) = last_id {
-            if id < previous {
-                return Err(format!(
-                    "{}:{}: not sorted by id: {id:?} follows {previous:?}",
-                    path.display(),
-                    number + 1
-                ));
-            }
-        }
-        last_id = Some(id);
-        for &candidate in &PLATFORMS {
-            if platforms.contains(&candidate) && !seen.insert((candidate, id.to_string())) {
-                return Err(format!(
-                    "{}:{}: {id} is already selected for {candidate}",
-                    path.display(),
-                    number + 1
-                ));
-            }
-        }
-        if platforms.contains(&platform) {
-            rows.insert(id.to_string(), reason.to_string());
-        }
+        out.insert(id, row.reason);
     }
-    Ok(rows)
+    Ok(out)
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
@@ -485,6 +424,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut timeout_seconds = None;
     let mut kinds = Vec::new();
     let mut jobs = None;
+    let mut partition = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -523,6 +463,10 @@ fn parse_options(args: &[String]) -> Result<Options> {
                     format!("--timeout-seconds must be a positive integer, got {value:?}")
                 })?);
             }
+            "--partition" => {
+                let value = required_value(args, &mut index, "--partition")?;
+                partition = Some(parse_partition(value)?);
+            }
             "--help" | "-h" => return Err("--help must be used on its own".to_string()),
             _ => {
                 return Err(format!(
@@ -553,7 +497,44 @@ fn parse_options(args: &[String]) -> Result<Options> {
         hew_bin,
         timeout_seconds,
         jobs,
+        partition,
     })
+}
+
+/// Parse `k/n`: a 0-based shard index and a positive total shard count.
+fn parse_partition(value: &str) -> Result<(usize, usize)> {
+    let (shard, total) = value
+        .split_once('/')
+        .ok_or_else(|| format!("--partition must be 'k/n', got {value:?}"))?;
+    let shard: usize = shard
+        .parse()
+        .map_err(|_| format!("--partition shard must be a non-negative integer, got {shard:?}"))?;
+    let total: usize = total
+        .parse()
+        .map_err(|_| format!("--partition total must be a positive integer, got {total:?}"))?;
+    if total == 0 {
+        return Err("--partition total must be positive".to_string());
+    }
+    if shard >= total {
+        return Err(format!(
+            "--partition shard {shard} must be less than total {total}"
+        ));
+    }
+    Ok((shard, total))
+}
+
+/// A stable 1-of-`total` slice of `selected`, ordered by id so a shard's
+/// contents do not depend on manifest iteration order.
+fn partition_cases(selected: Vec<&Case>, partition: (usize, usize)) -> Vec<&Case> {
+    let (shard, total) = partition;
+    let mut sorted = selected;
+    sorted.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    sorted
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index % total == shard)
+        .map(|(_, case)| case)
+        .collect()
 }
 
 /// One case at a time per core, capped. Every case shells out to the compiler
@@ -587,6 +568,7 @@ fn usage() -> String {
         "  --kind run,check,reject,doc           run only cases of these kinds",
         "  --jobs N                              cases to run concurrently (default: cores; 1 for safety)",
         "  --timeout-seconds N                   override each case timeout",
+        "  --partition K/N                       run only shard K of N (0-based, stable by id)",
     ]
     .join("\n")
 }
@@ -1896,6 +1878,7 @@ mod tests {
             cases: Vec::new(),
             kinds: Vec::new(),
             jobs: 1,
+            partition: None,
             hew_bin: directory.path().join("hew"),
             timeout_seconds: None,
         };
@@ -1951,6 +1934,7 @@ mod tests {
             cases: Vec::new(),
             kinds: Vec::new(),
             jobs: 1,
+            partition: None,
             hew_bin: binary.clone(),
             timeout_seconds: None,
         };
@@ -2138,6 +2122,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_partition_refuses_a_shard_out_of_range() {
+        assert!(parse_partition("2/2").is_err());
+        assert!(parse_partition("0/0").is_err());
+        assert!(parse_partition("not-a-fraction").is_err());
+        assert_eq!(parse_partition("1/4").unwrap(), (1, 4));
+    }
+
+    #[test]
+    fn partition_cases_splits_by_id_and_covers_every_case_exactly_once() {
+        let manifest = manifest();
+        let all: Vec<&Case> = manifest.cases.iter().collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for shard in 0..3 {
+            for case in partition_cases(all.clone(), (shard, 3)) {
+                assert!(
+                    seen.insert(case.id.clone()),
+                    "case assigned to more than one shard"
+                );
+            }
+        }
+        assert_eq!(seen.len(), all.len());
+    }
+
+    #[test]
     fn a_listed_case_that_now_passes_is_red_because_ratchets_only_shrink() {
         let ledger = ledger(&[("listed", "issue #1")]);
         let verdicts = [("listed", true), ("unlisted", true)];
@@ -2156,67 +2164,70 @@ mod tests {
         assert!(result.now_passing.is_empty());
     }
 
+    fn row(platforms: &str, id: &str, expect: &str, issue: &str, reason: &str) -> String {
+        format!("acceptance\t{platforms}\t{id}\t{expect}\t{issue}\t{reason}\n")
+    }
+
     fn ledger_root(body: &str) -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
-        fs::create_dir_all(directory.path().join("tests/core-acceptance")).unwrap();
-        fs::write(directory.path().join(EXPECTED_FAILURES_PATH), body).unwrap();
+        let path = directory.path().join(crate::ratchet::LEDGER_PATH);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
         directory
     }
 
     #[test]
     fn a_row_naming_no_case_is_refused_rather_than_ignored() {
-        let directory = ledger_root("linux,macos,windows,freebsd\tghost  # issue #1\n");
+        let body = row(
+            "linux,macos,windows,freebsd",
+            "ghost",
+            "compile",
+            "#1",
+            "gone",
+        );
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("a row for a case that no longer exists must be refused");
         assert!(error.contains("is not a core-acceptance case"), "{error}");
     }
 
     #[test]
-    fn a_row_without_a_reason_is_refused() {
-        let directory = ledger_root("linux,macos,windows,freebsd\tacceptance-case\n");
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
-            .expect_err("a row with no reason must be refused");
-        assert!(error.contains("has no reason"), "{error}");
-    }
-
-    #[test]
-    fn a_row_without_a_platform_column_is_refused() {
-        let directory = ledger_root("acceptance-case  # issue #3001\n");
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
-            .expect_err("a row with no platform column must be refused");
-        assert!(error.contains("no platform column"), "{error}");
-    }
-
-    #[test]
     fn a_row_with_an_unknown_platform_is_refused() {
-        let directory = ledger_root("solaris\tacceptance-case  # issue #3001\n");
+        let body = row("solaris", "acceptance-case", "compile", "#1", "reason");
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("an unknown platform must be refused");
         assert!(error.contains("unknown platform"), "{error}");
     }
 
     #[test]
-    fn a_row_with_a_wildcard_platform_is_refused() {
-        let directory = ledger_root("*\tacceptance-case  # issue #3001\n");
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
-            .expect_err("core-acceptance has no wildcard platform");
-        assert!(error.contains("unknown platform"), "{error}");
+    fn a_wildcard_platform_applies_on_every_host() {
+        let body = row("*", "acceptance-case", "compile", "#3001", "reason");
+        let directory = ledger_root(&body);
+        let rows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
+        assert_eq!(rows["acceptance-case"], "reason");
     }
 
     #[test]
     fn a_ledger_row_is_read_with_its_reason() {
-        let directory = ledger_root(
-            "# a comment\n\nlinux,macos,windows,freebsd\tacceptance-case  # issue #3001\n",
+        let body = row(
+            "linux,macos,windows,freebsd",
+            "acceptance-case",
+            "compile",
+            "#3001",
+            "reason",
         );
+        let directory = ledger_root(&body);
         let rows = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
-        assert_eq!(rows["acceptance-case"], "issue #3001");
+        assert_eq!(rows["acceptance-case"], "reason");
     }
 
     #[test]
     fn a_row_applies_only_on_its_named_platforms() {
-        let directory = ledger_root("windows\tacceptance-case  # issue #3436\n");
+        let body = row("windows", "acceptance-case", "compile", "#3436", "reason");
+        let directory = ledger_root(&body);
         let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
-        assert_eq!(windows["acceptance-case"], "issue #3436");
+        assert_eq!(windows["acceptance-case"], "reason");
         let linux = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
         assert!(
             linux.is_empty(),
@@ -2226,9 +2237,14 @@ mod tests {
 
     #[test]
     fn two_rows_selecting_the_same_case_and_platform_are_refused_as_overlap() {
-        let directory = ledger_root(
-            "windows,freebsd\tacceptance-case  # issue #1\nfreebsd\tacceptance-case  # issue #2\n",
-        );
+        let body = row(
+            "windows,freebsd",
+            "acceptance-case",
+            "compile",
+            "#1",
+            "reason",
+        ) + &row("freebsd", "acceptance-case", "compile", "#2", "reason");
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "freebsd")
             .expect_err("overlapping platform selection for one case must be refused");
         assert!(error.contains("already selected for freebsd"), "{error}");
@@ -2236,37 +2252,34 @@ mod tests {
 
     #[test]
     fn an_out_of_order_row_is_refused() {
-        let directory = ledger_root(
-            "linux,macos,windows,freebsd\tsafety-case  # issue #1\n\
-             linux,macos,windows,freebsd\tacceptance-case  # issue #2\n",
+        let body = row(
+            "linux,macos,windows,freebsd",
+            "safety-case",
+            "compile",
+            "#1",
+            "reason",
+        ) + &row(
+            "linux,macos,windows,freebsd",
+            "acceptance-case",
+            "compile",
+            "#2",
+            "reason",
         );
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("a row out of id order must be refused");
-        assert!(error.contains("not sorted by id"), "{error}");
-    }
-
-    #[test]
-    fn sort_order_resets_at_a_section_header() {
-        let directory = ledger_root(
-            "# ── safety ──────────────────\n\
-             linux,macos,windows,freebsd\tsafety-case  # issue #1\n\
-             # ── acceptance ──────────────\n\
-             linux,macos,windows,freebsd\tacceptance-case  # issue #2\n",
-        );
-        let rows = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
-        assert_eq!(rows["safety-case"], "issue #1");
-        assert_eq!(rows["acceptance-case"], "issue #2");
+        assert!(error.contains("not sorted"), "{error}");
     }
 
     #[test]
     fn two_rows_selecting_the_same_case_on_disjoint_platforms_are_both_kept() {
-        let directory = ledger_root(
-            "windows\tacceptance-case  # issue #1\nfreebsd\tacceptance-case  # issue #2\n",
-        );
+        let body = row("windows", "acceptance-case", "compile", "#1", "reason-a")
+            + &row("freebsd", "acceptance-case", "compile", "#2", "reason-b");
+        let directory = ledger_root(&body);
         let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
-        assert_eq!(windows["acceptance-case"], "issue #1");
+        assert_eq!(windows["acceptance-case"], "reason-a");
         let freebsd = load_expected_failures(directory.path(), &manifest(), "freebsd").unwrap();
-        assert_eq!(freebsd["acceptance-case"], "issue #2");
+        assert_eq!(freebsd["acceptance-case"], "reason-b");
     }
 
     // -----------------------------------------------------------------
@@ -2542,6 +2555,7 @@ mod tests {
             cases: Vec::new(),
             kinds: Vec::new(),
             jobs: 1,
+            partition: None,
             hew_bin: fake_hew,
             timeout_seconds: None,
         };

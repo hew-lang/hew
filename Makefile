@@ -78,7 +78,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance test-core-acceptance-runner
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check hew-fmt-fidelity test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure test-build-harness core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -263,9 +263,6 @@ endif
 NEXTEST_STORE := target/nextest
 NEXTEST_JUNIT := $(NEXTEST_STORE)/ci/junit.xml
 NEXTEST_RATCHET_JUNIT := $(NEXTEST_STORE)/ci/ratchet.xml
-NEXTEST_FAILURE_LEDGER := scripts/nextest-expected-failures.tsv
-RATCHET_STRICT_RECOVERIES ?= 0
-RATCHET_STRICT_RECOVERIES_ARG := $(if $(filter 1 true yes,$(RATCHET_STRICT_RECOVERIES)),--strict-recoveries,)
 
 ifndef NEXTEST_PLATFORM
 ifeq ($(OS),Windows_NT)
@@ -744,7 +741,7 @@ ci-preflight-smoke:
 #   make ci-local-linux CI_LINUX_HOST=user@host                   # full Linux job
 #   make ci-local-linux CI_LINUX_HOST=user@host STEP=core-acceptance
 #   STEP ∈ { all preflight lint ci-shard-1 ci-shard-2 ci-shard-3
-#            core-acceptance test-pkg-import test-hew-ratchet test-stdlib-ratchet sandbox-parity }
+#            core-acceptance test-pkg-import test-hew-ratchet sandbox-parity }
 #
 # The host must provide CI's toolchain (LLVM via LLVM_SYS_221_PREFIX, the pinned
 # Rust toolchain, cargo-nextest, wasmtime). Override the remote LLVM prefix with
@@ -1029,32 +1026,34 @@ test: test-artifacts ## Test: run the ratcheted Rust workspace test suite
 	@$(NEXTEST_PREPARE_SELECTED_INVENTORY)
 	@status=0; \
 		$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS) || status=$$?; \
-		cargo xtask nextest-ratchet \
+		cargo xtask ratchet check \
+			--suite nextest \
 			--junit "$(NEXTEST_JUNIT)" \
-			--ledger "$(NEXTEST_FAILURE_LEDGER)" \
 			--output "$(NEXTEST_RATCHET_JUNIT)" \
 			--platform "$(NEXTEST_PLATFORM)" \
-			--runner-exit "$$status" $(NEXTEST_RATCHET_INVENTORY_ARGS) $(RATCHET_STRICT_RECOVERIES_ARG)
+			--runner-exit "$$status" $(NEXTEST_RATCHET_INVENTORY_ARGS)
 
 test-strict: test-artifacts ## Test: run the Rust workspace test suite with no known failures
 	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)" "$(NEXTEST_FULL_INVENTORY)" "$(NEXTEST_SELECTED_INVENTORY)"
 	$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS)
 
 # Scheduled ledger authority. Each family runs independently so a red first
-# family cannot suppress reports from the later ledgers.
-ratchet-accounting: ## Check: strict expected-failure ledger accounting
-	RATCHET_STRICT_RECOVERIES=1 RATCHET_ACCOUNTING_MAKE="$(MAKE)" scripts/ratchet-accounting.sh
+# family cannot suppress reports from the later ledgers. A row whose test now
+# passes is reported, never a blocking failure (D555 amendment); this target
+# exists to run every ratcheted suite on its schedule, not to enforce strictness
+# `xtask ratchet check` does not have.
+ratchet-accounting: ## Check: expected-failure ledger accounting across every suite
+	RATCHET_ACCOUNTING_MAKE="$(MAKE)" scripts/ratchet-accounting.sh
 
 # Platform-scoped nextest ledger entries receive their own scheduled jobs.
-# This target owns strict mode rather than relying on workflow environment.
-ratchet-accounting-nextest: ## Check: strict nextest expected-failure accounting
-	RATCHET_STRICT_RECOVERIES=1 $(MAKE) test
+ratchet-accounting-nextest: ## Check: nextest expected-failure accounting
+	$(MAKE) test
 
 # Informational: needs `gh` (authenticated) and network, so it runs in the
-# nightly ratchet-accounting workflow, not PR CI. Read-only — reports rows
-# citing a closed issue, never edits a ledger.
-ledger-issues: ## Check: report expected-failure ledger rows citing a closed issue
-	$(PYTHON) scripts/ledger-issue-check.py
+# nightly ratchet-accounting workflow, not PR CI. Read-only — reports a row
+# whose issue does not resolve on GitHub, never edits a ledger.
+ledger-issues: ## Check: report expected-failure ledger rows with a bad issue
+	cargo xtask ratchet issues
 
 test-ratchet-accounting-runner: ## Test: accounting runner executes all families after failures
 	TMPDIR="$${TMPDIR:-/tmp}" scripts/tests/test_ratchet_accounting_runner.sh
@@ -1254,12 +1253,12 @@ test-runtime-unit:
 
 # Ratcheted wrappers for the Hew-language test suites.
 #
-# These targets run the suites through scripts/corpus-ratchet.sh, which
-# compares the set of failing tests against an exhaustive tracked-failures
-# list. Unexpected failures fail every gate; recovered tracked failures are
-# reported in PRs and fail only when RATCHET_STRICT_RECOVERIES=1. When the
-# converging lanes land and tracked failures drop to zero, delete the list
-# entries; the ratchets then pass with no tracking overhead.
+# These targets run the suites through scripts/corpus-ratchet.sh, which hands
+# the set of failing tests to `cargo xtask ratchet check` for comparison
+# against tests/expected-failures.tsv. Unexpected failures fail every gate;
+# recovered tracked failures are reported, never blocking (D555 amendment).
+# When the converging lanes land and tracked failures drop to zero, delete the
+# rows; the ratchets then pass with no tracking overhead.
 #
 # HEW_O0_OUTCOMES_FILE, when set, wires the ratchet's O0 outcome capture into
 # test-o2-differential's O0 baseline so the differential gate does not re-run
@@ -1273,7 +1272,7 @@ test-hew-ratchet:
 	$(PYTHON) scripts/compiled-hew-shards.py aggregate --mode ratchet \
 		--reports-dir "$(HEW_SHARD_REPORT_DIR)" \
 		--full-inventory "$(HEW_FULL_INVENTORY)" \
-		--shard-count "$(HEW_SHARD_COUNT)" $(RATCHET_STRICT_RECOVERIES_ARG)
+		--shard-count "$(HEW_SHARD_COUNT)"
 
 # The shard-aggregate form reads reports; it builds nothing.
 else
@@ -1320,10 +1319,6 @@ o2-differential-selftest:
 	PYTHON="$(PYTHON)" bash scripts/o2-differential-selftest.sh
 
 # Shell only; no artifacts.
-
-test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
-	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.
@@ -1665,7 +1660,7 @@ test-migrate-corpus: hew
 	"$(BUILD_DIR)/bin/hew" fmt --migrate --check --root "$$migration_root/accept"
 
 # Repo-wide hew check sweep over all tracked .hew files (excluding intentional
-# reject fixtures).  Ratchets against scripts/hew-corpus-expected-failures.txt.
+# reject fixtures).  Ratchets against tests/expected-failures.tsv (suite = corpus).
 # Catches the class of bug where a symbol rename or type change lands in the
 # compiler but fixture files across crates/tests/examples are silently missed.
 # See scripts/corpus-ratchet.sh for the allowlist format and classification guide.

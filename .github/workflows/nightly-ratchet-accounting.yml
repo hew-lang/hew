@@ -15,12 +15,11 @@ env:
   LLVM_VERSION: "22.1.5"
   WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
-  RATCHET_STRICT_RECOVERIES: "1"
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 
 jobs:
   account-linux:
-    name: Strict global ratchet accounting (Linux)
+    name: Global ratchet accounting (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -93,7 +92,7 @@ jobs:
   # in sync with the ledger selectors: adding a new platform-specific selector
   # requires a scheduled strict job for that platform.
   account-macos-nextest:
-    name: Strict nextest accounting (macOS arm64)
+    name: Nextest ratchet accounting (macOS arm64)
     # macos-15 for the same reason as ci.yml's macOS job: macos-14's lldb
     # predates `DW_TAG_variant_part` support.
     runs-on: macos-15
@@ -151,7 +150,7 @@ jobs:
           require_tests: true
 
   account-windows-nextest:
-    name: Strict nextest accounting (Windows)
+    name: Nextest ratchet accounting (Windows)
     runs-on: windows-2022
     timeout-minutes: 120
     env:

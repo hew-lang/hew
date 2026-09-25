@@ -87,9 +87,7 @@ class CompiledHewShardTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def aggregate(
-        self, mode: str, expect: int = 0, strict_recoveries: bool = False
-    ) -> subprocess.CompletedProcess[str]:
+    def aggregate(self, mode: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
             str(SCRIPT),
@@ -105,8 +103,6 @@ class CompiledHewShardTests(unittest.TestCase):
             "--expected-failures",
             str(self.expected),
         ]
-        if strict_recoveries:
-            command.append("--strict-recoveries")
         result = subprocess.run(
             command,
             cwd=ROOT,
@@ -279,17 +275,14 @@ class CompiledHewShardTests(unittest.TestCase):
             ET.parse(published / "compiled-hew-finalization.xml").find(".//failure")
         )
 
-    def test_recovery_is_nonblocking_and_strict_accounting_rejects_it(
-        self,
-    ) -> None:
+    def test_recovery_is_always_nonblocking(self) -> None:
+        # D555 amendment: a recovered ledger row is reported, never a CI
+        # failure, in every invocation.
         tracked = self.full[0]
         self.expected.write_text(f"{tracked} runtime\n", encoding="utf-8")
 
         result = self.aggregate("ratchet")
         self.assertIn("recovery accounting", result.stderr)
-
-        strict = self.aggregate("ratchet", expect=1, strict_recoveries=True)
-        self.assertIn("recoveries under strict accounting", strict.stderr)
 
         result, published = self.finalize(True)
 

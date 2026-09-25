@@ -102,3 +102,4 @@ examples/**/*.key.hew-state
 .env
 .env.*
 /AGENTS.md
+scripts/.hew-suite-expected-failures.generated.txt

@@ -21,8 +21,7 @@ EOF
 chmod +x "${FAKE_MAKE}"
 
 status=0
-output="$(RATCHET_STRICT_RECOVERIES=1 \
-    RATCHET_ACCOUNTING_MAKE="${FAKE_MAKE}" \
+output="$(RATCHET_ACCOUNTING_MAKE="${FAKE_MAKE}" \
     RATCHET_ACCOUNTING_TEST_LOG="${LOG}" \
     "${RUNNER}" 2>&1)" || status=$?
 if [[ "${status}" -ne 1 ]]; then

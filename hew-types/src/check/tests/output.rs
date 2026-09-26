@@ -216,13 +216,10 @@ fn source_resolutions_join_var_statement_and_use() {
     let name = source.find("var x").unwrap() + "var ".len();
     let statement_start = source.find("var x").unwrap();
     assert!(
-        output
-            .resolutions
-            .get(&SpanKey::in_module(
-                &(statement_start..statement_start + 1),
-                0
-            ))
-            .is_none(),
+        !output.resolutions.contains_key(&SpanKey::in_module(
+            &(statement_start..statement_start + 1),
+            0
+        )),
         "the `var` keyword must not become an identifier token row"
     );
     assert_eq!(
@@ -255,7 +252,7 @@ fn source_resolutions_do_not_publish_var_keyword_as_a_name() {
     ));
     assert_eq!(output.resolutions.get(&at(use_site)), declared);
     assert!(
-        output.resolutions.get(&at(statement)).is_none(),
+        !output.resolutions.contains_key(&at(statement)),
         "`var v` must not overlap the authored name token"
     );
 }

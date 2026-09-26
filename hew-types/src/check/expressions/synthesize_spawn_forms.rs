@@ -162,6 +162,16 @@ impl Checker {
                 if self.module_binding_in_current_file(module_short.name.as_str())
                     && self.env.lookup_ref(module_short.name.as_str()).is_none()
                 {
+                    let old_head = format!("{module_short}.{}", type_name.0);
+                    if let Some(replacement) = self.legacy_machine_event_replacement(&old_head) {
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &type_name.1,
+                            format!("machine event type `{old_head}` is now `{replacement}`"),
+                            vec![format!("replace `{old_head}` with `{replacement}`")],
+                        );
+                        return Ty::Error;
+                    }
                     let constructor = format!("{module_short}.{}::{}", type_name.0, field);
                     return self.synthesize_identifier(&constructor, span);
                 }

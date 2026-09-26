@@ -2268,7 +2268,7 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
 
     if let Some(root) = root {
         let snapshot_root = snapshot.path().join("root");
-        copy_migration_snapshot_tree(root, &snapshot_root).map_err(|error| {
+        copy_migration_snapshot_tree(root, &snapshot_root, snapshot.path()).map_err(|error| {
             eprintln!("Error: cannot create migration check snapshot: {error}");
         })?;
         for file in files {
@@ -2287,9 +2287,11 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
             let snapshot_parent = snapshot.path().join(format!("input-{index}"));
-            copy_migration_snapshot_tree(parent, &snapshot_parent).map_err(|error| {
-                eprintln!("Error: cannot create migration check snapshot: {error}");
-            })?;
+            copy_migration_snapshot_tree(parent, &snapshot_parent, snapshot.path()).map_err(
+                |error| {
+                    eprintln!("Error: cannot create migration check snapshot: {error}");
+                },
+            )?;
             let Some(file_name) = file.file_name() else {
                 eprintln!(
                     "Error: migration input has no file name: {}",
@@ -2359,7 +2361,11 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
     Ok(needs_changes)
 }
 
-fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_migration_snapshot_tree(
+    source: &Path,
+    destination: &Path,
+    snapshot_root: &Path,
+) -> Result<(), String> {
     std::fs::create_dir_all(destination)
         .map_err(|error| format!("cannot create `{}`: {error}", destination.display()))?;
     let entries = std::fs::read_dir(source)
@@ -2369,11 +2375,17 @@ fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(),
         let path = entry.path();
         let target = destination.join(entry.file_name());
         if path.is_dir() {
+            if path
+                .canonicalize()
+                .is_ok_and(|canonical| canonical.starts_with(snapshot_root))
+            {
+                continue;
+            }
             if !matches!(
                 path.file_name().and_then(|name| name.to_str()),
                 Some(".git" | "target")
             ) {
-                copy_migration_snapshot_tree(&path, &target)?;
+                copy_migration_snapshot_tree(&path, &target, snapshot_root)?;
             }
             continue;
         }
@@ -2401,12 +2413,13 @@ fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(),
 )]
 fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
     let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
-    let state = match hew_compile::run_file_frontend_to_typecheck_for_migration(
-        &file_path.display().to_string(),
-        &options,
-    ) {
-        Ok(state) => state,
-        Err(failure) => {
+    let label = file_path.display().to_string();
+    let initial = hew_compile::run_source_frontend_for_migration(source, &label, &options);
+    let source = migrate_machine_event_spellings(source, &initial.program);
+    let state = hew_compile::run_source_frontend_for_migration(&source, &label, &options);
+    let state = match &state.stopped {
+        None => state,
+        Some(failure) => {
             compile::render_frontend_diagnostics(&failure.diagnostics);
             let mut listed_site = false;
             for diagnostic in &failure.diagnostics {
@@ -2441,7 +2454,11 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         }
     };
 
-    let Some(typecheck) = state.typecheck_result.tco.as_ref() else {
+    let Some(typecheck) = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+    else {
         eprintln!("{file}: migration requires checker output");
         return Err(());
     };
@@ -2463,7 +2480,7 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         })
         .map(|module| module.id.dotted())
         .collect();
-    let tokens = hew_lexer::lex(source);
+    let tokens = hew_lexer::lex(&source);
     let mut variants = Vec::new();
     let mut refusals = Vec::new();
     for error in &typecheck.warnings {
@@ -2569,7 +2586,7 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         return Err(());
     }
 
-    match hew_parser::fmt::migrate_legacy_syntax(source, &variants) {
+    match hew_parser::fmt::migrate_legacy_syntax(&source, &variants) {
         Ok(migrated) => Ok(migrated),
         Err(error) => {
             for refusal in error.refusals {
@@ -2581,6 +2598,107 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
             Err(())
         }
     }
+}
+
+/// Replace the former flat machine companion only when a loaded declaration
+/// proves its owner. Lexer tokens keep strings and comments intact; an
+/// authored declaration with the same flat spelling wins and is left alone.
+fn migrate_machine_event_spellings(source: &str, program: &hew_parser::ast::Program) -> String {
+    use hew_parser::ast::{ImportSpec, Item};
+
+    let mut machines = std::collections::HashSet::new();
+    let mut authored = std::collections::HashSet::new();
+    let mut collect = |items: &[hew_parser::ast::Spanned<Item>]| {
+        for (item, _) in items {
+            match item {
+                Item::Machine(machine) => {
+                    machines.insert(machine.name.to_string());
+                }
+                Item::TypeDecl(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Trait(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Record(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::TypeAlias(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Const(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Function(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Actor(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Supervisor(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                _ => {}
+            }
+        }
+    };
+    collect(&program.items);
+    if let Some(graph) = &program.module_graph {
+        for module in graph.modules.values() {
+            collect(&module.items);
+        }
+    }
+
+    let mut edits = Vec::new();
+    for (token, span) in hew_lexer::lex(source) {
+        let hew_lexer::Token::Identifier(name) = token else {
+            continue;
+        };
+        let Some(machine) = name.strip_suffix("Event") else {
+            continue;
+        };
+        if !machines.contains(machine) || authored.contains(name) {
+            continue;
+        }
+        let import = program.items.iter().find_map(|(item, item_span)| {
+            (item_span.start <= span.start && span.end <= item_span.end)
+                .then_some((item, item_span))
+        });
+        let replacement = if let Some((Item::Import(import), import_span)) = import {
+            match &import.spec {
+                Some(ImportSpec::Names(names))
+                    if names
+                        .iter()
+                        .any(|item| item.name.name.as_str() == name && item.alias.is_some()) =>
+                {
+                    continue
+                }
+                Some(ImportSpec::Names(names))
+                    if names.iter().any(|item| item.name.name.as_str() == machine) =>
+                {
+                    if let Some(offset) = source[import_span.start..span.start].rfind(',') {
+                        edits.push((import_span.start + offset..span.end, String::new()));
+                    } else if let Some(offset) = source[span.end..import_span.end].find(',') {
+                        edits.push((span.start..span.end + offset + 1, String::new()));
+                    } else {
+                        continue;
+                    }
+                    continue;
+                }
+                Some(ImportSpec::Names(_)) => machine.to_string(),
+                _ => continue,
+            }
+        } else {
+            format!("{machine}.Event")
+        };
+        edits.push((span.start..span.end, replacement));
+    }
+    edits.sort_by_key(|(span, _)| (span.start, span.end));
+    let mut migrated = source.to_string();
+    for (span, replacement) in edits.into_iter().rev() {
+        migrated.replace_range(span, &replacement);
+    }
+    migrated
 }
 
 /// Check every migrated source as it would be written, with the whole

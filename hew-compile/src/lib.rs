@@ -3435,6 +3435,18 @@ pub fn run_source_frontend(
     run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Strict)
 }
 
+/// Run migration parsing and import resolution against an in-memory source.
+/// The returned state retains its module graph even when old spelling causes
+/// a later type error, so the migrator can prove an edit from declarations.
+#[must_use]
+pub fn run_source_frontend_for_migration(
+    source: &str,
+    label: &str,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
+    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Migration)
+}
+
 fn run_document_frontend_with_mode(
     input: &str,
     source_override: Option<&str>,

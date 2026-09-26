@@ -1413,6 +1413,14 @@ impl Checker {
                 format!("module `{surface_name}` cannot be used as a value"),
             );
             Ty::Error
+        } else if let Some(replacement) = self.legacy_machine_event_replacement(surface_name) {
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedVariable,
+                span,
+                format!("machine event type `{surface_name}` is now `{replacement}`"),
+                vec![format!("replace `{surface_name}` with `{replacement}`")],
+            );
+            Ty::Error
         } else if self.type_def_at(surface_name).is_some()
             || self.known_types.contains(surface_name)
             || self.type_aliases.contains_key(surface_name)

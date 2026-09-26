@@ -304,6 +304,60 @@ fn fmt_migrate_uses_checker_resolved_variant_owners_and_check_is_non_destructive
 }
 
 #[test]
+fn fmt_migrate_rewrites_declared_machine_event_aliases() {
+    let dir = support::tempdir();
+    let path = dir.path().join("machine-events.hew");
+    let source = "import std.machines.toggle.{Toggle, ToggleEvent};\n\
+        machine Tank { events { Tick, } state Idle, state Filled, \
+        on Tick: Idle => Filled, default { state } }\n\
+        fn main() { var tank = Tank.Idle; \
+        let _ = tank.step(TankEvent.Tick); \
+        var toggle: Toggle = .Off; let _ = toggle.step(ToggleEvent.Flip); \
+        println(\"TankEvent\"); }\n";
+    std::fs::write(&path, source).unwrap();
+
+    let migration = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        migration.status.success(),
+        "migration failed: {}",
+        String::from_utf8_lossy(&migration.stderr)
+    );
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains("Tank.Event.Tick"), "{migrated}");
+    assert!(migrated.contains("Toggle.Event.Flip"), "{migrated}");
+    assert!(
+        migrated.contains("import std.machines.toggle.{Toggle}"),
+        "{migrated}"
+    );
+    assert!(migrated.contains("\"TankEvent\""), "{migrated}");
+    let check = Command::new(hew_binary())
+        .arg("check")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "migrated source did not type-check: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let fixed_point = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--check"])
+        .arg(&path)
+        .env("TMPDIR", dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        fixed_point.status.success(),
+        "migration snapshot inside the source parent failed: {}",
+        String::from_utf8_lossy(&fixed_point.stderr)
+    );
+}
+
+#[test]
 fn fmt_migrate_root_discovers_nested_hew_sources() {
     let dir = support::tempdir();
     let nested = dir.path().join("nested");

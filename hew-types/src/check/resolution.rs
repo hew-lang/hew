@@ -3018,7 +3018,22 @@ impl Checker {
                 type_args,
             } => {
                 let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                    // Handle `Self` type
+                if let Some(replacement) = self.legacy_machine_event_replacement(name) {
+                    let key = SpanKey::in_module(&te.1, self.current_module_idx);
+                    if self
+                        .reported_undefined_named_types
+                        .insert((name.clone(), key))
+                    {
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            format!("machine event type `{name}` is now `{replacement}`"),
+                            vec![format!("replace `{name}` with `{replacement}`")],
+                        );
+                    }
+                    return Ty::Error;
+                }
+                // Handle `Self` type
                 if name == "Self" {
                     if let Some((self_type_name, self_type_args)) = &self.current_self_type {
                         return self.named_ty_for_key(self_type_name, self_type_args.clone());

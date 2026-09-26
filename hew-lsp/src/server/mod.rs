@@ -7333,7 +7333,7 @@ machine Traffic {
         );
         assert!(
             type_output
-                .type_def_at_path("machines.toggle.ToggleEvent")
+                .type_def_at_path("machines.toggle.Toggle.Event")
                 .is_some(),
             "imported machine event type should retain its canonical owner in type defs"
         );

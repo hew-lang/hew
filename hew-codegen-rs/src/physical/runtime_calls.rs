@@ -677,7 +677,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::RegexHandle => {
                 let handle = self.load_regex_handle(source(0)?)?;
                 let function = external_unary_ptr(self.ctx, self.llvm, "hew_regex_clone")?;
-                // The module slot outlives every pattern value built from it,
+                // The module's checked lifetime outlives every pattern value built from it,
                 // so the value owns an independent handle its scope exit frees.
                 let owned = self.runtime_call_value(function, &[handle.into()], "regex.pattern")?;
                 self.store(required_result()?, owned)?;

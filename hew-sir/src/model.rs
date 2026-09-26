@@ -766,7 +766,8 @@ pub struct SemModule {
     pub bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
     /// Regex-literal patterns in `literal_id` order, carried straight from
     /// HIR's deduplicated table. Each is compiled once into the module's
-    /// handle array; a `RegexMatch` call selects its slot by index.
+    /// handle array; a `RegexMatch` call selects its slot by index. Native
+    /// module initialization and cleanup own the handles.
     pub regex_patterns: Vec<String>,
     /// Root-unit lexical scopes and site offsets, for native debug metadata.
     pub debug: crate::SemDebugFacts,

@@ -1,5 +1,5 @@
 // End-to-end fixture: two `re"..."` literals with identical pattern text
-// dedupe to the same `literal_id` / module-init global slot
+// dedupe to the same `literal_id` / module-owned global slot
 // (`alloc_regex_literal` in hew-hir/src/lower.rs). Each binding clones the
 // slot's compiled handle independently on load (`F::RegexHandle` in
 // hew-codegen-rs/src/runtime_abi.rs), so each `Pattern` owns its own handle

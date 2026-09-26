@@ -1,5 +1,6 @@
 #include "config_policy.h"
 #include "hew_host.h"
+#include "regex_policy.h"
 #include "take_policy.h"
 #include <assert.h>
 #include <stdio.h>
@@ -115,8 +116,25 @@ static void compiled_policy(void) {
   }
 }
 
+static void compiled_regex_policy(void) {
+  const char *inputs[] = {"1234", "abc", "a1"};
+  const char *expected[] = {"digits", "letters", "other"};
+  for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; ++i) {
+    HewText *input = NULL, *result = NULL;
+    HewError *error = NULL;
+    assert(hew_host_text_from_utf8((const unsigned char *)inputs[i],
+                                   strlen(inputs[i]), &input, &error) == HEW_OK &&
+           !error);
+    assert(config_classify_text(input, &result, &error) == HEW_OK && !error);
+    text_is(result, (const unsigned char *)expected[i], strlen(expected[i]));
+    hew_host_text_release(input);
+    hew_host_text_release(result);
+  }
+}
+
 int main(void) {
   compiled_policy();
+  compiled_regex_policy();
   HewError *error = NULL, *next_error = NULL;
   HewText *text = NULL, *extracted = NULL;
   HewJson *bad = NULL;

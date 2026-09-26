@@ -57,7 +57,8 @@ def main():
     parser.add_argument("--sanitize", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
-    source = root / "tests/host/config_policy.hew"
+    config_source = root / "tests/host/config_policy.hew"
+    regex_source = root / "tests/host/regex_policy.hew"
     output = args.out_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -71,9 +72,10 @@ def main():
         directory = output / f"o{opt}"
         directory.mkdir(exist_ok=True)
         objects = []
-        for stem, selection in (
-            ("config_policy", "normalize_label=config_normalize_label"),
-            ("take_policy", "take_label=config_take_label"),
+        for stem, source, selection in (
+            ("config_policy", config_source, "normalize_label=config_normalize_label"),
+            ("take_policy", config_source, "take_label=config_take_label"),
+            ("regex_policy", regex_source, "classify_text=config_classify_text"),
         ):
             obj = directory / f"{stem}.o"
             run(

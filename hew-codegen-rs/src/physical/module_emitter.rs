@@ -51,7 +51,7 @@ pub(super) fn build_module_with_host<'ctx>(
         debug,
     };
     emitter.declare_functions()?;
-    emitter.emit_regex_handles()?;
+    emitter.emit_regex_lifecycle()?;
     emitter.emit_collection_value_descriptors()?;
     emitter.emit_task_descriptors()?;
     emitter.emit_generator_descriptors()?;
@@ -82,8 +82,9 @@ pub(super) fn build_module_with_host<'ctx>(
     Ok(emitter.llvm)
 }
 
-/// The module-private array of compiled `*HewRegex` handles, one slot per
-/// regex literal, filled in the process entry prologue.
+/// The module-private array of compiled `*HewRegex` handles. Native module
+/// constructors and destructors own these slots for both executables and
+/// libraries; no source process entry is required.
 const REGEX_HANDLES: &str = "hew_regex_handles";
 
 /// The single tagged-variant carrier a runtime operation's result needs.
@@ -138,28 +139,200 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    /// The module's compiled-regex handle array, one null slot per literal.
-    ///
-    /// The slots are filled once in the process entry prologue, before any
-    /// user body or actor runs, so a match arm only loads its slot.
-    fn emit_regex_handles(&self) -> CodegenResult<()> {
+    /// Give each checked literal one handle for the native module's lifetime.
+    /// The constructor runs before any exported body, including in a library;
+    /// the destructor releases the handles after callers can no longer use them.
+    fn emit_regex_lifecycle(&self) -> CodegenResult<()> {
         let Some(count) = regex_slot_count(self.module)? else {
             return Ok(());
         };
-        if self.module.entry_callable.is_none() {
-            // The slots are filled by the process entry. Without one they
-            // would stay null and every arm would silently fail to match.
-            return Err(CodegenError::FailClosed(
-                "a regex literal needs a process entry to compile its pattern".into(),
-            ));
-        }
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let global = self
             .llvm
             .add_global(pointer.array_type(count), None, REGEX_HANDLES);
         global.set_linkage(Linkage::Private);
         global.set_initializer(&pointer.const_array(&vec![pointer.const_null(); count as usize]));
+        let init = self.llvm.add_function(
+            "__hew_regex_init",
+            self.ctx.void_type().fn_type(&[], false),
+            Some(Linkage::Internal),
+        );
+        let fini = self.llvm.add_function(
+            "__hew_regex_fini",
+            self.ctx.void_type().fn_type(&[], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(init, "entry"));
+        self.emit_regex_compilation(&builder)?;
+        if self.module.target.triple.contains("windows") {
+            let register = get_or_declare_external(
+                &self.llvm,
+                "atexit",
+                self.ctx.i32_type().fn_type(&[pointer.into()], false),
+            )?;
+            let status = builder
+                .build_call(
+                    register,
+                    &[fini.as_global_value().as_pointer_value().into()],
+                    "regex.cleanup.registration",
+                )
+                .llvm_ctx("register regex module cleanup")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("atexit returned no status".into()))?
+                .into_int_value();
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    status,
+                    self.ctx.i32_type().const_zero(),
+                    "regex.cleanup.registration.failed",
+                )
+                .llvm_ctx("check regex cleanup registration")?;
+            let registered = self.ctx.append_basic_block(init, "registered");
+            let rejected = self.ctx.append_basic_block(init, "registration.failed");
+            builder
+                .build_conditional_branch(failed, rejected, registered)
+                .llvm_ctx("admit regex cleanup registration")?;
+            builder.position_at_end(rejected);
+            let trap = Intrinsic::find("llvm.trap")
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("LLVM trap intrinsic is unavailable".into())
+                })?
+                .get_declaration(&self.llvm, &[])
+                .ok_or_else(|| CodegenError::FailClosed("LLVM trap declaration failed".into()))?;
+            builder
+                .build_call(trap, &[], "regex.cleanup.trap")
+                .llvm_ctx("trap failed regex cleanup registration")?;
+            builder
+                .build_unreachable()
+                .llvm_ctx("terminate failed regex cleanup registration")?;
+            builder.position_at_end(registered);
+        }
+        builder
+            .build_return(None)
+            .llvm_ctx("finish regex literal initialization")?;
+        builder.position_at_end(self.ctx.append_basic_block(fini, "entry"));
+        let free = get_or_declare_external(
+            &self.llvm,
+            "hew_regex_free",
+            self.ctx.void_type().fn_type(&[pointer.into()], false),
+        )?;
+        let array = pointer.array_type(count);
+        for index in 0..count {
+            let slot = unsafe {
+                builder
+                    .build_gep(
+                        array,
+                        global.as_pointer_value(),
+                        &[
+                            self.ctx.i64_type().const_zero(),
+                            self.ctx.i64_type().const_int(u64::from(index), false),
+                        ],
+                        "regex.release.slot",
+                    )
+                    .llvm_ctx("address regex literal release slot")?
+            };
+            let handle = builder
+                .build_load(pointer, slot, "regex.release.handle")
+                .llvm_ctx("load regex literal release handle")?;
+            builder
+                .build_call(free, &[handle.into()], "")
+                .llvm_ctx("release regex literal")?;
+        }
+        builder
+            .build_return(None)
+            .llvm_ctx("finish regex literal cleanup")?;
+
+        if self.module.target.triple.contains("apple") {
+            let init = self.emit_regex_lifecycle_section(
+                init,
+                "__hew_regex_ctor",
+                "__DATA,__mod_init_func,mod_init_funcs",
+            )?;
+            let fini = self.emit_regex_lifecycle_section(
+                fini,
+                "__hew_regex_dtor",
+                "__DATA,__mod_term_func,mod_term_funcs",
+            )?;
+            self.retain_regex_lifecycle_sections(&[init, fini]);
+        } else if self.module.target.triple.contains("windows") {
+            let init = self.emit_regex_lifecycle_section(init, "__hew_regex_ctor", ".CRT$XCU")?;
+            self.retain_regex_lifecycle_sections(&[init]);
+        } else if self.module.target.triple.starts_with("wasm") {
+            // WASI's linker consumes these tables through its call-ctors path.
+            let entry = self.ctx.struct_type(
+                &[self.ctx.i32_type().into(), pointer.into(), pointer.into()],
+                false,
+            );
+            for (name, function) in [("llvm.global_ctors", init), ("llvm.global_dtors", fini)] {
+                let record = entry.const_named_struct(&[
+                    self.ctx.i32_type().const_int(65535, false).into(),
+                    function.as_global_value().as_pointer_value().into(),
+                    pointer.const_null().into(),
+                ]);
+                let entries = entry.const_array(&[record]);
+                let hook = self.llvm.add_global(entries.get_type(), None, name);
+                hook.set_initializer(&entries);
+                hook.set_linkage(Linkage::Appending);
+            }
+        } else {
+            // This target machine emits LLVM global ctor/dtor tables as
+            // legacy `.ctors`/`.dtors`, which the executable linker does not
+            // execute. Use the native loader's ELF arrays explicitly.
+            let init =
+                self.emit_regex_lifecycle_section(init, "__hew_regex_ctor", ".init_array")?;
+            let fini =
+                self.emit_regex_lifecycle_section(fini, "__hew_regex_dtor", ".fini_array")?;
+            self.retain_regex_lifecycle_sections(&[init, fini]);
+        }
         Ok(())
+    }
+
+    fn retain_regex_lifecycle_sections(&self, hooks: &[inkwell::values::GlobalValue<'ctx>]) {
+        use inkwell::values::AsValueRef;
+
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let entries = pointer.const_array(
+            &hooks
+                .iter()
+                .map(|hook| hook.as_pointer_value())
+                .collect::<Vec<_>>(),
+        );
+        let retained = self
+            .llvm
+            .add_global(entries.get_type(), None, "llvm.compiler.used");
+        retained.set_initializer(&entries);
+        retained.set_linkage(Linkage::Appending);
+        let metadata = c"llvm.metadata";
+        // SAFETY: the global and section string are live for this call.
+        unsafe {
+            inkwell::llvm_sys::core::LLVMSetSection(retained.as_value_ref(), metadata.as_ptr());
+        }
+    }
+
+    fn emit_regex_lifecycle_section(
+        &self,
+        function: FunctionValue<'ctx>,
+        name: &str,
+        section: &str,
+    ) -> CodegenResult<inkwell::values::GlobalValue<'ctx>> {
+        use inkwell::values::AsValueRef;
+
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let hook = self.llvm.add_global(pointer, None, name);
+        hook.set_linkage(Linkage::Private);
+        hook.set_initializer(&function.as_global_value().as_pointer_value());
+        let section = std::ffi::CString::new(section)
+            .map_err(|_| CodegenError::FailClosed("invalid regex lifecycle section".into()))?;
+        // Inkwell rewrites Mach-O section names for the host. Set the exact
+        // target section on the LLVM global, as actor codec registration does.
+        // SAFETY: the global and section string are live for this call.
+        unsafe {
+            inkwell::llvm_sys::core::LLVMSetSection(hook.as_value_ref(), section.as_ptr());
+        }
+        Ok(hook)
     }
 
     /// Compile every regex literal into its slot. The checker already proved
@@ -228,6 +401,42 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     CodegenError::FailClosed("hew_regex_compile returned no handle".into())
                 })?
                 .into_pointer_value();
+            let valid = self.ctx.append_basic_block(
+                builder
+                    .get_insert_block()
+                    .expect("regex init block")
+                    .get_parent()
+                    .expect("regex init function"),
+                "regex.valid",
+            );
+            let failed = self.ctx.append_basic_block(
+                builder
+                    .get_insert_block()
+                    .expect("regex init block")
+                    .get_parent()
+                    .expect("regex init function"),
+                "regex.failed",
+            );
+            let missing = builder
+                .build_is_null(handle, "regex.no_memory")
+                .llvm_ctx("check compiled regex literal")?;
+            builder
+                .build_conditional_branch(missing, failed, valid)
+                .llvm_ctx("admit compiled regex literal")?;
+            builder.position_at_end(failed);
+            let trap = Intrinsic::find("llvm.trap")
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("LLVM trap intrinsic is unavailable".into())
+                })?
+                .get_declaration(&self.llvm, &[])
+                .ok_or_else(|| CodegenError::FailClosed("LLVM trap declaration failed".into()))?;
+            builder
+                .build_call(trap, &[], "regex.literal.trap")
+                .llvm_ctx("trap failed regex literal compilation")?;
+            builder
+                .build_unreachable()
+                .llvm_ctx("terminate failed regex literal compilation")?;
+            builder.position_at_end(valid);
             builder
                 .build_call(release, &[pattern_value.into()], "")
                 .llvm_ctx("release the regex pattern string")?;
@@ -514,7 +723,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder.position_at_end(entry);
         self.emit_process_runtime_start(&builder, wrapper)?;
         self.emit_actor_observe_registration(&builder)?;
-        self.emit_regex_compilation(&builder)?;
         let result = if let Some(layout) = &callable.return_layout {
             Some(
                 builder

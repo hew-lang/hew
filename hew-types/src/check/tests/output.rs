@@ -79,8 +79,8 @@ fn source_resolutions_distinguish_same_named_fields_by_owner() {
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let a = source.find("a.x").expect("A field") + 2;
     let b = source.find("b.x").expect("B field") + 2;
-    let a_label = source.find("A { x:").expect("A initializer") + "A { ".len();
-    let b_label = source.find("B { x:").expect("B initializer") + "B { ".len();
+    let a_label = source.find("let a = A { x:").expect("A initializer") + "let a = A { ".len();
+    let b_label = source.find("let b = B { x:").expect("B initializer") + "let b = B { ".len();
     let at = |start| SpanKey::in_module(&(start..start + 1), 0);
     let a_field = output.resolutions.get(&at(a));
     let b_field = output.resolutions.get(&at(b));
@@ -109,6 +109,29 @@ fn source_resolutions_publish_qualified_record_constructor_segments() {
     };
     import.resolved_items = Some(module.program.items.into());
     import.resolved_source_paths = vec![std::path::PathBuf::from("ma.hew")];
+    let root = ModulePath::root();
+    let ma = ModulePath::new(["ma"]);
+    let mut graph = ModuleGraph::new(root.clone());
+    graph
+        .add_module(Module {
+            id: root.clone(),
+            items: Vec::new(),
+            imports: Vec::new(),
+            source_paths: vec![std::path::PathBuf::from("main.hew")],
+            doc: None,
+        })
+        .unwrap();
+    graph
+        .add_module(Module {
+            id: ma.clone(),
+            items: import.resolved_items.as_ref().unwrap().as_ref().clone(),
+            imports: Vec::new(),
+            source_paths: import.resolved_source_paths.clone(),
+            doc: None,
+        })
+        .unwrap();
+    graph.topo_order = vec![ma, root];
+    parsed.program.module_graph = Some(graph);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let start = source.find("ma.Shape {").unwrap();

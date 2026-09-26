@@ -3105,6 +3105,61 @@ trait with a `var self` receiver and implement that trait for your type.
 
 A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm.{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
 
+### Choosing between methods with the same name
+
+A dot-call prefers the type's inherent method. A generic bound or `dyn` view
+selects the method belonging to that trait:
+
+```hew
+trait Show { fn show(self) -> string; }
+trait Label { fn show(self) -> string; }
+type Item { value: i64 }
+impl Item { fn show(self) -> string { "inherent" } }
+impl Show for Item { fn show(self) -> string { "show" } }
+impl Label for Item { fn show(self) -> string { "label" } }
+fn via_show<T: Show>(value: T) -> string { value.show() }
+fn via_label(value: dyn Label) -> string { value.show() }
+fn main() {
+    let item = Item { value: 1 };
+    println(item.show());       // inherent
+    println(via_show(item));    // show
+    println(via_label(item));   // label
+}
+```
+
+Without an inherent `show`, a bare `item.show()` would be ambiguous between
+`Show` and `Label`. Declaration order does not choose a method. Structural
+satisfaction uses the same order: an inherent method, then a unique compatible
+trait method. Two traits imported from different modules stay distinct even
+when they have the same name.
+
+A user trait named `Clone` is an ordinary trait whose declared methods must be
+satisfied:
+
+```hew
+trait Clone { fn dup(self) -> i64; }
+type Number { value: i64 }
+impl Clone for Number { fn dup(self) -> i64 { self.value } }
+fn duplicate<T: Clone>(value: T) -> i64 { value.dup() }
+fn main() { println(duplicate(Number { value: 7 })); }
+```
+
+The spelling does not grant automatic cloning or sending capabilities.
+Protected prelude declarations such as `Display` cannot be redeclared.
+
+### Lexical callable names
+
+A local callable shadows a module function. A module function can also shadow
+a prelude function such as `len` or `println`:
+
+```hew
+fn helper(value: i64) -> i64 { 10 }
+fn main() {
+    let helper = |value: i64| -> i64 { value + 1 };
+    println(helper(1)); // 2
+}
+```
+
 ### Display trait (fmt) for f-string interpolation
 
 ```hew

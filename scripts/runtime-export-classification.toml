@@ -651,8 +651,6 @@ stable = [
   "hew_supervisor_is_running",
   "hew_supervisor_new",
   "hew_supervisor_nested_get",
-  "hew_supervisor_restart_await_detach",
-  "hew_supervisor_restart_await_suspend",
   "hew_supervisor_role_ask",
   "hew_supervisor_role_ask_with_channel",
   "hew_supervisor_role_send",
@@ -1562,6 +1560,7 @@ non-declarable = [
   # code has no way to name it or the child table it reads.
   "hew_supervisor_native_child",
   "hew_supervisor_native_role_owner",
+  "hew_supervisor_native_role_request",
   "hew_supervisor_native_role_wait_new",
   "hew_supervisor_native_spawn",
   "hew_supervisor_role_await_send",

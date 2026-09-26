@@ -122,6 +122,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ),
             PhysicalTerminator::CheckedRaiseFault { kind, cleanup } => {
                 self.initialize_active_fault(trap_code(*kind))?;
+                self.attach_active_fault_site(self.terminator_site(block))?;
                 self.emit_edge(cleanup)
             }
             PhysicalTerminator::DynCall {
@@ -261,10 +262,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 ..
             } => self.emit_extern_call(symbol, args, *result, result_abi, normal),
-            PhysicalTerminator::Panic { message, cleanup } => self.emit_panic(*message, cleanup),
+            PhysicalTerminator::Panic { message, cleanup } => {
+                self.emit_panic(*message, cleanup, self.terminator_site(block))
+            }
             PhysicalTerminator::Trap(kind) => {
                 let code = trap_code(*kind);
-                self.emit_new_fault(code)
+                self.emit_new_fault(code, self.terminator_site(block))
             }
             PhysicalTerminator::PropagateFault { handback } => {
                 if let Some(handback) = handback {
@@ -866,9 +869,58 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         Ok(())
     }
 
-    fn emit_new_fault(&self, code: i32) -> CodegenResult<()> {
+    fn emit_new_fault(&self, code: i32, site: Option<u32>) -> CodegenResult<()> {
         self.initialize_active_fault(code)?;
+        self.attach_active_fault_site(site)?;
         self.emit_propagate_fault()
+    }
+
+    fn terminator_site(&self, block: &PhysicalBlock) -> Option<u32> {
+        let index = u32::try_from(block.ops.len())
+            .expect("verified physical operation count fits a u32 index");
+        self.module
+            .debug
+            .functions
+            .get(&self.function.callable)?
+            .sites
+            .get(&(block.id, index))
+            .copied()
+    }
+
+    fn attach_active_fault_site(&self, site: Option<u32>) -> CodegenResult<()> {
+        let Some(site) = site else {
+            return Ok(());
+        };
+        let fault = self
+            .builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                self.active_fault,
+                "site.fault",
+            )
+            .llvm_ctx("load fault for source site")?;
+        let attach = get_or_declare_external(
+            self.llvm,
+            "hew_fault_set_site",
+            self.ctx.void_type().fn_type(
+                &[
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.i32_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        self.builder
+            .build_call(
+                attach,
+                &[
+                    fault.into(),
+                    self.ctx.i32_type().const_int(u64::from(site), false).into(),
+                ],
+                "fault.site",
+            )
+            .llvm_ctx("attach source site to fault")?;
+        Ok(())
     }
 
     fn emit_enter_defer(
@@ -1102,7 +1154,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_edge(normal)
     }
 
-    fn emit_panic(&self, message: ArgumentTransfer, cleanup: &PhysicalEdge) -> CodegenResult<()> {
+    fn emit_panic(
+        &self,
+        message: ArgumentTransfer,
+        cleanup: &PhysicalEdge,
+        site: Option<u32>,
+    ) -> CodegenResult<()> {
         let ArgumentTransfer::Borrow(source) = message else {
             return Err(CodegenError::FailClosed(
                 "physical panic must borrow its message".into(),
@@ -1112,6 +1169,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let message = self.load(source, "panic.message")?;
         let fault = self.runtime_call_value(constructor, &[message.into()], "panic.fault")?;
         self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+        self.attach_active_fault_site(site)?;
         self.emit_edge(cleanup)
     }
 

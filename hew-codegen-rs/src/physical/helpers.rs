@@ -352,14 +352,14 @@ pub(super) fn external_fault_drop<'ctx>(
     external_drop(ctx, module, "hew_fault_drop")
 }
 
-pub(super) fn external_fault_report<'ctx>(
+pub(super) fn external_fault_report_entry<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let ptr = ctx.ptr_type(AddressSpace::default());
     get_or_declare_external(
         module,
-        "hew_fault_report",
+        "hew_fault_report_entry",
         ctx.i32_type().fn_type(&[ptr.into()], false),
     )
 }

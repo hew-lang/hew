@@ -530,6 +530,59 @@ fn should_panic_test_fails_when_it_does_not_panic() {
 }
 
 #[test]
+fn should_panic_rejects_an_explicit_nonzero_exit() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "should_panic_exit_test.hew",
+            "#[test]\n#[should_panic]\nfn exits() {\n    exit(7);\n}\n",
+        )],
+        &["--no-color"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test exits ... FAILED"), "{stdout}");
+    assert!(stdout.contains("expected a user panic"), "{stdout}");
+}
+
+#[test]
+fn failed_assertion_reports_its_source_site() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "assert_site_test.hew",
+            "#[test]\nfn fails() {\n    assert(1 == 2);\n}\n",
+        )],
+        &["--no-color"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("assert_site_test.hew:3:"), "{stdout}");
+}
+
+#[test]
+fn should_panic_rejects_a_checked_trap_with_its_site() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "trap_site_test.hew",
+            "#[test]\n#[should_panic]\nfn traps() {\n    let values = [1, 2];\n    var index = 3;\n    let _ = values[index];\n}\n",
+        )],
+        &["--no-color"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("expected a user panic"), "{stdout}");
+    assert!(stdout.contains("trap_site_test.hew:6:"), "{stdout}");
+}
+
+#[test]
 fn no_test_files_in_directory_exits_non_zero() {
     let dir = support::tempdir();
     write_file(dir.path(), "notes/readme.txt", "not a Hew test\n");

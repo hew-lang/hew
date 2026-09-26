@@ -1,6 +1,7 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
+use serde::Deserialize;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -272,6 +273,15 @@ pub struct ScheduleOptions {
 #[derive(Debug, Clone, Copy)]
 struct Execution {
     driver: Option<(Schedule, u64)>,
+}
+
+/// Private record written by the runtime after the selected test settles.
+#[derive(Debug, Deserialize)]
+struct TestReport {
+    outcome: String,
+    status: i32,
+    fault_kind: Option<String>,
+    site_offset: Option<u32>,
 }
 
 impl Execution {
@@ -577,15 +587,27 @@ fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult 
     let mut first_failure: Option<(Execution, TestFailure, String)> = None;
     let mut failed_runs = 0usize;
     for execution in &runs {
-        let (outcome, output) = judge_run(
-            test,
-            crate::process::run_binary_with_driver(
-                &artifact.binary_path,
-                options.timeout,
-                execution.environment().as_deref(),
+        let report_dir = tempfile::tempdir();
+        let (run_result, report) = match report_dir {
+            Ok(dir) => {
+                let path = dir.path().join("report.json");
+                let run = crate::process::run_binary_with_driver(
+                    &artifact.binary_path,
+                    options.timeout,
+                    execution.environment().as_deref(),
+                    &path,
+                );
+                let report = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<TestReport>(&bytes).ok());
+                (run, report)
+            }
+            Err(error) => (
+                Err(format!("cannot create test report directory: {error}")),
+                None,
             ),
-            options.timeout,
-        );
+        };
+        let (outcome, output) = judge_run(test, run_result, options.timeout, report.as_ref());
         match outcome {
             TestOutcome::Failed(failure) => {
                 failed_runs += 1;
@@ -699,10 +721,19 @@ fn judge_run(
     test: &TestCase,
     run_result: Result<crate::process::BinaryRunOutcome, String>,
     timeout: Duration,
+    report: Option<&TestReport>,
 ) -> (TestOutcome, String) {
     match run_result {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
-            if test.should_panic {
+            if !report.is_some_and(|report| report.outcome == "passed" && report.status == 0) {
+                (
+                    TestOutcome::failed(
+                        TestFailureKind::Runtime,
+                        "test exited without a valid runtime report",
+                    ),
+                    stdout,
+                )
+            } else if test.should_panic {
                 (
                     TestOutcome::failed(
                         TestFailureKind::Runtime,
@@ -714,15 +745,35 @@ fn judge_run(
                 (TestOutcome::Passed, stdout)
             }
         }
-        Ok(crate::process::BinaryRunOutcome::Failed { stdout, stderr, .. }) => {
-            if test.should_panic {
+        Ok(crate::process::BinaryRunOutcome::Failed {
+            stdout,
+            stderr,
+            exit_code,
+            signal,
+        }) => {
+            let reported_panic = signal.is_none()
+                && report.is_some_and(|report| {
+                    report.status == exit_code
+                        && report.outcome == "fault"
+                        && report.fault_kind.as_deref() == Some("UserPanic")
+                });
+            if test.should_panic && reported_panic {
                 (TestOutcome::Passed, stdout)
             } else {
-                let msg = if stderr.is_empty() {
+                let mut msg = if stderr.is_empty() {
                     "test exited with non-zero status".to_string()
                 } else {
                     with_operand_diff(stderr)
                 };
+                if let Some(site) = report
+                    .and_then(|report| report.site_offset)
+                    .and_then(|offset| test_source_location(&test.file, offset))
+                {
+                    let _ = write!(msg, "\n  at {site}");
+                }
+                if test.should_panic {
+                    msg = format!("expected a user panic, got another failure: {msg}");
+                }
                 (TestOutcome::failed(TestFailureKind::Runtime, msg), stdout)
             }
         }
@@ -744,6 +795,14 @@ fn judge_run(
             String::new(),
         ),
     }
+}
+
+fn test_source_location(file: &str, offset: u32) -> Option<String> {
+    let source = std::fs::read_to_string(file).ok()?;
+    let prefix = source.get(..usize::try_from(offset).ok()?)?;
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let column = prefix.rsplit('\n').next()?.chars().count() + 1;
+    Some(format!("{file}:{line}:{column}"))
 }
 
 #[cfg(test)]

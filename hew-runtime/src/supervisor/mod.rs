@@ -544,6 +544,7 @@ pub(crate) unsafe fn trap_with_code(code: i32, reported: bool) {
         }
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let _ = std::io::Write::flush(&mut std::io::stderr());
+        crate::test_report::finish(1);
         // JUSTIFIED: a trap with no recovery authority ends the run; the OS
         // reclaims what the skipped destructors would have released.
         std::process::exit(1);

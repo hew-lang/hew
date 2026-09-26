@@ -6811,6 +6811,36 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fault_report_entry( *const HewFault) -> i32",
+        "wasm32-wasip1": "fn hew_fault_report_entry( *const HewFault) -> i32"
+      },
+      "symbol": "hew_fault_report_entry"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fault_set_site( *mut HewFault, u32)",
+        "wasm32-wasip1": "fn hew_fault_set_site( *mut HewFault, u32)"
+      },
+      "symbol": "hew_fault_set_site"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fault_take_message( *mut HewFault) -> *mut HewString",
         "wasm32-wasip1": "fn hew_fault_take_message( *mut HewFault) -> *mut HewString"
       },

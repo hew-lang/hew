@@ -616,6 +616,7 @@ impl LowerCtx {
     pub(super) fn lower_assertion(
         &mut self,
         args: &[CallArg],
+        comparison: Option<([&Spanned<Expr>; 2], BinaryOp)>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let (condition, message) = match args {
@@ -639,92 +640,133 @@ impl LowerCtx {
                 );
             }
         };
-        let (condition_expr, condition_span) = condition;
+        let condition_span = &condition.1;
         let text = hew_parser::fmt::format_expression(condition);
 
         let block_scope = self.ids.scope();
         self.push_scope();
         let mut statements = Vec::new();
-        let mut operands = None;
-        let holds = match condition_expr {
-            Expr::Binary { left, op, right }
-                if self.defer_body_depth == 0
-                    && matches!(
-                        op,
-                        BinaryOp::Equal
-                            | BinaryOp::NotEqual
-                            | BinaryOp::Less
-                            | BinaryOp::LessEqual
-                            | BinaryOp::Greater
-                            | BinaryOp::GreaterEqual
-                    ) =>
-            {
-                let mut refs = Vec::with_capacity(2);
-                for (role, operand) in [("left", left), ("right", right)] {
-                    let operand_key = self.mk_key(&operand.1);
-                    let rendering = self
-                        .unrendered_assertion_operands
-                        .contains(&operand_key)
-                        .then(|| self.expr_types.get(&operand_key).cloned())
-                        .flatten();
-                    let value = self.lower_expr(operand, IntentKind::Read);
-                    let ty = value.ty.clone();
-                    let name = format!("__hew_assert_{role}_{}", self.ids.binding().0);
-                    let binding = self.bind(name.clone(), ty.clone(), false, operand.1.clone());
-                    let id = binding.id;
-                    statements.push(HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Let(binding, Some(value)),
-                        span: operand.1.clone(),
-                    });
-                    refs.push((name, id, ty, operand.1.clone(), rendering));
-                }
-                let reference = |ctx: &mut Self, index: usize| {
-                    let (name, id, ty, operand_span, _) = &refs[index];
-                    ctx.make_binding_ref(
-                        name.clone(),
-                        *id,
-                        ty.clone(),
-                        IntentKind::Read,
-                        operand_span.clone(),
-                    )
-                };
-                let left_ref = reference(self, 0);
-                let right_ref = reference(self, 1);
-                let comparison_key = self.mk_key(condition_span);
-                let comparison = if let Some(dispatch) =
-                    self.user_comparison_dispatch.get(&comparison_key).cloned()
-                {
-                    self.lower_user_comparison_dispatch(
-                        &dispatch,
-                        *op,
-                        left_ref,
-                        right_ref,
-                        condition_span.clone(),
-                    )
-                } else {
-                    self.make_expr(
-                        HirExprKind::Binary {
-                            op: *op,
-                            left: Box::new(left_ref),
-                            right: Box::new(right_ref),
-                        },
-                        ResolvedTy::Bool,
-                        IntentKind::Read,
-                        condition_span.clone(),
-                    )
-                };
-                let rendered = [0, 1].map(|index| {
-                    let value = reference(self, index);
-                    let rendering = refs[index].4.clone();
-                    self.render_assertion_operand(value, rendering.as_ref(), span)
-                });
-                operands = Some(rendered);
+        let mut operands_rendered = None;
+        let holds = match comparison {
+            Some((operands, op)) if self.defer_body_depth == 0 => {
+                let (comparison, rendered) = self.bind_compared_operands(
+                    operands,
+                    op,
+                    condition_span,
+                    span,
+                    &mut statements,
+                );
+                operands_rendered = Some(rendered);
                 comparison
             }
             _ => self.lower_expr(condition, IntentKind::Read),
         };
 
+        let report = self.assertion_report(&text, message, operands_rendered, span);
+        let guard = self.assertion_guard(holds, report, span);
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(guard),
+            span: span.clone(),
+        });
+        self.pop_scope();
+
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements,
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: span.clone(),
+            }),
+            ResolvedTy::Unit,
+        )
+    }
+
+    /// Bind both compared operands once, left then right, and rebuild the
+    /// comparison from the bindings through the same user-impl or structural
+    /// path a written comparison takes. Returns the comparison and both
+    /// operands rendered for the report.
+    fn bind_compared_operands(
+        &mut self,
+        operands: [&Spanned<Expr>; 2],
+        op: BinaryOp,
+        condition_span: &Span,
+        span: &Span,
+        statements: &mut Vec<HirStmt>,
+    ) -> (HirExpr, [HirExpr; 2]) {
+        let mut refs = Vec::with_capacity(2);
+        for (role, operand) in ["left", "right"].into_iter().zip(operands) {
+            let operand_key = self.mk_key(&operand.1);
+            let rendering = self
+                .unrendered_assertion_operands
+                .contains(&operand_key)
+                .then(|| self.expr_types.get(&operand_key).cloned())
+                .flatten();
+            let value = self.lower_expr(operand, IntentKind::Read);
+            let ty = value.ty.clone();
+            let name = format!("__hew_assert_{role}_{}", self.ids.binding().0);
+            let binding = self.bind(name.clone(), ty.clone(), false, operand.1.clone());
+            let id = binding.id;
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(binding, Some(value)),
+                span: operand.1.clone(),
+            });
+            refs.push((name, id, ty, operand.1.clone(), rendering));
+        }
+        let reference = |ctx: &mut Self, index: usize| {
+            let (name, id, ty, operand_span, _) = &refs[index];
+            ctx.make_binding_ref(
+                name.clone(),
+                *id,
+                ty.clone(),
+                IntentKind::Read,
+                operand_span.clone(),
+            )
+        };
+        let left_ref = reference(self, 0);
+        let right_ref = reference(self, 1);
+        let comparison_key = self.mk_key(condition_span);
+        let comparison =
+            if let Some(dispatch) = self.user_comparison_dispatch.get(&comparison_key).cloned() {
+                self.lower_user_comparison_dispatch(
+                    &dispatch,
+                    op,
+                    left_ref,
+                    right_ref,
+                    condition_span.clone(),
+                )
+            } else {
+                self.make_expr(
+                    HirExprKind::Binary {
+                        op,
+                        left: Box::new(left_ref),
+                        right: Box::new(right_ref),
+                    },
+                    ResolvedTy::Bool,
+                    IntentKind::Read,
+                    condition_span.clone(),
+                )
+            };
+        let rendered = [0, 1].map(|index| {
+            let value = reference(self, index);
+            let rendering = refs[index].4.clone();
+            self.render_assertion_operand(value, rendering.as_ref(), span)
+        });
+        (comparison, rendered)
+    }
+
+    /// The failure report: the condition text, the message on the failure
+    /// branch, and the rendered operands of a comparison.
+    fn assertion_report(
+        &mut self,
+        text: &str,
+        message: Option<&Spanned<Expr>>,
+        operands: Option<[HirExpr; 2]>,
+        span: &Span,
+    ) -> HirExpr {
         let mut report =
             self.build_string_literal_expr(format!("assertion failed: {text}"), span.clone());
         if let Some(message) = message {
@@ -743,6 +785,11 @@ impl LowerCtx {
                     self.build_catalog_call("string_concat", vec![report, rendered], span.clone());
             }
         }
+        report
+    }
+
+    /// `if !holds { panic(report) }`.
+    fn assertion_guard(&mut self, holds: HirExpr, report: HirExpr, span: &Span) -> HirExpr {
         let panic_call = self.build_catalog_call("panic", vec![report], span.clone());
         let then_scope = self.ids.scope();
         let then_block = HirExpr {
@@ -770,7 +817,7 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let guard = self.make_expr(
+        self.make_expr(
             HirExprKind::If {
                 condition: Box::new(fails),
                 then_expr: Box::new(then_block),
@@ -779,24 +826,6 @@ impl LowerCtx {
             ResolvedTy::Unit,
             IntentKind::Read,
             span.clone(),
-        );
-        statements.push(HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Expr(guard),
-            span: span.clone(),
-        });
-        self.pop_scope();
-
-        (
-            HirExprKind::Block(HirBlock {
-                node: self.ids.node(),
-                scope: block_scope,
-                statements,
-                tail: None,
-                ty: ResolvedTy::Unit,
-                span: span.clone(),
-            }),
-            ResolvedTy::Unit,
         )
     }
 
@@ -812,6 +841,30 @@ impl LowerCtx {
         match unrendered {
             Some(ty) => {
                 self.build_string_literal_expr(format!("<{}>", ty.user_facing()), span.clone())
+            }
+            // A string already is its rendering, and a scalar renders
+            // through its `to_string_*` builtin as it does everywhere.
+            None if value.ty == ResolvedTy::String => value,
+            None if matches!(
+                value.ty,
+                ResolvedTy::I8
+                    | ResolvedTy::I16
+                    | ResolvedTy::I32
+                    | ResolvedTy::I64
+                    | ResolvedTy::U8
+                    | ResolvedTy::U16
+                    | ResolvedTy::U32
+                    | ResolvedTy::U64
+                    | ResolvedTy::Isize
+                    | ResolvedTy::Usize
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Bool
+                    | ResolvedTy::Char
+            ) =>
+            {
+                let ty = value.ty.clone();
+                self.lower_scalar_display(value, &ty, span.clone())
             }
             None => self.build_structural_format_call(value, span.clone()),
         }

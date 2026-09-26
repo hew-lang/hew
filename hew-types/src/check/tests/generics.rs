@@ -5073,7 +5073,8 @@ fn display_is_satisfied_only_where_an_impl_exists() {
         );
     }
 
-    for unrenderable in ["println([1, 2])"] {
+    {
+        let unrenderable = "println([1, 2])";
         let output = check_source(&format!("fn main() {{ {unrenderable}; }}"));
         let hit = output
             .errors

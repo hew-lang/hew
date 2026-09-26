@@ -444,14 +444,10 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
     let mut checker = Checker::new(test_registry());
     checker.register_builtins();
 
-    // The assertions render both operands, so they carry Display like the
-    // printing builtins, plus the Eq their comparison needs.
     for (name, bounds) in [
         ("print", vec!["Display".to_string()]),
         ("println", vec!["Display".to_string()]),
         ("to_string", vec!["Display".to_string()]),
-        ("assert_eq", vec!["Eq".to_string(), "Display".to_string()]),
-        ("assert_ne", vec!["Eq".to_string(), "Display".to_string()]),
     ] {
         let sig = checker
             .fn_sigs
@@ -530,16 +526,17 @@ fn equality_assertions_reject_a_type_without_eq() {
     );
 
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-    let bounds_errors: Vec<_> = errors
+    let refused: Vec<_> = errors
         .iter()
         .filter(|error| {
-            error.kind == TypeErrorKind::BoundsNotSatisfied && error.message.contains("Eq")
+            error.kind == TypeErrorKind::InvalidOperation
+                && error.message.contains("no selected Eq implementation")
         })
         .collect();
     assert_eq!(
-        bounds_errors.len(),
+        refused.len(),
         2,
-        "assert_eq/assert_ne should reject a Display type with no equality: {errors:?}"
+        "both assertion forms should refuse a comparison with no equality: {errors:?}"
     );
 }
 

@@ -1911,11 +1911,20 @@ non-declarable = [
 # reason paragraph makes that authenticated. The gate enforces that directly.
 [sys-lane-closure.authenticated-edges]
 
+"drain_poll -> run_to_quiescence" = """
+On the single-thread driver (always on wasm32, selected natively for \
+deterministic runs) the exit and shutdown drains have no worker to wait for: \
+where the threaded runtime sleeps while workers finish queued work, the \
+exiting thread runs that work itself. It is the driver counterpart of \
+`worker_loop` finishing the same queue during shutdown, and gives the stable \
+symbol that exits no sys-lane capability beyond what exiting already drains."""
+
 "wait -> step" = """
-The wasm32 readiness latch is the process driver. With no worker thread to \
-satisfy it, `wake::blocking::Readiness::wait` advances the process itself: it \
-ticks the timer wheel and runs one queued activation, which is how an actor \
-gets to dispatch at all on that target. The edge is therefore the wasm32 \
+On the single-thread driver (always on wasm32, selected natively for \
+deterministic runs) the readiness latch is the process driver. With no worker \
+thread to satisfy it, `wake::blocking::Readiness::wait` advances the process \
+itself: it ticks the timer wheel and runs one ready participant, which is how \
+an actor gets to dispatch at all there. The edge is therefore the driver \
 counterpart of the native `worker_loop` turning the same crank, not a stable \
 symbol acquiring a sys-lane capability - every caller in the reported closure \
 reaches it by blocking, and blocking is what hands the process back to the \
@@ -1925,7 +1934,8 @@ which calls nothing of the sort."""
 "wait_for_peer -> step" = """
 Same edge as `wait -> step`, for a caller whose condition lives in its own \
 lock rather than in a readiness latch: a producer blocked on a full pipe ring \
-re-checks the ring, and on wasm32 the only thing that can drain it is the \
+re-checks the ring, and on the single-thread driver the only thing that can \
+drain it is the \
 consumer the process driver runs. Releasing the lock and stepping the driver \
 is what native code gets from a worker thread plus `Condvar::wait`; it gives \
 the blocked producer no sys-lane capability it did not already reach by \

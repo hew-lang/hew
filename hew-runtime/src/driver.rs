@@ -217,9 +217,7 @@ impl SplitMix64 {
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         z ^= z >> 31;
-        #[expect(clippy::cast_possible_truncation, reason = "the high 32 bits")]
-        let high = (z >> 32) as u32;
-        high
+        u32::try_from(z >> 32).expect("the high 32 bits fit")
     }
 
     fn next_index(&mut self, len: usize) -> usize {
@@ -337,7 +335,7 @@ fn pick() -> Option<Participant> {
     participant
 }
 
-fn run(participant: Participant) {
+fn run_participant(participant: Participant) {
     match participant {
         Participant::Actor(actor) => activate_queued_actor(actor),
         #[cfg(not(target_arch = "wasm32"))]
@@ -406,7 +404,7 @@ fn fail(reason: &str) -> ! {
 /// resume: that is a deadlock, and the run fails closed at once.
 pub(crate) fn step() {
     if let Some(participant) = pick() {
-        run(participant);
+        run_participant(participant);
         return;
     }
     if fire_due_timers() > 0 || advance_to_next_timer() {
@@ -441,7 +439,7 @@ fn wait_for_host() {}
 pub(crate) fn run_to_quiescence() {
     loop {
         if let Some(participant) = pick() {
-            run(participant);
+            run_participant(participant);
             continue;
         }
         if fire_due_timers() == 0 && !has_queued_work() {

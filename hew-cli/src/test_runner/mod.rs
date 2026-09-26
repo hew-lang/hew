@@ -374,7 +374,7 @@ mod partition_tests {
             ignored: false,
             should_panic: false,
             serial: false,
-            real_time: false,
+            clock: crate::test_runner::discovery::TestClock::Deterministic,
         };
         assert_eq!(
             test_identity(&test, Path::new("/repo")),

@@ -23,9 +23,18 @@ pub struct TestCase {
     pub should_panic: bool,
     /// Whether the test must run exclusively with other serial tests.
     pub serial: bool,
-    /// Whether the test runs on host threads and the host clock (`#[real_time]`)
-    /// instead of the deterministic driver.
-    pub real_time: bool,
+    /// Where the test runs: the deterministic driver, or host threads and the
+    /// host clock for a `#[real_time]` test.
+    pub clock: TestClock,
+}
+
+/// The runtime a test executes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestClock {
+    /// The single-thread driver with a seeded schedule and a virtual clock.
+    Deterministic,
+    /// The threaded scheduler and the host clock (`#[real_time]`).
+    RealTime,
 }
 
 /// The result of inspecting a single source file for tests.
@@ -64,7 +73,11 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
                 let ignored = f.attributes.iter().any(|a| a.name == "ignore");
                 let should_panic = f.attributes.iter().any(|a| a.name == "should_panic");
                 let serial = f.attributes.iter().any(|a| a.name == "serial");
-                let real_time = f.attributes.iter().any(|a| a.name == "real_time");
+                let clock = if f.attributes.iter().any(|a| a.name == "real_time") {
+                    TestClock::RealTime
+                } else {
+                    TestClock::Deterministic
+                };
                 tests.push(TestCase {
                     name: f.name.to_string(),
                     file: file.to_string(),
@@ -79,7 +92,7 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
                     ignored,
                     should_panic,
                     serial,
-                    real_time,
+                    clock,
                 });
             }
         }

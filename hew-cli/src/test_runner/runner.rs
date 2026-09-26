@@ -3,6 +3,7 @@
 use super::discovery::TestCase;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -294,7 +295,7 @@ fn explored_seed(base: u64, index: u32) -> u64 {
 /// then the explored `random` schedules. A `#[real_time]` test runs once on
 /// the threaded runtime.
 fn executions(test: &TestCase, options: &TestRunOptions<'_>) -> Vec<Execution> {
-    if test.real_time {
+    if test.clock == crate::test_runner::discovery::TestClock::RealTime {
         return vec![Execution { driver: None }];
     }
     let schedules = options.schedules;
@@ -612,18 +613,20 @@ fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult 
         Some((schedule, seed)) => {
             let mut message = failure.message.trim_end().to_string();
             if runs.len() > 1 {
-                message.push_str(&format!(
+                let _ = write!(
+                    message,
                     "\nfailed on {failed_runs} of {} schedules",
                     runs.len()
-                ));
+                );
             }
-            message.push_str(&format!(
+            let _ = write!(
+                message,
                 "\nschedule {}, seed {seed:#x}\nreproduce: hew test {} --filter {} --schedule {} --seed {seed:#x}",
                 schedule.as_str(),
                 test.file,
                 test.name,
                 schedule.as_str(),
-            ));
+            );
             message
         }
     };
@@ -679,12 +682,12 @@ fn with_operand_diff(report: String) -> String {
             i += 1;
             j += 1;
             format!("\n    {}", left[i - 1])
-        } else if j < right.len() && (i == left.len() || common[i][j + 1] >= common[i + 1][j]) {
-            j += 1;
-            format!("\n  + {}", right[j - 1])
-        } else {
+        } else if i < left.len() && (j == right.len() || common[i + 1][j] >= common[i][j + 1]) {
             i += 1;
             format!("\n  - {}", left[i - 1])
+        } else {
+            j += 1;
+            format!("\n  + {}", right[j - 1])
         };
         diff.push_str(line.trim_end());
     }
@@ -1225,7 +1228,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
-                real_time: false,
+                clock: crate::test_runner::discovery::TestClock::Deterministic,
             },
             TestCase {
                 name: "beta".into(),
@@ -1240,7 +1243,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
-                real_time: false,
+                clock: crate::test_runner::discovery::TestClock::Deterministic,
             },
             TestCase {
                 name: "gamma".into(),
@@ -1255,7 +1258,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
-                real_time: false,
+                clock: crate::test_runner::discovery::TestClock::Deterministic,
             },
         ];
 

@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 mod actor_codec;
 mod actor_delivery;
 pub(crate) mod admissibility;
-mod assertion;
+pub(crate) mod assertion;
 mod branch_join;
 mod callables;
 mod calls;

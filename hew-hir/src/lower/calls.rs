@@ -950,7 +950,24 @@ impl LowerCtx {
                     endpoint: hew_types::stdlib_catalog_identity::ASSERT.to_string(),
                 })
             {
-                let (kind, ty) = self.lower_assertion(args, &span);
+                // A comparison condition reports both operands.
+                let comparison = match args.first().map(|arg| &arg.expr().0) {
+                    Some(Expr::Binary { left, op, right })
+                        if matches!(
+                            op,
+                            BinaryOp::Equal
+                                | BinaryOp::NotEqual
+                                | BinaryOp::Less
+                                | BinaryOp::LessEqual
+                                | BinaryOp::Greater
+                                | BinaryOp::GreaterEqual
+                        ) =>
+                    {
+                        Some(([&**left, &**right], *op))
+                    }
+                    _ => None,
+                };
+                let (kind, ty) = self.lower_assertion(args, comparison, &span);
                 return Err(Box::new(HirExpr {
                     node: self.ids.node(),
                     site,

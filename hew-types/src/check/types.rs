@@ -633,6 +633,8 @@ pub struct TypeCheckOutput {
     /// Exact possible callees for an accepted indirect call. Unknown origins
     /// remain explicit even when other branches have known candidates.
     pub indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
+    /// Exact actual-to-formal callable flow at each checked direct call.
+    pub callable_argument_flows: HashMap<SpanKey, Vec<CallableArgumentFlow>>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
@@ -1073,6 +1075,23 @@ pub enum CallableCandidate {
     Declaration(crate::DefId),
     /// A closure literal in the checked source module.
     Closure(SpanKey),
+    /// A checker-bound formal supplied by a caller at the selected call site.
+    Formal(TypeBindingId),
+}
+
+/// One checked actual-to-formal edge at a selected direct call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableArgumentFlow {
+    pub callee: crate::DefId,
+    pub formal: TypeBindingId,
+    pub candidates: IndirectCallCandidates,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingCallableArguments {
+    pub(super) callee: crate::DefId,
+    pub(super) receiver: Option<IndirectCallCandidates>,
+    pub(super) arguments: Vec<IndirectCallCandidates>,
 }
 
 /// Possible indirect callees and whether an opaque source may also arrive.
@@ -1620,6 +1639,7 @@ impl Default for TypeCheckOutput {
             suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
             indirect_call_candidates: HashMap::new(),
+            callable_argument_flows: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_bindings: HashMap::new(),
             trait_defaults: HashMap::new(),
@@ -3296,6 +3316,8 @@ pub struct Checker {
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     pub(super) indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
+    pub(super) callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
@@ -4377,6 +4399,8 @@ impl Checker {
             direct_call_targets: HashMap::new(),
             indirect_call_candidates: HashMap::new(),
             callable_binding_candidates: HashMap::new(),
+            callable_formals: HashMap::new(),
+            pending_callable_arguments: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_bindings: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),

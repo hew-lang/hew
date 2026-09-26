@@ -972,6 +972,7 @@ impl Checker {
                     .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
             }
             self.record_local_resolution(p.name, &p.name_span);
+            self.record_callable_formal_candidate(p.name);
             self.env.set_parameter_consume(
                 p.name.name.as_str(),
                 p.is_consume || (is_receiver && fd.consumes_self),
@@ -988,24 +989,40 @@ impl Checker {
     /// but `FnDecl::name` is bare (e.g. `close`). Using the qualified name prevents
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
-        let body = self
+        let declaration = self
             .checking_declaration
             .or_else(|| self.lookup_declaration(fn_name))
-            .or_else(|| self.impl_method_declaration_ids.get(fn_name).copied())
-            .map(|id| {
-                let creator = super::effects::EffectBody::Declaration(id);
-                if fd.is_generator {
-                    self.effect_graph.bodies.entry(creator).or_default();
-                    super::effects::EffectBody::Generator(id)
-                } else {
-                    creator
-                }
-            });
+            .or_else(|| self.impl_method_declaration_ids.get(fn_name).copied());
+        let body = declaration.map(|id| {
+            let creator = super::effects::EffectBody::Declaration(id);
+            if fd.is_generator {
+                self.effect_graph.bodies.entry(creator).or_default();
+                super::effects::EffectBody::Generator(id)
+            } else {
+                creator
+            }
+        });
         let previous = std::mem::replace(&mut self.effect_graph.current_body, body.clone());
         if let Some(body) = body {
             self.effect_graph.bodies.entry(body).or_default();
         }
         self.check_function_body_as(fd, fn_name);
+        if let Some(declaration) = declaration {
+            let formals = fd
+                .params
+                .iter()
+                .map(|param| {
+                    let key = SpanKey::in_module(&param.name_span, self.current_module_idx);
+                    match self.scopes.resolutions().get(&key) {
+                        Some(super::scope::Resolution::Local(id)) => Some(*id),
+                        _ => None,
+                    }
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(formals) = formals {
+                self.callable_formals.insert(declaration, formals);
+            }
+        }
         self.effect_graph.current_body = previous;
     }
 

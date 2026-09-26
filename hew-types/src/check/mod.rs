@@ -82,13 +82,13 @@ use self::types::{
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, CallableCandidate, CheckedSelectSource, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
-    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, IndirectCallCandidates,
-    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
-    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    AssignTargetShape, CallableArgumentFlow, CallableCandidate, CheckedSelectSource, Checker,
+    ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind,
+    ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
+    EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType,
+    ExecutionContextReader, ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView,
+    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
     PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
@@ -2794,6 +2794,7 @@ impl Checker {
         // moved out: the output layer uses it for codegen decisions, and it
         // reads the declaration table the output takes next.
         self.ensure_handle_bearing_fresh();
+        let callable_argument_flows = self.finish_callable_argument_flows();
         // The checker keeps its table: post-check queries resolve through it.
         let defs = std::sync::Arc::new(self.defs.clone());
         let resolutions = self.scopes.take_resolutions();
@@ -2873,6 +2874,7 @@ impl Checker {
             builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             indirect_call_candidates: std::mem::take(&mut self.indirect_call_candidates),
+            callable_argument_flows,
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
             trait_bindings: std::mem::take(&mut self.trait_bindings),
             trait_defaults,

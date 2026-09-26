@@ -1,9 +1,13 @@
 //! Checker-owned provenance for function values at indirect calls.
 
 use super::scope::Resolution;
-use super::types::{CallableCandidate, Checker, IndirectCallCandidates, SpanKey};
+use super::types::{
+    CallableArgumentFlow, CallableCandidate, Checker, IndirectCallCandidates,
+    PendingCallableArguments, SpanKey,
+};
+use super::{CallTarget, MethodCallRewrite};
 use crate::DeclarationKind;
-use hew_parser::ast::{Expr, Ident, Span, Spanned};
+use hew_parser::ast::{CallArg, Expr, Ident, Span, Spanned};
 
 impl Checker {
     /// Read the selected declaration or lexical binding at the authored
@@ -145,5 +149,111 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             IndirectCallCandidates::unknown(),
         );
+    }
+
+    /// Parameters retain their own symbolic origin until a selected call
+    /// supplies an actual value. This remains precise through helper-to-helper
+    /// forwarding without globally merging unrelated callers.
+    pub(super) fn record_callable_formal_candidate(&mut self, name: Ident) {
+        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
+            return;
+        };
+        self.callable_binding_candidates.insert(
+            binding.id,
+            IndirectCallCandidates::single(CallableCandidate::Formal(binding.id)),
+        );
+    }
+
+    fn callable_target_declaration(target: &CallTarget) -> Option<crate::DefId> {
+        match target {
+            CallTarget::User(id) | CallTarget::ImplMethod(id) => Some(*id),
+            CallTarget::Extern { declaration, .. } => Some(*declaration),
+            _ => None,
+        }
+    }
+
+    /// Capture authored actuals after checking selected this call's exact
+    /// declaration. Formal IDs may be registered later in source order; the
+    /// completed table joins them at the output boundary.
+    pub(super) fn record_call_argument_sources(&mut self, expr: &Expr, span: &Span) {
+        let (receiver, args): (Option<&Spanned<Expr>>, &[CallArg]) = match expr {
+            Expr::Call { args, .. } => (None, args),
+            Expr::MethodCall { receiver, args, .. } => (Some(receiver), args),
+            _ => return,
+        };
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let target = self
+            .method_call_rewrites
+            .get(&key)
+            .and_then(|rewrite| match rewrite {
+                MethodCallRewrite::RewriteToFunction { target, .. }
+                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+                _ => None,
+            })
+            .or_else(|| self.direct_call_targets.get(&key));
+        let Some(callee) = target.and_then(Self::callable_target_declaration) else {
+            return;
+        };
+        let receiver = receiver.map(|value| self.callable_candidates_for_expr(&value.0, &value.1));
+        let arguments = args
+            .iter()
+            .map(|arg| {
+                let (value, value_span) = arg.expr();
+                self.callable_candidates_for_expr(value, value_span)
+            })
+            .collect();
+        self.pending_callable_arguments.insert(
+            key,
+            PendingCallableArguments {
+                callee,
+                receiver,
+                arguments,
+            },
+        );
+    }
+
+    pub(super) fn finish_callable_argument_flows(
+        &mut self,
+    ) -> std::collections::HashMap<SpanKey, Vec<CallableArgumentFlow>> {
+        let mut flows = std::collections::HashMap::new();
+        for (site, pending) in std::mem::take(&mut self.pending_callable_arguments) {
+            let Some(formals) = self.callable_formals.get(&pending.callee) else {
+                continue;
+            };
+            let receiver_offset = usize::from(
+                pending.receiver.is_some() && formals.len() == pending.arguments.len() + 1,
+            );
+            if formals.len() != pending.arguments.len() + receiver_offset {
+                continue;
+            }
+            let mut actuals = Vec::with_capacity(formals.len());
+            if receiver_offset == 1 {
+                actuals.push(CallableArgumentFlow {
+                    callee: pending.callee,
+                    formal: formals[0],
+                    candidates: pending
+                        .receiver
+                        .expect("receiver offset requires a receiver"),
+                });
+            }
+            let slots = self.call_argument_slots.get(&site);
+            for (index, candidates) in pending.arguments.into_iter().enumerate() {
+                let slot = slots.map_or(index, |slots| slots[index]) + receiver_offset;
+                let Some(formal) = formals.get(slot) else {
+                    actuals.clear();
+                    break;
+                };
+                actuals.push(CallableArgumentFlow {
+                    callee: pending.callee,
+                    formal: *formal,
+                    candidates,
+                });
+            }
+            if !actuals.is_empty() {
+                flows.insert(site, actuals);
+            }
+        }
+        flows
     }
 }

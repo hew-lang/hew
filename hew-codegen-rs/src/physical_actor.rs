@@ -519,12 +519,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .fn_type(&[ptr.into(), i32_ty.into(), ptr.into()], false),
         )?;
         for actor in &self.module.actors {
-            let ResolvedTy::Named { name, .. } = &actor.handle_ty else {
+            let ResolvedTy::Named { head, .. } = &actor.handle_ty else {
                 return Err(CodegenError::FailClosed(format!(
                     "actor {} has a handle type without a name: {}",
                     actor.id.0, actor.handle_ty
                 )));
             };
+            let name = head.registry_key();
             let dispatch = self
                 .llvm
                 .get_function(&symbol(actor.id, "dispatch"))

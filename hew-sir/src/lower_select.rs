@@ -115,7 +115,6 @@ impl Builder<'_, '_> {
                             stream: operand,
                             loans: source_loans,
                             output: ResolvedTy::named_builtin(
-                                "Option",
                                 hew_types::BuiltinType::Option,
                                 vec![element],
                             ),

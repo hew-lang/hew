@@ -135,11 +135,7 @@ fn bytes_is_hash_and_eq_at_type_level() {
 fn record_of_hash_eligible_primitives_is_hash_and_eq() {
     let mut reg = r();
     reg.register_type("Point".into(), vec![Ty::I64, Ty::I64]);
-    let point = Ty::Named {
-        name: "Point".into(),
-        args: vec![],
-        builtin: None,
-    };
+    let point = Ty::named_for_test("Point", vec![]);
     assert_hash_eq_pos(&reg, &point, "record<i64, i64>");
 }
 
@@ -147,11 +143,7 @@ fn record_of_hash_eligible_primitives_is_hash_and_eq() {
 fn record_containing_float_is_hash_and_eq() {
     let mut reg = r();
     reg.register_type("FPoint".into(), vec![Ty::F64, Ty::F64]);
-    let fpoint = Ty::Named {
-        name: "FPoint".into(),
-        args: vec![],
-        builtin: None,
-    };
+    let fpoint = Ty::named_for_test("FPoint", vec![]);
     // Float fields compare and hash bitwise, so the record is Hash + Eq.
     assert_hash_eq_pos(&reg, &fpoint, "record<f64, f64>");
 }

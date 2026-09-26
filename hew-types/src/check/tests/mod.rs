@@ -344,7 +344,7 @@ pub(super) fn make_checker_with_trait(
     };
 
     let info = Checker::trait_info_from_decl(&td, None, 0);
-    checker.trait_defs.insert(trait_name.to_string(), info);
+    checker.test_trait_def(trait_name, info);
     checker
 }
 
@@ -525,6 +525,7 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
     let ty = Ty::TraitObject {
         traits: vec![crate::ty::TraitObjectBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![Ty::Var(original)],
             assoc_bindings: vec![],
         }],
@@ -592,4 +593,40 @@ fn cancellation_token_has_no_cancel_method() {
         "CancellationToken.cancel() must remain out of scope: {:#?}",
         output.errors
     );
+}
+
+impl Checker {
+    /// A declaration row in this checker's own table, for tests that register
+    /// definitions by hand.
+    pub(super) fn test_declaration(&mut self, path: &str) -> crate::NominalId {
+        crate::NominalId::from_minted_declaration(self.defs.mint_for_test(path))
+    }
+
+    /// File a hand-built signature under a fresh declaration row spelled
+    /// `key`.
+    pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {
+        let declaration = self.defs.mint_for_test(key);
+        self.insert_fn_sig(key, declaration, sig);
+    }
+
+    /// File a hand-built trait under a fresh declaration row spelled `key`.
+    pub(super) fn test_trait_def(&mut self, key: &str, info: TraitInfo) {
+        let declaration = self.defs.mint_for_test(key);
+        self.trait_def_keys.insert(key.to_string(), declaration);
+        self.trait_defs.insert(declaration, info);
+    }
+
+    /// The named type of a hand-registered declaration (see
+    /// [`Self::test_declaration`]); a path nothing declared is a fixture
+    /// nominal no definition answers to.
+    pub(super) fn test_named(&self, path: &str, args: Vec<Ty>) -> Ty {
+        let id = self
+            .defs
+            .lookup_nominal(path)
+            .unwrap_or_else(|| crate::NominalId::for_test(path));
+        Ty::named_head(
+            crate::TypeHead::Nominal(crate::NominalHead::new(id, path)),
+            args,
+        )
+    }
 }

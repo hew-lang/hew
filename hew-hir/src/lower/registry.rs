@@ -89,20 +89,14 @@ impl LowerCtx {
                 return_ty: ResolvedTy::Unit,
                 param_tys: vec![
                     ResolvedTy::Named {
-                        name: hew_types::BuiltinType::RemotePid
-                            .canonical_name()
-                            .to_string(),
                         args: vec![ResolvedTy::Unit],
-                        builtin: Some(hew_types::BuiltinType::RemotePid),
+                        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid),
                         is_opaque: false,
                     },
-                    // PartitionPolicy is a stdlib enum (not a BuiltinType); a
-                    // Named ref with no builtin tag is sufficient for arity here —
-                    // the checker validates the precise type at the call site.
+                    // PartitionPolicy is the stdlib enum the checker also names.
                     ResolvedTy::Named {
-                        name: "PartitionPolicy".to_string(),
+                        head: hew_types::KnownDecl::PartitionPolicy.head(),
                         args: vec![],
-                        builtin: None,
                         is_opaque: false,
                     },
                 ],
@@ -137,14 +131,11 @@ impl LowerCtx {
             FnEntry {
                 id: ItemId(u32::MAX / 2),
                 return_ty: ResolvedTy::Unit,
-                param_tys: vec![ResolvedTy::Named {
-                    name: hew_types::BuiltinType::ActorHandle
-                        .canonical_name()
-                        .to_string(),
-                    args: vec![ResolvedTy::Unit],
-                    builtin: Some(hew_types::BuiltinType::ActorHandle),
-                    is_opaque: false,
-                }],
+                param_tys: vec![ResolvedTy::named_actor_path(
+                    &self.defs,
+                    hew_types::BuiltinType::ActorHandle.canonical_name(),
+                    vec![ResolvedTy::Unit],
+                )],
                 linkage: None,
                 type_params: Vec::new(),
                 builtin_family: Some(RuntimeCallFamily::SupervisorStop),
@@ -178,14 +169,11 @@ impl LowerCtx {
                 FnEntry {
                     id,
                     return_ty: ResolvedTy::Unit,
-                    param_tys: vec![ResolvedTy::Named {
-                        name: hew_types::BuiltinType::ActorHandle
-                            .canonical_name()
-                            .to_string(),
-                        args: vec![ResolvedTy::Unit],
-                        builtin: Some(hew_types::BuiltinType::ActorHandle),
-                        is_opaque: false,
-                    }],
+                    param_tys: vec![ResolvedTy::named_actor_path(
+                        &self.defs,
+                        hew_types::BuiltinType::ActorHandle.canonical_name(),
+                        vec![ResolvedTy::Unit],
+                    )],
                     linkage: None,
                     type_params: Vec::new(),
                     builtin_family: Some(family),

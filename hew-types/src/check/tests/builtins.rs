@@ -81,8 +81,8 @@ fn test_builtin_registration() {
     checker.register_builtins();
 
     // Check that println_int is registered
-    assert!(checker.fn_sigs.contains_key("println_int"));
-    let sig = &checker.fn_sigs["println_int"];
+    assert!(checker.sigs().contains("println_int"));
+    let sig = &checker.sigs()["println_int"];
     assert_eq!(sig.params.len(), 1);
     assert_eq!(sig.params[0], Ty::I64);
     assert_eq!(sig.return_type, Ty::Unit);
@@ -191,7 +191,7 @@ fn test_receive_gen_fn_returns_stream() {
     let output = checker.check_program(&program);
     assert!(output.errors.is_empty());
     assert_eq!(
-        output.fn_sigs["NumberStream::numbers"].return_type,
+        output.sigs()["NumberStream::numbers"].return_type,
         Ty::stream(Ty::I64)
     );
 }
@@ -462,7 +462,7 @@ fn test_stream_annotation_resolves_to_stream_type() {
     // The body is empty (returns unit) so there will be a return-type mismatch error,
     // but fn_sigs is populated in pass 1 (before body checking), so the signature
     // should already reflect the resolved return type.
-    assert_eq!(output.fn_sigs["foo"].return_type, Ty::stream(Ty::I32));
+    assert_eq!(output.sigs()["foo"].return_type, Ty::stream(Ty::I32));
 }
 
 #[test]
@@ -586,7 +586,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
     let output = checker.check_program(&program);
     // Stream<i32> must still resolve to the built-in stream type.
     assert_eq!(
-        output.fn_sigs["baz"].return_type,
+        output.sigs()["baz"].return_type,
         Ty::stream(Ty::I32),
         "Stream<i32> (canonical name) must resolve to Ty::stream(Ty::I32)"
     );
@@ -619,30 +619,24 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
     let output = checker.check_program(&result.program);
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     for ty in [
-        &output.fn_sigs["stream_id"].params[0],
-        &output.fn_sigs["stream_id"].return_type,
+        &output.sigs()["stream_id"].params[0],
+        &output.sigs()["stream_id"].return_type,
     ] {
         assert!(
             matches!(
                 ty,
-                Ty::Named {
-                    name,
-                    args,
-                    builtin: Some(crate::BuiltinType::Stream),
-                } if name == "Stream" && args == &[Ty::I64]
+                Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Stream), args }
+                    if args == &[Ty::I64]
             ),
             "got: {ty:?}",
         );
     }
-    let sink = &output.fn_sigs["close_sink"].params[0];
+    let sink = &output.sigs()["close_sink"].params[0];
     assert!(
         matches!(
             sink,
-            Ty::Named {
-                name,
-                builtin: Some(crate::BuiltinType::Sink),
-                args,
-            } if name == "Sink" && args == &[Ty::String]
+            Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Sink), args }
+                if args == &[Ty::String]
         ),
         "a qualified builtin spelling must keep its builtin identity and element: {sink:?}"
     );

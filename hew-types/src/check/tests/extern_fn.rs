@@ -32,7 +32,7 @@ fn extern_borrow_signature_registers_exact_types() {
         "#,
     );
     assert!(output.errors.is_empty(), "errors: {:#?}", output.errors);
-    let sig = output.fn_sigs.get("read").expect("extern signature");
+    let sig = output.sigs().get("read").expect("extern signature");
     let borrow_i64 = Ty::Borrow {
         pointee: Box::new(Ty::I64),
     };
@@ -287,7 +287,7 @@ fn injected_ordinary_function_borrow_fails_closed() {
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert_one_borrow_outside_extern(&output.errors, borrow_span);
     assert!(output
-        .fn_sigs
+        .sigs()
         .get("ordinary")
         .is_none_or(|sig| { sig.params.iter().all(|ty| !matches!(ty, Ty::Borrow { .. })) }));
 }
@@ -305,7 +305,7 @@ fn injected_ordinary_field_and_alias_borrows_fail_closed() {
     inject_borrow(ty, field_span.clone());
     let field_output = Checker::new(ModuleRegistry::new(vec![])).check_program(&field_program);
     assert_one_borrow_outside_extern(&field_output.errors, field_span);
-    assert!(field_output.type_defs.get("Holder").is_none_or(|def| {
+    assert!(field_output.type_def_at_path("Holder").is_none_or(|def| {
         def.fields
             .get("value")
             .is_none_or(|ty| !matches!(ty, Ty::Borrow { .. }))
@@ -343,11 +343,11 @@ fn checker_extern_context_does_not_leak_to_ordinary_signature() {
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert_one_borrow_outside_extern(&output.errors, borrow_span);
     assert!(matches!(
-        output.fn_sigs["get"].return_type,
+        output.sigs()["get"].return_type,
         Ty::Borrow { .. }
     ));
     assert!(output
-        .fn_sigs
+        .sigs()
         .get("ordinary")
         .is_none_or(|sig| { !matches!(sig.return_type, Ty::Borrow { .. }) }));
 }
@@ -367,7 +367,7 @@ fn extern_symbol_on_extern_c_fn_populates_fn_sig_spec() {
         "#,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("vec_push")
         .expect("extern fn must be registered");
     let spec = sig
@@ -531,7 +531,7 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
         "#,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("unrelated")
         .expect("extern fn must be registered");
     assert!(
@@ -564,7 +564,7 @@ fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
         output.errors
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Holder::cloned")
         .expect("impl method must be in fn_sigs");
     let spec = sig
@@ -578,8 +578,7 @@ fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
     );
 
     let td = output
-        .type_defs
-        .get("Holder")
+        .type_def_at_path("Holder")
         .expect("Holder type must be registered");
     let method_sig = td
         .methods
@@ -630,7 +629,7 @@ fn malformed_extern_symbol_template_emits_invalid_template_diagnostic() {
     // and route through the legacy path (or surface an
     // unresolved-symbol diagnostic later).
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("bad")
         .expect("extern fn must still be registered for downstream resolution");
     assert!(

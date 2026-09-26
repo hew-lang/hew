@@ -53,7 +53,7 @@ impl Checker {
             if matches!(
                 ty,
                 Ty::Named {
-                    builtin: Some(BuiltinType::Vec),
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
                     ..
                 }
             ) {
@@ -644,6 +644,12 @@ impl Checker {
         // (which are themselves tail-flowing), and the default arm consults
         // `tail_ok_armed` to perform the actual coercion.
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
+        // A struct literal's written path names its nominal by identity; it
+        // meets the expected type only when both name one declaration.
+        let struct_init_head = match expr {
+            Expr::StructInit { path, .. } => self.resolve_type_path_head(path),
+            _ => None,
+        };
         match (expr, expected) {
             (Expr::ContextVariant(context), _) => {
                 if let Some(result) = self.dispatch_context_builtin_variant(
@@ -833,7 +839,7 @@ impl Checker {
                     right,
                 },
                 Ty::Named {
-                    builtin: Some(BuiltinType::Range),
+                    head: crate::TypeHead::Builtin(BuiltinType::Range),
                     args,
                     ..
                 },
@@ -990,7 +996,7 @@ impl Checker {
             (
                 Expr::Array(elems),
                 Ty::Named {
-                    builtin: Some(BuiltinType::Vec),
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
                     args,
                     ..
                 },
@@ -1066,7 +1072,7 @@ impl Checker {
             (
                 Expr::MapLiteral { entries },
                 Ty::Named {
-                    builtin: Some(BuiltinType::HashMap),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                     args,
                     ..
                 },
@@ -1085,7 +1091,7 @@ impl Checker {
             (
                 Expr::Block(block),
                 Ty::Named {
-                    builtin: Some(BuiltinType::HashMap),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                     ..
                 },
             ) if block.stmts.is_empty() && block.trailing_expr.is_none() => {
@@ -1263,104 +1269,6 @@ impl Checker {
                 actual
             }
 
-            // Module-qualified struct init coercion: a bare construction name
-            // (`Widget { … }`) constrained by a module-qualified expected type
-            // (`widgeti8.Widget`) must resolve its field types from the
-            // QUALIFIED type def, not the bare `type_defs["Widget"]` key — which
-            // is last-write-wins across two packages that each export `Widget`.
-            // Two same-bare-name types from different modules are distinct
-            // identities; pinning the construction to the expected module's def
-            // keeps each `Widget`'s field layout its own (the i8 vs i64
-            // collision). The struct-init site records the QUALIFIED name so the
-            // qualifier survives into HIR/MIR layout keying. Only fires when the
-            // expected name is qualified (`module.Type`), shares the bare
-            // construction name's short form, and is a non-generic struct/record
-            // (generics route through the arms below); single-module programs
-            // never reach it (bare construction == bare expected).
-            (
-                Expr::StructInit {
-                    path: named_path,
-                    fields,
-                    type_args,
-                    base,
-                },
-                Ty::Named {
-                    name: expected_name,
-                    args: expected_args,
-                    ..
-                },
-            ) if named_path.to_string() != *expected_name // TRANSITION(P1): deleted by A1 commit 2
-                && expected_args.is_empty()
-                && !named_path.to_string().contains('.')
-                && !named_path.to_string().contains("::")
-                && expected_name.contains('.')
-                && crate::short_name(expected_name) == named_path.to_string()
-                && self.lookup_type_def(expected_name).is_some_and(|td| {
-                    td.type_params.is_empty()
-                        && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)
-                }) =>
-            {
-                let actual = self.check_struct_init(
-                    expected_name,
-                    fields,
-                    type_args.as_deref(),
-                    base.as_deref(),
-                    span,
-                );
-                // `check_struct_init` returns the qualified `Named` but does not
-                // record the init site; the synthesize path records via
-                // `synthesize_inner`'s tail, which this arm bypasses. Record the
-                // qualified type so HIR/MIR key the layout by the module
-                // identity, not the bare last-write-wins name.
-                self.record_type(span, &actual);
-                actual
-            }
-
-            // Generic sibling of the arm above: a bare GENERIC construction
-            // (`Holder { … }`) constrained by a module-qualified generic expected
-            // type (`qualshapes.Holder<qualshapes.Box>`). The bare outer name is
-            // legitimate here because the annotation pins the identity, so route
-            // the construction through the QUALIFIED expected name (which carries
-            // a `.` and so bypasses the bare-scope gate in `check_struct_init`)
-            // and let the existing generic-coercion handling below resolve the
-            // field type args from `expected`. Only fires for a generic
-            // struct/record whose short name matches the bare construction name.
-            (
-                Expr::StructInit {
-                    path: named_path,
-                    fields,
-                    type_args,
-                    base,
-                },
-                Ty::Named {
-                    name: expected_name,
-                    args: expected_args,
-                    ..
-                },
-            ) if named_path.to_string() != *expected_name // TRANSITION(P1): deleted by A1 commit 2
-                && !expected_args.is_empty()
-                && !named_path.to_string().contains('.')
-                && !named_path.to_string().contains("::")
-                && expected_name.contains('.')
-                && crate::short_name(expected_name) == named_path.to_string()
-                && self.lookup_type_def(expected_name).is_some_and(|td| {
-                    !td.type_params.is_empty()
-                        && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)
-                }) =>
-            {
-                // Re-dispatch against the same expected type with the qualified
-                // construction name, so the generic-struct coercion arm below
-                // pins the field type args without the bare-name scope gate
-                // rejecting the legitimate annotated construction.
-                let qualified_init = Expr::StructInit {
-                    path: Path::single(Ident::new(expected_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
-                    fields: fields.clone(),
-                    type_args: type_args.clone(),
-                    base: base.clone(),
-                };
-                self.check_against(&qualified_init, span, expected)
-            }
-
             // Struct init coercion: propagate expected type args into field checking.
             //
             // A pipe half is excluded by its builtin discriminator, not by its
@@ -1376,18 +1284,19 @@ impl Checker {
                     ..
                 },
                 Ty::Named {
-                    name: expected_name,
+                    head: expected_head,
                     args: expected_args,
-                    builtin: expected_builtin,
                 },
-            ) if named_path.to_string() == *expected_name // TRANSITION(P1): deleted by A1 commit 2
-                && !expected_builtin.is_some_and(crate::BuiltinType::is_substrate_handle) =>
+            ) if struct_init_head == Some(*expected_head)
+                && !expected_head
+                    .builtin()
+                    .is_some_and(crate::BuiltinType::is_substrate_handle) =>
             {
-                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                    // If the literal carries explicit type args, validate that they agree
-                                                    // with the expected args coming from the binding site.  Conflicting
-                                                    // annotations (`Wrapper<String>` when expected is `Wrapper<int>`) are
-                                                    // rejected here rather than being silently dropped.
+                let name = expected_head.registry_key();
+                // If the literal carries explicit type args, validate that they agree
+                // with the expected args coming from the binding site.  Conflicting
+                // annotations (`Wrapper<String>` when expected is `Wrapper<int>`) are
+                // rejected here rather than being silently dropped.
                 if let Some(explicit_args) = type_args {
                     if explicit_args.len() == expected_args.len() {
                         for (te, expected_arg) in explicit_args.iter().zip(expected_args.iter()) {
@@ -1446,12 +1355,7 @@ impl Checker {
                                 // Still infer any remaining unbound type params
                                 for tp in &td.type_params {
                                     if !type_arg_map.contains_key(tp)
-                                        && *declared_ty
-                                            == (Ty::Named {
-                                                builtin: None,
-                                                name: tp.clone(),
-                                                args: vec![],
-                                            })
+                                        && *declared_ty == (Ty::param(tp))
                                     {
                                         type_arg_map.insert(tp.clone(), actual.clone());
                                     }
@@ -1544,12 +1448,11 @@ impl Checker {
                     ..
                 },
                 Ty::Named {
-                    name: expected_enum_name,
+                    head: expected_head,
                     args: expected_args,
-                    builtin: expected_builtin,
-                    ..
                 },
             ) => {
+                let expected_enum_name = expected_head.registry_key();
                 let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                                                     // Fail-closed: explicit type args on enum variant struct forms are not
                                                     // yet supported in the check_against path.  The expected type already
@@ -1571,9 +1474,8 @@ impl Checker {
                 // `left.Status`). Alias and current-module lexical spellings
                 // are projected by the shared exact variant-owner authority.
                 let expected_nominal = Ty::Named {
-                    name: expected_enum_name.clone(),
+                    head: *expected_head,
                     args: expected_args.clone(),
-                    builtin: *expected_builtin,
                 };
                 let prefix_ok = self.variant_surface_owner_matches(name, &expected_nominal);
 
@@ -1612,12 +1514,7 @@ impl Checker {
                                         // Bind any remaining unbound type params
                                         for tp in &type_params {
                                             if !type_arg_map.contains_key(tp)
-                                                && declared_ty
-                                                    == (Ty::Named {
-                                                        builtin: None,
-                                                        name: tp.clone(),
-                                                        args: vec![],
-                                                    })
+                                                && declared_ty == (Ty::param(tp))
                                             {
                                                 type_arg_map.insert(tp.clone(), actual.clone());
                                             }
@@ -1796,7 +1693,7 @@ impl Checker {
             (
                 Expr::Ident(name),
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::Option),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Option),
                     ..
                 },
             ) if name.name.as_str() == "None" => {
@@ -1807,11 +1704,11 @@ impl Checker {
             (
                 Expr::Ident(name),
                 Ty::Named {
-                    name: expected_type_name,
+                    head: expected_type_head,
                     args: expected_args,
-                    ..
                 },
             ) => {
+                let expected_type_name = expected_type_head.registry_key();
                 // Qualified unit-variant identifier (`SplitMode::SplitWords`)
                 // under a known expected nominal: the expected type's resolved
                 // identity is the resolution authority for its own source-leaf

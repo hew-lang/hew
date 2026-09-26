@@ -29,21 +29,11 @@ impl Checker {
         generic_param_names: &HashMap<u32, String>,
     ) -> Ty {
         match ty {
-            Ty::Var(v) => generic_param_names.get(&v.0).map_or_else(
-                || ty.clone(),
-                |name| Ty::Named {
-                    builtin: None,
-                    name: name.clone(),
-                    args: vec![],
-                },
-            ),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
+            Ty::Var(v) => generic_param_names
+                .get(&v.0)
+                .map_or_else(|| ty.clone(), |name| Ty::param(name)),
+            Ty::Named { head, args } => Ty::Named {
+                head: *head,
                 args: args
                     .iter()
                     .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
@@ -105,6 +95,7 @@ impl Checker {
                     .iter()
                     .map(|bound| crate::ty::TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
                         args: bound
                             .args
                             .iter()
@@ -247,13 +238,17 @@ impl Checker {
 
     pub(super) fn current_type_param_name(&self, ty: &Ty) -> Option<String> {
         let Ty::Named {
-            name,
+            head:
+                head @ (crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_)),
             args,
-            builtin: None,
+            ..
         } = ty
         else {
             return None;
         };
+        let name = head.registry_key();
         if !args.is_empty() {
             return None;
         }
@@ -263,14 +258,14 @@ impl Checker {
             .rev()
             .any(|frame| frame.bounds.contains_key(name))
         {
-            return Some(name.clone());
+            return Some(name.to_string());
         }
         let fn_name = self.current_function.as_ref()?;
-        self.fn_sigs.get(fn_name).and_then(|sig| {
+        self.fn_sig(fn_name).and_then(|sig| {
             sig.type_params
                 .iter()
                 .any(|param_name| param_name == name)
-                .then_some(name.clone())
+                .then(|| name.to_string())
         })
     }
 
@@ -280,7 +275,7 @@ impl Checker {
             names.extend(frame.bounds.keys().cloned());
         }
         if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 names.extend(sig.type_params.iter().cloned());
             }
         }
@@ -303,7 +298,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 for param_name in &sig.type_params {
                     bounds.entry(param_name.clone()).or_insert_with(|| {
                         sig.type_param_bounds
@@ -332,7 +327,14 @@ impl Checker {
         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
             // Preserve the exact top-level user-method dispatch route. Nested
             // user methods are selected recursively by TypeFactService.
-            if let Ty::Named { builtin: None, .. } = left_resolved {
+            if let Ty::Named {
+                head:
+                    crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            } = left_resolved
+            {
                 if let Some((method, _)) =
                     self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
                 {
@@ -346,7 +348,12 @@ impl Checker {
             self.record_eq_requirement(left_resolved, expr_span);
             return;
         }
-        if let Ty::Named { builtin: None, .. } = left_resolved {
+        if let Ty::Named {
+            head:
+                crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_),
+            ..
+        } = left_resolved
+        {
             if let Some((method, _)) =
                 self.trait_impl_method_declaration(left_resolved, "Ord", "lt")
             {
@@ -370,15 +377,18 @@ impl Checker {
             let aggregate = match ty {
                 Ty::Tuple(_)
                 | Ty::Named {
-                    builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                    head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
                     ..
                 } => true,
-                Ty::Named { name, .. } => self.type_defs.get(name).is_some_and(|definition| {
-                    matches!(
-                        definition.kind,
-                        TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
-                    )
-                }),
+                Ty::Named { head, .. } => {
+                    self.type_def_at(head.registry_key())
+                        .is_some_and(|definition| {
+                            matches!(
+                                definition.kind,
+                                TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                            )
+                        })
+                }
                 _ => false,
             };
             aggregate.then(|| ty.user_facing().to_string())
@@ -449,7 +459,7 @@ impl Checker {
         let owner = self.current_function.clone();
         let params = owner
             .as_ref()
-            .and_then(|key| self.fn_sigs.get(key))
+            .and_then(|key| self.fn_sig(key))
             .map_or_else(Vec::new, |sig| sig.type_params.clone());
         let requirements = self.eq_requirements.entry(owner).or_default();
         if requirements.iter().any(|existing| {
@@ -500,8 +510,7 @@ impl Checker {
             ),
         };
         let Some(declared_params) = self
-            .fn_sigs
-            .get(&callee_key)
+            .fn_sig(&callee_key)
             .map(|sig| sig.type_params.clone())
             .filter(|params| !params.is_empty())
         else {
@@ -515,8 +524,7 @@ impl Checker {
         }
         if let Some((owner_name, owner_args)) = owner {
             let owner_params = self
-                .type_defs
-                .get(owner_name)
+                .type_def_at(owner_name)
                 .map(|type_def| type_def.type_params.clone())
                 .unwrap_or_default();
             if owner_params.len() == owner_args.len() {
@@ -539,7 +547,7 @@ impl Checker {
         let enclosing = self.current_function.clone();
         let enclosing_params = enclosing
             .as_ref()
-            .and_then(|name| self.fn_sigs.get(name))
+            .and_then(|name| self.fn_sig(name))
             .map_or_else(Vec::new, |sig| sig.type_params.clone());
         self.generic_fn_instantiation_sites
             .push(GenericFnInstantiationSite {

@@ -15,28 +15,21 @@ use hew_types::{
 };
 
 pub(super) fn utf8_error_ty(path: &str) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: path.to_string(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::user_for_test(path, Vec::new())
 }
 
 fn option_i64_ty() -> ResolvedTy {
     ResolvedTy::Named {
-        name: "Option".to_string(),
         args: vec![ResolvedTy::I64],
-        builtin: Some(BuiltinType::Option),
+        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
         is_opaque: false,
     }
 }
 
 pub(super) fn decode_result_ty(error: ResolvedTy) -> ResolvedTy {
     ResolvedTy::Named {
-        name: "Result".to_string(),
         args: vec![ResolvedTy::String, error],
-        builtin: Some(BuiltinType::Result),
+        head: hew_types::TypeHead::Builtin(BuiltinType::Result),
         is_opaque: false,
     }
 }

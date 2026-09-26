@@ -205,7 +205,7 @@ impl Checker {
                 return result;
             }
             let source_member = format!("{}.{method}", head.canonical_type);
-            if !self.fn_sigs.contains_key(&source_member) {
+            if !self.has_fn_sig(&source_member) {
                 for arg in args {
                     let (expr, arg_span) = arg.expr();
                     self.synthesize(expr, arg_span);
@@ -253,7 +253,7 @@ impl Checker {
                 && !receiver_is_known_type
                 && (self.module_binding_in_current_file(name.name.as_str())
                     || self.module_fn_exports.contains(&key)
-                    || self.fn_sigs.contains_key(&key));
+                    || self.has_fn_sig(&key));
             if looks_like_module_call {
                 self.record_method_call_receiver_kind(
                     span,
@@ -309,7 +309,7 @@ impl Checker {
                             .iter()
                             .map(|ty| self.subst.resolve(ty))
                             .collect();
-                        return self.variant_nominal_ty(type_name, resolved_args);
+                        return self.variant_nominal_ty(&type_name, resolved_args);
                     }
                 }
                 if !self.module_fn_exports.contains(&key) {
@@ -389,7 +389,7 @@ impl Checker {
                 {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                 }
-                if let Some(sig) = self.fn_sigs.get(&key).cloned() {
+                if let Some(sig) = self.fn_sig(&key).cloned() {
                     self.record_call_edge(&key);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(
                         name.name.as_str(),
@@ -460,9 +460,9 @@ impl Checker {
                 .canonical_nominal_name(name.name.as_str())
                 .unwrap_or_else(|| name.to_string());
             let static_key = format!("{canonical_static_owner}.{method}");
-            let static_sig = self.fn_sigs.get(&static_key).cloned().or_else(|| {
+            let static_sig = self.fn_sig(&static_key).cloned().or_else(|| {
                 (canonical_static_owner != name.name.as_str())
-                    .then(|| self.fn_sigs.get(&format!("{name}.{method}")).cloned())
+                    .then(|| self.fn_sig(&format!("{name}.{method}")).cloned())
                     .flatten()
             });
             if let Some(sig) = static_sig {
@@ -570,19 +570,19 @@ impl Checker {
         };
         let resolved = match &resolved {
             Ty::Named {
-                name,
+                head,
                 args: type_args,
-                ..
             } if crate::method_resolution::lookup_named_method_sig(
+                &self.defs,
                 &self.type_defs,
-                &self.fn_sigs,
-                name,
+                self.sigs(),
+                head.registry_key(),
                 type_args,
                 method,
             )
             .is_none() =>
             {
-                self.alias_target_for_instance(name, type_args)
+                self.alias_target_for_instance(head.registry_key(), type_args)
                     .unwrap_or(resolved)
             }
             _ => resolved,
@@ -631,7 +631,8 @@ impl Checker {
         }
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
-        if let Ty::Named { name, .. } = &resolved {
+        if let Ty::Named { head, .. } = &resolved {
+            let name = head.registry_key();
             self.warn_if_blocking_handle_method(name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
@@ -646,7 +647,7 @@ impl Checker {
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
-                        builtin: Some(_),
+                        head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
                         ..
                     }
             )
@@ -658,7 +659,7 @@ impl Checker {
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
-                        builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                        head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
                         ..
                     }
             );
@@ -666,7 +667,7 @@ impl Checker {
                 && matches!(
                     &resolved,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Vec | BuiltinType::HashMap),
+                        head: crate::TypeHead::Builtin(BuiltinType::Vec | BuiltinType::HashMap),
                         ..
                     }
                 )
@@ -772,7 +773,7 @@ impl Checker {
             // Vec methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Vec),
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
                     args: type_args,
                     ..
                 },
@@ -781,7 +782,7 @@ impl Checker {
             // HashMap methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::HashMap),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                     args: type_args,
                     ..
                 },
@@ -790,7 +791,7 @@ impl Checker {
             // HashSet methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::HashSet),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                     args: type_args,
                     ..
                 },
@@ -800,7 +801,7 @@ impl Checker {
                 // can refine an earlier `IntLiteral` element before we validate lowerability.
                 let original_type_args = match &receiver_ty {
                     Ty::Named {
-                        builtin: Some(BuiltinType::HashSet),
+                        head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                         args,
                         ..
                     } => args.as_slice(),
@@ -811,7 +812,7 @@ impl Checker {
             // Rc<T> methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Rc),
+                    head: crate::TypeHead::Builtin(BuiltinType::Rc),
                     args: type_args,
                     ..
                 },
@@ -820,7 +821,7 @@ impl Checker {
             // Weak<T> methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Weak),
+                    head: crate::TypeHead::Builtin(BuiltinType::Weak),
                     args: type_args,
                     ..
                 },
@@ -833,7 +834,7 @@ impl Checker {
             // boundary, so the receiver lowers as a bare `i64` nanos timestamp.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Instant),
+                    head: crate::TypeHead::Builtin(BuiltinType::Instant),
                     ..
                 },
                 _,
@@ -1322,7 +1323,7 @@ impl Checker {
                 // is `close`, which tears its tree down.
                 let supervisor = matches!(
                     resolved.as_actor_handle(),
-                    Some(Ty::Named { name, .. }) if self.supervisor_children.contains_key(name)
+                    Some(Ty::Named { head, .. }) if self.supervisor_children.contains_key(head.registry_key())
                 );
                 if method == "stop" && resolved.as_actor_handle().is_some() && !supervisor {
                     if !self.check_arity(args, 0, "`stop`", span) {
@@ -1338,8 +1339,8 @@ impl Checker {
                 // `send` resolves through the reference type's own method.
                 let has_user_send_handler = if method == "send" {
                     resolved.as_local_actor_ref().and_then(|inner| {
-                        if let Ty::Named { name, .. } = inner {
-                            Some(name.clone())
+                        if let Ty::Named { head, .. } = inner { let name = head.registry_key();
+                            Some(name.to_string())
                         } else {
                             None
                         }
@@ -1377,8 +1378,8 @@ impl Checker {
                     let actor_hint = resolved
                         .as_local_actor_ref()
                         .and_then(|inner| {
-                            if let Ty::Named { name, .. } = inner {
-                                Some(name.clone())
+                            if let Ty::Named { head, .. } = inner {
+                                Some(head.registry_key().to_string())
                             } else {
                                 None
                             }
@@ -1434,27 +1435,24 @@ impl Checker {
                 // Fall through to actor receive-fn dispatch on the inner type.
                 let inner = resolved.as_local_actor_ref().unwrap();
                 if let Ty::Named {
-                    name: actor_name,
+                    head,
                     args: actor_type_args,
-                    ..
                 } = inner
                 {
+                    let actor_name = head.registry_key();
                     // An annotation-derived `Account` actor-handle type carries
                     // the actor's bare name directly; resolve it to the
                     // registered actor identity (current module's actor, root actor, or a
                     // unique module export) before keying `fn_sigs`. Spawn-
                     // derived handles already carry the dotted identity.
-                    let actor_identity = if self
-                        .fn_sigs
-                        .contains_key(&format!("{actor_name}::{method}"))
-                    {
-                        actor_name.clone()
+                    let actor_identity = if self.has_fn_sig(&format!("{actor_name}::{method}")) {
+                        actor_name.to_string()
                     } else if let BareActorResolution::Resolved(identity) =
                         self.resolve_bare_actor_identity(actor_name)
                     {
                         identity
                     } else {
-                        actor_name.clone()
+                        actor_name.to_string()
                     };
                     let method_key = format!("{actor_identity}::{method}");
                     // A plain (non-receive) `fn` on the actor lands in `fn_sigs` under the
@@ -1464,7 +1462,7 @@ impl Checker {
                     // the latter names an internal method with no mailbox-handler shape —
                     // MIR has no `ActorHandlerLayout` row for it (#2366). Reject here,
                     // fail-closed, instead of deferring to a MIR NotYetImplemented.
-                    if self.fn_sigs.contains_key(&method_key)
+                    if self.has_fn_sig(&method_key)
                         && !self.actor_receive_methods.contains(&method_key)
                     {
                         for arg in args {
@@ -1637,7 +1635,7 @@ impl Checker {
             // separate `.recv()`.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::ActorFn),
+                    head: crate::TypeHead::Builtin(BuiltinType::ActorFn),
                     args: type_args,
                     ..
                 },
@@ -1652,7 +1650,7 @@ impl Checker {
             // .next() returns Option<yielded type>.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Generator),
+                    head: crate::TypeHead::Builtin(BuiltinType::Generator),
                     args: type_args,
                     ..
                 },
@@ -1695,7 +1693,7 @@ impl Checker {
             // now codegen will fail if the type is actually used.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Stream),
+                    head: crate::TypeHead::Builtin(BuiltinType::Stream),
                     args: type_args,
                     ..
                 },
@@ -1704,7 +1702,7 @@ impl Checker {
             // Sink<T> methods
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Sink),
+                    head: crate::TypeHead::Builtin(BuiltinType::Sink),
                     args: type_args,
                     ..
                 },
@@ -1814,7 +1812,7 @@ impl Checker {
             // an unconstrained `(0..n).rev()` exactly as a bare range would.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Range),
+                    head: crate::TypeHead::Builtin(BuiltinType::Range),
                     args: range_args,
                     ..
                 },
@@ -1856,15 +1854,16 @@ impl Checker {
             // User-defined struct/actor methods from type_defs
             (
                 Ty::Named {
-                    name,
+                    head,
                     args: type_args,
-                    builtin,
                 },
                 _,
             ) => {
+                let name = head.registry_key();
+                let builtin = &head.builtin();
                 let canonical_receiver_name = self
                     .canonical_nominal_name(name)
-                    .unwrap_or_else(|| name.clone());
+                    .unwrap_or_else(|| name.to_string());
                 // Builtin `Result<T, E>` / `Option<T>` receivers (e.g. the
                 // `Result<T, AskError>` wrapper an actor ask produces) resolve
                 // their methods against the origin-based stdlib snapshot ONLY,
@@ -1881,8 +1880,33 @@ impl Checker {
                 // methods; any method absent from the builtin surface yields
                 // `None` and falls through to the `no method on
                 // Result<...>`/`Option<...>` diagnostic below.
-                let sig = match builtin {
-                    Some(b @ (BuiltinType::Result | BuiltinType::Option)) => {
+                // R1: a source method is selected through the dispatch table
+                // by the receiver's declaration and the method's owner.
+                let receiver_named = Ty::Named {
+                    head: *head,
+                    args: type_args.clone(),
+                };
+                let selection = match builtin {
+                    Some(BuiltinType::Result | BuiltinType::Option) => {
+                        crate::check::dispatch_table::MethodSelection::Missing
+                    }
+                    _ => self.select_method(&receiver_named, method),
+                };
+                let mut selected_declaration = None;
+                let sig = match (builtin, selection) {
+                    (_, crate::check::dispatch_table::MethodSelection::Ambiguous(traits)) => {
+                        for arg in args {
+                            let (expr, arg_span) = arg.expr();
+                            self.synthesize(expr, arg_span);
+                        }
+                        self.report_ambiguous_method(&receiver_named, method, &traits, span);
+                        return Ty::Error;
+                    }
+                    (_, crate::check::dispatch_table::MethodSelection::Unique(_, declaration)) => {
+                        selected_declaration = Some(declaration);
+                        self.selected_method_sig(&receiver_named, declaration)
+                    }
+                    (Some(b @ (BuiltinType::Result | BuiltinType::Option)), _) => {
                         self.lookup_builtin_result_option_method_sig(*b, type_args, method)
                     }
                     _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
@@ -1896,8 +1920,7 @@ impl Checker {
                         );
                     }
                     let is_actor_receive_dispatch = self
-                        .type_defs
-                        .get(name)
+                        .type_def_at(name)
                         .is_some_and(|td| td.kind == TypeDefKind::Actor)
                         && self
                             .actor_receive_methods
@@ -1938,7 +1961,7 @@ impl Checker {
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::ActorInstance {
-                                actor_name: name.clone(),
+                                actor_name: name.to_string(),
                             },
                         );
                         // Every arg crosses the mailbox boundary; record the
@@ -1960,7 +1983,7 @@ impl Checker {
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::NamedTypeInstance {
-                            type_name: name.clone(),
+                            type_name: name.to_string(),
                         },
                     );
                     // Machine method dispatch: `.step()` and `.state_name()` on a
@@ -1976,8 +1999,7 @@ impl Checker {
                     // R-value and immutable-binding receivers are rejected here
                     // with a typed diagnostic.
                     if self
-                        .type_defs
-                        .get(name)
+                        .type_def_at(name)
                         .is_some_and(|td| td.kind == TypeDefKind::Machine)
                     {
                         match method {
@@ -2216,9 +2238,14 @@ impl Checker {
                             // positional keys on a miss — a bare spelling here
                             // would silently change the encoded schema.
                             let mut value_source = self.subst.resolve(&resolved);
-                            if let Ty::Named { name: nominal, .. } = &mut value_source {
-                                if *nominal != canonical_receiver_name {
-                                    nominal.clone_from(&canonical_receiver_name);
+                            if let Ty::Named { head, .. } = &mut value_source {
+                                if head.registry_key() != canonical_receiver_name {
+                                    if let Some(canonical) = self
+                                        .named_ty_for_key(&canonical_receiver_name, Vec::new())
+                                        .head()
+                                    {
+                                        *head = canonical;
+                                    }
                                 }
                             }
                             if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
@@ -2241,7 +2268,8 @@ impl Checker {
                                     MethodCallRewrite::BuiltinVecIterNext,
                                 );
                             }
-                        } else if self.fn_sigs.contains_key(&method_key)
+                        } else if selected_declaration.is_some()
+                            || self.has_fn_sig(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
                                 // Concrete-specialised-impl check (#2270): the
@@ -2261,9 +2289,7 @@ impl Checker {
                                             args,
                                         )
                                     })
-                                    .is_some_and(|m| {
-                                        self.fn_sigs.contains_key(&format!("{m}::{method}"))
-                                    })
+                                    .is_some_and(|m| self.has_fn_sig(&format!("{m}::{method}")))
                             })
                         {
                             // For concrete-specialised impls, use the mangled
@@ -2285,9 +2311,7 @@ impl Checker {
                                             args,
                                         )
                                     })
-                                    .filter(|m| {
-                                        self.fn_sigs.contains_key(&format!("{m}::{method}"))
-                                    })
+                                    .filter(|m| self.has_fn_sig(&format!("{m}::{method}")))
                                     .map_or_else(
                                         || method_key.clone(),
                                         |m| format!("{m}::{method}"),
@@ -2298,6 +2322,7 @@ impl Checker {
                             // declaration; the bare `Result::<method>` key can
                             // name a same-spelled user method instead.
                             let declaration = match *builtin {
+                                _ if selected_declaration.is_some() => selected_declaration,
                                 Some(BuiltinType::Option | BuiltinType::Result) => sig
                                     .impl_method
                                     .as_ref()
@@ -2360,8 +2385,8 @@ impl Checker {
                 // 3. 0 hits → UndefinedMethod, >1 distinct declaring traits → AmbiguousTraitMethod,
                 //    1 → record StaticTraitDispatch rewrite
                 let bounds_for_type_param = self.current_function.as_ref().and_then(|fn_name| {
-                    self.fn_sigs.get(fn_name).and_then(|sig| {
-                        if sig.type_params.contains(name) {
+                    self.fn_sig(fn_name).and_then(|sig| {
+                        if sig.type_params.iter().any(|param| param == name) {
                             sig.type_param_bounds.get(name).cloned()
                         } else {
                             None
@@ -2447,7 +2472,7 @@ impl Checker {
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::NamedTypeInstance {
-                                type_name: name.clone(),
+                                type_name: name.to_string(),
                             },
                         );
                         if trait_sig.consumes_receiver {
@@ -2479,7 +2504,7 @@ impl Checker {
                             span,
                             MethodCallRewrite::StaticTraitDispatch {
                                 target,
-                                receiver_type_param: name.clone(),
+                                receiver_type_param: name.to_string(),
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
                                 consumes_receiver: trait_sig.consumes_receiver,
                                 returns_receiver_identity: trait_sig.returns_receiver_identity,
@@ -2520,21 +2545,25 @@ impl Checker {
                 }
                 // `clone` on a user-defined named type: intercept before
                 // `UndefinedMethod` for admissible records.
-                // This arm handles the (Ty::Named { builtin: None, .. }, "clone")
+                // This arm handles the (Ty::Named { head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. }, "clone")
                 // case where `try_resolve_named_method` found no `clone` in fn_sigs.
                 if method == "clone" && args.is_empty() {
                     if let Ty::Named {
-                        name,
+                        head:
+                            head @ (crate::TypeHead::Nominal(_)
+                            | crate::TypeHead::Param(_)
+                            | crate::TypeHead::Unresolved(_)),
                         args: type_args,
-                        builtin: None,
+                        ..
                     } = &resolved
                     {
+                        let name = head.registry_key();
                         match self.record_clone_admissibility(name, type_args, span) {
                             RecordCloneAdmissibility::Admissible => {
                                 self.record_method_call_rewrite(
                                     span,
                                     MethodCallRewrite::RecordCloneInplace {
-                                        record_name: name.clone(),
+                                        record_name: name.to_string(),
                                     },
                                 );
                                 // Bare-seed monomorphic records only; a generic
@@ -2542,9 +2571,9 @@ impl Checker {
                                 // and seeded from the `RecordCloneInplace` walk
                                 // in codegen (see the sibling clone intercept).
                                 if type_args.is_empty()
-                                    && !self.user_clone_record_seeds.contains(name)
+                                    && !self.user_clone_record_seeds.iter().any(|seed| seed == name)
                                 {
-                                    self.user_clone_record_seeds.push(name.clone());
+                                    self.user_clone_record_seeds.push(name.to_string());
                                 }
                                 return resolved;
                             }
@@ -2608,7 +2637,7 @@ impl Checker {
                                 self.record_method_call_rewrite(
                                     span,
                                     MethodCallRewrite::RecordCloneInplace {
-                                        record_name: name.clone(),
+                                        record_name: name.to_string(),
                                     },
                                 );
                                 return resolved;
@@ -2644,7 +2673,9 @@ impl Checker {
                     && matches!(
                         resolved,
                         Ty::Named {
-                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                            head: crate::TypeHead::Builtin(
+                                BuiltinType::Option | BuiltinType::Result
+                            ),
                             ..
                         }
                     ) {

@@ -4,7 +4,7 @@ fn main() -> i64 {
     var source = pipeline.run(pipeline.from(50));
     var i: i64 = 0;
     while i < 50 {
-        let item: pipeline.PipelineItemI64 = PipelineItemI64 {
+        let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 {
             value: i,
             label: f"normal-owned-{i}",
             crash_stage: false,

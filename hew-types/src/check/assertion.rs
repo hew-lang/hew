@@ -5,10 +5,7 @@
 //! a compared operand as `{:?}` renders it; an operand whose type has no
 //! structural rendering is published here so the report names its type.
 
-use super::{
-    type_def_for_spelling, BinaryOp, CallArg, Checker, Expr, FnSig, SpanKey, Ty, TypeDefKind,
-    VariantDef,
-};
+use super::{BinaryOp, CallArg, Checker, Expr, FnSig, SpanKey, Ty, TypeDefKind, VariantDef};
 
 /// The signature of `assert(condition, message)`.
 pub(super) fn with_message(mut sig: FnSig) -> FnSig {
@@ -52,7 +49,7 @@ impl Checker {
     /// Whether `ty` renders structurally all the way down: a declared type
     /// through its fields and variant payloads, which an actor or supervisor
     /// handle never does. `visiting` guards recursive declarations.
-    fn renders_through_fields<'a>(&'a self, ty: &'a Ty, visiting: &mut Vec<&'a str>) -> bool {
+    fn renders_through_fields(&self, ty: &Ty, visiting: &mut Vec<crate::NominalId>) -> bool {
         if !ty.renders_structurally() {
             return false;
         }
@@ -60,21 +57,20 @@ impl Checker {
             Ty::Tuple(members) => members
                 .iter()
                 .all(|member| self.renders_through_fields(member, visiting)),
-            Ty::Named {
-                name,
-                args,
-                builtin: None,
-            } => {
-                if visiting.contains(&name.as_str()) {
+            Ty::Named { head, args } if head.builtin().is_none() => {
+                let Some(id) = head.declaration(&self.defs) else {
+                    return true;
+                };
+                if visiting.contains(&id) {
                     return true;
                 }
-                let Some(def) = type_def_for_spelling(&self.type_defs, name) else {
+                let Some(def) = self.type_defs.get(&id) else {
                     return true;
                 };
                 if matches!(def.kind, TypeDefKind::Actor | TypeDefKind::Supervisor) {
                     return false;
                 }
-                visiting.push(name);
+                visiting.push(id);
                 let fields_render = def
                     .fields
                     .values()

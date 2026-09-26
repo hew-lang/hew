@@ -583,6 +583,43 @@ impl BuiltinType {
         }
     }
 
+    /// The canonical path of the std declaration a lifecycle builtin is,
+    /// when it is one (`std.failure.CrashInfo`).
+    #[must_use]
+    pub const fn source_owned_path(self) -> Option<&'static str> {
+        match self {
+            Self::CrashInfo => Some("std.failure.CrashInfo"),
+            Self::CrashAction => Some("std.failure.CrashAction"),
+            Self::CrashNotification => Some("std.failure.CrashNotification"),
+            Self::CrashKind => Some("std.failure.CrashKind"),
+            Self::MonitorId => Some("std.link_monitor.MonitorId"),
+            Self::DownTarget => Some("std.link_monitor.DownTarget"),
+            Self::DownReason => Some("std.link_monitor.DownReason"),
+            Self::DownNotification => Some("std.link_monitor.DownNotification"),
+            Self::MonitorError => Some("std.link_monitor.MonitorError"),
+            Self::MonitorRef => Some("std.link_monitor.MonitorRef"),
+            _ => None,
+        }
+    }
+
+    /// The builtin a std source declaration at `path` is: the lifecycle
+    /// records, the identity-carrier stubs, the pipe halves and the generated
+    /// monomorphic enums are each one declaration and one builtin.
+    #[must_use]
+    pub fn from_source_declaration(path: &str) -> Option<Self> {
+        if !path.contains('.') {
+            return None;
+        }
+        lookup_builtin_type(path)
+            .or_else(|| {
+                builtin_types()
+                    .iter()
+                    .find(|info| info.kind.source_owned_path() == Some(path))
+                    .map(|info| info.kind)
+            })
+            .filter(|builtin| !builtin.is_encoding_value())
+    }
+
     #[must_use]
     pub const fn is_collection(self) -> bool {
         matches!(self, Self::Vec | Self::HashMap | Self::HashSet)
@@ -623,27 +660,6 @@ impl BuiltinType {
     #[must_use]
     pub const fn is_substrate_handle(self) -> bool {
         matches!(self, Self::Sink | Self::Stream)
-    }
-
-    /// True for the local actor-handle builtin that lowers to a single
-    /// pointer-shaped runtime word (`*mut HewActor`) — `ActorHandle<T>`.
-    ///
-    /// This is the builtin whose codegen `resolve_ty` arm produces an opaque
-    /// `ptr` and whose `Vec<T>` constructor routes to `hew_vec_new_ptr` (see
-    /// `resolve_ty` + `resolved_ty_is_plain_bitcopy` in `hew-codegen-rs`). The
-    /// checker MUST classify it as the pointer-shaped (`"ptr"`) Vec-element
-    /// ABI so `push`/`get`/`set`/`pop` route to the `hew_vec_*_ptr` family
-    /// rather than the layout-descriptor family — otherwise the constructor and
-    /// the element ops disagree (null-layout `hew_vec_new_ptr` + layout push),
-    /// tripping the runtime "layout-aware operation is not implemented" abort.
-    ///
-    /// `RemotePid<T>` is intentionally excluded: it lowers to an inline
-    /// aggregate, not a pointer, so it takes a different element ABI.
-    /// Substrate handles (`Stream`/`Sink`) are affine
-    /// move-only resources and are not admitted as Vec elements here.
-    #[must_use]
-    pub const fn lowers_as_pointer_vec_element(self) -> bool {
-        matches!(self, Self::ActorHandle)
     }
 
     /// True when the builtin's complete value ABI is one opaque pointer word.

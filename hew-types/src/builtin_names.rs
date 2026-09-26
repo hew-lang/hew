@@ -313,15 +313,13 @@ pub fn builtin_method_info(
 }
 
 fn type_param_ty() -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: "T".to_string(),
-        args: vec![],
-    }
+    Ty::param("T")
 }
 
 fn self_container_ty(kind: BuiltinNamedType, inner: Ty) -> Ty {
-    Ty::normalize_named(kind.canonical_name().to_string(), vec![inner])
+    let builtin = crate::builtin_type::lookup_builtin_type(kind.canonical_name())
+        .expect("every builtin named type is a builtin type");
+    Ty::named_head(crate::TypeHead::Builtin(builtin), vec![inner])
 }
 
 impl BuiltinMethodSigTemplate {

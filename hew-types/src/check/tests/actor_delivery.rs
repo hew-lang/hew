@@ -260,7 +260,10 @@ fn actor_delivery_failure_reason_matches_annotated_error_values() {
     let output = check_source("actor Worker { receive fn process() {} } fn reason(error: SendError) -> SendError { error } fn main() { let worker = mailbox(spawn Worker(), on_full: .Reject); match worker.process() { .Ok(_) => {}, .Err(failure) => { let same = reason(failure.reason); } } }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
-        output.type_defs["std.builtins.SendFailure"].fields["reason"],
+        output
+            .type_def_at_path("std.builtins.SendFailure")
+            .unwrap()
+            .fields["reason"],
         crate::Ty::send_error()
     );
 }
@@ -289,10 +292,15 @@ fn a_call_on_a_handle_completes_with_a_unit_result() {
     assert_eq!(success, &crate::Ty::Unit, "{call:?}");
     // The handler declares no `fails`, so the error can never be `Failed`: the
     // failure and rejection parameters are both the uninhabited `Never`.
-    let crate::Ty::Named { name, args, .. } = failure else {
+    let crate::Ty::Named {
+        head: name_head,
+        args,
+        ..
+    } = failure
+    else {
         panic!("completion error is not nominal: {failure:?}");
     };
-    assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
+    assert_eq!(name_head.spelling(), crate::KnownDecl::ActorError.path());
     assert_eq!(
         args.as_slice(),
         [crate::Ty::never_type(), crate::Ty::never_type()],

@@ -153,7 +153,7 @@ impl Checker {
         let released: Vec<(String, Span)> = self
             .env
             .current_scope_bindings()
-            .filter(|(name, _)| *name != receiver)
+            .filter(|(name, _)| name.name.as_str() != receiver)
             .filter_map(|(name, _)| {
                 let binding = self.env.lookup_ref(name)?;
                 self.release_may_run_close(&self.subst.resolve(&binding.ty))
@@ -240,11 +240,9 @@ impl Checker {
         visiting: &mut std::collections::HashSet<String>,
     ) -> bool {
         match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 if self.registry.is_resource(name) || self.registry.is_linear(name) {
                     return true;
                 }
@@ -259,7 +257,7 @@ impl Checker {
                 }
                 match self.registry.member_types(name) {
                     Some(members) => {
-                        if !visiting.insert(name.clone()) {
+                        if !visiting.insert(name.to_string()) {
                             return false;
                         }
                         let members = members.to_vec();
@@ -271,7 +269,7 @@ impl Checker {
                     }
                     // A name with no registered members and no declaration is
                     // an abstract type parameter.
-                    None => !self.type_defs.contains_key(name) && !self.known_types.contains(name),
+                    None => self.type_def_at(name).is_none() && !self.known_types.contains(name),
                 }
             }
             Ty::Tuple(elements) => elements

@@ -1,0 +1,4 @@
+type T { v: i64 }
+fn need<X: PartialOrd>(x: X) -> X { x }
+fn has<X: Ord>(x: X) -> X { need(x) }
+fn main() { println(has(5)); }

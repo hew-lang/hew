@@ -249,7 +249,7 @@ impl Checker {
     ) -> bool {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if let Ty::Named {
-            builtin: Some(builtin),
+            head: crate::TypeHead::Builtin(builtin),
             ..
         } = resolved
         {
@@ -475,7 +475,7 @@ impl Checker {
         })
     }
 
-    pub(super) fn dispatch_pattern_to_ty(pattern: &TyPattern) -> Ty {
+    pub(super) fn dispatch_pattern_to_ty(&self, pattern: &TyPattern) -> Ty {
         match pattern {
             TyPattern::Primitive(name) => match name.as_str() {
                 "i8" => Ty::I8,
@@ -497,25 +497,24 @@ impl Checker {
                 "duration" => Ty::Duration,
                 "()" => Ty::Unit,
                 "!" => Ty::Never,
-                other => Ty::Named {
-                    builtin: None,
-                    name: other.to_string(),
-                    args: vec![],
-                },
+                // TRANSITION(A1 commit 3): the dispatch pattern carries the
+                // receiver's spelling until the catalog move keys it by head.
+                other if self.is_type_param_in_scope(other) => Ty::param(other),
+                other => self.named_ty_for_key(other, vec![]),
             },
-            TyPattern::App { ctor, args } => Ty::Named {
-                builtin: crate::lookup_builtin_type(ctor),
-                name: ctor.clone(),
-                args: args.iter().map(Self::dispatch_pattern_to_ty).collect(),
-            },
-            TyPattern::Tuple(items) => {
-                Ty::Tuple(items.iter().map(Self::dispatch_pattern_to_ty).collect())
-            }
-            TyPattern::Var(name) => Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            },
+            TyPattern::App { ctor, args } => self.named_ty_for_key(
+                ctor,
+                args.iter()
+                    .map(|arg| self.dispatch_pattern_to_ty(arg))
+                    .collect(),
+            ),
+            TyPattern::Tuple(items) => Ty::Tuple(
+                items
+                    .iter()
+                    .map(|item| self.dispatch_pattern_to_ty(item))
+                    .collect(),
+            ),
+            TyPattern::Var(name) => Ty::param(name),
         }
     }
 
@@ -533,7 +532,7 @@ impl Checker {
         let registry = collection_dispatch_registry_impl();
         let resolved =
             resolve_method_call(&registry, trait_name, method, receiver, &|marker, ty| {
-                let ty = Self::dispatch_pattern_to_ty(ty);
+                let ty = self.dispatch_pattern_to_ty(ty);
                 self.collection_key_marker_available(&ty, marker)
             });
         match resolved {
@@ -553,7 +552,7 @@ impl Checker {
                 // diagnostic with attribution to the witness type.
                 // `MethodCallNoRewrite` is permanently demoted to a
                 // boundary-violation-only diagnostic.
-                let witness_ty = Self::dispatch_pattern_to_ty(&witness);
+                let witness_ty = self.dispatch_pattern_to_ty(&witness);
                 let bound_summary = unsatisfied
                     .iter()
                     .map(|b| format!("{}: {}", b.var, b.trait_name))
@@ -616,7 +615,7 @@ impl Checker {
             if *ty == key_pattern {
                 return self.type_param_has_marker_bound(&key_param_name, marker);
             }
-            let ty = Self::dispatch_pattern_to_ty(ty);
+            let ty = self.dispatch_pattern_to_ty(ty);
             self.registry.implements_marker(&ty, marker)
         });
         match resolved {
@@ -629,7 +628,7 @@ impl Checker {
                 witness,
                 ..
             }) => {
-                let witness_ty = Self::dispatch_pattern_to_ty(&witness);
+                let witness_ty = self.dispatch_pattern_to_ty(&witness);
                 let bound_summary = unsatisfied
                     .iter()
                     .map(|b| format!("{}: {}", b.var, b.trait_name))
@@ -661,10 +660,11 @@ impl Checker {
     pub(super) fn hashmap_abstract_key_param_name(&self, key_ty: &Ty) -> Option<String> {
         match self.subst.resolve(key_ty).materialize_literal_defaults() {
             Ty::Named {
-                name,
+                head: crate::TypeHead::Param(param),
                 args,
-                builtin: None,
-            } if args.is_empty() && self.is_type_param_in_scope(&name) => Some(name),
+            } if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()) => {
+                Some(param.spelling.to_string())
+            }
             _ => None,
         }
     }
@@ -737,7 +737,7 @@ impl Checker {
         let is_abstract = self.vec_element_contains_abstract_type_param(&elem_ty);
         let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
         let profile = crate::vec_authority::VecElementProfile {
-            abi: crate::vec_authority::classify_element(&elem_ty, &self.type_defs),
+            abi: crate::vec_authority::classify_element(&elem_ty, self.type_def_view()),
             is_owned: self.element_owns_heap(&elem_ty),
             is_copy_layout,
             is_function_like: matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }),
@@ -835,11 +835,9 @@ impl Checker {
     /// construction (`dedup-semantic-boundary`).
     pub(in crate::check) fn vec_element_contains_abstract_type_param(&self, elem_ty: &Ty) -> bool {
         match elem_ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 (builtin.is_none() && args.is_empty() && self.is_type_param_in_scope(name))
                     || args
                         .iter()
@@ -866,7 +864,7 @@ impl Checker {
         &self,
         call_type_args: &HashMap<SpanKey, Vec<Ty>>,
         record_init_type_args: &HashMap<SpanKey, Vec<Ty>>,
-        type_defs: &HashMap<String, TypeDef>,
+        types: crate::check::TypeDefView<'_>,
     ) -> HashMap<Ty, crate::vec_authority::VecElementToken> {
         let mut out = HashMap::new();
         for args in call_type_args
@@ -877,7 +875,7 @@ impl Checker {
                 if out.contains_key(ty) {
                     continue;
                 }
-                if let Some(token) = self.classify_vec_generic_element(ty, type_defs) {
+                if let Some(token) = self.classify_vec_generic_element(ty, types) {
                     out.insert(ty.clone(), token);
                 }
             }
@@ -903,10 +901,10 @@ impl Checker {
     pub(super) fn classify_vec_generic_element(
         &self,
         ty: &Ty,
-        type_defs: &HashMap<String, TypeDef>,
+        types: crate::check::TypeDefView<'_>,
     ) -> Option<crate::vec_authority::VecElementToken> {
         use crate::vec_authority::VecElementToken;
-        let token = crate::vec_authority::classify_element(ty, type_defs)?;
+        let token = crate::vec_authority::classify_element(ty, types)?;
         let admissible = match token {
             // Bit-copy scalars and the CoW `string` representation carry no
             // owner-aliasing hazard across the shared-buffer element ops. Every
@@ -1085,13 +1083,11 @@ impl Checker {
             }
             RetTemplate::SelfTy => match kind {
                 CollectionKind::HashMap => Ty::Named {
-                    builtin: Some(BuiltinType::HashMap),
-                    name: "HashMap".to_string(),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                     args: vec![cx.key.clone(), cx.val.clone()],
                 },
                 CollectionKind::HashSet => Ty::Named {
-                    builtin: Some(BuiltinType::HashSet),
-                    name: "HashSet".to_string(),
+                    head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                     args: vec![cx.elem.clone()],
                 },
             },
@@ -1513,12 +1509,9 @@ impl Checker {
             // requirements as enums. Generic machine instantiations are
             // refused (canonicalised to one bare-named decl layout; no
             // per-instantiation witness exists).
-            Ty::Named {
-                name,
-                builtin,
-                args,
-            } if builtin.is_none() => {
-                if let Some(type_def) = self.type_defs.get(name) {
+            Ty::Named { head, args } if head.builtin().is_none() => {
+                let name = head.registry_key();
+                if let Some(type_def) = self.type_def_at(name) {
                     if matches!(type_def.kind, TypeDefKind::Machine) {
                         // Generic instantiation: no per-instantiation layout.
                         if !args.is_empty() {
@@ -1550,7 +1543,8 @@ impl Checker {
             // for, which `queue_elem_rejection_reason` states in the same
             // words; every other shape is admitted on its value class.
             Ty::Named {
-                builtin: Some(_), ..
+                head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
+                ..
             }
             | Ty::Function { .. }
             | Ty::Closure { .. } => false,
@@ -1575,7 +1569,8 @@ impl Checker {
     /// Completes "`{Container}<X>` is not supported: {clause}".
     pub(in crate::check) fn queue_elem_rejection_reason(&self, elem_ty: &Ty) -> String {
         if let Ty::Named {
-            builtin: Some(_), ..
+            head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
+            ..
         } = elem_ty
         {
             return "builtin container and handle types cannot ride the \
@@ -1614,11 +1609,9 @@ impl Checker {
         visiting: &mut HashSet<String>,
     ) -> bool {
         match ty {
-            Ty::Named {
-                name,
-                builtin,
-                args,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 if matches!(
                     builtin,
                     Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet)
@@ -1629,7 +1622,9 @@ impl Checker {
                     // recurses through this field. Any other container element
                     // is unowned (no thunk path) — reject.
                     return !args.iter().all(|a| match a {
-                        Ty::Named { name: an, .. } => roots.contains(an),
+                        Ty::Named { head, .. } => {
+                            roots.iter().any(|root| root == head.registry_key())
+                        }
                         _ => false,
                     });
                 }
@@ -1640,13 +1635,13 @@ impl Checker {
                         .iter()
                         .any(|a| self.queue_element_holds_collection(a, roots, visiting));
                 }
-                if !visiting.insert(name.clone()) {
+                if !visiting.insert(name.to_string()) {
                     // Self-recursive edge on a user type: the recursion through a
                     // user record/enum is finite by construction here (it only
                     // recurses once per name). It carries no bare container.
                     return false;
                 }
-                let result = self.type_defs.get(name).is_some_and(|td| {
+                let result = self.type_def_at(name).is_some_and(|td| {
                     td.fields
                         .values()
                         .any(|fty| self.queue_element_holds_collection(fty, roots, visiting))
@@ -1754,10 +1749,7 @@ impl Checker {
         if method == "clone"
             && matches!(
                 self.subst.resolve(&elem_ty),
-                Ty::Named {
-                    builtin: Some(builtin),
-                    ..
-                } if builtin.is_pipe_half()
+                Ty::Named { head: crate::TypeHead::Builtin(builtin), .. } if builtin.is_pipe_half()
             )
         {
             self.check_arity(args, 0, "`Vec.clone`", span);
@@ -1899,7 +1891,7 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
+                if crate::vec_authority::classify_element(&resolved_elem, self.type_def_view())
                     == Some(crate::vec_authority::VecElementToken::Layout)
                 {
                     // W3.032 Slice 3e: lift the layout gate for equality-
@@ -1909,8 +1901,10 @@ impl Checker {
                     // opaque eligibility certificate and do NOT re-derive
                     // eligibility (see W3.032 plan §"Checker authority
                     // carry").
-                    let eligibility =
-                        crate::eq_eligibility::ty_is_eq_eligible(&resolved_elem, &self.type_defs);
+                    let eligibility = crate::eq_eligibility::ty_is_eq_eligible(
+                        &resolved_elem,
+                        self.type_def_view(),
+                    );
                     let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
                     let is_owned_admissible = self.element_owns_heap(&resolved_elem);
                     if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
@@ -2098,8 +2092,7 @@ impl Checker {
                 // post-guard, whereas the "no method on Vec" path falls through
                 // to it.
                 let receiver = Ty::Named {
-                    builtin: Some(BuiltinType::Vec),
-                    name: "Vec".to_string(),
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
                     args: vec![self.subst.resolve(&elem_ty)],
                 };
                 if let Some(ret_ty) =

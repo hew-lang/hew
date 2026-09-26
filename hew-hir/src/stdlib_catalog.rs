@@ -296,40 +296,34 @@ impl BuiltinTy {
             BuiltinTy::Bytes => ResolvedTy::Bytes,
             BuiltinTy::Unit => ResolvedTy::Unit,
             BuiltinTy::Never => ResolvedTy::Never,
-            BuiltinTy::VecAny => ResolvedTy::named_builtin(
-                "Vec",
-                hew_types::BuiltinType::Vec,
-                vec![ResolvedTy::named_user("T", vec![])],
-            ),
+            BuiltinTy::VecAny => {
+                ResolvedTy::named_builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::param("T")])
+            }
             BuiltinTy::HashMapAny => ResolvedTy::named_builtin(
-                "HashMap",
                 hew_types::BuiltinType::HashMap,
-                vec![
-                    ResolvedTy::named_user("K", vec![]),
-                    ResolvedTy::named_user("V", vec![]),
-                ],
+                vec![ResolvedTy::param("K"), ResolvedTy::param("V")],
             ),
             BuiltinTy::HashSetAny => ResolvedTy::named_builtin(
-                "HashSet",
                 hew_types::BuiltinType::HashSet,
-                vec![ResolvedTy::named_user("T", vec![])],
+                vec![ResolvedTy::param("T")],
             ),
             BuiltinTy::Pointer => ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::U8),
             },
             BuiltinTy::Duration => ResolvedTy::Duration,
-            BuiltinTy::NodeConfig => ResolvedTy::named_user("std.builtins.NodeConfig", vec![]),
+            BuiltinTy::NodeConfig => ResolvedTy::named_user(
+                hew_types::NominalHead::new(
+                    hew_types::KnownDecl::NodeConfig.nominal(),
+                    hew_types::KnownDecl::NodeConfig.path(),
+                ),
+                vec![],
+            ),
             BuiltinTy::NodeResult => ResolvedTy::named_builtin(
-                "Result",
                 hew_types::BuiltinType::Result,
                 vec![
                     ResolvedTy::Unit,
-                    ResolvedTy::named_builtin(
-                        "NodeError",
-                        hew_types::BuiltinType::NodeError,
-                        vec![],
-                    ),
+                    ResolvedTy::named_builtin(hew_types::BuiltinType::NodeError, vec![]),
                 ],
             ),
         }
@@ -1031,8 +1025,7 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
     ),
     // Pointer-shaped element family (a `Vec` of actor handles): the actor-handle
     // builtin lowers to a single pointer-sized word (`*mut HewActor`) and the
-    // checker classifies it via
-    // `BuiltinType::lowers_as_pointer_vec_element` → `"ptr"`. The runtime ABI
+    // checker classifies an actor head as `"ptr"`. The runtime ABI
     // (`hew_vec_new_ptr` + `hew_vec_{push,get,set,pop}_ptr`) already exists;
     // these rows register the symbols with HIR's `fn_registry` and codegen's
     // `fn_symbols` so the constructor (`hew_vec_new_ptr`) and the element ops
@@ -2769,7 +2762,7 @@ fn to_string_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::String => Some("len_str"),
-        ResolvedTy::Named { name, .. } if name == "Vec" => Some("len_vec"),
+        ResolvedTy::Named { head, .. } if head.registry_key() == "Vec" => Some("len_vec"),
         _ => None,
     }
 }

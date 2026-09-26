@@ -43,7 +43,7 @@ impl Checker {
     ) -> Option<FnSig> {
         let owner = self.current_module_identity()?;
         let qualified = format!("{owner}.{type_name}");
-        let td = self.type_defs.get(&qualified)?;
+        let td = self.type_def_at(&qualified)?;
         td.methods.get(method).cloned()
     }
 
@@ -53,44 +53,143 @@ impl Checker {
         type_args: &[Ty],
         method: &str,
     ) -> Option<FnSig> {
-        shared_lookup_named_method_sig(&self.type_defs, &self.fn_sigs, type_name, type_args, method)
-            .or_else(|| {
-                let target = self.alias_target_for_instance(type_name, type_args)?;
-                crate::method_resolution::lookup_method_sig(
-                    &self.type_defs,
-                    &self.fn_sigs,
-                    &target,
-                    method,
-                )
-            })
-            .or_else(|| {
-                self.module_registry
-                    .resolve_handle_method_sig(type_name, method)
-                    .map(|(_c_symbol, params, return_type, canonical_owner)| {
-                        // The registry's own projection sees only the loaded
-                        // module and its imports, so a nominal that module
-                        // neither declares nor imports (`stream.Sink` reached
-                        // from `std.net.http`) comes back at the legacy short
-                        // owner while source resolution mints the complete one.
-                        // Re-resolve through the shared ladder so a method
-                        // signature and the source around it name one owner
-                        // (rc1-F1 stage D, registry producer).
-                        FnSig {
-                            params: params
-                                .iter()
-                                .map(|ty| {
-                                    self.canonicalize_registry_signature(ty, &canonical_owner, &[])
-                                })
-                                .collect(),
-                            return_type: self.canonicalize_registry_signature(
-                                &return_type,
-                                &canonical_owner,
-                                &[],
-                            ),
-                            ..FnSig::default()
-                        }
-                    })
-            })
+        shared_lookup_named_method_sig(
+            &self.defs,
+            &self.type_defs,
+            self.sigs(),
+            type_name,
+            type_args,
+            method,
+        )
+        .or_else(|| {
+            let target = self.alias_target_for_instance(type_name, type_args)?;
+            crate::method_resolution::lookup_method_sig(
+                &self.defs,
+                &self.type_defs,
+                self.sigs(),
+                &target,
+                method,
+            )
+        })
+        .or_else(|| {
+            self.module_registry
+                .resolve_handle_method_sig(type_name, method)
+                .map(|(_c_symbol, params, return_type, canonical_owner)| {
+                    // The registry's own projection sees only the loaded
+                    // module and its imports, so a nominal that module
+                    // neither declares nor imports (`stream.Sink` reached
+                    // from `std.net.http`) comes back at the legacy short
+                    // owner while source resolution mints the complete one.
+                    // Re-resolve through the shared ladder so a method
+                    // signature and the source around it name one owner
+                    // (rc1-F1 stage D, registry producer).
+                    FnSig {
+                        params: params
+                            .iter()
+                            .map(|ty| {
+                                self.canonicalize_registry_signature(ty, &canonical_owner, &[])
+                            })
+                            .collect(),
+                        return_type: self.canonicalize_registry_signature(
+                            &return_type,
+                            &canonical_owner,
+                            &[],
+                        ),
+                        ..FnSig::default()
+                    }
+                })
+        })
+    }
+
+    /// The receiver declaration a dot call dispatches on and, when the
+    /// receiver's arguments are known, its exact instance.
+    pub(in crate::check) fn dispatch_receiver(
+        &self,
+        receiver: &Ty,
+    ) -> Option<(crate::NominalId, Option<crate::NominalInstance>)> {
+        let resolved = self.subst.resolve(receiver);
+        let head_only = match &resolved {
+            Ty::Named { head, .. } => Ty::named_head(*head, Vec::new()),
+            other => other.clone(),
+        };
+        let head = ResolvedTy::from_ty(&head_only)
+            .ok()?
+            .impl_receiver_instance(&self.defs)?
+            .nominal;
+        let instance = ResolvedTy::from_ty(&resolved)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance(&self.defs));
+        Some((head, instance))
+    }
+
+    /// Select the source method a dot call `receiver.method()` reaches (R1).
+    pub(in crate::check) fn select_method(
+        &self,
+        receiver: &Ty,
+        method: &str,
+    ) -> crate::check::dispatch_table::MethodSelection {
+        match self.dispatch_receiver(receiver) {
+            Some((head, instance)) => {
+                self.dispatch
+                    .select(head, instance.as_ref(), Symbol::intern(method))
+            }
+            None => crate::check::dispatch_table::MethodSelection::Missing,
+        }
+    }
+
+    /// The signature of a selected source method, instantiated for the
+    /// receiver's type arguments.
+    pub(in crate::check) fn selected_method_sig(
+        &self,
+        receiver: &Ty,
+        declaration: crate::DefId,
+    ) -> Option<FnSig> {
+        let sig = self.fn_sigs.get(&declaration)?.clone();
+        let Ty::Named { args, .. } = receiver else {
+            return Some(sig);
+        };
+        let type_params = self
+            .type_def_view()
+            .of_ty(receiver)
+            .map(|type_def| type_def.type_params.clone())
+            .unwrap_or_default();
+        Some(crate::method_resolution::instantiate_named_method_sig(
+            sig,
+            &type_params,
+            args,
+        ))
+    }
+
+    /// Report a dot call two traits' methods answer with no inherent method
+    /// to prefer (R1).
+    pub(in crate::check) fn report_ambiguous_method(
+        &mut self,
+        receiver: &Ty,
+        method: &str,
+        traits: &[(crate::DefId, crate::DefId)],
+        span: &Span,
+    ) {
+        let names: Vec<&str> = traits
+            .iter()
+            .map(|(declaring, _)| self.defs.display(*declaring))
+            .collect();
+        self.report_error_with_suggestions(
+            TypeErrorKind::AmbiguousTraitMethod,
+            span,
+            format!(
+                "ambiguous method `{method}` on `{}`: traits {} both provide it",
+                receiver.user_facing(),
+                names
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+            names
+                .iter()
+                .map(|name| format!("call it as `{name}.{method}(value)` or through a bound"))
+                .collect(),
+        );
     }
 
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
@@ -105,17 +204,34 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let Ty::Named {
-            name,
+            head,
             args: type_args,
-            ..
         } = receiver_ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let canonical_name = self
             .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.clone());
-        let sig = self.lookup_named_method_sig(&canonical_name, type_args, method)?;
+            .unwrap_or_else(|| name.to_string());
+        let (sig, selected) = match self.select_method(receiver_ty, method) {
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => (
+                self.selected_method_sig(receiver_ty, declaration)?,
+                Some(declaration),
+            ),
+            crate::check::dispatch_table::MethodSelection::Ambiguous(traits) => {
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_ambiguous_method(receiver_ty, method, &traits, span);
+                return Some(Ty::Error);
+            }
+            crate::check::dispatch_table::MethodSelection::Missing => (
+                self.lookup_named_method_sig(&canonical_name, type_args, method)?,
+                None,
+            ),
+        };
         let return_type = self
             .apply_instantiated_call_signature(
                 &sig,
@@ -141,7 +257,12 @@ impl Checker {
         // `self.handle` and reconstructs wrappers where needed.  Resolve the
         // canonical, source-qualified impl key here, at the lookup boundary,
         // rather than making HIR rediscover it from a presentation name.
-        self.record_named_source_method_rewrite(receiver_ty, method, &sig, span);
+        match selected {
+            Some(declaration) => {
+                self.record_selected_method_rewrite(receiver_ty, method, declaration, &sig, span);
+            }
+            None => self.record_named_source_method_rewrite(receiver_ty, method, &sig, span),
+        }
         Some(self.qualify_method_return_to_receiver_owner(&canonical_name, &return_type))
     }
 
@@ -154,16 +275,16 @@ impl Checker {
         method: &str,
     ) -> Option<String> {
         let Ty::Named {
-            name,
+            head,
             args: type_args,
-            ..
         } = receiver_ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let canonical_name = self
             .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.clone());
+            .unwrap_or_else(|| name.to_string());
         let method_key = format!("{canonical_name}::{method}");
         if type_args.is_empty() {
             return Some(method_key);
@@ -192,12 +313,14 @@ impl Checker {
         sig: &FnSig,
         span: &Span,
     ) {
-        let Ty::Named { name, builtin, .. } = receiver_ty else {
+        let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
+        let name = head.registry_key();
+        let builtin = head.builtin();
         let canonical_name = self
             .canonical_nominal_name(name)
-            .unwrap_or_else(|| name.clone());
+            .unwrap_or_else(|| name.to_string());
         let Some(dispatch_key) = self.named_source_method_dispatch_key(receiver_ty, method) else {
             return;
         };
@@ -208,7 +331,7 @@ impl Checker {
             || self.named_type_method_consumes_receiver(&canonical_name, method)
             || self.named_type_inherent_close_consumes_receiver(
                 &canonical_name,
-                *builtin,
+                builtin,
                 method,
                 sig,
             );
@@ -221,6 +344,50 @@ impl Checker {
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::impl_method(declaration),
                 c_symbol: dispatch_key,
+                descriptor: None,
+                extern_identity: None,
+                consumes_receiver,
+                requires_mutable_receiver: sig.requires_mutable_receiver,
+                receiver_update: sig.receiver_update,
+                returns_receiver_identity: sig.returns_receiver_identity,
+            },
+        );
+    }
+
+    /// Record a direct call to the source method dispatch selected.
+    pub(super) fn record_selected_method_rewrite(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        declaration: crate::DefId,
+        sig: &FnSig,
+        span: &Span,
+    ) {
+        let Ty::Named { head, .. } = receiver_ty else {
+            return;
+        };
+        let name = head.registry_key();
+        let builtin = head.builtin();
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.to_string());
+        let consumes_receiver = sig.consumes_receiver
+            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_inherent_close_consumes_receiver(
+                &canonical_name,
+                builtin,
+                method,
+                sig,
+            );
+        if consumes_receiver {
+            self.method_call_consumes_receiver
+                .insert(SpanKey::in_module(span, self.current_module_idx));
+        }
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::impl_method(declaration),
+                c_symbol: self.defs.path(declaration).to_string(),
                 descriptor: None,
                 extern_identity: None,
                 consumes_receiver,
@@ -254,7 +421,7 @@ impl Checker {
             .canonical_method_receiver_identity(receiver_name);
         let exact_receiver = if let Some(canonical) = canonical_registry_receiver.as_deref() {
             canonical
-        } else if self.type_defs.contains_key(receiver_name) {
+        } else if self.type_def_at(receiver_name).is_some() {
             receiver_name
         } else {
             return ty.clone();
@@ -268,37 +435,34 @@ impl Checker {
     pub(super) fn qualify_method_return_to_owner(&self, owner: &str, ty: &Ty) -> Ty {
         let mapped =
             ty.map_children_pub(&|child| self.qualify_method_return_to_owner(owner, child));
+        // Only a spelling the registry mirror left unresolved is qualified;
+        // a resolved head already names its declaration.
         let Ty::Named {
-            name,
+            head: crate::TypeHead::Unresolved(spelling),
             args,
-            builtin: None,
         } = mapped
         else {
             return mapped;
         };
+        let name = spelling.as_str();
         if name.contains('.') {
             let name = self
                 .module_registry
-                .canonical_registry_signature_type_identity(&name, owner)
-                .unwrap_or(name);
-            return Ty::Named {
-                name,
-                args,
-                builtin: None,
-            };
+                .canonical_registry_signature_type_identity(name, owner)
+                .unwrap_or_else(|| name.to_string());
+            return self.named_ty_for_key(&name, args);
         }
         let qualified = format!("{owner}.{name}");
-        Ty::Named {
-            name: if self.type_defs.contains_key(&qualified)
+        self.named_ty_for_key(
+            &if self.type_def_at(&qualified).is_some()
                 || self.module_registry.is_method_receiver_type(&qualified)
             {
                 qualified
             } else {
-                name
+                name.to_string()
             },
             args,
-            builtin: None,
-        }
+        )
     }
 
     pub(super) fn call_arg_types(&self, args: &[CallArg]) -> Vec<Option<Ty>> {
@@ -325,7 +489,8 @@ impl Checker {
         type_display_name: &str,
     ) -> Ty {
         if let Some(ty) = self.try_resolve_named_method(receiver_ty, method_name, args, span) {
-            if let Ty::Named { name, .. } = receiver_ty {
+            if let Ty::Named { head, .. } = receiver_ty {
+                let name = head.registry_key();
                 // If the receiver type is a registered actor declaration AND
                 // the resolved method is a receive handler (tracked in
                 // `actor_receive_methods`), this dispatch crosses the
@@ -336,15 +501,14 @@ impl Checker {
                 // method-call path.
                 let method_key = format!("{name}::{method_name}");
                 let is_actor_receive_dispatch = self
-                    .type_defs
-                    .get(name)
+                    .type_def_at(name)
                     .is_some_and(|td| td.kind == TypeDefKind::Actor)
                     && self.actor_receive_methods.contains(&method_key);
                 if is_actor_receive_dispatch {
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::ActorInstance {
-                            actor_name: name.clone(),
+                            actor_name: name.to_string(),
                         },
                     );
                     self.enforce_actor_method_send_args(args);
@@ -353,7 +517,7 @@ impl Checker {
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::NamedTypeInstance {
-                        type_name: name.clone(),
+                        type_name: name.to_string(),
                     },
                 );
             }
@@ -380,18 +544,22 @@ impl Checker {
         // `unclonable-leaf-fails-closed-transitively`.
         if method_name == "clone" && args.is_empty() {
             if let Ty::Named {
-                name,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 args: type_args,
-                builtin: None,
+                ..
             } = receiver_ty
             {
+                let name = head.registry_key();
                 match self.record_clone_admissibility(name, type_args, span) {
                     RecordCloneAdmissibility::Admissible => {
                         let record_ty = receiver_ty.clone();
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::RecordCloneInplace {
-                                record_name: name.clone(),
+                                record_name: name.to_string(),
                             },
                         );
                         // Seed for codegen's `emit_state_clone_drop_synthesis`.
@@ -403,8 +571,10 @@ impl Checker {
                         // names no monomorphic layout, so seeding it here would
                         // register a dead key. This mirrors the MIR keying
                         // (`monomorphic_user_record_key`, `args.is_empty()`).
-                        if type_args.is_empty() && !self.user_clone_record_seeds.contains(name) {
-                            self.user_clone_record_seeds.push(name.clone());
+                        if type_args.is_empty()
+                            && !self.user_clone_record_seeds.iter().any(|seed| seed == name)
+                        {
+                            self.user_clone_record_seeds.push(name.to_string());
                         }
                         return record_ty;
                     }
@@ -473,7 +643,7 @@ impl Checker {
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::RecordCloneInplace {
-                                record_name: name.clone(),
+                                record_name: name.to_string(),
                             },
                         );
                         return param_ty;
@@ -534,13 +704,17 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let Ty::Named {
-            name,
+            head:
+                head @ (crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_)),
             args: type_args,
-            builtin: None,
+            ..
         } = receiver_ty
         else {
             return None;
         };
+        let name = head.registry_key();
         let type_def = self.lookup_type_def(name)?;
         let field_ty = type_def.fields.get(method_name)?;
         let field_ty =
@@ -551,7 +725,7 @@ impl Checker {
         // stored handle, not an indirect function call.
         if let Ty::Named {
             args: ref type_args,
-            builtin: Some(crate::BuiltinType::ActorFn),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
             ..
         } = resolved_field
         {
@@ -630,7 +804,7 @@ impl Checker {
     pub(super) fn similar_methods(&self, receiver_ty: &Ty, method_name: &str) -> Vec<String> {
         crate::error::find_similar(
             method_name,
-            collect_method_sigs_for_receiver(&self.type_defs, &self.fn_sigs, receiver_ty)
+            collect_method_sigs_for_receiver(&self.defs, &self.type_defs, self.sigs(), receiver_ty)
                 .iter()
                 .map(|(name, _)| name.as_str()),
         )
@@ -806,12 +980,13 @@ impl Checker {
                     .map(|item| self.ty_to_dispatch_pattern(item))
                     .collect(),
             ),
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 if args.is_empty() {
-                    TyPattern::Primitive(name)
+                    TyPattern::Primitive(name.to_string())
                 } else {
                     TyPattern::App {
-                        ctor: name,
+                        ctor: name.to_string(),
                         args: args
                             .iter()
                             .map(|arg| self.ty_to_dispatch_pattern(arg))
@@ -835,7 +1010,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|param| param == param_name) {
                     return sig
                         .type_param_bounds

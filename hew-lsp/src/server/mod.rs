@@ -7013,13 +7013,15 @@ machine Traffic {
             .as_ref()
             .expect("cross-module machine fixture should be type checked");
         assert!(
-            type_output.type_defs.contains_key("machines.toggle.Toggle"),
+            type_output
+                .type_def_at_path("machines.toggle.Toggle")
+                .is_some(),
             "imported machine type should retain its canonical owner in type defs"
         );
         assert!(
             type_output
-                .type_defs
-                .contains_key("machines.toggle.ToggleEvent"),
+                .type_def_at_path("machines.toggle.ToggleEvent")
+                .is_some(),
             "imported machine event type should retain its canonical owner in type defs"
         );
 

@@ -69,11 +69,7 @@ fn item_declares_name(item: &Item, name: &str) -> bool {
 }
 
 fn generic_param(name: &str) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args: vec![],
-    }
+    Ty::param(name)
 }
 
 fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_type: &Ty) {
@@ -85,7 +81,7 @@ fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_typ
         output.errors
     );
 
-    let sig = output.fn_sigs.get(sig_name).unwrap_or_else(|| {
+    let sig = output.sigs().get(sig_name).unwrap_or_else(|| {
         panic!(
             "Expected signature for {}, got {:?}",
             sig_name, output.fn_sigs
@@ -1172,7 +1168,7 @@ fn inference_hole_function_parameter_signature_is_rejected() {
         output.errors
     );
     assert!(
-        !output.fn_sigs.contains_key("f"),
+        !output.sigs().contains("f"),
         "failing function signature should be stripped from checker output: {:?}",
         output.fn_sigs
     );
@@ -1444,7 +1440,7 @@ fn checker_output_success_path_contains_no_unresolved_ty_var() {
     );
     assert_expr_type_output_has_no_unresolved_ty_vars(&output);
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("id")
         .unwrap_or_else(|| panic!("expected function signature for id"));
     assert!(
@@ -1453,8 +1449,7 @@ fn checker_output_success_path_contains_no_unresolved_ty_var() {
         "signature id leaked unresolved Ty::Var: {sig:?}"
     );
     let ty_def = output
-        .type_defs
-        .get("Box")
+        .type_def_at_path("Box")
         .unwrap_or_else(|| panic!("expected type def for Box"));
     assert!(
         ty_def
@@ -1482,7 +1477,7 @@ fn inference_hole_function_return_signature_is_resolved() {
         output.errors
     );
     assert_eq!(
-        output.fn_sigs.get("f").map(|sig| &sig.return_type),
+        output.sigs().get("f").map(|sig| &sig.return_type),
         Some(&hew_types::Ty::Unit)
     );
 }
@@ -1558,7 +1553,7 @@ fn inference_hole_type_field_is_rejected() {
         output.errors
     );
     assert!(
-        !output.type_defs.contains_key("Box"),
+        output.type_def_at_path("Box").is_none(),
         "failing type definition should be stripped from checker output: {:?}",
         output.type_defs
     );
@@ -1582,12 +1577,12 @@ fn inference_hole_enum_variant_constructor_is_stripped_from_output() {
         output.errors
     );
     assert!(
-        !output.type_defs.contains_key("Maybe"),
+        output.type_def_at_path("Maybe").is_none(),
         "failing enum definition should be stripped from checker output: {:?}",
         output.type_defs
     );
     assert!(
-        !output.fn_sigs.contains_key("Some"),
+        !output.sigs().contains("Some"),
         "failing variant constructor should be stripped from checker output: {:?}",
         output.fn_sigs
     );

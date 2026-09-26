@@ -108,7 +108,8 @@ impl LowerCtx {
             .or_else(|| name.rsplit_once('.'))
             .map_or(name, |(_, variant)| variant);
         let mut candidates = Vec::with_capacity(5);
-        if let Some(ResolvedTy::Named { name: owner, .. }) = owner_ty {
+        if let Some(ResolvedTy::Named { head, .. }) = owner_ty {
+            let owner = head.registry_key();
             candidates.push(format!("{owner}::{variant_name}"));
             if !owner.contains('.') {
                 if let Some(module) = self.current_module_name.as_deref() {
@@ -190,7 +191,7 @@ impl LowerCtx {
         match ty {
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::Option),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Option),
                 ..
             } if args.len() == 1 => Some(&args[0]),
             _ => None,
@@ -201,7 +202,7 @@ impl LowerCtx {
         match ty {
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::Result),
+                head: hew_types::TypeHead::Builtin(BuiltinType::Result),
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,

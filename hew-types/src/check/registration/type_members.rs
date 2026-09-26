@@ -26,9 +26,8 @@ impl Checker {
         let struct_names: Vec<String> = self
             .type_defs
             .iter()
-            .filter_map(|(name, type_def)| {
-                (type_def.kind == TypeDefKind::Struct).then_some(name.clone())
-            })
+            .filter(|&(_id, type_def)| type_def.kind == TypeDefKind::Struct)
+            .map(|(id, _type_def)| self.defs.path(id.declaration()).to_string())
             .collect();
 
         self.handle_bearing_structs = struct_names
@@ -56,11 +55,11 @@ impl Checker {
     }
 
     pub(in crate::check) fn registered_type_def_name(&self, name: &str) -> Option<String> {
-        if self.type_defs.contains_key(name) {
+        if self.type_def_at(name).is_some() {
             return Some(name.to_string());
         }
         self.strip_module_prefix(name)
-            .filter(|unqualified| self.type_defs.contains_key(*unqualified))
+            .filter(|unqualified| self.type_def_at(unqualified).is_some())
             .map(str::to_string)
     }
 
@@ -221,13 +220,14 @@ impl Checker {
                             // identity only.
                             Item::Trait(td) => {
                                 let qualified = format!("{module_name}.{}", td.name);
-                                self.trait_defs.entry(qualified).or_insert_with(|| {
-                                    Self::trait_info_from_decl(
+                                if !self.trait_def_keys.contains_key(&qualified) {
+                                    let info = Self::trait_info_from_decl(
                                         td,
                                         Some(module_name.clone()),
                                         self.current_module_idx,
-                                    )
-                                });
+                                    );
+                                    self.insert_trait_def(&qualified, &qualified, info);
+                                }
                             }
                             // Register machine state/event binding tables for the
                             // non-root module path, mirroring the root-loop arm at
@@ -310,7 +310,8 @@ impl Checker {
                         &mut trait_errors,
                     );
                     self.errors.extend(trait_errors);
-                    self.trait_defs.insert(td.name.to_string(), info);
+                    let declaration = self.declaration_identity(td.name.name.as_str());
+                    self.insert_trait_def(td.name.name.as_str(), &declaration, info);
                     self.local_trait_defs.insert(td.name.to_string());
                     // Record super-trait relationships
                     if let Some(supers) = &td.super_traits {
@@ -321,12 +322,7 @@ impl Checker {
                                 s.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
                             })
                             .collect();
-                        self.trait_super
-                            .insert(td.name.to_string(), super_names.clone());
-                        if let Some(module) = self.current_module.as_deref() {
-                            self.trait_super
-                                .insert(format!("{module}.{}", td.name), super_names);
-                        }
+                        self.set_trait_supers(td.name.name.as_str(), super_names);
                     }
                     // Harvest `#[lang_item("…")]` attributes into the
                     // lang-item registry so downstream passes (HIR f-string
@@ -399,7 +395,7 @@ impl Checker {
         self.generic_ctx.push(
             type_params
                 .iter()
-                .map(|param| (param.clone(), Ty::named(param, vec![])))
+                .map(|param| (param.clone(), Ty::param(param)))
                 .collect(),
         );
         let mut holes = Vec::new();
@@ -630,7 +626,7 @@ impl Checker {
 
         let identity = self.authoritative_type_def_key(ad.name.name.as_str());
         let mut changed = false;
-        if let Some(stored) = self.type_defs.get_mut(&identity) {
+        if let Some(stored) = self.type_def_at_mut(&identity) {
             if stored.kind == TypeDefKind::Actor && stored.fields != fields {
                 stored.fields = fields;
                 changed = true;
@@ -653,7 +649,7 @@ impl Checker {
     pub(super) fn authoritative_type_def_key(&self, bare_name: &str) -> String {
         if let Some(module_owner) = self.current_module_identity() {
             let qualified = format!("{module_owner}.{bare_name}");
-            if self.type_defs.contains_key(&qualified) {
+            if self.type_def_at(&qualified).is_some() {
                 return qualified;
             }
         }
@@ -667,7 +663,7 @@ impl Checker {
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
             self.register_canonical_type_def(&module_owner, name, &type_def);
         } else {
-            self.type_defs.insert(name.to_string(), type_def);
+            self.insert_type_def(name, type_def);
         }
         self.handle_bearing_dirty = true;
     }
@@ -733,7 +729,7 @@ impl Checker {
         }
 
         let stored_key = self.authoritative_type_def_key(td.name.name.as_str());
-        let Some(stored) = self.type_defs.get(&stored_key) else {
+        let Some(stored) = self.type_def_at(&stored_key) else {
             return;
         };
         if stored.fields == fields && stored.variants == variants {
@@ -757,7 +753,7 @@ impl Checker {
         // Unit/struct variants carry no member-dependent constructor signature.
         for (variant_name, variant_def) in &type_def.variants {
             if let VariantDef::Tuple(variant_tys) = variant_def {
-                if let Some(sig) = self.fn_sigs.get_mut(variant_name) {
+                if let Some(sig) = self.fn_sig_mut(variant_name) {
                     sig.params.clone_from(variant_tys);
                 }
             }
@@ -815,7 +811,7 @@ impl Checker {
                 }
 
                 let stored_key = self.authoritative_type_def_key(rd.name.name.as_str());
-                let Some(stored) = self.type_defs.get(&stored_key) else {
+                let Some(stored) = self.type_def_at(&stored_key) else {
                     return;
                 };
                 if stored.fields == fields {
@@ -848,7 +844,7 @@ impl Checker {
                 // the positional types live only in the constructor `fn_sig`.
                 let canonical = self.authoritative_type_def_key(rd.name.name.as_str());
                 let mut changed = false;
-                if let Some(sig) = self.fn_sigs.get_mut(&canonical) {
+                if let Some(sig) = self.fn_sig_mut(&canonical) {
                     if sig.params != param_tys {
                         sig.params.clone_from(&param_tys);
                         changed = true;
@@ -900,7 +896,7 @@ impl Checker {
         }
 
         let machine_key = self.authoritative_type_def_key(md.name.name.as_str());
-        if let Some(stored) = self.type_defs.get(&machine_key) {
+        if let Some(stored) = self.type_def_at(&machine_key) {
             if stored.variants != variants {
                 let type_def = TypeDef {
                     kind: TypeDefKind::Machine,
@@ -951,7 +947,7 @@ impl Checker {
             }
         }
         let event_key = self.authoritative_type_def_key(&event_type_name);
-        if let Some(stored) = self.type_defs.get(&event_key) {
+        if let Some(stored) = self.type_def_at(&event_key) {
             if stored.variants != event_variants {
                 let event_type_def = TypeDef {
                     kind: TypeDefKind::Enum,
@@ -1016,7 +1012,7 @@ impl Checker {
         let guard_key = self
             .current_module_identity()
             .map_or_else(|| td.name.to_string(), |m| format!("{m}.{}", td.name));
-        if self.type_defs.contains_key(guard_key.as_str()) {
+        if self.type_def_at(guard_key.as_str()).is_some() {
             return;
         }
         // #1295: record `#[resource]` types from pre-registered (imported)
@@ -1064,11 +1060,7 @@ impl Checker {
         let mut hole_vars = Vec::new();
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
 
         for item in &td.body {
@@ -1083,14 +1075,23 @@ impl Checker {
                         || td.name.to_string(),
                         |module| format!("{module}.{}", td.name),
                     );
+                    let variant_member_kind =
+                        if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                            crate::DeclarationKind::MachineState
+                        } else {
+                            crate::DeclarationKind::Variant
+                        };
                     let return_type =
-                        self.variant_nominal_ty(declaration_name.clone(), enum_return_args.clone());
+                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
                             // Register variant constructor so body-checking can construct values
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1111,8 +1112,11 @@ impl Checker {
                                 variant.name.to_string(),
                                 VariantDef::Tuple(variant_tys.clone()),
                             );
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1194,7 +1198,7 @@ impl Checker {
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
             self.register_canonical_type_def(&module_owner, td.name.name.as_str(), &type_def);
         }
-        self.type_defs.insert(td.name.to_string(), type_def);
+        self.insert_type_def(td.name.name.as_str(), type_def);
         self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
     }
@@ -1385,11 +1389,7 @@ impl Checker {
             self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
 
         for item in &td.body {
@@ -1405,13 +1405,22 @@ impl Checker {
                         || td.name.to_string(),
                         |module| format!("{module}.{}", td.name),
                     );
+                    let variant_member_kind =
+                        if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                            crate::DeclarationKind::MachineState
+                        } else {
+                            crate::DeclarationKind::Variant
+                        };
                     let return_type =
-                        self.variant_nominal_ty(declaration_name.clone(), enum_return_args.clone());
+                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1434,8 +1443,11 @@ impl Checker {
                             );
 
                             // Register variant constructor as function
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1516,7 +1528,7 @@ impl Checker {
         // surface; this covers the registration call itself.
         self.seed_qualified_type_markers_for_current_module(td.name.name.as_str());
 
-        self.type_defs.insert(td.name.to_string(), type_def);
+        self.insert_type_def(td.name.name.as_str(), type_def);
         self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
 
@@ -1558,21 +1570,13 @@ impl Checker {
         // Build the return type for constructors: `R` or `R<T1, T2, …>`
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
         let declaration_name = self.current_module_identity().map_or_else(
             || rd.name.to_string(),
             |module| format!("{module}.{}", rd.name),
         );
-        let return_type = Ty::Named {
-            builtin: None,
-            name: declaration_name.clone(),
-            args: enum_return_args,
-        };
+        let return_type = self.named_ty_for_key(&declaration_name, enum_return_args);
 
         let mut fields: HashMap<String, Ty> = HashMap::new();
         let mut field_order: Vec<String> = Vec::new();
@@ -1611,7 +1615,7 @@ impl Checker {
                     return_type: return_type.clone(),
                     ..FnSig::default()
                 };
-                self.fn_sigs.insert(declaration_name.clone(), signature);
+                self.insert_fn_sig_at(&declaration_name, signature);
             }
         }
 
@@ -1646,7 +1650,7 @@ impl Checker {
         // value-type semantics (Resource always false; all other markers field-driven).
         self.registry.register_record_type(declaration_name.clone());
 
-        self.type_defs.insert(declaration_name.clone(), type_def);
+        self.insert_type_def(&declaration_name, type_def);
         self.record_type_def_inference_holes(declaration_name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
     }
@@ -1673,15 +1677,11 @@ impl Checker {
             || type_name.to_string(),
             |module| format!("{module}.{type_name}"),
         );
-        let self_ty = Ty::Named {
-            builtin: None,
-            name: canonical_identity.clone(),
-            args: vec![],
-        };
+        let self_ty = self.named_ty_for_key(&canonical_identity, vec![]);
         let bytes_ty = Ty::Bytes;
 
         let Some((is_wire_struct, is_serial_wire_enum, layout_entry)) =
-            self.type_defs.get(type_name).map(|type_def| {
+            self.type_def_at(type_name).map(|type_def| {
                 let is_wire_struct = type_def.kind == TypeDefKind::Struct;
                 let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
                     && type_def
@@ -1739,7 +1739,7 @@ impl Checker {
         // `commit_reresolved_type_def` pattern. Pre-registration mints the
         // qualified skeleton before this runs; the later canonical refresh is
         // what carries the codec methods onto the durable definition.
-        if let Some(type_def) = self.type_defs.get_mut(type_name) {
+        if let Some(type_def) = self.type_def_at_mut(type_name) {
             for (method_name, params, return_type) in &instance_methods {
                 type_def.methods.insert(
                     (*method_name).to_string(),
@@ -1775,14 +1775,21 @@ impl Checker {
             // ONLY. The call-site arm canonicalizes the receiver's surface
             // spelling (`Env.from_json` inside the defining module, an
             // importer's binding, an `as`-alias) to this key before lookup.
-            self.fn_sigs.insert(
-                format!("{canonical_identity}.{method_name}"),
-                FnSig {
-                    params,
-                    return_type,
-                    ..FnSig::default()
-                },
-            );
+            let sig = FnSig {
+                params,
+                return_type,
+                ..FnSig::default()
+            };
+            let key = format!("{canonical_identity}.{method_name}");
+            match self.lookup_declaration(&canonical_identity) {
+                Some(owner) => {
+                    let member = self
+                        .defs
+                        .mint_codec_member(owner, Symbol::intern(method_name));
+                    self.insert_fn_sig(&key, member, sig);
+                }
+                None => self.insert_fn_sig_at(&key, sig),
+            }
         }
     }
 
@@ -2044,26 +2051,14 @@ impl Checker {
         }
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::Named {
-                builtin: None,
-                name: name.clone(),
-                args: vec![],
-            })
+            .map(|name| Ty::param(name))
             .collect();
         let machine_identity = self.declaration_identity(md.name.name.as_str());
-        let machine_ty = Ty::Named {
-            builtin: None,
-            name: machine_identity.clone(),
-            args: machine_generic_args.clone(),
-        };
+        let machine_ty = self.named_ty_for_key(&machine_identity, machine_generic_args.clone());
 
         let event_type_name = format!("{}Event", md.name);
         let event_identity = self.declaration_identity(&event_type_name);
-        let event_ty = Ty::Named {
-            builtin: None,
-            name: event_identity.clone(),
-            args: machine_generic_args.clone(),
-        };
+        let event_ty = self.named_ty_for_key(&event_identity, machine_generic_args.clone());
 
         // Build state variants
         let mut variants = HashMap::new();
@@ -2074,8 +2069,11 @@ impl Checker {
                 // Register unit state constructor as a function. For generic
                 // machines (e.g. `machine Worker<T>`), the constructor returns
                 // `Worker<T>` so callers can instantiate with concrete args.
-                self.fn_sigs.insert(
-                    state.name.to_string(),
+                self.insert_member_sig(
+                    state.name.name.as_str(),
+                    &machine_identity,
+                    state.name.name,
+                    crate::DeclarationKind::MachineState,
                     FnSig {
                         type_params: type_param_names.clone(),
                         type_param_bounds: type_param_bounds.clone(),
@@ -2184,7 +2182,7 @@ impl Checker {
         self.known_types.insert(event_identity);
 
         // Register the step() method on the machine type
-        if let Some(td) = self.type_defs.get_mut(&machine_identity) {
+        if let Some(td) = self.type_def_at_mut(&machine_identity) {
             td.methods.insert(
                 "step".to_string(),
                 FnSig {
@@ -2217,8 +2215,8 @@ impl Checker {
             );
         }
         if machine_identity != md.name.name.as_str() {
-            if let Some(type_def) = self.type_defs.get(&machine_identity).cloned() {
-                self.type_defs.insert(md.name.to_string(), type_def);
+            if let Some(type_def) = self.type_def_at(&machine_identity).cloned() {
+                self.insert_type_def(md.name.name.as_str(), type_def);
             }
         }
     }

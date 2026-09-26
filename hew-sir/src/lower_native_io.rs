@@ -15,7 +15,7 @@ impl Builder<'_, '_> {
         let argument_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
         operation
             .contract()
-            .instantiate(&argument_types, &result_ty)?;
+            .instantiate(&self.service.module.defs, &argument_types, &result_ty)?;
         self.service.require_type_facts(&result_ty)?;
         let before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();

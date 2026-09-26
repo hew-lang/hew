@@ -240,10 +240,22 @@ def is_string_collection_declaration(text: str) -> bool:
     return INFERRED_COLLECTION.search(text) is not None
 
 
-def tracked_names(ast_grep: Path, roots: list[Path]) -> set[str]:
+def tracked_names(
+    ast_grep: Path, root: Path, roots: list[Path], excluded: list[SyntaxRange]
+) -> set[str]:
+    """Names declared as string-keyed collections in production code.
+
+    A test fixture's local map does not make a production table of the same
+    name a string keyspace.
+    """
     names: set[str] = set()
     for kind in ("field_declaration", "parameter", "let_declaration"):
         for row in query(ast_grep, roots, kind=kind):
+            item = syntax_range(root, row)
+            if is_test_path(item.path) or any(
+                test.contains(item.path, item.start) for test in excluded
+            ):
+                continue
             text = str(row["text"])
             name = declaration_name(text)
             if (
@@ -267,8 +279,8 @@ def discover(ast_grep: Path, root: Path) -> list[Finding]:
     ]
     if not roots:
         raise SystemExit("canonical keyspace lint found no compiler source roots")
-    declarations = tracked_names(ast_grep, roots)
     excluded = test_ranges(ast_grep, root, roots)
+    declarations = tracked_names(ast_grep, root, roots, excluded)
     findings: list[Finding] = []
     for row in candidate_rows(ast_grep, root, roots):
         path = relative_path(root, row)

@@ -33,6 +33,8 @@ regex = "1"
 
 [dev-dependencies]
 serde_json.workspace = true
+# Integration tests build named types through the fixture constructors.
+hew-types = { path = ".", features = ["test"] }
 # W4.001 Stage C0b — `resolved_call_kernel_symbols` resolves Stage B
 # registry symbol names against the live runtime at *link time* (not
 # `dlsym`). Statically linking `hew-runtime` here folds its archive

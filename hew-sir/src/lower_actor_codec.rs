@@ -22,12 +22,13 @@ impl InstanceService<'_> {
                     .protocol_descriptor
                     .as_ref()
                     .filter(|protocol| protocol.handlers.iter().any(|handler| handler.remote_codec))
-                    .map(|_| {
-                        ResolvedTy::named_builtin(
+                    .map(|_| ResolvedTy::Named {
+                        head: hew_types::TypeHead::Actor(hew_types::NominalHead::new(
+                            hew_types::NominalId::of_declaration(actor.declaration),
                             self.module.defs.path(actor.declaration),
-                            hew_types::BuiltinType::ActorHandle,
-                            Vec::new(),
-                        )
+                        )),
+                        args: Vec::new(),
+                        is_opaque: false,
                     })
             })
             .collect::<Vec<_>>();

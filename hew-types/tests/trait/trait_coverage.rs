@@ -10,19 +10,11 @@ use hew_types::ty::{TraitObjectBound, Ty};
 // Helper: shorthand for a Named type with no generic args
 // ---------------------------------------------------------------------------
 fn named(name: &str) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args: vec![],
-    }
+    Ty::named_for_test(name, vec![])
 }
 
 fn named_with(name: &str, args: Vec<Ty>) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args,
-    }
+    Ty::named_for_test(name, args)
 }
 
 // ===========================================================================
@@ -176,7 +168,7 @@ fn string_is_not_frozen() {
 #[test]
 fn actor_handle_is_frozen() {
     let reg = TraitRegistry::new();
-    let pid = Ty::actor_handle("MyActor", vec![]);
+    let pid = Ty::actor_for_test("MyActor", vec![]);
     assert!(reg.is_frozen(&pid));
 }
 
@@ -513,11 +505,7 @@ fn negative_impl_overrides_auto_derivation() {
 fn machine_type_derives_from_fields() {
     let mut reg = TraitRegistry::new();
     reg.register_type("CounterMachine".to_string(), vec![Ty::I32, Ty::Bool]);
-    let machine = Ty::Named {
-        builtin: None,
-        name: "CounterMachine".to_string(),
-        args: vec![],
-    };
+    let machine = Ty::named_for_test("CounterMachine", vec![]);
     assert!(reg.implements_marker(&machine, MarkerTrait::Copy));
     assert!(reg.implements_marker(&machine, MarkerTrait::Send));
 }
@@ -539,6 +527,7 @@ fn trait_object_checks_super_traits() {
     let obj = Ty::TraitObject {
         traits: vec![TraitObjectBound {
             trait_name: "Drawable".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![],
         }],
@@ -722,7 +711,7 @@ fn vec_of_non_eq_is_not_eq() {
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
     };
-    let vec_fn = Ty::normalize_named("Vec".to_string(), vec![fn_ty]);
+    let vec_fn = Ty::named_for_test("Vec", vec![fn_ty]);
     assert!(!reg.implements_marker(&vec_fn, MarkerTrait::Eq));
 }
 
@@ -730,7 +719,7 @@ fn vec_of_non_eq_is_not_eq() {
 fn vec_of_float_is_eq() {
     let reg = TraitRegistry::new();
     // F64 is Eq under bitwise/total semantics, so Vec<F64> is Eq too.
-    let vec_f64 = Ty::normalize_named("Vec".to_string(), vec![Ty::F64]);
+    let vec_f64 = Ty::named_for_test("Vec", vec![Ty::F64]);
     assert!(reg.implements_marker(&vec_f64, MarkerTrait::Eq));
 }
 
@@ -762,7 +751,7 @@ fn method_sig_mutable_self() {
 #[test]
 fn actor_handle_is_copy_clone_debug() {
     let reg = TraitRegistry::new();
-    let pid = Ty::actor_handle("Logger", vec![]);
+    let pid = Ty::actor_for_test("Logger", vec![]);
     assert!(reg.implements_marker(&pid, MarkerTrait::Copy));
     assert!(reg.implements_marker(&pid, MarkerTrait::Clone));
     assert!(reg.implements_marker(&pid, MarkerTrait::Debug));

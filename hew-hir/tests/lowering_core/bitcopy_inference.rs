@@ -61,7 +61,7 @@ fn struct_of_primitives_is_inferred_bitcopy() {
         "Point's fields are all BitCopy primitives; auto-inference must promote it"
     );
 
-    let ty = ResolvedTy::named_user("Point", Vec::new());
+    let ty = ResolvedTy::named_path(&output.module.defs, "Point", Vec::new());
     assert_eq!(
         lookup_type_marker_for_ty(&ty, &output.module.type_classes),
         Some(ResourceMarker::BitCopy),
@@ -100,7 +100,7 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
         entry.0,
     );
 
-    let ty = ResolvedTy::named_user("Sparse", Vec::new());
+    let ty = ResolvedTy::named_path(&output.module.defs, "Sparse", Vec::new());
     assert_ne!(
         lookup_type_marker_for_ty(&ty, &output.module.type_classes),
         Some(ResourceMarker::BitCopy),
@@ -130,7 +130,7 @@ fn concrete_generic_type_instantiation_is_inferred_bitcopy() {
         Some(ResourceMarker::BitCopy),
         "concrete Wrapper<i64> layout should be BitCopy under its mangled key"
     );
-    let ty = ResolvedTy::named_user("Wrapper", vec![ResolvedTy::I64]);
+    let ty = ResolvedTy::named_path(&output.module.defs, "Wrapper", vec![ResolvedTy::I64]);
     assert_eq!(
         lookup_type_marker_for_ty(&ty, &output.module.type_classes),
         Some(ResourceMarker::BitCopy)
@@ -289,15 +289,14 @@ fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
         "no diagnostics expected; got: {:#?}",
         output.diagnostics
     );
-    let user_ty = ResolvedTy::named_user("Stream", Vec::new());
+    let user_ty = ResolvedTy::named_path(&output.module.defs, "Stream", Vec::new());
     assert_eq!(
         lookup_type_marker_for_ty(&user_ty, &output.module.type_classes),
         Some(ResourceMarker::None),
         "user-defined Stream with builtin: None must not inherit builtin Resource classification"
     );
 
-    let builtin_ty =
-        ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64]);
+    let builtin_ty = ResolvedTy::named_builtin(BuiltinType::Stream, vec![ResolvedTy::I64]);
     assert_eq!(
         lookup_type_marker_for_ty(&builtin_ty, &output.module.type_classes),
         Some(ResourceMarker::Resource),

@@ -364,16 +364,16 @@ fn overlapping_builtin_impls_rejected() {
     );
 }
 
-/// user-defined record constructors — `impl<T> Acc for Box2<T>` AND
-/// `impl Acc for Box2<i64>` must be rejected (fail-closed), never silently
-/// accepted. User-record impls do NOT flow through the primitive/builtin side
-/// table (where this change's drift fail-open lived), so they are rejected by the
-/// pre-existing impl-coherence path rather than the new `ConflictingTraitImpl`
-/// primitive diagnostic. Either way the overlap must not type-check cleanly.
+/// A user record's concrete impl (`impl Acc for Box2<i64>`) serves exactly
+/// its instance beside the generic impl, and each impl's body is checked
+/// against its own signature (the concrete-specialisation dispatch of #2270).
+/// Whether a trait may be implemented twice for one user type constructor is
+/// an open language question; this pins today's accepted shape, and the
+/// builtin-constructor overlap above stays refused.
 #[test]
-fn overlapping_user_record_impls_rejected() {
+fn concrete_and_generic_user_record_impls_project_per_instance() {
     let output = typecheck(
-        r"
+        r#"
         trait Acc {
             type Output;
             fn fetch(self, key: i64) -> Option<Self.Output>;
@@ -387,12 +387,15 @@ fn overlapping_user_record_impls_rejected() {
             type Output = i64;
             fn fetch(self, key: i64) -> Option<i64> { .Some(self.inner) }
         }
-        fn main() {}
-        ",
+        fn main() {
+            let wide: Option<i64> = Box2 { inner: 1 }.fetch(0);
+            let text: Option<string> = Box2 { inner: "a" }.fetch(0);
+        }
+        "#,
     );
     assert!(
-        !output.errors.is_empty(),
-        "expected the overlapping Box2 impls to be rejected (fail-closed), \
-         but type-check was clean",
+        output.errors.is_empty(),
+        "each Box2 instance must reach its own impl: {:#?}",
+        output.errors
     );
 }

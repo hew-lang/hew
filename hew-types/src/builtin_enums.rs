@@ -49,6 +49,15 @@ pub fn monomorphic_builtin_enum(name: &str) -> Option<&'static BuiltinMonomorphi
     unique_monomorphic_builtin_enum(monomorphic_builtin_enums(), name)
 }
 
+/// The exact nominal identity of the monomorphic builtin enum a builtin is.
+#[must_use]
+pub fn monomorphic_canonical_name(builtin: crate::BuiltinType) -> Option<&'static str> {
+    monomorphic_builtin_enums()
+        .iter()
+        .find(|fact| crate::lookup_builtin_type(fact.name) == Some(builtin))
+        .map(|fact| fact.canonical_name)
+}
+
 /// Whether a named type carries both axes of generated enum authority: the
 /// exact catalog owner and that catalog row's builtin discriminator.
 #[must_use]
@@ -79,9 +88,8 @@ pub fn monomorphic_builtin_enum_ty(name: &str) -> Option<crate::Ty> {
     let fact = monomorphic_builtin_enum(name)?;
     let builtin = crate::lookup_builtin_type(fact.name)?;
     Some(crate::Ty::Named {
-        name: fact.canonical_name.to_string(),
         args: Vec::new(),
-        builtin: Some(builtin),
+        head: crate::TypeHead::Builtin(builtin),
     })
 }
 
@@ -92,9 +100,8 @@ pub fn resolved_monomorphic_builtin_enum_ty(name: &str) -> Option<crate::Resolve
     let fact = monomorphic_builtin_enum(name)?;
     let builtin = crate::lookup_builtin_type(fact.name)?;
     Some(crate::ResolvedTy::Named {
-        name: fact.canonical_name.to_string(),
         args: Vec::new(),
-        builtin: Some(builtin),
+        head: crate::TypeHead::Builtin(builtin),
         is_opaque: false,
     })
 }
@@ -120,24 +127,20 @@ mod tests {
     fn generated_enum_constructors_retain_exact_identity() {
         for fact in monomorphic_builtin_enums() {
             let ty = monomorphic_builtin_enum_ty(fact.name).expect("catalog type");
-            let normalized = crate::Ty::normalize_named(fact.canonical_name.to_string(), vec![]);
+            let normalized = crate::Ty::named_for_test(fact.canonical_name, vec![]);
             let resolved =
                 resolved_monomorphic_builtin_enum_ty(fact.name).expect("resolved catalog type");
             assert!(matches!(
                 ty,
-                crate::Ty::Named { ref name, .. } if name == fact.canonical_name
+                crate::Ty::Named { head, .. } if head.registry_key() == fact.canonical_name
             ));
             assert!(matches!(
                 resolved,
-                crate::ResolvedTy::Named { ref name, .. } if name == fact.canonical_name
+                crate::ResolvedTy::Named { head, .. } if head.registry_key() == fact.canonical_name
             ));
             assert!(matches!(
                 normalized,
-                crate::Ty::Named {
-                    ref name,
-                    builtin: Some(_),
-                    ..
-                } if name == fact.canonical_name
+                crate::Ty::Named { head: head @ crate::TypeHead::Builtin(_), .. } if head.registry_key() == fact.canonical_name
             ));
         }
     }

@@ -149,7 +149,7 @@ fn checker_accepted_monomorphic_catalog_callables_have_target_identities() {
             )
         })
         .filter_map(|entry| {
-            let signature = output.fn_sigs.get(entry.name)?;
+            let signature = output.sigs().get(entry.name)?;
             let concrete = signature.type_params.is_empty()
                 && !signature.params.iter().any(Ty::has_inference_var)
                 && !signature.return_type.has_inference_var();

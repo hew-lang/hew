@@ -19,7 +19,7 @@ pub(super) fn declaration<'a>(
     if matches!(
         ty,
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::ActorFn),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
             ..
         }
     ) {
@@ -28,7 +28,7 @@ pub(super) fn declaration<'a>(
             _ => None,
         });
     }
-    let instance = crate::actor::local_actor_instance(&module.defs, ty)?;
+    let instance = crate::actor::local_actor_instance(ty)?;
     module.items.iter().find_map(|item| match item {
         HirItem::Actor(actor)
             if actor.declaration == instance.nominal.declaration()
@@ -41,14 +41,14 @@ pub(super) fn declaration<'a>(
 }
 
 fn actor_substitution(
-    defs: &hew_types::DefTable,
+    _defs: &hew_types::DefTable,
     source: &hew_hir::HirActorDecl,
     ty: &ResolvedTy,
 ) -> Result<TypeSubstitution, String> {
     let args = if source.lambda_handle_ty.is_some() {
         Vec::new()
     } else {
-        crate::actor::local_actor_instance(defs, ty)
+        crate::actor::local_actor_instance(ty)
             .ok_or("actor instance lacks its nominal identity")?
             .args
     };
@@ -198,13 +198,16 @@ impl InstanceService<'_> {
         let handle_ty = if let Some(handle) = lambda_handle {
             handle
         } else {
-            let instance = crate::actor::local_actor_instance(&self.module.defs, ty)
+            let instance = crate::actor::local_actor_instance(ty)
                 .ok_or("declaration() matched a local actor reference")?;
-            ResolvedTy::named_builtin(
-                self.module.defs.path(instance.nominal.declaration()),
-                hew_types::BuiltinType::ActorHandle,
-                instance.args.clone(),
-            )
+            ResolvedTy::Named {
+                head: hew_types::TypeHead::Actor(hew_types::NominalHead::new(
+                    instance.nominal,
+                    self.module.defs.path(instance.nominal.declaration()),
+                )),
+                args: instance.args.clone(),
+                is_opaque: false,
+            }
         };
         let ty = &handle_ty;
         let substitution = actor_substitution(&self.module.defs, &source, ty)?;
@@ -270,19 +273,13 @@ impl InstanceService<'_> {
                 }
                 hew_hir::HirLifecycleHookKind::Crash => (
                     vec![ResolvedTy::named_builtin(
-                        "std.failure.CrashInfo",
                         hew_types::BuiltinType::CrashInfo,
                         Vec::new(),
                     )],
-                    ResolvedTy::named_builtin(
-                        "std.failure.CrashAction",
-                        hew_types::BuiltinType::CrashAction,
-                        Vec::new(),
-                    ),
+                    ResolvedTy::named_builtin(hew_types::BuiltinType::CrashAction, Vec::new()),
                 ),
                 hew_hir::HirLifecycleHookKind::Exit => (
                     vec![ResolvedTy::named_builtin(
-                        "std.failure.CrashNotification",
                         hew_types::BuiltinType::CrashNotification,
                         Vec::new(),
                     )],
@@ -290,7 +287,6 @@ impl InstanceService<'_> {
                 ),
                 hew_hir::HirLifecycleHookKind::Down => (
                     vec![ResolvedTy::named_builtin(
-                        "std.link_monitor.DownNotification",
                         hew_types::BuiltinType::DownNotification,
                         Vec::new(),
                     )],
@@ -418,7 +414,6 @@ impl InstanceService<'_> {
             // body is checked against the element it yields.
             let checked_return = if handler.is_generator {
                 ResolvedTy::named_builtin(
-                    "Stream",
                     hew_types::BuiltinType::Stream,
                     vec![substitution.apply(&handler.return_ty)],
                 )
@@ -449,7 +444,7 @@ impl InstanceService<'_> {
                 .is_generator
                 .then(|| substitution.apply(&handler.return_ty));
             let sink = stream.clone().map(|element| {
-                ResolvedTy::named_builtin("Sink", hew_types::BuiltinType::Sink, vec![element])
+                ResolvedTy::named_builtin(hew_types::BuiltinType::Sink, vec![element])
             });
             let return_ty = if stream.is_some() {
                 ResolvedTy::Unit
@@ -619,12 +614,12 @@ fn lifecycle_types_match(actual: &ResolvedTy, expected: &ResolvedTy) -> bool {
     match (actual, expected) {
         (
             ResolvedTy::Named {
-                builtin: Some(actual_builtin),
+                head: hew_types::TypeHead::Builtin(actual_builtin),
                 args: actual_args,
                 ..
             },
             ResolvedTy::Named {
-                builtin: Some(expected_builtin),
+                head: hew_types::TypeHead::Builtin(expected_builtin),
                 args: expected_args,
                 ..
             },
@@ -1510,7 +1505,7 @@ impl Builder<'_, '_> {
                 if !self.is_open() {
                     return Ok(request);
                 }
-                if matches!(&request_ty, ResolvedTy::Named { name, .. } if name == hew_types::actor_delivery::FAILURE_TYPE)
+                if matches!(&request_ty, ResolvedTy::Named { head, .. } if *head == hew_types::KnownDecl::SendFailure.head())
                 {
                     let shape = self.service.require_aggregate_shape(&request_ty)?;
                     let fields = self.emit_destructure_value(
@@ -1561,7 +1556,8 @@ impl Builder<'_, '_> {
                     hew_types::actor_delivery::request_parts(payload_ty)
                         .ok_or("recovery input lacks its sealed completion protocol")?;
                 if source_policy != *policy
-                    || source_method.rsplit("::").next() != method_id.rsplit("::").next()
+                    || source_method.spelling.as_str().rsplit("::").next()
+                        != method_id.rsplit("::").next()
                     || *params
                         != hew_types::Ty::Tuple(
                             handler.params.iter().map(ResolvedTy::to_ty).collect(),

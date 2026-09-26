@@ -77,7 +77,7 @@ impl InstanceService<'_> {
     )]
     pub(super) fn require_supervisor(&mut self, ty: &ResolvedTy) -> Result<SupervisorId, String> {
         if let ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::ChildRef),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
             args,
             ..
         } = ty
@@ -97,7 +97,7 @@ impl InstanceService<'_> {
         let source = declaration(self.module, ty)
             .ok_or("supervisor handle lacks its exact declaration")?
             .clone();
-        let instance = crate::actor::local_actor_instance(&self.module.defs, ty)
+        let instance = crate::actor::local_actor_instance(ty)
             .ok_or("supervisor instance lacks its nominal identity")?;
         if instance.args.len() != source.type_params.len() {
             return Err("supervisor instance type arguments differ from its declaration".into());
@@ -499,7 +499,7 @@ impl Builder<'_, '_> {
     /// view's supervisor identifies the declaration.
     fn pool_member_count(&mut self, view_ty: &ResolvedTy) -> Result<u32, String> {
         let ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::SupervisorPool),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::SupervisorPool),
             args,
             ..
         } = view_ty

@@ -303,7 +303,7 @@ impl SemModule {
 #[must_use]
 pub fn generator_parts(ty: &ResolvedTy) -> Option<(&ResolvedTy, &ResolvedTy)> {
     let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::Generator),
+        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
         args,
         ..
     } = ty

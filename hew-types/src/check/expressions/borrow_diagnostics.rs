@@ -1077,13 +1077,10 @@ impl Checker {
     ) -> Option<(String, String)> {
         let type_def = self.lookup_type_def(type_name)?;
         let field_ty = type_def.fields.get(field)?;
-        let Ty::Named {
-            name: field_type_name,
-            ..
-        } = field_ty
-        else {
+        let Ty::Named { head, .. } = field_ty else {
             return None;
         };
+        let field_type_name = head.registry_key();
         self.canonical_owned_handle_type_name(field_type_name)
             .map(|handle_name| (field.to_string(), handle_name))
     }

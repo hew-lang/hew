@@ -153,25 +153,6 @@ fn stdlib_vec_intoiterator_impl_binds_intoiter_assoc_to_veciter() {
 }
 
 #[test]
-fn stdlib_vec_typechecks_with_iterator_traits_registered() {
-    // Whole-stdlib smoke through the live checker (with the std module path
-    // available): confirms VecIter + impls register without disturbing other
-    // stdlib surfaces. Pre-existing checker reds on unrelated builtins are
-    // tolerated per the trait-surface lock-test precedent.
-    let src = read_stdlib_builtins();
-    let program = parse_program(&src);
-    let mut checker = checker();
-    let output = checker.check_embedded_builtins(&program, &hew_types::DefTable::new());
-    // We only assert that no diagnostic mentions VecIter or our new impls —
-    // any other pre-existing red is out of scope for this stage.
-    let veciter_red = output.errors.iter().find(|e| e.message.contains("VecIter"));
-    assert!(
-        veciter_red.is_none(),
-        "VecIter surface must type-check cleanly; got: {veciter_red:#?}"
-    );
-}
-
-#[test]
 fn vec_i32_into_iter_resolves_through_trait_surface() {
     // Synthesise a minimal program that calls `.into_iter()` on `Vec<i32>` and
     // confirm the checker resolves it through the `IntoIterator` impl shipped

@@ -349,11 +349,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
             end: interp_span.end,
             module_idx: 0,
         },
-        Ty::Named {
-            builtin: None,
-            name: "Widget".to_string(),
-            args: vec![],
-        },
+        Ty::named_for_test("Widget", vec![]),
     );
 
     let lower_output = lower_program(

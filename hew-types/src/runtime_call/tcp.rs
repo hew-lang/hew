@@ -108,9 +108,14 @@ impl TcpOp {
 }
 
 impl RuntimeCallFamily {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of the extern declaration is matched independently"
+    )]
     #[must_use]
     pub fn matches_tcp_extern(
         self,
+        defs: &crate::DefTable,
         module: &str,
         declaration: &str,
         symbol: &str,
@@ -123,7 +128,7 @@ impl RuntimeCallFamily {
             && symbol == self.c_symbol()
             && declaration == format!("{module}.{symbol}")
             && self.semantic_contract().is_some_and(|contract| {
-                contract.matches_signature(params, result)
+                contract.matches_signature(defs, params, result)
                     && consuming.len() == contract.arguments.len()
                     && consuming
                         .iter()

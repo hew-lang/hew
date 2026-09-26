@@ -249,6 +249,7 @@ pub fn find_field_definition(
     let resolved_type_name = type_output
         .type_defs
         .keys()
+        .map(|id| type_output.defs.path(id.declaration()))
         .find(|name| Ty::names_match_qualified(name, receiver_type_name))?;
     find_type_field_definition(source, parse_result, resolved_type_name, &field_name)
 }

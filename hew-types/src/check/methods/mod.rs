@@ -84,7 +84,7 @@ impl Checker {
 /// rewrite carries the produced wire type, not the `Result` wrapper.
 fn result_ok_payload(ty: &Ty) -> Option<Ty> {
     if let Ty::Named {
-        builtin: Some(BuiltinType::Result),
+        head: crate::TypeHead::Builtin(BuiltinType::Result),
         args,
         ..
     } = ty
@@ -327,11 +327,7 @@ impl CollectionTyCx {
             CollectionKind::HashMap => vec![self.key.clone(), self.val.clone()],
             CollectionKind::HashSet => vec![self.elem.clone()],
         };
-        Ty::Named {
-            builtin: Some(kind.builtin()),
-            name: kind.name().to_string(),
-            args,
-        }
+        Ty::named_head(crate::TypeHead::Builtin(kind.builtin()), args)
     }
 }
 

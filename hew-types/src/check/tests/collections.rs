@@ -83,14 +83,12 @@ fn pipe_result_preserves_endpoint_type_parameter() {
         let expected = Ty::result(
             Ty::Tuple(vec![
                 Ty::Named {
-                    name: BuiltinType::Sink.canonical_name().to_string(),
                     args: vec![element_type.clone()],
-                    builtin: Some(BuiltinType::Sink),
+                    head: crate::TypeHead::Builtin(BuiltinType::Sink),
                 },
                 Ty::Named {
-                    name: BuiltinType::Stream.canonical_name().to_string(),
                     args: vec![element_type],
-                    builtin: Some(BuiltinType::Stream),
+                    head: crate::TypeHead::Builtin(BuiltinType::Stream),
                 },
             ]),
             Ty::String,
@@ -470,11 +468,7 @@ fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() 
         assert!(
             matches!(
                 iterable_ty,
-                Ty::Named {
-                    args,
-                    builtin: Some(BuiltinType::HashSet),
-                    ..
-                } if args == &[Ty::I64]
+                Ty::Named { args, head: crate::TypeHead::Builtin(BuiltinType::HashSet), .. } if args == &[Ty::I64]
             ),
             "`{function_name}` real iterable span must remain HashSet<i64>, got {iterable_ty:?}"
         );
@@ -488,11 +482,7 @@ fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() 
         assert!(
             matches!(
                 projection_ty,
-                Ty::Named {
-                    args,
-                    builtin: Some(BuiltinType::Vec),
-                    ..
-                } if args == &[Ty::I64]
+                Ty::Named { args, head: crate::TypeHead::Builtin(BuiltinType::Vec), .. } if args == &[Ty::I64]
             ),
             "`{function_name}` synthetic projection must be Vec<i64>, got {projection_ty:?}"
         );
@@ -519,11 +509,7 @@ fn vec_new_with_error_element_remains_error_typed() {
         },
         span.clone(),
     );
-    let expected = Ty::Named {
-        name: "Vec".to_string(),
-        args: vec![Ty::Error],
-        builtin: None,
-    };
+    let expected = Ty::named_for_test("Vec", vec![Ty::Error]);
 
     let result = checker
         .check_call_against_expected_constructor(&func, None, &[], &expected, &span)
@@ -599,14 +585,11 @@ fn vec_record_clear_has_semantic_contract() {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table-driven test pins the complete equality-eligibility shape matrix"
-)]
 fn vec_contains_eq_eligibility_classifies_layout_elements() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Point");
     checker.type_defs.insert(
-        "Point".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Point".to_string(),
@@ -620,8 +603,9 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("WithFloat");
     checker.type_defs.insert(
-        "WithFloat".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "WithFloat".to_string(),
@@ -635,8 +619,9 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("Handle");
     checker.type_defs.insert(
-        "Handle".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Handle".to_string(),
@@ -651,56 +636,45 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
         },
     );
 
-    let point = Ty::Named {
-        name: "Point".to_string(),
-        args: vec![],
-        builtin: None,
-    };
-    let with_float = Ty::Named {
-        name: "WithFloat".to_string(),
-        args: vec![],
-        builtin: None,
-    };
-    let handle = Ty::Named {
-        name: "Handle".to_string(),
-        args: vec![],
-        builtin: None,
-    };
-    let unknown = Ty::Named {
-        name: "Unknown".to_string(),
-        args: vec![],
-        builtin: None,
-    };
+    let point = Ty::named_for_test("Point", vec![]);
+    let with_float = Ty::named_for_test("WithFloat", vec![]);
+    let handle = Ty::named_for_test("Handle", vec![]);
+    let unknown = Ty::named_for_test("Unknown", vec![]);
 
     assert_eq!(
-        ty_is_eq_eligible(&point, &checker.type_defs),
+        ty_is_eq_eligible(&point, checker.type_def_view()),
         EqEligibility::Eligible
     );
     // Floats are equality-eligible: structural equality bit-casts the float
     // and compares the bit pattern (bitwise/total semantics).
     assert_eq!(
-        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::F64]), &checker.type_defs),
+        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::F64]), checker.type_def_view()),
         EqEligibility::Eligible
     );
     assert_eq!(
-        ty_is_eq_eligible(&with_float, &checker.type_defs),
+        ty_is_eq_eligible(&with_float, checker.type_def_view()),
         EqEligibility::Eligible
     );
     assert_eq!(
-        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::String]), &checker.type_defs),
+        ty_is_eq_eligible(
+            &Ty::Tuple(vec![Ty::I32, Ty::String]),
+            checker.type_def_view()
+        ),
         EqEligibility::Eligible
     );
     assert_eq!(
-        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::Bytes]), &checker.type_defs),
+        ty_is_eq_eligible(
+            &Ty::Tuple(vec![Ty::I32, Ty::Bytes]),
+            checker.type_def_view()
+        ),
         EqEligibility::IneligibleManaged(Ty::Bytes)
     );
     let nested_failure = crate::eq_eligibility::ty_eq_ineligibility(
         &Ty::Named {
-            name: "Option".to_string(),
             args: vec![Ty::Tuple(vec![Ty::I32, Ty::Bytes])],
-            builtin: Some(BuiltinType::Option),
+            head: crate::TypeHead::Builtin(BuiltinType::Option),
         },
-        &checker.type_defs,
+        checker.type_def_view(),
     )
     .expect("bytes member must reject structural equality");
     assert_eq!(nested_failure.member, "Some.1");
@@ -709,11 +683,11 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
         EqEligibility::IneligibleManaged(Ty::Bytes)
     );
     assert_eq!(
-        ty_is_eq_eligible(&handle, &checker.type_defs),
+        ty_is_eq_eligible(&handle, checker.type_def_view()),
         EqEligibility::IneligibleOwned(handle)
     );
     assert_eq!(
-        ty_is_eq_eligible(&unknown, &checker.type_defs),
+        ty_is_eq_eligible(&unknown, checker.type_def_view()),
         EqEligibility::IneligibleUnknown
     );
 }
@@ -724,30 +698,17 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
     // clonable types is admissible — the per-mono clone thunk is synthesised
     // per instantiation.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Pair");
     checker.type_defs.insert(
-        "Pair".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Pair".to_string(),
             type_params: vec!["A".to_string(), "B".to_string()],
             bounds: HashMap::new(),
             fields: HashMap::from([
-                (
-                    "a".to_string(),
-                    Ty::Named {
-                        name: "A".to_string(),
-                        args: vec![],
-                        builtin: None,
-                    },
-                ),
-                (
-                    "b".to_string(),
-                    Ty::Named {
-                        name: "B".to_string(),
-                        args: vec![],
-                        builtin: None,
-                    },
-                ),
+                ("a".to_string(), Ty::param("A")),
+                ("b".to_string(), Ty::param("B")),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1054,40 +1015,31 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
     checker
         .registry
         .register_linear_type("owner.LinearTicket".to_string());
+    let __id = checker.test_declaration("ResourceWrapper");
     checker.type_defs.insert(
-        "ResourceWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "ResourceWrapper",
             "resource",
-            Ty::Named {
-                name: "owner.ResourceToken".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            checker.test_named("owner.ResourceToken", vec![]),
         ),
     );
+    let __id = checker.test_declaration("LinearWrapper");
     checker.type_defs.insert(
-        "LinearWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "LinearWrapper",
             "linear",
-            Ty::Named {
-                name: "owner.LinearTicket".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            checker.test_named("owner.LinearTicket", vec![]),
         ),
     );
+    let __id = checker.test_declaration("SharedWrapper");
     checker.type_defs.insert(
-        "SharedWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "SharedWrapper",
             "shared",
-            Ty::rc(Ty::Named {
-                name: "owner.ResourceToken".to_string(),
-                args: vec![],
-                builtin: None,
-            }),
+            Ty::rc(checker.test_named("owner.ResourceToken", vec![])),
         ),
     );
 
@@ -1125,8 +1077,9 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
     checker
         .registry
         .register_linear_type("LinearTicket".to_string());
+    let __id = checker.test_declaration("Envelope");
     checker.type_defs.insert(
-        "Envelope".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Envelope".to_string(),
@@ -1135,11 +1088,7 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
             fields: HashMap::new(),
             variants: HashMap::from([(
                 "Full".to_string(),
-                VariantDef::Tuple(vec![Ty::Named {
-                    name: "ResourceToken".to_string(),
-                    args: vec![],
-                    builtin: None,
-                }]),
+                VariantDef::Tuple(vec![checker.test_named("ResourceToken", vec![])]),
             )]),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1147,34 +1096,22 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("TupleWrapper");
     checker.type_defs.insert(
-        "TupleWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "TupleWrapper",
             "value",
-            Ty::Tuple(vec![
-                Ty::I64,
-                Ty::Named {
-                    name: "Envelope".to_string(),
-                    args: vec![],
-                    builtin: None,
-                },
-            ]),
+            Ty::Tuple(vec![Ty::I64, checker.test_named("Envelope", vec![])]),
         ),
     );
+    let __id = checker.test_declaration("ArrayWrapper");
     checker.type_defs.insert(
-        "ArrayWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "ArrayWrapper",
             "values",
-            Ty::Array(
-                Box::new(Ty::Named {
-                    name: "LinearTicket".to_string(),
-                    args: vec![],
-                    builtin: None,
-                }),
-                2,
-            ),
+            Ty::Array(Box::new(checker.test_named("LinearTicket", vec![])), 2),
         ),
     );
 
@@ -1196,13 +1133,10 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
     checker
         .registry
         .register_resource_type("ResourceToken".to_string());
-    let resource = Ty::Named {
-        name: "ResourceToken".to_string(),
-        args: vec![],
-        builtin: None,
-    };
+    let resource = checker.test_named("ResourceToken", vec![]);
+    let __id = checker.test_declaration("HandleWrapper");
     checker.type_defs.insert(
-        "HandleWrapper".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "HandleWrapper".to_string(),
@@ -1213,7 +1147,7 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                 ("weak".to_string(), Ty::weak(resource.clone())),
                 (
                     "local".to_string(),
-                    Ty::actor_handle("ResourceToken", vec![]),
+                    Ty::actor_for_test("ResourceToken", vec![]),
                 ),
                 ("remote".to_string(), Ty::remote_pid(resource.clone())),
                 (
@@ -1239,8 +1173,9 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("PhantomKey");
     checker.type_defs.insert(
-        "PhantomKey".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "PhantomKey".to_string(),
@@ -1278,17 +1213,14 @@ fn record_clone_refuses_either_pipe_half_by_the_endpoint() {
     checker
         .registry
         .register_resource_type("ResourceToken".to_string());
-    let resource = Ty::Named {
-        name: "ResourceToken".to_string(),
-        args: vec![],
-        builtin: None,
-    };
+    let resource = checker.test_named("ResourceToken", vec![]);
     for (name, builtin) in [
         ("SinkWrapper", BuiltinType::Sink),
         ("StreamWrapper", BuiltinType::Stream),
     ] {
+        let __id = checker.test_declaration(name);
         checker.type_defs.insert(
-            name.to_string(),
+            __id,
             record_type_def_with_field(
                 name,
                 "half",
@@ -1313,8 +1245,9 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
     // is the abstract param `T`.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.user_opaque_type_names.insert("Handle".to_string());
+    let __id = checker.test_declaration("Handle");
     checker.type_defs.insert(
-        "Handle".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Handle".to_string(),
@@ -1328,21 +1261,15 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
             is_indirect: true,
         },
     );
+    let __id = checker.test_declaration("Box");
     checker.type_defs.insert(
-        "Box".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Box".to_string(),
             type_params: vec!["T".to_string()],
             bounds: HashMap::new(),
-            fields: HashMap::from([(
-                "item".to_string(),
-                Ty::Named {
-                    name: "T".to_string(),
-                    args: vec![],
-                    builtin: None,
-                },
-            )]),
+            fields: HashMap::from([("item".to_string(), Ty::param("T"))]),
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1351,11 +1278,7 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
         },
     );
     let span = Span::from(0..0);
-    let handle = Ty::Named {
-        name: "Handle".to_string(),
-        args: vec![],
-        builtin: None,
-    };
+    let handle = checker.test_named("Handle", vec![]);
     assert!(matches!(
         checker.record_clone_admissibility("Box", std::slice::from_ref(&handle), &span),
         RecordCloneAdmissibility::OpaqueField { .. }
@@ -1368,30 +1291,17 @@ fn generic_record_clone_unresolved_var_is_nyi() {
     // inference vars) keeps the `GenericRecord` NYI diagnostic; the
     // substitution-aware opaque walk must not regress this clean reject.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Pair");
     checker.type_defs.insert(
-        "Pair".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Pair".to_string(),
             type_params: vec!["A".to_string(), "B".to_string()],
             bounds: HashMap::new(),
             fields: HashMap::from([
-                (
-                    "a".to_string(),
-                    Ty::Named {
-                        name: "A".to_string(),
-                        args: vec![],
-                        builtin: None,
-                    },
-                ),
-                (
-                    "b".to_string(),
-                    Ty::Named {
-                        name: "B".to_string(),
-                        args: vec![],
-                        builtin: None,
-                    },
-                ),
+                ("a".to_string(), Ty::param("A")),
+                ("b".to_string(), Ty::param("B")),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1834,8 +1744,9 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
     // evade the cycle guard.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("pkg".to_string());
+    let __id = checker.test_declaration("Wrap");
     checker.type_defs.insert(
-        "Wrap".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Wrap".to_string(),
@@ -1843,19 +1754,10 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
             bounds: HashMap::new(),
             fields: HashMap::from([(
                 "next".to_string(),
-                Ty::Named {
-                    name: "Wrap".to_string(),
-                    args: vec![Ty::Named {
-                        name: "Wrap".to_string(),
-                        args: vec![Ty::Named {
-                            name: "T".to_string(),
-                            args: vec![],
-                            builtin: None,
-                        }],
-                        builtin: None,
-                    }],
-                    builtin: None,
-                },
+                Ty::named_for_test(
+                    "Wrap",
+                    vec![Ty::named_for_test("Wrap", vec![Ty::param("T")])],
+                ),
             )]),
             field_order: vec!["next".to_string()],
             variants: HashMap::new(),
@@ -1864,19 +1766,16 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("pkg.Wrap");
     checker.type_defs.insert(
-        "pkg.Wrap".to_string(),
+        __id,
         checker
-            .type_defs
-            .get("Wrap")
+            .type_def_view()
+            .at_path("Wrap")
             .expect("local fixture definition")
             .clone(),
     );
-    let ty = Ty::Named {
-        name: "pkg.Wrap".to_string(),
-        args: vec![Ty::I64],
-        builtin: None,
-    };
+    let ty = Ty::named_for_test("pkg.Wrap", vec![Ty::I64]);
 
     assert_eq!(
         checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
@@ -1978,12 +1877,12 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
     // collection-free record (`Person`) stays admitted on BOTH surfaces.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let vec_i64 = Ty::Named {
-        name: "Vec".to_string(),
-        builtin: Some(BuiltinType::Vec),
+        head: crate::TypeHead::Builtin(BuiltinType::Vec),
         args: vec![Ty::I64],
     };
+    let __id = checker.test_declaration("Boxed");
     checker.type_defs.insert(
-        "Boxed".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Boxed".to_string(),
@@ -1997,8 +1896,9 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("Person");
     checker.type_defs.insert(
-        "Person".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Person".to_string(),
@@ -2013,16 +1913,8 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
         },
     );
 
-    let boxed = Ty::Named {
-        name: "Boxed".to_string(),
-        builtin: None,
-        args: vec![],
-    };
-    let person = Ty::Named {
-        name: "Person".to_string(),
-        builtin: None,
-        args: vec![],
-    };
+    let boxed = Ty::named_for_test("Boxed", vec![]);
+    let person = Ty::named_for_test("Person", vec![]);
 
     // Vec storage admits the collection-bearing record (copy-in push).
     assert!(
@@ -2416,11 +2308,7 @@ fn vec_iter_cursor_takes_a_qualified_opaque_element() {
     checker
         .user_opaque_type_names
         .insert("pkg.Handle".to_string());
-    let ty = Ty::Named {
-        name: "pkg.Handle".to_string(),
-        args: vec![],
-        builtin: None,
-    };
+    let ty = Ty::named_for_test("pkg.Handle", vec![]);
 
     assert_eq!(
         checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
@@ -2980,13 +2868,19 @@ fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
     let option_types: Vec<&Ty> = output
         .expr_types
         .values()
-        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
         !option_types.is_empty()
-            && option_types
-                .iter()
-                .all(|ty| matches!(ty, Ty::Named { builtin: None, .. })),
+            && option_types.iter().all(|ty| matches!(
+                ty,
+                Ty::Named {
+                    head: crate::TypeHead::Nominal(_)
+                        | crate::TypeHead::Param(_)
+                        | crate::TypeHead::Unresolved(_),
+                    ..
+                }
+            )),
         "every source Option<T> constructor/annotation must retain user nominal identity: {:#?}",
         output.expr_types
     );
@@ -3018,14 +2912,14 @@ fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
     let option_types: Vec<&Ty> = output
         .expr_types
         .values()
-        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
         !option_types.is_empty()
             && option_types.iter().all(|ty| matches!(
                 ty,
                 Ty::Named {
-                    builtin: Some(BuiltinType::Option),
+                    head: crate::TypeHead::Builtin(BuiltinType::Option),
                     ..
                 }
             )),
@@ -3037,18 +2931,16 @@ fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
 #[test]
 fn expected_constructor_rebuild_preserves_renamed_builtin_presentation() {
     let renamed_option = Ty::Named {
-        name: "Maybe".to_string(),
         args: vec![Ty::Var(TypeVar::fresh())],
-        builtin: Some(BuiltinType::Option),
+        head: crate::TypeHead::Builtin(BuiltinType::Option),
     };
     let rebuilt = Checker::variant_nominal_from_expected(&renamed_option, vec![Ty::I64])
         .expect("a named expected type must rebuild as a named constructor result");
     assert_eq!(
         rebuilt,
         Ty::Named {
-            name: "Maybe".to_string(),
             args: vec![Ty::I64],
-            builtin: Some(BuiltinType::Option),
+            head: crate::TypeHead::Builtin(BuiltinType::Option)
         },
         "constructor inference may resolve type arguments, but must retain both the renamed \
          presentation and builtin Option authority"
@@ -3146,16 +3038,15 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     assert!(
-        output.type_defs.contains_key("MachineState"),
+        output.type_def_at_path("MachineState").is_some(),
         "user machine named MachineState must still register as a nominal type: {:?}",
         output.type_defs.keys().collect::<Vec<_>>()
     );
     assert_eq!(
-        Ty::normalize_named("MachineState".to_string(), vec![]),
+        Ty::named_for_test("MachineState", vec![]),
         Ty::Named {
-            builtin: Some(crate::BuiltinType::MachineState),
-            name: "MachineState".to_string(),
-            args: vec![],
+            head: crate::TypeHead::Builtin(crate::BuiltinType::MachineState),
+            args: vec![]
         },
         "the builtin handle marker remains available separately"
     );
@@ -3255,17 +3146,18 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         lang_item: None,
     };
 
+    for name in ["Inner", "Outer", "Plain"] {
+        checker.test_declaration(name);
+    }
     checker.register_type_decl(&inner);
     checker.register_type_decl(&outer);
     checker.register_type_decl(&plain);
-    checker.register_qualified_type_alias("regexwrap", "Outer");
 
     // Registrations set handle_bearing_dirty; flush before reading the set.
     checker.ensure_handle_bearing_fresh();
 
     assert!(checker.handle_bearing_structs.contains("Inner"));
     assert!(checker.handle_bearing_structs.contains("Outer"));
-    assert!(checker.handle_bearing_structs.contains("regexwrap.Outer"));
     assert!(!checker.handle_bearing_structs.contains("Plain"));
 }
 
@@ -3331,8 +3223,7 @@ fn concrete_hashset_validation_reaches_pointer_wrapped_hashset() {
     let ty = Ty::Pointer {
         is_mutable: false,
         pointee: Box::new(Ty::Named {
-            builtin: Some(crate::BuiltinType::HashSet),
-            name: "HashSet".to_string(),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
             args: vec![Ty::Bool],
         }),
     };
@@ -3354,8 +3245,7 @@ fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let ty = Ty::Tuple(vec![
         Ty::Named {
-            builtin: Some(crate::BuiltinType::HashMap),
-            name: "HashMap".to_string(),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::HashMap),
             args: vec![Ty::I64, Ty::String],
         },
         Ty::Unit,
@@ -3467,11 +3357,7 @@ fn imported_module_record_seeds_send_marker_for_actor_ask_reply() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&program);
 
-    let result_ty = Ty::Named {
-        builtin: None,
-        name: "Result".to_string(),
-        args: vec![],
-    };
+    let result_ty = Ty::named_for_test("Result", vec![]);
     assert!(
         checker
             .registry
@@ -3550,11 +3436,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&program);
 
-    let qualified = |name: &str| Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args: vec![],
-    };
+    let qualified = |name: &str| Ty::named_for_test(name, vec![]);
     assert!(
         !checker
             .registry
@@ -3591,13 +3473,13 @@ fn actor_handle_layout_does_not_recurse_into_actor_rc_state() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&parsed.program);
-    let actor_handle_ty = Ty::actor_handle("Worker", vec![]);
+    let actor_handle_ty = Ty::actor_for_test("Worker", vec![]);
 
     let vec_ty = checker.make_vec_type(actor_handle_ty, &(0..0));
     assert!(matches!(
         vec_ty,
         Ty::Named {
-            builtin: Some(BuiltinType::Vec),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             ..
         }
     ));

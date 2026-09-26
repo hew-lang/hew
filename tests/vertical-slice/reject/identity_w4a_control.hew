@@ -1,0 +1,2 @@
+fn g<T>(x: T) -> i64 { x.v }
+fn main() { println(g(1)); }

@@ -117,7 +117,7 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
         output.errors,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Counter::next")
         .expect("Counter::next must be registered in fn_sigs");
     assert!(
@@ -125,8 +125,7 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
         "fn_sigs[Counter::next].requires_mutable_receiver must be true for `var self`",
     );
     let td = output
-        .type_defs
-        .get("Counter")
+        .type_def_at_path("Counter")
         .expect("Counter type must be registered");
     let method_sig = td
         .methods
@@ -156,7 +155,7 @@ fn q297_immut_self_method_records_no_mut_receiver_flag() {
         output.errors,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Counter::peek")
         .expect("Counter::peek must be registered");
     assert!(
@@ -327,7 +326,7 @@ fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
     let option_types: Vec<&Ty> = output
         .expr_types
         .values()
-        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
         !option_types.is_empty()
@@ -335,7 +334,7 @@ fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
                 !matches!(
                     *ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Option),
+                        head: crate::TypeHead::Builtin(BuiltinType::Option),
                         ..
                     }
                 )
@@ -488,8 +487,7 @@ fn q297_stdlib_iterator_next_and_vec_iter_carry_mut_receiver_flag() {
     // load-bearing impl side rather than the trait side.)
     let output = check_source("");
     let td = output
-        .type_defs
-        .get("VecIter")
+        .type_def_at_path("std.builtins.VecIter")
         .expect("VecIter must be pre-registered from std/builtins.hew");
     let next_sig = td
         .methods

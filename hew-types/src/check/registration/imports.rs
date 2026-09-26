@@ -57,7 +57,7 @@ impl Checker {
                 continue;
             }
             let qualified = format!("{}.{}", key.short_name, trait_name);
-            if self.trait_defs.contains_key(&qualified) {
+            if self.has_trait_def(&qualified) {
                 used.insert(key.clone());
             }
         }
@@ -695,7 +695,7 @@ impl Checker {
             // distinct declarations.
             let namespace =
                 crate::check::NominalNamespace::for_import(decl.path.segments.is_empty());
-            if !self.defs.module_has_declarations(primary) {
+            if !self.defs.module_has_source_declarations(primary) {
                 for (index, (item, span)) in items.iter().enumerate() {
                     let module = decl
                         .resolved_item_source_paths
@@ -802,7 +802,7 @@ impl Checker {
                             hew_parser::ast::Symbol::intern(&func.name),
                             &func.name,
                         );
-                        self.fn_sigs.insert(func.name, sig);
+                        self.insert_fn_sig_at(&func.name, sig);
                     }
 
                     // Register wrapper pub fn signatures
@@ -833,8 +833,7 @@ impl Checker {
                         // `import m::{ f as alias }` accidentally retain an
                         // ambient `f` binding. Selected bare bindings are
                         // published later from the resolved source surface.
-                        self.fn_sigs
-                            .insert(format!("{canonical_owner}.{}", wfn.name), sig);
+                        self.insert_fn_sig_at(&format!("{canonical_owner}.{}", wfn.name), sig);
                     }
 
                     // Register module and clean names
@@ -863,10 +862,10 @@ impl Checker {
                         // E.g. `log.setup()` should have 0 params (the wrapper's sig),
                         // not 1 param (the extern `hew_log_set_level(level)` sig).
                         let key = format!("{canonical_owner}.{method}");
-                        let wrapper_sig = self.fn_sigs.get(&key).cloned();
+                        let wrapper_sig = self.fn_sig(&key).cloned();
                         let sig = wrapper_sig
                             .clone()
-                            .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
+                            .or_else(|| self.fn_sig(c_symbol.as_str()).cloned());
                         if let Some(sig) = sig {
                             // Module functions are source declarations, so their
                             // registry authority is the exact full module owner.
@@ -880,7 +879,13 @@ impl Checker {
                             // signature (`net.NetError` versus
                             // `std.net.NetError`). Only fill a genuinely absent
                             // canonical slot from the wrapper/extern registry.
-                            self.fn_sigs.entry(key.clone()).or_insert(sig);
+                            if !self.has_fn_sig(&key) {
+                                if wrapper_sig.is_some() {
+                                    self.insert_fn_sig_at(&key, sig);
+                                } else {
+                                    self.alias_fn_sig(&key, c_symbol);
+                                }
+                            }
                             if wrapper_sig.is_none() {
                                 // The clean name resolved straight to the C
                                 // function: the call is an FFI call and keeps
@@ -1179,9 +1184,7 @@ impl Checker {
                             ))
                             .or_default()
                             .insert(canonical.clone());
-                        if let Some(info) = self.trait_defs.get(&canonical).cloned() {
-                            self.trait_defs.insert(binding.clone(), info);
-                        }
+                        self.rebind_trait_def(&binding, &canonical);
                         self.unqualified_to_module.insert(
                             (
                                 self.current_module.clone(),
@@ -1450,7 +1453,14 @@ impl Checker {
                     {
                         continue;
                     }
-                    self.trait_defs.insert(tr.name.to_string(), info);
+                    // The declaring file's registration owns the trait's
+                    // definition; the importer only binds its spelling.
+                    let declaration = format!("{owner}.{}", tr.name);
+                    if self.has_trait_def(&declaration) {
+                        self.rebind_trait_def(tr.name.name.as_str(), &declaration);
+                    } else {
+                        self.insert_trait_def(tr.name.name.as_str(), &declaration, info);
+                    }
                     if tr.visibility.is_pub() {
                         self.published_bare_trait_owners
                             .entry((
@@ -1740,7 +1750,7 @@ impl Checker {
                         None => {
                             let prefix = format!("{imported_owner}.");
                             let loaded_traits: Vec<String> = self
-                                .trait_defs
+                                .trait_def_keys
                                 .keys()
                                 .filter_map(|key| key.strip_prefix(&prefix))
                                 .filter(|name| !name.contains('.'))
@@ -1836,41 +1846,27 @@ impl Checker {
     /// actually declares (`{module}.{name}` present in `type_defs`) is
     /// qualified; otherwise the bare name is preserved (#2208).
     pub(super) fn qualify_colliding_reply_ty(&self, ty: &Ty, module_short: &str) -> Ty {
-        let Ty::Named {
-            name,
-            args,
-            builtin,
-        } = ty
-        else {
+        let Ty::Named { head, args } = ty else {
             return ty.clone();
         };
-        let args = args
+        let args: Vec<Ty> = args
             .iter()
             .map(|arg| self.qualify_colliding_reply_ty(arg, module_short))
             .collect();
-        if builtin.is_some()
-            || name.contains('.')
-            || !self.cross_module_colliding_record_names.contains(name)
-        {
-            return Ty::Named {
-                name: name.clone(),
-                args,
-                builtin: *builtin,
-            };
-        }
+        // A resolved head already names its declaration; only a spelling the
+        // registry mirror left unresolved can still collide across modules.
+        let crate::TypeHead::Unresolved(spelling) = head else {
+            return Ty::Named { head: *head, args };
+        };
+        let name = spelling.as_str();
         let qualified = format!("{module_short}.{name}");
-        if self.type_defs.contains_key(&qualified) {
-            Ty::Named {
-                name: qualified,
-                args,
-                builtin: None,
-            }
+        if !name.contains('.')
+            && self.cross_module_colliding_record_names.contains(name)
+            && self.type_def_at(&qualified).is_some()
+        {
+            self.named_ty_for_key(&qualified, args)
         } else {
-            Ty::Named {
-                name: name.clone(),
-                args,
-                builtin: *builtin,
-            }
+            self.named_ty_for_key(name, args)
         }
     }
 
@@ -1899,7 +1895,6 @@ impl Checker {
             {
                 continue;
             }
-            self.type_defs.remove(key);
             self.type_def_spans.remove(key);
             self.registry.remove_type_marker_key(key);
         }

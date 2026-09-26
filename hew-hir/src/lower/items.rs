@@ -185,12 +185,11 @@ impl LowerCtx {
             if let (Some(builtin), ResolvedTy::Named { args, .. }) =
                 (injected_builtin, &resolved_impl_self_ty)
             {
-                resolved_impl_self_ty =
-                    ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args.clone());
+                resolved_impl_self_ty = ResolvedTy::named_builtin(builtin, args.clone());
             }
         }
         let builtin_impl_kind = match &resolved_impl_self_ty {
-            ResolvedTy::Named { builtin, .. } => *builtin,
+            ResolvedTy::Named { head, .. } => head.builtin(),
             ResolvedTy::Duration => Some(BuiltinType::Duration),
             _ => None,
         };
@@ -244,9 +243,9 @@ impl LowerCtx {
         // are ordinary source bodies in the checked declaration's own module.
         let is_declaring_encoding_impl = builtin_impl_kind
             .is_some_and(BuiltinType::is_encoding_value)
-            && matches!(&resolved_impl_self_ty, ResolvedTy::Named { name, .. } if {
+            && matches!(&resolved_impl_self_ty, ResolvedTy::Named { head, .. } if {
                 self.defs.declarations().any(|(occurrence, declaration)| {
-                    self.defs.lookup_path(name) == Some(declaration)
+                    self.defs.lookup_path(head.registry_key()) == Some(declaration)
                         && occurrence.module().is_some_and(|module| {
                             Some(self.defs.module_path(module))
                                 == self.current_module_name.as_deref()
@@ -267,8 +266,8 @@ impl LowerCtx {
             let declared_resource_close_impl =
                 matches!(
                     &resolved_impl_self_ty,
-                    ResolvedTy::Named { name, .. }
-                        if self.type_classes.get(name).is_some_and(|(marker, _)| {
+                    ResolvedTy::Named { head, .. }
+                        if self.type_classes.get(head.registry_key()).is_some_and(|(marker, _)| {
                             *marker == ResourceMarker::Resource
                         })
                 ) && decl.methods.iter().any(|m| m.name == Ident::new("close"));
@@ -342,15 +341,15 @@ impl LowerCtx {
         // receiver from an associated function's ordinary first argument.
         let hir_impl_self_type_name = match &resolved_impl_self_ty {
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::VecIter),
+                head: hew_types::TypeHead::Builtin(BuiltinType::VecIter),
                 ..
             } => "std.builtins.VecIter".to_string(),
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::HashMapIter),
+                head: hew_types::TypeHead::Builtin(BuiltinType::HashMapIter),
                 ..
             } => "std.builtins.HashMapIter".to_string(),
-            ResolvedTy::Named { name, .. } => self.current_module_name.as_deref().map_or_else(
-                || name.clone(),
+            ResolvedTy::Named { head, .. } => self.current_module_name.as_deref().map_or_else(
+                || head.registry_key().to_string(),
                 |module| {
                     // Runtime carrier presentation may deliberately collapse a
                     // source-owned builtin to its catalog name (`MonitorRef`),
@@ -364,8 +363,9 @@ impl LowerCtx {
                         return declared;
                     }
                     let module_short = hew_types::short_name(module);
+                    let name = head.registry_key();
                     name.strip_prefix(&format!("{module_short}."))
-                        .map_or_else(|| name.clone(), |local| format!("{module}.{local}"))
+                        .map_or_else(|| name.to_string(), |local| format!("{module}.{local}"))
                 },
             ),
             _ => resolved_impl_self_ty
@@ -693,14 +693,16 @@ impl LowerCtx {
         module_full_path: &str,
     ) -> ResolvedTy {
         let ResolvedTy::Named {
-            name,
+            head,
             args,
-            builtin,
             is_opaque,
+            ..
         } = ty
         else {
             return ty.clone();
         };
+        let name = head.registry_key();
+        let builtin = head.builtin();
         let args = args
             .iter()
             .map(|arg| self.qualify_colliding_module_record_ty(arg, module_full_path))
@@ -711,20 +713,18 @@ impl LowerCtx {
             || !self.cross_module_colliding_record_names.contains(name)
         {
             return ResolvedTy::Named {
-                name: name.clone(),
+                head: *head,
                 args,
-                builtin: *builtin,
                 is_opaque: *is_opaque,
             };
         }
         let qualified = format!("{module_full_path}.{name}");
         if self.record_registry.contains_key(&qualified) {
-            return ResolvedTy::named_user(qualified, args);
+            return ResolvedTy::named_path(&self.defs, &qualified, args);
         }
         ResolvedTy::Named {
-            name: name.clone(),
+            head: *head,
             args,
-            builtin: *builtin,
             is_opaque: *is_opaque,
         }
     }
@@ -782,7 +782,11 @@ impl LowerCtx {
                         && family
                             .source_intrinsic_declaration()
                             .is_none_or(|expected| expected == source_key)
-                        && contract.matches_signature(&signature.param_tys, &signature.return_ty)
+                        && contract.matches_signature(
+                            &self.defs,
+                            &signature.param_tys,
+                            &signature.return_ty,
+                        )
                 });
                 if !matches {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -1000,9 +1004,8 @@ impl LowerCtx {
         let captures = Self::collect_gen_captures(&gen_body, &outer_bindings);
 
         let generator_ty = ResolvedTy::Named {
-            name: "Generator".to_string(),
             args: vec![yield_ty.clone(), gen_return_ty.clone()],
-            builtin: Some(hew_types::BuiltinType::Generator),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
             is_opaque: false,
         };
         let gen_block_expr = HirExpr {

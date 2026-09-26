@@ -1792,15 +1792,8 @@ mod tests {
 
     #[test]
     fn test_undefined_field_display() {
-        let err = TypeError::undefined_field(
-            10..20,
-            &Ty::Named {
-                builtin: None,
-                name: "Point".into(),
-                args: vec![],
-            },
-            "colour",
-        );
+        let err =
+            TypeError::undefined_field(10..20, &Ty::named_for_test("Point", vec![]), "colour");
         assert_eq!(err.to_string(), "no field `colour` on type `Point`");
         assert_eq!(err.kind, TypeErrorKind::UndefinedField);
     }
@@ -2128,11 +2121,7 @@ mod tests {
 
     #[test]
     fn test_undefined_field_on_generic_type() {
-        let ty = Ty::Named {
-            builtin: None,
-            name: "HashMap".into(),
-            args: vec![Ty::String, Ty::I32],
-        };
+        let ty = Ty::named_for_test("HashMap", vec![Ty::String, Ty::I32]);
         let err = TypeError::undefined_field(0..10, &ty, "colour");
         assert_eq!(
             err.to_string(),

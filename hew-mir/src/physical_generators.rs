@@ -171,7 +171,7 @@ pub(super) fn verify_suspend(
             let (yielded, _) = hew_sir::generator_parts(&storage(function, *generator)?.ty)
                 .ok_or_else(|| PhysicalError::new("next has no generator receiver"))?;
             if storage(function, *result)?.ty
-                != ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![yielded.clone()])
+                != ResolvedTy::named_builtin(BuiltinType::Option, vec![yielded.clone()])
             {
                 return Err(PhysicalError::new("generator next changes its output type"));
             }

@@ -23,12 +23,12 @@ fn or_branch_bound_names(
     // A name counts as newly bound when it is absent from `before` or rebound to
     // a fresh binding id (shadowing within the same scope), so a branch that
     // re-binds an outer name to a different type is still observed.
-    let before_ids: HashMap<&str, crate::env::TypeBindingId> =
+    let before_ids: HashMap<Ident, crate::env::TypeBindingId> =
         before.current_scope_bindings().collect();
     after
         .current_scope_bindings()
         .filter(|(name, id)| before_ids.get(name) != Some(id))
-        .map(|(name, _)| name.to_owned())
+        .map(|(name, _)| name.to_string())
         .collect()
 }
 
@@ -181,6 +181,20 @@ pub(super) enum VariantPayloadShape {
 }
 
 impl Checker {
+    /// Whether a record pattern's type name resolves to the scrutinee's own
+    /// declaration. A scrutinee that is not a resolved nominal is left to the
+    /// other pattern checks.
+    fn record_pattern_names_scrutinee(&self, name: &str, ty: &Ty) -> bool {
+        let Ty::Named { head, .. } = self.subst.resolve(ty) else {
+            return true;
+        };
+        // An undeclared scrutinee type is reported by the field binding below.
+        if !matches!(head, crate::TypeHead::Nominal(_)) || self.type_def_view().of(head).is_none() {
+            return true;
+        }
+        self.named_ty_for_key(name, Vec::new()).head() == Some(head)
+    }
+
     /// Enumerate `(variant_name, payload_shape)` for an enum-like scrutinee
     /// type: builtin `Option` / `Result`, user enums, and machine state
     /// enums. Returns `None` for non-enum types.
@@ -281,8 +295,7 @@ impl Checker {
         let type_name = ty.type_name()?;
         let machine_name = type_name.strip_suffix("Event")?;
         if !self
-            .type_defs
-            .get(machine_name)
+            .type_def_at(machine_name)
             .is_some_and(|td| td.kind == TypeDefKind::Machine)
         {
             return None;
@@ -752,16 +765,16 @@ impl Checker {
             return;
         }
         self.bind_pattern_recording = true;
-        let before: HashSet<String> = self
+        let before: HashSet<Ident> = self
             .env
             .current_scope_bindings()
-            .map(|(name, _)| name.to_string())
+            .map(|(name, _)| name)
             .collect();
         self.bind_pattern_inner(pattern, ty, is_mutable, span);
         let bound: Vec<String> = self
             .env
             .current_scope_bindings()
-            .filter(|(name, _)| !before.contains(*name))
+            .filter(|(name, _)| !before.contains(name))
             .map(|(name, _)| name.to_string())
             .collect();
         self.bind_pattern_recording = false;
@@ -1060,7 +1073,8 @@ impl Checker {
                 }
                 self.check_shadowing(name.name.as_str(), span);
                 self.env
-                    .define_with_span(name.to_string(), ty.clone(), is_mutable, span.clone());
+                    .define_with_span(*name, ty.clone(), is_mutable, span.clone());
+                self.record_local_resolution(*name, span);
             }
             // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
@@ -1087,9 +1101,8 @@ impl Checker {
                     }
                 } else {
                     match ty {
-                        Ty::Named {
-                            name: type_name, ..
-                        } => {
+                        Ty::Named { head, .. } => {
+                            let type_name = head.registry_key();
                             let container_kind =
                                 self.lookup_type_def(type_name).map_or("enum", |td| {
                                     if td.kind == TypeDefKind::Machine {
@@ -1100,7 +1113,7 @@ impl Checker {
                                 });
                             self.report_error(
                                 TypeErrorKind::Mismatch {
-                                    expected: type_name.clone(),
+                                    expected: type_name.to_string(),
                                     actual: name.clone(),
                                 },
                                 span,
@@ -1152,6 +1165,24 @@ impl Checker {
                         format!(
                             "struct-variant pattern `{name}` does not belong to scrutinee type `{expected}`"
                         ),
+                    );
+                    self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    return;
+                }
+                // A record pattern names its type, and that type must be the
+                // scrutinee's declaration (R5): `Other { x, .. }` never
+                // matches a `Point` by field shape.
+                if !self.names_struct_variant_of(name, ty)
+                    && !self.record_pattern_names_scrutinee(name, ty)
+                {
+                    let expected = ty.user_facing().to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: expected.clone(),
+                            actual: name.clone(),
+                        },
+                        span,
+                        format!("pattern names `{name}`, scrutinee is `{expected}`"),
                     );
                     self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     return;
@@ -1447,11 +1478,7 @@ impl Checker {
                             self.check_shadowing(capture_name, span);
                             self.env.define_with_span(
                                 capture_name.to_string(),
-                                Ty::Named {
-                                    builtin: None,
-                                    name: "string".to_string(),
-                                    args: vec![],
-                                },
+                                self.named_ty_for_key("string", vec![]),
                                 false,
                                 span.clone(),
                             );

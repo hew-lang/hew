@@ -73,7 +73,7 @@ fn contextual_variant_reports_ambiguous_expected_owner() {
         .extend(["left.State".to_string(), "right.State".to_string()]);
 
     assert!(checker
-        .context_variant_expected_owner(&Ty::named("State", vec![]), &(0..6))
+        .context_variant_expected_owner(&Ty::named_for_test("State", vec![]), &(0..6))
         .is_none());
     assert!(checker.errors.iter().any(|error| {
         error.kind == TypeErrorKind::ContextVariantAmbiguous
@@ -426,10 +426,8 @@ fn qualified_associated_item_rejects_multiple_trait_owners() {
     let info = Checker::trait_info_from_decl(trait_decl, None, 0);
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .trait_defs
-        .insert("left.Shared".to_string(), info.clone());
-    checker.trait_defs.insert("right.Shared".to_string(), info);
+    checker.test_trait_def("left.Shared", info.clone());
+    checker.test_trait_def("right.Shared", info);
     checker.published_bare_trait_owners.insert(
         (None, 0, "Shared".to_string()),
         ["left.Shared".to_string(), "right.Shared".to_string()]
@@ -787,7 +785,7 @@ fn record_with_bytes_field_eq_and_hash_are_accepted() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_for_test(
             "Packet",
             vec![],
         )))
@@ -812,7 +810,7 @@ fn record_with_non_hashable_field_is_not_hashable() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_for_test(
             "Sample",
             vec![],
         )))
@@ -1658,7 +1656,7 @@ fn typecheck_return_type_mismatch() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     // The function signature should still reflect i32 return type
-    assert_eq!(output.fn_sigs["foo"].return_type, Ty::I32);
+    assert_eq!(output.sigs()["foo"].return_type, Ty::I32);
 }
 
 #[test]
@@ -1893,7 +1891,7 @@ fn typecheck_actor_receive_fn_registered() {
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
-    assert!(output.fn_sigs.contains_key("Greeter::greet"));
+    assert!(output.sigs().contains("Greeter::greet"));
 }
 
 fn span_key_for(source: &str, needle: &str) -> SpanKey {
@@ -2111,17 +2109,10 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         "unexpected errors: {non_import_errors:?}"
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("unwrap_or")
         .expect("unwrap_or signature should be registered");
-    assert_eq!(
-        sig.params[0],
-        Ty::Named {
-            builtin: None,
-            name: "Result".to_string(),
-            args: vec![],
-        }
-    );
+    assert_eq!(sig.params[0], Ty::named_in(&output.defs, "Result", vec![]));
 }
 
 #[test]
@@ -2286,8 +2277,7 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
         second_output.errors
     );
     let listener = second_output
-        .type_defs
-        .get("net.Listener")
+        .type_def_at_path("net.Listener")
         .expect("second compile should publish its own net.Listener declaration");
     assert!(
         listener.fields.contains_key("value"),
@@ -2480,7 +2470,7 @@ fn selected_eq_uses_nested_user_methods_for_otherwise_ineligible_members() {
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
     let selected = service
         .capability_plan(
-            &ResolvedTy::named_user("Key", vec![]),
+            &ResolvedTy::named_for_test("Key", vec![]),
             crate::ValueCapability::Eq,
         )
         .unwrap()
@@ -2580,7 +2570,7 @@ fn selected_eq_composes_exact_generic_user_method_for_bytes() {
         .lookup_path("Key::<impl Eq for Key<T>>::eq")
         .unwrap();
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
-    let key = ResolvedTy::named_user("Key", vec![ResolvedTy::Bytes]);
+    let key = ResolvedTy::named_for_test("Key", vec![ResolvedTy::Bytes]);
     let selected = service
         .capability_plan(&key, crate::ValueCapability::Eq)
         .unwrap()

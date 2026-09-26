@@ -103,7 +103,7 @@ impl SemWirePlan {
             ) => Ok(()),
             (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Vec),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
                     args,
                     ..
                 },
@@ -111,7 +111,7 @@ impl SemWirePlan {
             )
             | (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::HashSet),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashSet),
                     args,
                     ..
                 },
@@ -119,7 +119,7 @@ impl SemWirePlan {
             ) if args.len() == 1 => child(&args[0], value, records, enums),
             (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::HashMap),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashMap),
                     args,
                     ..
                 },
@@ -130,7 +130,7 @@ impl SemWirePlan {
             }
             (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Option),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Option),
                     args,
                     ..
                 },

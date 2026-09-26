@@ -712,9 +712,9 @@ impl<'m> Walker<'m> {
                 ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 | ResolvedTy::U64 | ResolvedTy::Usize |
                 ResolvedTy::F32 | ResolvedTy::F64 | ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String => scalar("scalar"),
                 ResolvedTy::Tuple(_) => Ok(serde_json::json!({"kind": "tuple", "members": members})),
-                ResolvedTy::Named { name, builtin, is_opaque, .. } => {
-                    if *builtin == Some(BuiltinType::Vec) { return Ok(serde_json::json!({"kind": "vector", "members": members})); }
-                    if *builtin == Some(BuiltinType::HashMap) { return Ok(serde_json::json!({"kind": "map", "members": members})); }
+                ResolvedTy::Named { head, is_opaque, .. } => { let name = head.registry_key(); let builtin = head.builtin();
+                    if builtin == Some(BuiltinType::Vec) { return Ok(serde_json::json!({"kind": "vector", "members": members})); }
+                    if builtin == Some(BuiltinType::HashMap) { return Ok(serde_json::json!({"kind": "map", "members": members})); }
                     if *is_opaque { return Ok(serde_json::json!({"kind": "identity", "name": name})); }
                     if let Some(shape) = self.module.variant_shape_for_type(&key.value) {
                         let mut offset = 0;

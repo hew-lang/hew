@@ -1,0 +1,6 @@
+fn helper() -> i64 { 10 }
+
+fn main() {
+    let helper = 7;
+    println(helper());
+}

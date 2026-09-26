@@ -4,8 +4,48 @@
 //! supporting let/var declarations and shadowing.
 
 use crate::ty::Ty;
-use hew_parser::ast::{Expr, Span, Spanned};
+use hew_parser::ast::{Expr, Ident, Span, Spanned, Symbol};
 use std::collections::HashMap;
+
+/// A spelling the lexical environment binds or looks up. Lexical scopes are
+/// keyed by `(Symbol, SyntaxContext)` — an [`Ident`] — so a binding written
+/// by one hygiene context is invisible to an identifier from another.
+///
+/// TRANSITION(A1): a caller that still holds only a spelling binds it in the
+/// source context; deleted once every caller passes the AST `Ident`.
+pub trait LexicalName {
+    fn lexical_key(&self) -> Ident;
+}
+
+impl LexicalName for Ident {
+    fn lexical_key(&self) -> Ident {
+        *self
+    }
+}
+
+impl LexicalName for Symbol {
+    fn lexical_key(&self) -> Ident {
+        Ident::from_symbol(*self)
+    }
+}
+
+impl LexicalName for str {
+    fn lexical_key(&self) -> Ident {
+        Ident::new(self)
+    }
+}
+
+impl LexicalName for String {
+    fn lexical_key(&self) -> Ident {
+        Ident::new(self)
+    }
+}
+
+impl<T: LexicalName + ?Sized> LexicalName for &T {
+    fn lexical_key(&self) -> Ident {
+        (**self).lexical_key()
+    }
+}
 
 /// Checker-local identity for a lexical binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -335,7 +375,7 @@ pub enum ScopeWarningKind {
 /// Lookup walks from innermost to outermost scope.
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv {
-    scopes: Vec<HashMap<String, Binding>>,
+    scopes: Vec<HashMap<Ident, Binding>>,
     /// Deferred bodies registered in each lexical scope, parallel to `scopes`.
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
     /// Active loop labels, lexical floors and entry ownership snapshots.
@@ -503,7 +543,8 @@ impl TypeEnv {
     }
 
     /// Define a variable in the current scope (synthetic, no source span — not warned about).
-    pub fn define(&mut self, name: String, ty: Ty, is_mutable: bool) {
+    pub fn define(&mut self, name: impl LexicalName, ty: Ty, is_mutable: bool) {
+        let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -534,9 +575,14 @@ impl TypeEnv {
 
     /// Bind an actor state field that `init` must initialize (D447). It is
     /// mutable, uninitialized on entry and exempt from the unused lint.
-    pub fn define_deferred_field(&mut self, name: &str, ty: Ty) {
-        self.define(name.to_string(), ty, true);
-        if let Some(binding) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+    pub fn define_deferred_field(&mut self, name: impl LexicalName, ty: Ty) {
+        let name = name.lexical_key();
+        self.define(name, ty, true);
+        if let Some(binding) = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.get_mut(&name))
+        {
             binding.origin = BindingOrigin::DeferredField;
             binding.is_moved = true;
         }
@@ -544,21 +590,30 @@ impl TypeEnv {
 
     /// Whether `name` is a deferred init field still awaiting its first store.
     #[must_use]
-    pub fn deferred_field_uninitialized(&self, name: &str) -> bool {
+    pub fn deferred_field_uninitialized(&self, name: impl LexicalName) -> bool {
+        let name = name.lexical_key();
         self.lookup_ref(name)
             .is_some_and(|binding| binding.deferred_init() && binding.is_moved)
     }
 
     /// The binding id of `name` when it is a deferred init field.
     #[must_use]
-    pub fn deferred_field_id(&self, name: &str) -> Option<TypeBindingId> {
+    pub fn deferred_field_id(&self, name: impl LexicalName) -> Option<TypeBindingId> {
+        let name = name.lexical_key();
         self.lookup_ref(name)
             .filter(|binding| binding.deferred_init())
             .map(|binding| binding.id)
     }
 
     /// Define a user-visible variable with a source span for diagnostics.
-    pub fn define_with_span(&mut self, name: String, ty: Ty, is_mutable: bool, span: Span) {
+    pub fn define_with_span(
+        &mut self,
+        name: impl LexicalName,
+        ty: Ty,
+        is_mutable: bool,
+        span: Span,
+    ) {
+        let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -597,7 +652,14 @@ impl TypeEnv {
     /// Unlike `define`, `shadow_span` is populated so a nested local that
     /// shadows the parameter name is downgraded from hard error to warning,
     /// the same treatment given to shadowing a user-declared local variable.
-    pub fn define_param_with_span(&mut self, name: String, ty: Ty, is_mutable: bool, span: Span) {
+    pub fn define_param_with_span(
+        &mut self,
+        name: impl LexicalName,
+        ty: Ty,
+        is_mutable: bool,
+        span: Span,
+    ) {
+        let name = name.lexical_key();
         self.define_param_with_span_and_origin(
             name,
             ty,
@@ -608,8 +670,13 @@ impl TypeEnv {
     }
 
     /// Preserve declared parameter ownership independently of local mutability.
-    pub fn set_parameter_consume(&mut self, name: &str, is_consume: bool) {
-        if let Some(binding) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+    pub fn set_parameter_consume(&mut self, name: impl LexicalName, is_consume: bool) {
+        let name = name.lexical_key();
+        if let Some(binding) = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.get_mut(&name))
+        {
             debug_assert!(binding.is_param());
             binding.parameter_ownership = ParameterOwnership::from_consume(is_consume);
         }
@@ -619,7 +686,7 @@ impl TypeEnv {
     /// write-back provenance for mutation diagnostics.
     pub fn define_receiver_param_with_span(
         &mut self,
-        name: String,
+        name: impl LexicalName,
         ty: Ty,
         is_mutable: bool,
         span: Span,
@@ -635,12 +702,13 @@ impl TypeEnv {
 
     fn define_param_with_span_and_origin(
         &mut self,
-        name: String,
+        name: impl LexicalName,
         ty: Ty,
         is_mutable: bool,
         span: Span,
         origin: BindingOrigin,
     ) {
+        let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -718,9 +786,10 @@ impl TypeEnv {
     }
 
     /// Mark a variable as moved, returning `true` if found.
-    pub fn mark_moved(&mut self, name: &str, span: Span) -> bool {
+    pub fn mark_moved(&mut self, name: impl LexicalName, span: Span) -> bool {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 binding.is_moved = true;
                 binding.consumed_at.get_or_insert_with(|| span.clone());
@@ -737,10 +806,16 @@ impl TypeEnv {
     /// `path` must be non-empty; a whole-binding consume is [`Self::mark_moved`].
     /// Re-recording an already-consumed place keeps the FIRST consume site,
     /// which is the one a diagnostic should point at.
-    pub fn mark_place_moved(&mut self, name: &str, path: PlacePath, span: Span) -> bool {
+    pub fn mark_place_moved(
+        &mut self,
+        name: impl LexicalName,
+        path: PlacePath,
+        span: Span,
+    ) -> bool {
+        let name = name.lexical_key();
         debug_assert!(!path.is_empty(), "empty place path is `mark_moved`");
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 binding.consumed_at.get_or_insert_with(|| span.clone());
                 if !binding.moved_places.iter().any(|m| m.path == path) {
@@ -764,7 +839,7 @@ impl TypeEnv {
     #[must_use]
     pub fn place_move_conflict(
         &self,
-        name: &str,
+        name: impl LexicalName,
         path: &[String],
     ) -> Option<(PlaceConflict, PlacePath, Span)> {
         let binding = self.lookup_ref(name)?;
@@ -784,9 +859,10 @@ impl TypeEnv {
     }
 
     /// Attach the initializer's collection loan to its lexical binding.
-    pub fn set_collection_borrow(&mut self, name: &str, origin: Option<Span>) {
+    pub fn set_collection_borrow(&mut self, name: impl LexicalName, origin: Option<Span>) {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.collection_borrow = origin;
                 return;
             }
@@ -795,7 +871,8 @@ impl TypeEnv {
 
     /// Whether a selected place still carries an ordinary parameter borrow.
     #[must_use]
-    pub fn place_borrows_parameter(&self, name: &str, path: &[String]) -> bool {
+    pub fn place_borrows_parameter(&self, name: impl LexicalName, path: &[String]) -> bool {
+        let name = name.lexical_key();
         self.lookup_ref(name).is_some_and(|binding| {
             binding.is_param()
                 && !binding.is_receiver()
@@ -813,9 +890,10 @@ impl TypeEnv {
     ///
     /// The empty `path` is a whole-binding re-initialisation and additionally
     /// clears `is_moved`.
-    pub fn reinit_place(&mut self, name: &str, path: &[String]) {
+    pub fn reinit_place(&mut self, name: impl LexicalName, path: &[String]) {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 if binding.is_param()
                     && binding.parameter_ownership == ParameterOwnership::Borrow
                     && !binding
@@ -844,9 +922,10 @@ impl TypeEnv {
     /// Discharge one affine resource without making its closed handle bits
     /// unreadable. Returns the earlier discharge site when this binding was
     /// already released.
-    pub fn mark_released(&mut self, name: &str, span: Span) -> Option<Option<Span>> {
+    pub fn mark_released(&mut self, name: impl LexicalName, span: Span) -> Option<Option<Span>> {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 let prior = binding.released_at.clone();
                 binding.released_at = Some(span);
@@ -859,9 +938,10 @@ impl TypeEnv {
     /// Restore a binding after a validated receiver-identity method result is
     /// discarded in place. The method temporarily transfers the one owner
     /// through `consume self` and returns that exact owner to this binding.
-    pub fn unmark_moved(&mut self, name: &str) -> bool {
+    pub fn unmark_moved(&mut self, name: impl LexicalName) -> bool {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.is_moved = false;
                 binding.moved_at = None;
                 return true;
@@ -1000,7 +1080,7 @@ impl TypeEnv {
     }
 
     fn apply_ownership(
-        scopes: &mut [HashMap<String, Binding>],
+        scopes: &mut [HashMap<Ident, Binding>],
         states: &HashMap<TypeBindingId, OwnershipState>,
     ) {
         for scope in scopes.iter_mut() {
@@ -1026,9 +1106,10 @@ impl TypeEnv {
     /// The write starts a fresh observation window: whatever was read before
     /// it saw the old value, so `mutation_observed` resets here and only a
     /// later read can set it again.
-    pub fn mark_written(&mut self, name: &str) {
+    pub fn mark_written(&mut self, name: impl LexicalName) {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.mutation = MutationState::Unobserved;
                 return;
             }
@@ -1040,7 +1121,8 @@ impl TypeEnv {
     ///
     /// Reads taken inside this window resolve the target place or compute the
     /// new value from the old one; neither observes the mutation's result.
-    pub fn begin_mutation(&mut self, name: &str) -> Option<TypeBindingId> {
+    pub fn begin_mutation(&mut self, name: impl LexicalName) -> Option<TypeBindingId> {
+        let name = name.lexical_key();
         let previous = self.mutation_root;
         self.mutation_root = self.lookup_ref(name).map(|binding| binding.id);
         previous
@@ -1057,10 +1139,11 @@ impl TypeEnv {
     /// the method writes back, which is the same target resolution that plain
     /// assignment undoes with `unmark_used`. Skipped when the receiver is
     /// already the mutation root, since that read was never counted.
-    pub fn discount_mutation_receiver_read(&mut self, name: &str) {
+    pub fn discount_mutation_receiver_read(&mut self, name: impl LexicalName) {
+        let name = name.lexical_key();
         let root = self.mutation_root;
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 if root != Some(binding.id) {
                     binding.observing_reads = binding.observing_reads.saturating_sub(1);
                 }
@@ -1081,7 +1164,7 @@ impl TypeEnv {
             .expect("cannot pop empty defer-scope stack");
         let mut warnings = Vec::new();
         for (name, binding) in &scope {
-            if name.starts_with('_') {
+            if name.name.as_str().starts_with('_') {
                 continue; // convention: _ prefix means intentionally unused
             }
             let Some(span) = &binding.def_span else {
@@ -1098,7 +1181,7 @@ impl TypeEnv {
                 {
                     if let Some(span) = &binding.shadow_span {
                         warnings.push(ScopeWarning {
-                            name: name.clone(),
+                            name: name.name.to_string(),
                             span: span.clone(),
                             kind: ScopeWarningKind::VarParamMutationLost,
                             ty: binding.ty.clone(),
@@ -1109,14 +1192,14 @@ impl TypeEnv {
             };
             if binding.read_count == 0 {
                 warnings.push(ScopeWarning {
-                    name: name.clone(),
+                    name: name.name.to_string(),
                     span: span.clone(),
                     kind: ScopeWarningKind::Unused,
                     ty: binding.ty.clone(),
                 });
             } else if binding.is_mutable && !binding.is_written() {
                 warnings.push(ScopeWarning {
-                    name: name.clone(),
+                    name: name.name.to_string(),
                     span: span.clone(),
                     kind: ScopeWarningKind::NeverMutated,
                     ty: binding.ty.clone(),
@@ -1128,10 +1211,11 @@ impl TypeEnv {
 
     /// Look up a variable by name, marking it as used.
     #[must_use]
-    pub fn lookup(&mut self, name: &str) -> Option<&Binding> {
+    pub fn lookup(&mut self, name: impl LexicalName) -> Option<&Binding> {
+        let name = name.lexical_key();
         let root = self.mutation_root;
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.read_count += 1;
                 Self::record_observing_read(binding, root);
                 return Some(binding);
@@ -1156,9 +1240,10 @@ impl TypeEnv {
     ///
     /// Used when a reassignment joins an inferred closure binding to the
     /// callable shape that holds every closure assigned to it.
-    pub fn widen_ty(&mut self, name: &str, ty: Ty) {
+    pub fn widen_ty(&mut self, name: impl LexicalName, ty: Ty) {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.ty = ty;
                 return;
             }
@@ -1167,9 +1252,10 @@ impl TypeEnv {
 
     /// Look up a variable by name without marking it as used.
     #[must_use]
-    pub fn lookup_ref(&self, name: &str) -> Option<&Binding> {
+    pub fn lookup_ref(&self, name: impl LexicalName) -> Option<&Binding> {
+        let name = name.lexical_key();
         for scope in self.scopes.iter().rev() {
-            if let Some(binding) = scope.get(name) {
+            if let Some(binding) = scope.get(&name) {
                 return Some(binding);
             }
         }
@@ -1182,20 +1268,22 @@ impl TypeEnv {
     /// locals and parameters live in a body scope. Callers that validate an
     /// imported namespace must preserve that ordinary local-shadowing rule.
     #[must_use]
-    pub fn lookup_ref_with_depth(&self, name: &str) -> Option<(usize, &Binding)> {
+    pub fn lookup_ref_with_depth(&self, name: impl LexicalName) -> Option<(usize, &Binding)> {
+        let name = name.lexical_key();
         self.scopes
             .iter()
             .enumerate()
             .rev()
-            .find_map(|(depth, scope)| scope.get(name).map(|binding| (depth, binding)))
+            .find_map(|(depth, scope)| scope.get(&name).map(|binding| (depth, binding)))
     }
 
     /// Look up a variable by name, returning the scope depth where it was found. Marks as used.
     #[must_use]
-    pub fn lookup_with_depth(&mut self, name: &str) -> Option<(usize, &Binding)> {
+    pub fn lookup_with_depth(&mut self, name: impl LexicalName) -> Option<(usize, &Binding)> {
+        let name = name.lexical_key();
         let root = self.mutation_root;
         for (i, scope) in self.scopes.iter_mut().enumerate().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 binding.read_count += 1;
                 Self::record_observing_read(binding, root);
                 return Some((i, binding));
@@ -1206,10 +1294,11 @@ impl TypeEnv {
 
     /// Check if a variable is defined in the current (innermost) scope only.
     #[must_use]
-    pub fn is_defined_in_current_scope(&self, name: &str) -> bool {
+    pub fn is_defined_in_current_scope(&self, name: impl LexicalName) -> bool {
+        let name = name.lexical_key();
         self.scopes
             .last()
-            .is_some_and(|scope| scope.contains_key(name))
+            .is_some_and(|scope| scope.contains_key(&name))
     }
 
     /// Get the depth of the scope stack.
@@ -1224,10 +1313,11 @@ impl TypeEnv {
     /// span, `Some(None)` when found but synthetic, or `None` when the name
     /// is not bound in the current scope.
     #[must_use]
-    pub fn find_in_current_scope(&self, name: &str) -> Option<Option<Span>> {
+    pub fn find_in_current_scope(&self, name: impl LexicalName) -> Option<Option<Span>> {
+        let name = name.lexical_key();
         self.scopes
             .last()
-            .and_then(|scope| scope.get(name))
+            .and_then(|scope| scope.get(&name))
             .map(|b| b.shadow_span.clone())
     }
 
@@ -1237,10 +1327,11 @@ impl TypeEnv {
     /// span, `Some(None)` when found but synthetic (e.g. actor fields), or
     /// `None` when the name is not bound in any outer scope.
     #[must_use]
-    pub fn find_in_outer_scope(&self, name: &str) -> Option<Option<Span>> {
+    pub fn find_in_outer_scope(&self, name: impl LexicalName) -> Option<Option<Span>> {
+        let name = name.lexical_key();
         // Skip the last (current) scope and check all outer scopes
         for scope in self.scopes.iter().rev().skip(1) {
-            if let Some(binding) = scope.get(name) {
+            if let Some(binding) = scope.get(&name) {
                 return Some(binding.shadow_span.clone());
             }
         }
@@ -1248,11 +1339,11 @@ impl TypeEnv {
     }
 
     /// Return all variable names visible in the current scope stack.
-    pub fn all_names(&self) -> impl Iterator<Item = &str> {
+    pub fn all_names(&self) -> impl Iterator<Item = Symbol> + '_ {
         self.scopes
             .iter()
             .rev()
-            .flat_map(|scope| scope.keys().map(String::as_str))
+            .flat_map(|scope| scope.keys().map(|key| key.name))
     }
 
     /// Yield `(name, binding id)` for every binding in the innermost (current)
@@ -1263,18 +1354,19 @@ impl TypeEnv {
     /// snapshots by `(name, id)` distinguishes "same binding untouched" from
     /// "rebound in place". Used to compute the exact set of names a pattern
     /// branch introduced (see `bind_pattern`'s or-pattern arm).
-    pub fn current_scope_bindings(&self) -> impl Iterator<Item = (&str, TypeBindingId)> {
+    pub fn current_scope_bindings(&self) -> impl Iterator<Item = (Ident, TypeBindingId)> + '_ {
         self.scopes
             .last()
             .into_iter()
-            .flat_map(|scope| scope.iter().map(|(name, b)| (name.as_str(), b.id)))
+            .flat_map(|scope| scope.iter().map(|(name, b)| (*name, b.id)))
     }
 
     /// Undo the `is_used` mark on a variable (used for plain assignment LHS).
     /// Decrements the read count so that write-only variables are still detected.
-    pub fn unmark_used(&mut self, name: &str) {
+    pub fn unmark_used(&mut self, name: impl LexicalName) {
+        let name = name.lexical_key();
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+            if let Some(binding) = scope.get_mut(&name) {
                 // Decrement the read count to undo the lookup that resolved the
                 // assignment target. If the variable was genuinely read before
                 // (read_count > 1), the count stays positive and the variable
@@ -1685,7 +1777,7 @@ mod tests {
         env.push_scope();
         env.define("b".to_string(), Ty::Bool, false);
         let names: Vec<_> = env.all_names().collect();
-        assert!(names.contains(&"a"));
-        assert!(names.contains(&"b"));
+        assert!(names.contains(&Symbol::intern("a")));
+        assert!(names.contains(&Symbol::intern("b")));
     }
 }

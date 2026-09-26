@@ -1,0 +1,26 @@
+trait A {
+    fn tag(self) -> string;
+    fn alpha(self) -> string { "alpha default" }
+}
+trait B {
+    fn tag(self) -> string;
+    fn beta(self) -> string { "beta default" }
+}
+type T { v: i64 }
+impl A for T { fn tag(self) -> string { "A" } }
+impl B for T { fn tag(self) -> string { "B" } }
+impl A for i64 { fn tag(self) -> string { "A" } }
+impl B for i64 { fn tag(self) -> string { "B" } }
+fn via_a<X: A>(x: X) -> string { x.tag() }
+fn via_b<X: B>(x: X) -> string { x.tag() }
+fn main() {
+    let t = T { v: 1 };
+    println(via_a(t));
+    println(via_b(t));
+    let n: i64 = 3;
+    println(via_a(n));
+    println(via_b(n));
+    println(t.alpha());
+    println(t.beta());
+    println(n.alpha());
+}

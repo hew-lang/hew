@@ -145,8 +145,12 @@ fn slice_result_type_is_vec_t_not_t() {
         .expect("function must be in HIR module");
     let tail = func.body.tail.as_ref().expect("tail must exist");
     match &tail.ty {
-        ResolvedTy::Named { name, args, .. } => {
-            assert_eq!(name, "Vec");
+        ResolvedTy::Named {
+            head: name_head,
+            args,
+            ..
+        } => {
+            assert_eq!(name_head.spelling(), "Vec");
             assert_eq!(args.len(), 1);
             assert_eq!(args[0], ResolvedTy::I64);
         }

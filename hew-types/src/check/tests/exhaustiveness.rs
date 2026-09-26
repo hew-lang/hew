@@ -1284,7 +1284,7 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
     );
     assert_eq!(
         output.expr_types.get(&SpanKey::from(inner_call_span)),
-        Some(&Ty::named("Option", vec![Ty::I64])),
+        Some(&Ty::named_in(&output.defs, "Option", vec![Ty::I64])),
         "constructor call should resolve to `Option<i64>`: {:?}",
         output.expr_types
     );

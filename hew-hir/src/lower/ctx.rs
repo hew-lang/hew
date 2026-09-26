@@ -32,7 +32,7 @@ impl LowerCtx {
             // Resolution spellings remain a checker lookup index. Declaration
             // identity comes only from `tc_output.defs`; HIR must never
             // manufacture a second canonical-string namespace here.
-            fn_sigs: tc_output.fn_sigs.clone(),
+            fn_sigs_by_path: tc_output.fn_sigs_by_path(),
             direct_call_targets: tc_output.direct_call_targets.clone(),
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
@@ -110,7 +110,7 @@ impl LowerCtx {
                             | hew_types::check::TypeDefKind::Supervisor
                     )
                 })
-                .map(|(name, _)| name.clone())
+                .map(|(id, _)| tc_output.defs.path(id.declaration()).to_string())
                 .collect(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
@@ -165,7 +165,7 @@ impl LowerCtx {
                     })
                 })
                 .collect(),
-            checked_type_defs: tc_output.type_defs.clone(),
+            checked_type_defs: tc_output.type_defs_by_path(),
             current_module_idx: 0,
             current_item_ordinal: 0,
             root_item_ids: HashSet::new(),
@@ -338,20 +338,23 @@ impl LowerCtx {
     pub(super) fn checked_span_user_resource_type(&self, span: &Span) -> Option<String> {
         let ty = self.checked_ty(span)?;
         let ResolvedTy::Named {
-            name,
-            builtin: None,
+            head:
+                head @ (hew_types::TypeHead::Nominal(_)
+                | hew_types::TypeHead::Param(_)
+                | hew_types::TypeHead::Unresolved(_)),
             ..
         } = ty
         else {
             return None;
         };
+        let name = head.registry_key();
         self.type_facts
             .get(&hew_types::TypeInstanceKey(ty.clone()))
             .filter(|facts| {
                 facts.class == hew_types::ValueClass::AffineResource
                     && facts.clone == hew_types::CloneKind::None
             })
-            .map(|_| name.clone())
+            .map(|_| name.to_string())
     }
 
     pub(super) fn checked_span_is_user_resource(&self, span: &Span) -> bool {
@@ -584,7 +587,8 @@ impl LowerCtx {
     /// at the outer non-generic callsite where `type_args` is `[]`.
     pub(super) fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
         match ty {
-            ResolvedTy::Named { name, args, .. } => {
+            ResolvedTy::Named { head, args, .. } => {
+                let name = head.registry_key();
                 if self.is_type_param_symbol(name) {
                     return true;
                 }
@@ -671,7 +675,7 @@ impl LowerCtx {
             let declared = format!("{module}.{name}");
             if self.defs.declaration_kind_by_path(&declared)
                 == Some(hew_types::DeclarationKind::Function)
-                && self.fn_sigs.contains_key(&declared)
+                && self.fn_sigs_by_path.contains_key(&declared)
             {
                 return Some(self.published_declaration_symbol(&declared));
             }
@@ -726,7 +730,7 @@ impl LowerCtx {
                 let qualified = self.qualify_current_module_record_ty(resolved);
                 let named = parameters
                     .iter()
-                    .map(|name| ResolvedTy::named_user(name.clone(), vec![]))
+                    .map(|name| ResolvedTy::param(name))
                     .collect::<Vec<_>>();
                 substitute_type_params(&qualified, parameters, &named)
             }

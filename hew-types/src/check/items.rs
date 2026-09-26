@@ -10,10 +10,18 @@ impl Checker {
     /// parameter rather than a same-named type or alias from another module.
     /// The declaration's own binders count even when its signature lives
     /// under a module-scoped key.
+    /// The signature of the impl method whose body is being checked.
+    fn checking_sig(&self) -> Option<FnSig> {
+        self.checking_declaration
+            .and_then(|declaration| self.fn_sigs.get(&declaration))
+            .cloned()
+    }
+
     fn registered_fn_type_param_scope(&self, fn_name: &str, fd: &FnDecl) -> TypeParamScope {
         let mut scope = self
-            .fn_sigs
-            .get(fn_name)
+            .checking_declaration
+            .and_then(|declaration| self.fn_sigs.get(&declaration))
+            .or_else(|| self.fn_sig(fn_name))
             .map(|sig| {
                 let mut bounds = sig.type_param_bounds.clone();
                 for param in &sig.type_params {
@@ -122,16 +130,19 @@ impl Checker {
                 continue;
             }
             let Ty::Named {
-                name,
-                builtin: None,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 ..
             } = self.resolve_type_expr(&param.ty)
             else {
                 continue;
             };
+            let name = head.registry_key();
             let marker = crate::value_class::ClassDeclarations::declared_type(
                 &self.class_declarations(),
-                &name,
+                name,
             )
             .map(|declared| declared.marker);
             if !matches!(
@@ -148,12 +159,12 @@ impl Checker {
                     function,
                     index,
                     self.current_module.as_deref(),
-                    &name,
+                    name,
                 )
             {
                 continue;
             }
-            let shown = name.rsplit('.').next().unwrap_or(&name).to_string();
+            let shown = name.rsplit('.').next().unwrap_or(name).to_string();
             self.report_error_with_suggestions(
                 TypeErrorKind::BoundaryResourceMustConsume,
                 span,
@@ -267,8 +278,7 @@ impl Checker {
     pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let bounds = self
-            .type_defs
-            .get(sd.name.name.as_str())
+            .type_def_at(sd.name.name.as_str())
             .map_or_else(HashMap::new, |definition| definition.bounds.clone());
         self.current_type_param_bounds
             .push(TypeParamScope::new(bounds, HashMap::new()));
@@ -324,7 +334,7 @@ impl Checker {
             child.span.clone()
         };
         let identity = self.resolve_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-        let definition = identity.as_ref().and_then(|name| self.type_defs.get(name));
+        let definition = identity.as_ref().and_then(|name| self.type_def_at(name));
         if definition.is_some_and(|definition| {
             matches!(
                 definition.kind,
@@ -981,7 +991,8 @@ impl Checker {
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
         let body = self
-            .lookup_declaration(fn_name)
+            .checking_declaration
+            .or_else(|| self.lookup_declaration(fn_name))
             .or_else(|| self.impl_method_declaration_ids.get(fn_name).copied())
             .map(|id| {
                 let creator = super::effects::EffectBody::Declaration(id);
@@ -1066,9 +1077,9 @@ impl Checker {
         let module_local_method = fn_name
             .split_once("::")
             .and_then(|(type_name, method)| self.module_local_method_sig(type_name, method));
-        let declared_ret = if let Some(sig) = module_local_method {
+        let declared_ret = if let Some(sig) = self.checking_sig().or(module_local_method) {
             sig.return_type.clone()
-        } else if let Some(sig) = self.fn_sigs.get(fn_name) {
+        } else if let Some(sig) = self.fn_sig(fn_name) {
             sig.return_type.clone()
         } else {
             fd.return_type.as_ref().map_or(Ty::Unit, |annotation| {
@@ -1225,8 +1236,8 @@ impl Checker {
                     // in those traits.  We inject `Self → [TraitName]` into the
                     // registered sig for `Trait::method` so the same path
                     // resolves sibling trait-method calls on the `Self` receiver.
-                    let prev_sig = self.fn_sigs.get(&qualified).cloned();
-                    if let Some(sig) = self.fn_sigs.get_mut(&qualified) {
+                    let prev_sig = self.fn_sig(&qualified).cloned();
+                    if let Some(sig) = self.fn_sig_mut(&qualified) {
                         if !sig.type_params.contains(&"Self".to_string()) {
                             sig.type_params.push("Self".to_string());
                         }
@@ -1241,8 +1252,8 @@ impl Checker {
                     // Restore the original sig — the `Self` type-param is an
                     // internal default-body-check artefact and must not persist
                     // into the signature visible to call sites.
-                    if let Some(original) = prev_sig {
-                        self.fn_sigs.insert(qualified, original);
+                    if let (Some(original), Some(sig)) = (prev_sig, self.fn_sig_mut(&qualified)) {
+                        *sig = original;
                     }
                 }
             }
@@ -1258,30 +1269,20 @@ impl Checker {
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
         let identity = Self::actor_identity(self.current_module.as_deref(), ad.name.name.as_str());
-        let actor_ty = Ty::Named {
-            builtin: None,
-            name: identity.clone(),
-            args: ad
-                .type_params
+        let actor_ty = self.named_ty_for_key(
+            &identity,
+            ad.type_params
                 .iter()
-                .map(|parameter| Ty::Named {
-                    builtin: None,
-                    name: parameter.name.to_string(),
-                    args: Vec::new(),
-                })
+                .map(|parameter| Ty::param(&parameter.name.to_string()))
                 .collect(),
-        };
+        );
         let generic_bindings: HashMap<_, _> = ad
             .type_params
             .iter()
             .map(|parameter| {
                 (
                     parameter.name.to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: parameter.name.to_string(),
-                        args: Vec::new(),
-                    },
+                    Ty::param(&parameter.name.to_string()),
                 )
             })
             .collect();
@@ -1289,8 +1290,7 @@ impl Checker {
         if has_parameters {
             self.generic_ctx.push(generic_bindings);
             let bounds = self
-                .type_defs
-                .get(&identity)
+                .type_def_at(&identity)
                 .map_or_else(HashMap::new, |definition| definition.bounds.clone());
             self.current_type_param_bounds
                 .push(TypeParamScope::new(bounds, HashMap::new()));
@@ -2494,14 +2494,7 @@ impl Checker {
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
-                generic_bindings.insert(
-                    tp.name.to_string(),
-                    Ty::Named {
-                        builtin: None,
-                        name: tp.name.to_string(),
-                        args: vec![],
-                    },
-                );
+                generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
             }
         }
         if !generic_bindings.is_empty() {
@@ -2527,7 +2520,7 @@ impl Checker {
             self.env.set_parameter_consume(p.name.name.as_str(), true);
         }
 
-        let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {
+        let declared_ret = if let Some(sig) = self.fn_sig(&qualified_name) {
             if rf.is_generator {
                 sig.return_type
                     .as_stream()
@@ -2730,8 +2723,7 @@ impl Checker {
     fn require_supertrait_impls(&mut self, type_name: &str, trait_name: &str, span: &Span) {
         let declared_key = self.trait_defs_key_for_bound(trait_name);
         let mut stack = self
-            .trait_super
-            .get(&declared_key)
+            .trait_supers(&declared_key)
             .cloned()
             .unwrap_or_default();
         let mut visited = std::collections::HashSet::new();
@@ -2741,7 +2733,7 @@ impl Checker {
             if !visited.insert(super_key.clone()) {
                 continue;
             }
-            if let Some(nested) = self.trait_super.get(&super_key) {
+            if let Some(nested) = self.trait_supers(&super_key) {
                 stack.extend(nested.iter().cloned());
             }
             if self
@@ -2827,14 +2819,7 @@ impl Checker {
             let mut generic_bindings = std::collections::HashMap::new();
             if let Some(tps) = &id.type_params {
                 for tp in tps {
-                    generic_bindings.insert(
-                        tp.name.to_string(),
-                        Ty::Named {
-                            builtin: None,
-                            name: tp.name.to_string(),
-                            args: vec![],
-                        },
-                    );
+                    generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
                 }
             }
             let pushed_generic = !generic_bindings.is_empty();
@@ -2880,11 +2865,17 @@ impl Checker {
 
             for method in &id.methods {
                 self.env.push_scope();
-                // Use qualified name (e.g. Connection::close) so the fn_sigs
-                // lookup finds the impl method, not a same-named builtin or
-                // inlined function from another module.
+                // Check the body against its own declaration's signature: an
+                // inherent method and trait methods of one name on one type
+                // are distinct declarations (R1).
+                let declaration = self
+                    .impl_method_declaration_id(type_name, method, id.trait_bound.as_ref())
+                    .filter(|declaration| self.fn_sigs.contains_key(declaration));
+                let previous_declaration =
+                    std::mem::replace(&mut self.checking_declaration, declaration);
                 let qualified = format!("{type_name}::{}", method.name);
                 self.check_function_as(method, &qualified);
+                self.checking_declaration = previous_declaration;
                 self.env.pop_scope();
             }
 
@@ -2934,11 +2925,8 @@ impl Checker {
         // Trait declarations and other receiver contexts outside an impl do
         // not have a source-resolved impl target to reuse. Preserve the
         // existing primitive/nominal fallback for those contexts.
-        let receiver_ty = Ty::from_name(self_name).unwrap_or_else(|| Ty::Named {
-            builtin: None,
-            name: self_name.clone(),
-            args: self_args.clone(),
-        });
+        let receiver_ty = Ty::from_name(self_name)
+            .unwrap_or_else(|| self.named_ty_for_key(self_name, self_args.clone()));
         (receiver_ty, true)
     }
 }
@@ -2946,14 +2934,9 @@ impl Checker {
 fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
     match ty {
         Ty::Named {
-            name,
+            head: crate::TypeHead::Actor(actor),
             args,
-            builtin: Some(builtin),
-        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorHandle)
-            && args.is_empty() =>
-        {
-            Some(name.as_str())
-        }
+        } if args.is_empty() => Some(actor.spelling.as_str()),
         _ => None,
     }
 }
@@ -2971,13 +2954,10 @@ fn is_canonical_std_named_type(
 ) -> bool {
     matches!(
         ty,
-        Ty::Named {
-            name,
-            args,
-            builtin: resolved_builtin,
-        } if args.is_empty()
-            && (*resolved_builtin == Some(builtin)
-                || (resolved_builtin.is_none() && name == source_identity))
+        Ty::Named { head, args }
+            if args.is_empty()
+                && (head.builtin() == Some(builtin)
+                    || (head.is_user() && head.registry_key() == source_identity))
     )
 }
 
@@ -2988,11 +2968,8 @@ fn is_canonical_std_named_type(
 fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
     matches!(
         ty,
-        Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } if args.is_empty() && name == source_identity
+        Ty::Named { head, args }
+            if args.is_empty() && !head.is_param() && head.registry_key() == source_identity
     )
 }
 
@@ -3012,10 +2989,9 @@ mod lifecycle_std_identity_tests {
     use super::*;
 
     fn named(name: &str, builtin: Option<crate::BuiltinType>) -> Ty {
-        Ty::Named {
-            name: name.to_string(),
-            args: Vec::new(),
-            builtin,
+        match builtin {
+            Some(builtin) => Ty::named_head(crate::TypeHead::Builtin(builtin), Vec::new()),
+            None => Ty::user_for_test(name, Vec::new()),
         }
     }
 

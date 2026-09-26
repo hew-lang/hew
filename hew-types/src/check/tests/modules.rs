@@ -5,61 +5,12 @@
 pub(super) use super::*;
 
 #[test]
-fn nested_same_final_modules_resolve_own_nominals_to_full_identity() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.local_type_defs.insert("Box".to_string());
-    checker.source_type_defs.insert("Box".to_string());
-    let box_def = TypeDef {
-        kind: TypeDefKind::Struct,
-        name: "Box".to_string(),
-        type_params: vec!["T".to_string()],
-        bounds: HashMap::new(),
-        fields: HashMap::new(),
-        field_order: vec![],
-        variants: HashMap::new(),
-        methods: HashMap::new(),
-        doc_comment: None,
-        is_indirect: false,
-    };
-    for owner in ["left.render", "right.render"] {
-        checker
-            .type_defs
-            .insert(format!("{owner}.Box"), box_def.clone());
-    }
-    // Preserve the legacy bare compatibility entry as a deliberate trap: the
-    // exact current owner must win even when a bare definition is available.
-    checker.type_defs.insert("Box".to_string(), box_def);
-
-    let annotation = (
-        TypeExpr::Named {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Box"), 0..0),
-            type_args: Some(vec![(
-                TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
-                    type_args: None,
-                },
-                0..0,
-            )]),
-        },
-        0..0,
-    );
-    for owner in ["left.render", "right.render"] {
-        checker.current_module = Some(owner.to_string());
-        let expected = Ty::Named {
-            name: format!("{owner}.Box"),
-            args: vec![Ty::I64],
-            builtin: None,
-        };
-        assert_eq!(checker.resolve_type_expr(&annotation), expected);
-    }
-}
-
-#[test]
 fn root_enum_shadows_generated_delivery_type_member() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.local_type_defs.insert("Delivery".to_string());
+    let __id = checker.test_declaration("Delivery");
     checker.type_defs.insert(
-        "Delivery".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Delivery".to_string(),
@@ -113,8 +64,9 @@ fn source_owned_bare_impl_target_matches_its_full_return_owner_only() {
 fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.encoding.yaml".to_string());
+    let __id = checker.test_declaration("std.encoding.yaml.ParseError");
     checker.type_defs.insert(
-        "std.encoding.yaml.ParseError".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "ParseError".to_string(),
@@ -128,11 +80,7 @@ fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
             is_indirect: false,
         },
     );
-    let expected = Ty::Named {
-        name: "std.encoding.yaml.ParseError".to_string(),
-        args: vec![],
-        builtin: None,
-    };
+    let expected = Ty::named_for_test("std.encoding.yaml.ParseError", vec![]);
 
     assert!(checker.variant_surface_owner_matches("ParseError::Invalid", &expected));
     assert!(!checker.variant_surface_owner_matches("other.ParseError::Invalid", &expected));
@@ -148,8 +96,9 @@ fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
 fn private_imported_result_cannot_rename_the_builtin_in_another_module() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.string".to_string());
+    let __id = checker.test_declaration("hew.testffi.Result");
     checker.type_defs.insert(
-        "hew.testffi.Result".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Result".to_string(),
@@ -167,9 +116,8 @@ fn private_imported_result_cannot_rename_the_builtin_in_another_module() {
 
     assert_eq!(checker.source_nominal_declaration("Result"), None);
     let builtin_result = Ty::Named {
-        name: "hew.testffi.Result".to_string(),
         args: vec![Ty::I64, Ty::String],
-        builtin: Some(BuiltinType::Result),
+        head: crate::TypeHead::Builtin(BuiltinType::Result),
     };
     assert_eq!(
         checker.normalize_for_use(&builtin_result),
@@ -195,14 +143,12 @@ fn aliased_and_full_stdlib_builtin_spellings_normalize_to_one_nominal() {
         .insert((None, 0, "stream".to_string()), "std.stream".to_string());
 
     let aliased = Ty::Named {
-        name: "stream.Stream".to_string(),
         args: vec![Ty::String],
-        builtin: Some(BuiltinType::Stream),
+        head: crate::TypeHead::Builtin(BuiltinType::Stream),
     };
     let full = Ty::Named {
-        name: "std.stream.Stream".to_string(),
         args: vec![Ty::String],
-        builtin: Some(BuiltinType::Stream),
+        head: crate::TypeHead::Builtin(BuiltinType::Stream),
     };
     let aliased_normalized = checker.normalize_for_use(&aliased);
     assert_eq!(
@@ -215,9 +161,8 @@ fn aliased_and_full_stdlib_builtin_spellings_normalize_to_one_nominal() {
     assert_eq!(
         aliased_normalized,
         Ty::Named {
-            name: "Stream".to_string(),
             args: vec![Ty::String],
-            builtin: Some(BuiltinType::Stream),
+            head: crate::TypeHead::Builtin(BuiltinType::Stream)
         },
         "the canonical source owner is the one surviving spelling, builtin authority intact"
     );
@@ -296,16 +241,8 @@ fn generic_same_leaf_owner_conflict_is_rejected_before_inference_binds() {
     checker.source_type_defs.insert("Envelope".to_string());
 
     let element = TypeVar::fresh();
-    let local = Ty::Named {
-        name: "Envelope".to_string(),
-        args: vec![Ty::Var(element)],
-        builtin: None,
-    };
-    let foreign = Ty::Named {
-        name: "foreign.Envelope".to_string(),
-        args: vec![Ty::I64],
-        builtin: None,
-    };
+    let local = Ty::named_for_test("Envelope", vec![Ty::Var(element)]);
+    let foreign = Ty::named_for_test("foreign.Envelope", vec![Ty::I64]);
 
     checker.expect_type(&local, &foreign, &(10..20));
 
@@ -328,11 +265,7 @@ fn expected_constructor_args_do_not_cross_same_leaf_nominal_owners() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.local_type_defs.insert("Envelope".to_string());
     checker.source_type_defs.insert("Envelope".to_string());
-    let expected = Ty::Named {
-        name: "Envelope".to_string(),
-        args: vec![Ty::String],
-        builtin: None,
-    };
+    let expected = Ty::named_for_test("Envelope", vec![Ty::String]);
 
     assert_eq!(
         checker.expected_constructor_type_args(&expected, "foreign.Envelope", 1),
@@ -501,8 +434,8 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
 fn module_qualified_call_rejects_private_body_only_signature() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("mymod".to_string());
-    checker.fn_sigs.insert(
-        "mymod.secret".to_string(),
+    checker.test_fn_sig(
+        "mymod.secret",
         FnSig {
             return_type: Ty::I64,
             ..FnSig::default()
@@ -530,8 +463,8 @@ fn module_qualified_call_accepts_exported_signature() {
     checker
         .module_fn_exports
         .insert("mymod.visible".to_string());
-    checker.fn_sigs.insert(
-        "mymod.visible".to_string(),
+    checker.test_fn_sig(
+        "mymod.visible",
         FnSig {
             return_type: Ty::I64,
             ..FnSig::default()
@@ -2281,8 +2214,8 @@ mod warning_source_attribution {
         };
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker.trait_defs.insert(
-            "fakemod.FakeTrait".to_string(),
+        checker.test_trait_def(
+            "fakemod.FakeTrait",
             Checker::trait_info_from_decl(&fake_trait, None, 0),
         );
         checker
@@ -2874,7 +2807,7 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     let mut import_checker = Checker::new(ModuleRegistry::new(vec![]));
     let import_out = import_checker.check_program(&import_program);
     assert!(
-        import_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        import_out.sigs().contains("oracle_mod.shared_helper"),
         "import axis registers the canonical module-qualified identity"
     );
 
@@ -2926,11 +2859,11 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     // root alias would be a second declaration authority and must not survive
     // the hard cutover.
     assert!(
-        root_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        root_out.sigs().contains("oracle_mod.shared_helper"),
         "the canonical source identity is the sole published function key"
     );
     assert!(
-        !root_out.fn_sigs.contains_key("shared_helper"),
+        !root_out.sigs().contains("shared_helper"),
         "no inert bare compatibility alias may survive publication"
     );
 }

@@ -366,10 +366,11 @@ impl Checker {
         let receiver_ty = self
             .expr_types
             .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))?;
-        let Ty::Named { name, args, .. } = self.subst.resolve(receiver_ty) else {
+        let Ty::Named { head, args } = self.subst.resolve(receiver_ty) else {
             return None;
         };
-        let definition = self.lookup_type_def(&name)?;
+        let name = head.registry_key();
+        let definition = self.lookup_type_def(name)?;
         Some(Self::instantiate_type_def_member(
             definition.fields.get(field)?,
             &definition.type_params,

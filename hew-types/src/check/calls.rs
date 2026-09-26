@@ -66,14 +66,14 @@ impl Checker {
                 .flatten();
             let direct_key = canonical_owner_key
                 .as_deref()
-                .filter(|key| self.type_defs.contains_key(*key))
+                .filter(|key| self.type_def_at(key).is_some())
                 .or_else(|| {
                     local_owner_key
                         .as_deref()
-                        .filter(|key| self.type_defs.contains_key(*key))
+                        .filter(|key| self.type_def_at(key).is_some())
                 })
                 .unwrap_or(type_prefix);
-            let direct = self.type_defs.get(direct_key).and_then(|td| {
+            let direct = self.type_def_at(direct_key).and_then(|td| {
                 if !matches!(
                     td.kind,
                     TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -100,7 +100,7 @@ impl Checker {
                 self.current_module_idx,
                 type_prefix.to_string(),
             ))?;
-            self.type_defs.get(canonical.as_str()).and_then(|td| {
+            self.type_def_at(canonical.as_str()).and_then(|td| {
                 if !matches!(
                     td.kind,
                     TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -128,22 +128,27 @@ impl Checker {
             let find_in = |name: &str, check_local: bool| {
                 self.type_defs
                     .iter()
-                    .filter(|(type_name, td)| {
-                        let is_local = self.local_type_defs.contains(type_name.as_str())
-                            || self.source_type_defs.contains(type_name.as_str())
+                    .filter(|(id, td)| {
+                        let type_name = self.defs.path(id.declaration());
+                        let is_local = self.local_type_defs.contains(td.name.as_str())
+                            || self.source_type_defs.contains(td.name.as_str())
                             || self.is_current_module_type_def(type_name);
                         let kind_ok =
                             td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct;
                         kind_ok && (is_local == check_local)
                     })
-                    .find_map(|(type_name, td)| {
+                    .find_map(|(id, td)| {
                         td.variants.get(name).and_then(|variant| {
                             let params = match variant {
                                 VariantDef::Unit => Vec::new(),
                                 VariantDef::Tuple(p) => p.clone(),
                                 VariantDef::Struct(_) => return None,
                             };
-                            Some((type_name.clone(), params, td.type_params.clone()))
+                            Some((
+                                self.defs.path(id.declaration()).to_string(),
+                                params,
+                                td.type_params.clone(),
+                            ))
                         })
                     })
             };
@@ -162,8 +167,8 @@ impl Checker {
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
-            Ty::Named { name, args, .. }
-                if self.strict_nominal_identity(name)
+            Ty::Named { head, args }
+                if self.strict_nominal_identity(head.registry_key())
                     == self.strict_nominal_identity(type_name)
                     && args.len() == arity =>
             {
@@ -179,14 +184,10 @@ impl Checker {
     /// display spelling again would lose renamed builtin presentations or
     /// retag a same-spelling source declaration.
     pub(super) fn variant_nominal_from_expected(expected: &Ty, args: Vec<Ty>) -> Option<Ty> {
-        let Ty::Named { name, builtin, .. } = expected else {
+        let Ty::Named { head, .. } = expected else {
             return None;
         };
-        Some(Ty::Named {
-            name: name.clone(),
-            args,
-            builtin: *builtin,
-        })
+        Some(Ty::Named { head: *head, args })
     }
 
     fn lower_turbofish_elem(
@@ -230,8 +231,7 @@ impl Checker {
             self.lower_turbofish_elem(constructor_name, expected_arity, supplied_args, span)?;
         let resolved_args: Vec<Ty> = lowered.iter().map(|ty| self.subst.resolve(ty)).collect();
         let result_ty = Ty::Named {
-            builtin: Some(builtin),
-            name: constructor_name.to_string(),
+            head: crate::TypeHead::Builtin(builtin),
             args: resolved_args,
         };
         match builtin {
@@ -799,13 +799,13 @@ impl Checker {
         } {
             self.check_arity(args, 0, &format!("`{name}.new`"), span);
             let Ty::Named {
-                name: expected_name,
+                head,
                 args: expected_args,
-                ..
             } = &resolved_expected
             else {
                 return None;
             };
+            let expected_name = head.registry_key();
             if expected_name != name || expected_args.len() != arity {
                 return None;
             }
@@ -818,8 +818,7 @@ impl Checker {
                 return Some(Ty::Error);
             }
             let result_ty = Ty::Named {
-                builtin: Some(builtin),
-                name: name.to_string(),
+                head: crate::TypeHead::Builtin(builtin),
                 args: resolved_args.clone(),
             };
             if !resolved_args.iter().any(|arg| matches!(arg, Ty::Var(_))) {
@@ -858,13 +857,13 @@ impl Checker {
                 // Expected-type path: infer element type from the surrounding
                 // `Vec<T>` annotation.
                 let Ty::Named {
-                    name,
+                    head,
                     args: vec_args,
-                    ..
                 } = &resolved_expected
                 else {
                     return None;
                 };
+                let name = head.registry_key();
                 if name != "Vec" || vec_args.len() != 1 {
                     return None;
                 }
@@ -876,8 +875,7 @@ impl Checker {
                 // expected type as-is (both are valid deferred placeholders).
                 let result_ty = if type_args.is_some() {
                     Ty::Named {
-                        builtin: Some(crate::BuiltinType::Vec),
-                        name: "Vec".to_string(),
+                        head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                         args: vec![elem_ty],
                     }
                 } else {
@@ -903,7 +901,7 @@ impl Checker {
                 self.record_type(span, &Ty::Error);
                 return Some(Ty::Error);
             }
-            if crate::vec_authority::classify_element(&elem_ty, &self.type_defs)
+            if crate::vec_authority::classify_element(&elem_ty, self.type_def_view())
                 == Some(crate::vec_authority::VecElementToken::Layout)
                 && matches!(elem_ty, Ty::Named { .. })
                 // An element that still carries an unresolved type parameter
@@ -939,8 +937,7 @@ impl Checker {
             // already has the correct Vec<T> shape).
             let result_ty = if type_args.is_some() {
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    name: "Vec".to_string(),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                     args: vec![self.subst.resolve(&elem_ty)],
                 }
             } else {
@@ -1272,7 +1269,7 @@ impl Checker {
         let (module_name, method) = func_name.split_once("::")?;
         // A trait-qualified call (`Trait::method`) is handled by the dedicated
         // paths above and must not be re-interpreted as a module call.
-        if self.trait_defs.contains_key(module_name) {
+        if self.has_trait_def(module_name) {
             return None;
         }
         if method.contains("::") {
@@ -1286,7 +1283,7 @@ impl Checker {
         // nested modules and aliases retain their exact source identity.
         let canonical_owner = self.canonical_module_import_owner(module_name);
         let key = self.canonical_fn_identity(Some(&canonical_owner), method);
-        if !self.fn_sigs.contains_key(&key) {
+        if !self.has_fn_sig(&key) {
             return None;
         }
         if self.module_binding_in_current_file(module_name) {
@@ -1340,7 +1337,7 @@ impl Checker {
         if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
             self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
         }
-        let sig = self.fn_sigs.get(&key).cloned()?;
+        let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
@@ -1477,7 +1474,7 @@ impl Checker {
     /// the same string every `{owner}::{member}` registry key is built from.
     fn current_actor_type_name(&self) -> Option<&str> {
         match self.current_actor_type.as_ref()? {
-            Ty::Named { name, .. } => Some(name.as_str()),
+            Ty::Named { head, .. } => Some(head.registry_key()),
             _ => None,
         }
     }
@@ -1752,7 +1749,7 @@ impl Checker {
         if contract.is_variadic {
             return None;
         }
-        let signature = self.fn_sigs.get(self.defs.path(declaration))?;
+        let signature = self.fn_sig(self.defs.path(declaration))?;
         if !signature.type_params.is_empty() {
             return None;
         }
@@ -1764,6 +1761,7 @@ impl Checker {
             .ok()?;
         let result = ResolvedTy::from_ty(&self.subst.resolve(&signature.return_type)).ok()?;
         (family.matches_encoding_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1771,6 +1769,7 @@ impl Checker {
             &result,
             &contract.consuming_params,
         ) || family.matches_file_read_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1778,6 +1777,7 @@ impl Checker {
             &result,
             &contract.consuming_params,
         ) || family.matches_tcp_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1785,6 +1785,7 @@ impl Checker {
             &result,
             &contract.consuming_params,
         ) || family.matches_async_io_extern(
+            &self.defs,
             module,
             self.defs.path(declaration),
             &extern_decl.symbol,
@@ -1824,7 +1825,12 @@ impl Checker {
             );
             return Ty::Error;
         }
-        // Get function name from expression
+        // A body-local binding shadows a function of the same spelling (R3).
+        // Keep it on the ordinary value-call path below, which also handles
+        // polymorphic closures and actor-handle capture checks.
+        let lexical_shadow_of_item = matches!(&func.0, Expr::Ident(name)
+            if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
+                && self.visible_fn_signature_key(name.name.as_str()).is_some());
         let func_name = match &func.0 {
             Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => {
@@ -1968,7 +1974,7 @@ impl Checker {
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            let result_ty = self.variant_nominal_ty(type_name, resolved_args);
+            let result_ty = self.variant_nominal_ty(&type_name, resolved_args);
             return result_ty;
         }
 
@@ -2011,7 +2017,7 @@ impl Checker {
                 let elem_ty = lowered.remove(0);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 // Inherit the layout+Copy guard from check_call_against_expected_constructor.
-                if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
+                if crate::vec_authority::classify_element(&resolved_elem, self.type_def_view())
                     == Some(crate::vec_authority::VecElementToken::Layout)
                     && matches!(resolved_elem, Ty::Named { .. })
                 {
@@ -2030,8 +2036,7 @@ impl Checker {
                     }
                 }
                 let result_ty = Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    name: "Vec".to_string(),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                     args: vec![resolved_elem],
                 };
                 self.record_type(span, &result_ty);
@@ -2102,8 +2107,8 @@ impl Checker {
                 let resolved = self.subst.resolve(&actor_ty);
                 // Supervisor close uses the tree's terminal contract, which
                 // tears down every child before returning.
-                if let Some(Ty::Named { name, .. }) = resolved.as_local_actor_ref() {
-                    if self.supervisor_children.contains_key(name) {
+                if let Some(Ty::Named { head, .. }) = resolved.as_local_actor_ref() {
+                    if self.supervisor_children.contains_key(head.registry_key()) {
                         if func_name == "close" {
                             self.record_direct_call_target(
                                 span,
@@ -2166,7 +2171,7 @@ impl Checker {
                         // forms feed the same HIR identity lowering below.
                         Ty::Array(inner, _) => self.expect_type(&elem, &inner, span),
                         Ty::Named {
-                            builtin: Some(crate::BuiltinType::Vec),
+                            head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                             args,
                             ..
                         } if args.len() == 1 => self.expect_type(&elem, &args[0], span),
@@ -2256,11 +2261,11 @@ impl Checker {
 
                 // Accept local actor handles as supervisor handles.
                 if let Some(Ty::Named {
-                    name: sup_name,
+                    head: sup_head,
                     args: sup_args,
-                    ..
                 }) = sup_ty_resolved.as_local_actor_ref()
                 {
+                    let sup_name = sup_head.registry_key();
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // `supervisor_child` builtin indexes into the static slot space.
                         let statics = &sup_children.statics;
@@ -2276,8 +2281,7 @@ impl Checker {
                             {
                                 let child_type = &statics[i].1;
                                 let parameters = self
-                                    .type_defs
-                                    .get(sup_name)
+                                    .type_def_at(sup_name)
                                     .map_or_else(Vec::new, |definition| {
                                         definition.type_params.clone()
                                     });
@@ -2310,7 +2314,7 @@ impl Checker {
         // receiver param on the resolved sig so arity matches and the
         // first arg is type-checked against the canonical receiver.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.trait_defs.contains_key(trait_name) {
+            if self.has_trait_def(trait_name) {
                 if let Some(ret_ty) = self.try_dispatch_ufcs_primitive_trait_method(
                     trait_name,
                     method_name,
@@ -2324,9 +2328,12 @@ impl Checker {
 
         // Prefer a declaration or an exact file import, then an enclosing
         // actor helper. A signature published by another file is not a binding.
-        let visible_fn_key = self
-            .visible_fn_signature_key(&func_name)
-            .or_else(|| self.enclosing_actor_method_key(&func_name));
+        let visible_fn_key = if lexical_shadow_of_item {
+            None
+        } else {
+            self.visible_fn_signature_key(&func_name)
+                .or_else(|| self.enclosing_actor_method_key(&func_name))
+        };
         let has_visible_fn_signature = visible_fn_key.is_some();
         let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
         // An actor method reads and writes the actor's own state, so it is
@@ -2359,8 +2366,7 @@ impl Checker {
             }
         }
         if let Some(sig) = self
-            .fn_sigs
-            .get(&resolved_fn_name)
+            .fn_sig(&resolved_fn_name)
             .cloned()
             .filter(|_| has_visible_fn_signature)
         {
@@ -2513,7 +2519,7 @@ impl Checker {
             if resolved_fn_name == "len" {
                 if let Some(Ty::Named {
                     args,
-                    builtin: Some(crate::BuiltinType::HashSet),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
                     ..
                 }) = applied_sig.params.first().map(|ty| self.subst.resolve(ty))
                 {
@@ -2620,7 +2626,7 @@ impl Checker {
             if matches!(
                 &resolved_func_ty,
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::ActorFn),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
                     ..
                 }
             ) {
@@ -2655,7 +2661,7 @@ impl Checker {
         // If the function name has the form `TraitName::method` and TraitName
         // is a known trait, resolve the method from the trait definition.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.trait_defs.contains_key(trait_name) {
+            if self.has_trait_def(trait_name) {
                 // Use the full signature (receiver included) for qualified calls.
                 if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
                     // The trait sig includes all non-receiver params.
@@ -2730,13 +2736,14 @@ impl Checker {
             })
             .map(|(_, _, binding)| binding.as_str())
             .collect();
+        let local_names: Vec<&str> = self.env.all_names().map(Symbol::as_str).collect();
         let mut similar = crate::error::find_similar(
             &func_name,
-            self.fn_sigs
-                .keys()
-                .map(String::as_str)
+            self.sigs()
+                .entries()
+                .map(|(key, _)| key)
                 .filter(|key| !foreign_bindings.contains(key))
-                .chain(self.env.all_names()),
+                .chain(local_names.iter().copied()),
         );
         similar.extend(module_qualified_intrinsic_spellings(&func_name));
         self.report_error_with_suggestions(
@@ -2859,7 +2866,7 @@ impl Checker {
             // the handle's message type (M). The message must be Send (crosses actor boundary).
             Ty::Named {
                 args: ref type_args,
-                builtin: Some(crate::BuiltinType::ActorFn),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
                 ..
             } if type_args.len() == 2 => {
                 self.check_lambda_actor_call(&resolved, type_args, args, span, None)
@@ -2867,10 +2874,15 @@ impl Checker {
             // A delivery view over a lambda handle: `mailbox(handle, ..)` and
             // `policy(handle, ..)` carry the same `(msg)` call surface the
             // handle has, and decide only how the submission is admitted.
-            Ty::Named { builtin: None, .. }
-                if crate::actor_delivery::sender_parts(&resolved)
-                    .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
-                    .is_some_and(|(target, _)| target.as_actor_fn().is_some()) =>
+            Ty::Named {
+                head:
+                    crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            } if crate::actor_delivery::sender_parts(&resolved)
+                .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
+                .is_some_and(|(target, _)| target.as_actor_fn().is_some()) =>
             {
                 let one_way = crate::actor_delivery::sender_parts(&resolved).is_some();
                 let (target, policy) = crate::actor_delivery::sender_parts(&resolved)

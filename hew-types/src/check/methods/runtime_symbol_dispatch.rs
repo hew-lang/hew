@@ -149,9 +149,10 @@ impl Checker {
         &self,
         receiver_ty: &Ty,
     ) -> Option<String> {
-        let Ty::Named { name, .. } = receiver_ty else {
+        let Ty::Named { head, .. } = receiver_ty else {
             return None;
         };
+        let name = head.registry_key();
         self.module_registry.canonical_handle_type_identity(name)
     }
 

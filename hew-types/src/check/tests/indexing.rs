@@ -149,9 +149,8 @@ fn vec_index_still_rejects_either_pipe_half() {
     ] {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let half = Ty::Named {
-            name: name.to_string(),
             args: vec![Ty::I64],
-            builtin: Some(builtin),
+            head: crate::TypeHead::Builtin(builtin),
         };
         assert!(!checker.validate_vec_index_borrow_surface(&half, &Span::from(0..0)));
         assert!(

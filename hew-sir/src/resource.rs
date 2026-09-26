@@ -228,7 +228,7 @@ pub(crate) fn record_resource_lifecycle<'a>(
     ty: &ResolvedTy,
 ) -> Option<&'a hew_hir::ResourceRecordLifecycle> {
     let ResolvedTy::Named {
-        name,
+        head,
         args,
         is_opaque: false,
         ..
@@ -236,6 +236,7 @@ pub(crate) fn record_resource_lifecycle<'a>(
     else {
         return None;
     };
+    let name = head.registry_key();
     if !args.is_empty() {
         return None;
     }
@@ -393,7 +394,7 @@ pub fn verify_resource_release(
         return Err("resource release requires affine ownership without a copy recipe".into());
     }
     if *release == ResourceRelease::ActorCall {
-        return if matches!(ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::ActorCall), args, .. }
+        return if matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorCall), args, .. }
             if matches!(args.as_slice(), [result] if result.is_builtin(hew_types::BuiltinType::Result)))
         {
             Ok(())
@@ -428,7 +429,7 @@ pub fn verify_resource_release(
         ResourceRelease::Sink => Some((hew_types::BuiltinType::Sink, 1..=1)),
         _ => None,
     } {
-        return if matches!(ty, ResolvedTy::Named { builtin: Some(kind), args, .. } if *kind == builtin && elements.contains(&args.len()))
+        return if matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(kind), args, .. } if *kind == builtin && elements.contains(&args.len()))
         {
             Ok(())
         } else {
@@ -437,16 +438,16 @@ pub fn verify_resource_release(
     }
     if let ResourceRelease::OpaqueClose { lifecycle, .. } = release {
         let ResolvedTy::Named {
-            name,
+            head,
             args,
-            builtin: None,
             is_opaque: true,
         } = ty
         else {
             return Err("an authored opaque release requires an exact opaque nominal type".into());
         };
         return if args.is_empty()
-            && defs.path(lifecycle.resource_declaration) == name
+            && head.nominal().map(hew_types::NominalId::declaration)
+                == Some(lifecycle.resource_declaration)
             && lifecycle.release_declaration == lifecycle.close_declaration
             && lifecycle.producer_declarations.is_empty()
         {
@@ -457,7 +458,7 @@ pub fn verify_resource_release(
     }
     if let ResourceRelease::RecordClose { lifecycle, .. } = release {
         let ResolvedTy::Named {
-            name,
+            head,
             args,
             is_opaque: false,
             ..
@@ -465,6 +466,7 @@ pub fn verify_resource_release(
         else {
             return Err("a record release requires an exact non-opaque nominal type".into());
         };
+        let name = head.registry_key();
         return if args.is_empty() && defs.path(lifecycle.resource_declaration) == name {
             Ok(())
         } else {
@@ -542,14 +544,18 @@ fn verify_nominal_release(
         return Err("producer declarations or signatures disagree with checked lifecycle".into());
     }
     let ResolvedTy::Named {
-        name,
+        head:
+            head @ (hew_types::TypeHead::Nominal(_)
+            | hew_types::TypeHead::Param(_)
+            | hew_types::TypeHead::Unresolved(_)),
         args,
-        builtin: None,
         is_opaque: true,
+        ..
     } = ty
     else {
         return Err("nominal release requires an exact opaque source type".into());
     };
+    let name = head.registry_key();
     if !args.is_empty() || defs.path(lifecycle.resource_declaration) != name {
         return Err("resource release declaration does not match its nominal owner".into());
     }
@@ -560,7 +566,7 @@ fn verify_nominal_release(
         .contract()
         .ok_or("nominal resource release has no generated ownership row")?;
     if release_row.params != [ExternParamOwnership::Consume]
-        || release_row.resource_param_types != [name.as_str()]
+        || release_row.resource_param_types != [name]
         || release_row.result != hew_types::ffi_contracts::ExternResultOwnership::None
     {
         return Err("nominal release row does not consume its exact declared resource".into());

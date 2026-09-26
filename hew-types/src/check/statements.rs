@@ -111,7 +111,7 @@ impl Checker {
             || matches!(resolved_expected, Ty::TraitObject { .. })
             || matches!(
                 &resolved_expected,
-                Ty::Named { name, .. } if self.type_aliases.contains_key(name)
+                Ty::Named { head, .. } if self.type_aliases.contains_key(head.registry_key())
             )
         {
             return resolved_expected;
@@ -445,14 +445,14 @@ impl Checker {
             Some(actor_ty) => self.subst.resolve(actor_ty),
             None => return None,
         };
-        let Ty::Named { name, .. } = actor_ty else {
+        let Ty::Named { head, .. } = actor_ty else {
             return None;
         };
+        let name = head.registry_key();
         let actor_name = self
-            .type_defs
-            .get(&name)
+            .type_def_at(name)
             .filter(|def| def.kind == TypeDefKind::Actor)
-            .map_or(name, |def| def.name.clone());
+            .map_or_else(|| name.to_string(), |def| def.name.clone());
         Some(format!("{actor_name}::{}", method.0))
     }
 
@@ -1183,12 +1183,9 @@ impl Checker {
                         });
                     }
                     self.check_shadowing(name.name.as_str(), &pattern.1);
-                    self.env.define_with_span(
-                        name.to_string(),
-                        val_ty.clone(),
-                        false,
-                        pattern.1.clone(),
-                    );
+                    self.env
+                        .define_with_span(*name, val_ty.clone(), false, pattern.1.clone());
+                    self.record_local_resolution(*name, &pattern.1);
                     self.env
                         .set_collection_borrow(name.name.as_str(), collection_borrow.clone());
                     // Register generic lambda binding for call-site inference.
@@ -1237,7 +1234,6 @@ impl Checker {
                             path: one_path,
                             payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
                         } if one_path.segments.len() == 1 => {
-                            let pat_name = &one_path.to_string();
                             let type_name = resolved_val_ty.type_name();
                             match type_name {
                                 Some(tn) => {
@@ -1249,41 +1245,9 @@ impl Checker {
                                                 TypeDefKind::Record | TypeDefKind::Struct
                                             ) =>
                                         {
-                                            // The pattern's written constructor name must
-                                            // resolve to the SAME product type as the RHS.
-                                            // `let Other { x } = Point { .. }` must NOT be
-                                            // admitted as an irrefutable destructure just
-                                            // because `Other` and `Point` share a field
-                                            // shape — the written `Other` constructor would
-                                            // otherwise never be enforced (see PR #2003).
-                                            let pat_key = self
-                                                .canonical_nominal_name(pat_name)
-                                                .unwrap_or_else(|| pat_name.clone());
-                                            let rhs_key = self
-                                                .canonical_nominal_name(tn)
-                                                .unwrap_or_else(|| tn.to_string());
-                                            let pat_td = self.lookup_type_def(&pat_key);
-                                            let matches_rhs =
-                                                pat_td.as_ref().is_some_and(|_| pat_key == rhs_key);
-                                            if !matches_rhs {
-                                                // Report a mismatch and still return `None`
-                                                // (no *additional* refutable-let error): the
-                                                // reported error already fails compilation, and
-                                                // bind_pattern runs below for error recovery.
-                                                self.report_error(
-                                                    TypeErrorKind::Mismatch {
-                                                        expected: pat_name.clone(),
-                                                        actual: td.name.clone(),
-                                                    },
-                                                    &pattern.1,
-                                                    format!(
-                                                        "let-destructuring pattern names \
-                                                         type `{pat_name}`, but the value \
-                                                         has type `{}`",
-                                                        td.name
-                                                    ),
-                                                );
-                                            }
+                                            // The pattern's name must be the value's
+                                            // declaration; `bind_pattern` below
+                                            // refuses any other (R5).
                                             // A record pattern always matches its
                                             // own type, but a field pattern can
                                             // still fail: `let Wrap { inner:
@@ -1298,7 +1262,6 @@ impl Checker {
                                         None => {
                                             // Unknown type — checker already reported; allow
                                             // bind_pattern to run for error recovery.
-                                            let _ = pat_name;
                                             None
                                         }
                                     }
@@ -1621,7 +1584,8 @@ impl Checker {
                     let obj_ty = self.synthesize(&object.0, &object.1);
                     self.place_base_depth -= 1;
                     let resolved = self.subst.resolve(&obj_ty);
-                    if let Ty::Named { name, .. } = &resolved {
+                    if let Ty::Named { head, .. } = &resolved {
+                        let name = head.registry_key();
                         let root_is_mutable = self
                             .assignment_root_binding_name(&target.0)
                             .is_some_and(|root| {
@@ -1917,7 +1881,7 @@ impl Checker {
                 if matches!(
                     resolved_iter_ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Stream),
+                        head: crate::TypeHead::Builtin(BuiltinType::Stream),
                         ..
                     }
                 ) {
@@ -1949,12 +1913,12 @@ impl Checker {
                     }
                     Ty::Slice(inner) => (**inner).clone(),
                     Ty::Named {
-                        builtin: Some(BuiltinType::Range),
+                        head: crate::TypeHead::Builtin(BuiltinType::Range),
                         args,
                         ..
                     } if args.len() == 1 => args[0].clone(),
                     Ty::Named {
-                        builtin: Some(BuiltinType::Stream),
+                        head: crate::TypeHead::Builtin(BuiltinType::Stream),
                         args,
                         ..
                     } => {
@@ -2026,7 +1990,7 @@ impl Checker {
                         }
                     }
                     Ty::Named {
-                        builtin: Some(BuiltinType::Vec),
+                        head: crate::TypeHead::Builtin(BuiltinType::Vec),
                         args,
                         ..
                     } => {
@@ -2065,7 +2029,7 @@ impl Checker {
                     }
                     Ty::Named {
                         args,
-                        builtin: Some(BuiltinType::VecIter),
+                        head: crate::TypeHead::Builtin(BuiltinType::VecIter),
                         ..
                     } if !args.is_empty() => {
                         let elem = args[0].clone();
@@ -2076,7 +2040,7 @@ impl Checker {
                         }
                     }
                     Ty::Named {
-                        builtin: Some(BuiltinType::HashMap),
+                        head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                         args,
                         ..
                     } if args.len() >= 2 => {
@@ -2125,7 +2089,7 @@ impl Checker {
                         Ty::Tuple(vec![key_ty, val_ty])
                     }
                     Ty::Named {
-                        builtin: Some(BuiltinType::HashSet),
+                        head: crate::TypeHead::Builtin(BuiltinType::HashSet),
                         args,
                         ..
                     } if !args.is_empty() => {

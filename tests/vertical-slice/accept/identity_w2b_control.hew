@@ -1,0 +1,5 @@
+trait Klone { fn dup(self) -> i64; }
+type Q { v: i64 }
+impl Klone for Q { fn dup(self) -> i64 { self.v } }
+fn f<T: Klone>(x: T) -> i64 { x.dup() }
+fn main() { println(f(Q { v: 7 })); }

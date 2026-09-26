@@ -254,7 +254,7 @@ fn opaque_resource_layouts_preserve_pointer_and_native_io_token_abis() {
             let ty = semantic
                 .resources
                 .keys()
-                .find(|ty| matches!(ty, ResolvedTy::Named { name, .. } if name == owner))
+                .find(|ty| matches!(ty, ResolvedTy::Named { head, .. } if head.spelling() == owner))
                 .unwrap();
             assert_eq!(target.layout(ty).unwrap().repr, repr, "{triple}: {owner}");
             let physical = hew_mir::lower_physical_module(semantic, target).unwrap();

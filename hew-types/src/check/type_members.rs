@@ -35,13 +35,16 @@ impl Checker {
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
         let Ty::Named {
-            name,
-            builtin: Some(builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result)),
+            head:
+                head @ crate::TypeHead::Builtin(
+                    builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result),
+                ),
             ..
         } = self.subst.resolve(expected)
         else {
             return None;
         };
+        let name = head.registry_key();
         let span = match usage {
             DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
                 *span
@@ -71,7 +74,7 @@ impl Checker {
             return Some(Ty::Error);
         }
         let head = ResolvedDottedTypeHead {
-            canonical_type: name,
+            canonical_type: name.to_string(),
             builtin: Some(builtin),
             type_args: None,
             span: span.clone(),
@@ -124,8 +127,7 @@ impl Checker {
                             .map(|_| surface.to_string())
                     })
                     .or_else(|| {
-                        self.fn_sigs
-                            .contains_key(&format!("{surface}::{member}"))
+                        self.has_fn_sig(&format!("{surface}::{member}"))
                             .then(|| surface.to_string())
                     })?;
                 let builtin = self.resolved_builtin_type(&canonical);
@@ -196,7 +198,7 @@ impl Checker {
         member: &str,
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
-        let type_def = self.type_defs.get(&head.canonical_type)?;
+        let type_def = self.type_def_at(&head.canonical_type)?;
         if !matches!(
             type_def.kind,
             TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -261,8 +263,7 @@ impl Checker {
         let result = match usage {
             DottedTypeMemberUse::Reference { span: _ } if variant.payload_type_args.is_empty() => {
                 Ty::Named {
-                    builtin: Some(builtin),
-                    name: head.canonical_type.clone(),
+                    head: crate::TypeHead::Builtin(builtin),
                     args: (0..expected_arity)
                         .map(|_| Ty::Var(TypeVar::fresh()))
                         .collect(),
@@ -326,8 +327,7 @@ impl Checker {
             .map(|type_arg| self.resolve_type_expr(type_arg))
             .collect::<Vec<_>>();
         let expected = Ty::Named {
-            builtin: Some(builtin),
-            name: head.canonical_type.clone(),
+            head: crate::TypeHead::Builtin(builtin),
             args: resolved_args,
         };
         let span = match usage {
@@ -372,7 +372,7 @@ impl Checker {
             crate::BuiltinType::Vec,
             "from",
         );
-        let checker_member = if self.fn_sigs.contains_key(&internal_member) || is_vec_from {
+        let checker_member = if self.has_fn_sig(&internal_member) || is_vec_from {
             Some(internal_member.clone())
         } else {
             None
@@ -396,7 +396,7 @@ impl Checker {
             return Some(result);
         }
 
-        let type_def = self.type_defs.get(&head.canonical_type).cloned()?;
+        let type_def = self.type_def_at(&head.canonical_type).cloned()?;
         let raw_sig = type_def.methods.get(method).cloned()?;
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {
             if type_args.len() != type_def.type_params.len() {

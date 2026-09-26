@@ -42,11 +42,11 @@ fn link_actor_ref_returns_result_link_error() {
         out.errors
     );
     assert!(
-        out.type_defs.contains_key("std.builtins.LinkError"),
+        out.type_def_at_path("std.builtins.LinkError").is_some(),
         "LinkError must retain its std/builtins.hew declaration owner"
     );
     assert!(
-        !out.type_defs.contains_key("std.link_monitor.LinkError"),
+        out.type_def_at_path("std.link_monitor.LinkError").is_none(),
         "the mixed monitor projection must not re-owner LinkError"
     );
 }

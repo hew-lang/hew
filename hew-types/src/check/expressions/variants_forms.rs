@@ -67,7 +67,7 @@ impl Checker {
         if matches!(
             resolved,
             Ty::Named {
-                builtin: Some(
+                head: crate::TypeHead::Builtin(
                     crate::BuiltinType::NodeId
                         | crate::BuiltinType::Location
                         | crate::BuiltinType::RemotePid
@@ -102,7 +102,8 @@ impl Checker {
                 return Some(resolved);
             }
         }
-        if let Ty::Named { name, args, .. } = &resolved {
+        if let Ty::Named { head, args } = &resolved {
+            let name = head.registry_key();
             if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
                 return Some(resolved);
             }
@@ -422,21 +423,11 @@ else needs `impl Display for {rendered}`)"
     /// normalization even when its leaf spelling is `Option` or `Result`.
     /// Non-source entries retain normal builtin canonicalization (including
     /// imported aliases).
-    pub(in crate::check) fn variant_nominal_ty(&self, type_name: String, type_args: Vec<Ty>) -> Ty {
-        if self
-            .source_authorized_generated_enum_builtin(&type_name)
-            .is_some()
-        {
-            return Ty::normalize_named(type_name, type_args);
+    pub(in crate::check) fn variant_nominal_ty(&self, type_name: &str, type_args: Vec<Ty>) -> Ty {
+        if let Some(builtin) = self.source_authorized_generated_enum_builtin(type_name) {
+            return Ty::named_head(crate::TypeHead::Builtin(builtin), type_args);
         }
-        if self.local_type_defs.contains(type_name.as_str())
-            || self.source_type_defs.contains(type_name.as_str())
-            || self.is_current_module_type_def(&type_name)
-        {
-            Ty::named(type_name, type_args)
-        } else {
-            Ty::normalize_named(type_name, type_args)
-        }
+        self.named_ty_for_key(type_name, type_args)
     }
 
     pub(super) fn find_user_variant_shadow_ty(&self, variant_name: &str) -> Option<Ty> {
@@ -448,7 +439,7 @@ else needs `impl Display for {rendered}`)"
             .iter()
             .chain(self.source_type_defs.iter())
         {
-            let Some(td) = self.type_defs.get(type_name.as_str()) else {
+            let Some(td) = self.type_def_at(type_name.as_str()) else {
                 continue;
             };
             if td.kind != TypeDefKind::Enum {
@@ -464,7 +455,7 @@ else needs `impl Display for {rendered}`)"
                 .iter()
                 .map(|_| Ty::Var(TypeVar::fresh()))
                 .collect();
-            let return_type = self.variant_nominal_ty(type_name.clone(), type_args.clone());
+            let return_type = self.variant_nominal_ty(type_name, type_args.clone());
             return Some(match variant {
                 VariantDef::Tuple(payload_tys) => {
                     // Substitute generic type params with their corresponding
@@ -516,9 +507,10 @@ else needs `impl Display for {rendered}`)"
         // `local_type_defs` or `source_type_defs`; pass 2 considers the rest.
         let mut found = None;
         // Pass 1: user-declared types.
-        for (type_name, td) in &self.type_defs {
-            if !self.local_type_defs.contains(type_name.as_str())
-                && !self.source_type_defs.contains(type_name.as_str())
+        for (id, td) in &self.type_defs {
+            let type_name = self.defs.path(id.declaration());
+            if !self.local_type_defs.contains(td.name.as_str())
+                && !self.source_type_defs.contains(td.name.as_str())
                 && !self.is_current_module_type_def(type_name)
             {
                 continue;
@@ -533,9 +525,10 @@ else needs `impl Display for {rendered}`)"
         }
         // Pass 2: builtin/imported types (only when no user type matched).
         if found.is_none() {
-            for (type_name, td) in &self.type_defs {
-                if self.local_type_defs.contains(type_name.as_str())
-                    || self.source_type_defs.contains(type_name.as_str())
+            for (id, td) in &self.type_defs {
+                let type_name = self.defs.path(id.declaration());
+                if self.local_type_defs.contains(td.name.as_str())
+                    || self.source_type_defs.contains(td.name.as_str())
                     || self.is_current_module_type_def(type_name)
                 {
                     continue; // already scanned in pass 1
@@ -564,7 +557,7 @@ else needs `impl Display for {rendered}`)"
                 } else {
                     self.current_module_identity()
                         .map(|owner| format!("{owner}.{type_prefix}"))
-                        .filter(|candidate| self.type_defs.contains_key(candidate))
+                        .filter(|candidate| self.type_def_at(candidate).is_some())
                         .or_else(|| {
                             (!self.local_type_defs.contains(type_prefix)
                                 && !self.source_type_defs.contains(type_prefix))
@@ -573,7 +566,7 @@ else needs `impl Display for {rendered}`)"
                         })
                         .unwrap_or_else(|| type_prefix.to_string())
                 };
-                if let Some(td) = self.type_defs.get(&canonical_type_prefix) {
+                if let Some(td) = self.type_def_at(&canonical_type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
                         if matches!(variant, VariantDef::Unit) {
                             // Instantiate type params with fresh inference variables
@@ -593,7 +586,7 @@ else needs `impl Display for {rendered}`)"
                 }
                 // Also check fn_sigs for qualified constructors
                 if found.is_none() {
-                    if let Some(sig) = self.fn_sigs.get(variant_name) {
+                    if let Some(sig) = self.fn_sig(variant_name) {
                         if sig.params.is_empty() {
                             let ret = &sig.return_type;
                             let matches_type =
@@ -617,7 +610,7 @@ else needs `impl Display for {rendered}`)"
                         ))
                         .cloned()
                     {
-                        if let Some(td) = self.type_defs.get(canonical.as_str()) {
+                        if let Some(td) = self.type_def_at(canonical.as_str()) {
                             if let Some(variant) = td.variants.get(variant_name) {
                                 if matches!(variant, VariantDef::Unit) {
                                     let ty = self.instantiated_unit_variant_ty(&canonical, td);
@@ -679,11 +672,13 @@ else needs `impl Display for {rendered}`)"
                         .to_string(),
                 );
             } else {
+                let local_names: Vec<&str> = self.env.all_names().map(Symbol::as_str).collect();
                 let similar = crate::error::find_similar(
                     name,
-                    self.env
-                        .all_names()
-                        .chain(self.fn_sigs.keys().map(String::as_str)),
+                    local_names
+                        .iter()
+                        .copied()
+                        .chain(self.sigs().entries().map(|(key, _)| key)),
                 );
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedVariable,
@@ -708,7 +703,7 @@ else needs `impl Display for {rendered}`)"
             .iter()
             .map(|_| Ty::Var(TypeVar::fresh()))
             .collect();
-        self.variant_nominal_ty(type_name.to_string(), args)
+        self.variant_nominal_ty(type_name, args)
     }
 
     pub(super) fn record_dyn_index_method_call(
@@ -767,7 +762,7 @@ else needs `impl Display for {rendered}`)"
         if matches!(resolved, Ty::Error) {
             return None;
         }
-        let Ty::Named { name, builtin, .. } = &resolved else {
+        let Ty::Named { head, .. } = &resolved else {
             self.report_error(
                 TypeErrorKind::ContextVariantNoType,
                 span,
@@ -778,12 +773,14 @@ else needs `impl Display for {rendered}`)"
             );
             return None;
         };
+        let name = head.registry_key();
+        let builtin = head.builtin();
 
         if !name.contains('.') {
             if let Some(owners) = self.published_bare_type_owners.get(&(
                 self.current_module.clone(),
                 self.current_module_idx,
-                name.clone(),
+                name.to_string(),
             )) {
                 if owners.len() > 1 {
                     let candidates = owners.iter().cloned().collect::<Vec<_>>();
@@ -805,9 +802,9 @@ else needs `impl Display for {rendered}`)"
         }
 
         if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
-            return Some(name.clone());
+            return Some(name.to_string());
         }
-        let Some(definition) = self.type_defs.get(name) else {
+        let Some(definition) = self.type_def_at(name) else {
             self.report_error(
                 TypeErrorKind::ContextVariantNoType,
                 span,
@@ -827,7 +824,7 @@ else needs `impl Display for {rendered}`)"
             );
             return None;
         }
-        Some(name.clone())
+        Some(name.to_string())
     }
 
     pub(in crate::check) fn context_variant_definition(
@@ -835,8 +832,7 @@ else needs `impl Display for {rendered}`)"
         owner: &str,
         variant: &str,
     ) -> Option<VariantDef> {
-        self.type_defs
-            .get(owner)
+        self.type_def_at(owner)
             .and_then(|definition| definition.variants.get(variant))
             .cloned()
     }
@@ -951,7 +947,7 @@ else needs `impl Display for {rendered}`)"
                     .iter()
                     .map(|_| Ty::Var(TypeVar::fresh()))
                     .collect();
-                Ty::normalize_named(qualified_type, args)
+                self.named_ty_for_key(&qualified_type, args)
             }
             VariantDef::Tuple(params) => {
                 // Tuple-variant naked reference (no call): treat as a function
@@ -974,7 +970,7 @@ else needs `impl Display for {rendered}`)"
                     .iter()
                     .map(|p| p.substitute_named_params_parallel(&ctor_subst_map))
                     .collect();
-                let ret = Ty::normalize_named(qualified_type, args);
+                let ret = self.named_ty_for_key(&qualified_type, args);
                 Ty::Function {
                     capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                     params: subst_params,
@@ -1013,14 +1009,11 @@ else needs `impl Display for {rendered}`)"
             .type_defs
             .iter()
             .filter_map(|(type_name, td)| {
+                let type_name = self.defs.path(type_name.declaration());
                 let canonical_type_name = self
                     .canonical_nominal_name(type_name)
-                    .unwrap_or_else(|| type_name.clone());
-                let expected = Ty::Named {
-                    name: canonical_type_name.clone(),
-                    args: vec![],
-                    builtin: None,
-                };
+                    .unwrap_or_else(|| type_name.to_string());
+                let expected = self.named_ty_for_key(&canonical_type_name, vec![]);
                 if !self.variant_surface_owner_matches(surface_name, &expected) {
                     return None;
                 }
@@ -1120,7 +1113,7 @@ else needs `impl Display for {rendered}`)"
         };
         Ty::from_name(name.name.as_str()).or_else(|| {
             self.lookup_type_def(name.name.as_str())
-                .map(|type_def| Ty::normalize_named(type_def.name, vec![]))
+                .map(|type_def| self.named_ty_for_key(&type_def.name, vec![]))
         })
     }
 
@@ -1238,7 +1231,8 @@ else needs `impl Display for {rendered}`)"
         match ty {
             // Named types: actor handles and any user `TypeDef` whose kind
             // carries heap/reference identity.
-            Ty::Named { name, .. } => {
+            Ty::Named { head, .. } => {
+                let name = head.registry_key();
                 // Actor handles.
                 if ty.as_local_actor_ref().is_some() {
                     return true;
@@ -1262,7 +1256,7 @@ else needs `impl Display for {rendered}`)"
                 // the codegen front, which is the other half of the answer:
                 // the set here is the set codegen can lower, so its legality
                 // check stays an unreachable backstop (#3108, #3134).
-                if let Some(td) = self.type_defs.get(name) {
+                if let Some(td) = self.type_def_at(name) {
                     return matches!(td.kind, TypeDefKind::Actor);
                 }
                 false
@@ -1285,6 +1279,6 @@ else needs `impl Display for {rendered}`)"
     /// Used by [`synthesize_identifier`](Self::synthesize_identifier) to add a
     /// targeted suggestion when a `UseAfterMove` fires on a substrate binding.
     pub(super) fn ty_is_substrate_handle(ty: &Ty) -> bool {
-        matches!(ty, Ty::Named { builtin: Some(builtin), .. } if builtin.is_substrate_handle())
+        matches!(ty, Ty::Named { head: crate::TypeHead::Builtin(builtin), .. } if builtin.is_substrate_handle())
     }
 }

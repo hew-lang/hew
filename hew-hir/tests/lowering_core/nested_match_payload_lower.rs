@@ -208,8 +208,8 @@ fn sum(p: Point) -> i64 {
     assert!(matches!(
         &arms[0].predicate,
         HirMatchArmPredicate::RecordProject {
-            ty: ResolvedTy::Named { name, .. },
-        } if name == "Point"
+            ty: ResolvedTy::Named { head: name_head, .. },
+        } if name_head.spelling() == "Point"
     ));
     assert_eq!(arms[0].bindings.len(), 2);
     assert_eq!(arms[0].bindings[0].name, "x");

@@ -118,6 +118,42 @@ def main() -> None:
             f"canonical constructor counterfactual failed:\n{fixed.stderr}"
         )
 
+    id_keyed = """
+use std::collections::HashMap;
+
+struct Tables {
+    numeric_defs: HashMap<u32, u32>,
+}
+
+fn file(tables: &mut Tables, id: u32) {
+    tables.numeric_defs.insert(id, 1);
+}
+"""
+    fixture = """
+#[cfg(test)]
+mod tests {
+    fn fixture() {
+        let mut numeric_defs = std::collections::HashMap::new();
+        numeric_defs.insert("n".to_string(), 1);
+    }
+}
+"""
+    test_local = run(id_keyed + fixture)
+    if test_local.returncode != 0:
+        raise SystemExit(
+            "a test fixture's string map made an id-keyed table a keyspace:\n"
+            f"{test_local.stderr}"
+        )
+    production_local = run(id_keyed + fixture.replace("#[cfg(test)]\n", ""))
+    if (
+        production_local.returncode != 1
+        or "numeric_defs" not in production_local.stderr
+    ):
+        raise SystemExit(
+            "a production string map of the same name was not tracked:\n"
+            f"{production_local.stderr}"
+        )
+
     print("canonical keyspace lint counterfactuals: PASS")
 
 

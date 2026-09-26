@@ -180,8 +180,8 @@ fn semantic_release_dependencies(
             ResolvedTy::Tuple(fields) => pending.extend(fields.iter().cloned()),
             ResolvedTy::Array(element, size) if *size != 0 => pending.push((**element).clone()),
             ResolvedTy::Named {
-                builtin:
-                    Some(
+                head:
+                    hew_types::TypeHead::Builtin(
                         BuiltinType::Vec
                         | BuiltinType::HashMap
                         | BuiltinType::HashSet

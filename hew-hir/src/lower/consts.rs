@@ -220,7 +220,7 @@ impl LowerCtx {
     /// form produced when the type is written as `String` in an annotation.
     pub(super) fn is_string_ty(ty: &ResolvedTy) -> bool {
         matches!(ty, ResolvedTy::String)
-            || matches!(ty, ResolvedTy::Named { name, .. } if name == "String")
+            || matches!(ty, ResolvedTy::Named { head, .. } if head.registry_key() == "String")
     }
 
     pub(super) fn is_float_ty(ty: &ResolvedTy) -> bool {

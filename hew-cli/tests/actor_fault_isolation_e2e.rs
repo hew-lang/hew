@@ -93,7 +93,7 @@ const CRASHING_PIPELINE: &str = r#"
 import std.pipeline;
 
 fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
-    PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
+    pipeline.PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
 }
 
 fn main() {

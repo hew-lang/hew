@@ -179,7 +179,6 @@ impl SemSupervisor {
         };
         let view = vec![self.handle_ty.clone(), member.clone()];
         Ok(ResolvedTy::named_builtin(
-            hew_types::BuiltinType::SupervisorPool.canonical_name(),
             hew_types::BuiltinType::SupervisorPool,
             view,
         ))
@@ -188,7 +187,6 @@ impl SemSupervisor {
     #[must_use]
     pub fn child_ref_ty(&self) -> ResolvedTy {
         ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ChildRef.canonical_name(),
             hew_types::BuiltinType::ChildRef,
             vec![self.handle_ty.clone()],
         )
@@ -265,7 +263,7 @@ impl SemSupervisor {
 }
 
 /// The declaration a direct handle or stable supervisor role names.
-pub(crate) fn declared_handle(defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<DefId> {
-    let instance = crate::actor::local_actor_instance(defs, ty)?;
+pub(crate) fn declared_handle(_defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<DefId> {
+    let instance = crate::actor::local_actor_instance(ty)?;
     Some(instance.nominal.declaration())
 }

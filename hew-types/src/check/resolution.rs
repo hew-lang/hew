@@ -338,7 +338,7 @@ impl Checker {
         if !name.contains('.') && self.local_type_defs.contains(name) {
             if let Some(module) = self.current_module_identity() {
                 let local = format!("{module}.{name}");
-                if self.type_defs.contains_key(&local) || self.known_types.contains(&local) {
+                if self.type_def_exact(&local).is_some() || self.known_types.contains(&local) {
                     return Some(local);
                 }
             }
@@ -364,7 +364,7 @@ impl Checker {
         if !name.contains('.') && self.local_type_defs.contains(name) {
             if let Some(module) = self.current_module_identity() {
                 let local = format!("{module}.{name}");
-                if self.type_defs.contains_key(&local) || self.known_types.contains(&local) {
+                if self.type_def_exact(&local).is_some() || self.known_types.contains(&local) {
                     return Some(local);
                 }
             }
@@ -406,9 +406,7 @@ impl Checker {
         // the binding `U` records `m.T`, so a bare `U` binds to `m.T` — never a
         // reconstructed `m.U` that would name the wrong (or a non-existent) type.
         let qualified = identities.iter().next()?;
-        self.type_defs
-            .contains_key(qualified)
-            .then(|| qualified.clone())
+        self.type_def_exact(qualified).map(|_| qualified.clone())
     }
 
     pub(super) fn flat_file_import_type_owner(&self, name: &str) -> Option<String> {
@@ -421,7 +419,7 @@ impl Checker {
                 .filter(|owner| {
                     owner.rsplit_once('.').is_some_and(|(module, _)| {
                         self.flat_file_import_module_names.contains(module)
-                    }) && self.type_defs.contains_key(owner)
+                    }) && self.type_def_exact(owner).is_some()
                         && self.resolved_builtin_type(owner).is_none()
                 })
                 .collect();
@@ -474,7 +472,7 @@ impl Checker {
                 surface_owner.to_string(),
             )) {
                 let canonical = format!("{canonical_owner}.{short}");
-                if self.type_defs.contains_key(&canonical)
+                if self.type_def_exact(&canonical).is_some()
                     || self.known_types.contains(&canonical)
                     || self.canonical_std_module_sources.contains(canonical_owner)
                 {
@@ -509,7 +507,7 @@ impl Checker {
         if self.local_type_defs.contains(name) {
             let module = self.current_module.as_deref()?;
             let qualified = format!("{module}.{name}");
-            if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified) {
+            if self.type_def_exact(&qualified).is_some() || self.known_types.contains(&qualified) {
                 return Some(qualified);
             }
             // Lexical declaration authority blocks every foreign owner, but
@@ -522,7 +520,8 @@ impl Checker {
         if self.source_type_defs.contains(name) {
             if let Some(module) = self.current_module.as_deref() {
                 let qualified = format!("{module}.{name}");
-                if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified)
+                if self.type_def_exact(&qualified).is_some()
+                    || self.known_types.contains(&qualified)
                 {
                     return Some(qualified);
                 }
@@ -583,10 +582,11 @@ impl Checker {
     /// leaf `name`, collapsed through proven owner bindings so compatibility
     /// and canonical registrations of one declaration count once.
     fn registered_type_owners(&self, name: &str) -> Vec<String> {
-        let mut owners: Vec<&String> = self
+        let mut owners: Vec<&str> = self
             .type_defs
             .keys()
-            .chain(self.known_types.iter())
+            .map(|id| self.defs.path(id.declaration()))
+            .chain(self.known_types.iter().map(String::as_str))
             .filter(|qualified| {
                 qualified
                     .rsplit_once('.')
@@ -611,7 +611,7 @@ impl Checker {
             .into_iter()
             .map(|owner| {
                 self.canonical_nominal_name(owner)
-                    .unwrap_or_else(|| owner.clone())
+                    .unwrap_or_else(|| owner.to_string())
             })
             .collect();
         canonical_owners.sort_unstable();
@@ -638,7 +638,7 @@ impl Checker {
                 if let Some(owner) = self.current_module_identity() {
                     let local = format!("{owner}.{dotted}");
                     if local == expected
-                        && (self.type_defs.contains_key(&local)
+                        && (self.type_def_exact(&local).is_some()
                             || self.known_types.contains(&local))
                     {
                         return local;
@@ -667,7 +667,7 @@ impl Checker {
             return canonical;
         }
 
-        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
+        if self.type_def_exact(&dotted).is_some() || self.known_types.contains(&dotted) {
             return dotted;
         }
 
@@ -688,11 +688,11 @@ impl Checker {
 
         let expected = match expected_ty {
             Ty::Named {
-                builtin: Some(BuiltinType::Option),
+                head: crate::TypeHead::Builtin(BuiltinType::Option),
                 ..
             } => "Option".to_string(),
             Ty::Named {
-                builtin: Some(BuiltinType::Result),
+                head: crate::TypeHead::Builtin(BuiltinType::Result),
                 ..
             } => "Result".to_string(),
             // Preserve an already-resolved full source owner here.  The
@@ -700,9 +700,9 @@ impl Checker {
             // own full spelling as its short source spelling for collision
             // diagnostics, but variant-surface ownership compares against the
             // full key produced by `canonical_variant_surface_owner`.
-            Ty::Named { name, .. } => self
-                .canonical_nominal_name(name)
-                .unwrap_or_else(|| name.clone()),
+            Ty::Named { head, .. } => self
+                .canonical_nominal_name(head.registry_key())
+                .unwrap_or_else(|| head.registry_key().to_string()),
             _ => return false,
         };
         self.canonical_variant_surface_owner(surface_owner, expected_ty) == expected
@@ -725,14 +725,14 @@ impl Checker {
 
         let expected = match expected_ty {
             Ty::Named {
-                builtin: Some(BuiltinType::Option),
+                head: crate::TypeHead::Builtin(BuiltinType::Option),
                 ..
             } => "Option",
             Ty::Named {
-                builtin: Some(BuiltinType::Result),
+                head: crate::TypeHead::Builtin(BuiltinType::Result),
                 ..
             } => "Result",
-            Ty::Named { name, .. } => name,
+            Ty::Named { head, .. } => head.registry_key(),
             _ => return false,
         };
         let expected_canonical = self
@@ -834,156 +834,11 @@ impl Checker {
     fn canonical_current_module_qualified_type_name(&self, name: &str) -> Option<String> {
         let canonical =
             crate::current_module_qualified_type_candidate(self.current_module.as_deref(), name)?;
-        (self.type_defs.contains_key(&canonical)
+        (self.type_def_exact(&canonical).is_some()
             || self.known_types.contains(&canonical)
             || self.type_aliases.contains_key(&canonical)
             || self.type_visibility.contains_key(&canonical))
         .then_some(canonical)
-    }
-
-    /// Whether comparing `a` and `b` under the permissive suffix rule
-    /// (`Ty::names_match_qualified`, used inside `unify`) would ACCEPT a pairing
-    /// that owner-qualified nominal identity REJECTS — i.e. the specific
-    /// bare↔qualified nominal collision issue #2651 is about.
-    ///
-    /// Returns `true` when any corresponding nominal nodes would match under
-    /// the suffix rule but NOT under strict owner-qualified identity — the
-    /// signature of a root-local type conflated with an unrelated import
-    /// (`Widget` vs `widgeti8.Widget`). A same-def
-    /// alias (`Box` vs `nestbox.Box`, a prelude `MonitorError` vs
-    /// `link_monitor.MonitorError`, a builtin handle `HashSet` vs
-    /// `collections.HashSet`) is strictly equal and so is NOT flagged; a genuine
-    /// outer-name mismatch is not suffix-equal and so is left for `unify` to
-    /// report (preserving its coercion-recovery paths). Nested inference
-    /// variables do not defer an already-provable outer owner mismatch.
-    ///
-    /// This is a READ-ONLY comparison: it rewrites no stored name and binds no
-    /// inference variable, so it cannot leak a canonical spelling downstream.
-    pub(super) fn nominal_owner_conflict(&self, a: &Ty, b: &Ty) -> bool {
-        self.nominal_owner_conflict_on_unification_path(a, b)
-    }
-
-    /// Whether permissive unification would cross a provably distinct nominal
-    /// owner at any corresponding named node.
-    ///
-    /// This intentionally ignores differences below the named node while
-    /// deciding its owner. `Local<T>` versus `foreign.Local<i64>` is already an
-    /// invalid owner pairing even while `T` is unresolved; waiting until the
-    /// whole type is concrete lets suffix unification bind `T` and permanently
-    /// erase the conflict. Composite recursion covers the same nested type
-    /// positions that [`crate::unify::unify`] traverses.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive mirror of the type shapes traversed by context-free unification"
-    )]
-    pub(super) fn nominal_owner_conflict_on_unification_path(&self, a: &Ty, b: &Ty) -> bool {
-        match (a, b) {
-            (
-                Ty::Named {
-                    name: an,
-                    args: aa,
-                    builtin: ab,
-                },
-                Ty::Named {
-                    name: bn,
-                    args: ba,
-                    builtin: bb,
-                },
-            ) => {
-                (Ty::names_match_qualified(an, bn)
-                    && !self.strict_names_same_owner(an, *ab, bn, *bb))
-                    || (aa.len() == ba.len()
-                        && aa.iter().zip(ba).any(|(left, right)| {
-                            self.nominal_owner_conflict_on_unification_path(left, right)
-                        }))
-            }
-            (Ty::Tuple(left), Ty::Tuple(right)) => {
-                left.len() == right.len()
-                    && left.iter().zip(right).any(|(left, right)| {
-                        self.nominal_owner_conflict_on_unification_path(left, right)
-                    })
-            }
-            (Ty::Array(left, left_len), Ty::Array(right, right_len)) => {
-                left_len == right_len
-                    && self.nominal_owner_conflict_on_unification_path(left, right)
-            }
-            (Ty::Slice(left), Ty::Slice(right))
-            | (Ty::Task(left), Ty::Task(right))
-            | (Ty::Borrow { pointee: left }, Ty::Borrow { pointee: right }) => {
-                self.nominal_owner_conflict_on_unification_path(left, right)
-            }
-            (
-                Ty::Function {
-                    params: left_params,
-                    ret: left_ret,
-                    ..
-                }
-                | Ty::Closure {
-                    params: left_params,
-                    ret: left_ret,
-                    ..
-                },
-                Ty::Function {
-                    params: right_params,
-                    ret: right_ret,
-                    ..
-                }
-                | Ty::Closure {
-                    params: right_params,
-                    ret: right_ret,
-                    ..
-                },
-            ) => {
-                (left_params.len() == right_params.len()
-                    && left_params.iter().zip(right_params).any(|(left, right)| {
-                        self.nominal_owner_conflict_on_unification_path(left, right)
-                    }))
-                    || self.nominal_owner_conflict_on_unification_path(left_ret, right_ret)
-            }
-            (
-                Ty::Pointer {
-                    is_mutable: left_mutable,
-                    pointee: left,
-                },
-                Ty::Pointer {
-                    is_mutable: right_mutable,
-                    pointee: right,
-                },
-            ) => {
-                left_mutable == right_mutable
-                    && self.nominal_owner_conflict_on_unification_path(left, right)
-            }
-            (
-                Ty::TraitObject {
-                    traits: left_traits,
-                },
-                Ty::TraitObject {
-                    traits: right_traits,
-                },
-            ) => left_traits.iter().any(|left| {
-                right_traits
-                    .iter()
-                    .find(|right| right.trait_name == left.trait_name)
-                    .is_some_and(|right| {
-                        (left.args.len() == right.args.len()
-                            && left.args.iter().zip(&right.args).any(|(left, right)| {
-                                self.nominal_owner_conflict_on_unification_path(left, right)
-                            }))
-                            || left.assoc_bindings.iter().any(|(left_name, left_ty)| {
-                                right
-                                    .assoc_bindings
-                                    .iter()
-                                    .find(|(right_name, _)| right_name == left_name)
-                                    .is_some_and(|(_, right_ty)| {
-                                        self.nominal_owner_conflict_on_unification_path(
-                                            left_ty, right_ty,
-                                        )
-                                    })
-                            })
-                    })
-            }),
-            _ => false,
-        }
     }
 
     /// The strict owner-qualified identity a concrete `Ty::Named` name denotes
@@ -1340,7 +1195,7 @@ impl Checker {
                                                                                    // `dyn X` names a trait; an unknown name has no vtable to build and no
                                                                                    // methods to dispatch, so refuse it here rather than letting it reach a
                                                                                    // coercion site as an unexplained type mismatch.
-        if !self.trait_defs.contains_key(&trait_lookup_key) {
+        if !self.has_trait_def(&trait_lookup_key) {
             // A type annotation is resolved once per registration pass and
             // again at use, so report the span once.
             let dedup_key = (
@@ -1356,7 +1211,7 @@ impl Checker {
             }
         }
         if let Some(associated_type_names) =
-            self.trait_defs.get(&trait_lookup_key).map(|trait_info| {
+            self.trait_def_at(&trait_lookup_key).map(|trait_info| {
                 trait_info
                     .associated_types
                     .iter()
@@ -1423,6 +1278,7 @@ impl Checker {
 
         crate::ty::TraitObjectBound {
             trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+            trait_id: self.trait_key_id(&trait_lookup_key),
             args,
             assoc_bindings,
         }
@@ -1443,7 +1299,7 @@ impl Checker {
         let protected = ty.substitute_named_params_parallel(&substitutions);
         let resolved = self.normalize_for_use(&protected);
         binders.into_iter().fold(resolved, |ty, (name, var)| {
-            ty.substitute(var, &Ty::named(name, vec![]))
+            ty.substitute(var, &Ty::param(name))
         })
     }
 
@@ -1605,7 +1461,7 @@ impl Checker {
         self.record_deferred_inference_holes(annotation, context, hole_vars);
         match &ty {
             Ty::Named {
-                builtin: Some(crate::BuiltinType::Vec),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                 args,
                 ..
             } if args.len() == 1 => {
@@ -1618,7 +1474,7 @@ impl Checker {
                 }
             }
             Ty::Named {
-                builtin: Some(crate::BuiltinType::HashSet),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
                 args,
                 ..
             } if args.len() == 1 => {
@@ -1630,7 +1486,7 @@ impl Checker {
                 }
             }
             Ty::Named {
-                builtin: Some(crate::BuiltinType::HashMap),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::HashMap),
                 args,
                 ..
             } if args.len() == 2 => {
@@ -2006,7 +1862,7 @@ impl Checker {
     pub(super) fn default_unconstrained_range_types(&mut self, expr_types: &HashMap<SpanKey, Ty>) {
         for ty in expr_types.values() {
             if let Ty::Named {
-                builtin: Some(crate::BuiltinType::Range),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Range),
                 args,
                 ..
             } = ty
@@ -2185,7 +2041,7 @@ impl Checker {
         // Super-trait projections are deferred per the precursor plan.
         let mut matches: Vec<String> = Vec::new();
         for trait_name in &bounds {
-            if let Some(info) = self.trait_defs.get(trait_name) {
+            if let Some(info) = self.trait_def_at(trait_name) {
                 if info
                     .associated_types
                     .iter()
@@ -2211,11 +2067,7 @@ impl Checker {
             1 => {
                 let trait_name = matches.into_iter().next().expect("len==1");
                 Some(Ty::AssocType {
-                    base: Box::new(Ty::Named {
-                        builtin: None,
-                        name: base_name.to_string(),
-                        args: vec![],
-                    }),
+                    base: Box::new(Ty::param(base_name)),
                     trait_name: trait_name.into_boxed_str(),
                     assoc_name: assoc_name.to_string().into_boxed_str(),
                 })
@@ -2252,7 +2104,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|p| p == param_name) {
                     return Some(
                         sig.type_param_bounds
@@ -2302,7 +2154,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|p| p == name) {
                     return true;
                 }
@@ -2324,6 +2176,10 @@ impl Checker {
     /// registration. When no binding exists for `(base_type, trait, assoc)`,
     /// the carrier passes through — `enforce_type_param_bounds` is the
     /// authoritative diagnostic surface for "type does not implement trait".
+    #[expect(
+        clippy::too_many_lines,
+        reason = "TRANSITION(A1 commit 3): the string-keyed projection shrinks to an id-keyed impl lookup"
+    )]
     pub(super) fn project_assoc_types(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::AssocType {
@@ -2340,7 +2196,12 @@ impl Checker {
                 // Resolve via the substitution so a `Ty::Var` bound to a
                 // concrete type also collapses.
                 let resolved_base = self.subst.resolve(&projected_base);
-                if let Ty::Named { name, args, .. } = &resolved_base {
+                if let Ty::Named {
+                    head: crate::TypeHead::Param(param),
+                    args,
+                } = &resolved_base
+                {
+                    let name = param.spelling.as_str();
                     if args.is_empty() && self.is_type_param_in_scope(name) {
                         if let Some(binding) = self.lookup_type_param_assoc_binding(
                             name,
@@ -2363,7 +2224,7 @@ impl Checker {
                 // projection must accept both classes. Generic arguments remain
                 // instance data used only to substitute the selected binding.
                 let named_base = match &resolved_base {
-                    Ty::Named { name, args, .. } => Some((name, args)),
+                    Ty::Named { head, args } => Some((head.registry_key(), args)),
                     _ => None,
                 };
                 let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
@@ -2380,7 +2241,7 @@ impl Checker {
                     .or_else(|| {
                         named_base.map(|(name, _)| {
                             self.canonical_nominal_name(name)
-                                .unwrap_or_else(|| name.clone())
+                                .unwrap_or_else(|| name.to_string())
                         })
                     });
                 if let Some(nominal_identity) = nominal_identity {
@@ -2422,7 +2283,7 @@ impl Checker {
                         // `type_params` is absent is to return the binding
                         // unchanged — sound when the impl is non-generic.
                         let args = named_base.map_or(&[][..], |(_, args)| args.as_slice());
-                        let bound = if let Some(td) = self.type_defs.get(&nominal_identity) {
+                        let bound = if let Some(td) = self.type_def_exact(&nominal_identity) {
                             let map: HashMap<String, Ty> = td
                                 .type_params
                                 .iter()
@@ -2501,80 +2362,18 @@ impl Checker {
     /// declarations and returns `None` when no owner proof exists.
     pub(super) fn canonicalize_nominal_identity(&self, ty: &Ty) -> Ty {
         match ty {
-            // The checker keeps type-parameter binders as bare names. A bare
-            // spelling some generic declaration binds is that binder, never an
-            // unrelated module's `type U` or an import alias `C` found by leaf.
+            // A head is its identity; only a spelling the interim key
+            // resolution could not settle is resolved again at handoff.
+            // TRANSITION(A1 commit 3): deleted with the spelled heads.
             Ty::Named {
-                name,
+                head: crate::TypeHead::Unresolved(spelling),
                 args,
-                builtin: None,
-            } if args.is_empty() && self.declared_type_param_names.contains(name) => ty.clone(),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                // An actor is the type of its handle, so the handle's name is
-                // the actor declaration's own identity and takes the ordinary
-                // nominal ladder rather than a builtin presentation name.
-                let canonical_name = if matches!(builtin, Some(crate::BuiltinType::ActorHandle)) {
-                    self.canonical_nominal_name(name)
-                        .unwrap_or_else(|| name.clone())
-                } else if let Some(kind) = builtin {
-                    // A builtin discriminator is already closed identity
-                    // authority. Do not run a BARE presentation leaf through
-                    // the user-declaration ladder: a private imported `Result`
-                    // may share the leaf, but cannot rename builtin
-                    // `Result<T, E>` during final checker handoff.
-                    if kind.is_substrate_handle() {
-                        // A pipe half has one spelling at every stage.
-                        kind.canonical_name().to_string()
-                    } else if name.contains('.') {
-                        if self.resolved_builtin_type(name).is_some() {
-                            // A trusted qualified carrier still projects its
-                            // lexical module alias to the one canonical source
-                            // owner (`stream.Stream` → `std.stream.Stream`).
-                            // Two dotted spellings are DISTINCT nominals to
-                            // `names_match_qualified`, so leaving the alias
-                            // spelling in place splits one builtin nominal
-                            // into two identities at every unify boundary.
-                            self.canonical_nominal_name(name)
-                                .unwrap_or_else(|| name.clone())
-                        } else {
-                            kind.canonical_name().to_string()
-                        }
-                    } else {
-                        name.clone()
-                    }
-                } else {
-                    self.canonical_nominal_name(name)
-                        .unwrap_or_else(|| name.clone())
-                };
-                Ty::Named {
-                    // A source declaration may share a builtin leaf spelling
-                    // (`Option`, `Result`, or an imported source nominal). The
-                    // resolver already established that its provisional type
-                    // is source-owned with `builtin: None`; do not recreate a
-                    // builtin discriminator merely because the final handoff
-                    // revisits that presentation name.
-                    builtin: builtin.or_else(|| {
-                        let trusted_qualified_builtin = canonical_name.contains('.')
-                            && self.resolved_builtin_type(&canonical_name).is_some();
-                        let source_nominal = !trusted_qualified_builtin
-                            && (self.local_type_defs.contains(&canonical_name)
-                                || self.source_type_defs.contains(&canonical_name)
-                                || self.type_defs.contains_key(&canonical_name));
-                        (!source_nominal)
-                            .then(|| self.resolved_builtin_type(&canonical_name))
-                            .flatten()
-                    }),
-                    name: canonical_name,
-                    args: args
-                        .iter()
-                        .map(|arg| self.canonicalize_nominal_identity(arg))
-                        .collect(),
-                }
-            }
+            } => self.named_ty_for_key(
+                spelling.as_str(),
+                args.iter()
+                    .map(|arg| self.canonicalize_nominal_identity(arg))
+                    .collect(),
+            ),
             _ => ty.map_children_pub(&|child| self.canonicalize_nominal_identity(child)),
         }
     }
@@ -2672,26 +2471,19 @@ impl Checker {
         let placeholder_args: Vec<Ty> = alias
             .type_params
             .iter()
-            .map(|param| Ty::Named {
-                name: param.clone(),
-                args: Vec::new(),
-                builtin: None,
-            })
+            .map(|param| Ty::param(param))
             .collect();
-        let probe = Ty::Named {
-            name: name.to_string(),
-            args: placeholder_args,
-            builtin: None,
-        };
+        let probe = self.named_ty_for_key(name, placeholder_args);
         self.alias_expansion_has_cycle(&probe, &mut HashSet::new())
     }
 
     /// Walk an alias expansion and distinguish an actual cycle from an
     /// unrelated `Ty::Error` already reported while resolving the target.
     fn alias_expansion_has_cycle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        if let Ty::Named { name, args, .. } = ty {
+        if let Ty::Named { head, args } = ty {
+            let name = head.registry_key();
             if let Some(target) = self.alias_target_for_instance(name, args) {
-                if !visiting.insert(name.clone()) {
+                if !visiting.insert(name.to_string()) {
                     return true;
                 }
                 let has_cycle = self.alias_expansion_has_cycle(&target, visiting);
@@ -2712,9 +2504,10 @@ impl Checker {
     }
 
     fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Ty {
-        if let Ty::Named { name, args, .. } = ty {
+        if let Ty::Named { head, args } = ty {
+            let name = head.registry_key();
             if let Some(target) = self.alias_target_for_instance(name, args) {
-                if !visiting.insert(name.clone()) {
+                if !visiting.insert(name.to_string()) {
                     return Ty::Error;
                 }
                 let expanded = self.expand_type_aliases(&target, visiting);
@@ -2756,7 +2549,7 @@ impl Checker {
             return true;
         }
         if self.known_types.contains(name)
-            || self.trait_defs.contains_key(name)
+            || self.has_trait_def(name)
             || self.type_aliases.contains_key(name)
         {
             return true;
@@ -2830,7 +2623,7 @@ impl Checker {
             return true;
         }
         if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|param| param == name) {
                     return true;
                 }
@@ -2840,7 +2633,7 @@ impl Checker {
         // whose tables key on the unqualified short name.
         if let Some(unqualified) = self.strip_module_prefix(name) {
             if self.known_types.contains(unqualified)
-                || self.trait_defs.contains_key(unqualified)
+                || self.has_trait_def(unqualified)
                 || self.type_aliases.contains_key(unqualified)
                 || self.supervisor_children.contains_key(unqualified)
             {
@@ -2895,9 +2688,9 @@ impl Checker {
     /// and relies on the helper to drop duplicates.
     fn enforce_type_def_bounds_recursive(&mut self, ty: &Ty, span: &Span) {
         match ty {
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
                 if !args.is_empty() {
-                    self.enforce_type_def_instantiation_bounds(name, args, span);
+                    self.enforce_type_def_instantiation_bounds(head.registry_key(), args, span);
                     for arg in args {
                         self.enforce_type_def_bounds_recursive(arg, span);
                     }
@@ -2999,17 +2792,17 @@ impl Checker {
                 || name.to_string(),
                 |module| {
                     let qualified = format!("{module}.{name}");
-                    if self.type_defs.contains_key(&qualified) {
+                    if self.type_def_exact(&qualified).is_some() {
                         qualified
                     } else {
                         name.to_string()
                     }
                 },
             );
-            return Some(Ty::named(resolved_name, args.to_vec()));
+            return Some(self.named_ty_for_key(&resolved_name, args.to_vec()));
         }
         self.published_bare_type_qualified(name)
-            .map(|qualified| Ty::named(qualified, args.to_vec()))
+            .map(|qualified| self.named_ty_for_key(&qualified, args.to_vec()))
     }
 
     /// Omitted `ActorError` parameters default to the uninhabited `Never`.
@@ -3020,13 +2813,8 @@ impl Checker {
         context: TypeResolutionContext,
     ) -> Ty {
         let mut ty = self.resolve_type_expr_inner(te, hole_vars, context);
-        if let Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } = &mut ty
-        {
-            if name == crate::actor_delivery::ACTOR_ERROR_TYPE {
+        if let Ty::Named { head, args } = &mut ty {
+            if *head == crate::KnownDecl::ActorError.head() {
                 args.resize_with(args.len().max(2), Ty::never_type);
             }
         }
@@ -3049,26 +2837,16 @@ impl Checker {
     /// actor that satisfies the trait.
     pub(super) fn canonicalize_actor_handles(&self, ty: &mut Ty) {
         match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args } => {
                 for argument in args.iter_mut() {
                     self.canonicalize_actor_handles(argument);
                 }
-                // A type parameter in scope is its own binder, even when an
-                // actor or handler trait elsewhere shares its spelling.
-                let is_type_param = self
-                    .current_type_param_bounds
-                    .iter()
-                    .any(|scope| scope.bounds.contains_key(name.as_str()))
-                    || self
-                        .generic_ctx
-                        .iter()
-                        .any(|scope| scope.contains_key(name.as_str()));
-                if builtin.is_none() && !is_type_param && self.name_is_actor_handle_nominal(name) {
-                    *builtin = Some(crate::BuiltinType::ActorHandle);
+                // A binder is its own type, even when an actor or handler
+                // trait elsewhere shares its spelling.
+                if let crate::TypeHead::Nominal(nominal) = *head {
+                    if self.name_is_actor_handle_nominal(nominal.spelling.as_str()) {
+                        *head = crate::TypeHead::Actor(nominal);
+                    }
                 }
             }
             Ty::Tuple(items) => {
@@ -3153,7 +2931,7 @@ impl Checker {
                 }
                 let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 let mut candidates = Vec::new();
-                if self.trait_defs.contains_key(&trait_name) {
+                if self.has_trait_def(&trait_name) {
                     candidates.push(trait_name.clone());
                 } else if !trait_name.contains('.') && !trait_name.contains("::") {
                     if let Some(owners) = self.published_bare_trait_owners.get(&(
@@ -3164,7 +2942,7 @@ impl Checker {
                         candidates.extend(
                             owners
                                 .iter()
-                                .filter(|owner| self.trait_defs.contains_key(*owner))
+                                .filter(|owner| self.has_trait_def(owner))
                                 .cloned(),
                         );
                     }
@@ -3185,7 +2963,7 @@ impl Checker {
                     .first()
                     .cloned()
                     .unwrap_or_else(|| self.trait_ref_lookup_key(&trait_name));
-                if let Some(info) = self.trait_defs.get(&trait_key) {
+                if let Some(info) = self.trait_def_at(&trait_key) {
                     if !info
                         .associated_types
                         .iter()
@@ -3225,7 +3003,12 @@ impl Checker {
                                                     // Handle `Self` type
                 if name == "Self" {
                     if let Some((self_type_name, self_type_args)) = &self.current_self_type {
-                        return Ty::normalize_named(self_type_name.clone(), self_type_args.clone());
+                        return self.named_ty_for_key(self_type_name, self_type_args.clone());
+                    }
+                    // Outside an impl, `Self` is the declaring trait's abstract
+                    // receiver binder.
+                    if type_args.as_ref().is_none_or(Vec::is_empty) {
+                        return Ty::named_head(crate::TypeHead::self_param(), Vec::new());
                     }
                 }
                 if let Some(alias_name) = name
@@ -3260,11 +3043,7 @@ impl Checker {
                     // its OWN `Self::Item` (projection flag unset).
                     if let Some(trait_name) = self.current_trait_for_self_projection.clone() {
                         return Ty::AssocType {
-                            base: Box::new(Ty::Named {
-                                builtin: None,
-                                name: "Self".to_string(),
-                                args: vec![],
-                            }),
+                            base: Box::new(Ty::param("Self")),
                             trait_name: trait_name.into_boxed_str(),
                             assoc_name: alias_name.to_string().into_boxed_str(),
                         };
@@ -3506,8 +3285,7 @@ impl Checker {
                     .any(|scope| scope.bounds.contains_key(name))
                 {
                     return Ty::Named {
-                        builtin: None,
-                        name: name.clone(),
+                        head: crate::TypeHead::param(name),
                         args,
                     };
                 }
@@ -3579,7 +3357,7 @@ impl Checker {
                     )) {
                         self.mark_module_owner_bindings_used(module);
                     }
-                    return Ty::named(identity, args);
+                    return self.named_ty_for_key(&identity, args);
                 }
                 // A qualified lifecycle source identity is valid only when its
                 // canonical owner was imported directly by this lexical module.
@@ -3634,7 +3412,7 @@ impl Checker {
                     // another module may export the same name.
                     || (!name.contains('.')
                         && self.current_module.as_ref().is_some_and(|module| {
-                            self.type_defs.contains_key(&format!("{module}.{name}"))
+                            self.type_def_exact(&format!("{module}.{name}")).is_some()
                         }));
                 // Fail closed under qualified-by-default: a bare reference
                 // published by more than one module is ambiguous, and one
@@ -3719,7 +3497,7 @@ impl Checker {
                     // declaring file's minted identity together.
                     if let Some(module) = self.current_module.as_deref() {
                         let qualified = format!("{module}.{name}");
-                        if self.type_defs.contains_key(&qualified) {
+                        if self.type_def_exact(&qualified).is_some() {
                             qualified
                         } else {
                             name.clone()
@@ -3892,42 +3670,23 @@ impl Checker {
                     if builtin == BuiltinType::CancellationToken && args.is_empty() {
                         return Ty::CancellationToken;
                     }
-                    // Name resolution has selected this builtin declaration. Keep
-                    // its generated owner identity through annotations and fields,
-                    // just as compiler-created error values already do.
-                    let canonical_name =
-                        crate::builtin_enums::monomorphic_builtin_enum(&resolved_name)
-                            .filter(|declaration| {
-                                crate::lookup_builtin_type(declaration.name) == Some(builtin)
-                            })
-                            .map_or_else(
-                                || {
-                                    // A pipe half and an identity carrier
-                                    // carry their identity in the
-                                    // discriminator; every stage spells them
-                                    // by the canonical name.
-                                    if builtin.is_substrate_handle()
-                                        || matches!(
-                                            builtin,
-                                            BuiltinType::NodeId
-                                                | BuiltinType::Location
-                                                | BuiltinType::RemotePid
-                                        )
-                                    {
-                                        builtin.canonical_name().to_string()
-                                    } else {
-                                        resolved_name.clone()
-                                    }
-                                },
-                                |declaration| declaration.canonical_name.to_string(),
-                            );
-                    Ty::Named {
-                        name: canonical_name,
-                        args,
-                        builtin: Some(builtin),
-                    }
+                    Ty::named_head(crate::TypeHead::Builtin(builtin), args)
                 } else {
-                    Ty::named(resolved_name, args)
+                    let ty = self.named_ty_for_key(&resolved_name, args);
+                    // TRANSITION(A1 commit 3): a spelling no declaration claims
+                    // that a generic item declares is that binder.
+                    match ty {
+                        Ty::Named {
+                            head: crate::TypeHead::Unresolved(_),
+                            ref args,
+                        } if args.is_empty()
+                            && (self.is_type_param_in_scope(&resolved_name)
+                                || self.declared_type_param_names.contains(&resolved_name)) =>
+                        {
+                            Ty::param(&resolved_name)
+                        }
+                        other => other,
+                    }
                 }
             }
             TypeExpr::Result { ok, err } => {
@@ -3967,8 +3726,8 @@ impl Checker {
                 ),
                 *size,
             ),
-            TypeExpr::Slice(element) => Ty::normalize_named(
-                "Vec".to_string(),
+            TypeExpr::Slice(element) => Ty::builtin_named(
+                BuiltinType::Vec,
                 vec![
                     self.resolve_type_expr_tracking_holes_with_context(element, hole_vars, context)
                 ],

@@ -5,6 +5,76 @@
 pub(super) use super::*;
 
 #[test]
+fn source_resolutions_join_local_definition_and_use() {
+    let source = "fn main() { let value: i64 = 1; let next = value; }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let definition = source.find("value:").expect("binding definition");
+    let use_site = source.rfind("value;").expect("binding use");
+    let at = |start| SpanKey::in_module(&(start..start + "value".len()), 0);
+    let declared = output.resolutions.get(&at(definition));
+    assert!(matches!(
+        declared,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert_eq!(output.resolutions.get(&at(use_site)), declared);
+}
+
+#[test]
+fn source_resolutions_distinguish_same_named_fields_by_owner() {
+    let source = "type A { x: i64 } type B { x: i64 } fn main() { \
+        let a = A { x: 1 }; let b = B { x: 2 }; \
+        println(a.x); println(b.x); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let a = source.find("a.x").expect("A field") + 2;
+    let b = source.find("b.x").expect("B field") + 2;
+    let at = |start| SpanKey::in_module(&(start..start + 1), 0);
+    let a_field = output.resolutions.get(&at(a));
+    let b_field = output.resolutions.get(&at(b));
+    assert!(matches!(
+        a_field,
+        Some(crate::check::scope::Resolution::Field(_, 0))
+    ));
+    assert!(matches!(
+        b_field,
+        Some(crate::check::scope::Resolution::Field(_, 0))
+    ));
+    assert_ne!(a_field, b_field);
+}
+
+#[test]
+fn source_resolutions_publish_selected_function_and_method() {
+    let source = "type A { x: i64 } \
+        impl A { fn get(self) -> i64 { self.x } } \
+        fn helper() -> i64 { 1 } \
+        fn main() { let a = A { x: 2 }; println(helper()); println(a.get()); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let helper = source.rfind("helper()").expect("helper call");
+    let get = source.rfind("get()").expect("method call");
+    let at = |start, len| SpanKey::in_module(&(start..start + len), 0);
+    let Some(crate::check::scope::Resolution::Def(function)) =
+        output.resolutions.get(&at(helper, "helper".len()))
+    else {
+        panic!(
+            "function call has no declaration resolution: {:?}",
+            output.resolutions
+        );
+    };
+    assert_eq!(output.defs.name(*function).as_str(), "helper");
+    let Some(crate::check::scope::Resolution::Member(method)) =
+        output.resolutions.get(&at(get, "get".len()))
+    else {
+        panic!(
+            "method call has no declaration resolution: {:?}",
+            output.resolutions
+        );
+    };
+    assert_eq!(output.defs.name(*method).as_str(), "get");
+}
+
+#[test]
 fn checker_output_contract_intersects_assignment_target_side_tables() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.assign_target_kinds.insert(
@@ -62,11 +132,7 @@ fn expr_output_contract_rechecks_normalized_unresolved_subset() {
     let mut expr_types = HashMap::from([(
         span.clone(),
         Ty::Tuple(vec![
-            Ty::Named {
-                builtin: None,
-                name: "Sender".to_string(),
-                args: vec![Ty::Var(sender_var)],
-            },
+            Ty::named_for_test("Sender", vec![Ty::Var(sender_var)]),
             Ty::Var(covered_var),
         ]),
     )]);
@@ -120,7 +186,7 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
     // type_defs must include "Foo" so validate_method_call_receiver_kinds_output_contract
     // retains the NamedTypeInstance entry after validate_method_call_output_contract passes it.
     let mut type_defs = HashMap::from([(
-        "Foo".to_string(),
+        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test("Foo")),
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Foo".to_string(),
@@ -268,7 +334,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
     // type_defs must include "Good" so validate_method_call_receiver_kinds_output_contract
     // retains the NamedTypeInstance entry for the good span after the span-based pruner passes it.
     let mut type_defs = HashMap::from([(
-        "Good".to_string(),
+        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test("Good")),
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Good".to_string(),

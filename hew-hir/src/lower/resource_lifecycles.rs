@@ -570,7 +570,7 @@ impl LowerCtx {
         &self,
         declaration: hew_types::DefId,
     ) -> Option<&hew_types::FnSig> {
-        self.fn_sigs.values().find(|sig| {
+        self.fn_sigs_by_path.values().find(|sig| {
             sig.impl_method.as_ref().is_some_and(|origin| {
                 origin.is_inherent
                     && origin.receiver.as_ref() == Some(&declaration)
@@ -700,7 +700,7 @@ impl LowerCtx {
                  { ... } }`); the inline `type T { fn commit(consume self) ... }` \
                  surface is not lowered to a callable consume target",
             ));
-        } else if !self.fn_sigs.values().any(|sig| {
+        } else if !self.fn_sigs_by_path.values().any(|sig| {
             sig.consumes_receiver
                 && sig.impl_method.as_ref().is_some_and(|origin| {
                     origin.is_inherent && origin.receiver.as_ref() == Some(&declaration)

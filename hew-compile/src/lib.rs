@@ -4935,7 +4935,11 @@ mod tests {
                 .expect("type checking was enabled");
             let root_tag = tco
                 .defs
-                .lookup_path("TestResult::<impl TestResultMethods for TestResult>::tag")
+                .lookup_path(
+                    "mixed_import_impl_collision_lib.TestResult::<impl \
+                     mixed_import_impl_collision_lib.TestResultMethods for \
+                     mixed_import_impl_collision_lib.TestResult>::tag",
+                )
                 .expect("declared root impl method");
             let package_rows = tco
                 .defs
@@ -5281,15 +5285,15 @@ fn main() {
         let expected = "hew.selfqualtype.Meter";
         assert!(
             matches!(
-                tco.fn_sigs
+                tco.sigs()
                     .get("hew.selfqualtype.read")
                     .expect("checker must retain imported read signature")
                     .params
                     .as_slice(),
-                [hew_types::Ty::Named { name, .. }] if name == expected
+                [hew_types::Ty::Named { head, .. }] if head.spelling() == expected
             ),
             "checker parameter type must be the complete module owner: {:#?}",
-            tco.fn_sigs.get("hew.selfqualtype.read")
+            tco.sigs().get("hew.selfqualtype.read")
         );
 
         let hir = hew_hir::lower_program(
@@ -5334,7 +5338,7 @@ fn main() {
             })
             .expect("HIR must emit the imported read body");
         assert!(
-            matches!(read.params.as_slice(), [param] if param.name == "m" && matches!(&param.ty, hew_types::ResolvedTy::Named { name, .. } if name == expected)),
+            matches!(read.params.as_slice(), [param] if param.name == "m" && matches!(&param.ty, hew_types::ResolvedTy::Named { head, .. } if head.registry_key() == expected)),
             "HIR read parameter must retain the full self-qualified owner: {read:#?}"
         );
     }
@@ -7474,7 +7478,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "import std.pipeline;\n\
              fn main() {\n\
                  let chain = pipeline.run(pipeline.from(1));\n\
-                 let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
+                 let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 {\n\
                      value: 21, label: \"probe\", crash_stage: false\n\
                  };\n\
                  match chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\

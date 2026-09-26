@@ -94,11 +94,7 @@ impl Checker {
                         format!("invalid regex literal `re\"{pattern}\"`: {err}"),
                     );
                 }
-                Ty::Named {
-                    builtin: None,
-                    name: "std.text.regex.Pattern".to_string(),
-                    args: vec![],
-                }
+                self.named_ty_for_key("std.text.regex.Pattern", vec![])
             }
             Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
@@ -147,7 +143,11 @@ impl Checker {
                 self.report_bare_variant_expr(name.name.as_str(), "Option.None", span);
                 Ty::option(Ty::Var(TypeVar::fresh()))
             }
-            Expr::Ident(name) => self.synthesize_identifier(name.name.as_str(), span),
+            Expr::Ident(name) => {
+                let ty = self.synthesize_identifier(name.name.as_str(), span);
+                self.record_local_resolution(*name, span);
+                ty
+            }
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
                     for (_, value) in &record.fields {
@@ -227,6 +227,13 @@ impl Checker {
                 is_tail_call: _,
             } => {
                 let ty = self.check_call(function, type_args.as_deref(), args, span);
+                if !matches!(&ty, Ty::Error) {
+                    let (callee_span, method_like) = match &function.0 {
+                        Expr::FieldAccess { field, .. } => (&field.1, true),
+                        _ => (&function.1, false),
+                    };
+                    self.record_call_resolution(span, callee_span, method_like);
+                }
                 self.finish_named_arguments(args, || Self::callee_label(function), &ty, span);
                 ty
             }
@@ -238,13 +245,20 @@ impl Checker {
                 args,
             } => {
                 let ty = self.check_method_call(receiver, method.0.name.as_str(), args, span);
+                if !matches!(&ty, Ty::Error) {
+                    self.record_call_resolution(span, &method.1, true);
+                }
                 self.finish_named_arguments(args, || format!("method `{}`", method.0), &ty, span);
                 ty
             }
 
             // Field access
             Expr::FieldAccess { object, field } => {
-                self.check_field_access(object, field.0.name.as_str(), span)
+                let ty = self.check_field_access(object, field.0.name.as_str(), span);
+                if !matches!(&ty, Ty::Error) {
+                    self.record_field_resolution(object, field);
+                }
+                ty
             }
 
             // Block
@@ -495,10 +509,10 @@ impl Checker {
                     if (r.as_option().is_some() && ty.as_option().is_some())
                         || (r.as_result().is_some() && ty.as_result().is_some())
                         || matches!(r, Ty::Var(_) | Ty::Error)
-                        || matches!(&r, Ty::Named { name, .. }
-                                if !Ty::is_named_builtin(name)
-                                    && !self.type_defs.contains_key(name)
-                                    && !self.type_aliases.contains_key(name))
+                        || matches!(&r, Ty::Named { head, .. }
+                                if head.builtin().is_none()
+                                    && self.type_def_at(head.registry_key()).is_none()
+                                    && !self.type_aliases.contains_key(head.registry_key()))
                     {
                         None
                     } else {
@@ -907,11 +921,7 @@ impl Checker {
         let (payload, error_ty) = if scope_recovery {
             Some((
                 container.clone(),
-                Ty::Named {
-                    name: "std.builtins.ScopeFailure".to_string(),
-                    args: Vec::new(),
-                    builtin: None,
-                },
+                self.named_ty_for_key("std.builtins.ScopeFailure", Vec::new()),
             ))
         } else if error.is_some() {
             container
@@ -985,8 +995,7 @@ impl Checker {
     /// element type may still be an inference variable.
     pub(super) fn vec_of(elem_ty: Ty) -> Ty {
         Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args: vec![elem_ty],
         }
     }
@@ -1045,8 +1054,7 @@ impl Checker {
             let k = TypeVar::fresh();
             let v = TypeVar::fresh();
             Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
-                name: "HashMap".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                 args: vec![Ty::Var(k), Ty::Var(v)],
             }
         } else {
@@ -1060,8 +1068,7 @@ impl Checker {
             }
             self.validate_hashmap_key_value_types(&first_key_ty, &first_val_ty, span);
             Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
-                name: "HashMap".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                 args: vec![first_key_ty, first_val_ty],
             }
         }
@@ -1209,10 +1216,10 @@ impl Checker {
                 let type_name = &rest[..colon_pos];
                 let variant_name = &rest[colon_pos + 2..];
                 let is_binding = self.env.lookup_ref(candidate_module).is_some();
-                let is_known_type = self.type_defs.contains_key(candidate_module);
+                let is_known_type = self.type_def_at(candidate_module);
                 let qualified_key = format!("{candidate_module}.{type_name}");
-                let qualified_in_type_defs = self.type_defs.contains_key(&qualified_key);
-                if !is_binding && !is_known_type && !qualified_in_type_defs {
+                let qualified_in_type_defs = self.type_def_at(&qualified_key);
+                if !is_binding && is_known_type.is_none() && qualified_in_type_defs.is_none() {
                     return self.check_module_qualified_variant_ref(
                         candidate_module,
                         type_name,
@@ -1251,7 +1258,7 @@ impl Checker {
             } else if is_moved && !is_write_target {
                 let is_linear = matches!(
                     &ty,
-                    Ty::Named { name, .. } if self.registry.is_linear(name)
+                    Ty::Named { head, .. } if self.registry.is_linear(head.registry_key())
                 );
                 let mut err = TypeError::new(
                     if is_linear {
@@ -1350,7 +1357,10 @@ impl Checker {
                 }
             }
             self.record_call_edge(&fn_sig_key);
-            let sig = self.fn_sigs[&fn_sig_key].clone();
+            let sig = self
+                .fn_sig(&fn_sig_key)
+                .cloned()
+                .unwrap_or_else(|| panic!("visible function `{fn_sig_key}` has a signature"));
             // A bare enum variant used as a value (`let c = Red;`,
             // `xs.map(Wrap)`) is refused like its call form; nothing here
             // selects the enum, so the fix-it qualifies it.
@@ -1360,8 +1370,7 @@ impl Checker {
                 if let Some((owner, _, _)) =
                     self.lookup_variant_constructor(name)
                         .filter(|(owner, _, _)| {
-                            self.type_defs
-                                .get(owner)
+                            self.type_def_at(owner)
                                 .is_some_and(|td| td.kind == TypeDefKind::Enum)
                                 && !self.machine_state_is_bare_here(owner)
                         })
@@ -1392,7 +1401,7 @@ impl Checker {
                 format!("module `{surface_name}` cannot be used as a value"),
             );
             Ty::Error
-        } else if self.type_defs.contains_key(surface_name)
+        } else if self.type_def_at(surface_name).is_some()
             || self.known_types.contains(surface_name)
             || self.type_aliases.contains_key(surface_name)
             || crate::lookup_builtin_type(surface_name).is_some()
@@ -1435,7 +1444,7 @@ impl Checker {
 
         let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         let mut candidates = Vec::new();
-        if self.trait_defs.contains_key(&trait_name) {
+        if self.has_trait_def(&trait_name) {
             candidates.push(trait_name.clone());
         } else if !trait_name.contains('.') && !trait_name.contains("::") {
             if let Some(owners) = self.published_bare_trait_owners.get(&(
@@ -1446,7 +1455,7 @@ impl Checker {
                 candidates.extend(
                     owners
                         .iter()
-                        .filter(|owner| self.trait_defs.contains_key(*owner))
+                        .filter(|owner| self.has_trait_def(owner))
                         .cloned(),
                 );
             }
@@ -1476,7 +1485,9 @@ impl Checker {
             );
             return Ty::Error;
         };
-        let info = &self.trait_defs[trait_key];
+        let info = self
+            .trait_def_at(trait_key)
+            .unwrap_or_else(|| panic!("trait `{trait_key}` is registered"));
         if info
             .associated_types
             .iter()
@@ -1545,7 +1556,7 @@ impl Checker {
             }
             return match &obj_ty {
                 Ty::Named {
-                    builtin: Some(BuiltinType::Vec),
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
                     args,
                     ..
                 } if !args.is_empty() => {
@@ -1643,7 +1654,7 @@ impl Checker {
             // Publish the operand widening so HIR inserts an explicit cast
             // before the runtime bounds check.
             Ty::Named {
-                builtin: Some(BuiltinType::Vec),
+                head: crate::TypeHead::Builtin(BuiltinType::Vec),
                 args,
                 ..
             } if !args.is_empty() => {
@@ -1703,7 +1714,7 @@ impl Checker {
             // span. The key bound is the existing `K: Hash + Eq` admission
             // contract — the same one every HashMap method call enforces.
             Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
+                head: crate::TypeHead::Builtin(BuiltinType::HashMap),
                 args,
                 ..
             } if args.len() == 2 => {
@@ -1769,7 +1780,8 @@ impl Checker {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 Ty::U8
             }
-            Ty::Named { name, args, .. } => {
+            Ty::Named { head, args } => {
+                let name = head.registry_key();
                 if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
                     let expected_key = self
                         .lookup_named_method_sig(name, args, "at")

@@ -162,6 +162,19 @@ pub struct SyntaxContext(u32);
 impl SyntaxContext {
     /// The context of source-written identifiers.
     pub const ROOT: SyntaxContext = SyntaxContext(0);
+
+    /// The context at `row` of a compilation's context table. Only that
+    /// table mints contexts; the row is meaningless outside it.
+    #[must_use]
+    pub const fn from_row(row: u32) -> Self {
+        Self(row)
+    }
+
+    /// This context's row in its compilation's context table.
+    #[must_use]
+    pub const fn row(self) -> u32 {
+        self.0
+    }
 }
 
 #[cfg(test)]

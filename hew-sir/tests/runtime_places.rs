@@ -108,7 +108,7 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
         ) {
             assert!(operation.results.iter().all(|result| {
                 hew_types::runtime_call::collection_type_arguments(&result.ty).is_none()
-                    && !matches!(&result.ty, hew_types::ResolvedTy::Named { name, .. } if name == "State")
+                    && !matches!(&result.ty, hew_types::ResolvedTy::Named { head, .. } if head.spelling() == "State")
             }), "receiver or its parent was copied: {operation:?}");
         }
     }

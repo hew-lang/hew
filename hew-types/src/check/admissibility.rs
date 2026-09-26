@@ -62,11 +62,11 @@ pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
 pub(crate) fn identity_aggregate_layout(ty: &Ty) -> Option<(usize, usize)> {
     match ty {
         Ty::Named {
-            builtin: Some(BuiltinType::ChildRef | BuiltinType::NodeId),
+            head: crate::TypeHead::Builtin(BuiltinType::ChildRef | BuiltinType::NodeId),
             ..
         } => Some((16, 8)),
         Ty::Named {
-            builtin: Some(BuiltinType::Location | BuiltinType::RemotePid),
+            head: crate::TypeHead::Builtin(BuiltinType::Location | BuiltinType::RemotePid),
             ..
         } => Some((32, 8)),
         _ => None,
@@ -91,11 +91,8 @@ fn align_up(offset: usize, align: usize) -> usize {
 /// Returns `None` for types that are not hash-eligible primitives or Copy records.
 /// Only types that `ty_is_hash_eligible` would return `Eligible` for are expected
 /// here; the function is conservative and returns `None` for everything else.
-pub(crate) fn primitive_copy_layout(
-    ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    primitive_copy_layout_on_path(ty, type_defs, &mut HashSet::new())
+pub(crate) fn primitive_copy_layout(ty: &Ty, types: TypeDefView<'_>) -> Option<(usize, usize)> {
+    primitive_copy_layout_on_path(ty, types, &mut HashSet::new())
 }
 
 /// `primitive_copy_layout` with the currently-expanded record declarations.
@@ -107,7 +104,7 @@ pub(crate) fn primitive_copy_layout(
 /// finite Copy size.
 fn primitive_copy_layout_on_path(
     ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
     if let Some(layout) = identity_aggregate_layout(ty) {
@@ -122,24 +119,24 @@ fn primitive_copy_layout_on_path(
         // f64 is hash-ineligible but included for the same reason.
         Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
         Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_copy_layout_on_path(elem, type_defs, visiting)?;
+            let (elem_size, elem_align) = primitive_copy_layout_on_path(elem, types, visiting)?;
             let count = usize::try_from(*count).ok()?;
             Some((elem_size.checked_mul(count)?, elem_align))
         }
-        Ty::Named { name, args, .. } => {
-            let type_def = crate::check::types::type_def_for_spelling(type_defs, name)?;
+        Ty::Named { head, args } => {
+            let type_def = types.of(*head)?;
             let visit_key = type_def.name.clone();
             if !visiting.insert(visit_key.clone()) {
                 return None;
             }
             let layout = if args.is_empty() {
-                compute_copy_record_layout_on_path(type_def, type_defs, visiting)
+                compute_copy_record_layout_on_path(type_def, types, visiting)
             } else {
                 if type_def.type_params.len() != args.len() {
                     visiting.remove(&visit_key);
                     return None;
                 }
-                compute_copy_record_layout_with_args_on_path(type_def, args, type_defs, visiting)
+                compute_copy_record_layout_with_args_on_path(type_def, args, types, visiting)
             };
             visiting.remove(&visit_key);
             layout
@@ -157,34 +154,32 @@ fn primitive_copy_layout_member_on_path(
     ty: &Ty,
     type_def: &TypeDef,
     type_args: &[Ty],
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
     match ty {
         Ty::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
         } if args.is_empty() => {
             let type_param_index = type_def
                 .type_params
                 .iter()
-                .position(|param| param == name)?;
+                .position(|declared| declared == param.spelling.as_str())?;
             let type_arg = type_args.get(type_param_index)?;
             // A fresh parameter path is needed for finite Wrap<Wrap<i64>>,
             // but must not erase a declaration cycle through that parameter.
             // Reuse the checker termination proof before restarting the walk;
             // it also refuses cycles with growing generic arguments.
             let resolved_arg = ResolvedTy::from_ty(type_arg).ok()?;
-            if !declaration_walk_terminates(&resolved_arg, type_defs) {
+            if !declaration_walk_terminates(&resolved_arg, types) {
                 return None;
             }
-            primitive_copy_layout(type_arg, type_defs)
+            primitive_copy_layout(type_arg, types)
         }
         Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_copy_layout_member_on_path(
-                elem, type_def, type_args, type_defs, visiting,
-            )?;
+            let (elem_size, elem_align) =
+                primitive_copy_layout_member_on_path(elem, type_def, type_args, types, visiting)?;
             let count = usize::try_from(*count).ok()?;
             Some((elem_size.checked_mul(count)?, elem_align))
         }
@@ -196,23 +191,23 @@ fn primitive_copy_layout_member_on_path(
                 .map(|(param, arg)| (param.clone(), arg.clone()))
                 .collect();
             let instantiated = ty.substitute_named_params_parallel(&subst);
-            primitive_copy_layout_on_path(&instantiated, type_defs, visiting)
+            primitive_copy_layout_on_path(&instantiated, types, visiting)
         }
     }
 }
 
 fn compute_copy_record_layout_on_path(
     type_def: &TypeDef,
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
-    compute_copy_record_layout_with_args_on_path(type_def, &[], type_defs, visiting)
+    compute_copy_record_layout_with_args_on_path(type_def, &[], types, visiting)
 }
 
 fn compute_copy_record_layout_with_args_on_path(
     type_def: &TypeDef,
     type_args: &[Ty],
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
     if type_def.fields.is_empty() {
@@ -240,9 +235,8 @@ fn compute_copy_record_layout_with_args_on_path(
 
     for name in field_names {
         let field_ty = type_def.fields.get(*name)?;
-        let (field_size, field_align) = primitive_copy_layout_member_on_path(
-            field_ty, type_def, type_args, type_defs, visiting,
-        )?;
+        let (field_size, field_align) =
+            primitive_copy_layout_member_on_path(field_ty, type_def, type_args, types, visiting)?;
 
         // Align the field start offset to the field's natural alignment.
         offset = align_up(offset, field_align);
@@ -406,8 +400,8 @@ impl Checker {
     pub(super) fn validate_checker_output_contract(
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
-        type_defs: &mut HashMap<String, TypeDef>,
-        fn_sigs: &mut HashMap<String, FnSig>,
+        type_defs: &mut HashMap<crate::NominalId, TypeDef>,
+        fn_sigs: &mut HashMap<crate::DefId, FnSig>,
         call_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
         record_init_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
     ) {
@@ -457,17 +451,18 @@ impl Checker {
     /// catch.
     pub(super) fn validate_handle_types_no_field_overlap(
         &mut self,
-        type_defs: &mut HashMap<String, TypeDef>,
+        type_defs: &mut HashMap<crate::NominalId, TypeDef>,
     ) {
-        let conflicts: HashSet<String> = type_defs
+        let conflicts: Vec<(crate::NominalId, String)> = type_defs
             .iter()
-            .filter(|(name, type_def)| {
-                !type_def.fields.is_empty() && self.module_registry.is_handle_type(name)
+            .filter_map(|(id, type_def)| {
+                let name = self.defs.path(id.declaration());
+                (!type_def.fields.is_empty() && self.module_registry.is_handle_type(name))
+                    .then(|| (*id, name.to_string()))
             })
-            .map(|(name, _)| name.clone())
             .collect();
 
-        for name in &conflicts {
+        for (id, name) in &conflicts {
             let span = self
                 .type_def_spans
                 .get(name.as_str())
@@ -481,18 +476,7 @@ impl Checker {
                      fields; remove the fields or remove the handle registration"
                 ),
             );
-        }
-
-        type_defs.retain(|k, _| !conflicts.contains(k));
-
-        // Defensive: also prune the bare-alias twin (short form) if a qualified key
-        // is removed. If `fake.Handle` conflicts and is removed, also remove `Handle`
-        // so `lookup_user_type_def`'s fallback cannot resolve to a field-bearing entry.
-        for name in &conflicts {
-            if let Some((_, short)) = name.split_once('.') {
-                // Current register_qualified_type_alias format is "{module_short}.{name}"; split_once is safe here. If multi-dot module paths are ever added, switch to rsplit_once or a dedicated helper.
-                type_defs.remove(short);
-            }
+            type_defs.remove(id);
         }
     }
 
@@ -670,12 +654,13 @@ impl Checker {
     ///   is still present in the checker's trait registry.
     pub(super) fn validate_method_call_receiver_kinds_output_contract(
         &mut self,
-        type_defs: &HashMap<String, TypeDef>,
-        fn_sigs: &HashMap<String, FnSig>,
+        type_defs: &HashMap<crate::NominalId, TypeDef>,
+        fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) {
+        let types = TypeDefView::new(&self.defs, type_defs);
         // Collect known trait names before the mutable borrow on
         // `method_call_receiver_kinds` to avoid a split-borrow conflict.
-        let known_trait_names: HashSet<String> = self.trait_defs.keys().cloned().collect();
+        let known_trait_names: HashSet<String> = self.trait_def_keys.keys().cloned().collect();
 
         // Collect all type parameter names from the resolved function signatures
         // so we can retain `NamedTypeInstance` entries produced by trait-bounded
@@ -687,44 +672,45 @@ impl Checker {
             .flat_map(|sig| sig.type_params.iter().map(String::as_str))
             .collect();
 
-        self.method_call_receiver_kinds
-            .retain(|_, kind| match kind {
-                MethodCallReceiverKind::LexicalBinding { binding_name } => !binding_name.is_empty(),
-                MethodCallReceiverKind::ModuleBinding { module_name } => !module_name.is_empty(),
-                MethodCallReceiverKind::EnumConstructorPath { type_name } => type_defs
-                    .get(type_name)
-                    .is_some_and(|type_def| type_def.kind == TypeDefKind::Enum),
-                MethodCallReceiverKind::NamedTypeInstance { type_name } => {
-                    type_defs.contains_key(type_name)
-                        || type_name.contains('.')
-                        || known_type_params.contains(type_name.as_str())
-                }
-                MethodCallReceiverKind::ActorInstance { actor_name } => type_defs
-                    .get(actor_name)
-                    .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor),
-                MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
-                MethodCallReceiverKind::TraitObject { trait_name } => {
-                    known_trait_names.contains(trait_name)
-                }
-                MethodCallReceiverKind::StreamInstance { element_kind } => {
-                    matches!(element_kind.as_str(), "" | "string" | "bytes")
-                }
-                MethodCallReceiverKind::PrimitiveTraitImpl {
-                    trait_name,
-                    canonical_receiver,
-                } => {
-                    // Retain only when the trait still exists and the canonical
-                    // receiver key still matches one we'd produce today (i.e.
-                    // the registration helper would still accept it).  This
-                    // mirrors the producer discipline added in Stage A1 and
-                    // prevents stale entries from leaking past the checker
-                    // output boundary.
-                    let trait_known = known_trait_names.contains(trait_name);
-                    let receiver_known =
-                        Self::is_known_primitive_or_builtin_canonical_key(canonical_receiver);
-                    trait_known && receiver_known
-                }
-            });
+        let mut receiver_kinds = std::mem::take(&mut self.method_call_receiver_kinds);
+        receiver_kinds.retain(|_, kind| match kind {
+            MethodCallReceiverKind::LexicalBinding { binding_name } => !binding_name.is_empty(),
+            MethodCallReceiverKind::ModuleBinding { module_name } => !module_name.is_empty(),
+            MethodCallReceiverKind::EnumConstructorPath { type_name } => types
+                .at_path(type_name)
+                .is_some_and(|type_def| type_def.kind == TypeDefKind::Enum),
+            MethodCallReceiverKind::NamedTypeInstance { type_name } => {
+                types.at_path(type_name).is_some()
+                    || type_name.contains('.')
+                    || known_type_params.contains(type_name.as_str())
+            }
+            MethodCallReceiverKind::ActorInstance { actor_name } => types
+                .at_path(actor_name)
+                .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor),
+            MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
+            MethodCallReceiverKind::TraitObject { trait_name } => {
+                known_trait_names.contains(trait_name)
+            }
+            MethodCallReceiverKind::StreamInstance { element_kind } => {
+                matches!(element_kind.as_str(), "" | "string" | "bytes")
+            }
+            MethodCallReceiverKind::PrimitiveTraitImpl {
+                trait_name,
+                canonical_receiver,
+            } => {
+                // Retain only when the trait still exists and the canonical
+                // receiver key still matches one we'd produce today (i.e.
+                // the registration helper would still accept it).  This
+                // mirrors the producer discipline added in Stage A1 and
+                // prevents stale entries from leaking past the checker
+                // output boundary.
+                let trait_known = known_trait_names.contains(trait_name);
+                let receiver_known =
+                    Self::is_known_primitive_or_builtin_canonical_key(canonical_receiver);
+                trait_known && receiver_known
+            }
+        });
+        self.method_call_receiver_kinds = receiver_kinds;
     }
 
     /// Whether `key` is a canonical receiver key the registration helper
@@ -787,13 +773,12 @@ impl Checker {
             _ => return self.registry.implements_marker(ty, marker),
         };
         if let Ty::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
         } = ty
         {
-            if args.is_empty() && self.is_type_param_in_scope(name) {
-                return self.type_param_has_marker_bound(name, marker);
+            if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()) {
+                return self.type_param_has_marker_bound(param.spelling.as_str(), marker);
             }
         }
         let ty = self.subst.resolve(ty).materialize_literal_defaults();
@@ -856,16 +841,12 @@ impl Checker {
         {
             return Vec::new();
         }
-        self.fn_sigs
-            .get(name)
+        self.fn_sig(name)
             .and_then(|sig| {
-                let Ty::Named {
-                    name: return_name, ..
-                } = &sig.return_type
-                else {
+                let Ty::Named { head, .. } = &sig.return_type else {
                     return None;
                 };
-                (return_name == name).then(|| sig.params.clone())
+                (head.registry_key() == name).then(|| sig.params.clone())
             })
             .unwrap_or_default()
     }
@@ -1086,11 +1067,16 @@ impl Checker {
     /// and iterates by borrow at every monomorphisation.
     fn clone_proven_element(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Named { name, args, .. } => {
-                if self.is_type_param_in_scope(name)
-                    && !self.type_param_has_marker_bound(name, MarkerTrait::Clone)
-                {
-                    return false;
+            Ty::Named { head, args } => {
+                if let crate::TypeHead::Param(param) = head {
+                    if self.is_type_param_in_scope(param.spelling.as_str())
+                        && !self.type_param_has_marker_bound(
+                            param.spelling.as_str(),
+                            MarkerTrait::Clone,
+                        )
+                    {
+                        return false;
+                    }
                 }
                 args.iter().all(|arg| self.clone_proven_element(arg))
             }
@@ -1313,8 +1299,8 @@ impl Checker {
             return false;
         }
 
-        if matches!(&resolved, Ty::Named { name, args, builtin: None }
-            if args.is_empty() && self.is_type_param_in_scope(name))
+        if matches!(&resolved, Ty::Named { head: crate::TypeHead::Param(param), args }
+            if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str()))
         {
             return self.validate_collection_key_capabilities(&resolved, "Set", span);
         }
@@ -1389,14 +1375,14 @@ impl Checker {
         if matches!(
             elem_ty,
             Ty::Named {
-                builtin: Some(BuiltinType::Sink),
+                head: crate::TypeHead::Builtin(BuiltinType::Sink),
                 ..
             }
         ) {
             return false;
         }
         self.registry.implements_marker(elem_ty, MarkerTrait::Copy)
-            || primitive_copy_layout(elem_ty, &self.type_defs).is_some()
+            || primitive_copy_layout(elem_ty, self.type_def_view()).is_some()
     }
 
     /// True when a Vec element type transitively carries a function/closure
@@ -1422,14 +1408,17 @@ impl Checker {
                 self.vec_element_contains_fn_value(inner, visiting)
             }
             Ty::Named {
-                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
+                head:
+                    crate::TypeHead::Builtin(
+                        BuiltinType::Range | BuiltinType::Option | BuiltinType::Result,
+                    ),
                 args,
                 ..
             } => args
                 .iter()
                 .any(|arg| self.vec_element_contains_fn_value(arg, visiting)),
-            Ty::Named { name, args, .. } => {
-                let Some(type_def) = self.lookup_type_def(name) else {
+            Ty::Named { head, args } => {
+                let Some(type_def) = self.lookup_type_def(head.registry_key()) else {
                     return false;
                 };
                 if visiting.contains(type_def.name.as_str()) {
@@ -1519,9 +1508,9 @@ impl Checker {
     ) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Named { builtin, args, .. } => {
+            Ty::Named { head, args } => {
                 if let Some(result) =
-                    collection.validate_named_collection(self, *builtin, args, span)
+                    collection.validate_named_collection(self, head.builtin(), args, span)
                 {
                     return result;
                 }
@@ -1584,8 +1573,7 @@ impl Checker {
 
     pub(super) fn make_vec_type(&mut self, elem_ty: Ty, span: &Span) -> Ty {
         let ty = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args: vec![elem_ty],
         };
         self.validate_concrete_vec_type(&ty, span);
@@ -1624,14 +1612,13 @@ impl Checker {
                 .all(|elem| self.rc_payload_clone_drop_supported(elem, visiting, false)),
             Ty::Array(elem, _) => self.rc_payload_clone_drop_supported(elem, visiting, false),
             Ty::Named {
-                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                head: crate::TypeHead::Builtin(BuiltinType::Rc | BuiltinType::Weak),
                 args,
                 ..
             } => args.len() == 1,
             Ty::Named {
-                name,
+                head: head @ crate::TypeHead::Builtin(builtin),
                 args,
-                builtin: Some(builtin),
             } => match builtin {
                 BuiltinType::Option | BuiltinType::Result => args
                     .iter()
@@ -1645,18 +1632,23 @@ impl Checker {
                         && self.rc_payload_clone_drop_supported(&args[1], visiting, true)
                 }
                 _ => {
-                    self.canonical_owned_handle_type_name(name).is_none()
-                        && !self.is_user_opaque_type_name(name)
+                    self.canonical_owned_handle_type_name(head.registry_key())
+                        .is_none()
+                        && !self.is_user_opaque_type_name(head.registry_key())
                         && self
                             .registry
                             .implements_marker(&resolved, MarkerTrait::Copy)
                 }
             },
             Ty::Named {
-                name,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 args,
-                builtin: None,
             } => {
+                // TRANSITION(A1 commit 3): registry lookups by key.
+                let name = head.registry_key();
                 if self.canonical_owned_handle_type_name(name).is_some()
                     || self.is_user_opaque_type_name(name)
                     || self.registry.is_linear(name)
@@ -1726,10 +1718,9 @@ impl Checker {
             || matches!(
                 &resolved,
                 Ty::Named {
-                    name,
+                    head: crate::TypeHead::Param(param),
                     args,
-                    builtin: None,
-                } if args.is_empty() && self.is_type_param_in_scope(name)
+                } if args.is_empty() && self.is_type_param_in_scope(param.spelling.as_str())
             );
         if unresolved_generic {
             self.report_error(
@@ -1765,6 +1756,10 @@ impl Checker {
 
 #[cfg(test)]
 mod tests {
+    fn checker_nominal(checker: &mut Checker, path: &str) -> crate::NominalId {
+        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test(path))
+    }
+
     use super::*;
     use crate::module_registry::ModuleRegistry;
 
@@ -1777,8 +1772,8 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::normalize_named(
-                "Result".to_string(),
+            params: vec![Ty::named_for_test(
+                "Result",
                 vec![Ty::I32, Ty::Tuple(vec![Ty::Error])],
             )],
             ret: Box::new(Ty::Bool),
@@ -1810,7 +1805,7 @@ mod tests {
 
         let mut fn_sigs = HashMap::from([
             (
-                "good_fn".to_string(),
+                crate::DefId::for_test("good_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::Bool,
@@ -1818,7 +1813,7 @@ mod tests {
                 },
             ),
             (
-                "error_param_fn".to_string(),
+                crate::DefId::for_test("error_param_fn"),
                 FnSig {
                     params: vec![Ty::Error],
                     return_type: Ty::I32,
@@ -1826,7 +1821,7 @@ mod tests {
                 },
             ),
             (
-                "error_return_fn".to_string(),
+                crate::DefId::for_test("error_return_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::Error,
@@ -1848,15 +1843,15 @@ mod tests {
         );
 
         assert!(
-            fn_sigs.contains_key("good_fn"),
+            fn_sigs.contains_key(&crate::DefId::for_test("good_fn")),
             "clean signature must survive the contract check"
         );
         assert!(
-            !fn_sigs.contains_key("error_param_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("error_param_fn")),
             "signature with Ty::Error in params must be pruned"
         );
         assert!(
-            !fn_sigs.contains_key("error_return_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("error_return_fn")),
             "signature with Ty::Error as return type must be pruned"
         );
     }
@@ -1871,7 +1866,7 @@ mod tests {
 
         let mut fn_sigs = HashMap::from([
             (
-                "good_fn".to_string(),
+                crate::DefId::for_test("good_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::Bool,
@@ -1879,10 +1874,10 @@ mod tests {
                 },
             ),
             (
-                "normalized_param_fn".to_string(),
+                crate::DefId::for_test("normalized_param_fn"),
                 FnSig {
-                    params: vec![Ty::normalize_named(
-                        "Sender".to_string(),
+                    params: vec![Ty::named_for_test(
+                        "Sender",
                         vec![Ty::Var(normalized_param_var)],
                     )],
                     return_type: Ty::Unit,
@@ -1890,18 +1885,18 @@ mod tests {
                 },
             ),
             (
-                "normalized_return_fn".to_string(),
+                crate::DefId::for_test("normalized_return_fn"),
                 FnSig {
                     params: vec![Ty::I32],
-                    return_type: Ty::normalize_named(
-                        "Receiver".to_string(),
+                    return_type: Ty::named_for_test(
+                        "Receiver",
                         vec![Ty::Var(normalized_return_var)],
                     ),
                     ..FnSig::default()
                 },
             ),
             (
-                "leaked_param_fn".to_string(),
+                crate::DefId::for_test("leaked_param_fn"),
                 FnSig {
                     params: vec![Ty::Tuple(vec![Ty::Var(leaked_param_var)])],
                     return_type: Ty::Unit,
@@ -1909,7 +1904,7 @@ mod tests {
                 },
             ),
             (
-                "leaked_return_fn".to_string(),
+                crate::DefId::for_test("leaked_return_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::option(Ty::Var(leaked_return_var)),
@@ -1931,17 +1926,17 @@ mod tests {
         );
 
         assert!(
-            fn_sigs.contains_key("good_fn"),
+            fn_sigs.contains_key(&crate::DefId::for_test("good_fn")),
             "clean signature must survive the contract check"
         );
-        assert!(!fn_sigs.contains_key("normalized_param_fn"));
-        assert!(!fn_sigs.contains_key("normalized_return_fn"));
+        assert!(!fn_sigs.contains_key(&crate::DefId::for_test("normalized_param_fn")));
+        assert!(!fn_sigs.contains_key(&crate::DefId::for_test("normalized_return_fn")));
         assert!(
-            !fn_sigs.contains_key("leaked_param_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("leaked_param_fn")),
             "signature with a real untracked Ty::Var in params must be pruned"
         );
         assert!(
-            !fn_sigs.contains_key("leaked_return_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("leaked_return_fn")),
             "signature with a real untracked Ty::Var in return type must be pruned"
         );
     }
@@ -1961,7 +1956,7 @@ mod tests {
 
         let mut type_defs = HashMap::from([
             (
-                "Good".to_string(),
+                checker_nominal(&mut checker, "Good"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "Good".to_string(),
@@ -1976,7 +1971,7 @@ mod tests {
                 },
             ),
             (
-                "NormalizedHandles".to_string(),
+                checker_nominal(&mut checker, "NormalizedHandles"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "NormalizedHandles".to_string(),
@@ -1984,23 +1979,20 @@ mod tests {
                     bounds: HashMap::new(),
                     fields: HashMap::from([(
                         "tx".to_string(),
-                        Ty::normalize_named(
-                            "Sender".to_string(),
-                            vec![Ty::Var(normalized_field_var)],
-                        ),
+                        Ty::named_for_test("Sender", vec![Ty::Var(normalized_field_var)]),
                     )]),
                     variants: HashMap::from([(
                         "Recv".to_string(),
-                        VariantDef::Tuple(vec![Ty::normalize_named(
-                            "Receiver".to_string(),
+                        VariantDef::Tuple(vec![Ty::named_for_test(
+                            "Receiver",
                             vec![Ty::Var(normalized_variant_var)],
                         )]),
                     )]),
                     methods: HashMap::from([(
                         "close".to_string(),
                         FnSig {
-                            params: vec![Ty::normalize_named(
-                                "Sender".to_string(),
+                            params: vec![Ty::named_for_test(
+                                "Sender",
                                 vec![Ty::Var(normalized_method_var)],
                             )],
                             return_type: Ty::Unit,
@@ -2013,7 +2005,7 @@ mod tests {
                 },
             ),
             (
-                "LeakedField".to_string(),
+                checker_nominal(&mut checker, "LeakedField"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "LeakedField".to_string(),
@@ -2031,7 +2023,7 @@ mod tests {
                 },
             ),
             (
-                "LeakedVariant".to_string(),
+                checker_nominal(&mut checker, "LeakedVariant"),
                 TypeDef {
                     kind: TypeDefKind::Enum,
                     name: "LeakedVariant".to_string(),
@@ -2063,19 +2055,19 @@ mod tests {
         );
 
         assert!(
-            type_defs.contains_key("Good"),
+            type_defs.contains_key(&checker_nominal(&mut checker, "Good")),
             "concrete type definitions must survive the contract check"
         );
         assert!(
-            !type_defs.contains_key("NormalizedHandles"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "NormalizedHandles")),
             "a channel endpoint with an unresolved element must be pruned, not erased"
         );
         assert!(
-            !type_defs.contains_key("LeakedField"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "LeakedField")),
             "type definitions with real untracked Ty::Var fields must be pruned"
         );
         assert!(
-            !type_defs.contains_key("LeakedVariant"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "LeakedVariant")),
             "type definitions with real untracked Ty::Var variants must be pruned"
         );
     }
@@ -2144,7 +2136,7 @@ mod tests {
         );
 
         let mut type_defs = HashMap::from([(
-            "Widget".to_string(),
+            checker_nominal(&mut checker, "Widget"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Widget".to_string(),
@@ -2256,8 +2248,8 @@ mod tests {
         );
 
         // Seed trait_defs with only the known trait.
-        checker.trait_defs.insert(
-            "Greeter".to_string(),
+        checker.test_trait_def(
+            "Greeter",
             TraitInfo {
                 source_module: None,
                 file_index: 0,
@@ -2322,17 +2314,13 @@ mod tests {
         // mod.rs drains self.fn_sigs via std::mem::take into resolved_fn_sigs before
         // calling validate_checker_output_contract).
         let mut fn_sigs = HashMap::from([(
-            "display".to_string(),
+            crate::DefId::for_test("display"),
             FnSig {
                 impl_method: None,
                 type_params: vec!["T".to_string()],
                 type_param_bounds: HashMap::new(),
                 param_names: vec!["item".to_string()],
-                params: vec![Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                }],
+                params: vec![Ty::param("T")],
                 return_type: Ty::Unit,
                 doc_comment: None,
                 extern_symbol: None,
@@ -2495,7 +2483,7 @@ mod tests {
         // "fake.Handle" is the qualified key in type_defs — exactly as
         // register_qualified_type_alias would produce — and has non-empty fields.
         let mut type_defs = HashMap::from([(
-            "fake.Handle".to_string(),
+            checker_nominal(&mut checker, "fake.Handle"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "fake.Handle".to_string(),
@@ -2551,7 +2539,7 @@ mod tests {
         let mut type_defs = HashMap::from([
             // User type whose unqualified name matches the handle short name — must survive.
             (
-                "TlsStream".to_string(),
+                checker_nominal(&mut checker, "TlsStream"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "TlsStream".to_string(),
@@ -2567,7 +2555,7 @@ mod tests {
             ),
             // Fieldless qualified alias for the actual handle type — also must survive.
             (
-                "tls.TlsStream".to_string(),
+                checker_nominal(&mut checker, "tls.TlsStream"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "tls.TlsStream".to_string(),
@@ -2596,154 +2584,6 @@ mod tests {
             checker.errors
         );
     }
-
-    /// Diagnostic emitted for a qualified alias that has fields must carry the
-    /// bare-name span, not the zero span that results when
-    /// `register_qualified_type_alias` omits the span propagation.
-    ///
-    /// Regression guard for the `0..0` fallback in
-    /// `validate_handle_types_no_field_overlap`.
-    #[test]
-    fn validate_handle_types_no_field_overlap_qualified_alias_span_is_propagated() {
-        let mut module_registry = ModuleRegistry::new(vec![]);
-        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
-        let mut checker = Checker::new(module_registry);
-
-        // Seed the bare name entry in type_defs and type_def_spans, simulating
-        // what register_type_namespace_name + register_type_decl would do.
-        checker.type_def_spans.insert("Handle".to_string(), 10..25);
-        checker.type_defs.insert(
-            "Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::new(),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        );
-
-        // register_qualified_type_alias must propagate the span to the qualified key.
-        checker.register_qualified_type_alias("fake", "Handle");
-
-        // Build the local type_defs map as the checker would pass to the validator:
-        // the qualified alias has fields — triggering the overlap check.
-        let mut type_defs = HashMap::from([(
-            "fake.Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "fake.Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        )]);
-
-        checker.validate_handle_types_no_field_overlap(&mut type_defs);
-
-        let overlap_errors: Vec<_> = checker
-            .errors
-            .iter()
-            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
-            .collect();
-        assert_eq!(
-            overlap_errors.len(),
-            1,
-            "expected exactly one overlap error"
-        );
-        assert_eq!(
-            overlap_errors[0].span,
-            10..25,
-            "diagnostic span must be the bare-name declaration span, not 0..0"
-        );
-    }
-
-    /// When a qualified key (e.g. `fake.Handle`) is identified as conflicting,
-    /// the validator must defensively prune the bare-name twin (e.g. `Handle`) from
-    /// `type_defs` so that `lookup_user_type_def`'s fallback cannot resolve to a
-    /// field-bearing entry.
-    #[test]
-    fn validate_handle_types_no_field_overlap_prunes_bare_alias_twin() {
-        let mut module_registry = ModuleRegistry::new(vec![]);
-        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
-        let mut checker = Checker::new(module_registry);
-
-        let mut type_defs = HashMap::from([(
-            "Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        )]);
-
-        // Also seed the qualified key that will trigger the conflict.
-        type_defs.insert(
-            "fake.Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "fake.Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        );
-
-        checker.validate_handle_types_no_field_overlap(&mut type_defs);
-
-        // Both the qualified key and its bare-name twin must be removed.
-        assert!(
-            !type_defs.contains_key("fake.Handle"),
-            "conflicting qualified key must be removed"
-        );
-        assert!(
-            !type_defs.contains_key("Handle"),
-            "bare-alias twin must also be pruned defensively"
-        );
-
-        // Verify an error was reported for the conflict.
-        let overlap_errors: Vec<_> = checker
-            .errors
-            .iter()
-            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
-            .collect();
-        assert_eq!(
-            overlap_errors.len(),
-            1,
-            "expected exactly one overlap error for the qualified key"
-        );
-    }
-
-    /// Integration test: handle-type field overlap is detected and pruned via the
-    /// public entry point `validate_checker_output_contract`, not just the internal
-    /// `validate_handle_types_no_field_overlap` validator.
-    ///
-    /// This test seeded an overlap via qualified-alias registration, verifies:
-    /// 1. The overlap is rejected with an `InvalidOperation` diagnostic
-    /// 2. Both the qualified key and bare-name twin are removed from `type_defs`
-    /// 3. The error is reportable through the full contract validation pipeline
     #[test]
     fn validate_checker_output_contract_prunes_handle_type_field_overlap_via_public_entry() {
         let mut module_registry = ModuleRegistry::new(vec![]);
@@ -2756,7 +2596,7 @@ mod tests {
         // - "fake.Handle" from register_qualified_type_alias with fields
         let mut type_defs = HashMap::from([
             (
-                "Handle".to_string(),
+                checker_nominal(&mut checker, "Handle"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "Handle".to_string(),
@@ -2771,7 +2611,7 @@ mod tests {
                 },
             ),
             (
-                "fake.Handle".to_string(),
+                checker_nominal(&mut checker, "fake.Handle"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "fake.Handle".to_string(),
@@ -2800,15 +2640,10 @@ mod tests {
             &mut record_init_type_args,
         );
 
-        // Both qualified key and bare-name twin must be pruned from type_defs
-        // after validate_checker_output_contract processes the overlap.
+        // The field-bearing handle declaration is pruned from type_defs.
         assert!(
-            !type_defs.contains_key("fake.Handle"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "fake.Handle")),
             "qualified handle-type key with fields must be pruned from type_defs"
-        );
-        assert!(
-            !type_defs.contains_key("Handle"),
-            "bare-alias twin must also be pruned defensively from type_defs"
         );
 
         // Exactly one InvalidOperation diagnostic must be reported.
@@ -2952,7 +2787,7 @@ mod tests {
     #[test]
     fn primitive_copy_layout_bool_is_1_1() {
         assert_eq!(
-            primitive_copy_layout(&Ty::Bool, &HashMap::new()),
+            primitive_copy_layout(&Ty::Bool, TypeDefView::for_test(&HashMap::new())),
             Some((1, 1))
         );
     }
@@ -2960,11 +2795,11 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i8_u8_is_1_1() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I8, &HashMap::new()),
+            primitive_copy_layout(&Ty::I8, TypeDefView::for_test(&HashMap::new())),
             Some((1, 1))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U8, &HashMap::new()),
+            primitive_copy_layout(&Ty::U8, TypeDefView::for_test(&HashMap::new())),
             Some((1, 1))
         );
     }
@@ -2972,11 +2807,11 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i16_u16_is_2_2() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I16, &HashMap::new()),
+            primitive_copy_layout(&Ty::I16, TypeDefView::for_test(&HashMap::new())),
             Some((2, 2))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U16, &HashMap::new()),
+            primitive_copy_layout(&Ty::U16, TypeDefView::for_test(&HashMap::new())),
             Some((2, 2))
         );
     }
@@ -2984,15 +2819,15 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i32_u32_char_is_4_4() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I32, &HashMap::new()),
+            primitive_copy_layout(&Ty::I32, TypeDefView::for_test(&HashMap::new())),
             Some((4, 4))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U32, &HashMap::new()),
+            primitive_copy_layout(&Ty::U32, TypeDefView::for_test(&HashMap::new())),
             Some((4, 4))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::Char, &HashMap::new()),
+            primitive_copy_layout(&Ty::Char, TypeDefView::for_test(&HashMap::new())),
             Some((4, 4))
         );
     }
@@ -3000,15 +2835,15 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i64_u64_duration_is_8_8() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I64, &HashMap::new()),
+            primitive_copy_layout(&Ty::I64, TypeDefView::for_test(&HashMap::new())),
             Some((8, 8))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U64, &HashMap::new()),
+            primitive_copy_layout(&Ty::U64, TypeDefView::for_test(&HashMap::new())),
             Some((8, 8))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::Duration, &HashMap::new()),
+            primitive_copy_layout(&Ty::Duration, TypeDefView::for_test(&HashMap::new())),
             Some((8, 8))
         );
     }
@@ -3021,13 +2856,22 @@ mod tests {
         let child_ref = Ty::child_ref(Ty::I64);
         let type_defs = HashMap::new();
 
-        assert_eq!(primitive_copy_layout(&node_id, &type_defs), Some((16, 8)));
-        assert_eq!(primitive_copy_layout(&location, &type_defs), Some((32, 8)));
         assert_eq!(
-            primitive_copy_layout(&remote_pid, &type_defs),
+            primitive_copy_layout(&node_id, TypeDefView::for_test(&type_defs)),
+            Some((16, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&location, TypeDefView::for_test(&type_defs)),
             Some((32, 8))
         );
-        assert_eq!(primitive_copy_layout(&child_ref, &type_defs), Some((16, 8)));
+        assert_eq!(
+            primitive_copy_layout(&remote_pid, TypeDefView::for_test(&type_defs)),
+            Some((32, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&child_ref, TypeDefView::for_test(&type_defs)),
+            Some((16, 8))
+        );
     }
 
     #[test]
@@ -3035,106 +2879,56 @@ mod tests {
         // String is heap-managed; not a fixed-layout Copy type. The hash-key
         // Its payload requires a clone rather than a bit copy.
         // blob — `primitive_copy_layout` stays the Copy authority.
-        assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+        assert_eq!(
+            primitive_copy_layout(&Ty::String, TypeDefView::for_test(&HashMap::new())),
+            None
+        );
     }
 
     #[test]
     fn primitive_copy_layout_substitutes_generic_record_args() {
         let type_defs = HashMap::from([
             (
-                "Wrap".to_string(),
-                make_generic_record(
-                    "Wrap",
-                    vec!["T"],
-                    vec![(
-                        "v",
-                        Ty::Named {
-                            name: "T".to_string(),
-                            args: vec![],
-                            builtin: None,
-                        },
-                    )],
-                ),
+                crate::NominalId::for_test("Wrap"),
+                make_generic_record("Wrap", vec!["T"], vec![("v", Ty::param("T"))]),
             ),
             (
-                "Pair".to_string(),
+                crate::NominalId::for_test("Pair"),
                 make_generic_record(
                     "Pair",
                     vec!["A", "B"],
-                    vec![
-                        (
-                            "a",
-                            Ty::Named {
-                                name: "A".to_string(),
-                                args: vec![],
-                                builtin: None,
-                            },
-                        ),
-                        (
-                            "b",
-                            Ty::Named {
-                                name: "B".to_string(),
-                                args: vec![],
-                                builtin: None,
-                            },
-                        ),
-                    ],
+                    vec![("a", Ty::param("A")), ("b", Ty::param("B"))],
                 ),
             ),
             (
-                "Point".to_string(),
+                crate::NominalId::for_test("Point"),
                 make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)]),
             ),
             (
-                "Holder".to_string(),
-                make_generic_record(
-                    "Holder",
-                    vec!["T"],
-                    vec![(
-                        "value",
-                        Ty::Named {
-                            name: "T".to_string(),
-                            args: vec![],
-                            builtin: None,
-                        },
-                    )],
-                ),
+                crate::NominalId::for_test("Holder"),
+                make_generic_record("Holder", vec!["T"], vec![("value", Ty::param("T"))]),
             ),
         ]);
 
-        let wrap_i64 = Ty::Named {
-            name: "Wrap".to_string(),
-            args: vec![Ty::I64],
-            builtin: None,
-        };
-        let pair_i64 = Ty::Named {
-            name: "Pair".to_string(),
-            args: vec![Ty::I64, Ty::I64],
-            builtin: None,
-        };
-        let holder_point = Ty::Named {
-            name: "Holder".to_string(),
-            args: vec![Ty::Named {
-                name: "Point".to_string(),
-                args: vec![],
-                builtin: None,
-            }],
-            builtin: None,
-        };
-        let nested_wrap = Ty::Named {
-            name: "Wrap".to_string(),
-            args: vec![wrap_i64.clone()],
-            builtin: None,
-        };
+        let wrap_i64 = Ty::named_for_test("Wrap", vec![Ty::I64]);
+        let pair_i64 = Ty::named_for_test("Pair", vec![Ty::I64, Ty::I64]);
+        let holder_point = Ty::named_for_test("Holder", vec![Ty::named_for_test("Point", vec![])]);
+        let nested_wrap = Ty::named_for_test("Wrap", vec![wrap_i64.clone()]);
 
-        assert_eq!(primitive_copy_layout(&wrap_i64, &type_defs), Some((8, 8)));
-        assert_eq!(primitive_copy_layout(&pair_i64, &type_defs), Some((16, 8)));
         assert_eq!(
-            primitive_copy_layout(&holder_point, &type_defs),
+            primitive_copy_layout(&wrap_i64, TypeDefView::for_test(&type_defs)),
+            Some((8, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&pair_i64, TypeDefView::for_test(&type_defs)),
             Some((16, 8))
         );
         assert_eq!(
-            primitive_copy_layout(&nested_wrap, &type_defs),
+            primitive_copy_layout(&holder_point, TypeDefView::for_test(&type_defs)),
+            Some((16, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&nested_wrap, TypeDefView::for_test(&type_defs)),
             Some((8, 8))
         );
     }
@@ -3154,21 +2948,21 @@ mod tests {
             doc_comment: None,
             is_indirect: false,
         };
-        checker.fn_sigs.insert(
-            "left.Pair".to_string(),
+        checker.test_fn_sig(
+            "left.Pair",
             FnSig {
                 params: vec![Ty::I64],
-                return_type: Ty::named("left.Pair", Vec::new()),
+                return_type: Ty::named_for_test("left.Pair", Vec::new()),
                 ..FnSig::default()
             },
         );
         // A legacy bare constructor entry is present too. Before exact
         // matching, `right.Pair` could reach it through the short-name path.
-        checker.fn_sigs.insert(
-            "Pair".to_string(),
+        checker.test_fn_sig(
+            "Pair",
             FnSig {
                 params: vec![Ty::Bool],
-                return_type: Ty::named("left.Pair", Vec::new()),
+                return_type: Ty::named_for_test("left.Pair", Vec::new()),
                 ..FnSig::default()
             },
         );

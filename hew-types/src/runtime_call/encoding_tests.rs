@@ -7,9 +7,8 @@ use strum::IntoEnumIterator;
 
 fn value(format: EncodingFormat) -> ResolvedTy {
     ResolvedTy::Named {
-        name: format.builtin().canonical_name().to_string(),
+        head: crate::TypeHead::Builtin(format.builtin()),
         args: vec![],
-        builtin: Some(format.builtin()),
         is_opaque: true,
     }
 }
@@ -65,6 +64,7 @@ fn every_encoding_extern_checks_its_complete_source_abi_and_identity() {
             let (params, result, consuming) = source_signature(op, &value(format));
             let admits = |params: &[ResolvedTy], result: &ResolvedTy, consuming: &[bool]| {
                 family.matches_encoding_extern(
+                    &crate::DefTable::new(),
                     format.module(),
                     &declaration,
                     symbol,
@@ -99,6 +99,7 @@ fn every_encoding_extern_checks_its_complete_source_abi_and_identity() {
                 );
             }
             assert!(!family.matches_encoding_extern(
+                &crate::DefTable::new(),
                 "user.json",
                 &declaration,
                 symbol,
@@ -107,6 +108,7 @@ fn every_encoding_extern_checks_its_complete_source_abi_and_identity() {
                 &consuming
             ));
             assert!(!family.matches_encoding_extern(
+                &crate::DefTable::new(),
                 format.module(),
                 symbol,
                 symbol,
@@ -115,6 +117,7 @@ fn every_encoding_extern_checks_its_complete_source_abi_and_identity() {
                 &consuming
             ));
             assert!(!family.matches_encoding_extern(
+                &crate::DefTable::new(),
                 format.module(),
                 &declaration,
                 "user_parse",
@@ -131,30 +134,37 @@ fn encoding_receiver_binding_preserves_the_owner_and_rejects_impostors() {
     let original = value(EncodingFormat::Json);
     let contract = EncodingOp::GetField.contract(EncodingFormat::Json);
     let bound = contract
-        .instantiate(&[original.clone(), ResolvedTy::String], &original)
+        .instantiate(
+            &crate::DefTable::new(),
+            &[original.clone(), ResolvedTy::String],
+            &original,
+        )
         .unwrap();
     assert_eq!(bound.result_ty, original);
     assert!(collection_type_arguments(&original).is_none());
     assert!(RuntimeValueKind::TypeArgument(0)
-        .resolve(Some(&original))
+        .resolve(&crate::DefTable::new(), Some(&original))
         .is_none());
 
     let malformed = [
         value(EncodingFormat::Yaml),
-        ResolvedTy::named_opaque("std.encoding.json.Value", vec![]),
-        ResolvedTy::named_builtin("alias.Value", BuiltinType::JsonValue, vec![]),
-        ResolvedTy::named_builtin(
-            "std.encoding.json.Value",
-            BuiltinType::JsonValue,
-            vec![ResolvedTy::I64],
-        ),
+        ResolvedTy::opaque_for_test("std.encoding.json.Value", vec![]),
+        ResolvedTy::named_builtin(BuiltinType::JsonValue, vec![ResolvedTy::I64]),
     ];
     for impostor in malformed {
-        assert!(!contract.matches_signature(&[impostor.clone(), ResolvedTy::String], &impostor));
-        assert!(!contract.matches_signature(&[original.clone(), ResolvedTy::String], &impostor));
+        assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
+            &[impostor.clone(), ResolvedTy::String],
+            &impostor
+        ));
+        assert!(!contract.matches_signature(
+            &crate::DefTable::new(),
+            &[original.clone(), ResolvedTy::String],
+            &impostor
+        ));
         assert!(!EncodingOp::FromInt
             .contract(EncodingFormat::Json)
-            .matches_signature(&[ResolvedTy::I64], &impostor));
+            .matches_signature(&crate::DefTable::new(), &[ResolvedTy::I64], &impostor));
     }
     for (op, scalar) in [
         (EncodingOp::FromInt, ResolvedTy::I64),
@@ -163,7 +173,7 @@ fn encoding_receiver_binding_preserves_the_owner_and_rejects_impostors() {
     ] {
         let bound = op
             .contract(EncodingFormat::Json)
-            .instantiate(&[scalar], &original)
+            .instantiate(&crate::DefTable::new(), &[scalar], &original)
             .unwrap();
         assert_eq!(bound.result_ty, original);
     }
@@ -190,12 +200,16 @@ fn encoding_mutation_moves_both_owners_and_returns_the_updated_receiver() {
             );
             assert_eq!(
                 contract
-                    .instantiate(&params, &ResolvedTy::Unit)
+                    .instantiate(&crate::DefTable::new(), &params, &ResolvedTy::Unit)
                     .unwrap()
                     .result_ty,
                 owner
             );
-            assert!(!contract.matches_signature(&params, &ResolvedTy::Unit));
+            assert!(!contract.matches_signature(
+                &crate::DefTable::new(),
+                &params,
+                &ResolvedTy::Unit
+            ));
             assert_eq!(
                 family.arg_consume_verdict(child),
                 ConsumeVerdict::ProvenConsume

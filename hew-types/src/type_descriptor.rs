@@ -45,10 +45,7 @@ impl ResolvedTy {
     ///
     /// # Named-type precondition
     ///
-    /// `ResolvedTy::Named.name` is emitted as-is. If module identity matters,
-    /// callers must construct `ResolvedTy::Named` with an already canonical,
-    /// module-qualified name; `canonical_string()` does not resolve or qualify
-    /// bare names.
+    /// A named type renders by its head's declaration spelling.
     #[must_use]
     pub fn canonical_string(&self) -> String {
         match self {
@@ -82,10 +79,10 @@ impl ResolvedTy {
             ResolvedTy::Slice(elem) => {
                 format!("[{}]", elem.canonical_string())
             }
-            ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
-            ResolvedTy::Named { name, args, .. } => {
+            ResolvedTy::Named { head, args, .. } if args.is_empty() => head.registry_key().into(),
+            ResolvedTy::Named { head, args, .. } => {
                 let arg_strs: Vec<String> = args.iter().map(Self::canonical_string).collect();
-                format!("{}<{}>", name, arg_strs.join(","))
+                format!("{}<{}>", head.registry_key(), arg_strs.join(","))
             }
             ResolvedTy::Function {
                 capabilities,

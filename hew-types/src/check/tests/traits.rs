@@ -297,21 +297,17 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     );
 
     let get_sig = output
-        .fn_sigs
+        .sigs()
         .get("Box::get")
         .expect("generic inherent method must retain its signature");
     assert_eq!(
         get_sig.return_type,
-        Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        },
+        Ty::param("T"),
         "the body must resolve the primary return hole"
     );
 
     let with_sig = output
-        .fn_sigs
+        .sigs()
         .get("Box::with")
         .expect("generic trait impl method must retain its signature");
     assert!(
@@ -320,10 +316,10 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     );
     assert!(matches!(
         &with_sig.return_type,
-        Ty::Named { name, args, .. }
-            if name == "Box"
-                && matches!(args.as_slice(), [Ty::Named { name, args, .. }]
-                    if name == "T" && args.is_empty())
+        Ty::Named { head, args }
+            if head.spelling() == "Box"
+                && matches!(args.as_slice(), [Ty::Named { head, args }]
+                    if head.is_param() && head.spelling() == "T" && args.is_empty())
     ));
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
@@ -362,7 +358,7 @@ fn generic_receiver_identity_rejects_changed_type_arguments() {
     );
     assert!(
         output
-            .fn_sigs
+            .sigs()
             .get("Pair::swap_identity")
             .is_some_and(|sig| !sig.returns_receiver_identity),
         "a changed generic instantiation must fail closed in dispatch metadata"
@@ -1628,12 +1624,10 @@ fn trait_method_where_clause_bound_enforced_positive() {
         output.errors
     );
     assert!(
-        output.call_type_args.values().any(|args| args
-            == &vec![crate::ty::Ty::Named {
-                builtin: None,
-                name: "Page".to_string(),
-                args: vec![]
-            }]),
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::named_in(&output.defs, "Page", vec![])]),
         "expected method-level bound call to infer U=Page, got {:?}",
         output.call_type_args
     );
@@ -1651,12 +1645,12 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
             ..FnSig::default()
         },
     );
-    checker.type_defs.insert(
-        "Speaker".to_string(),
-        make_test_type_def("Speaker", vec![], methods),
-    );
-    checker.fn_sigs.insert(
-        "Speaker::hello".to_string(),
+    let __id = checker.test_declaration("Speaker");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Speaker", vec![], methods));
+    checker.test_fn_sig(
+        "Speaker::hello",
         FnSig {
             return_type: Ty::I64,
             ..FnSig::default()
@@ -1681,25 +1675,18 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            return_type: Ty::param("T"),
             ..FnSig::default()
         },
     );
+    let __id = checker.test_declaration("Boxy");
     checker.type_defs.insert(
-        "Boxy".to_string(),
+        __id,
         make_test_type_def("Boxy", vec!["T".to_string()], methods),
     );
     checker.env.define(
         "boxy".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "Boxy".to_string(),
-            args: vec![Ty::String],
-        },
+        checker.test_named("Boxy", vec![Ty::String]),
         false,
     );
 
@@ -1730,30 +1717,23 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     // Same as above but the `get` method is registered via fn_sigs rather than
     // inline on the type_def (the fn_sig-fallback path in lookup_named_method_sig).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
-        "Wrapper".to_string(),
+        __id,
         make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
     );
-    checker.fn_sigs.insert(
-        "Wrapper::get".to_string(),
+    checker.test_fn_sig(
+        "Wrapper::get",
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            return_type: Ty::param("T"),
             ..FnSig::default()
         },
     );
     checker.env.define(
         "wrapper".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "Wrapper".to_string(),
-            args: vec![Ty::String],
-        },
+        checker.test_named("Wrapper", vec![Ty::String]),
         false,
     );
 
@@ -1789,13 +1769,8 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Register HashMap with a string-keyed .get() method (as the stdlib defines it).
     // Return type is Option<V>, represented as the Named form.
     let option_v = Ty::Named {
-        builtin: Some(crate::BuiltinType::Option),
-        name: "Option".to_string(),
-        args: vec![Ty::Named {
-            builtin: None,
-            name: "V".to_string(),
-            args: vec![],
-        }],
+        head: crate::TypeHead::Builtin(crate::BuiltinType::Option),
+        args: vec![Ty::param("V")],
     };
     let mut methods = HashMap::new();
     methods.insert(
@@ -1807,17 +1782,14 @@ fn hashmap_bracket_index_is_a_compile_error() {
             ..FnSig::default()
         },
     );
+    let __id = checker.test_declaration("HashMap");
     checker.type_defs.insert(
-        "HashMap".to_string(),
+        __id,
         make_test_type_def("HashMap", vec!["K".to_string(), "V".to_string()], methods),
     );
     checker.env.define(
         "m".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "HashMap".to_string(),
-            args: vec![Ty::String, Ty::I64],
-        },
+        checker.test_named("HashMap", vec![Ty::String, Ty::I64]),
         false,
     );
 
@@ -1933,24 +1905,17 @@ fn dyn_index_with_output_binding() {
 #[test]
 fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
-        "Wrapper".to_string(),
+        __id,
         make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
     );
-    checker.fn_sigs.insert(
-        "Wrapper::value".to_string(),
+    checker.test_fn_sig(
+        "Wrapper::value",
         FnSig {
             param_names: vec!["next".to_string()],
-            params: vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            params: vec![Ty::param("T")],
+            return_type: Ty::param("T"),
             ..FnSig::default()
         },
     );
@@ -1965,12 +1930,12 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
 #[test]
 fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.type_defs.insert(
-        "Thing".to_string(),
-        make_test_type_def("Thing", vec![], HashMap::new()),
-    );
-    checker.fn_sigs.insert(
-        "Thing::label".to_string(),
+    let __id = checker.test_declaration("Thing");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Thing", vec![], HashMap::new()));
+    checker.test_fn_sig(
+        "Thing::label",
         FnSig {
             return_type: Ty::String,
             ..FnSig::default()
@@ -1978,11 +1943,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     );
     checker.env.define(
         "thing".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "widgets.Thing".to_string(),
-            args: vec![],
-        },
+        checker.test_named("widgets.Thing", vec![]),
         false,
     );
 
@@ -2101,12 +2062,11 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
     );
 
     let fn_sig = output
-        .fn_sigs
+        .sigs()
         .get("Wrapper::map")
         .expect("impl method must populate fn_sigs");
     let method_sig = output
-        .type_defs
-        .get("Wrapper")
+        .type_def_at_path("Wrapper")
         .and_then(|type_def| type_def.methods.get("map"))
         .expect("impl method must populate type_def.methods");
 
@@ -2129,13 +2089,11 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
 #[test]
 fn structural_hardening_uses_fn_sigs_named_method_fallback() {
     let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    checker.type_defs.insert(
-        "Speaker".to_string(),
-        make_test_type_def("Speaker", vec![], HashMap::new()),
-    );
+    let __id = checker.test_declaration("Speaker");
     checker
-        .fn_sigs
-        .insert("Speaker::hello".to_string(), FnSig::default());
+        .type_defs
+        .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
+    checker.test_fn_sig("Speaker::hello", FnSig::default());
 
     assert!(
         checker.type_structurally_satisfies("Speaker", "Greet"),
@@ -2155,12 +2113,12 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
             ..FnSig::default()
         },
     );
-    checker.type_defs.insert(
-        "Sink".to_string(),
-        make_test_type_def("Sink", vec![], methods),
-    );
-    checker.fn_sigs.insert(
-        "Sink::close".to_string(),
+    let __id = checker.test_declaration("Sink");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Sink", vec![], methods));
+    checker.test_fn_sig(
+        "Sink::close",
         FnSig {
             return_type: Ty::I32,
             ..FnSig::default()
@@ -2201,7 +2159,8 @@ fn structural_hardening_qualified_trait_name_matches() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     assert!(
         checker.type_structurally_satisfies("Speaker", "greet.Greet"),
@@ -2237,7 +2196,8 @@ fn structural_hardening_qualified_type_name_matches() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     assert!(
         checker.type_structurally_satisfies("mymod.Speaker", "Greet"),
@@ -2273,7 +2233,8 @@ fn structural_hardening_unknown_module_qualifier_is_rejected() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     // Trait "unknown.Greet" should not resolve to "Greet" because "unknown" is
     // not a registered module.
@@ -2520,9 +2481,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&assoc_super, None, 0);
-    checker
-        .trait_defs
-        .insert("AssocSuper".to_string(), info_super);
+    checker.test_trait_def("AssocSuper", info_super);
 
     // Child trait with no assoc types of its own.
     let child = TraitDecl {
@@ -2565,12 +2524,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child, None, 0);
-    checker
-        .trait_defs
-        .insert("ChildTrait".to_string(), info_child);
-    checker
-        .trait_super
-        .insert("ChildTrait".to_string(), vec!["AssocSuper".to_string()]);
+    checker.test_trait_def("ChildTrait", info_child);
+    checker.set_trait_supers("ChildTrait", vec!["AssocSuper".to_string()]);
 
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
@@ -2624,9 +2579,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&generic_super, None, 0);
-    checker
-        .trait_defs
-        .insert("GenericSuper".to_string(), info_super);
+    checker.test_trait_def("GenericSuper", info_super);
 
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
@@ -2668,12 +2621,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child, None, 0);
-    checker
-        .trait_defs
-        .insert("ChildTrait".to_string(), info_child);
-    checker
-        .trait_super
-        .insert("ChildTrait".to_string(), vec!["GenericSuper".to_string()]);
+    checker.test_trait_def("ChildTrait", info_child);
+    checker.set_trait_supers("ChildTrait", vec!["GenericSuper".to_string()]);
 
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
@@ -2684,12 +2633,20 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 #[test]
 fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .trait_super
-        .insert("TraitA".to_string(), vec!["TraitB".to_string()]);
-    checker
-        .trait_super
-        .insert("TraitB".to_string(), vec!["TraitA".to_string()]);
+    for name in ["TraitA", "TraitB"] {
+        checker.test_trait_def(
+            name,
+            TraitInfo {
+                source_module: None,
+                file_index: 0,
+                methods: Vec::new(),
+                associated_types: Vec::new(),
+                type_params: Vec::new(),
+            },
+        );
+    }
+    checker.set_trait_supers("TraitA", vec!["TraitB".to_string()]);
+    checker.set_trait_supers("TraitB", vec!["TraitA".to_string()]);
     checker
         .trait_impls_set
         .insert(("Thing".to_string(), "TraitA".to_string()));
@@ -2700,15 +2657,7 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
         ..Default::default()
     };
 
-    checker.enforce_type_param_bounds(
-        &sig,
-        &[Ty::Named {
-            builtin: None,
-            name: "Thing".to_string(),
-            args: vec![],
-        }],
-        &(0..0),
-    );
+    checker.enforce_type_param_bounds(&sig, &[Ty::named_for_test("Thing", vec![])], &(0..0));
 
     assert!(
         checker
@@ -2938,16 +2887,8 @@ fn record_field_marker_derivation_expands_top_level_alias() {
         output.errors
     );
 
-    let good = Ty::Named {
-        builtin: None,
-        name: "Good".to_string(),
-        args: vec![],
-    };
-    let bad = Ty::Named {
-        builtin: None,
-        name: "Bad".to_string(),
-        args: vec![],
-    };
+    let good = Ty::named_for_test("Good", vec![]);
+    let bad = Ty::named_for_test("Bad", vec![]);
 
     for marker in [
         crate::traits::MarkerTrait::Send,
@@ -3167,11 +3108,12 @@ fn local_trait_implemented_for_an_imported_type_dispatches() {
         output.errors
     );
     assert!(
-        output.fn_sigs.contains_key("pkg.thing.Thing::tag"),
+        output.sigs().contains("pkg.thing.Thing::tag"),
         "the impl method must register under the target's identity: {:?}",
         output
-            .fn_sigs
-            .keys()
+            .sigs()
+            .entries()
+            .map(|(key, _)| key)
             .filter(|key| key.ends_with("::tag"))
             .collect::<Vec<_>>()
     );

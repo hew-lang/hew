@@ -48,9 +48,8 @@ impl LowerCtx {
             .as_ref()
             .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
         ResolvedTy::Named {
-            name: BuiltinType::ActorFn.canonical_name().to_string(),
             args: vec![msg_ty, reply_ty],
-            builtin: Some(hew_types::BuiltinType::ActorFn),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
             is_opaque: false,
         }
     }
@@ -146,9 +145,8 @@ impl LowerCtx {
                         "gen block type failed checker-boundary conversion",
                     ));
                     ResolvedTy::Named {
-                        name: "Generator".to_string(),
                         args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
-                        builtin: Some(hew_types::BuiltinType::Generator),
+                        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
                         is_opaque: false,
                     }
                 }
@@ -163,9 +161,8 @@ impl LowerCtx {
                 "checker did not provide a Generator<Yield, Return> type for this gen block",
             ));
             ResolvedTy::Named {
-                name: "Generator".to_string(),
                 args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
-                builtin: Some(hew_types::BuiltinType::Generator),
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
                 is_opaque: false,
             }
         };
@@ -209,7 +206,7 @@ impl LowerCtx {
     ) -> Option<(ResolvedTy, ResolvedTy)> {
         let ResolvedTy::Named {
             args,
-            builtin: Some(BuiltinType::Generator),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Generator),
             ..
         } = ty
         else {

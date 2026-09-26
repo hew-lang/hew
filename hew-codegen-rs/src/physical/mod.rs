@@ -777,7 +777,10 @@ fn primitive_repr(
         // An `#[opaque]` nominal with no resource descriptor is a bit-copied
         // FFI id of pointer width; its lifecycle belongs to whatever owns it.
         ResolvedTy::Named {
-            builtin: None,
+            head:
+                hew_types::TypeHead::Nominal(_)
+                | hew_types::TypeHead::Param(_)
+                | hew_types::TypeHead::Unresolved(_),
             is_opaque: true,
             ..
         } => PhysicalRepr::Pointer,

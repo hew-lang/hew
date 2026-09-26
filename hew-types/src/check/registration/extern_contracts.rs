@@ -103,11 +103,9 @@ impl Checker {
     /// declaration used by field annotations and ordinary callable signatures.
     pub(super) fn resolve_extern_signature_nominals(&self, ty: &Ty) -> Ty {
         match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
+            Ty::Named { head, args, .. } => {
+                let name = head.registry_key();
+                let builtin = head.builtin();
                 // The callable consumes source values, including fields from
                 // peer files assembled into this module. Resolve their registered
                 // declaration rather than substituting the ABI contract's file
@@ -117,13 +115,14 @@ impl Checker {
                         .then(|| self.extern_nominal_imported_owner(name))
                         .flatten()
                 });
-                Ty::Named {
-                    name: resolved.unwrap_or_else(|| name.clone()),
-                    args: args
-                        .iter()
-                        .map(|arg| self.resolve_extern_signature_nominals(arg))
-                        .collect(),
-                    builtin: *builtin,
+                let args = args
+                    .iter()
+                    .map(|arg| self.resolve_extern_signature_nominals(arg))
+                    .collect();
+                if builtin.is_some() || head.is_param() {
+                    Ty::Named { head: *head, args }
+                } else {
+                    self.named_ty_for_key(&resolved.unwrap_or_else(|| name.to_string()), args)
                 }
             }
             _ => ty.map_children_pub(&|child| self.resolve_extern_signature_nominals(child)),
@@ -590,7 +589,7 @@ impl Checker {
                 continue;
             };
             self.record_fn_sig_inference_holes(&key, hole_vars);
-            self.fn_sigs.insert(key.clone(), sig);
+            self.insert_fn_sig(&key, declaration, sig);
             if !self
                 .source_extern_declarations
                 .iter()
@@ -622,7 +621,7 @@ impl Checker {
     /// inherit a lifecycle.
     pub(in crate::check) fn derive_opaque_resource_candidate_graph(
         &self,
-        fn_sigs: &HashMap<String, FnSig>,
+        fn_sigs: crate::check::FnSigView<'_>,
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(
             &self.source_extern_declarations,
@@ -638,7 +637,7 @@ impl Checker {
     #[cfg(test)]
     pub(in crate::check) fn derive_opaque_resource_candidate_graph_for_contracts(
         &self,
-        fn_sigs: &HashMap<String, FnSig>,
+        fn_sigs: crate::check::FnSigView<'_>,
         contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(

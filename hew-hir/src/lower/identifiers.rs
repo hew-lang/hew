@@ -211,8 +211,9 @@ impl LowerCtx {
             let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
             let checker_agrees = match checker_owner.as_ref() {
                 None => !self.expr_types.contains_key(&key),
-                Some(ResolvedTy::Named { name, .. }) => {
-                    name == &tagged_union_name
+                Some(ResolvedTy::Named { head, .. }) => {
+                    let name = head.registry_key();
+                    name == tagged_union_name
                         || (!name.contains('.')
                             && self
                                 .machine_ctor_registry
@@ -244,24 +245,14 @@ impl LowerCtx {
                                 span.clone(),
                                 "checker-authoritative unit-variant result type failed boundary conversion",
                             ));
-                            ResolvedTy::Named {
-                                name: tagged_union_name.clone(),
-                                args: Vec::new(),
-                                builtin: None,
-                                is_opaque: false,
-                            }
+                            ResolvedTy::named_path(&self.defs, &tagged_union_name, Vec::new())
                         }
                     }
                 } else {
                     // None means the checker had no entry at this span.
                     // Treat as bare-name rather than a hard diagnostic so
                     // synthesised/non-typed paths don't regress.
-                    ResolvedTy::Named {
-                        name: tagged_union_name.clone(),
-                        args: Vec::new(),
-                        builtin: None,
-                        is_opaque: false,
-                    }
+                    ResolvedTy::named_path(&self.defs, &tagged_union_name, Vec::new())
                 };
                 // W4.047 P1.2: prove the typed handoff agrees at this fail-open
                 // bare-name unit-ctor site (the B1 archetype; no behaviour

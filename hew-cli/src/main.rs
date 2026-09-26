@@ -2618,16 +2618,7 @@ fn unlisted_bare_variant_refusals(
         if expression_span.module_idx != 0 {
             continue;
         }
-        let Some(owner) = ty.type_name() else {
-            continue;
-        };
-        let type_def = typecheck.type_defs.get(owner).or_else(|| {
-            typecheck
-                .type_defs
-                .values()
-                .find(|type_def| type_def.name == owner)
-        });
-        let Some(type_def) = type_def else {
+        let Some(type_def) = typecheck.types().of_ty(ty) else {
             continue;
         };
         for (index, (token, span)) in tokens.iter().enumerate() {

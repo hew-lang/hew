@@ -64,7 +64,7 @@ impl InstanceService<'_> {
             | ResolvedTy::String
             | ResolvedTy::Bytes => SemWireKind::Scalar,
             ResolvedTy::Named {
-                builtin: Some(builtin),
+                head: hew_types::TypeHead::Builtin(builtin),
                 args,
                 ..
             } => match (builtin, args.as_slice()) {
@@ -86,7 +86,7 @@ impl InstanceService<'_> {
                     if matches!(
                         value,
                         ResolvedTy::Named {
-                            builtin: Some(BuiltinType::Option),
+                            head: hew_types::TypeHead::Builtin(BuiltinType::Option),
                             ..
                         }
                     ) {
@@ -117,11 +117,14 @@ impl InstanceService<'_> {
                 }
             },
             ResolvedTy::Named {
-                name,
-                builtin: None,
+                head:
+                    head @ (hew_types::TypeHead::Nominal(_)
+                    | hew_types::TypeHead::Param(_)
+                    | hew_types::TypeHead::Unresolved(_)),
                 is_opaque: false,
                 ..
             } => {
+                let name = head.registry_key();
                 let layout = self
                     .module
                     .wire_layouts

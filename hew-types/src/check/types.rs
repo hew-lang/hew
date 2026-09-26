@@ -7,6 +7,7 @@ use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::{BuiltinType, WasmUnsupportedFeature};
+use hew_parser::ast::Symbol;
 use hew_parser::ast::{
     ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
@@ -568,7 +569,7 @@ pub struct TypeCheckOutput {
     ///
     /// Duplicates are harmless (the seed collector deduplicates).
     pub user_clone_record_seeds: Vec<String>,
-    pub type_defs: HashMap<String, TypeDef>,
+    pub type_defs: HashMap<crate::NominalId, TypeDef>,
     /// Fully expanded alias targets keyed by their source declaration.
     pub resolved_type_aliases: HashMap<crate::DefId, TypeAliasDef>,
     /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
@@ -594,6 +595,12 @@ pub struct TypeCheckOutput {
     /// later stages look up an exact declaration occurrence; every `DefId` in
     /// this output indexes it.
     pub defs: std::sync::Arc<crate::DefTable>,
+    /// Every path segment the checker resolved, keyed by the segment's span:
+    /// the identity `Scope::resolve` answered. HIR and tooling read it rather
+    /// than resolving a spelling again.
+    pub resolutions: HashMap<SpanKey, super::scope::Resolution>,
+    /// The compilation's hygiene contexts (identity plan §3.8).
+    pub contexts: super::scope::SyntaxContexts,
     /// The checker-selected process entry and its complete exit contract.
     pub entry_exit_plan: Option<EntryExitPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
@@ -602,19 +609,23 @@ pub struct TypeCheckOutput {
     /// adopt the established contract. Also the `unsafe`-gating declaration
     /// index (replaces the former `unsafe_functions` side registry).
     pub extern_contracts: crate::extern_table::ExternTable,
-    /// Function signatures keyed by declaration identity. Impl methods retain
-    /// their exact `DefId` path as well as their receiver/method lookup spelling,
-    /// so trait and inherent declarations sharing a name remain distinct.
+    /// Function signatures keyed by declaration identity.
+    pub fn_sigs: HashMap<crate::DefId, FnSig>,
+    /// Source-declared methods by receiver declaration and owner.
+    pub dispatch: super::dispatch_table::DispatchTable,
+    /// The signature keys the checker's callers spell, each naming one
+    /// declaration of `fn_sigs`.
     ///
-    /// Key shapes: `{module}.{name}` for source free functions — the module
-    /// being the identity table's render, so a module reached under two import
-    /// spellings keys one namespace — `Type::method` for methods, and bare
-    /// names for compiler builtins and `extern "C"` symbols, whose namespace is
-    /// the linker's rather than a module's. No source declaration is reachable
-    /// under a bare name: explicit imports publish only exact per-file bindings
-    /// in `import_fn_name_aliases`, leaving the canonical declaration signature
-    /// and ambient builtin signatures unchanged.
-    pub fn_sigs: HashMap<String, FnSig>,
+    /// TRANSITION(A1 commit 4): WHY callers still spell `Type::method` and
+    /// `{module}.{name}` keys. WHEN call resolution goes through `Scope` and
+    /// the dispatch table, callers hold the id and this index is deleted.
+    /// WHAT: every caller reads `fn_sigs` by the `DefId` it resolved.
+    pub fn_sig_keys: HashMap<String, crate::DefId>,
+    /// Compiler builtin function signatures by name.
+    ///
+    /// TRANSITION(A1 commit 3): the catalog move keys these by
+    /// `CatalogEntryId`.
+    pub builtin_fn_sigs: HashMap<Symbol, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
@@ -1421,6 +1432,52 @@ pub struct ArmResolution {
 }
 
 impl TypeCheckOutput {
+    /// The type definitions, read by declaration.
+    #[must_use]
+    pub fn types(&self) -> TypeDefView<'_> {
+        TypeDefView::new(&self.defs, &self.type_defs)
+    }
+
+    /// The type definition filed under a declaration path.
+    ///
+    /// TRANSITION(B1, B3): see [`Self::type_defs_by_path`].
+    #[must_use]
+    pub fn type_def_at_path(&self, path: &str) -> Option<&TypeDef> {
+        self.types().at_path(path)
+    }
+
+    /// The type definitions keyed by their rendered declaration path.
+    ///
+    /// TRANSITION(B1, B3): deleted when HIR and tooling read definitions by
+    /// declaration.
+    #[must_use]
+    pub fn type_defs_by_path(&self) -> HashMap<String, TypeDef> {
+        self.type_defs
+            .iter()
+            .map(|(id, type_def)| {
+                (
+                    self.defs.path(id.declaration()).to_string(),
+                    type_def.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// The function signatures, read by the keys callers spell.
+    #[must_use]
+    pub fn sigs(&self) -> FnSigView<'_> {
+        FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+    }
+
+    /// The function signatures keyed by every spelling the checker published.
+    ///
+    /// TRANSITION(B1, B3): deleted when HIR and tooling read signatures by
+    /// declaration.
+    #[must_use]
+    pub fn fn_sigs_by_path(&self) -> HashMap<String, FnSig> {
+        self.sigs().by_key()
+    }
+
     /// Record an expression's checker type, keeping the `Ty`-typed
     /// `expr_types` side-table and the typed `resolved_expr_types` handoff
     /// map (W4.047) in sync.
@@ -1490,9 +1547,14 @@ impl Default for TypeCheckOutput {
             resolved_type_aliases: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             defs: std::sync::Arc::default(),
+            resolutions: HashMap::new(),
+            contexts: super::scope::SyntaxContexts::new(),
             entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
+            dispatch: super::dispatch_table::DispatchTable::default(),
             fn_sigs: HashMap::new(),
+            fn_sig_keys: HashMap::new(),
+            builtin_fn_sigs: HashMap::new(),
             suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
@@ -2382,25 +2444,176 @@ impl PendingLoweringFact {
     }
 }
 
-/// Look up a type definition under either spelling `type_defs` is keyed by.
-///
-/// A qualified declaration is registered under its full path and under the
-/// twin one segment shorter, so a resolved type may carry either. Splitting on
-/// the first dot maps `std.stream.Sink` to `stream.Sink` and
-/// `stream.Sink` to `Sink`, which is the twin in both cases.
-#[must_use]
-#[expect(
-    clippy::implicit_hasher,
-    reason = "mirrors the concrete HashMap the checker and TypeCheckOutput store"
-)]
-pub fn type_def_for_spelling<'a>(
-    type_defs: &'a HashMap<String, TypeDef>,
-    name: &str,
-) -> Option<&'a TypeDef> {
-    type_defs.get(name).or_else(|| {
-        name.split_once('.')
-            .and_then(|(_, twin)| type_defs.get(twin))
-    })
+/// The type definitions of one compilation, read by the declaration a type
+/// head names.
+#[derive(Debug, Clone, Copy)]
+pub struct TypeDefView<'a> {
+    pub defs: &'a crate::DefTable,
+    pub type_defs: &'a HashMap<crate::NominalId, TypeDef>,
+}
+
+impl<'a> TypeDefView<'a> {
+    #[must_use]
+    pub fn new(
+        defs: &'a crate::DefTable,
+        type_defs: &'a HashMap<crate::NominalId, TypeDef>,
+    ) -> Self {
+        Self { defs, type_defs }
+    }
+
+    /// The definition of the declaration `head` names.
+    #[must_use]
+    pub fn of(self, head: crate::TypeHead) -> Option<&'a TypeDef> {
+        self.type_defs.get(&head.declaration(self.defs)?)
+    }
+
+    /// The definition of the named type `ty`.
+    #[must_use]
+    pub fn of_ty(self, ty: &Ty) -> Option<&'a TypeDef> {
+        self.of(ty.head()?)
+    }
+
+    /// A view over hand-built fixture definitions, keyed by
+    /// [`crate::NominalId::for_test`] identities.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(type_defs: &'a HashMap<crate::NominalId, TypeDef>) -> Self {
+        static TABLE: std::sync::OnceLock<crate::DefTable> = std::sync::OnceLock::new();
+        Self {
+            defs: TABLE.get_or_init(crate::DefTable::new),
+            type_defs,
+        }
+    }
+
+    /// The definition filed under a declaration path.
+    ///
+    /// TRANSITION(A2): deleted when the class and fact tables are keyed by
+    /// declaration instead of by rendered path.
+    #[must_use]
+    pub fn at_path(self, path: &str) -> Option<&'a TypeDef> {
+        self.type_defs.get(&self.defs.lookup_nominal(path)?)
+    }
+}
+
+/// The function signatures of one compilation, read by declaration or, until
+/// callers hold ids, by the keys they spell.
+#[derive(Debug, Clone, Copy)]
+pub struct FnSigView<'a> {
+    pub sigs: &'a HashMap<crate::DefId, FnSig>,
+    pub keys: &'a HashMap<String, crate::DefId>,
+    pub builtins: &'a HashMap<Symbol, FnSig>,
+}
+
+impl<'a> FnSigView<'a> {
+    #[must_use]
+    pub fn new(
+        sigs: &'a HashMap<crate::DefId, FnSig>,
+        keys: &'a HashMap<String, crate::DefId>,
+        builtins: &'a HashMap<Symbol, FnSig>,
+    ) -> Self {
+        Self {
+            sigs,
+            keys,
+            builtins,
+        }
+    }
+
+    /// The signature of a declaration.
+    #[must_use]
+    pub fn of(self, declaration: crate::DefId) -> Option<&'a FnSig> {
+        self.sigs.get(&declaration)
+    }
+
+    /// The signature a key spells: a declaration's key, else a builtin name.
+    ///
+    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
+    #[must_use]
+    pub fn get(self, key: &str) -> Option<&'a FnSig> {
+        self.keys
+            .get(key)
+            .and_then(|id| self.sigs.get(id))
+            .or_else(|| self.builtins.get(&Symbol::intern(key)))
+    }
+
+    #[must_use]
+    pub fn contains(self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Every spelled key with its signature.
+    pub fn entries(self) -> impl Iterator<Item = (&'a str, &'a FnSig)> + 'a {
+        self.keys
+            .iter()
+            .filter_map(move |(key, id)| Some((key.as_str(), self.sigs.get(id)?)))
+            .chain(self.builtins.iter().map(|(name, sig)| (name.as_str(), sig)))
+    }
+
+    /// TRANSITION(B1, B3): see [`TypeCheckOutput::fn_sigs_by_path`].
+    #[must_use]
+    pub fn by_key(self) -> HashMap<String, FnSig> {
+        self.entries()
+            .map(|(key, sig)| (key.to_string(), sig.clone()))
+            .collect()
+    }
+}
+
+impl<Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for FnSigView<'_> {
+    type Output = FnSig;
+
+    /// The signature a key spells.
+    ///
+    /// # Panics
+    ///
+    /// When no signature answers to the key.
+    fn index(&self, key: &Q) -> &FnSig {
+        let key = key.as_ref();
+        self.get(key)
+            .unwrap_or_else(|| panic!("no signature answers to `{key}`"))
+    }
+}
+
+/// Hand-built signatures keyed by fixture declarations, for tests of the
+/// functions that read a [`FnSigView`].
+#[cfg(any(test, feature = "test"))]
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct FnSigFixture {
+    sigs: HashMap<crate::DefId, FnSig>,
+    keys: HashMap<String, crate::DefId>,
+    builtins: HashMap<Symbol, FnSig>,
+}
+
+#[cfg(any(test, feature = "test"))]
+impl FnSigFixture {
+    #[must_use]
+    pub fn new(sigs: impl IntoIterator<Item = (String, FnSig)>) -> Self {
+        let mut fixture = Self::default();
+        for (key, sig) in sigs {
+            let declaration = crate::DefId::for_test(&key);
+            fixture.keys.insert(key, declaration);
+            fixture.sigs.insert(declaration, sig);
+        }
+        fixture
+    }
+
+    #[must_use]
+    pub fn view(&self) -> FnSigView<'_> {
+        FnSigView::new(&self.sigs, &self.keys, &self.builtins)
+    }
+
+    /// The `fn_sigs`, `fn_sig_keys` and `builtin_fn_sigs` of a hand-built
+    /// [`TypeCheckOutput`].
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        HashMap<crate::DefId, FnSig>,
+        HashMap<String, crate::DefId>,
+        HashMap<Symbol, FnSig>,
+    ) {
+        (self.sigs, self.keys, self.builtins)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2977,8 +3190,13 @@ pub struct Checker {
     /// Surfaced through `TypeCheckOutput::stack_hints` and consumed by the CLI's
     /// `--show-stack-hints` printer. See [`StackHint`].
     pub(super) stack_hints: Vec<StackHint>,
-    pub(super) type_defs: HashMap<String, TypeDef>,
-    pub(super) fn_sigs: HashMap<String, FnSig>,
+    pub(super) type_defs: HashMap<crate::NominalId, TypeDef>,
+    /// Function signatures keyed by declaration identity.
+    pub(super) fn_sigs: HashMap<crate::DefId, FnSig>,
+    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
+    pub(super) fn_sig_keys: HashMap<String, crate::DefId>,
+    /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::builtin_fn_sigs`].
+    pub(super) builtin_fn_sigs: HashMap<Symbol, FnSig>,
     /// Closed runtime call families published by compiler builtin
     /// registration.  This is deliberately distinct from `fn_sigs`: a
     /// signature name is an open-set source lookup key, whereas this table is
@@ -3214,9 +3432,24 @@ pub struct Checker {
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
     pub(super) type_aliases: HashMap<String, TypeAliasDef>,
-    pub(super) trait_defs: HashMap<String, TraitInfo>,
+    /// Source-declared methods by receiver declaration and owner.
+    pub(super) dispatch: super::dispatch_table::DispatchTable,
+    /// The impl method whose body is being checked, so its own signature is
+    /// read rather than the last one filed under its `Type::method` spelling.
+    pub(super) checking_declaration: Option<crate::DefId>,
+    /// Trait declarations by declaration identity.
+    pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
+    /// The trait spellings callers use, each naming one declaration.
+    ///
+    /// TRANSITION(A1 commit 4): WHY bounds and impls still carry trait
+    /// spellings. WHEN they carry `TraitRef`s resolved through `Scope`, this
+    /// index is deleted. WHAT: every reader holds the trait's `DefId`.
+    pub(super) trait_def_keys: HashMap<String, crate::DefId>,
     /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
-    pub(super) trait_super: HashMap<String, Vec<String>>,
+    ///
+    /// Keyed by the trait's declaration; the super-trait spellings stay
+    /// strings until bounds carry `TraitRef`s (TRANSITION(A1 commit 4)).
+    pub(super) trait_super: HashMap<crate::DefId, Vec<String>>,
     /// A declaring module's trait import bindings:
     /// `(declaring_module_short, name_as_spelled)` → owner-qualified SOURCE
     /// identity (`{owner_short}.{Source}`), always a registered `trait_defs` key.
@@ -3567,6 +3800,8 @@ pub struct Checker {
     /// here — `defs.root_module_path()` — and is the authority the
     /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
     pub(super) defs: crate::DefTable,
+    /// The spelling boundary: every module, file and prelude scope.
+    pub(super) scopes: super::scope::Scopes,
     /// The table the next `check_program` mints into instead of a fresh one;
     /// set only by [`crate::Checker::check_embedded_builtins`].
     pub(super) seed_defs: Option<crate::DefTable>,
@@ -4061,6 +4296,8 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            fn_sig_keys: HashMap::new(),
+            builtin_fn_sigs: HashMap::new(),
             builtin_call_targets: HashMap::new(),
             import_fn_name_aliases: HashMap::new(),
             published_bare_function_owners: HashMap::new(),
@@ -4124,7 +4361,10 @@ impl Checker {
             modules: HashSet::new(),
             known_types: HashSet::new(),
             type_aliases: HashMap::new(),
+            dispatch: super::dispatch_table::DispatchTable::default(),
+            checking_declaration: None,
             trait_defs: HashMap::new(),
+            trait_def_keys: HashMap::new(),
             trait_super: HashMap::new(),
             trait_import_bindings: HashMap::new(),
             trait_impls_set: HashSet::new(),
@@ -4185,6 +4425,7 @@ impl Checker {
             task_scope_depth: 0,
             current_module: None,
             defs: crate::DefTable::new(),
+            scopes: super::scope::Scopes::new(),
             seed_defs: None,
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),

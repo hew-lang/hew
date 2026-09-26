@@ -123,10 +123,11 @@ fn spawn_expr_type_is_the_actor_handle() {
         }
     ";
     let (tc, _lower) = lower_with_types(source);
-    let has_counter_handle = tc
-        .expr_types
-        .values()
-        .any(|ty| ty.actor_handle_identity() == Some(("Counter", &[][..])));
+    let has_counter_handle = tc.expr_types.values().any(|ty| {
+        ty.actor_handle_identity()
+            .map(|(head, args)| (head.spelling.as_str(), args))
+            == Some(("Counter", &[][..]))
+    });
     assert!(
         has_counter_handle,
         "expr_types should contain at least one Counter actor-handle entry"
@@ -134,17 +135,16 @@ fn spawn_expr_type_is_the_actor_handle() {
     // The spawn-return type is the actor's own name with the `ActorHandle`
     // builtin discriminator; no stray `ActorRef`-named handle exists anywhere
     // in the type table (the family is the actor handle / `RemotePid`).
-    let has_stray_actor_ref = tc
-        .expr_types
-        .values()
-        .any(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"));
+    let has_stray_actor_ref = tc.expr_types.values().any(
+        |ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "ActorRef"),
+    );
     assert!(
         !has_stray_actor_ref,
         "spawn must produce the actor's own handle type; no `ActorRef`-named \
          handle should appear: {:#?}",
         tc.expr_types
             .values()
-            .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"))
+            .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "ActorRef"))
             .collect::<Vec<_>>()
     );
 }
@@ -243,8 +243,8 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
                 layout.key.type_args.as_slice(),
                 [
                     hew_types::ResolvedTy::I64,
-                    hew_types::ResolvedTy::Named { name, .. }
-                ] if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE
+                    hew_types::ResolvedTy::Named { head: name_head, .. }
+                ] if name_head.spelling() == hew_types::KnownDecl::ActorError.path()
             )
     });
     assert!(

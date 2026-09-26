@@ -195,7 +195,19 @@ impl RuntimeValueKind {
         clippy::too_many_lines,
         reason = "one arm per value kind; splitting the dispatch hides the binding rules"
     )]
-    pub fn resolve(self, receiver: Option<&ResolvedTy>) -> Option<ResolvedTy> {
+    pub fn resolve(
+        self,
+        defs: &crate::DefTable,
+        receiver: Option<&ResolvedTy>,
+    ) -> Option<ResolvedTy> {
+        // A contract type is named by its canonical declaration path: the
+        // runtime table is keyed by linker contract, not by source spelling.
+        let contract = |path: &str| {
+            Some(crate::NominalHead::new(
+                crate::NominalId::from_minted_declaration(defs.lookup_path(path)?),
+                path,
+            ))
+        };
         Some(match self {
             Self::IoHandle(kind) => {
                 let receiver = receiver?;
@@ -219,7 +231,13 @@ impl RuntimeValueKind {
                 receiver.clone()
             }
             Self::PipeHalfResult(_) | Self::NodeLookupResult => return None,
-            Self::StreamPair => stream_pair_ty()?,
+            Self::StreamPair => ResolvedTy::named_opaque(
+                contract(
+                    crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?
+                        .resource_type,
+                )?,
+                Vec::new(),
+            ),
             Self::ActorRequestOwner => actor_request_owner_ty(),
             Self::ActorHandle => {
                 let actor = receiver?;
@@ -228,19 +246,20 @@ impl RuntimeValueKind {
                 }
                 actor.clone()
             }
-            Self::ActorRequestAdmission => {
-                ResolvedTy::named_opaque("std.builtins.ActorRequestAdmission", Vec::new())
-            }
+            Self::ActorRequestAdmission => ResolvedTy::named_opaque(
+                crate::NominalHead::new(
+                    crate::KnownDecl::ActorRequestAdmission.nominal(),
+                    crate::KnownDecl::ActorRequestAdmission.path(),
+                ),
+                Vec::new(),
+            ),
             Self::StructuralOperand => receiver?.clone(),
-            Self::Named(name) => ResolvedTy::named_user(name, Vec::new()),
-            Self::NamedOpaque(name) => ResolvedTy::named_opaque(name, Vec::new()),
-            Self::BuiltinNominal(builtin) => {
-                ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new())
-            }
+            Self::Named(name) => ResolvedTy::named_user(contract(name)?, Vec::new()),
+            Self::NamedOpaque(name) => ResolvedTy::named_opaque(contract(name)?, Vec::new()),
+            Self::BuiltinNominal(builtin) => ResolvedTy::named_builtin(builtin, Vec::new()),
             Self::MonomorphicBuiltin(builtin) => {
-                let fact =
-                    crate::builtin_enums::monomorphic_builtin_enum(builtin.canonical_name())?;
-                ResolvedTy::named_builtin(fact.canonical_name, builtin, Vec::new())
+                crate::builtin_enums::monomorphic_builtin_enum(builtin.canonical_name())?;
+                ResolvedTy::named_builtin(builtin, Vec::new())
             }
             Self::Receiver(expected) => {
                 let receiver = receiver?;
@@ -279,22 +298,20 @@ impl RuntimeValueKind {
                 view.clone()
             }
             Self::PoolMember => ResolvedTy::named_builtin(
-                BuiltinType::ChildRef.canonical_name(),
                 BuiltinType::ChildRef,
                 vec![supervisor_pool_member_type(receiver?)?.clone()],
             ),
             Self::Applied(builtin, arguments) => ResolvedTy::named_builtin(
-                builtin.canonical_name(),
                 builtin,
                 arguments
                     .iter()
-                    .map(|ty| ty.resolve(receiver))
+                    .map(|ty| ty.resolve(defs, receiver))
                     .collect::<Option<Vec<_>>>()?,
             ),
             Self::Tuple(fields) => ResolvedTy::Tuple(
                 fields
                     .iter()
-                    .map(|ty| ty.resolve(receiver))
+                    .map(|ty| ty.resolve(defs, receiver))
                     .collect::<Option<Vec<_>>>()?,
             ),
             // The remaining kinds have fixed types independent of the receiver.
@@ -393,16 +410,17 @@ impl RuntimeVariantResultKind {
                 Self::Utf8Decode,
                 ResolvedTy::Named {
                     args,
-                    builtin: Some(crate::BuiltinType::Result),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
                     ..
                 },
             ) if args.len() == 2
                 && args[0] == ResolvedTy::String
-                // TRANSITION(P2): deleted by A1 commit 2.
+                // TRANSITION(A1 commit 3): the contract type is matched by its
+                // canonical path until the runtime table carries its identity.
                 && matches!(
                     &args[1],
-                    ResolvedTy::Named { name, args, builtin: None, .. }
-                        if args.is_empty() && name == "std.encoding.utf8.Utf8Error"
+                    ResolvedTy::Named { head, args, .. }
+                        if args.is_empty() && head.registry_key() == "std.encoding.utf8.Utf8Error"
                 ) =>
             {
                 Some((&args[0], &args[1]))
@@ -493,8 +511,13 @@ impl RuntimeSemanticContract {
     /// runtime contract the single authority for both call admission and SIR
     /// verification, including exact nominal variant results.
     #[must_use]
-    pub fn matches_signature(self, params: &[ResolvedTy], result: &ResolvedTy) -> bool {
-        self.instantiate(params, result)
+    pub fn matches_signature(
+        self,
+        defs: &crate::DefTable,
+        params: &[ResolvedTy],
+        result: &ResolvedTy,
+    ) -> bool {
+        self.instantiate(defs, params, result)
             .is_ok_and(|resolved| resolved.result_ty == *result)
     }
 
@@ -507,10 +530,11 @@ impl RuntimeSemanticContract {
     /// Rejects wrong arity, noncanonical receivers and mismatched type arguments.
     pub fn instantiate(
         self,
+        defs: &crate::DefTable,
         params: &[ResolvedTy],
         result_hint: &ResolvedTy,
     ) -> Result<RuntimeInstantiatedContract, String> {
-        let resolved = self.resolve_types(params, result_hint)?;
+        let resolved = self.resolve_types(defs, params, result_hint)?;
         for (index, (actual, expected)) in params.iter().zip(&resolved.arguments).enumerate() {
             if actual != expected {
                 return Err(format!(
@@ -531,6 +555,7 @@ impl RuntimeSemanticContract {
     /// Rejects wrong arity or a missing canonical receiver/result binding.
     pub fn resolve_types(
         self,
+        defs: &crate::DefTable,
         params: &[ResolvedTy],
         result_hint: &ResolvedTy,
     ) -> Result<RuntimeInstantiatedContract, String> {
@@ -589,7 +614,7 @@ impl RuntimeSemanticContract {
                 } else {
                     receiver
                 };
-                expected.ty.resolve(binding).ok_or_else(|| {
+                expected.ty.resolve(defs, binding).ok_or_else(|| {
                     "runtime signature has no matching canonical receiver binding".to_string()
                 })
             })
@@ -610,7 +635,7 @@ impl RuntimeSemanticContract {
                 {
                     Some(result_hint.clone())
                 } else {
-                    kind.resolve(receiver)
+                    kind.resolve(defs, receiver)
                 };
                 resolved.ok_or_else(|| {
                     "runtime result has no matching canonical receiver binding".to_string()
@@ -648,14 +673,7 @@ pub struct RuntimeInstantiatedContract {
 /// than routing identity through the receiver table, which knows only
 /// collections and handles.
 fn carries_builtin_identity(ty: &ResolvedTy, expected: BuiltinType) -> bool {
-    let ResolvedTy::Named { name, builtin, .. } = ty else {
-        return false;
-    };
-    if *builtin == Some(expected) {
-        return true;
-    }
-    let leaf = name.rsplit('.').next().unwrap_or(name.as_str());
-    leaf == expected.canonical_name()
+    ty.head() == Some(crate::TypeHead::Builtin(expected))
 }
 
 fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
@@ -672,8 +690,8 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     }
     match ty {
         ResolvedTy::Named {
-            builtin:
-                Some(
+            head:
+                crate::TypeHead::Builtin(
                     kind @ (BuiltinType::Stream
                     | BuiltinType::Sink
                     | BuiltinType::Rc
@@ -683,13 +701,10 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
             ..
         } if args.len() == 1 => Some(*kind),
         ResolvedTy::Named {
-            name,
-            builtin: Some(builtin),
+            head: crate::TypeHead::Builtin(builtin),
             args,
             ..
-        } if builtin.is_encoding_value() && name == builtin.canonical_name() && args.is_empty() => {
-            Some(*builtin)
-        }
+        } if builtin.is_encoding_value() && args.is_empty() => Some(*builtin),
         _ => None,
     }
 }
@@ -700,7 +715,7 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
 pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            head: crate::TypeHead::Builtin(BuiltinType::Rc | BuiltinType::Weak),
             args,
             ..
         } if args.len() == 1 => args.first(),
@@ -709,8 +724,8 @@ pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 }
 
 fn is_node_lookup_result(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Named { builtin: Some(BuiltinType::Result), args, .. }
-        if matches!(args.as_slice(), [ResolvedTy::Named { builtin: Some(BuiltinType::RemotePid), args: remote_args, .. }, error]
+    matches!(ty, ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::Result), args, .. }
+        if matches!(args.as_slice(), [ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::RemotePid), args: remote_args, .. }, error]
             if remote_args.len() == 1
                 && error.is_builtin(BuiltinType::LookupError)))
 }
@@ -730,7 +745,7 @@ impl PipeHalfKind {
             Self::Sink => BuiltinType::Sink,
             Self::Stream => BuiltinType::Stream,
         };
-        matches!(ty, ResolvedTy::Named { builtin: Some(builtin), args, .. }
+        matches!(ty, ResolvedTy::Named { head: crate::TypeHead::Builtin(builtin), args, .. }
             if *builtin == expected && args.len() == 1)
     }
 
@@ -747,21 +762,27 @@ impl PipeHalfKind {
 /// result. Reading the row rather than the spelling keeps one ownership
 /// authority.
 #[must_use]
-pub fn stream_pair_ty() -> Option<ResolvedTy> {
-    let contract = crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?;
-    Some(ResolvedTy::named_opaque(contract.resource_type, Vec::new()))
-}
-
-/// The sealed completion request's source-declared runtime owner.
-#[must_use]
 pub fn actor_request_owner_ty() -> ResolvedTy {
-    ResolvedTy::named_opaque("std.builtins.ActorRequestOwner", Vec::new())
+    ResolvedTy::named_opaque(
+        crate::NominalHead::new(
+            crate::KnownDecl::ActorRequestOwner.nominal(),
+            crate::KnownDecl::ActorRequestOwner.path(),
+        ),
+        Vec::new(),
+    )
 }
 
 /// Whether one checked type is the paired pipe allocation.
+///
+/// TRANSITION(A1 commit 3): matched by the contract's canonical path.
 #[must_use]
 pub fn is_stream_pair_ty(ty: &ResolvedTy) -> bool {
-    stream_pair_ty().is_some_and(|pair| pair == *ty)
+    crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel").is_some_and(
+        |contract| {
+            matches!(ty, ResolvedTy::Named { head, args, .. }
+                if args.is_empty() && head.registry_key() == contract.resource_type)
+        },
+    )
 }
 
 /// Recognize supported canonical collection instances and their exact arity.
@@ -769,7 +790,7 @@ pub fn is_stream_pair_ty(ty: &ResolvedTy) -> bool {
 pub fn collection_type_arguments(ty: &ResolvedTy) -> Option<(BuiltinType, &[ResolvedTy])> {
     match ty {
         ResolvedTy::Named {
-            builtin: Some(builtin),
+            head: crate::TypeHead::Builtin(builtin),
             args,
             ..
         } if matches!(
@@ -788,7 +809,7 @@ pub fn collection_type_arguments(ty: &ResolvedTy) -> Option<(BuiltinType, &[Reso
 pub fn supervisor_pool_member_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::SupervisorPool),
+            head: crate::TypeHead::Builtin(BuiltinType::SupervisorPool),
             args,
             ..
         } if args.len() == 2 => args.get(1),
@@ -801,7 +822,7 @@ pub fn supervisor_pool_member_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 pub fn vector_element_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
         ResolvedTy::Named {
-            builtin: Some(crate::BuiltinType::Vec),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
             args,
             ..
         } if args.len() == 1 => args.first(),

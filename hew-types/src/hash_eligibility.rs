@@ -28,10 +28,10 @@
 //! Tuples are tracked but ineligible as layout hash keys in this slice; the
 //! admissibility gate (C-2c) will reject them before they reach codegen.
 
-use crate::check::{TypeDef, TypeDefKind};
+use crate::check::{TypeDefKind, TypeDefView};
 use crate::ty::Ty;
 use crate::BuiltinType;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// The hash eligibility verdict for a type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +61,7 @@ pub(crate) enum HashEligibility {
 /// resource marker can occur in any nested value-type field.
 fn hash_ineligibility(
     ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     resource_types: &HashSet<String>,
 ) -> Option<HashEligibility> {
     match ty {
@@ -97,27 +97,19 @@ fn hash_ineligibility(
         | Ty::Bytes
         // Compiler-owned identity aggregates have fixed all-integer layouts and
         // exact structural equality, so they use the source-record layout-key ABI.
-        | Ty::Named {
-            builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
-            ..
-        } => None,
+        | Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid), .. } => None,
 
         // Tuples: tracked but not admitted as layout hash keys in this slice.
         Ty::Tuple(_) => Some(HashEligibility::IneligibleTuple(ty.clone())),
 
         // Encoding trees need format-specific operations, never an empty
         // source-field walk. No matching hash operation is currently supplied.
-        Ty::Named {
-            builtin: Some(BuiltinType::JsonValue | BuiltinType::YamlValue),
-            ..
-        } => Some(HashEligibility::IneligibleManaged(ty.clone())),
+        Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::JsonValue | BuiltinType::YamlValue), .. } => Some(HashEligibility::IneligibleManaged(ty.clone())),
 
         // Other named types are eligible iff Record kind, not indirect, and every
         // field is hash-eligible. Only `record`-keyword source types are Copy
         // value-semantic; Struct/Enum/Actor/Machine are not layout keys.
-        Ty::Named { name, .. } => match crate::check::type_def_for_spelling(
-            type_defs, name,
-        ) {
+        Ty::Named { head, .. } => match types.of(*head) {
             Some(type_def) if type_def.is_indirect => {
                 Some(HashEligibility::IneligibleManaged(ty.clone()))
             }
@@ -126,7 +118,7 @@ fn hash_ineligibility(
             // copied into a collection key slot: doing so would duplicate the
             // close obligation and make a later remove/free double-close it.
             Some(type_def)
-                if resource_types.contains(name) || resource_types.contains(&type_def.name) =>
+                if resource_types.contains(head.registry_key()) || resource_types.contains(&type_def.name) =>
             {
                 Some(HashEligibility::IneligibleManaged(ty.clone()))
             }
@@ -145,7 +137,7 @@ fn hash_ineligibility(
                     type_def
                         .fields
                         .get(field_name)
-                        .and_then(|field_ty| hash_ineligibility(field_ty, type_defs, resource_types))
+                        .and_then(|field_ty| hash_ineligibility(field_ty, types, resource_types))
                 })
             }
             // Unknown named type — fail closed; cannot verify hash-eligibility.
@@ -190,11 +182,8 @@ fn hash_ineligibility(
 /// when they are not indirect and every field passes the same check recursively.
 #[cfg(test)]
 #[must_use]
-pub(crate) fn ty_is_hash_eligible(
-    ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
-) -> HashEligibility {
-    ty_is_hash_eligible_with_resources(ty, type_defs, &HashSet::new())
+pub(crate) fn ty_is_hash_eligible(ty: &Ty, types: TypeDefView<'_>) -> HashEligibility {
+    ty_is_hash_eligible_with_resources(ty, types, &HashSet::new())
 }
 
 /// Determine hash eligibility with the ownership-marker authority in scope.
@@ -205,19 +194,21 @@ pub(crate) fn ty_is_hash_eligible(
 #[must_use]
 pub(crate) fn ty_is_hash_eligible_with_resources(
     ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     resource_types: &HashSet<String>,
 ) -> HashEligibility {
-    hash_ineligibility(ty, type_defs, resource_types).unwrap_or(HashEligibility::Eligible)
+    hash_ineligibility(ty, types, resource_types).unwrap_or(HashEligibility::Eligible)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::TypeDef;
     use crate::check::{FnSig, VariantDef};
     use crate::ty::TypeVar;
+    use std::collections::HashMap;
 
-    fn empty_type_defs() -> HashMap<String, TypeDef> {
+    fn empty_type_defs() -> HashMap<crate::NominalId, TypeDef> {
         HashMap::new()
     }
 
@@ -271,7 +262,7 @@ mod tests {
             Ty::U64,
         ] {
             assert_eq!(
-                ty_is_hash_eligible(&ty, &tds),
+                ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
                 HashEligibility::Eligible,
                 "{ty:?} should be hash-eligible"
             );
@@ -282,11 +273,11 @@ mod tests {
     fn hash_eligible_bool_and_char() {
         let tds = empty_type_defs();
         assert_eq!(
-            ty_is_hash_eligible(&Ty::Bool, &tds),
+            ty_is_hash_eligible(&Ty::Bool, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::Eligible
         );
         assert_eq!(
-            ty_is_hash_eligible(&Ty::Char, &tds),
+            ty_is_hash_eligible(&Ty::Char, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::Eligible
         );
     }
@@ -296,7 +287,7 @@ mod tests {
         let tds = empty_type_defs();
         // Duration is i64 nanoseconds: deterministic fixed width, no NaN hazard.
         assert_eq!(
-            ty_is_hash_eligible(&Ty::Duration, &tds),
+            ty_is_hash_eligible(&Ty::Duration, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::Eligible
         );
     }
@@ -310,7 +301,7 @@ mod tests {
             Ty::remote_pid(Ty::I64),
         ] {
             assert_eq!(
-                ty_is_hash_eligible(&ty, &tds),
+                ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
                 HashEligibility::Eligible,
                 "{ty:?} should be hash-eligible"
             );
@@ -323,11 +314,11 @@ mod tests {
         // the eq thunk's bitwise compare so `==` implies an equal hash.
         let tds = empty_type_defs();
         assert_eq!(
-            ty_is_hash_eligible(&Ty::F64, &tds),
+            ty_is_hash_eligible(&Ty::F64, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::Eligible
         );
         assert_eq!(
-            ty_is_hash_eligible(&Ty::F32, &tds),
+            ty_is_hash_eligible(&Ty::F32, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::Eligible
         );
     }
@@ -338,7 +329,7 @@ mod tests {
         // canonical `hew_layout_key_string` descriptor at the key-layout seam).
         let tds = empty_type_defs();
         assert_eq!(
-            ty_is_hash_eligible(&Ty::String, &tds),
+            ty_is_hash_eligible(&Ty::String, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::Eligible
         );
     }
@@ -347,11 +338,14 @@ mod tests {
     fn hash_eligible_copy_record_int_fields() {
         let mut tds = HashMap::new();
         tds.insert(
-            "Point".to_string(),
+            crate::NominalId::for_test("Point"),
             make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)], false),
         );
-        let ty = Ty::normalize_named("Point".to_string(), vec![]);
-        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
+        let ty = Ty::named_for_test("Point", vec![]);
+        assert_eq!(
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
+            HashEligibility::Eligible
+        );
     }
 
     #[test]
@@ -360,11 +354,14 @@ mod tests {
         // which hash on their bit pattern — is admitted as a layout key.
         let mut tds = HashMap::new();
         tds.insert(
-            "FPoint".to_string(),
+            crate::NominalId::for_test("FPoint"),
             make_record("FPoint", vec![("x", Ty::F64), ("y", Ty::F64)], false),
         );
-        let ty = Ty::normalize_named("FPoint".to_string(), vec![]);
-        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
+        let ty = Ty::named_for_test("FPoint", vec![]);
+        assert_eq!(
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
+            HashEligibility::Eligible
+        );
     }
 
     #[test]
@@ -374,15 +371,18 @@ mod tests {
         // per-record drop thunk frees the owned string on remove/free.
         let mut tds = HashMap::new();
         tds.insert(
-            "Named".to_string(),
+            crate::NominalId::for_test("Named"),
             make_record(
                 "Named",
                 vec![("label", Ty::String), ("age", Ty::I64)],
                 false,
             ),
         );
-        let ty = Ty::normalize_named("Named".to_string(), vec![]);
-        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
+        let ty = Ty::named_for_test("Named", vec![]);
+        assert_eq!(
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
+            HashEligibility::Eligible
+        );
     }
 
     #[test]
@@ -391,14 +391,14 @@ mod tests {
         // `Vec<T>` field is not hash-eligible (its per-key deep clone/drop is a
         // larger surface), so the record key stays rejected fail-closed.
         let mut tds = HashMap::new();
-        let vec_field = Ty::normalize_named("Vec".to_string(), vec![Ty::I64]);
+        let vec_field = Ty::named_for_test("Vec", vec![Ty::I64]);
         tds.insert(
-            "Bag".to_string(),
+            crate::NominalId::for_test("Bag"),
             make_record("Bag", vec![("items", vec_field.clone())], false),
         );
-        let ty = Ty::normalize_named("Bag".to_string(), vec![]);
+        let ty = Ty::named_for_test("Bag", vec![]);
         assert_eq!(
-            ty_is_hash_eligible(&ty, &tds),
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::IneligibleOwned(vec_field)
         );
     }
@@ -408,12 +408,12 @@ mod tests {
         let mut tds = HashMap::new();
         // is_indirect takes precedence over kind check — checked regardless of Record/Struct.
         tds.insert(
-            "Handle".to_string(),
+            crate::NominalId::for_test("Handle"),
             make_record("Handle", vec![], true), // is_indirect = true
         );
-        let ty = Ty::normalize_named("Handle".to_string(), vec![]);
+        let ty = Ty::named_for_test("Handle", vec![]);
         assert_eq!(
-            ty_is_hash_eligible(&ty, &tds),
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::IneligibleManaged(ty.clone())
         );
     }
@@ -423,7 +423,7 @@ mod tests {
         let tds = empty_type_defs();
         let ty = Ty::Tuple(vec![Ty::I32, Ty::I64]);
         assert_eq!(
-            ty_is_hash_eligible(&ty, &tds),
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::IneligibleTuple(ty.clone())
         );
     }
@@ -432,11 +432,14 @@ mod tests {
     fn hash_ineligible_ty_var_and_ty_error() {
         let tds = empty_type_defs();
         assert_eq!(
-            ty_is_hash_eligible(&Ty::Var(TypeVar(0)), &tds),
+            ty_is_hash_eligible(
+                &Ty::Var(TypeVar(0)),
+                crate::check::TypeDefView::for_test(&tds)
+            ),
             HashEligibility::IneligibleVar
         );
         assert_eq!(
-            ty_is_hash_eligible(&Ty::Error, &tds),
+            ty_is_hash_eligible(&Ty::Error, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::IneligibleError
         );
     }
@@ -447,7 +450,7 @@ mod tests {
     fn hash_eligible_copy_record_mixed_primitives() {
         let mut tds = HashMap::new();
         tds.insert(
-            "Event".to_string(),
+            crate::NominalId::for_test("Event"),
             make_record(
                 "Event",
                 vec![
@@ -459,8 +462,11 @@ mod tests {
                 false,
             ),
         );
-        let ty = Ty::normalize_named("Event".to_string(), vec![]);
-        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
+        let ty = Ty::named_for_test("Event", vec![]);
+        assert_eq!(
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
+            HashEligibility::Eligible
+        );
     }
 
     /// Regression: a non-`record` named type (e.g. an enum) with empty fields must NOT
@@ -470,12 +476,12 @@ mod tests {
     fn hash_ineligible_enum_named_type() {
         let mut tds = HashMap::new();
         tds.insert(
-            "Color".to_string(),
+            crate::NominalId::for_test("Color"),
             make_non_record("Color", TypeDefKind::Enum),
         );
-        let ty = Ty::normalize_named("Color".to_string(), vec![]);
+        let ty = Ty::named_for_test("Color", vec![]);
         assert_eq!(
-            ty_is_hash_eligible(&ty, &tds),
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::IneligibleNamedNonRecord(ty.clone()),
             "Enum types must be rejected before field-walk even when fields is empty"
         );
@@ -486,12 +492,17 @@ mod tests {
     fn hash_eligible_struct_named_type() {
         let mut tds = HashMap::new();
         tds.insert(
-            "Wrapper".to_string(),
+            crate::NominalId::for_test("Wrapper"),
             make_record("Wrapper", vec![("value", Ty::I64)], false),
         );
-        tds.get_mut("Wrapper").expect("inserted type").kind = TypeDefKind::Struct;
-        let ty = Ty::normalize_named("Wrapper".to_string(), vec![]);
-        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible,);
+        tds.get_mut(&crate::NominalId::for_test("Wrapper"))
+            .expect("inserted type")
+            .kind = TypeDefKind::Struct;
+        let ty = Ty::named_for_test("Wrapper", vec![]);
+        assert_eq!(
+            ty_is_hash_eligible(&ty, crate::check::TypeDefView::for_test(&tds)),
+            HashEligibility::Eligible,
+        );
     }
 
     /// A resource marker wins over an otherwise hashable `type` layout. If the
@@ -501,13 +512,19 @@ mod tests {
     fn hash_ineligible_resource_struct_named_type() {
         let mut tds = HashMap::new();
         tds.insert(
-            "Token".to_string(),
+            crate::NominalId::for_test("Token"),
             make_record("Token", vec![("id", Ty::I64)], false),
         );
-        tds.get_mut("Token").expect("inserted type").kind = TypeDefKind::Struct;
-        let ty = Ty::normalize_named("Token".to_string(), vec![]);
+        tds.get_mut(&crate::NominalId::for_test("Token"))
+            .expect("inserted type")
+            .kind = TypeDefKind::Struct;
+        let ty = Ty::named_for_test("Token", vec![]);
         assert_eq!(
-            ty_is_hash_eligible_with_resources(&ty, &tds, &HashSet::from(["Token".to_string()]),),
+            ty_is_hash_eligible_with_resources(
+                &ty,
+                crate::check::TypeDefView::for_test(&tds),
+                &HashSet::from(["Token".to_string()]),
+            ),
             HashEligibility::IneligibleManaged(ty),
         );
     }
@@ -518,12 +535,12 @@ mod tests {
     fn hash_ineligible_isize_and_usize() {
         let tds = empty_type_defs();
         assert_eq!(
-            ty_is_hash_eligible(&Ty::Isize, &tds),
+            ty_is_hash_eligible(&Ty::Isize, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::IneligibleOwned(Ty::Isize),
             "isize has platform-dependent width — ineligible for layout hash"
         );
         assert_eq!(
-            ty_is_hash_eligible(&Ty::Usize, &tds),
+            ty_is_hash_eligible(&Ty::Usize, crate::check::TypeDefView::for_test(&tds)),
             HashEligibility::IneligibleOwned(Ty::Usize),
             "usize has platform-dependent width — ineligible for layout hash"
         );

@@ -165,12 +165,7 @@ fn consuming_parameters_require_concrete_owners() {
 }
 
 fn conn_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Conn".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_for_test("Conn", vec![])
 }
 
 #[test]

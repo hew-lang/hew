@@ -295,15 +295,19 @@ mod tests {
     #[test]
     fn builtin_impl_receiver_identity_requires_the_typed_discriminator() {
         let builtin = ResolvedTy::named_builtin(
-            "HashMapIter",
             BuiltinType::HashMapIter,
             vec![ResolvedTy::I64, ResolvedTy::String],
         );
-        let user = ResolvedTy::named_user("HashMapIter", vec![ResolvedTy::I64, ResolvedTy::String]);
-
         let mut defs = hew_types::DefTable::new();
         let cursor = defs.mint_for_test("std.builtins.HashMapIter");
         let shadow = defs.mint_for_test("HashMapIter");
+        let user = ResolvedTy::named_user(
+            hew_types::NominalHead::new(
+                hew_types::NominalId::of_declaration(shadow),
+                "HashMapIter",
+            ),
+            vec![ResolvedTy::I64, ResolvedTy::String],
+        );
         let builtin_instance = builtin
             .impl_receiver_instance(&defs)
             .expect("the compiler cursor has an exact std impl identity");

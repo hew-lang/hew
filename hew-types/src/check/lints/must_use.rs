@@ -67,14 +67,15 @@ impl NodeVisitor for MustUse<'_> {
             let Stmt::Expression((_expr, expr_span)) = stmt else {
                 continue;
             };
-            let Some(Ty::Named { name, .. }) = self.ctx.resolved_type_at(expr_span) else {
+            let Some(Ty::Named { head, .. }) = self.ctx.resolved_type_at(expr_span) else {
                 continue;
             };
+            let name = head.registry_key();
             if self
                 .ctx
                 .checker
                 .defs
-                .lookup_path(&name)
+                .lookup_path(name)
                 .is_some_and(|declaration| self.ctx.checker.must_use_types.contains(&declaration))
             {
                 self.hits.push(Hit {

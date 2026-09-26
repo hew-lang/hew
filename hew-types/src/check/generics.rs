@@ -43,7 +43,7 @@ impl Checker {
         // associated-type carriers are declaration-owned, so resolve the bound
         // once and use its canonical trait key for both metadata and projection.
         let trait_key = self.trait_ref_lookup_key(&bound.trait_name);
-        if let Some(trait_info) = self.trait_defs.get(&trait_key) {
+        if let Some(trait_info) = self.trait_def_at(&trait_key) {
             let type_params = &trait_info.type_params;
             if type_params.len() == bound.args.len() {
                 // Build the substitution map once and apply in parallel so
@@ -83,13 +83,8 @@ impl Checker {
                     resolved
                 }
             }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
+            Ty::Named { head, args } => Ty::Named {
+                head: *head,
                 args: args
                     .iter()
                     .map(|a| self.freshen_inner(a, mapping))
@@ -110,6 +105,7 @@ impl Checker {
                     .iter()
                     .map(|bound| crate::ty::TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
                         args: bound
                             .args
                             .iter()
@@ -441,7 +437,7 @@ impl Checker {
             // type-param-order source is the registered TypeDef. Fall
             // back to scanning bounds map keys against positional
             // arity by querying the matching TypeDef entry.
-            if let Some(td) = self.type_defs.get(machine_name) {
+            if let Some(td) = self.type_def_at(machine_name) {
                 if let Some(name) = td.type_params.get(idx) {
                     type_params.push(name.clone());
                     continue;
@@ -510,7 +506,7 @@ impl Checker {
                 || (!self.type_decls_registered
                     && bounds
                         .iter()
-                        .any(|bound| MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)))
+                        .any(|bound| self.bound_marker(bound) == Some(MarkerTrait::Eq)))
             {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
                     type_param: param_name.clone(),
@@ -585,8 +581,10 @@ impl Checker {
     ) {
         for bound in bounds {
             if !self.is_known_trait(bound) {
-                let similar =
-                    crate::error::find_similar(bound, self.trait_defs.keys().map(String::as_str));
+                let similar = crate::error::find_similar(
+                    bound,
+                    self.trait_def_keys.keys().map(String::as_str),
+                );
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedType,
                     span,
@@ -599,8 +597,8 @@ impl Checker {
             // yet. Carry its Eq demand through the same instantiation graph as
             // an ordinary comparison. Bare parameters still need their declared
             // bound in the active scope.
-            if MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)
-                && !matches!(resolved_arg, Ty::Named { args, builtin: None, .. } if args.is_empty())
+            if self.bound_marker(bound) == Some(MarkerTrait::Eq)
+                && !matches!(resolved_arg, Ty::Named { args, head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. } if args.is_empty())
                 && Self::ty_mentions_type_params(
                     resolved_arg,
                     &self
@@ -628,13 +626,13 @@ impl Checker {
             );
             // A Display bound fails because nothing renders the type, so name
             // the impl the program is missing rather than its absent methods.
-            let suggestions = if MarkerTrait::from_name(bound) == Some(MarkerTrait::Display) {
+            let suggestions = if self.bound_marker(bound) == Some(MarkerTrait::Display) {
                 vec![format!(
                     "write `impl {bound_display} for {} {{ fn fmt(...) -> string {{ ... }} }}`, \
                      or render the parts that already have one",
                     resolved_arg.user_facing()
                 )]
-            } else if MarkerTrait::from_name(bound) == Some(MarkerTrait::Serializable) {
+            } else if self.bound_marker(bound) == Some(MarkerTrait::Serializable) {
                 vec![
                     "only scalars, `Vec`, `HashMap`, `HashSet` and `Option` of serializable \
                      values, and `#[wire]` types with tagged fields have a wire encoding"
@@ -667,8 +665,7 @@ impl Checker {
         }
         let declared_key = self.trait_defs_key_for_bound(declared_bound);
         let mut stack = self
-            .trait_super
-            .get(&declared_key)
+            .trait_supers(&declared_key)
             .cloned()
             .unwrap_or_default();
         let mut visited = HashSet::new();
@@ -677,7 +674,7 @@ impl Checker {
             if !visited.insert(super_trait.clone()) {
                 continue;
             }
-            if let Some(nested) = self.trait_super.get(&super_trait) {
+            if let Some(nested) = self.trait_supers(&super_trait) {
                 stack.extend(nested.iter().cloned());
             }
 
@@ -725,7 +722,7 @@ impl Checker {
 
     fn impl_lookup_type_name(ty: &Ty) -> Option<String> {
         match ty {
-            Ty::Named { name, .. } => Some(name.clone()),
+            Ty::Named { head, .. } => Some(head.registry_key().to_string()),
             _ => ty
                 .canonical_lowering_name()
                 .or(match ty {
@@ -739,8 +736,7 @@ impl Checker {
 
     fn abstract_method_names_declared_by_trait(&self, trait_name: &str) -> Vec<String> {
         let mut methods: Vec<String> = self
-            .trait_defs
-            .get(trait_name)
+            .trait_def_at(trait_name)
             .map(|info| {
                 info.methods
                     .iter()
@@ -809,7 +805,7 @@ impl Checker {
                 continue;
             }
             out.extend(self.trait_lookup_candidates(&current));
-            if let Some(supers) = self.trait_super.get(&current) {
+            if let Some(supers) = self.trait_supers(&current) {
                 stack.extend(supers.iter().cloned());
             }
         }
@@ -825,31 +821,25 @@ impl Checker {
     ) -> Option<String> {
         let trait_key = self.trait_defs_key_for_bound(trait_name);
         if self
-            .trait_defs
-            .get(&trait_key)
+            .trait_def_at(&trait_key)
             .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
         {
             return Some(trait_key);
         }
 
-        let mut stack = self
-            .trait_super
-            .get(&trait_key)
-            .cloned()
-            .unwrap_or_default();
+        let mut stack = self.trait_supers(&trait_key).cloned().unwrap_or_default();
         let mut visited = HashSet::new();
         while let Some(current) = stack.pop() {
             if !visited.insert(current.clone()) {
                 continue;
             }
             if self
-                .trait_defs
-                .get(&current)
+                .trait_def_at(&current)
                 .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
             {
                 return Some(current);
             }
-            if let Some(supers) = self.trait_super.get(&current) {
+            if let Some(supers) = self.trait_supers(&current) {
                 stack.extend(supers.iter().cloned());
             }
         }
@@ -975,26 +965,27 @@ impl Checker {
         reason = "each branch is a distinct failure mode with its own message"
     )]
     fn diagnose_bound_failure_suggestions(&mut self, ty: &Ty, bound: &str) -> Vec<String> {
-        let Ty::Named { name, .. } = ty else {
+        let Ty::Named { head, .. } = ty else {
             return vec![];
         };
+        let name = head.registry_key();
         // Normalize module-qualified names (mirrors type_structurally_satisfies).
         let type_name: String = {
             let uq = self.strip_module_qualifier(name);
             match uq {
-                Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
-                _ => name.clone(),
+                Some(uq) if self.type_def_at(uq).is_some() => uq.to_string(),
+                _ => name.to_string(),
             }
         };
         let trait_name: String = {
             let uq = self.strip_module_qualifier(bound);
             match uq {
-                Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
+                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
                 _ => bound.to_string(),
             }
         };
 
-        let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
+        let Some(trait_info) = self.trait_def_at(&trait_name).cloned() else {
             return vec![];
         };
         let trait_display = crate::short_name(&trait_name);
@@ -1035,11 +1026,7 @@ impl Checker {
             )];
         }
 
-        let concrete_ty = Ty::Named {
-            builtin: None,
-            name: type_name.clone(),
-            args: vec![],
-        };
+        let concrete_ty = self.named_ty_for_key(&type_name, vec![]);
         let mut missing: Vec<String> = Vec::new();
 
         for method_name in &required {
@@ -1047,9 +1034,13 @@ impl Checker {
                 continue;
             };
 
-            let Some(type_sig) =
-                shared_lookup_method_sig(&self.type_defs, &self.fn_sigs, &concrete_ty, method_name)
-            else {
+            let Some(type_sig) = shared_lookup_method_sig(
+                &self.defs,
+                &self.type_defs,
+                self.sigs(),
+                &concrete_ty,
+                method_name,
+            ) else {
                 missing.push(format!("`{method_name}`"));
                 continue;
             };
@@ -1116,7 +1107,7 @@ impl Checker {
         // already uses. The structural marker derivation would grant it to
         // `Vec<i64>`, tuples and records, none of which have an impl for HIR to
         // call, so `println([1, 2])` reached lowering with no symbol.
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Display) {
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Display) {
             // An unresolved or already-errored type says nothing about Display;
             // reporting it here would cascade a second diagnostic onto the
             // first failure (`require_display_impl` guards the same way).
@@ -1130,16 +1121,20 @@ impl Checker {
         // record whose fields all clone has one - the clone thunk HIR calls -
         // so deriving the bound structurally keeps one authority for that fact
         // instead of demanding an empty `impl Clone for T {}` alongside it.
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Clone) {
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Clone) {
             if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
                 return true;
             }
             if let Ty::Named {
-                name,
+                head:
+                    head @ (crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_)),
                 args,
-                builtin: None,
+                ..
             } = &self.subst.resolve(ty)
             {
+                let name = head.registry_key();
                 if args.is_empty() && self.type_param_carries_bound(name, trait_name) {
                     return true;
                 }
@@ -1148,19 +1143,13 @@ impl Checker {
                 .parameter_clone_kind(ty)
                 .is_some_and(|clone| clone != crate::type_facts::CloneKind::None);
         }
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Serializable) {
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Serializable) {
             return self.satisfies_serializable(ty);
         }
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Send) {
-            return self.registry.implements_marker_with_bounds(
-                ty,
-                MarkerTrait::Send,
-                &|name, marker| {
-                    marker == MarkerTrait::Send && self.type_param_carries_bound(name, trait_name)
-                },
-            );
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Send) {
+            return self.type_is_send(ty);
         }
-        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Eq)
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Eq)
             && !Self::ty_mentions_type_params(
                 ty,
                 &self
@@ -1182,25 +1171,29 @@ impl Checker {
             // Display, the integer markers — without a dedicated `impl`. Delegate
             // to the i64 satisfaction path (mirrors `require_display_impl`).
             Ty::Named {
-                builtin: Some(crate::BuiltinType::Instant),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Instant),
                 ..
             } => self.type_satisfies_trait_bound(&Ty::I64, trait_name),
             Ty::Named {
-                builtin:
-                    Some(
+                head:
+                    crate::TypeHead::Builtin(
                         crate::BuiltinType::NodeId
                         | crate::BuiltinType::Location
                         | crate::BuiltinType::RemotePid,
                     ),
                 ..
-            } if MarkerTrait::from_name(trait_name).is_some() => MarkerTrait::from_name(trait_name)
+            } if self.bound_marker(trait_name).is_some() => self
+                .bound_marker(trait_name)
                 .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
             Ty::Named {
-                builtin: Some(_), ..
-            } if MarkerTrait::from_name(trait_name).is_some() => MarkerTrait::from_name(trait_name)
+                head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
+                ..
+            } if self.bound_marker(trait_name).is_some() => self
+                .bound_marker(trait_name)
                 .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
-            Ty::Named { name, .. } => {
-                let name = name.clone();
+            Ty::Named { head, .. } => {
+                let name = head.registry_key();
+                let name = name.to_string();
                 if self.type_implements_trait_for_ty(ty, trait_name)
                     || self.type_structurally_satisfies(&name, trait_name)
                 {
@@ -1245,7 +1238,7 @@ impl Checker {
                         return true;
                     }
                 }
-                if let Some(marker) = MarkerTrait::from_name(trait_name) {
+                if let Some(marker) = self.bound_marker(trait_name) {
                     self.registry.implements_marker(ty, marker)
                 } else {
                     false
@@ -1273,7 +1266,7 @@ impl Checker {
         let Some(fn_name) = self.current_function.as_ref() else {
             return false;
         };
-        let Some(sig) = self.fn_sigs.get(fn_name) else {
+        let Some(sig) = self.fn_sig(fn_name) else {
             return false;
         };
         if !sig.type_params.contains(&param_name.to_string()) {
@@ -1287,17 +1280,39 @@ impl Checker {
             .any(|b| self.bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name))
     }
 
+    /// Whether `ty` satisfies the compiler's `Send` predicate: the actor
+    /// boundary asks this of the predicate itself, never of a trait spelled
+    /// `Send` (R2).
+    pub(in crate::check) fn type_is_send(&self, ty: &Ty) -> bool {
+        self.registry
+            .implements_marker_with_bounds(ty, MarkerTrait::Send, &|name, marker| {
+                marker == MarkerTrait::Send && self.type_param_carries_bound(name, "Send")
+            })
+    }
+
+    /// The compiler predicate a bound spelling names (R2). A predicate has no
+    /// declaration, so a declared trait of the same spelling is an ordinary
+    /// trait; `Display` is the marker only as the prelude's own declaration.
+    pub(in crate::check) fn bound_marker(&self, bound: &str) -> Option<MarkerTrait> {
+        let marker = MarkerTrait::from_name(bound)?;
+        match self.trait_key_id(&self.trait_ref_lookup_key(bound)) {
+            None => Some(marker),
+            Some(declared) => (marker == MarkerTrait::Display
+                && self
+                    .lang_items
+                    .get(crate::LANG_ITEM_DISPLAY)
+                    .is_some_and(|binding| binding.trait_id == declared))
+            .then_some(marker),
+        }
+    }
+
     fn bound_implies_trait(&self, bound: &str, trait_name: &str) -> bool {
         let canonical_bound = self.trait_defs_key_for_bound(bound);
         let canonical_trait = self.trait_defs_key_for_bound(trait_name);
-        let (bound_owner, bound_leaf) = canonical_bound
-            .rsplit_once('.')
-            .unwrap_or(("", canonical_bound.as_str()));
-        let (trait_owner, trait_leaf) = canonical_trait
-            .rsplit_once('.')
-            .unwrap_or(("", canonical_trait.as_str()));
+        // `Ord` implies `PartialOrd` only between the predicates themselves.
         canonical_bound == canonical_trait
-            || (bound_leaf == "Ord" && trait_leaf == "PartialOrd" && bound_owner == trait_owner)
+            || (self.bound_marker(bound) == Some(MarkerTrait::Ord)
+                && self.bound_marker(trait_name) == Some(MarkerTrait::PartialOrd))
     }
 
     /// Check an already-selected type identity against an already-selected trait
@@ -1334,9 +1349,9 @@ impl Checker {
     /// selecting the conformance fact would lose the authority boundary.
     pub(super) fn type_implements_trait_for_ty(&self, ty: &Ty, trait_name: &str) -> bool {
         let identity = Self::canonical_primitive_or_builtin_key(ty).or_else(|| match ty {
-            Ty::Named { name, .. } => Some(
-                self.canonical_nominal_name(name)
-                    .unwrap_or_else(|| name.clone()),
+            Ty::Named { head, .. } => Some(
+                self.canonical_nominal_name(head.registry_key())
+                    .unwrap_or_else(|| head.registry_key().to_string()),
             ),
             _ => None,
         });
@@ -1346,9 +1361,10 @@ impl Checker {
         {
             return true;
         }
-        let Ty::Named { name, args, .. } = ty else {
+        let Ty::Named { head, args } = ty else {
             return false;
         };
+        let name = head.registry_key();
         self.alias_target_for_instance(name, args)
             .is_some_and(|target| self.type_implements_trait_for_ty(&target, trait_name))
     }
@@ -1367,7 +1383,7 @@ impl Checker {
         if !visited.insert(child_trait.to_string()) {
             return false;
         }
-        if let Some(supers) = self.trait_super.get(child_trait) {
+        if let Some(supers) = self.trait_supers(child_trait) {
             for s in supers {
                 if s == parent_trait || self.trait_extends_inner(s, parent_trait, visited) {
                     return true;
@@ -1427,7 +1443,7 @@ impl Checker {
         }
         visited.push(trait_name.to_string());
 
-        let trait_info = self.trait_defs.get(trait_name)?.clone();
+        let trait_info = self.trait_def_at(trait_name)?.clone();
 
         // E1 guard: associated types require an explicit impl alias scope.
         if !trait_info.associated_types.is_empty() {
@@ -1458,11 +1474,7 @@ impl Checker {
         // visited path so sibling super-traits can still observe the same
         // ancestor. Their effective surfaces are merged back together here so
         // sibling shadowing/default coverage is preserved at the parent trait.
-        let supers: Vec<String> = self
-            .trait_super
-            .get(trait_name)
-            .cloned()
-            .unwrap_or_default();
+        let supers: Vec<String> = self.trait_supers(trait_name).cloned().unwrap_or_default();
         for super_trait in &supers {
             let mut super_visited = visited.clone();
             let super_surface =
@@ -1530,14 +1542,14 @@ impl Checker {
         let trait_name: String = {
             let uq = self.strip_module_qualifier(trait_name);
             match uq {
-                Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
+                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
                 _ => trait_name.to_string(),
             }
         };
         let type_name: String = {
             let uq = self.strip_module_qualifier(type_name);
             match uq {
-                Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
+                Some(uq) if self.type_def_at(uq).is_some() => uq.to_string(),
                 _ => type_name.to_string(),
             }
         };
@@ -1548,8 +1560,7 @@ impl Checker {
         // The empty-surface guard below sees the whole chain and would not
         // catch this.
         if self
-            .trait_defs
-            .get(&trait_name)
+            .trait_def_at(&trait_name)
             .is_some_and(|info| info.methods.is_empty())
         {
             return false;
@@ -1570,11 +1581,7 @@ impl Checker {
         }
 
         // The concrete type, used for Self substitution in trait signatures.
-        let concrete_ty = Ty::Named {
-            builtin: None,
-            name: type_name.clone(),
-            args: vec![],
-        };
+        let concrete_ty = self.named_ty_for_key(&type_name, vec![]);
 
         for method_name in &required {
             // Resolve the trait method's expected signature.
@@ -1585,9 +1592,13 @@ impl Checker {
 
             // Look up the concrete type's method using the shared builtin-aware
             // resolver so imported stdlib stubs cannot shadow intrinsic surfaces.
-            let Some(type_sig) =
-                shared_lookup_method_sig(&self.type_defs, &self.fn_sigs, &concrete_ty, method_name)
-            else {
+            let Some(type_sig) = shared_lookup_method_sig(
+                &self.defs,
+                &self.type_defs,
+                self.sigs(),
+                &concrete_ty,
+                method_name,
+            ) else {
                 return false;
             };
 
@@ -1618,6 +1629,26 @@ impl Checker {
 
     /// Look up a method on a trait, walking super-traits if needed.
     /// Returns a `FnSig` with the receiver filtered out.
+    /// Run `f` with the lexical scope of the module that declared `trait_name`.
+    fn in_trait_declaring_scope<R>(
+        &mut self,
+        trait_name: &str,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let Some((module, file)) = self
+            .trait_def_at(trait_name)
+            .map(|info| (info.source_module.clone(), info.file_index))
+        else {
+            return f(self);
+        };
+        let saved_module = std::mem::replace(&mut self.current_module, module);
+        let saved_file = std::mem::replace(&mut self.current_module_idx, file);
+        let result = f(self);
+        self.current_module = saved_module;
+        self.current_module_idx = saved_file;
+        result
+    }
+
     pub(super) fn lookup_trait_method(&mut self, trait_name: &str, method: &str) -> Option<FnSig> {
         self.lookup_trait_method_inner(trait_name, method, true)
     }
@@ -1632,7 +1663,7 @@ impl Checker {
         skip_receiver: bool,
     ) -> Option<FnSig> {
         // Check the trait's own methods — clone data to release borrow before resolve_type_expr
-        let found_method = self.trait_defs.get(trait_name).and_then(|info| {
+        let found_method = self.trait_def_at(trait_name).and_then(|info| {
             info.methods
                 .iter()
                 .find(|m| m.name == Ident::new(method))
@@ -1649,16 +1680,20 @@ impl Checker {
             let prev_trait_self = self
                 .current_trait_for_self_projection
                 .replace(trait_name.to_string());
-            let params: Vec<Ty> = m
-                .params
-                .iter()
-                .skip(skip)
-                .map(|p| self.resolve_type_expr(&p.ty))
-                .collect();
-            let return_type = m
-                .return_type
-                .as_ref()
-                .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
+            // The declaration's types name what its own module sees.
+            let (params, return_type) = self.in_trait_declaring_scope(trait_name, |checker| {
+                let params: Vec<Ty> = m
+                    .params
+                    .iter()
+                    .skip(skip)
+                    .map(|p| checker.resolve_type_expr(&p.ty))
+                    .collect();
+                let return_type = m
+                    .return_type
+                    .as_ref()
+                    .map_or(Ty::Unit, |annotation| checker.resolve_type_expr(annotation));
+                (params, return_type)
+            });
             self.current_trait_for_self_projection = prev_trait_self;
             let param_names: Vec<String> = m
                 .params
@@ -1699,7 +1734,7 @@ impl Checker {
             });
         }
         // Walk super-traits — clone to release borrow
-        let supers = self.trait_super.get(trait_name).cloned();
+        let supers = self.trait_supers(trait_name).cloned();
         if let Some(supers) = supers {
             for super_trait in &supers {
                 if let Some(sig) =
@@ -1791,11 +1826,11 @@ impl Checker {
         if !visited.insert(key.to_string()) {
             return Ok(());
         }
-        for super_key in self.trait_super.get(key).cloned().unwrap_or_default() {
+        for super_key in self.trait_supers(key).cloned().unwrap_or_default() {
             let super_spelling = super_key.rsplit('.').next().unwrap_or(super_key.as_str());
             self.push_dyn_layout_trait(&super_key, super_spelling, bound, visited, layout)?;
         }
-        let Some(info) = self.trait_defs.get(key) else {
+        let Some(info) = self.trait_def_at(key) else {
             return Ok(());
         };
         for method in &info.methods {
@@ -1879,13 +1914,12 @@ impl Checker {
                 continue;
             }
             let declares_directly = self
-                .trait_defs
-                .get(&current)
+                .trait_def_at(&current)
                 .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)));
             if declares_directly {
                 out.push(current.clone());
             }
-            if let Some(supers) = self.trait_super.get(&current) {
+            if let Some(supers) = self.trait_supers(&current) {
                 for s in supers {
                     stack.push(s.clone());
                 }
@@ -1903,7 +1937,7 @@ impl Checker {
         skip_receiver: bool,
     ) -> Option<(String, FnSig)> {
         // Check the trait's own methods first (direct declaration).
-        let found_method = self.trait_defs.get(trait_name).and_then(|info| {
+        let found_method = self.trait_def_at(trait_name).and_then(|info| {
             info.methods
                 .iter()
                 .find(|m| m.name == Ident::new(method))
@@ -1918,16 +1952,20 @@ impl Checker {
             let prev_trait_self = self
                 .current_trait_for_self_projection
                 .replace(trait_name.to_string());
-            let params: Vec<Ty> = m
-                .params
-                .iter()
-                .skip(skip)
-                .map(|p| self.resolve_type_expr(&p.ty))
-                .collect();
-            let return_type = m
-                .return_type
-                .as_ref()
-                .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
+            // The declaration's types name what its own module sees.
+            let (params, return_type) = self.in_trait_declaring_scope(trait_name, |checker| {
+                let params: Vec<Ty> = m
+                    .params
+                    .iter()
+                    .skip(skip)
+                    .map(|p| checker.resolve_type_expr(&p.ty))
+                    .collect();
+                let return_type = m
+                    .return_type
+                    .as_ref()
+                    .map_or(Ty::Unit, |annotation| checker.resolve_type_expr(annotation));
+                (params, return_type)
+            });
             self.current_trait_for_self_projection = prev_trait_self;
             let param_names: Vec<String> = m
                 .params
@@ -1971,7 +2009,7 @@ impl Checker {
             ));
         }
         // Walk super-traits — propagate origin unchanged from the recursion.
-        let supers = self.trait_super.get(trait_name).cloned();
+        let supers = self.trait_supers(trait_name).cloned();
         if let Some(supers) = supers {
             for super_trait in &supers {
                 if let Some(result) =
@@ -1998,7 +2036,7 @@ fn substitute_trait_object_assoc_bindings(
         } if projected_trait.as_ref() == trait_name
             && matches!(
                 base.as_ref(),
-                Ty::Named { name, args, .. } if name == "Self" && args.is_empty()
+                Ty::Named { head, args } if *head == crate::TypeHead::param("Self") && args.is_empty()
             ) =>
         {
             bound

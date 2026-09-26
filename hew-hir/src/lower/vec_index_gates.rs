@@ -415,8 +415,9 @@ pub(super) fn render_elem_ty(ty: &ResolvedTy) -> String {
             format!("closure({params}) -> {}", render_elem_ty(ret))
         }
         ResolvedTy::TypeParam { name } => name.clone(),
-        ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named { head, args, .. } if args.is_empty() => head.registry_key().to_string(),
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
             let arg_list = args
                 .iter()
                 .map(render_elem_ty)
@@ -457,7 +458,7 @@ pub(super) fn check_vec_index_element_type(
     let elem_ty = match &resolved {
         ResolvedTy::Named {
             args,
-            builtin: Some(BuiltinType::Vec),
+            head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
             ..
         } if !args.is_empty() => args[0].clone(),
         // Not a Vec<T>: this might be a user-defined type with an `at` method

@@ -341,11 +341,10 @@ fn is_own_parameter(arg: &ResolvedTy, params: &[String]) -> bool {
     let name = match arg {
         ResolvedTy::TypeParam { name } => name,
         ResolvedTy::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
             ..
-        } if args.is_empty() => name,
+        } if args.is_empty() => param.spelling.as_str(),
         _ => return false,
     };
     params.iter().any(|param| param == name)
@@ -382,25 +381,15 @@ fn collect_mentions(
                 collect_mentions(capture, decls, out);
             }
         }
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } => {
-            let builtin = builtin.or_else(|| {
-                if decls.declaration(name).is_some() {
-                    None
-                } else {
-                    crate::builtin_type::lookup_builtin_type(name)
-                }
-            });
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
+            let builtin = head.builtin();
             match builtin {
                 // The two builtins whose class is the Aggregate rule over a
                 // declaration, so they are declaration mentions like any other.
                 Some(BuiltinType::CrashInfo | BuiltinType::CrashNotification) | None => {
                     if decls.declaration(name).is_some() {
-                        out.push((name.clone(), args.clone()));
+                        out.push((name.to_string(), args.clone()));
                     }
                     for arg in args {
                         collect_mentions(arg, decls, out);
@@ -545,13 +534,12 @@ pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]
     // `TypeParam` or, when the declaration was resolved without a type-parameter
     // scope, as a zero-argument user `Named`. Both are the same parameter.
     let parameter_name = match ty {
-        ResolvedTy::TypeParam { name } => Some(name),
+        ResolvedTy::TypeParam { name } => Some(name.as_str()),
         ResolvedTy::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
             ..
-        } if args.is_empty() => Some(name),
+        } if args.is_empty() => Some(param.spelling.as_str()),
         _ => None,
     };
     if let Some(index) =
@@ -575,17 +563,15 @@ pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]
             ResolvedTy::Slice(Box::new(substitute(element, params, args)))
         }
         ResolvedTy::Named {
-            name,
+            head,
             args: named_args,
-            builtin,
             is_opaque,
         } => ResolvedTy::Named {
-            name: name.clone(),
+            head: *head,
             args: named_args
                 .iter()
                 .map(|arg| substitute(arg, params, args))
                 .collect(),
-            builtin: *builtin,
             is_opaque: *is_opaque,
         },
         ResolvedTy::Function {
@@ -655,8 +641,14 @@ fn classify(
     let linear_none = (ValueClass::Linear, CloneKind::None);
 
     Ok(match ty {
-        // integers, floats, Bool, Char, Unit, Never, Duration
-        ResolvedTy::I8
+        // integers, floats, Bool, Char, Unit, Never, Duration; and an actor,
+        // which is the type of its handle: a pid never owns the actor, so its
+        // drop frees nothing.
+        ResolvedTy::Named {
+            head: crate::TypeHead::Actor(_),
+            ..
+        }
+        | ResolvedTy::I8
         | ResolvedTy::I16
         | ResolvedTy::I32
         | ResolvedTy::I64
@@ -721,9 +713,8 @@ fn classify(
         ResolvedTy::Array(element, _) => collection_facts(&[classify(element, decls, walk)?]),
         ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { name: name.clone() }),
         ResolvedTy::Named {
-            name,
+            head: head @ crate::TypeHead::Builtin(builtin),
             args,
-            builtin: Some(builtin),
             ..
         } => match builtin {
             // marker BitCopy today
@@ -781,7 +772,7 @@ fn classify(
             }
             // Aggregate rule over the std declaration's fields.
             BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
-                classify_declaration(name, args, decls, walk)?
+                classify_declaration(head.registry_key(), args, decls, walk)?
             }
             BuiltinType::JsonValue | BuiltinType::YamlValue => {
                 (ValueClass::CowValue, CloneKind::DeepCopy)
@@ -800,17 +791,22 @@ fn classify(
             }
         },
         ResolvedTy::Named {
-            name,
+            head:
+                head @ (crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_)),
             args,
-            builtin: None,
             is_opaque,
         } => {
+            let name = head.registry_key();
             // `builtin` is the identity fact. A `Named` that carries none and
             // that the context holds no declaration for is refused in every
             // context, the empty one included: reading the name against the
             // builtin table here would be a second identity authority.
             let Some(declared) = decls.declaration(name) else {
-                return Err(ClassError::UnknownDeclaration { name: name.clone() });
+                return Err(ClassError::UnknownDeclaration {
+                    name: name.to_string(),
+                });
             };
             match declared.marker {
                 DeclarationMarker::Resource => affine_none,

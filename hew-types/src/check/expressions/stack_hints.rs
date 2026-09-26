@@ -267,11 +267,11 @@ impl Checker {
     pub(super) fn classify_ty(ty: &Ty) -> AllocationClass {
         match ty {
             Ty::String => AllocationClass::String,
-            Ty::Named { name, .. } => match name.as_str() {
-                "Vec" => AllocationClass::Vec,
-                "HashMap" => AllocationClass::HashMap,
-                "HashSet" => AllocationClass::HashSet,
-                "Rc" => AllocationClass::Rc,
+            Ty::Named { head, .. } => match head.builtin() {
+                Some(crate::BuiltinType::Vec) => AllocationClass::Vec,
+                Some(crate::BuiltinType::HashMap) => AllocationClass::HashMap,
+                Some(crate::BuiltinType::HashSet) => AllocationClass::HashSet,
+                Some(crate::BuiltinType::Rc) => AllocationClass::Rc,
                 _ => AllocationClass::Stack,
             },
             // Type variables, primitives, tuples, arrays, function types:

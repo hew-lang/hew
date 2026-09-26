@@ -85,13 +85,13 @@ impl Checker {
             .get(&key)
             .ok_or_else(|| "runtime handler argument has no checked type".to_string())?;
         let Ty::Named {
-            name,
-            builtin: Some(BuiltinType::ActorHandle),
+            head: crate::TypeHead::Actor(actor),
             ..
         } = self.subst.resolve(ty)
         else {
             return Err("runtime handler requires a concrete actor handle".to_string());
         };
+        let name = actor.spelling.to_string();
         let canonical = self.canonical_nominal_name(&name).unwrap_or(name.clone());
         let protocol = self
             .actor_protocol_descriptors
@@ -129,43 +129,275 @@ impl Checker {
         })
     }
 
-    /// Look up a type definition, handling module-qualified names like `json.Value`.
-    pub(in crate::check) fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
-        let current_module_key = if name.contains('.') {
-            None
-        } else {
-            self.current_module_identity()
-                .map(|owner| format!("{owner}.{name}"))
-        };
-        self.type_defs
-            .get(name)
-            .or_else(|| {
-                current_module_key
-                    .as_ref()
-                    .and_then(|key| self.type_defs.get(key))
-            })
-            .or_else(|| {
-                self.strip_module_prefix(name)
-                    .and_then(|u| self.type_defs.get(u))
-            })
-            .cloned()
+    /// This compilation's type definitions, read by declaration.
+    pub(in crate::check) fn type_def_view(&self) -> crate::check::TypeDefView<'_> {
+        crate::check::TypeDefView::new(&self.defs, &self.type_defs)
     }
 
-    /// Look up a type definition mutably, handling module-qualified names.
-    pub(in crate::check) fn lookup_type_def_mut(&mut self, name: &str) -> Option<&mut TypeDef> {
-        if self.type_defs.contains_key(name) {
-            return self.type_defs.get_mut(name);
+    /// The declaration a registry key spells: the current module's
+    /// declaration of a bare key, its exact declared path, then the key with a
+    /// module prefix stripped.
+    ///
+    /// TRANSITION(A1 commit 3): deleted when every caller holds the head or
+    /// id `Scope::resolve` returned instead of a key.
+    pub(in crate::check) fn type_def_key(&self, key: &str) -> Option<crate::NominalId> {
+        let declared = |path: &str| {
+            self.lookup_declaration(path)
+                .map(crate::NominalId::from_minted_declaration)
+                .filter(|id| self.type_defs.contains_key(id))
+        };
+        (!key.contains('.'))
+            .then(|| self.current_module_identity())
+            .flatten()
+            .and_then(|owner| declared(&format!("{owner}.{key}")))
+            .or_else(|| declared(key))
+            .or_else(|| self.strip_module_prefix(key).and_then(declared))
+    }
+
+    /// The definition filed under an exact declaration path.
+    ///
+    /// TRANSITION(A1 commit 3): see [`Self::type_def_key`].
+    pub(in crate::check) fn type_def_exact(&self, path: &str) -> Option<&TypeDef> {
+        self.type_defs
+            .get(&crate::NominalId::from_minted_declaration(
+                self.lookup_declaration(path)?,
+            ))
+    }
+
+    /// The definition a registry key spells (see [`Self::type_def_key`]).
+    pub(in crate::check) fn type_def_at(&self, key: &str) -> Option<&TypeDef> {
+        self.type_defs.get(&self.type_def_key(key)?)
+    }
+
+    /// The definition a registry key spells, mutably.
+    pub(in crate::check) fn type_def_at_mut(&mut self, key: &str) -> Option<&mut TypeDef> {
+        let id = self.type_def_key(key)?;
+        self.type_defs.get_mut(&id)
+    }
+
+    /// This compilation's function signatures.
+    pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
+        crate::check::FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+    }
+
+    /// The signature a key spells.
+    ///
+    /// TRANSITION(A1 commit 4): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
+    pub(in crate::check) fn fn_sig(&self, key: &str) -> Option<&FnSig> {
+        self.sigs().get(key)
+    }
+
+    /// Whether a key spells a signature.
+    pub(in crate::check) fn has_fn_sig(&self, key: &str) -> bool {
+        self.sigs().contains(key)
+    }
+
+    /// The signature a key spells, mutably.
+    pub(in crate::check) fn fn_sig_mut(&mut self, key: &str) -> Option<&mut FnSig> {
+        match self.fn_sig_keys.get(key) {
+            Some(id) => self.fn_sigs.get_mut(id),
+            None => self.builtin_fn_sigs.get_mut(&Symbol::intern(key)),
         }
-        if !name.contains('.') {
-            if let Some(owner) = self.current_module_identity() {
-                let current_module_key = format!("{owner}.{name}");
-                if self.type_defs.contains_key(&current_module_key) {
-                    return self.type_defs.get_mut(&current_module_key);
+    }
+
+    /// File `sig` under `declaration`, reachable by `key`.
+    pub(in crate::check) fn insert_fn_sig(
+        &mut self,
+        key: &str,
+        declaration: crate::DefId,
+        sig: FnSig,
+    ) {
+        self.fn_sig_keys.insert(key.to_string(), declaration);
+        self.fn_sigs.insert(declaration, sig);
+    }
+
+    /// File the constructor signature of the member `name` of the declaration
+    /// `owner` spells (a variant, a machine state), reachable by `key`.
+    pub(in crate::check) fn insert_member_sig(
+        &mut self,
+        key: &str,
+        owner: &str,
+        name: Symbol,
+        kind: crate::DeclarationKind,
+        sig: FnSig,
+    ) {
+        match self
+            .lookup_declaration(owner)
+            .and_then(|owner| self.defs.member_of_kind(owner, name, kind))
+        {
+            Some(member) => self.insert_fn_sig(key, member, sig),
+            None => self.insert_fn_sig_at(key, sig),
+        }
+    }
+
+    /// Make `key` spell the signature `source` spells: an import binding or a
+    /// module surface for one declaration.
+    ///
+    /// TRANSITION(A1 commit 4): a binding is a `Scope` import once callers
+    /// resolve through it.
+    pub(in crate::check) fn alias_fn_sig(&mut self, key: &str, source: &str) {
+        if let Some(declaration) = self.fn_sig_keys.get(source).copied() {
+            self.fn_sig_keys.insert(key.to_string(), declaration);
+        } else if let Some(sig) = self.builtin_fn_sigs.get(&Symbol::intern(source)).cloned() {
+            self.builtin_fn_sigs.insert(Symbol::intern(key), sig);
+        }
+    }
+
+    /// File `sig` under the declaration `key` names: an established
+    /// signature key, an impl or trait method key, or a declaration path.
+    /// A key that names no declaration is an internal error, never dropped.
+    ///
+    /// TRANSITION(A1 commit 4): registration passes the declaration id.
+    pub(in crate::check) fn insert_fn_sig_at(&mut self, key: &str, sig: FnSig) {
+        let declaration = self
+            .fn_sig_keys
+            .get(key)
+            .copied()
+            .or_else(|| self.impl_method_declaration_ids.get(key).copied())
+            .or_else(|| self.trait_method_ids.get(key).map(|(_, method)| *method))
+            .or_else(|| self.lookup_declaration(key))
+            .or_else(|| {
+                self.current_module_identity()
+                    .and_then(|owner| self.lookup_declaration(&format!("{owner}.{key}")))
+            })
+            .or_else(|| {
+                let (owner, member) = key.rsplit_once("::")?;
+                let owner = self
+                    .lookup_declaration(owner)
+                    .or_else(|| self.lookup_declaration(&self.canonical_nominal_name(owner)?))?;
+                self.defs.member(owner, Symbol::intern(member))
+            })
+            .or_else(|| {
+                // A module function a registry publishes before its source is
+                // read: the source declaration adopts this row.
+                (key.contains('.') && !key.contains("::")).then(|| {
+                    self.defs
+                        .mint_sourceless(key, crate::DeclarationKind::Function)
+                })
+            });
+        match declaration {
+            Some(declaration) => self.insert_fn_sig(key, declaration, sig),
+            None => self.errors.push(crate::error::TypeError::new(
+                crate::error::TypeErrorKind::InvalidOperation,
+                0..0,
+                format!("internal: signature `{key}` names no declaration"),
+            )),
+        }
+    }
+
+    /// The trait declaration a spelling names.
+    ///
+    /// TRANSITION(A1 commit 4): see [`Checker::trait_def_keys`].
+    pub(in crate::check) fn trait_key_id(&self, key: &str) -> Option<crate::DefId> {
+        self.trait_def_keys.get(key).copied()
+    }
+
+    /// The trait a spelling names.
+    pub(in crate::check) fn trait_def_at(&self, key: &str) -> Option<&TraitInfo> {
+        self.trait_defs.get(&self.trait_key_id(key)?)
+    }
+
+    /// Whether a spelling names a trait.
+    pub(in crate::check) fn has_trait_def(&self, key: &str) -> bool {
+        self.trait_def_at(key).is_some()
+    }
+
+    /// File `info` under the trait declaration at `path`, reachable by `key`.
+    /// A path that names no declaration is an internal error, never dropped.
+    pub(in crate::check) fn insert_trait_def(&mut self, key: &str, path: &str, info: TraitInfo) {
+        // A module trait a route registers before the module's declarations
+        // are minted gets a sourceless row its declaration adopts.
+        let declaration = self.lookup_declaration(path).or_else(|| {
+            path.contains('.').then(|| {
+                self.defs
+                    .mint_sourceless(path, crate::DeclarationKind::Trait)
+            })
+        });
+        match declaration {
+            Some(declaration) => {
+                self.trait_def_keys.insert(key.to_string(), declaration);
+                self.trait_defs.insert(declaration, info);
+            }
+            None => self.errors.push(crate::error::TypeError::new(
+                crate::error::TypeErrorKind::InvalidOperation,
+                0..0,
+                format!("internal: trait `{path}` names no declaration"),
+            )),
+        }
+    }
+
+    /// Make `key` spell the trait `source` spells.
+    pub(in crate::check) fn rebind_trait_def(&mut self, key: &str, source: &str) {
+        if let Some(declaration) = self.trait_key_id(source) {
+            self.trait_def_keys.insert(key.to_string(), declaration);
+        }
+    }
+
+    /// Make `key` spell the trait `source` spells, unless `key` already
+    /// names one.
+    pub(in crate::check) fn alias_trait_def(&mut self, key: &str, source: &str) {
+        if let Some(declaration) = self.trait_key_id(source) {
+            self.trait_def_keys
+                .entry(key.to_string())
+                .or_insert(declaration);
+        }
+    }
+
+    /// The super-trait spellings of the trait a spelling names.
+    pub(in crate::check) fn trait_supers(&self, key: &str) -> Option<&Vec<String>> {
+        self.trait_super.get(&self.trait_key_id(key)?)
+    }
+
+    /// Record the super-traits of the trait a spelling names.
+    pub(in crate::check) fn set_trait_supers(&mut self, key: &str, supers: Vec<String>) {
+        if let Some(declaration) = self.trait_key_id(key) {
+            self.trait_super.insert(declaration, supers);
+        }
+    }
+
+    /// Look up a type definition by registry key.
+    pub(in crate::check) fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
+        self.type_def_at(name).cloned()
+    }
+
+    /// Look up a type definition mutably by registry key.
+    pub(in crate::check) fn lookup_type_def_mut(&mut self, name: &str) -> Option<&mut TypeDef> {
+        self.type_def_at_mut(name)
+    }
+
+    /// File a definition under the declaration a registration key names in
+    /// the current module. A key no declaration answers to is an import
+    /// surface spelling of a declaration filed under its own identity.
+    ///
+    /// TRANSITION(A1 commit 4): registration passes the declaration id.
+    pub(in crate::check) fn insert_type_def(&mut self, key: &str, def: TypeDef) {
+        let declared = |path: &str| {
+            self.lookup_declaration(path)
+                .map(crate::NominalId::from_minted_declaration)
+        };
+        let id = if key.contains('.') {
+            declared(key)
+        } else {
+            self.current_module_identity()
+                .and_then(|owner| declared(&format!("{owner}.{key}")))
+                .or_else(|| declared(key))
+        };
+        if let Some(id) = id {
+            // TRANSITION(A1 commit 3): WHY a declaration is re-registered after
+            // impls published methods onto it, and the rebuilt definition must
+            // keep them. WHEN the dispatch table owns methods, `td.methods` is
+            // deleted and this merge with it. WHAT: impl methods are dispatch
+            // rows keyed by head, never members of the definition.
+            let mut def = def;
+            if let Some(existing) = self.type_defs.get(&id) {
+                for (name, sig) in &existing.methods {
+                    def.methods
+                        .entry(name.clone())
+                        .or_insert_with(|| sig.clone());
                 }
             }
+            self.type_defs.insert(id, def);
         }
-        let unqualified = self.strip_module_prefix(name)?;
-        self.type_defs.get_mut(unqualified)
     }
 
     /// Resolve a `(module, type)` pair to its `TypeDef`, gated on the type being
@@ -197,7 +429,7 @@ impl Checker {
             return None;
         }
         let qualified = format!("{resolved_module}.{type_name}");
-        self.type_defs.get(&qualified).cloned()
+        self.type_def_at(&qualified).cloned()
     }
 
     /// Return the exact source owner's exported type set for a lexical module
@@ -255,8 +487,7 @@ impl Checker {
         if let Some(owner) = self.current_module_identity() {
             let local_actor = format!("{owner}.{raw}");
             if self
-                .type_defs
-                .get(&local_actor)
+                .type_def_exact(&local_actor)
                 .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor)
             {
                 return Some(local_actor);
@@ -265,10 +496,10 @@ impl Checker {
 
         if self.local_type_defs.contains(raw) || self.source_type_defs.contains(raw) {
             let local = self.declaration_identity(raw);
-            if self.type_defs.contains_key(&local) {
+            if self.type_def_at(&local).is_some() {
                 return Some(local);
             }
-            if self.type_defs.contains_key(raw) {
+            if self.type_def_at(raw).is_some() {
                 return Some(raw.to_string());
             }
             // A flattened file import is root-visible in the source sets but
@@ -280,7 +511,7 @@ impl Checker {
         // Root actors and flattened file-import actors both publish an exact
         // root-surface key. This is not a leaf search: the key exists only
         // because that spelling was registered into the current root scope.
-        if self.current_module_identity().is_none() && self.type_defs.contains_key(raw) {
+        if self.current_module_identity().is_none() && self.type_def_at(raw).is_some() {
             return Some(raw.to_string());
         }
 
@@ -369,8 +600,7 @@ impl Checker {
         kinds: &[TypeDefKind],
     ) -> BareActorResolution {
         let is_actor = |key: &str| {
-            self.type_defs
-                .get(key)
+            self.type_def_exact(key)
                 .is_some_and(|td| kinds.contains(&td.kind))
         };
         if let Some(module) = self.current_module.as_deref() {

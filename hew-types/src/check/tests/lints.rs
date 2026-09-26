@@ -450,7 +450,7 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
         ("to_string", vec!["Display".to_string()]),
     ] {
         let sig = checker
-            .fn_sigs
+            .sigs()
             .get(name)
             .unwrap_or_else(|| panic!("missing builtin signature for {name}"));
         assert_eq!(
@@ -465,7 +465,7 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
         );
     }
 
-    let len_sig = checker.fn_sigs.get("len").expect("missing len builtin");
+    let len_sig = checker.sigs().get("len").expect("missing len builtin");
     assert!(
         len_sig.type_param_bounds.is_empty(),
         "len must stay out of the Display migration"
@@ -3088,10 +3088,10 @@ fn warn_selective_import_genuinely_unused() {
 #[test]
 fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let root_source = r"
-        import std.string;
+        import std.text.semver;
 
         fn describe_label() -> string {
-            string.describe(string.make_label())
+            semver.describe(semver.make_label())
         }
     ";
     let module_source = r#"
@@ -3158,7 +3158,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let output = checker.check_program(&root.program);
 
     assert!(
-        !output.user_modules.contains("string"),
+        !output.user_modules.contains("semver"),
         "stdlib Hew import should not go through the user-module import path"
     );
     assert!(
@@ -3172,16 +3172,12 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         .expect("stdlib imported generic call should record inferred type args");
     assert_eq!(
         inferred,
-        &vec![Ty::Named {
-            builtin: None,
-            name: "std.string.Label".to_string(),
-            args: vec![],
-        }]
+        &vec![Ty::named_in(&output.defs, "std.text.semver.Label", vec![])]
     );
     assert!(
         checker.trait_impls_set.contains(&(
-            "std.string.Label".to_string(),
-            "std.string.Describable".to_string()
+            "std.text.semver.Label".to_string(),
+            "std.text.semver.Describable".to_string()
         )),
         "stdlib Hew items should register trait impls under their exact source owners for downstream generic bound checks: {:?}",
         checker.trait_impls_set
@@ -3951,9 +3947,9 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // trait_defs (i.e. our builtins-blanket loader did NOT register
     // Display first and force the user declaration to be skipped).
     assert!(
-        checker.trait_defs.contains_key("Display"),
+        checker.has_trait_def("Display"),
         "user trait Display must remain registered; trait_defs keys: {:?}",
-        checker.trait_defs.keys().collect::<Vec<_>>()
+        checker.trait_def_keys.keys().collect::<Vec<_>>()
     );
 }
 
@@ -4110,12 +4106,12 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
         "stdlib Hew import should not go through the user-module import path"
     );
     assert!(
-        output.type_defs.contains_key("std.bench.Suite"),
+        output.type_def_at_path("std.bench.Suite").is_some(),
         "stdlib Hew items should still register public types canonically"
     );
-    assert!(!output.type_defs.contains_key("Suite"));
+    assert!(output.type_def_at_path("Suite").is_none());
     assert!(
-        output.fn_sigs.contains_key("std.bench.suite"),
+        output.sigs().contains("std.bench.suite"),
         "stdlib Hew items should still register qualified functions"
     );
     assert!(

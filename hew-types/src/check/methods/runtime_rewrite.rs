@@ -50,14 +50,11 @@ impl Checker {
     /// marker row is absent returns `None`: the Send gate must reject rather
     /// than consulting a same-name bare marker row.
     pub(super) fn send_gate_reply_ty(&self, method_id: &str, resolved_reply: &Ty) -> Option<Ty> {
-        let Ty::Named {
-            name,
-            args,
-            builtin,
-        } = resolved_reply
-        else {
+        let Ty::Named { head, args, .. } = resolved_reply else {
             return Some(resolved_reply.clone());
         };
+        let name = head.registry_key();
+        let builtin = head.builtin();
         // Builtins carry their own marker authority. A qualified user name,
         // by contrast, must have an exact structural marker row.
         if builtin.is_some() {
@@ -86,11 +83,7 @@ impl Checker {
         ))?;
         let qualified = format!("{module_owner}.{name}");
         if self.registry.has_type_markers(&qualified) {
-            Some(Ty::Named {
-                name: qualified,
-                args: args.clone(),
-                builtin: *builtin,
-            })
+            Some(self.named_ty_for_key(&qualified, args.clone()))
         } else {
             None
         }
@@ -650,7 +643,10 @@ impl Checker {
             return false;
         };
         let resolved_type_arg = self.subst.resolve(type_arg).materialize_literal_defaults();
-        let expanded = match spec.template.expand(&resolved_type_arg, &self.type_defs) {
+        let expanded = match spec
+            .template
+            .expand(&resolved_type_arg, self.type_def_view())
+        {
             Ok(symbol) => symbol,
             Err(crate::extern_symbol::TemplateExpansionError::UnsupportedCallingConvention {
                 expected_symbol,
@@ -790,9 +786,10 @@ impl Checker {
         span: &Span,
     ) {
         self.record_handle_method_call_receiver_kind_if_any(receiver_ty, span);
-        let Ty::Named { name, .. } = receiver_ty else {
+        let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
+        let name = head.registry_key();
         if self.record_declared_runtime_method(name, method, args, span) {
             return;
         }
@@ -870,11 +867,7 @@ impl Checker {
                     error_type,
                     error_variant,
                 } => {
-                    let error_ty = Ty::Named {
-                        name: error_type.to_string(),
-                        args: Vec::new(),
-                        builtin: None,
-                    };
+                    let error_ty = self.named_ty_for_key(error_type, Vec::new());
                     let error = self.resolve_variant_match(
                         &format!("{error_type}::{error_variant}"), &error_ty,
                     ).ok_or_else(|| format!("runtime error variant `{error_type}::{error_variant}` is not declared"))?;
@@ -969,9 +962,7 @@ impl Checker {
             let symbol = if c_symbol == method {
                 let source_qualified = format!("{canonical_owner}.{method}");
                 let surface_qualified = format!("{module_name}.{method}");
-                if !self.fn_sigs.contains_key(&source_qualified)
-                    && !self.fn_sigs.contains_key(&surface_qualified)
-                {
+                if !self.has_fn_sig(&source_qualified) && !self.has_fn_sig(&surface_qualified) {
                     return;
                 }
                 // Linker presentation remains the checker-selected registry
@@ -1018,10 +1009,8 @@ impl Checker {
         {
             return;
         }
-        if self.fn_sigs.contains_key(&source_declaration)
-            || self
-                .fn_sigs
-                .contains_key(&format!("{module_name}.{method}"))
+        if self.has_fn_sig(&source_declaration)
+            || self.has_fn_sig(&format!("{module_name}.{method}"))
         {
             self.record_module_qualified_method_call_rewrite(
                 span,
@@ -1032,9 +1021,11 @@ impl Checker {
     }
 
     pub(super) fn reject_if_wasm_native_only_handle(&mut self, receiver_ty: &Ty, span: &Span) {
-        let Ty::Named { name, builtin, .. } = receiver_ty else {
+        let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
+        let name = head.registry_key();
+        let builtin = head.builtin();
         if builtin.is_some_and(|builtin| {
             builtin.has_role(crate::builtin_type::BuiltinTypeRole::WasmNativeOnlyHandle)
         }) {
@@ -1047,7 +1038,7 @@ impl Checker {
         if self.user_modules.contains(module_name) {
             return;
         }
-        match name.as_str() {
+        match name {
             "std.net.http.Response"
                 if self.canonical_std_module_sources.contains("std.net.http") =>
             {
@@ -1096,9 +1087,10 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        let Ty::Named { name, .. } = receiver_ty else {
+        let Ty::Named { head, .. } = receiver_ty else {
             return;
         };
+        let name = head.registry_key();
         if name != "std.semaphore.Semaphore" {
             return;
         }

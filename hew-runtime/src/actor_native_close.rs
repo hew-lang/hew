@@ -643,6 +643,7 @@ mod tests {
                 parent,
                 0,
                 child_wake.descriptor(),
+                1,
                 0,
             )
         };
@@ -653,6 +654,7 @@ mod tests {
                 parent,
                 0,
                 child_wake.descriptor(),
+                1,
                 1,
             )
         };

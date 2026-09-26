@@ -340,6 +340,8 @@ pub struct MonitorDownPayload {
     pub target: Location,
     /// Carried terminal reason code, encoded with a typed reason tag.
     pub reason: i32,
+    /// Semantic actor end, independent of the scheduler's terminal state.
+    pub end_reason: u8,
     /// `CrashKind` discriminant when `reason` is crashed, otherwise zero.
     pub crash_kind: i32,
 }
@@ -1295,6 +1297,10 @@ pub fn encode_monitor_down_payload(
             Value::Integer(Integer::from(4u64)),
             Value::Integer(Integer::from(payload.crash_kind)),
         ),
+        (
+            Value::Integer(Integer::from(5u64)),
+            Value::Integer(Integer::from(payload.end_reason)),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1324,12 +1330,21 @@ pub fn decode_monitor_down_payload(
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+    let end_reason = value_to_u8(required(&map, 5)?, 5)?;
+    if end_reason > 4 {
+        return Err(DecodeError::MalformedField {
+            key: 5,
+            expected: "a known actor end reason",
+        }
+        .into());
+    }
     Ok(MonitorDownPayload {
         ref_id: value_to_u64(required(&map, 1)?, 1)?,
         target: value_to_location(required(&map, 2)?, 2)?,
         reason: value_to_down_reason(required(&map, 3)?, 3)?,
         crash_kind: value_to_i32(required(&map, 4)?, 4)?,
+        end_reason,
     })
 }
 

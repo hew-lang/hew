@@ -947,6 +947,107 @@ pub(crate) unsafe fn supervisor_restart_await_blocking(
     }
 }
 
+/// A native coroutine observes one stable role without blocking the driver.
+/// The pin keeps the supervisor allocation live until cancellation or the
+/// resumed coroutine releases this observation.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct HewNativeRestartWait {
+    pin: Option<crate::lifetime::local_handles::SupervisorPin>,
+    slot: u32,
+    nested: bool,
+    _waker: Arc<crate::wake::OwnedWaker>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for HewNativeRestartWait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewNativeRestartWait")
+            .field("has_supervisor", &self.pin.is_some())
+            .field("slot", &self.slot)
+            .field("nested", &self.nested)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Register before the caller checks readiness, closing the gap between a
+/// restart publication and coroutine suspension.
+///
+/// # Safety
+/// `waker` obeys the retained native wake contract.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
+    owner: crate::lifetime::local_handles::HewLocalPidId,
+    slot: u32,
+    role_kind: c_int,
+    waker: *const crate::wake::HewWaker,
+) -> *mut HewNativeRestartWait {
+    // SAFETY: the caller keeps its wake descriptor live during retention.
+    let waker = Arc::new(unsafe { crate::wake::OwnedWaker::retain(&*waker) });
+    let pin = crate::lifetime::local_handles::pin_current_supervisor(owner);
+    if let Some(pin) = &pin {
+        // SAFETY: the pin retains the supervisor through registration.
+        unsafe { &(*pin.supervisor()).native_restart_wakers }.register(&waker);
+    }
+    Box::into_raw(Box::new(HewNativeRestartWait {
+        pin,
+        slot,
+        nested: role_kind == ROLE_KIND_SUPERVISOR,
+        _waker: waker,
+    }))
+}
+
+/// Return 0 while the selected role is transient, or 1 when it has a live
+/// incarnation without a pending fault or is permanently dead.
+///
+/// # Safety
+/// `wait` remains live and uniquely owned by the caller.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
+    wait: *const HewNativeRestartWait,
+) -> c_int {
+    // SAFETY: the caller owns the wait until it is freed.
+    let wait = unsafe { &*wait };
+    let Some(pin) = &wait.pin else {
+        return 1;
+    };
+    let sup = pin.supervisor();
+    // SAFETY: the pin retains the supervisor for this lookup.
+    let current = unsafe {
+        if wait.nested {
+            hew_supervisor_nested_get(sup, wait.slot)
+        } else {
+            hew_supervisor_child_get(sup, wait.slot)
+        }
+    };
+    if current.tag == 2 {
+        return 1;
+    }
+    // SAFETY: the pin retains the supervisor and its stable local identity.
+    let owner = unsafe { (*sup).local_pid_id };
+    let role = RoleKey {
+        owner,
+        slot: wait.slot,
+        nested: wait.nested,
+    };
+    c_int::from(
+        role_holds_running_incarnation(sup, wait.slot, wait.nested)
+            && !crate::exit_status::role_has_unsettled_fault(role),
+    )
+}
+
+/// Detach a native restart observer, releasing its supervisor pin and wake.
+///
+/// # Safety
+/// The caller transfers its unique wait owner.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_restart_wait_free(wait: *mut HewNativeRestartWait) {
+    // SAFETY: the caller relinquishes the unique owner.
+    drop(unsafe { Box::from_raw(wait) });
+}
+
 // ── Restart observation (deterministic testing) ─────────────────────────────
 
 /// Block until the supervisor's restart epoch reaches at least `target`, or

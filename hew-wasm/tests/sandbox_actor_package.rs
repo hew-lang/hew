@@ -899,6 +899,11 @@ fn a_declared_coalescing_loss_reports_a_discard() {
 }
 
 #[test]
+fn actor_stop_drains_accepted_work_and_refuses_new_work_in_both_runtimes() {
+    assert_native_manifest("actor-stop-drains");
+}
+
+#[test]
 fn a_cancelled_unadmitted_call_closes_its_payload_before_recovery() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/resource-close-pending-ask.hew"

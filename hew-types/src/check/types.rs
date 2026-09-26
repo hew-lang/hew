@@ -9,7 +9,7 @@ use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::{BuiltinType, WasmUnsupportedFeature};
 use hew_parser::ast::Symbol;
 use hew_parser::ast::{
-    ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
+    ImportSpec, Literal, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -932,14 +932,23 @@ pub struct WireFieldLayout {
     pub name: String,
     /// Numeric wire tag (`@N`), the compatibility authority.
     pub tag: u32,
-    /// Explicit JSON key override, if provided (`json_name = "..."`).
-    pub json_name: Option<String>,
-    /// Explicit YAML key override, if provided (`yaml_name = "..."`).
-    pub yaml_name: Option<String>,
+    /// Final JSON key selected by the checker.
+    pub json_name: String,
+    /// Final YAML key selected by the checker.
+    pub yaml_name: String,
     /// Whether the enclosing map key is required or optional.
     pub presence: WireFieldPresence,
     /// Whether this field is repeated (maps to `Vec<T>`).
     pub repeated: bool,
+}
+
+/// Checker-selected wire names and tag for one enum variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireVariantLayout {
+    pub name: String,
+    pub tag: u32,
+    pub json_name: String,
+    pub yaml_name: String,
 }
 
 /// Wire layout metadata for a single type (struct or enum).
@@ -947,19 +956,15 @@ pub struct WireFieldLayout {
 pub struct WireLayoutEntry {
     /// True for `#[wire] type`, false for `#[wire] enum`.
     pub is_struct: bool,
-    /// Type-level JSON casing override.
-    pub json_case: Option<NamingCase>,
-    /// Type-level YAML casing override.
-    pub yaml_case: Option<NamingCase>,
     /// Wire schema version (from `#[wire(version = N)]`).
     pub version: Option<u32>,
     /// Minimum compatible reader version.
     pub min_version: Option<u32>,
     /// Ordered fields (structs). Empty for enums.
     pub fields: Vec<WireFieldLayout>,
-    /// Enum variant tags. Each entry is `(variant_name, discriminant_tag)`.
+    /// Enum variant tags and final text names.
     /// Empty for structs.
-    pub variants: Vec<(String, u32)>,
+    pub variants: Vec<WireVariantLayout>,
 }
 
 /// All wire types registered during type-checking, keyed by canonical type name.

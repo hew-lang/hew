@@ -5323,11 +5323,6 @@ fn verify_terminator_shape(
             if let Err(reason) = plan.verify(variants.aggregate_shapes, variants.shapes) {
                 invalid_operation(function, *id, reason, diagnostics);
             }
-            if let Some(format) = direction.text_format() {
-                if let Err(reason) = plan.verify_text_names(format) {
-                    invalid_operation(function, *id, reason, diagnostics);
-                }
-            }
             let input_ty = if direction.is_serialize() {
                 plan.ty.clone()
             } else if direction.is_text() {

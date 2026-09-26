@@ -11,7 +11,6 @@ keywords = ["hew", "compiler", "ssa", "ir"]
 categories = ["compilers"]
 
 [dependencies]
-heck = "0.5"
 hew-hir = { path = "../hew-hir" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }

@@ -511,7 +511,40 @@ fn wire_layout_json_name_override_preserved() {
         .wire_layouts
         .get("Cfg")
         .expect("Cfg should have a wire layout entry");
-    assert_eq!(entry.fields[0].json_name, Some("hostname".to_string()));
+    assert_eq!(entry.fields[0].json_name, "hostname");
+    assert_eq!(entry.fields[0].yaml_name, "host");
+}
+
+#[test]
+fn wire_text_name_collisions_fail_at_declaration() {
+    let explicit = check_source(
+        r#"
+        #[wire]
+        type Cfg { a: string @1 json_name="x", b: string @2 json_name="x" }
+        "#,
+    );
+    assert!(
+        explicit.errors.iter().any(|error| {
+            error.message == "wire JSON field name `x` is ambiguous after naming metadata"
+        }),
+        "{:?}",
+        explicit.errors
+    );
+
+    let cased = check_source(
+        r#"
+        #[wire]
+        #[json("camelCase")]
+        type Cfg { foo_bar: string @1, fooBar: string @2 }
+        "#,
+    );
+    assert!(
+        cased.errors.iter().any(|error| {
+            error.message == "wire JSON field name `fooBar` is ambiguous after naming metadata"
+        }),
+        "{:?}",
+        cased.errors
+    );
 }
 
 #[test]

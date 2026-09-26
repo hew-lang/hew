@@ -1878,6 +1878,11 @@ non-declarable = [
   # `.hew` source names it, and `hew_supervisor_stop`, `hew_actor_group_destroy`
   # and `hew_runtime_cleanup` still reclaim supervised children.
   "hew_supervisor_remove_child",
+  # std.testing is the public surface for these driver controls. The raw
+  # process-level hooks are compiler/runtime protocol, not extern "rt" APIs.
+  "hew_test_driver_active",
+  "hew_test_seed",
+  "hew_test_settle",
   "hew_trace_clear",
   "hew_trace_drain",
   "hew_trace_reset",
@@ -2423,6 +2428,29 @@ discharge-depth = "none"
 # nothing owned crosses the boundary.
 [[ownership.contracts]]
 symbol = "hew_runtime_exit_status"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+# Deterministic test-driver queries and quiescence control return only scalars
+# or unit; no owner crosses the std.testing FFI boundary.
+[[ownership.contracts]]
+symbol = "hew_test_driver_active"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_test_seed"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_test_settle"
 result = "none"
 params = []
 release-symbol = ""

@@ -5,6 +5,182 @@
 pub(super) use super::*;
 
 #[test]
+fn indirect_calls_publish_closure_candidates_and_opaque_origins() {
+    let source = "fn invoke(f: fn() -> i64) -> i64 { f() } \
+        type Bag { callback: fn() -> i64 } \
+        fn main() { \
+            let local = || 1; \
+            let selected = if true { || 2 } else { || 3 }; \
+            let bag = Bag { callback: || 4 }; \
+            println(local()); println(selected()); println(bag.callback()); \
+            println(invoke(|| 5)); \
+        }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let closure = |text: &str| {
+        let start = source.find(text).expect("closure literal");
+        let key = output
+            .closure_escape_facts
+            .keys()
+            .find(|key| key.start == start)
+            .expect("checker-published closure span");
+        CallableCandidate::Closure(key.clone())
+    };
+    let call_key = |text: &str| {
+        let start = source.find(text).expect("call expression");
+        output
+            .direct_call_targets
+            .iter()
+            .find(|(key, target)| {
+                key.start == start
+                    && matches!(
+                        target,
+                        crate::check::dispatch::CallTarget::IndirectFunctionValue
+                    )
+            })
+            .map(|(key, _)| key.clone())
+            .expect("checked indirect call")
+    };
+    assert_eq!(
+        output.indirect_call_candidates.get(&call_key("local()")),
+        Some(&IndirectCallCandidates {
+            known: vec![closure("|| 1")],
+            may_be_unknown: false,
+        })
+    );
+    assert_eq!(
+        output.indirect_call_candidates.get(&call_key("selected()")),
+        Some(&IndirectCallCandidates {
+            known: vec![closure("|| 2"), closure("|| 3"),],
+            may_be_unknown: false,
+        })
+    );
+    for call in ["f()", "bag.callback()"] {
+        assert_eq!(
+            output.indirect_call_candidates.get(&call_key(call)),
+            Some(&IndirectCallCandidates {
+                known: vec![],
+                may_be_unknown: true,
+            }),
+            "{call}"
+        );
+    }
+}
+
+#[test]
+fn imported_function_value_keeps_its_declaration_at_indirect_call() {
+    let source = "import m; fn main() { let f: fn() -> i64 = m.host; println(f()); }";
+    let module = hew_parser::parse("pub fn host() -> i64 { 3 }");
+    assert!(module.errors.is_empty(), "{:#?}", module.errors);
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Import(import), _) = &mut parsed.program.items[0] else {
+        panic!("expected module import");
+    };
+    import.resolved_items = Some(module.program.items.clone().into());
+    let root = ModulePath::root();
+    let m = ModulePath::new(["m"]);
+    let mut graph = ModuleGraph::new(root.clone());
+    for (id, items) in [
+        (m.clone(), module.program.items),
+        (root.clone(), parsed.program.items.clone()),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![m, root];
+    parsed.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let declaration = output.defs.lookup_path("m.host").expect("imported host");
+    let call = source.rfind("f()").unwrap();
+    let key = SpanKey::in_module(&(call..call + 3), 0);
+    assert_eq!(
+        output.indirect_call_candidates.get(&key),
+        Some(&IndirectCallCandidates {
+            known: vec![CallableCandidate::Declaration(declaration)],
+            may_be_unknown: false,
+        })
+    );
+}
+
+#[test]
+fn indirect_branch_keeps_known_closure_and_opaque_parameter() {
+    let source = "fn choose(consume opaque: fn() -> i64) -> i64 { \
+        let selected = if true { || 1 } else { opaque }; selected() \
+    }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let literal_start = source.find("|| 1").unwrap();
+    let closure = output
+        .closure_escape_facts
+        .keys()
+        .find(|key| key.start == literal_start)
+        .expect("checker-published closure")
+        .clone();
+    let call_start = source.find("selected()").unwrap();
+    let call = output
+        .direct_call_targets
+        .iter()
+        .find(|(key, target)| {
+            key.start == call_start
+                && matches!(
+                    target,
+                    crate::check::dispatch::CallTarget::IndirectFunctionValue
+                )
+        })
+        .map(|(key, _)| key)
+        .expect("checked indirect call");
+    assert_eq!(
+        output.indirect_call_candidates.get(call),
+        Some(&IndirectCallCandidates {
+            known: vec![CallableCandidate::Closure(closure)],
+            may_be_unknown: true,
+        })
+    );
+}
+
+#[test]
+fn reassigned_function_value_keeps_every_possible_closure() {
+    let source = "fn main() { \
+        var f: fn() -> i64 = || 1; \
+        f = || 2; \
+        println(f()); \
+    }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let closure = |text: &str| {
+        let start = source.find(text).unwrap();
+        let key = output
+            .closure_escape_facts
+            .keys()
+            .find(|key| key.start == start)
+            .expect("checker-published closure span");
+        CallableCandidate::Closure(key.clone())
+    };
+    let call_start = source.find("f()").unwrap();
+    let call = output
+        .direct_call_targets
+        .keys()
+        .find(|key| key.start == call_start)
+        .expect("checked indirect call");
+    assert_eq!(
+        output.indirect_call_candidates.get(call),
+        Some(&IndirectCallCandidates {
+            known: vec![closure("|| 1"), closure("|| 2")],
+            may_be_unknown: false,
+        })
+    );
+}
+
+#[test]
 fn authored_static_method_wins_over_runtime_name() {
     let source = "type Node { v: i64 } \
         impl Node { fn shutdown() { println(\"user shutdown\"); } } \

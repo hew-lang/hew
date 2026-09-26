@@ -2836,6 +2836,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
+        self.record_indirect_call_candidates(span, func);
         let resolved = self.normalize_for_use(func_ty);
         match resolved {
             Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {

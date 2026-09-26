@@ -1184,6 +1184,7 @@ impl Checker {
                     self.env
                         .define_with_span(*name, val_ty.clone(), false, pattern.1.clone());
                     self.record_local_resolution(*name, &pattern.1);
+                    self.record_callable_binding_candidates(*name, value.as_ref());
                     // A plain identifier pattern begins at its name token;
                     // its AST span can also include the space before `=`.
                     let name_end = pattern.1.start.saturating_add(name.name.as_str().len());
@@ -1489,6 +1490,7 @@ impl Checker {
                 self.env
                     .define_with_span(name.to_string(), val_ty, true, span.clone());
                 self.record_local_resolution(*name, span);
+                self.record_callable_binding_candidates(*name, value.as_ref());
                 self.record_local_resolution(*name, name_span);
                 self.env
                     .set_collection_borrow(name.name.as_str(), collection_borrow);
@@ -1730,6 +1732,7 @@ impl Checker {
                 let value_ty = self
                     .rebind_inferred_closure_binding(&target.0, value, &target_ty)
                     .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty));
+                self.join_assigned_callable_candidates(target, value);
                 let collection_borrow = self.collection_borrow_origin(&value.0, &value.1);
                 if collection_borrow.is_none() || !matches!(target.0, Expr::Ident(_)) {
                     self.record_value_transfer(&value.0, &value.1);

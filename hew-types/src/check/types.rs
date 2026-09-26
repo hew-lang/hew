@@ -630,6 +630,9 @@ pub struct TypeCheckOutput {
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
     pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Exact possible callees for an accepted indirect call. Unknown origins
+    /// remain explicit even when other branches have known candidates.
+    pub indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
@@ -1061,6 +1064,47 @@ pub struct ClosureEscapeFact {
     pub kind: ClosureEscapeKind,
     /// Which classification rule produced `kind`.
     pub rule: ClosureEscapeRule,
+}
+
+/// One exact source of a function value selected at an indirect call.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CallableCandidate {
+    /// An authored callable declaration, including one in an imported module.
+    Declaration(crate::DefId),
+    /// A closure literal in the checked source module.
+    Closure(SpanKey),
+}
+
+/// Possible indirect callees and whether an opaque source may also arrive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndirectCallCandidates {
+    pub known: Vec<CallableCandidate>,
+    pub may_be_unknown: bool,
+}
+
+impl IndirectCallCandidates {
+    pub(super) fn unknown() -> Self {
+        Self {
+            known: Vec::new(),
+            may_be_unknown: true,
+        }
+    }
+
+    pub(super) fn single(candidate: CallableCandidate) -> Self {
+        Self {
+            known: vec![candidate],
+            may_be_unknown: false,
+        }
+    }
+
+    pub(super) fn join(&mut self, other: Self) {
+        for candidate in other.known {
+            if !self.known.contains(&candidate) {
+                self.known.push(candidate);
+            }
+        }
+        self.may_be_unknown |= other.may_be_unknown;
+    }
 }
 
 /// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
@@ -1575,6 +1619,7 @@ impl Default for TypeCheckOutput {
             builtin_fn_sigs: HashMap::new(),
             suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
+            indirect_call_candidates: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_bindings: HashMap::new(),
             trait_defaults: HashMap::new(),
@@ -3249,6 +3294,8 @@ pub struct Checker {
     pub(super) named_argument_calls: HashSet<SpanKey>,
     pub(super) effect_graph: super::effects::EffectGraph,
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    pub(super) indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
+    pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
@@ -4328,6 +4375,8 @@ impl Checker {
             named_argument_calls: HashSet::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
+            indirect_call_candidates: HashMap::new(),
+            callable_binding_candidates: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_bindings: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),

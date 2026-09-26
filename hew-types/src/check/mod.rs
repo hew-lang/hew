@@ -35,6 +35,7 @@ pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
 pub mod dispatch_table;
+mod indirect_candidates;
 pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
@@ -81,15 +82,15 @@ use self::types::{
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
-    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
-    DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
-    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, MachineMethodKind,
-    MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
-    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    AssignTargetShape, CallableCandidate, CheckedSelectSource, Checker, ChildKind, ChildSlot,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
+    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
+    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, IndirectCallCandidates,
+    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
+    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
+    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
     TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
@@ -2871,6 +2872,7 @@ impl Checker {
             fn_sig_keys: self.fn_sig_keys.clone(),
             builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
+            indirect_call_candidates: std::mem::take(&mut self.indirect_call_candidates),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
             trait_bindings: std::mem::take(&mut self.trait_bindings),
             trait_defaults,

@@ -378,7 +378,16 @@ fn try_struct_init_completions(
     let type_name = extract_type_name_before(source, brace_pos)?;
 
     let tc = type_output?;
-    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?;
+    let type_end = source.get(..brace_pos)?.trim_end().len();
+    let type_def = crate::identity::resolution_at(tc, 0, type_end.saturating_sub(1))
+        .and_then(|(span, resolution)| {
+            (span.start >= type_end.saturating_sub(type_name.len())).then_some(resolution)
+        })
+        .and_then(|resolution| match resolution {
+            hew_types::check::scope::Resolution::Nominal(id) => tc.type_defs.get(&id).cloned(),
+            _ => None,
+        })
+        .or_else(|| method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name))?;
     if type_def.fields.is_empty() {
         return None;
     }

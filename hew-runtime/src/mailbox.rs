@@ -1496,13 +1496,16 @@ pub struct HewMailbox {
     /// Typed destructor for legacy copied message payloads evicted before
     /// dispatch can move their owned fields out.
     message_drop_fn: Option<HewMessageDropFn>,
-    /// Whether the mailbox has been closed.
-    closed: std::sync::atomic::AtomicBool,
+    /// Closed bit and number of producers inside admission. A single atomic
+    /// makes close and the last accepted publication one ordering decision.
+    admission: AtomicUsize,
     /// Whether a stop has been requested on this mailbox.
     ///
     /// This flag IS the stop signal — there is no queued node. See
     /// [`mailbox_request_stop`].
     stop_requested: std::sync::atomic::AtomicBool,
+    /// Forceful lifecycle request; unlike legacy stop, authored hooks are skipped.
+    terminate_requested: std::sync::atomic::AtomicBool,
     /// Serialises terminal drains across the terminal publisher, an active
     /// scheduler owner, and a producer helping after its wake CAS loses.
     terminal_reclaiming: Mutex<()>,
@@ -1520,6 +1523,46 @@ pub struct HewMailbox {
     pub(crate) high_water_mark: AtomicI64,
     /// Whether this mailbox uses the slow (mutex) path for user messages.
     use_slow_path: bool,
+}
+
+const ADMISSION_CLOSED: usize = 1 << (usize::BITS - 1);
+const ADMISSION_COUNT: usize = ADMISSION_CLOSED - 1;
+
+struct AdmissionGuard<'a>(&'a HewMailbox);
+
+impl Drop for AdmissionGuard<'_> {
+    fn drop(&mut self) {
+        self.0.admission.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl HewMailbox {
+    fn enter_admission(&self) -> Option<AdmissionGuard<'_>> {
+        let mut state = self.admission.load(Ordering::Acquire);
+        loop {
+            if state & ADMISSION_CLOSED != 0 {
+                return None;
+            }
+            assert!(state & ADMISSION_COUNT != ADMISSION_COUNT);
+            match self.admission.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(AdmissionGuard(self)),
+                Err(current) => state = current,
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.admission.load(Ordering::Acquire) & ADMISSION_CLOSED != 0
+    }
+
+    fn admissions_drained(&self) -> bool {
+        self.admission.load(Ordering::Acquire) == ADMISSION_CLOSED
+    }
 }
 
 impl HewMailbox {
@@ -1633,8 +1676,9 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
-        closed: std::sync::atomic::AtomicBool::new(false),
+        admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminate_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
         block_wait: Mutex::new(()),
         not_full: Condvar::new(),
@@ -1675,8 +1719,9 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
-        closed: std::sync::atomic::AtomicBool::new(false),
+        admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminate_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
         block_wait: Mutex::new(()),
         not_full: Condvar::new(),
@@ -1726,8 +1771,9 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
-        closed: std::sync::atomic::AtomicBool::new(false),
+        admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminate_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
         block_wait: Mutex::new(()),
         not_full: Condvar::new(),
@@ -1769,8 +1815,9 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         coalesce_key_fn: None,
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
-        closed: std::sync::atomic::AtomicBool::new(false),
+        admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminate_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
         block_wait: Mutex::new(()),
         not_full: Condvar::new(),
@@ -1981,9 +2028,9 @@ unsafe fn send_with_overflow(
     non_blocking: bool,
     reply_channel: *mut c_void,
 ) -> SendOutcome {
-    if mb.closed.load(Ordering::Acquire) {
+    let Some(_admission) = mb.enter_admission() else {
         return SendOutcome::Closed;
-    }
+    };
 
     // Lock-free bounded mailboxes must claim capacity before allocating or
     // publishing a node so concurrent producers cannot all pass the same
@@ -2117,7 +2164,7 @@ unsafe fn send_with_overflow(
                     }
                     // Wait on condvar until space is available.
                     loop {
-                        if mb.closed.load(Ordering::Acquire) {
+                        if mb.is_closed() {
                             return SendOutcome::Closed;
                         }
                         let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
@@ -2129,7 +2176,7 @@ unsafe fn send_with_overflow(
                         // they cannot pass this sender's final checks before
                         // it atomically parks.
                         let wait = mb.block_wait.lock_or_recover();
-                        if mb.closed.load(Ordering::Acquire) {
+                        if mb.is_closed() {
                             return SendOutcome::Closed;
                         }
                         #[cfg(test)]
@@ -2455,9 +2502,9 @@ unsafe fn admit_native_request(
     reply: *mut c_void,
     terminal: bool,
 ) -> SendOutcome {
-    if mb.closed.load(Ordering::Acquire) {
+    let Some(_admission) = mb.enter_admission() else {
         return SendOutcome::Closed;
-    }
+    };
     // SAFETY: allocation retains caller ownership of the envelope until publication.
     let node = unsafe { msg_node_alloc_aliased(msg_type, envelope, reply) };
     if node.is_null() {
@@ -2465,7 +2512,7 @@ unsafe fn admit_native_request(
     }
     let outcome = if mb.capacity > 0 && mb.use_slow_path {
         let mut queue = mb.slow_path.lock_or_recover();
-        if mb.closed.load(Ordering::Acquire) {
+        if mb.is_closed() {
             SendOutcome::Closed
         } else if !terminal
             && i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) >= mb.capacity
@@ -2682,15 +2729,15 @@ pub(crate) unsafe fn mailbox_await_send(
     }
     // SAFETY: caller guarantees a live mailbox.
     let mailbox = unsafe { &*mb };
-    if mailbox.closed.load(Ordering::Acquire) {
+    let Some(_admission) = mailbox.enter_admission() else {
         return (HewError::ErrActorStopped as i32, 0);
-    }
+    };
     if mailbox.capacity <= 0 || mailbox.overflow != HewOverflowPolicy::Block {
         return (HewError::ErrMailboxFull as i32, 0);
     }
 
     let mut queue = mailbox.slow_path.lock_or_recover();
-    if mailbox.closed.load(Ordering::Acquire) {
+    if mailbox.is_closed() {
         return (HewError::ErrActorStopped as i32, 0);
     }
     // SAFETY: the caller guarantees the readable payload range.
@@ -2711,7 +2758,7 @@ pub(crate) unsafe fn mailbox_await_send(
     // registration. Close never takes the queue lock and therefore cannot
     // deadlock with callbacks that close from inside a coalesce traversal.
     let mut waiters = mailbox.blocked_senders.lock_or_recover();
-    if mailbox.closed.load(Ordering::Acquire) {
+    if mailbox.is_closed() {
         drop(waiters);
         drop(queue);
         // SAFETY: the node was never published and remains exclusively owned.
@@ -2762,16 +2809,16 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
     }
     // SAFETY: caller guarantees a live mailbox.
     let mailbox = unsafe { &*mb };
-    if mailbox.closed.load(Ordering::Acquire) {
+    let Some(_admission) = mailbox.enter_admission() else {
         return HewError::ErrActorStopped as i32;
-    }
+    };
     if mailbox.capacity <= 0 || mailbox.overflow != HewOverflowPolicy::Block {
         // SAFETY: caller guarantees the ordinary send preconditions.
         return unsafe { hew_mailbox_send_with_reply(mb, msg_type, data, size, reply_channel) };
     }
 
     let mut queue = mailbox.slow_path.lock_or_recover();
-    if mailbox.closed.load(Ordering::Acquire) {
+    if mailbox.is_closed() {
         return HewError::ErrActorStopped as i32;
     }
     // SAFETY: the caller guarantees the readable payload and live channel.
@@ -2788,7 +2835,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
     }
 
     let mut waiters = mailbox.blocked_senders.lock_or_recover();
-    if mailbox.closed.load(Ordering::Acquire) {
+    if mailbox.is_closed() {
         drop(waiters);
         drop(queue);
         // SAFETY: the node was never published and remains exclusively owned.
@@ -3081,6 +3128,29 @@ pub(crate) unsafe fn mailbox_request_stop(mb: *mut HewMailbox) {
     mb.stop_requested.store(true, Ordering::Release);
 }
 
+/// Record the forceful terminal cause before latching cancellation.
+///
+/// # Safety
+/// `mb` must be a valid mailbox pointer or null.
+pub(crate) unsafe fn mailbox_request_terminate(mb: *mut HewMailbox) {
+    if !mb.is_null() {
+        // SAFETY: caller keeps the mailbox live.
+        unsafe { &*mb }
+            .terminate_requested
+            .store(true, Ordering::Release);
+    }
+}
+
+/// Whether the terminal request was forceful.
+///
+/// # Safety
+/// `mb` must be a valid mailbox pointer or null.
+pub(crate) unsafe fn mailbox_terminate_requested(mb: *mut HewMailbox) -> bool {
+    !mb.is_null()
+        // SAFETY: caller keeps the mailbox live.
+        && unsafe { &*mb }.terminate_requested.load(Ordering::Acquire)
+}
+
 /// Whether a stop has been requested on this mailbox.
 ///
 /// # Safety
@@ -3145,7 +3215,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
 pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
-    if !mb.closed.swap(true, Ordering::AcqRel) {
+    if mb.admission.fetch_or(ADMISSION_CLOSED, Ordering::AcqRel) & ADMISSION_CLOSED == 0 {
         let blocked: Vec<_> = {
             let mut waiters = mb.blocked_senders.lock_or_recover();
             waiters.drain(..).collect()
@@ -3178,7 +3248,17 @@ pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
 pub(crate) unsafe fn mailbox_is_closed(mb: *mut HewMailbox) -> bool {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
-    mb.closed.load(Ordering::Acquire)
+    mb.is_closed()
+}
+
+/// True once close has excluded new producers and every pre-close admission
+/// has finished its publication or refusal.
+///
+/// # Safety
+/// `mb` must be a valid mailbox pointer.
+pub(crate) unsafe fn mailbox_admissions_drained(mb: *mut HewMailbox) -> bool {
+    // SAFETY: caller keeps the mailbox live.
+    unsafe { &*mb }.admissions_drained()
 }
 
 // ── Receive (consumer side) ─────────────────────────────────────────────
@@ -4402,7 +4482,7 @@ mod tests {
                 .expect("re-entrant close from coalesce drop callback deadlocked");
             assert_eq!(result, HewError::Ok as i32);
             worker.join().expect("coalescing sender panicked");
-            assert!((*mb).closed.load(Ordering::Acquire));
+            assert!((*mb).is_closed());
 
             REENTRANT_CLOSE_MAILBOX.store(0, Ordering::Release);
             hew_mailbox_free(mb);
@@ -4452,7 +4532,7 @@ mod tests {
                 .expect("re-entrant close from coalesce key callback deadlocked");
             assert_eq!(result, HewError::Ok as i32);
             worker.join().expect("coalescing sender panicked");
-            assert!((*mb).closed.load(Ordering::Acquire));
+            assert!((*mb).is_closed());
 
             REENTRANT_CLOSE_MAILBOX.store(0, Ordering::Release);
             hew_mailbox_free(mb);
@@ -4868,7 +4948,7 @@ mod tests {
             // Close publishes before it joins block_wait. Once observed here,
             // releasing the sender forces it to park before close can notify.
             let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !(*mb).closed.load(Ordering::Acquire) {
+            while !(*mb).is_closed() {
                 assert!(
                     std::time::Instant::now() < close_deadline,
                     "closer did not publish the closed predicate"
@@ -4930,7 +5010,7 @@ mod tests {
                 mailbox_close(ptr::without_provenance_mut(mb_addr));
             });
             let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !(*mb).closed.load(Ordering::Acquire) {
+            while !(*mb).is_closed() {
                 assert!(
                     std::time::Instant::now() < close_deadline,
                     "closer did not publish the closed predicate"

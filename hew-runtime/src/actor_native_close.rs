@@ -179,13 +179,31 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
 
 /// Request cooperative stop through a stable actor identity.
 #[no_mangle]
-pub extern "C" fn hew_actor_close_native(token: local_handles::HewLocalPidId) {
+pub extern "C" fn hew_actor_stop_native(token: local_handles::HewLocalPidId) {
     if let Some(id) = local_handles::resolve_current_actor(token) {
         live_actors::with_actor_send_by_id(id, |actor| {
-            // SAFETY: the guard pins the actor while the request is latched.
-            unsafe { crate::actor::hew_actor_stop(actor) };
+            // SAFETY: the guard pins the actor while admission closes.
+            unsafe { crate::actor::hew_actor_request_stop(actor) };
         });
     }
+}
+
+/// Request forceful termination through a stable actor identity.
+#[no_mangle]
+pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId) {
+    if let Some(id) = local_handles::resolve_current_actor(token) {
+        live_actors::with_actor_send_by_id(id, |actor| {
+            // SAFETY: the guard pins the actor while cancellation is latched.
+            unsafe { crate::actor::hew_actor_terminate(actor) };
+        });
+    }
+}
+
+/// Legacy native close entry retained only until compiler lifecycle emission
+/// switches to `hew_actor_stop_native`.
+#[no_mangle]
+pub extern "C" fn hew_actor_close_native(token: local_handles::HewLocalPidId) {
+    hew_actor_stop_native(token);
 }
 
 #[derive(Debug)]

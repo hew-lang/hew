@@ -4652,6 +4652,149 @@ fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
 }
 
 #[test]
+fn native_graceful_stop_drains_accepted_turns_before_completion() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+    use std::sync::Barrier;
+
+    struct StopState {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+        turns: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for StopState {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    unsafe extern "C" fn drop_state(state: *mut c_void) {
+        // SAFETY: native spawn owns one initialized StopState.
+        unsafe { std::ptr::drop_in_place(state.cast::<StopState>()) };
+    }
+
+    unsafe extern "C-unwind" fn clone_state(state: *const c_void) -> *mut c_void {
+        // SAFETY: the source is an initialized StopState owned by the actor.
+        let source = unsafe { &*state.cast::<StopState>() };
+        let copy = crate::mem::buf_try_alloc(std::mem::size_of::<StopState>()).cast::<StopState>();
+        if !copy.is_null() {
+            // SAFETY: the allocation has room for one StopState.
+            unsafe {
+                copy.write(StopState {
+                    entered: source.entered.clone(),
+                    release: source.release.clone(),
+                    turns: source.turns.clone(),
+                    drops: source.drops.clone(),
+                });
+            }
+        }
+        copy.cast()
+    }
+
+    unsafe extern "C-unwind" fn dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        // SAFETY: the actor owns this state for every dispatch turn.
+        let state = unsafe { &*state.cast::<StopState>() };
+        if state.turns.fetch_add(1, Ordering::SeqCst) == 0 {
+            state.entered.wait();
+            state.release.wait();
+        }
+        ptr::null_mut()
+    }
+
+    let _guard = crate::runtime_test_guard();
+    let runtime = NativeSchedulerGuard::new();
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let turns = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let state = crate::mem::buf_try_alloc(std::mem::size_of::<StopState>()).cast::<StopState>();
+    assert!(!state.is_null());
+    // SAFETY: the allocation has room for one initialized StopState.
+    unsafe {
+        state.write(StopState {
+            entered: entered.clone(),
+            release: release.clone(),
+            turns: turns.clone(),
+            drops: drops.clone(),
+        });
+    }
+    let mut fault = ptr::null_mut();
+    // SAFETY: all callback signatures and state ownership match native spawn.
+    let token = unsafe {
+        crate::actor::hew_actor_spawn_native(
+            state.cast(),
+            std::mem::size_of::<StopState>(),
+            dispatch,
+            drop_state,
+            clone_state,
+            None,
+            0,
+            0,
+            0,
+            ptr::null(),
+            0,
+            None,
+            None,
+            &raw mut fault,
+            None,
+            0,
+            None,
+            ptr::null_mut(),
+        )
+    };
+    assert!(fault.is_null());
+    assert_ne!(
+        token,
+        crate::lifetime::local_handles::HewLocalPidId::INVALID
+    );
+    let (ready, waker) = crate::wake::blocking::Readiness::new();
+    // SAFETY: the waker remains live until the observer is freed.
+    let wait = unsafe { crate::actor_native::hew_actor_wait_new(token, waker.descriptor()) };
+    assert_eq!(unsafe { crate::actor_native::hew_actor_wait_poll(wait) }, 0);
+
+    // SAFETY: token names this live actor, and empty payloads are valid.
+    assert_eq!(
+        unsafe { hew_local_pid_send(token, 1, ptr::null_mut(), 0) },
+        0
+    );
+    entered.wait();
+    // The second turn is already accepted when stop closes admission.
+    assert_eq!(
+        unsafe { hew_local_pid_send(token, 2, ptr::null_mut(), 0) },
+        0
+    );
+    crate::actor_native::hew_actor_stop_native(token);
+    assert_eq!(unsafe { crate::actor_native::hew_actor_wait_poll(wait) }, 0);
+    assert!(!ready.take_ready());
+    assert_eq!(turns.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    // SAFETY: stop has closed admission for this stable token.
+    assert_eq!(
+        unsafe { hew_local_pid_send(token, 3, ptr::null_mut(), 0) },
+        HewError::ErrActorStopped as i32
+    );
+
+    release.wait();
+    ready.wait();
+    // SAFETY: completion is now terminal and the observer remains owned here.
+    assert_eq!(unsafe { crate::actor_native::hew_actor_wait_poll(wait) }, 1);
+    assert_eq!(turns.load(Ordering::SeqCst), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    // SAFETY: the test owns its wait descriptor until this release.
+    unsafe { crate::actor_native::hew_actor_wait_free(wait) };
+    drop(runtime);
+}
+
+#[test]
 fn native_ask_successful_reply_returns_value_without_duplicate_cleanup() {
     let _guard = crate::runtime_test_guard();
     let runtime = NativeSchedulerGuard::new();

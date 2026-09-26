@@ -1231,8 +1231,11 @@ non-declarable = [
   "hew_actor_send_wait_new",
   "hew_actor_send_wait_poll",
   "hew_actor_spawn_native",
+  "hew_actor_stop_native",
   "hew_actor_submit_native",
   "hew_actor_submit_native_terminal",
+  "hew_actor_terminate",
+  "hew_actor_terminate_native",
   "hew_actor_wait_edge_fault",
   "hew_actor_wait_edge_free",
   "hew_actor_wait_edge_new",
@@ -1559,11 +1562,16 @@ non-declarable = [
   # incarnation. It is the whole lowering of a `supervisor` declaration; user
   # code has no way to name it or the child table it reads.
   "hew_supervisor_native_child",
+  "hew_supervisor_native_restart_wait_free",
+  "hew_supervisor_native_restart_wait_new",
+  "hew_supervisor_native_restart_wait_poll",
   "hew_supervisor_native_role_owner",
   "hew_supervisor_native_role_request",
   "hew_supervisor_native_role_wait_new",
   "hew_supervisor_native_spawn",
   "hew_supervisor_role_await_send",
+  "hew_supervisor_stop_native",
+  "hew_supervisor_terminate_native",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own
   # `supervisor_sys_dispatch` trampoline on the supervisor's not-yet-published
   # `self_actor`. The installed value is a compile-time constant code address
@@ -1577,6 +1585,7 @@ non-declarable = [
   # is already `non-declarable`.
   "hew_supervisor_start",
   "hew_task_scope_set_current",
+  "hew_test_selected",
   "hew_wasm_register_actor_meta",
   "hew_wire_cbor_to_text",
   "hew_wire_text_to_cbor",
@@ -1994,22 +2003,39 @@ direct child token. The receiving parent validates that exact incarnation before
 applying normal-stop policy. Source close can request teardown but cannot supply
 the parent, slot, child event payload or system-message kind."""
 
-"publish_terminal_notification -> hew_supervisor_notify_child_actor_event" = """
-Authenticated producer. The private publisher consumes the terminal notice
-recorded by hew_actor_trap_inner before any observer is woken. The delayed
-notice preserves that exact actor, supervisor, reason and fault record through
-consuming cleanup. hew_actor_trap_inner is NOT user-declarable (private, \
-and reached through hew_actor_trap, whose internal tier is \
-asserted by extern_rt_system_lane_symbols_rejected), which is what makes the \
-rest of this reason true: it was demoted precisely because its `actor` and \
-`error_code` arguments let a caller choose both the subject and the reason of \
-the event. Every remaining caller is a runtime crash path that reports a crash \
-the runtime detected in the trapping actor; the notification goes to that \
-actor's registered parent supervisor, whose identity is runtime state, and the \
-payload is the crash record. Reached transitively by hew_actor_stop / \
-hew_actor_close / hew_actor_group_stop_all via call_terminate_fn -> \
-handle_crash_recovery when a terminate hook panics — those callers name the \
-actor they already own and supply no code at all."""
+"finish_actor_terminal -> notify_child_actor_end_event" = """
+Authenticated normal-end producer. finish_actor_terminal is the sole owner of
+terminal cleanup: it has claimed the exact actor incarnation, run its stop
+hook, released owned state, and read the terminal reason from that actor and
+its mailbox termination latch. The parent supervisor pointer and child slot
+come from the child's runtime registration, not source arguments. The parent
+validates the actor identity when it handles the private system event. A
+source stop request can choose only the actor it already holds, never the
+event kind, parent, slot, or reason."""
+
+"publish_terminal_notification -> notify_child_actor_end_event" = """
+Authenticated crash producer. The terminal notice is recorded by the private
+actor crash path before any observer wakes, then consumed by the actor's sole
+terminal cleanup owner. It carries that exact incarnation's runtime-recorded
+parent, slot, crash reason, code, and fault record. The parent checks the
+incarnation before ruling; source code can neither forge the system-message
+kind nor choose the event payload."""
+
+"wait_for_child_stop_deadline -> step" = """
+The single-thread driver cannot wait on another worker while a supervised
+child finishes its cooperative stop. This private deadline loop advances the
+driver's existing ready queue until the child's completion or the declared
+stop deadline; no source value supplies a system message or dispatch address.
+It is the same scheduler handoff as the authenticated wait -> step edge,
+scoped to the teardown owner of this exact child."""
+
+"progress_supervisor_wait -> step" = """
+The supervisor teardown owner must progress its self actor and pending restart
+timer work while waiting on a single-thread driver. This helper steps only the
+driver's existing ready queue, or yields to scheduler workers on a threaded
+runtime; it cannot construct a system message or supply a dispatch pointer.
+Its source caller gains no private-lane capability beyond waiting for its
+already requested supervisor cleanup."""
 
 "publish_terminal_notification -> propagate_exit_to_links" = """
 Authenticated producer, and see the edge above for why hew_actor_trap_inner \

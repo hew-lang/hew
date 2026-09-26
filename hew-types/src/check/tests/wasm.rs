@@ -1199,7 +1199,7 @@ fn main() {
             fn register() {
                 let worker = spawn Worker;
                 let result = monitor(worker);
-                link(worker);
+                let _ = link(worker);
                 match result {
                     .Ok(m) => {
                         let _ = m.close();
@@ -1665,8 +1665,8 @@ fn main() {
         let source = concat!(
             "fn main() {\n",
             "    let config = NodeConfig.at(\"127.0.0.1:9000\");\n",
-            "    Node.start(config);\n",
-            "    Node.connect(\"1@127.0.0.1:9001\");\n",
+            "    let _ = Node.start(config);\n",
+            "    let _ = Node.connect(\"1@127.0.0.1:9001\");\n",
             "}\n",
         );
         let output = check_native(source);

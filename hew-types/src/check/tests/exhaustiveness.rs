@@ -1326,8 +1326,12 @@ fn builtin_result_constructors_materialize_output_types_without_call_type_args()
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     assert!(
-        output.errors.is_empty(),
-        "unexpected errors: {:?}",
+        output.errors.len() == 2
+            && output
+                .errors
+                .iter()
+                .all(|error| { error.kind == crate::error::TypeErrorKind::ResultDropped }),
+        "bare constructor values should be refused only as discarded Results: {:?}",
         output.errors
     );
     assert!(
@@ -1488,8 +1492,12 @@ fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     assert!(
-        output.errors.is_empty(),
-        "unexpected errors: {:?}",
+        output.errors.len() == 2
+            && output
+                .errors
+                .iter()
+                .all(|error| { error.kind == crate::error::TypeErrorKind::ResultDropped }),
+        "bare constructor values should be refused only as discarded Results: {:?}",
         output.errors
     );
     assert!(

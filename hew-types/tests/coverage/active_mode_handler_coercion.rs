@@ -201,7 +201,7 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
             }}
             fn install({parameter}: {alias}.{receiver}) {{
                 let handler = spawn Handler();
-                connection.attach(handler);
+                let _ = connection.attach(handler);
             }}
         "
         );

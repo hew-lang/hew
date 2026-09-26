@@ -29,7 +29,7 @@ actor Progress {
 
 fn observe(group: Group<string>, progress: Progress) {
     progress.set(1).expect("observer started");
-    closed(group);
+    stopped(group);
     progress.set(2).expect("observer finished");
 }
 
@@ -41,12 +41,20 @@ fn main() {
     assert(progress.get().expect("pending observer") == 1);
     assert(group.worker.get().expect("live child") == "OWNED");
     println("tree remains live");
-    let closing = fork close(group);
-    closed(group);
+    let closing = fork {
+        let __hew_migrated_actor_1086 = group;
+        stop(__hew_migrated_actor_1086);
+        stopped(__hew_migrated_actor_1086);
+    };
+    stopped(group);
     await closing;
     await observer;
     assert(progress.get().expect("completed observer") == 2);
-    closed(group);
-    close(progress);
+    stopped(group);
+    {
+        let __hew_migrated_actor_1243 = progress;
+        stop(__hew_migrated_actor_1243);
+        stopped(__hew_migrated_actor_1243);
+    };
     println("tree observed closed");
 }

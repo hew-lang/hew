@@ -29,6 +29,10 @@ fn main() {
         .Ok(n) => println(n),
         .Err(_) => panic("total query failed"),
     }
-    close(sink);
+    {
+        let __hew_migrated_actor_813 = sink;
+        stop(__hew_migrated_actor_813);
+        stopped(__hew_migrated_actor_813);
+    };
     println("closed");
 }

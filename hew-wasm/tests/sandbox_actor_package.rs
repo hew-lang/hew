@@ -300,7 +300,8 @@ actor Worker {
 fn main() {
     let worker = spawn Worker;
     let _ = worker.work();
-    close(worker);
+    stop(worker);
+    stopped(worker);
     println("closed");
 }
 "#,
@@ -819,10 +820,11 @@ fn main() {
         let _ = await first;
         let _ = await second;
     };
-    let _ = await_restart group.first;
+    restarted(group.first);
     println(group.first.get().expect("recovered first"));
     println(group.second.get().expect("recovered second"));
-    close(group);
+    stop(group);
+    stopped(group);
 }
 "#;
     for seed in [0, 1, 7, 42] {
@@ -1028,8 +1030,10 @@ fn main() {{
     assert(closed == 9);
     println(f"closed {{closed}}");
     println("ready");
-    close(worker);
-    close(audit);
+    stop(worker);
+    stopped(worker);
+    stop(audit);
+    stopped(audit);
 }}
 "#
     );
@@ -1084,8 +1088,10 @@ fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
     worker.run(audit).expect("run worker");
-    close(worker);
-    close(audit);
+    stop(worker);
+    stopped(worker);
+    stop(audit);
+    stopped(audit);
 }
 "#,
     );
@@ -1304,11 +1310,13 @@ fn main() {
     mailbox(worker).hold(Ticket { audit: audit, id: 1, fail_close: false }, output.clone()).expect("first");
     input.recv().expect("started");
     mailbox(worker).hold(Ticket { audit: audit, id: 2, fail_close: FAIL_CLOSE }, output.clone()).expect("queued");
-    close(worker);
+    terminate(worker);
+    stopped(worker);
     println("barrier");
     output.close();
     input.close();
-    close(audit);
+    stop(audit);
+    stopped(audit);
 }
 "#;
     for fails in [false, true] {
@@ -1363,7 +1371,8 @@ fn main() {
     let owner = spawn Owner(output: output, ticket: Ticket { id: 7 });
     owner.ready().expect("ready");
     scope {
-        close(owner);
+        stop(owner);
+        stopped(owner);
         println("incorrect clean close");
     } handle failure {
         match failure {
@@ -1423,7 +1432,7 @@ fn main() {
 fn a_declared_overflow_answers_a_full_queue_before_an_explicit_wait() {
     let source = r#"
 actor Worker {
-    mailbox 1 overflow OVERFLOW,
+    mailbox 1 overflow OVERFLOW;
     receive fn work(value: i64) { println(value); }
 }
 actor Driver {
@@ -1437,8 +1446,10 @@ fn main() {
     let driver = spawn Driver;
     driver.run(worker).expect("driver");
     sleep(1ms);
-    close(worker);
-    close(driver);
+    stop(worker);
+    stopped(worker);
+    stop(driver);
+    stopped(driver);
 }
 "#;
     for (overflow, handled) in [
@@ -1485,8 +1496,10 @@ fn main() {
     let worker = spawn Worker;
     let driver = spawn Driver;
     driver.run(worker).expect("driver");
-    close(worker);
-    close(driver);
+    stop(worker);
+    stopped(worker);
+    stop(driver);
+    stopped(driver);
     println("barrier");
 }
 "#,

@@ -1,6 +1,6 @@
 [[case]]
 id = "resource-close-actor-queued"
-intent = "Closing an actor drains active and queued affine payloads whose authored close asks a sleeping peer, before publishing its completion barrier."
+intent = "Terminating an actor drains active and queued affine payloads whose authored close asks a sleeping peer, before publishing its completion barrier."
 source = "cases/resource-close-actor-queued.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20

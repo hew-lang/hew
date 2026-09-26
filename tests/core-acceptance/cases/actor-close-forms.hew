@@ -18,18 +18,30 @@ fn main() {
         .Ok(count) => println(count),
         .Err(_) => panic("bump failed"),
     }
-    close(waited);
+    {
+        let __hew_migrated_actor_462 = waited;
+        stop(__hew_migrated_actor_462);
+        stopped(__hew_migrated_actor_462);
+    };
     println("after close");
 
     // `fork close` requests without waiting; `await` joins the same point.
     let forked = spawn Keeper(name: "forked");
-    let request = fork close(forked);
+    let request = fork {
+        let __hew_migrated_actor_652 = forked;
+        stop(__hew_migrated_actor_652);
+        stopped(__hew_migrated_actor_652);
+    };
     await request;
     println("after join");
 
     // `closed` waits for a stop another party requested.
     let observed = spawn Keeper(name: "observed");
-    fork close(observed);
-    closed(observed);
+    fork {
+        let __hew_migrated_actor_832 = observed;
+        stop(__hew_migrated_actor_832);
+        stopped(__hew_migrated_actor_832);
+    };
+    stopped(observed);
     println("after closed");
 }

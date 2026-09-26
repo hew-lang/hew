@@ -37,7 +37,11 @@ fn main() {
             }
             .Err(_) => panic("served count query failed"),
         }
-        close(worker);
+        {
+            let __hew_migrated_actor_1123 = worker;
+            stop(__hew_migrated_actor_1123);
+            stopped(__hew_migrated_actor_1123);
+        };
     }
     println(served);
 }

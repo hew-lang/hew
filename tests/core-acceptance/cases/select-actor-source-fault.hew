@@ -34,5 +34,9 @@ fn main() {
         after fail_after_start(waiting) => println("unexpected timer"),
     };
     release.close();
-    close(worker);
+    {
+        let __hew_migrated_actor_1296 = worker;
+        stop(__hew_migrated_actor_1296);
+        stopped(__hew_migrated_actor_1296);
+    };
 }

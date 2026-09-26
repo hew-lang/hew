@@ -43,7 +43,11 @@ fn main() {
     calc.apply_operation(|a, b| a + b, 10).expect("add");
     calc.apply_operation(|a, b| a * b, 5).expect("multiply");
     assert(calc.value().expect("read result") == 50);
-    close(calc);
+    {
+        let __hew_migrated_actor_1043 = calc;
+        stop(__hew_migrated_actor_1043);
+        stopped(__hew_migrated_actor_1043);
+    };
     let worker = spawn Worker;
     let prefix = "captured ".to_upper();
     worker.apply(value: argument(), op: {
@@ -66,8 +70,20 @@ fn main() {
     let words = spawn Transform<string>(current: "initial");
     mailbox(words, on_full: .Wait).apply(|value| prefix + value, "generic").expect("generic text");
     assert(words.get().expect("word") == "CAPTURED generic");
-    close(numbers);
-    close(words);
-    close(worker);
+    {
+        let __hew_migrated_actor_2111 = numbers;
+        stop(__hew_migrated_actor_2111);
+        stopped(__hew_migrated_actor_2111);
+    };
+    {
+        let __hew_migrated_actor_2131 = words;
+        stop(__hew_migrated_actor_2131);
+        stopped(__hew_migrated_actor_2131);
+    };
+    {
+        let __hew_migrated_actor_2149 = worker;
+        stop(__hew_migrated_actor_2149);
+        stopped(__hew_migrated_actor_2149);
+    };
     println("callable actor payloads");
 }

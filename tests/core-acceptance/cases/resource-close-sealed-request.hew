@@ -46,7 +46,11 @@ actor Runner {
                 .Err(ActorError.Rejected(failure)) => failure.message,
                 _ => panic("full mailbox accepted request"),
             };
-            close(gate);
+            {
+                let __hew_migrated_actor_1237 = gate;
+                terminate(__hew_migrated_actor_1237);
+                stopped(__hew_migrated_actor_1237);
+            };
             println("origin closed");
         };
         println("request closed");
@@ -57,6 +61,14 @@ fn main() {
     let audit = spawn Audit;
     let runner = spawn Runner;
     runner.run(audit).expect("request cleanup");
-    close(runner);
-    close(audit);
+    {
+        let __hew_migrated_actor_1468 = runner;
+        stop(__hew_migrated_actor_1468);
+        stopped(__hew_migrated_actor_1468);
+    };
+    {
+        let __hew_migrated_actor_1487 = audit;
+        stop(__hew_migrated_actor_1487);
+        stopped(__hew_migrated_actor_1487);
+    };
 }

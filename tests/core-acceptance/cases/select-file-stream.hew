@@ -45,5 +45,9 @@ fn main() {
         .Ok(report) => println(report),
         .Err(_) => println("watcher crashed"),
     }
-    close(watcher);
+    {
+        let __hew_migrated_actor_1545 = watcher;
+        stop(__hew_migrated_actor_1545);
+        stopped(__hew_migrated_actor_1545);
+    };
 }

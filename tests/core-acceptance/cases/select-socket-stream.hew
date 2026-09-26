@@ -50,5 +50,9 @@ fn main() {
     };
     output.close();
     listener.close();
-    close(clock);
+    {
+        let __hew_migrated_actor_1884 = clock;
+        stop(__hew_migrated_actor_1884);
+        stopped(__hew_migrated_actor_1884);
+    };
 }

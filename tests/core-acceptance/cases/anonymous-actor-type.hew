@@ -33,7 +33,19 @@ fn main() {
         println(line);
     };
     let _ = announce("announced");
-    close(scale);
-    close(job.run);
-    close(announce);
+    {
+        let __hew_migrated_actor_973 = scale;
+        stop(__hew_migrated_actor_973);
+        stopped(__hew_migrated_actor_973);
+    };
+    {
+        let __hew_migrated_actor_991 = job.run;
+        stop(__hew_migrated_actor_991);
+        stopped(__hew_migrated_actor_991);
+    };
+    {
+        let __hew_migrated_actor_1011 = announce;
+        stop(__hew_migrated_actor_1011);
+        stopped(__hew_migrated_actor_1011);
+    };
 }

@@ -18,6 +18,10 @@ actor Loader {
 fn main() {
     let loader = spawn Loader(path: "resource-read.bin");
     println(loader.describe().expect("describe"));
-    close(loader);
+    {
+        let __hew_migrated_actor_488 = loader;
+        stop(__hew_migrated_actor_488);
+        stopped(__hew_migrated_actor_488);
+    };
     println("released");
 }

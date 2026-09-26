@@ -38,9 +38,17 @@ fn main() {
     mailbox(worker).hold(Ticket { audit: audit, id: 1, fail_close: false }, output.clone()).expect("first");
     input.recv().expect("started");
     mailbox(worker).hold(Ticket { audit: audit, id: 2, fail_close: false }, output.clone()).expect("queued");
-    close(worker);
+    {
+        let __hew_migrated_actor_992 = worker;
+        terminate(__hew_migrated_actor_992);
+        stopped(__hew_migrated_actor_992);
+    };
     println("barrier");
     output.close();
     input.close();
-    close(audit);
+    {
+        let __hew_migrated_actor_1074 = audit;
+        stop(__hew_migrated_actor_1074);
+        stopped(__hew_migrated_actor_1074);
+    };
 }

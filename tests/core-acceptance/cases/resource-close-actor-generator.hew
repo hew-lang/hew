@@ -43,6 +43,14 @@ fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
     worker.run(audit).expect("generator cleanup");
-    close(worker);
-    close(audit);
+    {
+        let __hew_migrated_actor_945 = worker;
+        stop(__hew_migrated_actor_945);
+        stopped(__hew_migrated_actor_945);
+    };
+    {
+        let __hew_migrated_actor_964 = audit;
+        stop(__hew_migrated_actor_964);
+        stopped(__hew_migrated_actor_964);
+    };
 }

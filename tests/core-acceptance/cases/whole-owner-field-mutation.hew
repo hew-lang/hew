@@ -97,7 +97,11 @@ fn main() {
     let keeper = spawn Keeper(pool: Pool { items: [], ids: [], index: HashMap.new(), meta: Meta { tag: "keeper", count: 0 } });
     println(keeper.add(7).expect("add"));
     println(keeper.add(8).expect("add"));
-    close(keeper);
+    {
+        let __hew_migrated_actor_2236 = keeper;
+        stop(__hew_migrated_actor_2236);
+        stopped(__hew_migrated_actor_2236);
+    };
     let worker = spawn Worker;
     match worker.overflow() {
         .Ok(_) => println("unexpected"),

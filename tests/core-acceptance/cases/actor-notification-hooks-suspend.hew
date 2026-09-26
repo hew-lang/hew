@@ -33,7 +33,7 @@ actor Watcher {
         exits * 10 + downs
     }
 
-    #[on(exit)]
+    #[on(link)]
     fn exited(note: failure.CrashNotification) {
         sleep(1ms);
         audit.note("exit").expect("audit exit");
@@ -65,6 +65,14 @@ fn main() {
     }
     println(f"hooks {watcher.counts().expect("hook outcomes")}");
     observation.close();
-    close(watcher);
-    close(audit);
+    {
+        let __hew_migrated_actor_1751 = watcher;
+        stop(__hew_migrated_actor_1751);
+        stopped(__hew_migrated_actor_1751);
+    };
+    {
+        let __hew_migrated_actor_1771 = audit;
+        stop(__hew_migrated_actor_1771);
+        stopped(__hew_migrated_actor_1771);
+    };
 }

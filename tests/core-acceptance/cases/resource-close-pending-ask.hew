@@ -47,7 +47,15 @@ fn main() {
             .Fault { message } => panic(message),
         }
     };
-    close(gate);
+    {
+        let __hew_migrated_actor_1150 = gate;
+        terminate(__hew_migrated_actor_1150);
+        stopped(__hew_migrated_actor_1150);
+    };
     println("gate closed");
-    close(audit);
+    {
+        let __hew_migrated_actor_1195 = audit;
+        stop(__hew_migrated_actor_1195);
+        stopped(__hew_migrated_actor_1195);
+    };
 }

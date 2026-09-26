@@ -23,5 +23,9 @@ fn main() {
     // The next completion call is queued behind the submission, so its
     // reply follows the submitted note.
     println(journal.pair(second: "d", first: "c").expect("pair"));
-    close(journal);
+    {
+        let __hew_migrated_actor_934 = journal;
+        stop(__hew_migrated_actor_934);
+        stopped(__hew_migrated_actor_934);
+    };
 }

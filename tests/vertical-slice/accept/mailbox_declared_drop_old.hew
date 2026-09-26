@@ -42,6 +42,14 @@ fn main() {
     let worker = spawn Latest;
     let driver = spawn Driver;
     let _ = driver.run(worker);
-    close(driver);
-    close(worker);
+    {
+        let __hew_migrated_actor_1336 = driver;
+        stop(__hew_migrated_actor_1336);
+        stopped(__hew_migrated_actor_1336);
+    };
+    {
+        let __hew_migrated_actor_1355 = worker;
+        stop(__hew_migrated_actor_1355);
+        stopped(__hew_migrated_actor_1355);
+    };
 }

@@ -43,6 +43,10 @@ fn main() {
 
     // The buffer the actor was seeded from kept its own byte.
     assert(seed.len() == 1);
-    close(buffer);
+    {
+        let __hew_migrated_actor_1451 = buffer;
+        stop(__hew_migrated_actor_1451);
+        stopped(__hew_migrated_actor_1451);
+    };
     println("actor bytes pop passed");
 }

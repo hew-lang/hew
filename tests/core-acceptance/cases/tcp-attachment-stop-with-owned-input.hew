@@ -42,7 +42,11 @@ fn main() {
         .None => panic("actor never received input"),
     }
     let _ = client.send("pending\0input".to_bytes());
-    close(receiver);
+    {
+        let __hew_migrated_actor_1380 = receiver;
+        stop(__hew_migrated_actor_1380);
+        stopped(__hew_migrated_actor_1380);
+    };
     client.close();
     listener.close();
     rx.close();

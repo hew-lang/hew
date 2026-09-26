@@ -2248,17 +2248,27 @@ fn migrate_in_snapshot(files: &[PathBuf], root: Option<&Path>, check: bool) -> R
             mapped_files.push((file.clone(), snapshot_root.join(relative)));
         }
     } else {
-        for (index, file) in files.iter().enumerate() {
+        let mut snapshot_parents: std::collections::BTreeMap<PathBuf, PathBuf> =
+            std::collections::BTreeMap::new();
+        for file in files {
             let parent = file
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
-            let snapshot_parent = snapshot.path().join(format!("input-{index}"));
-            copy_migration_snapshot_tree(parent, &snapshot_parent, snapshot.path()).map_err(
-                |error| {
-                    eprintln!("Error: cannot create migration check snapshot: {error}");
-                },
-            )?;
+            let snapshot_parent = if let Some(mapped) = snapshot_parents.get(parent) {
+                mapped.clone()
+            } else {
+                let mapped = snapshot
+                    .path()
+                    .join(format!("input-{}", snapshot_parents.len()));
+                copy_migration_snapshot_tree(parent, &mapped, snapshot.path()).map_err(
+                    |error| {
+                        eprintln!("Error: cannot create migration check snapshot: {error}");
+                    },
+                )?;
+                snapshot_parents.insert(parent.to_path_buf(), mapped.clone());
+                mapped
+            };
             let Some(file_name) = file.file_name() else {
                 eprintln!(
                     "Error: migration input has no file name: {}",

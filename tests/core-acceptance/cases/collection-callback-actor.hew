@@ -68,6 +68,14 @@ fn main() {
     let oracle = spawn Oracle;
     let store = spawn Store;
     println(store.exercise(oracle).expect("collection exercise"));
-    close(store);
-    close(oracle);
+    {
+        let __hew_migrated_actor_2139 = store;
+        stop(__hew_migrated_actor_2139);
+        stopped(__hew_migrated_actor_2139);
+    };
+    {
+        let __hew_migrated_actor_2157 = oracle;
+        stop(__hew_migrated_actor_2157);
+        stopped(__hew_migrated_actor_2157);
+    };
 }

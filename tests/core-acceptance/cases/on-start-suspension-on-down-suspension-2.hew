@@ -26,451 +26,851 @@ fn main() {
     let t0 = spawn Target;
     let w0 = spawn Watcher;
     let m0 = w0.watch(t0).expect("watch");
-    close(t0);
+    {
+        let __hew_migrated_actor_559 = t0;
+        stop(__hew_migrated_actor_559);
+        stopped(__hew_migrated_actor_559);
+    };
     while w0.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m0.close();
-    close(w0);
+    {
+        let __hew_migrated_actor_658 = w0;
+        stop(__hew_migrated_actor_658);
+        stopped(__hew_migrated_actor_658);
+    };
     let t1 = spawn Target;
     let w1 = spawn Watcher;
     let m1 = w1.watch(t1).expect("watch");
-    close(t1);
+    {
+        let __hew_migrated_actor_771 = t1;
+        stop(__hew_migrated_actor_771);
+        stopped(__hew_migrated_actor_771);
+    };
     while w1.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m1.close();
-    close(w1);
+    {
+        let __hew_migrated_actor_870 = w1;
+        stop(__hew_migrated_actor_870);
+        stopped(__hew_migrated_actor_870);
+    };
     let t2 = spawn Target;
     let w2 = spawn Watcher;
     let m2 = w2.watch(t2).expect("watch");
-    close(t2);
+    {
+        let __hew_migrated_actor_983 = t2;
+        stop(__hew_migrated_actor_983);
+        stopped(__hew_migrated_actor_983);
+    };
     while w2.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m2.close();
-    close(w2);
+    {
+        let __hew_migrated_actor_1082 = w2;
+        stop(__hew_migrated_actor_1082);
+        stopped(__hew_migrated_actor_1082);
+    };
     let t3 = spawn Target;
     let w3 = spawn Watcher;
     let m3 = w3.watch(t3).expect("watch");
-    close(t3);
+    {
+        let __hew_migrated_actor_1195 = t3;
+        stop(__hew_migrated_actor_1195);
+        stopped(__hew_migrated_actor_1195);
+    };
     while w3.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m3.close();
-    close(w3);
+    {
+        let __hew_migrated_actor_1294 = w3;
+        stop(__hew_migrated_actor_1294);
+        stopped(__hew_migrated_actor_1294);
+    };
     let t4 = spawn Target;
     let w4 = spawn Watcher;
     let m4 = w4.watch(t4).expect("watch");
-    close(t4);
+    {
+        let __hew_migrated_actor_1407 = t4;
+        stop(__hew_migrated_actor_1407);
+        stopped(__hew_migrated_actor_1407);
+    };
     while w4.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m4.close();
-    close(w4);
+    {
+        let __hew_migrated_actor_1506 = w4;
+        stop(__hew_migrated_actor_1506);
+        stopped(__hew_migrated_actor_1506);
+    };
     let t5 = spawn Target;
     let w5 = spawn Watcher;
     let m5 = w5.watch(t5).expect("watch");
-    close(t5);
+    {
+        let __hew_migrated_actor_1619 = t5;
+        stop(__hew_migrated_actor_1619);
+        stopped(__hew_migrated_actor_1619);
+    };
     while w5.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m5.close();
-    close(w5);
+    {
+        let __hew_migrated_actor_1718 = w5;
+        stop(__hew_migrated_actor_1718);
+        stopped(__hew_migrated_actor_1718);
+    };
     let t6 = spawn Target;
     let w6 = spawn Watcher;
     let m6 = w6.watch(t6).expect("watch");
-    close(t6);
+    {
+        let __hew_migrated_actor_1831 = t6;
+        stop(__hew_migrated_actor_1831);
+        stopped(__hew_migrated_actor_1831);
+    };
     while w6.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m6.close();
-    close(w6);
+    {
+        let __hew_migrated_actor_1930 = w6;
+        stop(__hew_migrated_actor_1930);
+        stopped(__hew_migrated_actor_1930);
+    };
     let t7 = spawn Target;
     let w7 = spawn Watcher;
     let m7 = w7.watch(t7).expect("watch");
-    close(t7);
+    {
+        let __hew_migrated_actor_2043 = t7;
+        stop(__hew_migrated_actor_2043);
+        stopped(__hew_migrated_actor_2043);
+    };
     while w7.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m7.close();
-    close(w7);
+    {
+        let __hew_migrated_actor_2142 = w7;
+        stop(__hew_migrated_actor_2142);
+        stopped(__hew_migrated_actor_2142);
+    };
     let t8 = spawn Target;
     let w8 = spawn Watcher;
     let m8 = w8.watch(t8).expect("watch");
-    close(t8);
+    {
+        let __hew_migrated_actor_2255 = t8;
+        stop(__hew_migrated_actor_2255);
+        stopped(__hew_migrated_actor_2255);
+    };
     while w8.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m8.close();
-    close(w8);
+    {
+        let __hew_migrated_actor_2354 = w8;
+        stop(__hew_migrated_actor_2354);
+        stopped(__hew_migrated_actor_2354);
+    };
     let t9 = spawn Target;
     let w9 = spawn Watcher;
     let m9 = w9.watch(t9).expect("watch");
-    close(t9);
+    {
+        let __hew_migrated_actor_2467 = t9;
+        stop(__hew_migrated_actor_2467);
+        stopped(__hew_migrated_actor_2467);
+    };
     while w9.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m9.close();
-    close(w9);
+    {
+        let __hew_migrated_actor_2566 = w9;
+        stop(__hew_migrated_actor_2566);
+        stopped(__hew_migrated_actor_2566);
+    };
     let t10 = spawn Target;
     let w10 = spawn Watcher;
     let m10 = w10.watch(t10).expect("watch");
-    close(t10);
+    {
+        let __hew_migrated_actor_2684 = t10;
+        stop(__hew_migrated_actor_2684);
+        stopped(__hew_migrated_actor_2684);
+    };
     while w10.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m10.close();
-    close(w10);
+    {
+        let __hew_migrated_actor_2786 = w10;
+        stop(__hew_migrated_actor_2786);
+        stopped(__hew_migrated_actor_2786);
+    };
     let t11 = spawn Target;
     let w11 = spawn Watcher;
     let m11 = w11.watch(t11).expect("watch");
-    close(t11);
+    {
+        let __hew_migrated_actor_2905 = t11;
+        stop(__hew_migrated_actor_2905);
+        stopped(__hew_migrated_actor_2905);
+    };
     while w11.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m11.close();
-    close(w11);
+    {
+        let __hew_migrated_actor_3007 = w11;
+        stop(__hew_migrated_actor_3007);
+        stopped(__hew_migrated_actor_3007);
+    };
     let t12 = spawn Target;
     let w12 = spawn Watcher;
     let m12 = w12.watch(t12).expect("watch");
-    close(t12);
+    {
+        let __hew_migrated_actor_3126 = t12;
+        stop(__hew_migrated_actor_3126);
+        stopped(__hew_migrated_actor_3126);
+    };
     while w12.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m12.close();
-    close(w12);
+    {
+        let __hew_migrated_actor_3228 = w12;
+        stop(__hew_migrated_actor_3228);
+        stopped(__hew_migrated_actor_3228);
+    };
     let t13 = spawn Target;
     let w13 = spawn Watcher;
     let m13 = w13.watch(t13).expect("watch");
-    close(t13);
+    {
+        let __hew_migrated_actor_3347 = t13;
+        stop(__hew_migrated_actor_3347);
+        stopped(__hew_migrated_actor_3347);
+    };
     while w13.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m13.close();
-    close(w13);
+    {
+        let __hew_migrated_actor_3449 = w13;
+        stop(__hew_migrated_actor_3449);
+        stopped(__hew_migrated_actor_3449);
+    };
     let t14 = spawn Target;
     let w14 = spawn Watcher;
     let m14 = w14.watch(t14).expect("watch");
-    close(t14);
+    {
+        let __hew_migrated_actor_3568 = t14;
+        stop(__hew_migrated_actor_3568);
+        stopped(__hew_migrated_actor_3568);
+    };
     while w14.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m14.close();
-    close(w14);
+    {
+        let __hew_migrated_actor_3670 = w14;
+        stop(__hew_migrated_actor_3670);
+        stopped(__hew_migrated_actor_3670);
+    };
     let t15 = spawn Target;
     let w15 = spawn Watcher;
     let m15 = w15.watch(t15).expect("watch");
-    close(t15);
+    {
+        let __hew_migrated_actor_3789 = t15;
+        stop(__hew_migrated_actor_3789);
+        stopped(__hew_migrated_actor_3789);
+    };
     while w15.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m15.close();
-    close(w15);
+    {
+        let __hew_migrated_actor_3891 = w15;
+        stop(__hew_migrated_actor_3891);
+        stopped(__hew_migrated_actor_3891);
+    };
     let t16 = spawn Target;
     let w16 = spawn Watcher;
     let m16 = w16.watch(t16).expect("watch");
-    close(t16);
+    {
+        let __hew_migrated_actor_4010 = t16;
+        stop(__hew_migrated_actor_4010);
+        stopped(__hew_migrated_actor_4010);
+    };
     while w16.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m16.close();
-    close(w16);
+    {
+        let __hew_migrated_actor_4112 = w16;
+        stop(__hew_migrated_actor_4112);
+        stopped(__hew_migrated_actor_4112);
+    };
     let t17 = spawn Target;
     let w17 = spawn Watcher;
     let m17 = w17.watch(t17).expect("watch");
-    close(t17);
+    {
+        let __hew_migrated_actor_4231 = t17;
+        stop(__hew_migrated_actor_4231);
+        stopped(__hew_migrated_actor_4231);
+    };
     while w17.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m17.close();
-    close(w17);
+    {
+        let __hew_migrated_actor_4333 = w17;
+        stop(__hew_migrated_actor_4333);
+        stopped(__hew_migrated_actor_4333);
+    };
     let t18 = spawn Target;
     let w18 = spawn Watcher;
     let m18 = w18.watch(t18).expect("watch");
-    close(t18);
+    {
+        let __hew_migrated_actor_4452 = t18;
+        stop(__hew_migrated_actor_4452);
+        stopped(__hew_migrated_actor_4452);
+    };
     while w18.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m18.close();
-    close(w18);
+    {
+        let __hew_migrated_actor_4554 = w18;
+        stop(__hew_migrated_actor_4554);
+        stopped(__hew_migrated_actor_4554);
+    };
     let t19 = spawn Target;
     let w19 = spawn Watcher;
     let m19 = w19.watch(t19).expect("watch");
-    close(t19);
+    {
+        let __hew_migrated_actor_4673 = t19;
+        stop(__hew_migrated_actor_4673);
+        stopped(__hew_migrated_actor_4673);
+    };
     while w19.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m19.close();
-    close(w19);
+    {
+        let __hew_migrated_actor_4775 = w19;
+        stop(__hew_migrated_actor_4775);
+        stopped(__hew_migrated_actor_4775);
+    };
     let t20 = spawn Target;
     let w20 = spawn Watcher;
     let m20 = w20.watch(t20).expect("watch");
-    close(t20);
+    {
+        let __hew_migrated_actor_4894 = t20;
+        stop(__hew_migrated_actor_4894);
+        stopped(__hew_migrated_actor_4894);
+    };
     while w20.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m20.close();
-    close(w20);
+    {
+        let __hew_migrated_actor_4996 = w20;
+        stop(__hew_migrated_actor_4996);
+        stopped(__hew_migrated_actor_4996);
+    };
     let t21 = spawn Target;
     let w21 = spawn Watcher;
     let m21 = w21.watch(t21).expect("watch");
-    close(t21);
+    {
+        let __hew_migrated_actor_5115 = t21;
+        stop(__hew_migrated_actor_5115);
+        stopped(__hew_migrated_actor_5115);
+    };
     while w21.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m21.close();
-    close(w21);
+    {
+        let __hew_migrated_actor_5217 = w21;
+        stop(__hew_migrated_actor_5217);
+        stopped(__hew_migrated_actor_5217);
+    };
     let t22 = spawn Target;
     let w22 = spawn Watcher;
     let m22 = w22.watch(t22).expect("watch");
-    close(t22);
+    {
+        let __hew_migrated_actor_5336 = t22;
+        stop(__hew_migrated_actor_5336);
+        stopped(__hew_migrated_actor_5336);
+    };
     while w22.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m22.close();
-    close(w22);
+    {
+        let __hew_migrated_actor_5438 = w22;
+        stop(__hew_migrated_actor_5438);
+        stopped(__hew_migrated_actor_5438);
+    };
     let t23 = spawn Target;
     let w23 = spawn Watcher;
     let m23 = w23.watch(t23).expect("watch");
-    close(t23);
+    {
+        let __hew_migrated_actor_5557 = t23;
+        stop(__hew_migrated_actor_5557);
+        stopped(__hew_migrated_actor_5557);
+    };
     while w23.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m23.close();
-    close(w23);
+    {
+        let __hew_migrated_actor_5659 = w23;
+        stop(__hew_migrated_actor_5659);
+        stopped(__hew_migrated_actor_5659);
+    };
     let t24 = spawn Target;
     let w24 = spawn Watcher;
     let m24 = w24.watch(t24).expect("watch");
-    close(t24);
+    {
+        let __hew_migrated_actor_5778 = t24;
+        stop(__hew_migrated_actor_5778);
+        stopped(__hew_migrated_actor_5778);
+    };
     while w24.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m24.close();
-    close(w24);
+    {
+        let __hew_migrated_actor_5880 = w24;
+        stop(__hew_migrated_actor_5880);
+        stopped(__hew_migrated_actor_5880);
+    };
     let t25 = spawn Target;
     let w25 = spawn Watcher;
     let m25 = w25.watch(t25).expect("watch");
-    close(t25);
+    {
+        let __hew_migrated_actor_5999 = t25;
+        stop(__hew_migrated_actor_5999);
+        stopped(__hew_migrated_actor_5999);
+    };
     while w25.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m25.close();
-    close(w25);
+    {
+        let __hew_migrated_actor_6101 = w25;
+        stop(__hew_migrated_actor_6101);
+        stopped(__hew_migrated_actor_6101);
+    };
     let t26 = spawn Target;
     let w26 = spawn Watcher;
     let m26 = w26.watch(t26).expect("watch");
-    close(t26);
+    {
+        let __hew_migrated_actor_6220 = t26;
+        stop(__hew_migrated_actor_6220);
+        stopped(__hew_migrated_actor_6220);
+    };
     while w26.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m26.close();
-    close(w26);
+    {
+        let __hew_migrated_actor_6322 = w26;
+        stop(__hew_migrated_actor_6322);
+        stopped(__hew_migrated_actor_6322);
+    };
     let t27 = spawn Target;
     let w27 = spawn Watcher;
     let m27 = w27.watch(t27).expect("watch");
-    close(t27);
+    {
+        let __hew_migrated_actor_6441 = t27;
+        stop(__hew_migrated_actor_6441);
+        stopped(__hew_migrated_actor_6441);
+    };
     while w27.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m27.close();
-    close(w27);
+    {
+        let __hew_migrated_actor_6543 = w27;
+        stop(__hew_migrated_actor_6543);
+        stopped(__hew_migrated_actor_6543);
+    };
     let t28 = spawn Target;
     let w28 = spawn Watcher;
     let m28 = w28.watch(t28).expect("watch");
-    close(t28);
+    {
+        let __hew_migrated_actor_6662 = t28;
+        stop(__hew_migrated_actor_6662);
+        stopped(__hew_migrated_actor_6662);
+    };
     while w28.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m28.close();
-    close(w28);
+    {
+        let __hew_migrated_actor_6764 = w28;
+        stop(__hew_migrated_actor_6764);
+        stopped(__hew_migrated_actor_6764);
+    };
     let t29 = spawn Target;
     let w29 = spawn Watcher;
     let m29 = w29.watch(t29).expect("watch");
-    close(t29);
+    {
+        let __hew_migrated_actor_6883 = t29;
+        stop(__hew_migrated_actor_6883);
+        stopped(__hew_migrated_actor_6883);
+    };
     while w29.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m29.close();
-    close(w29);
+    {
+        let __hew_migrated_actor_6985 = w29;
+        stop(__hew_migrated_actor_6985);
+        stopped(__hew_migrated_actor_6985);
+    };
     let t30 = spawn Target;
     let w30 = spawn Watcher;
     let m30 = w30.watch(t30).expect("watch");
-    close(t30);
+    {
+        let __hew_migrated_actor_7104 = t30;
+        stop(__hew_migrated_actor_7104);
+        stopped(__hew_migrated_actor_7104);
+    };
     while w30.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m30.close();
-    close(w30);
+    {
+        let __hew_migrated_actor_7206 = w30;
+        stop(__hew_migrated_actor_7206);
+        stopped(__hew_migrated_actor_7206);
+    };
     let t31 = spawn Target;
     let w31 = spawn Watcher;
     let m31 = w31.watch(t31).expect("watch");
-    close(t31);
+    {
+        let __hew_migrated_actor_7325 = t31;
+        stop(__hew_migrated_actor_7325);
+        stopped(__hew_migrated_actor_7325);
+    };
     while w31.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m31.close();
-    close(w31);
+    {
+        let __hew_migrated_actor_7427 = w31;
+        stop(__hew_migrated_actor_7427);
+        stopped(__hew_migrated_actor_7427);
+    };
     let t32 = spawn Target;
     let w32 = spawn Watcher;
     let m32 = w32.watch(t32).expect("watch");
-    close(t32);
+    {
+        let __hew_migrated_actor_7546 = t32;
+        stop(__hew_migrated_actor_7546);
+        stopped(__hew_migrated_actor_7546);
+    };
     while w32.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m32.close();
-    close(w32);
+    {
+        let __hew_migrated_actor_7648 = w32;
+        stop(__hew_migrated_actor_7648);
+        stopped(__hew_migrated_actor_7648);
+    };
     let t33 = spawn Target;
     let w33 = spawn Watcher;
     let m33 = w33.watch(t33).expect("watch");
-    close(t33);
+    {
+        let __hew_migrated_actor_7767 = t33;
+        stop(__hew_migrated_actor_7767);
+        stopped(__hew_migrated_actor_7767);
+    };
     while w33.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m33.close();
-    close(w33);
+    {
+        let __hew_migrated_actor_7869 = w33;
+        stop(__hew_migrated_actor_7869);
+        stopped(__hew_migrated_actor_7869);
+    };
     let t34 = spawn Target;
     let w34 = spawn Watcher;
     let m34 = w34.watch(t34).expect("watch");
-    close(t34);
+    {
+        let __hew_migrated_actor_7988 = t34;
+        stop(__hew_migrated_actor_7988);
+        stopped(__hew_migrated_actor_7988);
+    };
     while w34.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m34.close();
-    close(w34);
+    {
+        let __hew_migrated_actor_8090 = w34;
+        stop(__hew_migrated_actor_8090);
+        stopped(__hew_migrated_actor_8090);
+    };
     let t35 = spawn Target;
     let w35 = spawn Watcher;
     let m35 = w35.watch(t35).expect("watch");
-    close(t35);
+    {
+        let __hew_migrated_actor_8209 = t35;
+        stop(__hew_migrated_actor_8209);
+        stopped(__hew_migrated_actor_8209);
+    };
     while w35.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m35.close();
-    close(w35);
+    {
+        let __hew_migrated_actor_8311 = w35;
+        stop(__hew_migrated_actor_8311);
+        stopped(__hew_migrated_actor_8311);
+    };
     let t36 = spawn Target;
     let w36 = spawn Watcher;
     let m36 = w36.watch(t36).expect("watch");
-    close(t36);
+    {
+        let __hew_migrated_actor_8430 = t36;
+        stop(__hew_migrated_actor_8430);
+        stopped(__hew_migrated_actor_8430);
+    };
     while w36.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m36.close();
-    close(w36);
+    {
+        let __hew_migrated_actor_8532 = w36;
+        stop(__hew_migrated_actor_8532);
+        stopped(__hew_migrated_actor_8532);
+    };
     let t37 = spawn Target;
     let w37 = spawn Watcher;
     let m37 = w37.watch(t37).expect("watch");
-    close(t37);
+    {
+        let __hew_migrated_actor_8651 = t37;
+        stop(__hew_migrated_actor_8651);
+        stopped(__hew_migrated_actor_8651);
+    };
     while w37.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m37.close();
-    close(w37);
+    {
+        let __hew_migrated_actor_8753 = w37;
+        stop(__hew_migrated_actor_8753);
+        stopped(__hew_migrated_actor_8753);
+    };
     let t38 = spawn Target;
     let w38 = spawn Watcher;
     let m38 = w38.watch(t38).expect("watch");
-    close(t38);
+    {
+        let __hew_migrated_actor_8872 = t38;
+        stop(__hew_migrated_actor_8872);
+        stopped(__hew_migrated_actor_8872);
+    };
     while w38.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m38.close();
-    close(w38);
+    {
+        let __hew_migrated_actor_8974 = w38;
+        stop(__hew_migrated_actor_8974);
+        stopped(__hew_migrated_actor_8974);
+    };
     let t39 = spawn Target;
     let w39 = spawn Watcher;
     let m39 = w39.watch(t39).expect("watch");
-    close(t39);
+    {
+        let __hew_migrated_actor_9093 = t39;
+        stop(__hew_migrated_actor_9093);
+        stopped(__hew_migrated_actor_9093);
+    };
     while w39.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m39.close();
-    close(w39);
+    {
+        let __hew_migrated_actor_9195 = w39;
+        stop(__hew_migrated_actor_9195);
+        stopped(__hew_migrated_actor_9195);
+    };
     let t40 = spawn Target;
     let w40 = spawn Watcher;
     let m40 = w40.watch(t40).expect("watch");
-    close(t40);
+    {
+        let __hew_migrated_actor_9314 = t40;
+        stop(__hew_migrated_actor_9314);
+        stopped(__hew_migrated_actor_9314);
+    };
     while w40.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m40.close();
-    close(w40);
+    {
+        let __hew_migrated_actor_9416 = w40;
+        stop(__hew_migrated_actor_9416);
+        stopped(__hew_migrated_actor_9416);
+    };
     let t41 = spawn Target;
     let w41 = spawn Watcher;
     let m41 = w41.watch(t41).expect("watch");
-    close(t41);
+    {
+        let __hew_migrated_actor_9535 = t41;
+        stop(__hew_migrated_actor_9535);
+        stopped(__hew_migrated_actor_9535);
+    };
     while w41.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m41.close();
-    close(w41);
+    {
+        let __hew_migrated_actor_9637 = w41;
+        stop(__hew_migrated_actor_9637);
+        stopped(__hew_migrated_actor_9637);
+    };
     let t42 = spawn Target;
     let w42 = spawn Watcher;
     let m42 = w42.watch(t42).expect("watch");
-    close(t42);
+    {
+        let __hew_migrated_actor_9756 = t42;
+        stop(__hew_migrated_actor_9756);
+        stopped(__hew_migrated_actor_9756);
+    };
     while w42.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m42.close();
-    close(w42);
+    {
+        let __hew_migrated_actor_9858 = w42;
+        stop(__hew_migrated_actor_9858);
+        stopped(__hew_migrated_actor_9858);
+    };
     let t43 = spawn Target;
     let w43 = spawn Watcher;
     let m43 = w43.watch(t43).expect("watch");
-    close(t43);
+    {
+        let __hew_migrated_actor_9977 = t43;
+        stop(__hew_migrated_actor_9977);
+        stopped(__hew_migrated_actor_9977);
+    };
     while w43.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m43.close();
-    close(w43);
+    {
+        let __hew_migrated_actor_10079 = w43;
+        stop(__hew_migrated_actor_10079);
+        stopped(__hew_migrated_actor_10079);
+    };
     let t44 = spawn Target;
     let w44 = spawn Watcher;
     let m44 = w44.watch(t44).expect("watch");
-    close(t44);
+    {
+        let __hew_migrated_actor_10198 = t44;
+        stop(__hew_migrated_actor_10198);
+        stopped(__hew_migrated_actor_10198);
+    };
     while w44.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m44.close();
-    close(w44);
+    {
+        let __hew_migrated_actor_10300 = w44;
+        stop(__hew_migrated_actor_10300);
+        stopped(__hew_migrated_actor_10300);
+    };
     let t45 = spawn Target;
     let w45 = spawn Watcher;
     let m45 = w45.watch(t45).expect("watch");
-    close(t45);
+    {
+        let __hew_migrated_actor_10419 = t45;
+        stop(__hew_migrated_actor_10419);
+        stopped(__hew_migrated_actor_10419);
+    };
     while w45.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m45.close();
-    close(w45);
+    {
+        let __hew_migrated_actor_10521 = w45;
+        stop(__hew_migrated_actor_10521);
+        stopped(__hew_migrated_actor_10521);
+    };
     let t46 = spawn Target;
     let w46 = spawn Watcher;
     let m46 = w46.watch(t46).expect("watch");
-    close(t46);
+    {
+        let __hew_migrated_actor_10640 = t46;
+        stop(__hew_migrated_actor_10640);
+        stopped(__hew_migrated_actor_10640);
+    };
     while w46.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m46.close();
-    close(w46);
+    {
+        let __hew_migrated_actor_10742 = w46;
+        stop(__hew_migrated_actor_10742);
+        stopped(__hew_migrated_actor_10742);
+    };
     let t47 = spawn Target;
     let w47 = spawn Watcher;
     let m47 = w47.watch(t47).expect("watch");
-    close(t47);
+    {
+        let __hew_migrated_actor_10861 = t47;
+        stop(__hew_migrated_actor_10861);
+        stopped(__hew_migrated_actor_10861);
+    };
     while w47.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m47.close();
-    close(w47);
+    {
+        let __hew_migrated_actor_10963 = w47;
+        stop(__hew_migrated_actor_10963);
+        stopped(__hew_migrated_actor_10963);
+    };
     let t48 = spawn Target;
     let w48 = spawn Watcher;
     let m48 = w48.watch(t48).expect("watch");
-    close(t48);
+    {
+        let __hew_migrated_actor_11082 = t48;
+        stop(__hew_migrated_actor_11082);
+        stopped(__hew_migrated_actor_11082);
+    };
     while w48.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m48.close();
-    close(w48);
+    {
+        let __hew_migrated_actor_11184 = w48;
+        stop(__hew_migrated_actor_11184);
+        stopped(__hew_migrated_actor_11184);
+    };
     let t49 = spawn Target;
     let w49 = spawn Watcher;
     let m49 = w49.watch(t49).expect("watch");
-    close(t49);
+    {
+        let __hew_migrated_actor_11303 = t49;
+        stop(__hew_migrated_actor_11303);
+        stopped(__hew_migrated_actor_11303);
+    };
     while w49.seen().expect("seen") == 0 {
         sleep(1ms);
     }
     m49.close();
-    close(w49);
+    {
+        let __hew_migrated_actor_11405 = w49;
+        stop(__hew_migrated_actor_11405);
+        stopped(__hew_migrated_actor_11405);
+    };
 }

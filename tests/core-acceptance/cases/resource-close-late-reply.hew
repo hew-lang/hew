@@ -83,6 +83,14 @@ fn main() {
     assert(last == 9);
     println(f"closed {last}");
     println("ready");
-    close(worker);
-    close(audit);
+    {
+        let __hew_migrated_actor_2481 = worker;
+        stop(__hew_migrated_actor_2481);
+        stopped(__hew_migrated_actor_2481);
+    };
+    {
+        let __hew_migrated_actor_2500 = audit;
+        stop(__hew_migrated_actor_2500);
+        stopped(__hew_migrated_actor_2500);
+    };
 }

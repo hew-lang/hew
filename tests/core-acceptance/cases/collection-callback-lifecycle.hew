@@ -155,7 +155,11 @@ fn main() {
         while !oracle.started().expect("wait for map callback") {
             sleep(1ms);
         }
-        close(store);
+        {
+            let __hew_migrated_actor_3806 = store;
+            terminate(__hew_migrated_actor_3806);
+            stopped(__hew_migrated_actor_3806);
+        };
         println("map closed");
         println(f"cancel set phase {phase}");
         let set_store = spawn Store;
@@ -164,7 +168,11 @@ fn main() {
         while !oracle.started().expect("wait for set callback") {
             sleep(1ms);
         }
-        close(set_store);
+        {
+            let __hew_migrated_actor_4172 = set_store;
+            terminate(__hew_migrated_actor_4172);
+            stopped(__hew_migrated_actor_4172);
+        };
         println("set closed");
     }
     println("fault during rehash");
@@ -174,5 +182,9 @@ fn main() {
         .Err(_) => println("callback fault returned"),
         .Ok(_) => panic("callback fault lost"),
     }
-    close(oracle);
+    {
+        let __hew_migrated_actor_4496 = oracle;
+        stop(__hew_migrated_actor_4496);
+        stopped(__hew_migrated_actor_4496);
+    };
 }

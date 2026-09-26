@@ -12,11 +12,19 @@ fn main() {
         .Ok(id) => println(id),
         .Err(_) => println("alpha unreachable"),
     }
-    close(first);
+    {
+        let __hew_migrated_actor_490 = first;
+        stop(__hew_migrated_actor_490);
+        stopped(__hew_migrated_actor_490);
+    };
     let second = spawn second_rack.Rack;
     match second.worker.identify() {
         .Ok(id) => println(id),
         .Err(_) => println("beta unreachable"),
     }
-    close(second);
+    {
+        let __hew_migrated_actor_672 = second;
+        stop(__hew_migrated_actor_672);
+        stopped(__hew_migrated_actor_672);
+    };
 }

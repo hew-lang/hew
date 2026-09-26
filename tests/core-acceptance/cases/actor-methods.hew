@@ -39,6 +39,10 @@ fn main() {
         .Ok(total) => println(total),
         .Err(_) => panic("increment failed"),
     }
-    close(counter);
+    {
+        let __hew_migrated_actor_982 = counter;
+        stop(__hew_migrated_actor_982);
+        stopped(__hew_migrated_actor_982);
+    };
     println("closed");
 }

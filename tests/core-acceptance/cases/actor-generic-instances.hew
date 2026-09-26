@@ -99,11 +99,35 @@ fn main() {
     assert(record_printer.show().expect("record display") == "<RECORD>");
     assert(render(7 as i8) == "<7>");
     assert(render(true) == "<true>");
-    close(record_printer);
-    close(numeric_printer);
-    close(text_printer);
-    close(records);
-    close(names);
-    close(numbers);
+    {
+        let __hew_migrated_actor_2792 = record_printer;
+        stop(__hew_migrated_actor_2792);
+        stopped(__hew_migrated_actor_2792);
+    };
+    {
+        let __hew_migrated_actor_2819 = numeric_printer;
+        stop(__hew_migrated_actor_2819);
+        stopped(__hew_migrated_actor_2819);
+    };
+    {
+        let __hew_migrated_actor_2847 = text_printer;
+        stop(__hew_migrated_actor_2847);
+        stopped(__hew_migrated_actor_2847);
+    };
+    {
+        let __hew_migrated_actor_2872 = records;
+        stop(__hew_migrated_actor_2872);
+        stopped(__hew_migrated_actor_2872);
+    };
+    {
+        let __hew_migrated_actor_2892 = names;
+        stop(__hew_migrated_actor_2892);
+        stopped(__hew_migrated_actor_2892);
+    };
+    {
+        let __hew_migrated_actor_2910 = numbers;
+        stop(__hew_migrated_actor_2910);
+        stopped(__hew_migrated_actor_2910);
+    };
     println("distinct generic actors and owned replies");
 }

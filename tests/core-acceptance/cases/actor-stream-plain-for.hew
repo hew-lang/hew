@@ -36,6 +36,10 @@ fn main() {
         .Ok(served) => println(served),
         .Err(_) => panic("served failed"),
     }
-    close(producer);
+    {
+        let __hew_migrated_actor_929 = producer;
+        stop(__hew_migrated_actor_929);
+        stopped(__hew_migrated_actor_929);
+    };
     println("closed");
 }

@@ -43,7 +43,15 @@ fn main() {
         .Ok(base) => println(base),
         .Err(_) => panic("base failed"),
     }
-    close(source);
-    close(consumer);
+    {
+        let __hew_migrated_actor_1122 = source;
+        stop(__hew_migrated_actor_1122);
+        stopped(__hew_migrated_actor_1122);
+    };
+    {
+        let __hew_migrated_actor_1141 = consumer;
+        stop(__hew_migrated_actor_1141);
+        stopped(__hew_migrated_actor_1141);
+    };
     println("closed");
 }

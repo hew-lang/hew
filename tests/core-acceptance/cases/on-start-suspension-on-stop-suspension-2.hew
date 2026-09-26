@@ -12,103 +12,303 @@ actor Slow {
 
 fn main() {
     let a0 = spawn Slow;
-    close(a0);
+    {
+        let __hew_migrated_actor_230 = a0;
+        stop(__hew_migrated_actor_230);
+        stopped(__hew_migrated_actor_230);
+    };
     let a1 = spawn Slow;
-    close(a1);
+    {
+        let __hew_migrated_actor_270 = a1;
+        stop(__hew_migrated_actor_270);
+        stopped(__hew_migrated_actor_270);
+    };
     let a2 = spawn Slow;
-    close(a2);
+    {
+        let __hew_migrated_actor_310 = a2;
+        stop(__hew_migrated_actor_310);
+        stopped(__hew_migrated_actor_310);
+    };
     let a3 = spawn Slow;
-    close(a3);
+    {
+        let __hew_migrated_actor_350 = a3;
+        stop(__hew_migrated_actor_350);
+        stopped(__hew_migrated_actor_350);
+    };
     let a4 = spawn Slow;
-    close(a4);
+    {
+        let __hew_migrated_actor_390 = a4;
+        stop(__hew_migrated_actor_390);
+        stopped(__hew_migrated_actor_390);
+    };
     let a5 = spawn Slow;
-    close(a5);
+    {
+        let __hew_migrated_actor_430 = a5;
+        stop(__hew_migrated_actor_430);
+        stopped(__hew_migrated_actor_430);
+    };
     let a6 = spawn Slow;
-    close(a6);
+    {
+        let __hew_migrated_actor_470 = a6;
+        stop(__hew_migrated_actor_470);
+        stopped(__hew_migrated_actor_470);
+    };
     let a7 = spawn Slow;
-    close(a7);
+    {
+        let __hew_migrated_actor_510 = a7;
+        stop(__hew_migrated_actor_510);
+        stopped(__hew_migrated_actor_510);
+    };
     let a8 = spawn Slow;
-    close(a8);
+    {
+        let __hew_migrated_actor_550 = a8;
+        stop(__hew_migrated_actor_550);
+        stopped(__hew_migrated_actor_550);
+    };
     let a9 = spawn Slow;
-    close(a9);
+    {
+        let __hew_migrated_actor_590 = a9;
+        stop(__hew_migrated_actor_590);
+        stopped(__hew_migrated_actor_590);
+    };
     let a10 = spawn Slow;
-    close(a10);
+    {
+        let __hew_migrated_actor_631 = a10;
+        stop(__hew_migrated_actor_631);
+        stopped(__hew_migrated_actor_631);
+    };
     let a11 = spawn Slow;
-    close(a11);
+    {
+        let __hew_migrated_actor_673 = a11;
+        stop(__hew_migrated_actor_673);
+        stopped(__hew_migrated_actor_673);
+    };
     let a12 = spawn Slow;
-    close(a12);
+    {
+        let __hew_migrated_actor_715 = a12;
+        stop(__hew_migrated_actor_715);
+        stopped(__hew_migrated_actor_715);
+    };
     let a13 = spawn Slow;
-    close(a13);
+    {
+        let __hew_migrated_actor_757 = a13;
+        stop(__hew_migrated_actor_757);
+        stopped(__hew_migrated_actor_757);
+    };
     let a14 = spawn Slow;
-    close(a14);
+    {
+        let __hew_migrated_actor_799 = a14;
+        stop(__hew_migrated_actor_799);
+        stopped(__hew_migrated_actor_799);
+    };
     let a15 = spawn Slow;
-    close(a15);
+    {
+        let __hew_migrated_actor_841 = a15;
+        stop(__hew_migrated_actor_841);
+        stopped(__hew_migrated_actor_841);
+    };
     let a16 = spawn Slow;
-    close(a16);
+    {
+        let __hew_migrated_actor_883 = a16;
+        stop(__hew_migrated_actor_883);
+        stopped(__hew_migrated_actor_883);
+    };
     let a17 = spawn Slow;
-    close(a17);
+    {
+        let __hew_migrated_actor_925 = a17;
+        stop(__hew_migrated_actor_925);
+        stopped(__hew_migrated_actor_925);
+    };
     let a18 = spawn Slow;
-    close(a18);
+    {
+        let __hew_migrated_actor_967 = a18;
+        stop(__hew_migrated_actor_967);
+        stopped(__hew_migrated_actor_967);
+    };
     let a19 = spawn Slow;
-    close(a19);
+    {
+        let __hew_migrated_actor_1009 = a19;
+        stop(__hew_migrated_actor_1009);
+        stopped(__hew_migrated_actor_1009);
+    };
     let a20 = spawn Slow;
-    close(a20);
+    {
+        let __hew_migrated_actor_1051 = a20;
+        stop(__hew_migrated_actor_1051);
+        stopped(__hew_migrated_actor_1051);
+    };
     let a21 = spawn Slow;
-    close(a21);
+    {
+        let __hew_migrated_actor_1093 = a21;
+        stop(__hew_migrated_actor_1093);
+        stopped(__hew_migrated_actor_1093);
+    };
     let a22 = spawn Slow;
-    close(a22);
+    {
+        let __hew_migrated_actor_1135 = a22;
+        stop(__hew_migrated_actor_1135);
+        stopped(__hew_migrated_actor_1135);
+    };
     let a23 = spawn Slow;
-    close(a23);
+    {
+        let __hew_migrated_actor_1177 = a23;
+        stop(__hew_migrated_actor_1177);
+        stopped(__hew_migrated_actor_1177);
+    };
     let a24 = spawn Slow;
-    close(a24);
+    {
+        let __hew_migrated_actor_1219 = a24;
+        stop(__hew_migrated_actor_1219);
+        stopped(__hew_migrated_actor_1219);
+    };
     let a25 = spawn Slow;
-    close(a25);
+    {
+        let __hew_migrated_actor_1261 = a25;
+        stop(__hew_migrated_actor_1261);
+        stopped(__hew_migrated_actor_1261);
+    };
     let a26 = spawn Slow;
-    close(a26);
+    {
+        let __hew_migrated_actor_1303 = a26;
+        stop(__hew_migrated_actor_1303);
+        stopped(__hew_migrated_actor_1303);
+    };
     let a27 = spawn Slow;
-    close(a27);
+    {
+        let __hew_migrated_actor_1345 = a27;
+        stop(__hew_migrated_actor_1345);
+        stopped(__hew_migrated_actor_1345);
+    };
     let a28 = spawn Slow;
-    close(a28);
+    {
+        let __hew_migrated_actor_1387 = a28;
+        stop(__hew_migrated_actor_1387);
+        stopped(__hew_migrated_actor_1387);
+    };
     let a29 = spawn Slow;
-    close(a29);
+    {
+        let __hew_migrated_actor_1429 = a29;
+        stop(__hew_migrated_actor_1429);
+        stopped(__hew_migrated_actor_1429);
+    };
     let a30 = spawn Slow;
-    close(a30);
+    {
+        let __hew_migrated_actor_1471 = a30;
+        stop(__hew_migrated_actor_1471);
+        stopped(__hew_migrated_actor_1471);
+    };
     let a31 = spawn Slow;
-    close(a31);
+    {
+        let __hew_migrated_actor_1513 = a31;
+        stop(__hew_migrated_actor_1513);
+        stopped(__hew_migrated_actor_1513);
+    };
     let a32 = spawn Slow;
-    close(a32);
+    {
+        let __hew_migrated_actor_1555 = a32;
+        stop(__hew_migrated_actor_1555);
+        stopped(__hew_migrated_actor_1555);
+    };
     let a33 = spawn Slow;
-    close(a33);
+    {
+        let __hew_migrated_actor_1597 = a33;
+        stop(__hew_migrated_actor_1597);
+        stopped(__hew_migrated_actor_1597);
+    };
     let a34 = spawn Slow;
-    close(a34);
+    {
+        let __hew_migrated_actor_1639 = a34;
+        stop(__hew_migrated_actor_1639);
+        stopped(__hew_migrated_actor_1639);
+    };
     let a35 = spawn Slow;
-    close(a35);
+    {
+        let __hew_migrated_actor_1681 = a35;
+        stop(__hew_migrated_actor_1681);
+        stopped(__hew_migrated_actor_1681);
+    };
     let a36 = spawn Slow;
-    close(a36);
+    {
+        let __hew_migrated_actor_1723 = a36;
+        stop(__hew_migrated_actor_1723);
+        stopped(__hew_migrated_actor_1723);
+    };
     let a37 = spawn Slow;
-    close(a37);
+    {
+        let __hew_migrated_actor_1765 = a37;
+        stop(__hew_migrated_actor_1765);
+        stopped(__hew_migrated_actor_1765);
+    };
     let a38 = spawn Slow;
-    close(a38);
+    {
+        let __hew_migrated_actor_1807 = a38;
+        stop(__hew_migrated_actor_1807);
+        stopped(__hew_migrated_actor_1807);
+    };
     let a39 = spawn Slow;
-    close(a39);
+    {
+        let __hew_migrated_actor_1849 = a39;
+        stop(__hew_migrated_actor_1849);
+        stopped(__hew_migrated_actor_1849);
+    };
     let a40 = spawn Slow;
-    close(a40);
+    {
+        let __hew_migrated_actor_1891 = a40;
+        stop(__hew_migrated_actor_1891);
+        stopped(__hew_migrated_actor_1891);
+    };
     let a41 = spawn Slow;
-    close(a41);
+    {
+        let __hew_migrated_actor_1933 = a41;
+        stop(__hew_migrated_actor_1933);
+        stopped(__hew_migrated_actor_1933);
+    };
     let a42 = spawn Slow;
-    close(a42);
+    {
+        let __hew_migrated_actor_1975 = a42;
+        stop(__hew_migrated_actor_1975);
+        stopped(__hew_migrated_actor_1975);
+    };
     let a43 = spawn Slow;
-    close(a43);
+    {
+        let __hew_migrated_actor_2017 = a43;
+        stop(__hew_migrated_actor_2017);
+        stopped(__hew_migrated_actor_2017);
+    };
     let a44 = spawn Slow;
-    close(a44);
+    {
+        let __hew_migrated_actor_2059 = a44;
+        stop(__hew_migrated_actor_2059);
+        stopped(__hew_migrated_actor_2059);
+    };
     let a45 = spawn Slow;
-    close(a45);
+    {
+        let __hew_migrated_actor_2101 = a45;
+        stop(__hew_migrated_actor_2101);
+        stopped(__hew_migrated_actor_2101);
+    };
     let a46 = spawn Slow;
-    close(a46);
+    {
+        let __hew_migrated_actor_2143 = a46;
+        stop(__hew_migrated_actor_2143);
+        stopped(__hew_migrated_actor_2143);
+    };
     let a47 = spawn Slow;
-    close(a47);
+    {
+        let __hew_migrated_actor_2185 = a47;
+        stop(__hew_migrated_actor_2185);
+        stopped(__hew_migrated_actor_2185);
+    };
     let a48 = spawn Slow;
-    close(a48);
+    {
+        let __hew_migrated_actor_2227 = a48;
+        stop(__hew_migrated_actor_2227);
+        stopped(__hew_migrated_actor_2227);
+    };
     let a49 = spawn Slow;
-    close(a49);
+    {
+        let __hew_migrated_actor_2269 = a49;
+        stop(__hew_migrated_actor_2269);
+        stopped(__hew_migrated_actor_2269);
+    };
 }

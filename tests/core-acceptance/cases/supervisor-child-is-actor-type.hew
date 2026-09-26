@@ -56,7 +56,19 @@ fn main() {
     // An ordinary spawned actor of the same declaration travels by its type.
     let free = spawn Worker(id: 11);
     println(ask(free, 2));
-    close(free);
-    close(desk);
-    close(pool);
+    {
+        let __hew_migrated_actor_1754 = free;
+        stop(__hew_migrated_actor_1754);
+        stopped(__hew_migrated_actor_1754);
+    };
+    {
+        let __hew_migrated_actor_1771 = desk;
+        stop(__hew_migrated_actor_1771);
+        stopped(__hew_migrated_actor_1771);
+    };
+    {
+        let __hew_migrated_actor_1788 = pool;
+        stop(__hew_migrated_actor_1788);
+        stopped(__hew_migrated_actor_1788);
+    };
 }

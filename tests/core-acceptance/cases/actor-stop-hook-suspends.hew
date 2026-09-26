@@ -45,7 +45,15 @@ fn main() {
     let worker = spawn Worker(audit: audit, ledger: Ledger { name: "ledger" });
     worker.bump().expect("bump");
     worker.bump().expect("bump");
-    close(worker);
+    {
+        let __hew_migrated_actor_1099 = worker;
+        stop(__hew_migrated_actor_1099);
+        stopped(__hew_migrated_actor_1099);
+    };
     println("worker closed");
-    close(audit);
+    {
+        let __hew_migrated_actor_1148 = audit;
+        stop(__hew_migrated_actor_1148);
+        stopped(__hew_migrated_actor_1148);
+    };
 }

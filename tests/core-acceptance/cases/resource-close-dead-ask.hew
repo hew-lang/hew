@@ -26,10 +26,18 @@ actor Worker {
 fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
-    close(worker);
+    {
+        let __hew_migrated_actor_436 = worker;
+        stop(__hew_migrated_actor_436);
+        stopped(__hew_migrated_actor_436);
+    };
     match worker.take(Ticket { audit: audit, id: 9 }) {
         .Err(_) => println("dead"),
         .Ok(_) => panic("closed actor accepted"),
     }
-    close(audit);
+    {
+        let __hew_migrated_actor_603 = audit;
+        stop(__hew_migrated_actor_603);
+        stopped(__hew_migrated_actor_603);
+    };
 }

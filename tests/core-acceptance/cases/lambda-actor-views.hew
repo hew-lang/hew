@@ -22,7 +22,11 @@ fn main() {
         .Ok(_) => {}
         .Err(_) => panic("the logger completion call failed"),
     }
-    close(log);
+    {
+        let __hew_migrated_actor_1000 = log;
+        stop(__hew_migrated_actor_1000);
+        stopped(__hew_migrated_actor_1000);
+    };
     match submission {
         .Ok(_) => println("accepted"),
         .Err(_) => panic("the submission was refused"),
@@ -42,7 +46,11 @@ fn main() {
         .Ok(v) => println(v),
         .Err(_) => panic("the handle refused its call"),
     }
-    close(scale);
+    {
+        let __hew_migrated_actor_1701 = scale;
+        stop(__hew_migrated_actor_1701);
+        stopped(__hew_migrated_actor_1701);
+    };
 
     // A handle stored in a record field answers `job.run(..)` directly.
     let job = Job { name: "doubler", run: actor |n: i64| -> i64 {
@@ -52,7 +60,11 @@ fn main() {
         .Ok(v) => println(f"{job.name} {v}"),
         .Err(_) => panic("the stored handle refused its call"),
     }
-    close(job.run);
+    {
+        let __hew_migrated_actor_2022 = job.run;
+        stop(__hew_migrated_actor_2022);
+        stopped(__hew_migrated_actor_2022);
+    };
 
     // A handle read out of a `Vec` is borrowed, not moved: the call addresses
     // the actor through the borrow and the vector keeps its element.

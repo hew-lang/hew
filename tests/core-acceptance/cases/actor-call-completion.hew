@@ -29,6 +29,10 @@ fn main() {
         .Ok(n) => println(n),
         .Err(_) => panic("count query failed"),
     }
-    close(worker);
+    {
+        let __hew_migrated_actor_902 = worker;
+        stop(__hew_migrated_actor_902);
+        stopped(__hew_migrated_actor_902);
+    };
     println("closed");
 }

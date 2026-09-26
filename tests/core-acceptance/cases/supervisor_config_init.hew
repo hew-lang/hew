@@ -37,6 +37,10 @@ fn main() -> i64 {
     let cfg = AppConfig { size: 5, label: "hi" };
     let sup = spawn App(config: cfg);
     let _c = sup.cache;
-    supervisor_stop(sup);
+    {
+        let __hew_migrated_actor_1356 = sup;
+        stop(__hew_migrated_actor_1356);
+        stopped(__hew_migrated_actor_1356);
+    };
     0
 }

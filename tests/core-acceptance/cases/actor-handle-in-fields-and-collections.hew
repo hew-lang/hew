@@ -53,6 +53,14 @@ fn main() {
         .Some(found) => println(ask(found, 6)),
         .None => panic("roster lost its member"),
     }
-    close(one);
-    close(two);
+    {
+        let __hew_migrated_actor_1433 = one;
+        stop(__hew_migrated_actor_1433);
+        stopped(__hew_migrated_actor_1433);
+    };
+    {
+        let __hew_migrated_actor_1449 = two;
+        stop(__hew_migrated_actor_1449);
+        stopped(__hew_migrated_actor_1449);
+    };
 }

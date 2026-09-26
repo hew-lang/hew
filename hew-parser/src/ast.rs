@@ -1077,6 +1077,9 @@ pub struct LambdaParam {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PatternField {
     pub name: Ident,
+    /// Source token of the field label and shorthand binding.
+    #[serde(skip)]
+    pub name_span: Span,
     pub pattern: Option<Spanned<Pattern>>,
 }
 

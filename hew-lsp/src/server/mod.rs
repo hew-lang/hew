@@ -1579,9 +1579,9 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_local_binding_fallback() {
+    fn goto_def_resolves_checked_local_binding() {
         let source = "fn main() {\n    let result = 41;\n    result + 1\n}";
-        let doc = make_doc(source);
+        let doc = make_typed_doc(source);
         let offset = source.rfind("result + 1").unwrap();
         let word = word_at_offset(source, offset).unwrap();
 
@@ -1589,18 +1589,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify local binding");
-        let (_, span) = resolution
-            .def_location()
-            .expect("local binding should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-local.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve local binding")
+                .range;
         let expected_start = source.find("let result").unwrap() + 4;
         let expected = offset_range_to_lsp(
             source,
@@ -1612,7 +1605,7 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_struct_field_access_fallback() {
+    fn goto_def_resolves_checked_struct_field_access() {
         let source =
             "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let doc = make_typed_doc(source);
@@ -1624,18 +1617,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify field access");
-        let (_, span) = resolution
-            .def_location()
-            .expect("field access should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-field.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve field access")
+                .range;
         let expected_start = source.find("x: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,
@@ -1687,6 +1673,49 @@ impl Worker {
             .iter()
             .any(|site| site.range
                 == offset_range_to_lsp(source, &doc.line_offsets, a_use, a_use + 1)));
+    }
+
+    #[test]
+    fn checked_var_navigation_uses_only_the_name_token() {
+        let source = "fn main() { var value = 1; println(value); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-var.hew");
+        let declared = source.find("var value").unwrap() + 4;
+        let used = source.rfind("value").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, declared, declared + 5);
+        for offset in [declared, used] {
+            let location = super::navigation::identity_definition_location(
+                &uri,
+                &doc,
+                offset,
+                &DashMap::new(),
+            )
+            .expect("var binding should resolve to its name token");
+            assert_eq!(location.range, expected);
+            let refs = super::navigation::identity_reference_locations(
+                &uri,
+                &doc,
+                offset,
+                true,
+                &DashMap::new(),
+            )
+            .expect("var references should use token spans");
+            assert_eq!(refs.len(), 2);
+            assert!(refs.iter().all(|reference| reference.range.end.character
+                - reference.range.start.character
+                == 5));
+        }
+        let initializer = source.find("= 1").unwrap() + 2;
+        assert!(
+            super::navigation::identity_definition_location(
+                &uri,
+                &doc,
+                initializer,
+                &DashMap::new(),
+            )
+            .is_none(),
+            "initializer is not the var binder"
+        );
     }
 
     #[test]
@@ -1750,6 +1779,81 @@ impl Worker {
             location.range,
             offset_range_to_lsp(source, &doc.line_offsets, expected, expected + 3)
         );
+    }
+
+    #[test]
+    fn checked_trait_bound_call_navigates_to_trait_method() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-trait-bound.hew");
+        let call = source.find("item.describe()").unwrap() + "item.".len();
+        let declared = source.find("fn describe(value").unwrap() + "fn ".len();
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
+                .expect("bounded call should resolve to its trait method");
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "describe".len()
+            )
+        );
+    }
+
+    #[test]
+    fn checked_call_hierarchy_incoming_keeps_same_named_methods_separate() {
+        let source = "type A { x: i64 }\nimpl A { fn get(self) -> i64 { self.x } }\ntype B { x: i64 }\nimpl B { fn get(self) -> i64 { self.x } }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.get()); println(b.get()); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-call-hierarchy.hew");
+        let declaration = source.rfind("fn get").unwrap() + 3;
+        let item = super::hierarchy::find_callable_at_offset(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            declaration,
+        )
+        .expect("B.get callable item");
+        let calls = find_incoming_calls(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            "get",
+            Some(&item),
+            doc.type_output.as_ref(),
+        );
+        let from_ranges: Vec<_> = calls.iter().flat_map(|call| &call.from_ranges).collect();
+        let b_call = source.rfind("b.get()").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, b_call, b_call + 7);
+        assert_eq!(from_ranges, vec![&expected]);
+
+        let main_declaration = source.find("fn main").unwrap() + 3;
+        let main_item = super::hierarchy::find_callable_at_offset(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            main_declaration,
+        )
+        .expect("main callable item");
+        let outgoing = find_outgoing_calls(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            "main",
+            Some(&main_item),
+            doc.type_output.as_ref(),
+        );
+        let gets: Vec<_> = outgoing
+            .iter()
+            .filter(|call| call.to.name == "get")
+            .collect();
+        assert_eq!(gets.len(), 2, "A.get and B.get are separate targets");
+        assert_ne!(gets[0].to.selection_range, gets[1].to.selection_range);
     }
 
     #[test]
@@ -1821,17 +1925,17 @@ impl Worker {
     #[test]
     fn checked_imported_record_completion_uses_the_selected_module() {
         let main_source = "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { width: 1 }; println(shape.width); }";
-        let ma_source = "pub type Shape { width: i64 }";
-        let mb_source = "pub type Shape { colour: i64 }";
+        let selected_source = "pub type Shape { width: i64 }";
+        let other_source = "pub type Shape { colour: i64 }";
         let main_uri = make_test_uri("/fake/identity-completion/main.hew");
         let documents = DashMap::new();
         documents.insert(
             make_test_uri("/fake/identity-completion/ma.hew"),
-            make_doc(ma_source),
+            make_doc(selected_source),
         );
         documents.insert(
             make_test_uri("/fake/identity-completion/mb.hew"),
-            make_doc(mb_source),
+            make_doc(other_source),
         );
         let doc = analyze_document(&main_uri, main_source, &documents, &[]);
         let errors = published_errors(&doc, &main_uri);
@@ -1852,43 +1956,44 @@ impl Worker {
     }
 
     #[test]
+    fn user_stream_completion_excludes_builtin_stream_methods() {
+        let source = "type Stream { value: i64 }\nimpl Stream { fn own(self) -> i64 { self.value } }\nfn main() { let stream = Stream { value: 1 }; println(stream.own()); }";
+        let doc = make_typed_doc(source);
+        let offset = source.find("stream.own").unwrap() + "stream.".len();
+        let items = hew_analysis::completions::complete(
+            source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"own"), "{labels:?}");
+        assert!(labels.contains(&"value"), "{labels:?}");
+        assert!(!labels.contains(&"recv"), "{labels:?}");
+        assert!(!labels.contains(&"try_recv"), "{labels:?}");
+    }
+
+    #[test]
     fn goto_def_resolves_nominal_type_name_to_declaration_span() {
         let source =
             "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
         let doc = make_typed_doc(source);
         let offset = source.find("-> Point").unwrap() + "-> ".len();
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify nominal type use");
-        match resolution {
-            hew_analysis::resolver::Resolution::TypeDef { name, def_span, .. } => {
-                assert_eq!(name, "Point");
-                assert_eq!(&source[def_span.start..def_span.end], "Point");
-                assert_eq!(def_span.start, source.find("Point").unwrap());
-                let range =
-                    offset_range_to_lsp(source, &doc.line_offsets, def_span.start, def_span.end);
-                let expected = offset_range_to_lsp(
-                    source,
-                    &doc.line_offsets,
-                    source.find("Point").unwrap(),
-                    source.find("Point").unwrap() + "Point".len(),
-                );
-                assert_eq!(range, expected);
-            }
-            other => panic!("expected nominal TypeDef, got {other:?}"),
-        }
+        let uri = make_test_uri("/identity-nominal.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve nominal type use")
+                .range;
+        let start = source.find("Point").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, start, start + "Point".len());
+        assert_eq!(range, expected);
     }
 
     #[test]
-    fn goto_def_resolves_param_fallback() {
+    fn goto_def_resolves_checked_param() {
         let source = "fn add(value: i32) -> i32 {\n    value + 1\n}";
-        let doc = make_doc(source);
+        let doc = make_typed_doc(source);
         let offset = source.rfind("value + 1").unwrap();
         let word = word_at_offset(source, offset).unwrap();
 
@@ -1896,18 +2001,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify param");
-        let (_, span) = resolution
-            .def_location()
-            .expect("param should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-param.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve parameter")
+                .range;
         let expected_start = source.find("value: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,
@@ -2287,7 +2385,7 @@ impl Worker {
         );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_incoming_calls(&uri, source, &lo, &parse_result, "helper");
+        let calls = find_incoming_calls(&uri, source, &lo, &parse_result, "helper", None, None);
         assert_eq!(
             calls.len(),
             1,
@@ -2308,7 +2406,7 @@ impl Worker {
         );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "main");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "main", None, None);
         assert_eq!(
             calls.len(),
             1,
@@ -2324,7 +2422,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "leaf");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "leaf", None, None);
         assert!(
             calls.is_empty(),
             "leaf function should have no outgoing calls"
@@ -2348,7 +2446,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "on_msg");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "on_msg", None, None);
         let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
         assert!(
             callee_names.contains(&"target_a"),
@@ -2375,7 +2473,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "alpha");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "alpha", None, None);
         let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
         assert!(
             callee_names.contains(&"alpha_target"),
@@ -6527,8 +6625,8 @@ machine Traffic {
     /// Check the `gotoDefinition` LSP surface for a v0.5 fixture probe.
     ///
     /// Uses the last occurrence of `probe_name` in `source` as the request
-    /// offset.  Asserts that either the resolver or the AST-walk fallback
-    /// returns a definition location.
+    /// offset and checks either the checker identity or a source declaration
+    /// that predates its remaining generated/builtin rows.
     ///
     /// Failure messages identify: surface, fixture name, probe name, and byte
     /// offset.
@@ -6538,16 +6636,14 @@ machine Traffic {
         let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
             panic!("surface=gotoDefinition fixture={fixture_name}: missing probe {probe_name:?}")
         });
-        let resolver_has_definition = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
+        let checked_location = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             probe_offset,
-        )
-        .is_some_and(|resolution| resolution.def_location().is_some());
+            &DashMap::new(),
+        );
         assert!(
-            resolver_has_definition
+            checked_location.is_some()
                 || find_definition_in_ast(
                     &doc.source,
                     &doc.line_offsets,
@@ -6556,7 +6652,7 @@ machine Traffic {
                 )
                 .is_some(),
             "surface=gotoDefinition fixture={fixture_name} probe={probe_name:?} \
-             offset={probe_offset}: no definition found via resolver or AST walk"
+             offset={probe_offset}: no checked or source declaration found"
         );
     }
 
@@ -6968,20 +7064,24 @@ machine Traffic {
         );
 
         let rhs_offset = source.find("is Payload").expect("is type pattern") + "is ".len();
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
+        let definition = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             rhs_offset,
+            &DashMap::new(),
         )
-        .expect("RHS type pattern should resolve");
-        let def = resolution
-            .def_location()
-            .expect("RHS type pattern should jump to type declaration");
-        assert!(
-            def.1.start < source.find("fn is_probe").expect("probe fn"),
-            "`is` RHS definition should point at Payload type declaration, got {def:?}"
+        .map(|location| location.range)
+        .or_else(|| find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, "Payload"))
+        .expect("RHS type pattern should jump to its source declaration");
+        let declared = source.find("Payload").unwrap();
+        assert_eq!(
+            definition,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "Payload".len()
+            )
         );
 
         assert_v05_semantic_token_at(
@@ -7035,20 +7135,27 @@ machine Traffic {
         let doc = make_typed_doc(source);
         assert_no_hard_type_errors("v05_extern_unsafe", &doc);
         let call_offset = source.rfind("raw_number").expect("raw_number call");
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            &v05_fixture_path("v05_extern_unsafe"),
+        let uri = Url::parse(&v05_fixture_path("v05_extern_unsafe")).unwrap();
+        let definition = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             call_offset,
+            &DashMap::new(),
         )
-        .expect("extern raw_number call should resolve");
-        let def = resolution
-            .def_location()
-            .expect("extern raw_number should have a definition");
-        assert!(
-            def.1.start < source.find("fn extern_unsafe_probe").expect("probe fn"),
-            "extern definition should point at the extern declaration, got {def:?}"
+        .map(|location| location.range)
+        .or_else(|| {
+            find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, "raw_number")
+        })
+        .expect("extern raw_number should have a source definition");
+        let declared = source.find("raw_number").unwrap();
+        assert_eq!(
+            definition,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "raw_number".len()
+            )
         );
     }
 

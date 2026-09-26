@@ -1,5 +1,6 @@
 use hew_types::check::{FnSig, SpanKey, TypeDef};
-use hew_types::{method_resolution, Ty, TypeCheckOutput};
+use hew_types::{method_resolution, Ty, TypeCheckOutput, TypeHead};
+use std::collections::HashSet;
 
 pub(crate) fn find_receiver_type(tc: &TypeCheckOutput, end_offset: usize) -> Option<&Ty> {
     let mut best: Option<(&SpanKey, &Ty)> = None;
@@ -29,6 +30,76 @@ pub(crate) fn find_receiver_type(tc: &TypeCheckOutput, end_offset: usize) -> Opt
         }
     }
     best.map(|(_, ty)| ty)
+}
+
+pub(crate) fn collect_method_sigs_for_receiver(
+    tc: &TypeCheckOutput,
+    receiver_ty: &Ty,
+) -> Vec<(String, FnSig)> {
+    let methods = method_resolution::collect_method_sigs_for_receiver(
+        &tc.defs,
+        &tc.type_defs,
+        tc.sigs(),
+        receiver_ty,
+    );
+    let Ty::Named {
+        head: TypeHead::Nominal(nominal),
+        ..
+    } = receiver_ty
+    else {
+        return methods;
+    };
+    let mut declared: HashSet<String> = tc
+        .dispatch
+        .methods_of(nominal.id)
+        .map(|(name, _, _)| name.to_string())
+        .collect();
+    if let Some(definition) = tc.type_defs.get(&nominal.id) {
+        declared.extend(definition.methods.keys().cloned());
+    }
+    methods
+        .into_iter()
+        .filter(|(name, _)| declared.contains(name))
+        .collect()
+}
+
+pub(crate) fn lookup_method_sig(
+    tc: &TypeCheckOutput,
+    receiver_ty: &Ty,
+    method: &str,
+) -> Option<FnSig> {
+    if let Ty::Named {
+        head: TypeHead::Nominal(nominal),
+        ..
+    } = receiver_ty
+    {
+        let declared_in_type = tc
+            .type_defs
+            .get(&nominal.id)
+            .is_some_and(|definition| definition.methods.contains_key(method));
+        let declared_in_dispatch = tc
+            .dispatch
+            .methods_of(nominal.id)
+            .any(|(name, _, _)| name.as_str() == method);
+        if !declared_in_type && !declared_in_dispatch {
+            return None;
+        }
+    }
+    method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, tc.sigs(), receiver_ty, method)
+}
+
+pub(crate) fn lookup_type_def_for_receiver(
+    tc: &TypeCheckOutput,
+    receiver_ty: &Ty,
+) -> Option<TypeDef> {
+    if let Ty::Named {
+        head: TypeHead::Nominal(nominal),
+        ..
+    } = receiver_ty
+    {
+        return tc.type_defs.get(&nominal.id).cloned();
+    }
+    method_resolution::lookup_type_def_for_receiver(&tc.defs, &tc.type_defs, receiver_ty)
 }
 
 #[cfg(test)]
@@ -63,31 +134,4 @@ mod tests {
 
         assert_eq!(find_receiver_type(&tc, 14), Some(&Ty::I64));
     }
-}
-
-pub(crate) fn collect_method_sigs_for_receiver(
-    tc: &TypeCheckOutput,
-    receiver_ty: &Ty,
-) -> Vec<(String, FnSig)> {
-    method_resolution::collect_method_sigs_for_receiver(
-        &tc.defs,
-        &tc.type_defs,
-        tc.sigs(),
-        receiver_ty,
-    )
-}
-
-pub(crate) fn lookup_method_sig(
-    tc: &TypeCheckOutput,
-    receiver_ty: &Ty,
-    method: &str,
-) -> Option<FnSig> {
-    method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, tc.sigs(), receiver_ty, method)
-}
-
-pub(crate) fn lookup_type_def_for_receiver(
-    tc: &TypeCheckOutput,
-    receiver_ty: &Ty,
-) -> Option<TypeDef> {
-    method_resolution::lookup_type_def_for_receiver(&tc.defs, &tc.type_defs, receiver_ty)
 }

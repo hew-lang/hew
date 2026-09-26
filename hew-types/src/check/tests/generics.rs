@@ -2399,10 +2399,12 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 fields: vec![
                     hew_parser::ast::PatternField {
                         name: Ident::new("first"),
+                        name_span: 0..0,
                         pattern: None,
                     },
                     hew_parser::ast::PatternField {
                         name: Ident::new("second"),
+                        name_span: 0..0,
                         pattern: None,
                     },
                 ],
@@ -2462,6 +2464,7 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
             payload: Some(hew_parser::ast::NominalPatternPayload::Record {
                 fields: vec![hew_parser::ast::PatternField {
                     name: Ident::new("value"),
+                    name_span: 0..0,
                     pattern: None,
                 }],
                 rest: None,

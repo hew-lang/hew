@@ -4,14 +4,271 @@ use std::collections::HashMap;
 use hew_analysis::calls::{
     collect_calls_in_block, collect_calls_in_item, collect_calls_in_named_body,
 };
-use hew_parser::ast::{Item, TypeDeclKind};
+use hew_parser::ast::{Item, TraitItem, TypeBodyItem, TypeDeclKind};
 use hew_parser::ParseResult;
+use hew_types::check::scope::Resolution;
+use hew_types::{DeclarationKind, DefId, TypeCheckOutput};
 use tower_lsp_server::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Range, SymbolKind,
     TypeHierarchyItem, Uri as Url,
 };
 
 use super::span_to_range;
+
+#[derive(PartialEq, Eq, Hash)]
+enum Target {
+    Declaration(DefId),
+    Name(String),
+}
+
+fn callable_item(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    name: &str,
+    kind: SymbolKind,
+    spans: (&std::ops::Range<usize>, &std::ops::Range<usize>),
+    detail: Option<String>,
+) -> CallHierarchyItem {
+    CallHierarchyItem {
+        name: name.to_string(),
+        kind,
+        tags: None,
+        detail,
+        uri: uri.clone(),
+        range: span_to_range(source, lo, spans.0),
+        selection_range: span_to_range(source, lo, spans.1),
+        data: None,
+    }
+}
+
+/// Select the callable whose declaration token actually contains the cursor.
+/// Equal method names in different impls remain separate source occurrences.
+pub(super) fn find_callable_at_offset(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    parsed: &ParseResult,
+    offset: usize,
+) -> Option<CallHierarchyItem> {
+    let contains = |span: &std::ops::Range<usize>| span.start <= offset && offset < span.end;
+    for (item, _) in &parsed.program.items {
+        match item {
+            Item::Function(function) if contains(&function.decl_span) => {
+                return Some(callable_item(
+                    uri,
+                    source,
+                    lo,
+                    function.name.name.as_str(),
+                    SymbolKind::FUNCTION,
+                    (&function.fn_span, &function.decl_span),
+                    None,
+                ))
+            }
+            Item::Impl(implementation) => {
+                for method in &implementation.methods {
+                    if contains(&method.decl_span) {
+                        return Some(callable_item(
+                            uri,
+                            source,
+                            lo,
+                            method.name.name.as_str(),
+                            SymbolKind::METHOD,
+                            (&method.fn_span, &method.decl_span),
+                            None,
+                        ));
+                    }
+                }
+            }
+            Item::TypeDecl(declaration) => {
+                for method in declaration.body.iter().filter_map(|part| match part {
+                    TypeBodyItem::Method(method) => Some(method),
+                    _ => None,
+                }) {
+                    if contains(&method.decl_span) {
+                        return Some(callable_item(
+                            uri,
+                            source,
+                            lo,
+                            method.name.name.as_str(),
+                            SymbolKind::METHOD,
+                            (&method.fn_span, &method.decl_span),
+                            Some(format!("type {}", declaration.name)),
+                        ));
+                    }
+                }
+            }
+            Item::Actor(actor) => {
+                if let Some(callable) = actor_callable_at_offset(uri, source, lo, actor, offset) {
+                    return Some(callable);
+                }
+            }
+            Item::Trait(trait_decl) => {
+                for method in trait_decl.items.iter().filter_map(|part| match part {
+                    TraitItem::Method(method) => Some(method),
+                    TraitItem::AssociatedType { .. } => None,
+                }) {
+                    let name = super::navigation::find_identifier_span_in_range(
+                        source,
+                        method.span.clone(),
+                        method.name.name.as_str(),
+                    );
+                    if let Some(name) =
+                        name.filter(|name| name.start <= offset && offset < name.end)
+                    {
+                        return Some(callable_item(
+                            uri,
+                            source,
+                            lo,
+                            method.name.name.as_str(),
+                            SymbolKind::METHOD,
+                            (&method.span, &(name.start..name.end)),
+                            Some(format!("trait {}", trait_decl.name)),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn actor_callable_at_offset(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    actor: &hew_parser::ast::ActorDecl,
+    offset: usize,
+) -> Option<CallHierarchyItem> {
+    for method in &actor.methods {
+        if method.decl_span.start <= offset && offset < method.decl_span.end {
+            return Some(callable_item(
+                uri,
+                source,
+                lo,
+                method.name.name.as_str(),
+                SymbolKind::METHOD,
+                (&method.fn_span, &method.decl_span),
+                Some(format!("actor {}", actor.name)),
+            ));
+        }
+    }
+    for receive in &actor.receive_fns {
+        let name = super::navigation::find_identifier_span_in_range(
+            source,
+            receive.span.clone(),
+            receive.name.name.as_str(),
+        );
+        if let Some(name) = name.filter(|name| name.start <= offset && offset < name.end) {
+            return Some(callable_item(
+                uri,
+                source,
+                lo,
+                receive.name.name.as_str(),
+                SymbolKind::METHOD,
+                (&receive.span, &(name.start..name.end)),
+                Some(format!("actor {}", actor.name)),
+            ));
+        }
+    }
+    None
+}
+
+fn declaration_for_hierarchy_item(
+    output: &TypeCheckOutput,
+    source: &str,
+    lo: &[usize],
+    item: &CallHierarchyItem,
+) -> Option<DefId> {
+    output.fn_sigs.keys().copied().find(|id| {
+        output.defs.name(*id).as_str() == item.name
+            && output.defs.site(*id).is_some_and(|site| {
+                site.module() == output.defs.root_module()
+                    && span_to_range(source, lo, &site.span()) == item.range
+            })
+    })
+}
+
+fn call_reaches(
+    call: &hew_analysis::calls::CallSite,
+    name: &str,
+    selected: Option<DefId>,
+    output: Option<&TypeCheckOutput>,
+) -> bool {
+    if let (Some(selected), Some(output)) = (selected, output) {
+        return match hew_analysis::calls::checked_call_target(call, output, 0) {
+            Some(Some(target)) => target == selected,
+            Some(None) => false,
+            None => call.name == name,
+        };
+    }
+    call.name == name
+}
+
+fn callable_for_declaration(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    parsed: &ParseResult,
+    output: &TypeCheckOutput,
+    declaration: DefId,
+) -> Option<CallHierarchyItem> {
+    let target = hew_analysis::identity::declaration_target(output, Resolution::Def(declaration))?;
+    if target.occurrence.module() != output.defs.root_module() {
+        return None;
+    }
+    let site = target.occurrence.span();
+    let name = hew_analysis::identity::declaration_name_span(source, parsed, &target)?;
+    let kind = match target.occurrence.kind() {
+        DeclarationKind::Function | DeclarationKind::ExternFunction => SymbolKind::FUNCTION,
+        _ => SymbolKind::METHOD,
+    };
+    Some(callable_item(
+        uri,
+        source,
+        lo,
+        &target.name,
+        kind,
+        (&site, &(name.start..name.end)),
+        None,
+    ))
+}
+
+fn caller_item_contains_body(
+    item: &Item,
+    source: &str,
+    lo: &[usize],
+    caller: &CallHierarchyItem,
+) -> bool {
+    let has_range = |span: &std::ops::Range<usize>| span_to_range(source, lo, span) == caller.range;
+    match item {
+        Item::Function(function) => has_range(&function.fn_span),
+        Item::Impl(implementation) => implementation
+            .methods
+            .iter()
+            .any(|method| has_range(&method.fn_span)),
+        Item::TypeDecl(declaration) => declaration
+            .body
+            .iter()
+            .any(|part| matches!(part, TypeBodyItem::Method(method) if has_range(&method.fn_span))),
+        Item::Actor(actor) => {
+            actor
+                .methods
+                .iter()
+                .any(|method| has_range(&method.fn_span))
+                || actor
+                    .receive_fns
+                    .iter()
+                    .any(|receive| has_range(&receive.span))
+        }
+        Item::Trait(trait_decl) => trait_decl
+            .items
+            .iter()
+            .any(|part| matches!(part, TraitItem::Method(method) if has_range(&method.span))),
+        _ => false,
+    }
+}
 
 // ── Type hierarchy helpers ──────────────────────────────────────────
 
@@ -223,13 +480,21 @@ pub(super) fn find_incoming_calls(
     lo: &[usize],
     parse_result: &ParseResult,
     target_name: &str,
+    target_item: Option<&CallHierarchyItem>,
+    type_output: Option<&TypeCheckOutput>,
 ) -> Vec<CallHierarchyIncomingCall> {
+    let selected = target_item.and_then(|item| {
+        type_output.and_then(|output| declaration_for_hierarchy_item(output, source, lo, item))
+    });
     let mut result = Vec::new();
     for (item, item_span) in &parse_result.program.items {
         // Collect all call sites inside this item using the exhaustive item walker.
         let mut calls = Vec::new();
         collect_calls_in_item(item, &mut calls);
-        let matching: Vec<_> = calls.iter().filter(|c| c.name == target_name).collect();
+        let matching: Vec<_> = calls
+            .iter()
+            .filter(|c| call_reaches(c, target_name, selected, type_output))
+            .collect();
         if matching.is_empty() {
             continue;
         }
@@ -264,7 +529,7 @@ pub(super) fn find_incoming_calls(
                     collect_calls_in_block(&init.body, &mut body_calls);
                     let fn_calls: Vec<_> = body_calls
                         .iter()
-                        .filter(|c| c.name == target_name)
+                        .filter(|c| call_reaches(c, target_name, selected, type_output))
                         .collect();
                     if !fn_calls.is_empty() {
                         let range = span_to_range(source, lo, item_span);
@@ -292,7 +557,7 @@ pub(super) fn find_incoming_calls(
                     collect_calls_in_block(&recv.body, &mut body_calls);
                     let fn_calls: Vec<_> = body_calls
                         .iter()
-                        .filter(|c| c.name == target_name)
+                        .filter(|c| call_reaches(c, target_name, selected, type_output))
                         .collect();
                     if fn_calls.is_empty() {
                         continue;
@@ -326,7 +591,7 @@ pub(super) fn find_incoming_calls(
                     collect_calls_in_block(&method.body, &mut body_calls);
                     let fn_calls: Vec<_> = body_calls
                         .iter()
-                        .filter(|c| c.name == target_name)
+                        .filter(|c| call_reaches(c, target_name, selected, type_output))
                         .collect();
                     if fn_calls.is_empty() {
                         continue;
@@ -466,6 +731,8 @@ pub(super) fn find_outgoing_calls(
     lo: &[usize],
     parse_result: &ParseResult,
     caller_name: &str,
+    caller_item: Option<&CallHierarchyItem>,
+    type_output: Option<&TypeCheckOutput>,
 ) -> Vec<CallHierarchyOutgoingCall> {
     let mut call_sites = Vec::new();
 
@@ -474,22 +741,36 @@ pub(super) fn find_outgoing_calls(
     // matching sub-body, preventing sibling methods from bleeding into the
     // outgoing call set.
     for (item, _) in &parse_result.program.items {
+        if caller_item.is_some_and(|caller| !caller_item_contains_body(item, source, lo, caller)) {
+            continue;
+        }
         collect_calls_in_named_body(item, caller_name, &mut call_sites);
     }
 
-    // Group call sites by callee name
-    let mut grouped: HashMap<String, Vec<Range>> = HashMap::new();
+    let mut grouped: HashMap<Target, Vec<Range>> = HashMap::new();
     for cs in &call_sites {
+        let target = match type_output
+            .and_then(|output| hew_analysis::calls::checked_call_target(cs, output, 0))
+        {
+            Some(Some(declaration)) => Target::Declaration(declaration),
+            Some(None) => continue,
+            None => Target::Name(cs.name.clone()),
+        };
         grouped
-            .entry(cs.name.clone())
+            .entry(target)
             .or_default()
             .push(span_to_range(source, lo, &cs.span));
     }
 
     grouped
         .into_iter()
-        .filter_map(|(callee_name, ranges)| {
-            let target = find_callable_at(uri, source, lo, parse_result, &callee_name)?;
+        .filter_map(|(callee, ranges)| {
+            let target = match callee {
+                Target::Declaration(id) => {
+                    callable_for_declaration(uri, source, lo, parse_result, type_output?, id)?
+                }
+                Target::Name(name) => find_callable_at(uri, source, lo, parse_result, &name)?,
+            };
             Some(CallHierarchyOutgoingCall {
                 to: target,
                 from_ranges: ranges,

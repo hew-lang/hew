@@ -363,6 +363,20 @@ impl Checker {
             let _ =
                 self.scopes
                     .resolve_prefix(&self.env, site, super::scope::Namespace::Value, &path);
+            if let Some((_, written)) = path.first() {
+                let key = super::types::SpanKey::in_module(written, self.current_module_idx);
+                if let Some(super::scope::Resolution::Local(binding)) =
+                    self.scopes.resolutions().get(&key)
+                {
+                    if let Some((owner, index)) = self.actor_field_binding_ids.get(binding) {
+                        self.scopes.record_resolution(
+                            site,
+                            written,
+                            super::scope::Resolution::Field(*owner, *index),
+                        );
+                    }
+                }
+            }
             // An identifier expression's span can include the whitespace up
             // to the next token. Retain that expression key for compiler
             // consumers and publish the written token for editor consumers.
@@ -477,9 +491,8 @@ impl Checker {
             .get(&key)
             .and_then(|rewrite| match rewrite {
                 MethodCallRewrite::RewriteToFunction { target, .. }
-                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. } => {
-                    Some(target)
-                }
+                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key));

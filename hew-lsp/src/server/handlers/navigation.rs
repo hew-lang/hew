@@ -1,14 +1,38 @@
 use tower_lsp_server::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp_server::lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, ReferenceParams,
-    RenameParams, Uri as Url, WorkspaceEdit,
+    RenameParams, WorkspaceEdit,
 };
 
 use super::super::{
     collect_import_items, find_cross_file_definition, find_definition_in_ast,
     find_stdlib_definition, non_empty, offset_range_to_lsp, plan_workspace_rename,
-    position_to_offset, word_at_offset, HewLanguageServer,
+    position_to_offset, word_at_offset, DocumentState, HewLanguageServer,
 };
+
+fn source_definition_location(
+    uri: &tower_lsp_server::lsp_types::Uri,
+    doc: &DocumentState,
+    word: &str,
+    offset: usize,
+) -> Option<Location> {
+    let span = hew_analysis::definition::find_local_binding_definition(
+        &doc.source,
+        &doc.parse_result,
+        word,
+        offset,
+    )
+    .or_else(|| hew_analysis::definition::find_param_definition(&doc.parse_result, word, offset));
+    let range = if let Some(span) = span {
+        offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end)
+    } else {
+        find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, word)?
+    };
+    Some(Location {
+        uri: uri.clone(),
+        range,
+    })
+}
 
 pub(crate) fn rename_error_to_jsonrpc(
     err: &hew_analysis::RenameError,
@@ -74,23 +98,8 @@ pub(crate) fn goto_definition(
     }
     let word = word_at_offset(&doc.source, offset)?;
 
-    if let Some(resolution) = hew_analysis::resolver::resolve_symbol_at_raw(
-        &doc.source,
-        &doc.parse_result,
-        doc.type_output.as_ref(),
-        uri.as_str(),
-        offset,
-    ) {
-        if let Some((res_uri, span)) = resolution.def_location() {
-            // Use the resolver's URI, not the caller's URI: the definition may
-            // live in a stdlib or imported file, not the document being queried.
-            let def_uri = res_uri.parse::<Url>().unwrap_or_else(|_| uri.clone());
-            let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
-            return Some(GotoDefinitionResponse::Scalar(Location {
-                uri: def_uri,
-                range,
-            }));
-        }
+    if let Some(location) = source_definition_location(uri, &doc, &word, offset) {
+        return Some(GotoDefinitionResponse::Scalar(location));
     }
 
     if let Some(method) = word.rsplit('.').next() {

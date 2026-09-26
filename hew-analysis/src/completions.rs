@@ -379,15 +379,15 @@ fn try_struct_init_completions(
 
     let tc = type_output?;
     let type_end = source.get(..brace_pos)?.trim_end().len();
-    let type_def = crate::identity::resolution_at(tc, 0, type_end.saturating_sub(1))
-        .and_then(|(span, resolution)| {
-            (span.start >= type_end.saturating_sub(type_name.len())).then_some(resolution)
-        })
-        .and_then(|resolution| match resolution {
-            hew_types::check::scope::Resolution::Nominal(id) => tc.type_defs.get(&id).cloned(),
-            _ => None,
-        })
-        .or_else(|| method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name))?;
+    let checked = crate::identity::resolution_at(tc, 0, type_end.saturating_sub(1))
+        .filter(|(span, _)| span.start >= type_end.saturating_sub(type_name.len()));
+    let type_def = match checked {
+        Some((_, hew_types::check::scope::Resolution::Nominal(id))) => {
+            tc.type_defs.get(&id).cloned()?
+        }
+        Some(_) => return None,
+        None => method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?,
+    };
     if type_def.fields.is_empty() {
         return None;
     }

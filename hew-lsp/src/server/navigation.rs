@@ -41,9 +41,30 @@ fn checked_resolution_at(
     hew_types::check::scope::Resolution,
 )> {
     let output = doc.type_output.as_ref()?;
-    hew_analysis::identity::resolution_at(output, 0, offset).or_else(|| {
-        hew_analysis::identity::field_declaration_at(output, &doc.source, &doc.parse_result, offset)
-    })
+    hew_analysis::identity::resolution_at(output, 0, offset)
+        .filter(|(span, resolution)| {
+            !matches!(resolution, hew_types::check::scope::Resolution::Local(_))
+                || is_identifier_token(&doc.source, *span)
+        })
+        .or_else(|| {
+            hew_analysis::identity::field_declaration_at(
+                output,
+                &doc.source,
+                &doc.parse_result,
+                offset,
+            )
+        })
+}
+
+fn is_identifier_token(source: &str, span: hew_analysis::OffsetSpan) -> bool {
+    let Some(token) = source.get(span.start..span.end) else {
+        return false;
+    };
+    let mut chars = token.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
 /// Resolve a checked source segment to its declaration. The checker carries
@@ -56,9 +77,12 @@ pub(super) fn identity_definition_location(
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<Location> {
     let output = doc.type_output.as_ref()?;
-    let (_, resolution) = checked_resolution_at(doc, offset)?;
+    let (selected_span, resolution) = checked_resolution_at(doc, offset)?;
     if let hew_types::check::scope::Resolution::Local(_) = resolution {
-        let span = *hew_analysis::identity::reference_spans(output, 0, resolution).first()?;
+        let spelling = doc.source.get(selected_span.start..selected_span.end)?;
+        let span = hew_analysis::identity::reference_spans(output, 0, resolution)
+            .into_iter()
+            .find(|span| doc.source.get(span.start..span.end) == Some(spelling))?;
         return Some(Location {
             uri: uri.clone(),
             range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
@@ -115,7 +139,7 @@ pub(super) fn identity_reference_locations(
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<Vec<Location>> {
     let output = doc.type_output.as_ref()?;
-    let (_, resolution) = checked_resolution_at(doc, offset)?;
+    let (selected_span, resolution) = checked_resolution_at(doc, offset)?;
     if !matches!(
         resolution,
         hew_types::check::scope::Resolution::Field(_, _)
@@ -125,6 +149,9 @@ pub(super) fn identity_reference_locations(
     }
     let declaration = identity_definition_location(uri, doc, offset, documents);
     let mut locations = Vec::new();
+    let local_spelling = matches!(resolution, hew_types::check::scope::Resolution::Local(_))
+        .then(|| doc.source.get(selected_span.start..selected_span.end))
+        .flatten();
     for (module_idx, span) in hew_analysis::identity::all_reference_spans(output, resolution) {
         let Some(source_uri) = source_uri_for_module_idx(uri, doc, module_idx) else {
             continue;
@@ -140,6 +167,10 @@ pub(super) fn identity_reference_locations(
             };
             source
         };
+        if local_spelling.is_some_and(|spelling| source.get(span.start..span.end) != Some(spelling))
+        {
+            continue;
+        }
         let line_offsets = hew_analysis::util::compute_line_offsets(&source);
         let location = Location {
             uri: source_uri,
@@ -1246,6 +1277,13 @@ pub(super) fn plan_workspace_rename(
     build_workspace_edit(uri, doc, offset, new_name, documents)
 }
 
+fn checked_field_index(index: usize, uri: &Url) -> Result<u32, hew_analysis::RenameError> {
+    u32::try_from(index).map_err(|_| hew_analysis::RenameError::Io {
+        path: uri.as_str().to_string(),
+        message: "field index exceeds the supported range".to_string(),
+    })
+}
+
 /// Rename a checked field through its nominal owner and declaration index.
 /// The current compilation supplies exact uses in the root source. A request
 /// involving other source modules is refused until the workspace can prove a
@@ -1316,7 +1354,7 @@ fn plan_checked_field_rename(
             .position(|field| field == new_name)
         {
             let mut other = target.clone();
-            other.field_index = Some(other_index as u32);
+            other.field_index = Some(checked_field_index(other_index, uri)?);
             other.name = new_name.to_string();
             let existing = hew_analysis::identity::declaration_name_span(
                 &doc.source,
@@ -1408,7 +1446,7 @@ fn collect_cross_file_conflict_raw(
             });
         }
     } else if let Some(existing) =
-        hew_analysis::resolver::find_matching_import(parse_result, new_name)
+        hew_analysis::definition::find_matching_import(parse_result, new_name)
     {
         let offending =
             hew_analysis::definition::find_definition(source, parse_result, offending_visible_name)

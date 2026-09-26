@@ -1,0 +1,25 @@
+actor Worker {
+    receive fn job() {
+        sleep(20ms);
+        println("job");
+    }
+
+    #[on(stop)]
+    fn done() { println("hook"); }
+}
+
+supervisor App {
+    child worker: Worker restart: transient,
+}
+
+fn main() {
+    let app = spawn App;
+    let role = app.worker;
+    mailbox(role).job().expect("admit job");
+    stop(role);
+    println("requested");
+    stopped(role);
+    println("observed");
+    stop(app);
+    stopped(app);
+}

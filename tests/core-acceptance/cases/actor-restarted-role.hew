@@ -1,0 +1,42 @@
+actor Worker {
+    receive fn fail() { panic("restart me"); }
+    receive fn value() -> i64 { 7 }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child worker: Worker,
+}
+
+actor Observer {
+    receive fn watch(role: ChildRef<Worker>, timer: Timer) {
+        let _ = role.fail();
+        mailbox(timer).tick().expect("schedule concurrent work");
+        restarted(role);
+        assert(role.value().expect("replacement") == 7);
+        println("restarted");
+    }
+}
+
+actor Timer {
+    receive fn tick() {
+        sleep(50ms);
+        println("tick");
+    }
+}
+
+fn main() {
+    let app = spawn App;
+    let _ = app.worker.fail();
+    restarted(app.worker);
+    let observer = spawn Observer();
+    let timer = spawn Timer();
+    mailbox(observer).watch(app.worker, timer).expect("observe");
+    stop(observer);
+    stopped(observer);
+    stop(timer);
+    stopped(timer);
+    stop(app);
+    stopped(app);
+}

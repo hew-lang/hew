@@ -618,12 +618,12 @@ impl MonitorState {
         watcher_actor_id: u64,
         monitor_id: u64,
         target: Location,
-        reason: i32,
         crash_kind: u32,
+        end_reason: u8,
     ) {
         deliver_down_message(
             watcher_actor_id,
-            HewDownMessage::remote(monitor_id, target, reason, crash_kind),
+            HewDownMessage::remote(monitor_id, target, crash_kind, end_reason),
         );
     }
 
@@ -765,13 +765,17 @@ impl HewDownMessage {
     pub(crate) fn remote(
         monitor_id: u64,
         target: Location,
-        terminal: i32,
         crash_kind: u32,
+        end_reason: u8,
     ) -> Self {
-        let reason_kind = if terminal == HewActorState::Stopped as i32 {
-            DOWN_REASON_STOPPED
-        } else {
-            DOWN_REASON_CRASHED
+        let reason_kind = match end_reason {
+            0 => DOWN_REASON_STOPPED,
+            1 => DOWN_REASON_TERMINATED,
+            2 => DOWN_REASON_CRASHED,
+            4 => DOWN_REASON_LOCAL_SHUTDOWN,
+            // The codec admits 3 (monitor lost); any invalid internal caller
+            // also fails closed as lost rather than inventing a terminal cause.
+            _ => DOWN_REASON_MONITOR_LOST,
         };
         Self {
             monitor_id,
@@ -1265,7 +1269,13 @@ pub(crate) fn notify_monitors_on_end(
     // terminal reason. The distributed table keys on the actor's serial; the
     // fan-out is fail-closed and no-ops when no remote watcher exists or no
     // node/conn-mgr is installed (R7), so the local sweep above is unaffected.
-    crate::hew_node::fan_out_remote_monitor_down(actor_id, remote_watchers, reason, crash_kind);
+    crate::hew_node::fan_out_remote_monitor_down(
+        actor_id,
+        remote_watchers,
+        reason,
+        crash_kind,
+        end,
+    );
 }
 
 #[cfg(test)]
@@ -2327,6 +2337,28 @@ mod tests {
 
     fn remote_location(byte: u8, slot: u64, incarnation: u32) -> Location {
         Location::new(NodeId::from_bytes([byte; 16]), slot, incarnation).unwrap()
+    }
+
+    #[test]
+    fn remote_down_retains_terminated_reason_across_wire() {
+        let target = remote_location(7, 13, 2);
+        let payload = crate::envelope::MonitorDownPayload {
+            ref_id: 41,
+            target,
+            reason: HewActorState::Stopped as i32,
+            end_reason: crate::internal::types::ActorEndReason::Terminated as u8,
+            crash_kind: 0,
+        };
+        let bytes = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
+        let decoded = crate::envelope::decode_monitor_down_payload(&bytes).unwrap();
+        let down = HewDownMessage::remote(
+            decoded.ref_id,
+            decoded.target,
+            decoded.crash_kind.cast_unsigned(),
+            decoded.end_reason,
+        );
+        assert_eq!(down.reason_kind, DOWN_REASON_TERMINATED);
+        assert_eq!(down.crash_kind, 0);
     }
 
     #[test]

@@ -1,0 +1,26 @@
+actor Worker {
+    #[on(stop)]
+    fn done() {
+        sleep(20ms);
+        println("nested hook");
+    }
+}
+
+supervisor Branch {
+    child worker: Worker,
+}
+
+supervisor Root {
+    child branch: Branch,
+}
+
+fn main() {
+    let root = spawn Root;
+    let role = root.branch;
+    stop(role);
+    println("requested");
+    stopped(role);
+    println("observed");
+    stop(root);
+    stopped(root);
+}

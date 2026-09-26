@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-stopped-role"
+intent = "A nested supervisor role waits for its child's stop hook and complete subtree release."
+source = "cases/supervisor-stopped-role.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "requested\nnested hook\nobserved\n"
+exit = 0

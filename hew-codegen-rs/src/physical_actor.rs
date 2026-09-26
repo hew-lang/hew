@@ -1595,47 +1595,57 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     | hew_mir::physical::LifecycleTarget::SupervisorRole(_)
             );
             if matches!(operation, ActorOperation::AwaitStopped(_)) {
-                self.emit_actor_await_closed(*source, role.then_some(false), unwind)?;
-            } else if matches!(operation, ActorOperation::AwaitRestarted(_)) {
-                let value = self.load(*source, "restart.role")?.into_struct_value();
-                let owner = self
-                    .builder
-                    .build_extract_value(value, 0, "restart.owner")
-                    .llvm_ctx("read the role owner")?;
-                let slot = self
-                    .builder
-                    .build_extract_value(value, 1, "restart.slot")
-                    .llvm_ctx("read the role slot")?;
-                let role_kind = u64::from(matches!(
-                    target,
-                    hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-                ));
-                let wait = coro::external(
-                    self.llvm,
-                    "hew_supervisor_native_await_restart",
-                    self.ctx.void_type().fn_type(
-                        &[
-                            owner.get_type().into(),
-                            slot.get_type().into(),
-                            self.ctx.i32_type().into(),
-                        ],
+                self.emit_actor_await_closed(
+                    *source,
+                    role.then_some((
+                        matches!(
+                            target,
+                            hew_mir::physical::LifecycleTarget::SupervisorRole(_)
+                        ),
                         false,
-                    ),
+                    )),
+                    unwind,
                 )?;
-                self.builder
-                    .build_call(
-                        wait,
-                        &[
-                            owner.into(),
-                            slot.into(),
-                            self.ctx.i32_type().const_int(role_kind, false).into(),
-                        ],
-                        "",
-                    )
-                    .llvm_ctx("wait for the role restart")?;
+            } else if matches!(operation, ActorOperation::AwaitRestarted(_)) {
+                self.emit_actor_await_restarted(
+                    *source,
+                    matches!(
+                        target,
+                        hew_mir::physical::LifecycleTarget::SupervisorRole(_)
+                    ),
+                    unwind,
+                )?;
             } else {
                 let value = self.load(*source, "lifecycle.handle")?;
-                let value = if role {
+                let value = if matches!(
+                    target,
+                    hew_mir::physical::LifecycleTarget::SupervisorRole(_)
+                ) {
+                    let role = value.into_struct_value();
+                    let owner = self
+                        .builder
+                        .build_extract_value(role, 0, "lifecycle.role.owner")
+                        .llvm_ctx("read nested role owner")?;
+                    let slot = self
+                        .builder
+                        .build_extract_value(role, 1, "lifecycle.role.slot")
+                        .llvm_ctx("read nested role slot")?;
+                    let resolve = coro::external(
+                        self.llvm,
+                        "hew_supervisor_native_nested_child",
+                        owner
+                            .get_type()
+                            .into_int_type()
+                            .fn_type(&[owner.get_type().into(), slot.get_type().into()], false),
+                    )?;
+                    call_value(
+                        &self.builder,
+                        resolve,
+                        &[owner.into(), slot.into()],
+                        "lifecycle.nested",
+                    )?
+                    .into_int_value()
+                } else if role {
                     self.resolve_role_handle(value.into_struct_value())?
                 } else {
                     value.into_int_value()
@@ -1736,7 +1746,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ));
             };
             let role_close = match operation {
-                ActorOperation::SupervisorRoleAwaitClosed { closing, .. } => Some(closing),
+                ActorOperation::SupervisorRoleAwaitClosed { closing, .. } => Some((true, closing)),
                 _ => None,
             };
             self.emit_actor_await_closed(*source, role_close, unwind)?;

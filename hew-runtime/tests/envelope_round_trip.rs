@@ -1302,6 +1302,7 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
         ref_id: 4242,
         target: location(51, 99, 191),
         reason: 5,
+        end_reason: 2,
         crash_kind: 1,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
@@ -1331,6 +1332,7 @@ fn monitor_down_payload_carries_negative_sentinel_reason() {
         ref_id: 1,
         target: location(52, 101, 193),
         reason: -1,
+        end_reason: 3,
         crash_kind: 0,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
@@ -1487,6 +1489,7 @@ fn monitor_payload_truncated_cbor_returns_error() {
         ref_id: 7,
         target: req.target,
         reason: 6,
+        end_reason: 0,
         crash_kind: 0,
     };
     let down_bytes = encode_monitor_down_payload(&down).expect("down should encode");
@@ -1573,6 +1576,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
         ref_id: 4242,
         target: location(59, 99, 229),
         reason: 5,
+        end_reason: 2,
         crash_kind: 0,
     };
     let bytes = encode_link_down_payload(&original).expect("link down should encode");
@@ -1583,6 +1587,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
         ref_id: 1,
         target: location(59, 99, 229),
         reason: -1,
+        end_reason: 3,
         crash_kind: 0,
     };
     let pbytes = encode_link_down_payload(&partition).expect("link down should encode");

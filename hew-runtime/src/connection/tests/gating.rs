@@ -308,6 +308,7 @@ fn link_down_from_unverified_or_superseded_peer_is_gated() {
             ref_id,
             target: test_location(route_slot, 1),
             reason: 2,
+            end_reason: 2,
             crash_kind: 0,
         };
         let bytes = crate::envelope::encode_link_down_payload(&payload).expect("link down encodes");

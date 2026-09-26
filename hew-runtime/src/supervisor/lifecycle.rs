@@ -232,6 +232,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         }),
         restart_epoch: (Mutex::new(0), Condvar::new()),
         restart_await_waiters: Mutex::new(Vec::new()),
+        native_restart_wakers: crate::wake::ReadinessRegistrations::default(),
     });
     let raw = Box::into_raw(sup); // ALLOCATOR-PAIRING: GlobalAlloc
     let publication = match crate::lifetime::local_handles::begin_supervisor_publication_in(

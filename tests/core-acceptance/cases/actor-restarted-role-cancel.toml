@@ -1,0 +1,12 @@
+[[case]]
+id = "actor-restarted-role-cancel"
+intent = "Cancelling a parked role restart observer releases its wake target and supervisor pin before shutdown."
+source = "cases/actor-restarted-role-cancel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+env = { HEW_WORKERS = "1" }
+
+[case.expected]
+stdout = "waiting\nreleased\n"
+stderr = "hew: failure: UserPanic (212): restart me\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart me\nhew: actor crash in Worker.fail (actor 3): UserPanic\n"
+exit = 0

@@ -1029,6 +1029,9 @@ pub struct HewSupervisor {
     /// Dead, never Transient. Drained on fire and on supervisor teardown; a
     /// cancelled slot drops its wake (the channel-core race guard).
     restart_await_waiters: Mutex<Vec<RestartAwaitWaiter>>,
+    /// Native coroutine observers retain their own wake targets and re-check
+    /// the selected role after each restart or terminal ruling.
+    native_restart_wakers: crate::wake::ReadinessRegistrations,
 }
 
 const SUPERVISOR_PIN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -2311,6 +2314,8 @@ fn notify_restart(sup: *mut HewSupervisor) {
     }
     crate::exit_status::note_supervision_change();
     wake_restart_await_waiters(sup);
+    // SAFETY: callers keep the supervisor live through the notification.
+    unsafe { &(*sup).native_restart_wakers }.notify();
 }
 
 /// Re-fire every restart waiter WITHOUT advancing the epoch.
@@ -2336,6 +2341,8 @@ fn wake_restart_waiters(sup: *mut HewSupervisor) {
     }
     crate::exit_status::note_supervision_change();
     wake_restart_await_waiters(sup);
+    // SAFETY: callers keep the supervisor live through the notification.
+    unsafe { &(*sup).native_restart_wakers }.notify();
 }
 
 /// Fire and drain every parked `await_restart` continuation. Mirrors the

@@ -1494,7 +1494,7 @@ impl LowerCtx {
                 ty: binding_ty,
             } = &predicate
             {
-                self.bind_existing(
+                self.bind_checked_existing(
                     *binding_id,
                     binding_name.clone(),
                     binding_ty.clone(),
@@ -1506,7 +1506,7 @@ impl LowerCtx {
             // Materialise payload bindings (constructor payload fields).
             let mut bindings = Vec::with_capacity(binding_specs.len());
             for (field_idx, name, ty, binding_span) in binding_specs {
-                let bound = self.bind(name.clone(), ty.clone(), false, binding_span);
+                let bound = self.bind_checked(name.clone(), ty.clone(), false, binding_span);
                 bindings.push(HirMatchArmBinding {
                     span: bound.span.clone(),
                     binding: bound.id,
@@ -1947,7 +1947,7 @@ impl LowerCtx {
                 return None;
             };
             let binding_span = self.match_payload_binding_span(payload, pattern_span)?;
-            let bound = self.bind(
+            let bound = self.bind_checked(
                 payload.binding_name.clone(),
                 ty.clone(),
                 false,

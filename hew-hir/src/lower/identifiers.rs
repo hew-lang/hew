@@ -232,6 +232,30 @@ impl LowerCtx {
                 return (HirExprKind::ContextReader { reader }, ty);
             }
         }
+        let key = self.mk_key(&span);
+        if let Some(Resolution::Local(source)) = self.resolutions.get(&key).copied() {
+            if let Some((id, ty)) = self.lookup_checked(source) {
+                return (
+                    HirExprKind::BindingRef {
+                        name: name.to_string(),
+                        resolved: ResolvedRef::Binding(id),
+                    },
+                    ty,
+                );
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: format!("Local resolution at {key:?} has no HIR binding"),
+                },
+                span,
+                "checker-selected local has no lowered source binding",
+            ));
+            return (
+                HirExprKind::Unsupported("unbound checked local".into()),
+                ResolvedTy::Unit,
+            );
+        }
         if let Some((id, ty)) = self.lookup(name) {
             if self.authored_bindings.contains(&id) {
                 self.diagnostics.push(HirDiagnostic::new(

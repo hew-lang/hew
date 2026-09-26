@@ -1,0 +1,11 @@
+[[case]]
+id = "identity_w3b_checked_local"
+intent = "A closure local shadows a same-named function using the checker-selected binding identity."
+source = "../vertical-slice/accept/identity_w3b.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "2\n"
+exit = 0

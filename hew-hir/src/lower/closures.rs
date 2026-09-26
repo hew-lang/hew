@@ -282,7 +282,7 @@ impl LowerCtx {
             .iter()
             .zip(signature_params)
             .map(|(param, ty)| {
-                self.bind(param.name.to_string(), ty, false, param.name_span.clone())
+                self.bind_checked(param.name.to_string(), ty, false, param.name_span.clone())
             })
             .collect();
         let lowered_body = self

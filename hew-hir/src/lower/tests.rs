@@ -3,6 +3,42 @@ use hew_parser::ast::Ident;
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
+#[test]
+fn missing_checked_closure_local_fails_closed_at_its_source_site() {
+    let source = "fn helper(x: i64) -> i64 { 10 } \
+        fn main() { let helper = |x: i64| -> i64 { x + 1 }; println(helper(1)); }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let intact = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(intact.diagnostics.is_empty(), "{:#?}", intact.diagnostics);
+
+    let start = source.find("helper(1)").expect("closure call");
+    let key = SpanKey::in_module(&(start..start + "helper".len()), 0);
+    assert!(matches!(
+        output.resolutions.remove(&key),
+        Some(Resolution::Local(_))
+    ));
+
+    let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(
+        lowered.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "helper"
+                        && reason.contains("authored local use lacks Resolution::Local")
+                        && reason.contains(&format!("{key:?}"))
+            )
+        }),
+        "{:#?}",
+        lowered.diagnostics
+    );
+}
+
 fn assert_ordered_aggregate_groups(main: &HirFn) {
     let groups: Vec<_> = main
         .body

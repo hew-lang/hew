@@ -237,6 +237,8 @@ impl LowerCtx {
             &mut self.direct_call_targets,
             tc_output.direct_call_targets.clone(),
         );
+        let saved_resolutions =
+            std::mem::replace(&mut self.resolutions, tc_output.resolutions.clone());
         let saved_numeric_coercions = std::mem::replace(
             &mut self.numeric_operand_coercions,
             tc_output.numeric_operand_coercions.clone(),
@@ -316,6 +318,7 @@ impl LowerCtx {
             self.record_init_type_args,
         ) = saved;
         self.direct_call_targets = saved_direct_calls;
+        self.resolutions = saved_resolutions;
         self.numeric_operand_coercions = saved_numeric_coercions;
 
         result

@@ -409,7 +409,7 @@ impl LowerCtx {
                 let name = self
                     .pattern_name(pattern)
                     .unwrap_or_else(|| "_".to_string());
-                let binding = self.bind(name, binding_ty, false, pattern.1.clone());
+                let binding = self.bind_checked(name, binding_ty, false, pattern.1.clone());
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Var {
@@ -426,7 +426,7 @@ impl LowerCtx {
                     },
                     |ty| self.lower_type(ty),
                 );
-                let binding = self.bind(name.to_string(), binding_ty, true, span.clone());
+                let binding = self.bind_checked(name.to_string(), binding_ty, true, span.clone());
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Assign { target, op, value } => {

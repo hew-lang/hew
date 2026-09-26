@@ -119,11 +119,11 @@ impl LowerCtx {
     /// every non-param binder) always leaves `false`.
     pub(super) fn bind_param(&mut self, param: &Param) -> HirBinding {
         let ty = self.lower_type(&param.ty);
-        let mut binding = self.bind(
+        let mut binding = self.bind_checked(
             param.name.to_string(),
             ty,
             param.is_mutable,
-            param.ty.1.clone(),
+            param.name_span.clone(),
         );
         binding.is_consume = param.is_consume;
         binding
@@ -132,22 +132,22 @@ impl LowerCtx {
     pub(super) fn bind_actor_param(&mut self, param: &Param) -> HirBinding {
         let ty = self.lower_type(&param.ty);
         let ty = self.qualify_current_module_record_ty(ty);
-        let mut binding = self.bind(
+        let mut binding = self.bind_checked(
             param.name.to_string(),
             ty,
             param.is_mutable,
-            param.ty.1.clone(),
+            param.name_span.clone(),
         );
         binding.is_consume = param.is_consume;
         binding
     }
 
-    /// Register a pre-allocated `BindingId` in the current scope under `name`.
+    /// Register a pre-allocated `BindingId` for a checked source binder.
     ///
     /// Used when the caller needs the `BindingId` before the scope is pushed
     /// (e.g. `HirMatchArmPredicate::Binding` where the id is embedded in the
     /// predicate and must be available before the guard expression is lowered).
-    pub(super) fn bind_existing(
+    pub(super) fn bind_checked_existing(
         &mut self,
         id: BindingId,
         name: String,
@@ -155,8 +155,26 @@ impl LowerCtx {
         _mutable: bool,
         span: std::ops::Range<usize>,
     ) {
+        let key = self.mk_key(&span);
+        let source = self.resolutions.get(&key).copied();
+        self.authored_bindings.insert(id);
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, (id, ty, span));
+            scope.insert(name.clone(), (id, ty.clone(), span.clone()));
+        }
+        match source {
+            Some(Resolution::Local(source)) => {
+                if let Some(scope) = self.checked_scopes.last_mut() {
+                    scope.insert(source, (id, ty, span));
+                }
+            }
+            other => self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name,
+                    reason: format!("missing Local resolution at {key:?}; found {other:?}"),
+                },
+                span,
+                "source binding has no checker-owned local identity",
+            )),
         }
     }
 

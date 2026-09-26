@@ -502,7 +502,9 @@ impl Builder<'_, '_> {
         self.current_site = Some(expr.site);
         match &expr.kind {
             HirExprKind::ActorDelivery {
-                operation: hew_types::actor_delivery::ActorDeliveryCall::AwaitClosed,
+                operation:
+                    hew_types::actor_delivery::ActorDeliveryCall::AwaitStopped
+                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted,
                 ..
             } => {
                 self.lower_actor_boundary(expr)?;

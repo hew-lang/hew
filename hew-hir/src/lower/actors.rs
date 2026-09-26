@@ -697,7 +697,7 @@ impl LowerCtx {
                     "start" => Some(HirLifecycleHookKind::Start),
                     "stop" => Some(HirLifecycleHookKind::Stop),
                     "crash" => Some(HirLifecycleHookKind::Crash),
-                    "exit" => Some(HirLifecycleHookKind::Exit),
+                    "link" => Some(HirLifecycleHookKind::Link),
                     "down" => Some(HirLifecycleHookKind::Down),
                     _ => None,
                 });

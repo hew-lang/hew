@@ -281,18 +281,15 @@ impl LowerCtx {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
                 (
-                    ActorDeliveryCall::Close | ActorDeliveryCall::AwaitClosed,
+                    ActorDeliveryCall::Stop
+                    | ActorDeliveryCall::Terminate
+                    | ActorDeliveryCall::AwaitStopped
+                    | ActorDeliveryCall::AwaitRestarted,
                     Expr::Call { args, .. },
                 ) if args.len() == 1 => (
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
                 ),
-                (
-                    ActorDeliveryCall::Close
-                    | ActorDeliveryCall::AwaitClosed
-                    | ActorDeliveryCall::Stop,
-                    Expr::MethodCall { receiver, args, .. },
-                ) if args.is_empty() => (self.lower_expr(receiver, IntentKind::Read), Vec::new()),
                 // `view(actor)` derives its admission from the destination's
                 // declaration; `view(actor, on_full: ..)` overrides it. The
                 // checker resolved both to one policy, so only the target
@@ -361,73 +358,6 @@ impl LowerCtx {
                         receiver: Box::new(readdressed),
                         args: Vec::new(),
                         operation: ActorDeliveryCall::Submit { policy },
-                    },
-                    span,
-                };
-            }
-            // `pid.stop()` is the stop request alone: the same request
-            // `close` makes, with the handle it yields discarded, so the call
-            // is `()` and nothing waits.
-            if let ActorDeliveryCall::Stop = operation {
-                let request = HirExpr {
-                    node: self.ids.node(),
-                    site,
-                    ty: receiver.ty.clone(),
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::ActorDelivery {
-                        receiver: Box::new(receiver),
-                        args,
-                        operation: ActorDeliveryCall::Close,
-                    },
-                    span: span.clone(),
-                };
-                return HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty,
-                    intent,
-                    kind: HirExprKind::Block(HirBlock {
-                        node: self.ids.node(),
-                        scope: self.ids.scope(),
-                        statements: vec![HirStmt {
-                            node: self.ids.node(),
-                            kind: HirStmtKind::Expr(request),
-                            span: span.clone(),
-                        }],
-                        tail: None,
-                        ty: ResolvedTy::Unit,
-                        span: span.clone(),
-                    }),
-                    span,
-                };
-            }
-            // `close(actor)` requests the stop AND waits for terminal cleanup:
-            // the request yields the same handle back, and the wait consumes it.
-            // `fork close(actor)` is how the request runs without waiting, and
-            // `closed(actor)` is the wait on its own.
-            if let ActorDeliveryCall::Close = operation {
-                let handle_ty = receiver.ty.clone();
-                let requested = HirExpr {
-                    node: self.ids.node(),
-                    site,
-                    ty: handle_ty,
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::ActorDelivery {
-                        receiver: Box::new(receiver),
-                        args,
-                        operation,
-                    },
-                    span: span.clone(),
-                };
-                return HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty,
-                    intent,
-                    kind: HirExprKind::ActorDelivery {
-                        receiver: Box::new(requested),
-                        args: Vec::new(),
-                        operation: ActorDeliveryCall::AwaitClosed,
                     },
                     span,
                 };
@@ -1066,25 +996,8 @@ impl LowerCtx {
                 )
             }
             Expr::AwaitRestart(inner) => {
-                // `await_restart sup.child` — suspend until the static supervised
-                // child restarts, then resume with the re-fetched live handle.
-                // Lower the inner supervised-child accessor (a `FieldAccess`);
-                // its `site` keys `supervisor_child_slots` with the (supervisor,
-                // slot) discriminator MIR re-reads to emit `SuspendKind::RestartWait`.
-                // The result type is the child's stable `ChildRef<ChildType>` (the
-                // checker assigned this expression the same type as the accessor).
-                let child = self.lower_expr(inner, IntentKind::Read);
-                let result_ty = self
-                    .expr_types
-                    .get(&self.mk_key(&span))
-                    .and_then(|t| ResolvedTy::from_ty(t).ok())
-                    .unwrap_or_else(|| child.ty.clone());
-                (
-                    HirExprKind::AwaitRestart {
-                        child: Box::new(child),
-                    },
-                    result_ty,
-                )
+                let _ = inner;
+                return self.unsupported_expr(span, "retired await_restart cannot be lowered");
             }
             Expr::Await(inner) => {
                 // TCP methods retain their authored wrapper and checked return

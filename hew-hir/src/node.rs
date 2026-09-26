@@ -621,11 +621,11 @@ pub enum HirLifecycleHookKind {
     /// `#[on(crash)]` — runs when the actor body traps. Takes the stdlib
     /// crash-info payload parameter and returns the stdlib crash action enum.
     Crash,
-    /// `#[on(exit)]` — runs when an actor THIS actor is linked to
+    /// `#[on(link)]` — runs when an actor THIS actor is linked to
     /// crashes/exits. Takes the stdlib `CrashNotification { actor_id, kind }`
     /// payload and returns `()`. Fired on the linked actor's own dispatch via
     /// the `HewSysMsg::Exit` delivery (M-7-R, Q210/A211).
-    Exit,
+    Link,
     /// `#[on(down)]` — receives a typed monitor terminal notification.
     Down,
 }

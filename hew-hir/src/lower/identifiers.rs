@@ -212,7 +212,7 @@ impl LowerCtx {
                 );
             }
             if self.defs.kind(declaration) == hew_types::DeclarationKind::Const {
-                if let Some(entry) = self.const_registry.get(self.defs.path(declaration)) {
+                if let Some(entry) = self.source_const_entries.get(&declaration) {
                     return (
                         HirExprKind::BindingRef {
                             name: name.to_string(),

@@ -467,8 +467,7 @@ impl Checker {
         // `fn dup<T: Clone>(v: Option<Vec<T>>)` even though every leaf was
         // clonable. An unbounded parameter still refuses, with a member path,
         // from the recursive call that examined it.
-        let in_scope: Vec<String> = self.current_type_param_names().into_iter().collect();
-        if Self::ty_mentions_type_params(&resolved, &in_scope) {
+        if resolved.has_type_parameters() {
             return None;
         }
         Some(CloneCapabilityBlocker::Missing {

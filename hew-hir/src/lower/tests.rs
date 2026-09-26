@@ -31,11 +31,7 @@ fn source_annotations_keep_user_nominals_with_builtin_spellings() {
     assert!(generic.diagnostics.is_empty(), "{:?}", generic.diagnostics);
     assert!(matches!(
         function_named(&generic, "keep").params[0].ty,
-        ResolvedTy::Named {
-            head: hew_types::TypeHead::Param(_),
-            is_opaque: false,
-            ..
-        }
+        ResolvedTy::TypeParam { .. }
     ));
     let (_, _, lowered) = parse_typecheck_and_lower(
         "#[opaque] type Connection {} fn keep(consume value: Connection) -> Connection { value }",

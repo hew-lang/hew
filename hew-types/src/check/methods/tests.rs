@@ -422,8 +422,8 @@ mod tests {
             SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
-                key_ty: Ty::param("K"),
-                val_ty: Ty::param("V"),
+                key_ty: Ty::param(crate::ParamHead::for_test("K")),
+                val_ty: Ty::param(crate::ParamHead::for_test("V")),
                 source_module: None,
                 type_param_bounds: HashMap::from([
                     ("K".into(), vec!["Hash".into(), "Eq".into()]),
@@ -452,8 +452,8 @@ mod tests {
             SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
-                key_ty: Ty::param("K"),
-                val_ty: Ty::param("V"),
+                key_ty: Ty::param(crate::ParamHead::for_test("K")),
+                val_ty: Ty::param(crate::ParamHead::for_test("V")),
                 source_module: None,
                 type_param_bounds: HashMap::from([
                     ("K".into(), vec!["Eq".into()]),
@@ -488,7 +488,12 @@ mod tests {
             ));
         let span = 80..90;
 
-        checker.record_resolved_hashmap_call("insert", &Ty::param("K"), &Ty::param("V"), &span);
+        checker.record_resolved_hashmap_call(
+            "insert",
+            &Ty::param(crate::ParamHead::for_test("K")),
+            &Ty::param(crate::ParamHead::for_test("V")),
+            &span,
+        );
 
         assert!(
             checker.errors.is_empty(),

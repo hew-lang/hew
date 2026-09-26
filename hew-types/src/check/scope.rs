@@ -194,6 +194,7 @@ struct FileScope {
 /// A generic declaration's lexical region in its defining source file.
 #[derive(Debug, Clone)]
 struct GenericScope {
+    owner: DefId,
     file: ModuleId,
     span: Span,
     parameters: HashMap<Ident, TypeParamId>,
@@ -328,10 +329,60 @@ impl Scopes {
             return;
         }
         self.source_type_params.push(GenericScope {
+            owner: declaration,
             file,
             span,
             parameters,
         });
+    }
+
+    /// Publish the implicit receiver binder of a trait in its source region.
+    pub fn declare_receiver_parameter(&mut self, file: ModuleId, owner: DefId, span: Span) {
+        self.source_type_params.push(GenericScope {
+            owner,
+            file,
+            span,
+            parameters: HashMap::from([(
+                Ident::new("Self"),
+                TypeParamId::new(owner, usize::from(u16::MAX)),
+            )]),
+        });
+    }
+
+    /// Parameters bound by this exact declaration, in declaration order.
+    #[must_use]
+    pub fn declaration_parameters(&self, owner: DefId) -> Vec<crate::ParamHead> {
+        let mut parameters: Vec<_> = self
+            .source_type_params
+            .iter()
+            .find(|scope| scope.owner == owner)
+            .into_iter()
+            .flat_map(|scope| &scope.parameters)
+            .filter(|(_, id)| id.index != u16::MAX)
+            .map(|(name, id)| crate::ParamHead::new(*id, name.name))
+            .collect();
+        parameters.sort_by_key(|parameter| parameter.id.index);
+        parameters
+    }
+
+    /// Publish each declaration's binders without exposing lexical spelling indexes.
+    #[must_use]
+    pub fn declaration_parameter_facts(
+        &self,
+    ) -> HashMap<DefId, (ModuleId, Span, Vec<crate::ParamHead>)> {
+        self.source_type_params
+            .iter()
+            .map(|scope| {
+                (
+                    scope.owner,
+                    (
+                        scope.file,
+                        scope.span.clone(),
+                        self.declaration_parameters(scope.owner),
+                    ),
+                )
+            })
+            .collect()
     }
 
     /// Resolve a parameter inside its defining lexical region.
@@ -459,8 +510,16 @@ impl Scopes {
         if span.is_empty() {
             return;
         }
-        self.resolutions
-            .insert(SpanKey::in_module(span, site.span_file), resolution);
+        let key = SpanKey::in_module(span, site.span_file);
+        // The implicit Self annotation on a receiver shares the authored
+        // `self` token's span. Its type is published separately; the token's
+        // navigation identity remains the local binding.
+        if matches!(resolution, Resolution::Param(parameter) if parameter.index == u16::MAX)
+            && matches!(self.resolutions.get(&key), Some(Resolution::Local(_)))
+        {
+            return;
+        }
+        self.resolutions.insert(key, resolution);
     }
 
     fn resolve_head(

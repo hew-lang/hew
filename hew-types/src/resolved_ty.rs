@@ -174,7 +174,7 @@ pub enum ResolvedTy {
     /// monomorphisation later replaces it with a concrete `ResolvedTy`.
     ///
     /// Construction from a checker-internal [`Ty`] requires the declared
-    /// type-parameter scope — see [`ResolvedTy::from_ty_with_type_params`].
+    /// type-parameter scope — see [`ResolvedTy::from_ty`].
     /// The unscoped [`ResolvedTy::from_ty`] never produces this variant (a
     /// bare `Ty::Named` is indistinguishable from a no-argument user type
     /// without that scope), so its behaviour is unchanged.
@@ -182,8 +182,8 @@ pub enum ResolvedTy {
     /// Display: the bare parameter name (`T`), via `to_ty()` →
     /// `Ty::Named { name, args: [], builtin: None }`.
     TypeParam {
-        /// The source-declared parameter name (e.g. `"T"`).
-        name: String,
+        /// The declaration-owned binder, including its display spelling.
+        name: crate::ParamHead,
     },
 }
 
@@ -742,45 +742,13 @@ impl ResolvedTy {
     /// encountered in a recursive descent: an unresolved inference
     /// variable, an `Ty::Error` placeholder, or an unmaterialized numeric
     /// literal. The carried data identifies the innermost offender.
-    pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
-        Self::from_ty_scoped(ty, &std::collections::HashSet::new())
-    }
-
-    /// Scope-aware variant of [`ResolvedTy::from_ty`] that recognises the
-    /// declared generic type parameters of the enclosing item.
-    ///
-    /// A bare `Ty::Named { name, args: [], builtin: None }` whose `name`
-    /// appears in `type_params` is converted to [`ResolvedTy::TypeParam`]
-    /// (the A622 abstract-parameter authority) rather than to a
-    /// `ResolvedTy::Named` user type. Every other type — and every name not
-    /// in scope — follows the exact same rules as [`ResolvedTy::from_ty`],
-    /// which is defined as this function with an empty scope. This keeps a
-    /// single conceptual boundary converter, so the two entry points cannot
-    /// drift: the unscoped form simply has no type parameters in scope.
-    ///
-    /// # Errors
-    ///
-    /// Identical fail-closed behaviour to [`ResolvedTy::from_ty`]: returns
-    /// the innermost [`BoundaryError`] for any leaked checker-internal state
-    /// (unresolved inference variable, error placeholder, unmaterialized
-    /// literal, or unresolved associated-type projection).
-    pub fn from_ty_with_type_params(
-        ty: &Ty,
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<Self, BoundaryError> {
-        Self::from_ty_scoped(ty, type_params)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "single exhaustive `Ty` -> `ResolvedTy` boundary conversion; \
                   every arm is a fail-closed mapping and splitting would scatter \
                   the total match across helpers"
     )]
-    fn from_ty_scoped(
-        ty: &Ty,
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<Self, BoundaryError> {
+    pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
         match ty {
             Ty::I8 => Ok(ResolvedTy::I8),
             Ty::I16 => Ok(ResolvedTy::I16),
@@ -806,15 +774,9 @@ impl ResolvedTy {
             Ty::FloatLiteral => Err(BoundaryError::UnmaterializedLiteral { is_integer: false }),
             Ty::Var(var) => Err(BoundaryError::UnresolvedInference { var: *var }),
             Ty::Error => Err(BoundaryError::TaintedError),
-            Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems, type_params)?)),
-            Ty::Array(elem, size) => Ok(ResolvedTy::Array(
-                Box::new(Self::from_ty_scoped(elem, type_params)?),
-                *size,
-            )),
-            Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty_scoped(
-                elem,
-                type_params,
-            )?))),
+            Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems)?)),
+            Ty::Array(elem, size) => Ok(ResolvedTy::Array(Box::new(Self::from_ty(elem)?), *size)),
+            Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty(elem)?))),
             Ty::Named {
                 head: TypeHead::Builtin(BuiltinType::CancellationToken),
                 args,
@@ -836,14 +798,10 @@ impl ResolvedTy {
             Ty::Named {
                 head: TypeHead::Param(param),
                 args,
-            } if args.is_empty() && type_params.contains(param.spelling.as_str()) => {
-                Ok(ResolvedTy::TypeParam {
-                    name: param.spelling.to_string(),
-                })
-            }
+            } if args.is_empty() => Ok(ResolvedTy::TypeParam { name: *param }),
             Ty::Named { head, args } => Ok(ResolvedTy::Named {
                 head: *head,
-                args: Self::convert_vec(args, type_params)?,
+                args: Self::convert_vec(args)?,
                 // The checker's `Ty::Named` carries no opacity discriminator;
                 // opacity is stamped downstream by `hew-hir::lower::lower_type`
                 // from the opaque-type-decl set. A `ResolvedTy` produced from a
@@ -866,8 +824,8 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Function {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params, type_params)?,
-                ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
+                params: Self::convert_vec(params)?,
+                ret: Box::new(Self::from_ty(ret)?),
             }),
             Ty::Closure {
                 capabilities,
@@ -877,30 +835,27 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Closure {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params, type_params)?,
-                ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
-                captures: Self::convert_vec(captures, type_params)?,
+                params: Self::convert_vec(params)?,
+                ret: Box::new(Self::from_ty(ret)?),
+                captures: Self::convert_vec(captures)?,
             }),
             Ty::Pointer {
                 is_mutable,
                 pointee,
             } => Ok(ResolvedTy::Pointer {
                 is_mutable: *is_mutable,
-                pointee: Box::new(Self::from_ty_scoped(pointee, type_params)?),
+                pointee: Box::new(Self::from_ty(pointee)?),
             }),
             Ty::Borrow { pointee } => Ok(ResolvedTy::Borrow {
-                pointee: Box::new(Self::from_ty_scoped(pointee, type_params)?),
+                pointee: Box::new(Self::from_ty(pointee)?),
             }),
             Ty::TraitObject { traits } => Ok(ResolvedTy::TraitObject {
                 traits: traits
                     .iter()
-                    .map(|bound| Self::convert_trait_bound(bound, type_params))
+                    .map(Self::convert_trait_bound)
                     .collect::<Result<Vec<_>, _>>()?,
             }),
-            Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty_scoped(
-                inner,
-                type_params,
-            )?))),
+            Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty(inner)?))),
             Ty::AssocType {
                 trait_name,
                 assoc_name,
@@ -912,27 +867,19 @@ impl ResolvedTy {
         }
     }
 
-    fn convert_vec(
-        tys: &[Ty],
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<Vec<ResolvedTy>, BoundaryError> {
-        tys.iter()
-            .map(|ty| Self::from_ty_scoped(ty, type_params))
-            .collect()
+    fn convert_vec(tys: &[Ty]) -> Result<Vec<ResolvedTy>, BoundaryError> {
+        tys.iter().map(Self::from_ty).collect()
     }
 
-    fn convert_trait_bound(
-        bound: &TraitObjectBound,
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<ResolvedTraitBound, BoundaryError> {
+    fn convert_trait_bound(bound: &TraitObjectBound) -> Result<ResolvedTraitBound, BoundaryError> {
         Ok(ResolvedTraitBound {
             trait_name: bound.trait_name.clone(),
             trait_id: bound.trait_id,
-            args: Self::convert_vec(&bound.args, type_params)?,
+            args: Self::convert_vec(&bound.args)?,
             assoc_bindings: bound
                 .assoc_bindings
                 .iter()
-                .map(|(name, ty)| Ok((name.clone(), Self::from_ty_scoped(ty, type_params)?)))
+                .map(|(name, ty)| Ok((name.clone(), Self::from_ty(ty)?)))
                 .collect::<Result<Vec<_>, BoundaryError>>()?,
         })
     }
@@ -1026,7 +973,7 @@ impl ResolvedTy {
             // the same shape the type param had before `from_ty_with_type_params`
             // recognised it, so the round-trip is lossless within the declared
             // type-parameter scope.
-            ResolvedTy::TypeParam { name } => Ty::param(name),
+            ResolvedTy::TypeParam { name } => Ty::param(*name),
         }
     }
 
@@ -1155,9 +1102,9 @@ impl ResolvedTy {
 
     /// The generic binder spelled `spelling`, in the named carrier.
     #[must_use]
-    pub fn param(spelling: &str) -> Self {
+    pub fn param(parameter: crate::ParamHead) -> Self {
         ResolvedTy::Named {
-            head: TypeHead::param(spelling),
+            head: TypeHead::param(parameter),
             args: Vec::new(),
             is_opaque: false,
         }
@@ -1522,7 +1469,9 @@ mod tests {
             capabilities: CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(ResolvedTy::Unit),
-            captures: vec![ResolvedTy::TypeParam { name: "T".into() }],
+            captures: vec![ResolvedTy::TypeParam {
+                name: crate::ParamHead::for_test("T"),
+            }],
         };
         assert_eq!(
             mangle_resolved_ty_segment(&abstract_capture, TypeParamMangle::BareKeyFallback),
@@ -1559,7 +1508,9 @@ mod tests {
 
     #[test]
     fn concrete_type_param_mangling_preserves_probe_encoding() {
-        let type_param = ResolvedTy::TypeParam { name: "T".into() };
+        let type_param = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
         assert_eq!(
             mangle_resolved_ty_segment(&type_param, TypeParamMangle::Concrete),
             Some("typeparam$xT$g".into())
@@ -1574,7 +1525,9 @@ mod tests {
 
     #[test]
     fn bare_key_type_param_mangling_preserves_fallback() {
-        let type_param = ResolvedTy::TypeParam { name: "T".into() };
+        let type_param = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
         assert_eq!(
             mangle_resolved_ty_segment(&type_param, TypeParamMangle::BareKeyFallback),
             None
@@ -1922,37 +1875,25 @@ mod tests {
 
     // --- TypeParam variant tests (A622) ---
 
-    fn type_param_scope(names: &[&str]) -> std::collections::HashSet<String> {
-        names.iter().map(|s| (*s).to_string()).collect()
-    }
-
     #[test]
-    fn unscoped_from_ty_never_produces_type_param() {
-        // Behaviour-preserving: a bare `Named` is a user type under the
-        // unscoped converter, exactly as before this variant existed.
-        let ty = Ty::param("T");
-        assert_eq!(ResolvedTy::from_ty(&ty), Ok(ResolvedTy::param("T")));
-    }
-
-    #[test]
-    fn scoped_from_ty_recognises_declared_type_param() {
-        let ty = Ty::param("T");
-        let scope = type_param_scope(&["T"]);
+    fn from_ty_preserves_declared_parameter_identity() {
+        let ty = Ty::param(crate::ParamHead::for_test("T"));
         assert_eq!(
-            ResolvedTy::from_ty_with_type_params(&ty, &scope),
-            Ok(ResolvedTy::TypeParam { name: "T".into() })
+            ResolvedTy::from_ty(&ty),
+            Ok(ResolvedTy::TypeParam {
+                name: crate::ParamHead::for_test("T")
+            })
         );
     }
 
     #[test]
-    fn scoped_from_ty_leaves_out_of_scope_names_as_named() {
+    fn from_ty_keeps_same_spelled_nominal_distinct() {
         // A no-argument user type whose name is NOT a declared param stays a
         // `Named` even under the scoped converter.
-        let ty = Ty::named_for_test("Color", vec![]);
-        let scope = type_param_scope(&["T", "U"]);
+        let ty = Ty::named_for_test("T", vec![]);
         assert_eq!(
-            ResolvedTy::from_ty_with_type_params(&ty, &scope),
-            Ok(ResolvedTy::named_for_test("Color", vec![]))
+            ResolvedTy::from_ty(&ty),
+            Ok(ResolvedTy::named_for_test("T", vec![]))
         );
     }
 
@@ -1960,44 +1901,52 @@ mod tests {
     fn type_param_round_trips_losslessly_both_directions() {
         // Non-vacuous round-trip: the variant survives ResolvedTy -> Ty and
         // back to the identical ResolvedTy under the declared scope.
-        let scope = type_param_scope(&["T"]);
-        let resolved = ResolvedTy::TypeParam { name: "T".into() };
+        let resolved = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
 
         let lowered = resolved.to_ty();
-        assert_eq!(lowered, Ty::param("T"));
+        assert_eq!(lowered, Ty::param(crate::ParamHead::for_test("T")));
 
-        let restored = ResolvedTy::from_ty_with_type_params(&lowered, &scope)
-            .expect("type-param carrier resolves within scope");
+        let restored =
+            ResolvedTy::from_ty(&lowered).expect("type-param carrier resolves within scope");
         assert_eq!(restored, resolved);
     }
 
     #[test]
     fn nested_type_param_round_trips_inside_composites() {
-        let scope = type_param_scope(&["T"]);
         // Vec<T> as a user-named composite carrying an abstract argument.
-        let resolved =
-            ResolvedTy::named_for_test("Vec", vec![ResolvedTy::TypeParam { name: "T".into() }]);
-        let restored = ResolvedTy::from_ty_with_type_params(&resolved.to_ty(), &scope)
+        let resolved = ResolvedTy::named_for_test(
+            "Vec",
+            vec![ResolvedTy::TypeParam {
+                name: crate::ParamHead::for_test("T"),
+            }],
+        );
+        let restored = ResolvedTy::from_ty(&resolved.to_ty())
             .expect("nested type-param resolves within scope");
         assert_eq!(restored, resolved);
     }
 
     #[test]
-    fn scoped_from_ty_still_fails_closed_on_inference_var() {
+    fn parameter_conversion_still_rejects_inference_variables() {
         // The scope must not weaken the fail-closed contract for genuine
         // checker-internal leaks.
         let var = TypeVar::fresh();
-        let ty = Ty::Tuple(vec![Ty::param("T"), Ty::Var(var)]);
-        let scope = type_param_scope(&["T"]);
+        let ty = Ty::Tuple(vec![
+            Ty::param(crate::ParamHead::for_test("T")),
+            Ty::Var(var),
+        ]);
         assert_eq!(
-            ResolvedTy::from_ty_with_type_params(&ty, &scope),
+            ResolvedTy::from_ty(&ty),
             Err(BoundaryError::UnresolvedInference { var })
         );
     }
 
     #[test]
     fn type_param_display_is_bare_name() {
-        let resolved = ResolvedTy::TypeParam { name: "T".into() };
+        let resolved = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
         assert_eq!(resolved.to_string(), "T");
     }
 }

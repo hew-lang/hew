@@ -2063,13 +2063,7 @@ fn verify_generic_template_headers<'a>(
             }));
         }
         let mut type_params = HashSet::new();
-        for (index, parameter) in template.type_params.iter().enumerate() {
-            if parameter.is_empty() {
-                diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
-                    template: name.clone(),
-                    reason: format!("type parameter {index} has an empty semantic name"),
-                }));
-            }
+        for parameter in &template.type_params {
             if !type_params.insert(parameter) {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
                     template: name.clone(),

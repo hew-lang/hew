@@ -555,7 +555,10 @@ impl Builder {
         // and the impl carry them verbatim.
         report.type_params.clone_from(&params);
         report.where_clause.clone_from(&machine.where_clause);
+        let report_start = self.next_span;
         self.refresh_type_decl(&mut report)?;
+        let report_span = report_start..self.next_span;
+        let impl_start = self.next_span;
         let Item::Impl(mut implementation) = shell.next().expect("impl shell").0 else {
             unreachable!()
         };
@@ -603,15 +606,25 @@ impl Builder {
             Item::TypeDecl(report),
             Item::Impl(implementation),
         ];
-        for item in &mut generated[..4] {
-            if let Item::TypeDecl(decl) = item {
-                self.refresh_type_decl(decl)?;
+        let impl_span = impl_start..self.next_span;
+        let mut spans = Vec::new();
+        for (index, item) in generated[..4].iter_mut().enumerate() {
+            let start = self.next_span;
+            // The state declaration retains the authored machine occurrence;
+            // its field annotations retain that lexical binder scope too.
+            if index != 0 {
+                if let Item::TypeDecl(decl) = item {
+                    self.refresh_type_decl(decl)?;
+                }
             }
+            self.span();
+            spans.push(start..self.next_span);
         }
-        Ok(generated
-            .into_iter()
-            .map(|item| (item, self.span()))
-            .collect())
+        spans.extend([report_span, impl_span]);
+        for span in &spans {
+            self.source_spans.insert(span.clone(), self.origin.clone());
+        }
+        Ok(generated.into_iter().zip(spans).collect())
     }
 
     fn enum_decl(
@@ -965,7 +978,10 @@ impl Builder {
     fn refresh_type(&mut self, ty: &mut Spanned<TypeExpr>) {
         ty.1 = self.span();
         match &mut ty.0 {
-            TypeExpr::Named { type_args, .. } => {
+            TypeExpr::Named { path, type_args } => {
+                for (_, span) in &mut path.segments {
+                    *span = self.span();
+                }
                 if let Some(args) = type_args {
                     for ty in args {
                         self.refresh_type(ty);

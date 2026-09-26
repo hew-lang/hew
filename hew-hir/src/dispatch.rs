@@ -32,7 +32,7 @@ pub struct TraitImplMethodEntry {
     /// Impl-level type parameter names (e.g. `["U"]` for
     /// `impl<U> Show for Wrapper<U>`). Empty for non-generic impls.
     /// Order matches the impl-method's `HirFn::type_params` prefix.
-    pub impl_type_params: Vec<String>,
+    pub impl_type_params: Vec<hew_types::ParamHead>,
 }
 
 /// Key into the static-dispatch registry. Every field is structured —

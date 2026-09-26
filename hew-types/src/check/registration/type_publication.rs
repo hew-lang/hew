@@ -162,7 +162,13 @@ impl Checker {
             vec![],
             Ty::Named {
                 head: crate::TypeHead::Builtin(builtin),
-                args: type_params.iter().map(|param| Ty::param(param)).collect(),
+                args: type_params
+                    .iter()
+                    .map(|param| Ty::Named {
+                        head: crate::TypeHead::Unresolved(Symbol::intern(param)),
+                        args: vec![],
+                    })
+                    .collect(),
             },
         );
         self.builtin_call_targets
@@ -538,6 +544,15 @@ impl Checker {
                     span,
                 );
             }
+        } else {
+            for (item_ordinal, (item, span)) in items.iter().enumerate() {
+                self.declare_item_type_parameter_scopes(
+                    Some(identity_module),
+                    item_ordinal,
+                    item,
+                    span,
+                );
+            }
         }
         let saved_registration_origin = self
             .registration_origin_module
@@ -778,7 +793,7 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let info = Self::trait_info_from_decl(
+                    let info = self.trait_info_from_decl(
                         tr,
                         Some(module_full_path.to_string()),
                         self.current_module_idx,
@@ -976,12 +991,10 @@ impl Checker {
                             id.trait_bound.as_ref(),
                         );
                         if let Some(builtin) = builtin_receiver {
-                            let impl_params: Vec<String> = id
-                                .type_params
-                                .iter()
-                                .flatten()
-                                .map(|param| param.name.to_string())
-                                .collect();
+                            let impl_params = self.source_parameter_heads(
+                                id.type_params.as_deref().unwrap_or_default(),
+                                &method.fn_span,
+                            );
                             if builtin == BuiltinType::Vec {
                                 if id.trait_bound.is_none() {
                                     self.builtin_vec_method_sigs.insert(
@@ -1720,7 +1733,7 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
-                    let info = Self::trait_info_from_decl(
+                    let info = self.trait_info_from_decl(
                         tr,
                         Some(module_full_path.to_string()),
                         declaring_file_idx,
@@ -2395,7 +2408,7 @@ impl Checker {
         &self,
         module_full_path: &str,
         ty: &Ty,
-        parameters: &[String],
+        parameters: &[crate::ParamHead],
     ) -> Ty {
         let qualified_children = ty.map_children_pub(&|child| {
             self.qualify_source_member_ty(module_full_path, child, parameters)
@@ -2410,7 +2423,13 @@ impl Checker {
             return qualified_children;
         };
         let name = spelling.as_str();
-        if name.contains('.') || parameters.iter().any(|parameter| parameter == name) {
+        if let Some(parameter) = parameters
+            .iter()
+            .find(|parameter| parameter.spelling.as_str() == name)
+        {
+            return Ty::named_head(crate::TypeHead::Param(*parameter), args);
+        }
+        if name.contains('.') {
             return self.named_ty_for_key(name, args);
         }
         let canonical = format!("{module_full_path}.{name}");
@@ -2425,7 +2444,7 @@ impl Checker {
         &self,
         module_full_path: &str,
         definition: &VariantDef,
-        parameters: &[String],
+        parameters: &[crate::ParamHead],
     ) -> VariantDef {
         match definition {
             VariantDef::Unit => VariantDef::Unit,

@@ -35,8 +35,7 @@ impl Checker {
             return true;
         }
         let ty = self.normalize_for_use(&ty);
-        ResolvedTy::from_ty_with_type_params(&ty, &self.current_type_param_names())
-            .is_ok_and(|ty| self.is_serializable(&ty))
+        ResolvedTy::from_ty(&ty).is_ok_and(|ty| self.is_serializable(&ty))
     }
 
     /// Refuse a `#[wire]` declaration whose members have no wire encoding,

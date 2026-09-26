@@ -62,15 +62,15 @@ fn literal_pattern_matches_type(literal: &Literal, ty: &Ty) -> bool {
 
 pub(super) fn substitute_pattern_field_ty(
     raw_field_ty: &Ty,
-    type_params: &[String],
+    type_params: &[crate::ParamHead],
     type_args: &[Ty],
 ) -> Ty {
-    let map: HashMap<String, Ty> = type_params
+    let map: HashMap<crate::ParamHead, Ty> = type_params
         .iter()
         .zip(type_args.iter())
-        .map(|(p, a)| (p.clone(), a.clone()))
+        .map(|(p, a)| (*p, a.clone()))
         .collect();
-    raw_field_ty.substitute_named_params_parallel(&map)
+    raw_field_ty.substitute_type_params_parallel(&map)
 }
 
 /// Extract the single binding name introduced by a sub-pattern, if any.

@@ -142,8 +142,8 @@ impl ValueMethodSelection {
 #[derive(Debug, Clone)]
 pub(crate) struct ImplMethodBinders {
     pub receiver: crate::Ty,
-    pub impl_params: Vec<String>,
-    pub method_params: Vec<String>,
+    pub impl_params: Vec<crate::ParamHead>,
+    pub method_params: Vec<crate::ParamHead>,
     pub obligations: Option<Vec<(String, ImplMethodObligation)>>,
 }
 
@@ -177,7 +177,9 @@ impl ImplMethodBinders {
         decide: &mut dyn FnMut(&ResolvedTy, ImplMethodObligation) -> Result<bool, ClassError>,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
         if let Some(name) = self.method_params.first() {
-            return Err(ClassError::TypeParam { name: name.clone() });
+            return Err(ClassError::TypeParam {
+                name: name.spelling.to_string(),
+            });
         }
         let variables: Vec<_> = self
             .impl_params
@@ -187,12 +189,10 @@ impl ImplMethodBinders {
         let replacements: HashMap<_, _> = self
             .impl_params
             .iter()
-            .cloned()
+            .copied()
             .zip(variables.iter().copied().map(crate::Ty::Var))
             .collect();
-        let pattern = self
-            .receiver
-            .substitute_named_params_parallel(&replacements);
+        let pattern = self.receiver.substitute_type_params_parallel(&replacements);
         let mut subst = crate::ty::Substitution::new();
         let receiver_ty = receiver.to_ty();
         crate::unify::unify_exact(&mut subst, &pattern, &receiver_ty).map_err(|_| {
@@ -217,7 +217,9 @@ impl ImplMethodBinders {
                     }
                     push_type_components(&component, &mut components);
                 }
-                Err(ClassError::TypeParam { name: name.clone() })
+                Err(ClassError::TypeParam {
+                    name: name.spelling.to_string(),
+                })
             })
             .collect::<Result<_, _>>()?;
         let refusal = || ClassError::UnknownDeclaration {
@@ -227,7 +229,7 @@ impl ImplMethodBinders {
             let position = self
                 .impl_params
                 .iter()
-                .position(|name| name == param)
+                .position(|name| name.spelling.as_str() == param)
                 .ok_or_else(refusal)?;
             let satisfied = match obligation {
                 ImplMethodObligation::Marker(marker) => {
@@ -245,7 +247,9 @@ impl ImplMethodBinders {
 
 fn require_concrete_capability_type(ty: &ResolvedTy) -> Result<(), ClassError> {
     if let ResolvedTy::TypeParam { name } = ty {
-        return Err(ClassError::TypeParam { name: name.clone() });
+        return Err(ClassError::TypeParam {
+            name: name.spelling.to_string(),
+        });
     }
     let mut components = Vec::new();
     push_type_components(ty, &mut components);
@@ -303,7 +307,7 @@ pub struct TypeFactContext {
 /// Source type identities before storage normalization expands aliases.
 #[derive(Debug, Clone)]
 pub(crate) struct RenderingMembers {
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub fields: HashMap<String, crate::Ty>,
     pub variants: HashMap<String, crate::check::VariantDef>,
 }
@@ -718,9 +722,7 @@ impl TypeFactService {
             definition.fields.get(field)
         };
         ty.map(|ty| {
-            let parameters = definition.type_params.iter().cloned().collect();
-            let source = ResolvedTy::from_ty_with_type_params(ty, &parameters)
-                .map_err(|error| error.to_string())?;
+            let source = ResolvedTy::from_ty(ty).map_err(|error| error.to_string())?;
             Ok(crate::value_class::substitute(
                 &source,
                 &definition.type_params,
@@ -976,7 +978,9 @@ impl TypeFactService {
             | ResolvedTy::Duration
             | ResolvedTy::String
             | ResolvedTy::Bytes => true,
-            ResolvedTy::TypeParam { name } => param(name, MarkerTrait::Serializable),
+            ResolvedTy::TypeParam { name } => {
+                param(name.spelling.as_str(), MarkerTrait::Serializable)
+            }
             ResolvedTy::Named {
                 head: crate::TypeHead::Builtin(builtin),
                 args,
@@ -1041,7 +1045,8 @@ impl TypeFactService {
     /// uses to rebuild the collection.
     fn is_codec_key(&self, ty: &ResolvedTy, param: &dyn Fn(&str, MarkerTrait) -> bool) -> bool {
         if let ResolvedTy::TypeParam { name } = ty {
-            return param(name, MarkerTrait::Hash) && param(name, MarkerTrait::Eq);
+            return param(name.spelling.as_str(), MarkerTrait::Hash)
+                && param(name.spelling.as_str(), MarkerTrait::Eq);
         }
         [ValueCapability::Hash, ValueCapability::Eq]
             .into_iter()
@@ -1351,8 +1356,11 @@ mod tests {
 
     fn generic_impl_binders(receiver_name: &str) -> super::ImplMethodBinders {
         super::ImplMethodBinders {
-            receiver: crate::Ty::named_for_test(receiver_name, vec![crate::Ty::param("T")]),
-            impl_params: vec!["T".to_string()],
+            receiver: crate::Ty::named_for_test(
+                receiver_name,
+                vec![crate::Ty::param(crate::ParamHead::for_test("T"))],
+            ),
+            impl_params: vec![crate::ParamHead::for_test("T")],
             method_params: vec![],
             obligations: Some(vec![]),
         }
@@ -1474,12 +1482,12 @@ mod tests {
             "std.builtins.VecIter".to_string(),
             DeclaredType {
                 builtin: None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![
                     ResolvedTy::named_builtin(
                         BuiltinType::Vec,
                         vec![ResolvedTy::TypeParam {
-                            name: "T".to_string(),
+                            name: crate::ParamHead::for_test("T"),
                         }],
                     ),
                     ResolvedTy::I64,
@@ -1501,13 +1509,16 @@ mod tests {
             ResolvedTy::named_builtin(
                 BuiltinType::Vec,
                 vec![ResolvedTy::TypeParam {
-                    name: name.to_string(),
+                    name: crate::ParamHead::for_test(name),
                 }],
             )
         };
         DeclaredType {
             builtin: None,
-            type_params: vec!["K".to_string(), "V".to_string()],
+            type_params: vec![
+                crate::ParamHead::for_test("K"),
+                crate::ParamHead::for_test("V"),
+            ],
             members: vec![vec_of_param("K"), vec_of_param("V"), ResolvedTy::I64],
             ..DeclaredType::default()
         }
@@ -1710,7 +1721,7 @@ mod tests {
         assert_eq!(
             ValueClass::of_ty(
                 &ResolvedTy::TypeParam {
-                    name: "T".to_string()
+                    name: crate::ParamHead::for_test("T")
                 },
                 &context
             ),
@@ -2152,10 +2163,10 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![
                     ResolvedTy::TypeParam {
-                        name: "T".to_string(),
+                        name: crate::ParamHead::for_test("T"),
                     },
                     named("Pair", None, vec![conn()]),
                 ],
@@ -2167,9 +2178,9 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![ResolvedTy::TypeParam {
-                    name: "T".to_string(),
+                    name: crate::ParamHead::for_test("T"),
                 }],
             },
         );
@@ -2179,12 +2190,12 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![named(
                     "Wrapper",
                     None,
                     vec![ResolvedTy::TypeParam {
-                        name: "T".to_string(),
+                        name: crate::ParamHead::for_test("T"),
                     }],
                 )],
             },
@@ -2281,7 +2292,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![named("Expr", None, vec![])],
             },
         );
@@ -2321,13 +2332,13 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![named(
                     "Deep",
                     None,
                     vec![ResolvedTy::Named {
                         args: vec![ResolvedTy::TypeParam {
-                            name: "T".to_string(),
+                            name: crate::ParamHead::for_test("T"),
                         }],
                         head: crate::TypeHead::Builtin(BuiltinType::Vec),
                         is_opaque: false,
@@ -2387,13 +2398,13 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![named(
                     "Relay",
                     None,
                     vec![ResolvedTy::Named {
                         args: vec![ResolvedTy::TypeParam {
-                            name: "T".to_string(),
+                            name: crate::ParamHead::for_test("T"),
                         }],
                         head: crate::TypeHead::Builtin(BuiltinType::Vec),
                         is_opaque: false,
@@ -2407,12 +2418,12 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
-                type_params: vec!["U".to_string()],
+                type_params: vec![crate::ParamHead::for_test("U")],
                 members: vec![named(
                     "Grow",
                     None,
                     vec![ResolvedTy::TypeParam {
-                        name: "U".to_string(),
+                        name: crate::ParamHead::for_test("U"),
                     }],
                 )],
             },

@@ -322,7 +322,7 @@ fn main() {
         .expect("generic inherent method must retain its signature");
     assert_eq!(
         get_sig.return_type,
-        Ty::param("T"),
+        Ty::param(get_sig.type_params[0]),
         "the body must resolve the primary return hole"
     );
 
@@ -1785,14 +1785,14 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::param("T"),
+            return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
     );
     let __id = checker.test_declaration("Boxy");
     checker.type_defs.insert(
         __id,
-        make_test_type_def("Boxy", vec!["T".to_string()], methods),
+        make_test_type_def("Boxy", vec![crate::ParamHead::for_test("T")], methods),
     );
     checker.env.define(
         "boxy".to_string(),
@@ -1830,14 +1830,18 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
         __id,
-        make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
+        make_test_type_def(
+            "Wrapper",
+            vec![crate::ParamHead::for_test("T")],
+            HashMap::new(),
+        ),
     );
     checker.test_fn_sig(
         "Wrapper::get",
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::param("T"),
+            return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
     );
@@ -1880,7 +1884,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Return type is Option<V>, represented as the Named form.
     let option_v = Ty::Named {
         head: crate::TypeHead::Builtin(crate::BuiltinType::Option),
-        args: vec![Ty::param("V")],
+        args: vec![Ty::param(crate::ParamHead::for_test("V"))],
     };
     let mut methods = HashMap::new();
     methods.insert(
@@ -1895,7 +1899,14 @@ fn hashmap_bracket_index_is_a_compile_error() {
     let __id = checker.test_declaration("HashMap");
     checker.type_defs.insert(
         __id,
-        make_test_type_def("HashMap", vec!["K".to_string(), "V".to_string()], methods),
+        make_test_type_def(
+            "HashMap",
+            vec![
+                crate::ParamHead::for_test("K"),
+                crate::ParamHead::for_test("V"),
+            ],
+            methods,
+        ),
     );
     checker.env.define(
         "m".to_string(),
@@ -2017,14 +2028,18 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
         __id,
-        make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
+        make_test_type_def(
+            "Wrapper",
+            vec![crate::ParamHead::for_test("T")],
+            HashMap::new(),
+        ),
     );
     checker.test_fn_sig(
         "Wrapper::value",
         FnSig {
             param_names: vec!["next".to_string()],
-            params: vec![Ty::param("T")],
-            return_type: Ty::param("T"),
+            params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+            return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
     );
@@ -2591,7 +2606,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_super = Checker::trait_info_from_decl(&assoc_super, None, 0);
+    let info_super = checker.trait_info_from_decl(&assoc_super, None, 0);
     checker.test_trait_def("AssocSuper", info_super);
 
     // Child trait with no assoc types of its own.
@@ -2635,7 +2650,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_child = Checker::trait_info_from_decl(&child, None, 0);
+    let info_child = checker.trait_info_from_decl(&child, None, 0);
     checker.test_trait_def("ChildTrait", info_child);
     checker.set_trait_supers("ChildTrait", vec!["AssocSuper".to_string()]);
 
@@ -2691,7 +2706,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_super = Checker::trait_info_from_decl(&generic_super, None, 0);
+    let info_super = checker.trait_info_from_decl(&generic_super, None, 0);
     checker.test_trait_def("GenericSuper", info_super);
 
     let child = TraitDecl {
@@ -2734,7 +2749,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_child = Checker::trait_info_from_decl(&child, None, 0);
+    let info_child = checker.trait_info_from_decl(&child, None, 0);
     checker.test_trait_def("ChildTrait", info_child);
     checker.set_trait_supers("ChildTrait", vec!["GenericSuper".to_string()]);
 
@@ -2766,7 +2781,7 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
         .insert(("Thing".to_string(), "TraitA".to_string()));
 
     let sig = FnSig {
-        type_params: vec!["T".to_string()],
+        type_params: vec![crate::ParamHead::for_test("T")],
         type_param_bounds: HashMap::from([("T".to_string(), vec!["MissingTrait".to_string()])]),
         ..Default::default()
     };

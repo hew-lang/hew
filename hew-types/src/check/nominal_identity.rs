@@ -218,7 +218,7 @@ impl Checker {
         &self,
         ty: &crate::ty::Ty,
         canonical_owner: &str,
-        binders: &[String],
+        binders: &[crate::ParamHead],
     ) -> crate::ty::Ty {
         let mapped = ty.map_children_pub(&|child| {
             self.canonicalize_registry_signature(child, canonical_owner, binders)
@@ -231,8 +231,13 @@ impl Checker {
             return mapped;
         };
         let spelling = spelling.as_str();
-        if args.is_empty() && binders.iter().any(|binder| binder == spelling) {
-            return crate::ty::Ty::param(spelling);
+        if args.is_empty() {
+            if let Some(parameter) = binders
+                .iter()
+                .find(|binder| binder.spelling.as_str() == spelling)
+            {
+                return crate::ty::Ty::param(*parameter);
+            }
         }
         let name = self
             .resolve_nominal_declaration(
@@ -627,9 +632,9 @@ impl Checker {
                     crate::KnownDecl::head,
                 ))
             }
-            Ok(super::scope::Resolution::Param(_)) => {
-                Some(crate::TypeHead::param(path.segments[0].0.name.as_str()))
-            }
+            Ok(super::scope::Resolution::Param(id)) => Some(crate::TypeHead::param(
+                crate::ParamHead::new(id, path.segments[0].0.name),
+            )),
             Ok(super::scope::Resolution::Builtin(builtin)) => {
                 Some(crate::TypeHead::Builtin(builtin))
             }

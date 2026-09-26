@@ -49,7 +49,7 @@ impl Checker {
     pub(super) fn lookup_variant_constructor(
         &self,
         func_name: &str,
-    ) -> Option<(String, Vec<Ty>, Vec<String>)> {
+    ) -> Option<(String, Vec<Ty>, Vec<crate::ParamHead>)> {
         if let Some(pos) = func_name.rfind("::") {
             let type_prefix = &func_name[..pos];
             let variant_name = &func_name[pos + 2..];
@@ -971,15 +971,15 @@ impl Checker {
             )?;
             self.check_arity(args, expected_params.len(), "this function", span);
             {
-                let subst_map: HashMap<String, Ty> = type_params
+                let subst_map: HashMap<crate::ParamHead, Ty> = type_params
                     .iter()
                     .zip(inferred_args.iter())
-                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .map(|(p, a)| (*p, a.clone()))
                     .collect();
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = expected_params.get(i) {
                         let (expr, arg_span) = arg.expr();
-                        let expected_ty = param_ty.substitute_named_params_parallel(&subst_map);
+                        let expected_ty = param_ty.substitute_type_params_parallel(&subst_map);
                         self.check_against(expr, arg_span, &expected_ty);
                         self.record_value_transfer(expr, arg_span);
                     }
@@ -1954,10 +1954,10 @@ impl Checker {
             }
             self.check_arity(args, expected_params.len(), "this function", span);
             {
-                let subst_map: HashMap<String, Ty> = type_params
+                let subst_map: HashMap<crate::ParamHead, Ty> = type_params
                     .iter()
                     .zip(inferred_args.iter())
-                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .map(|(p, a)| (*p, a.clone()))
                     .collect();
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = expected_params.get(i) {
@@ -1965,7 +1965,7 @@ impl Checker {
                         let expected_ty = if subst_map.is_empty() {
                             param_ty.clone()
                         } else {
-                            param_ty.substitute_named_params_parallel(&subst_map)
+                            param_ty.substitute_type_params_parallel(&subst_map)
                         };
                         self.check_against(expr, span, &expected_ty);
                         self.record_value_transfer(expr, span);
@@ -2319,7 +2319,7 @@ impl Checker {
                                     .zip(sup_args.iter().cloned())
                                     .collect();
                                 return Ty::child_ref(
-                                    child_type.substitute_named_params_parallel(&substitution),
+                                    child_type.substitute_type_params_parallel(&substitution),
                                 );
                             }
                         }

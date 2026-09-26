@@ -311,7 +311,7 @@ struct GenericTemplate<'a> {
 /// asks for a size, alignment, ABI class, or layout.
 #[derive(Debug, Clone, Default)]
 struct TypeSubstitution {
-    params: Vec<String>,
+    params: Vec<hew_types::ParamHead>,
     args: Vec<ResolvedTy>,
 }
 
@@ -610,18 +610,20 @@ pub(crate) fn evaluation_sequence(evaluation_order: &[usize], len: usize) -> Vec
     }
 }
 
-fn declared_type_param_name<'a>(ty: &'a ResolvedTy, declared: &[String]) -> Option<&'a str> {
-    match ty {
-        ResolvedTy::TypeParam { name } => Some(name.as_str()),
+fn declared_type_parameter(
+    ty: &ResolvedTy,
+    declared: &[hew_types::ParamHead],
+) -> Option<hew_types::ParamHead> {
+    let parameter = match ty {
+        ResolvedTy::TypeParam { name } => *name,
         ResolvedTy::Named {
-            head: head @ (hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)),
+            head: hew_types::TypeHead::Param(parameter),
             args,
             ..
-        } if args.is_empty() && declared.iter().any(|param| param == head.registry_key()) => {
-            Some(head.registry_key())
-        }
-        _ => None,
-    }
+        } if args.is_empty() => *parameter,
+        _ => return None,
+    };
+    declared.contains(&parameter).then_some(parameter)
 }
 
 /// Resolve one concrete record through the canonical checker type service.

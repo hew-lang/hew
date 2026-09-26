@@ -10,7 +10,7 @@ fn named(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
 #[test]
 fn type_param_probe_key_encoding_is_preserved() {
     let ty = ResolvedTy::TypeParam {
-        name: "T".to_string(),
+        name: hew_types::ParamHead::for_test("T"),
     };
     assert_eq!(mangle_resolved_ty(&ty), "typeparam$xT$g");
 }
@@ -102,7 +102,7 @@ fn type_family(depth: usize) -> Vec<ResolvedTy> {
         ResolvedTy::String,
         named("Leaf", vec![]),
         ResolvedTy::TypeParam {
-            name: "T".to_string(),
+            name: hew_types::ParamHead::for_test("T"),
         },
     ];
 

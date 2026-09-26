@@ -385,7 +385,7 @@ impl Checker {
                                 .into_iter()
                                 .zip(sup_args.iter().cloned())
                                 .collect();
-                            let child_ty = template.substitute_named_params_parallel(&substitution);
+                            let child_ty = template.substitute_type_params_parallel(&substitution);
                             if let Ty::Named { head, args } = &child_ty {
                                 self.enforce_type_def_instantiation_bounds(
                                     head.registry_key(),
@@ -444,13 +444,13 @@ impl Checker {
                         // Substitute generic type params with concrete args in
                         // parallel so a swap instantiation like `Pair<B, A>` does
                         // not alias: sequential A→B then B→A would produce A again.
-                        let subst_map: HashMap<String, Ty> = td
+                        let subst_map: HashMap<crate::ParamHead, Ty> = td
                             .type_params
                             .iter()
                             .zip(args.iter())
-                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .map(|(p, a)| (*p, a.clone()))
                             .collect();
-                        field_ty.substitute_named_params_parallel(&subst_map)
+                        field_ty.substitute_type_params_parallel(&subst_map)
                     } else {
                         let similar =
                             crate::error::find_similar(field, td.fields.keys().map(String::as_str));
@@ -742,14 +742,54 @@ impl Checker {
         // bleed their type-var pairs out to an unrelated enclosing Stmt::Let.
         self.last_lambda_generic_sig = None;
 
+        let generic_parameters =
+            if let Some(parameters) = type_params.filter(|parameters| !parameters.is_empty()) {
+                let module = self.current_declaration_module();
+                let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    module,
+                    span,
+                    0,
+                    crate::DeclarationKind::Closure,
+                    0,
+                );
+                let path = scoped_module_item_name(
+                    self.canonical_fn_owner(),
+                    &format!("<closure@{}:{}>", span.start, span.end),
+                )
+                .unwrap_or_else(|| format!("<closure@{}:{}>", span.start, span.end));
+                let owner = self
+                    .defs
+                    .declare(occurrence, Symbol::intern("closure"), None, path)
+                    .expect("one closure occurrence has one declaration identity");
+                if let Some(module) = module {
+                    self.scopes.declare_type_parameters(
+                        module,
+                        owner,
+                        span.clone(),
+                        parameters.iter().map(|parameter| parameter.name),
+                    );
+                }
+                parameters
+                    .iter()
+                    .enumerate()
+                    .map(|(index, parameter)| {
+                        crate::ParamHead::new(
+                            crate::TypeParamId::new(owner, index),
+                            parameter.name.name,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
         let mut generic_bindings = std::collections::HashMap::new();
         let mut generic_param_names = HashMap::new();
         let mut generic_type_vars = Vec::new();
         if let Some(tps) = type_params {
-            for tp in tps {
+            for (tp, parameter) in tps.iter().zip(&generic_parameters) {
                 let tv = TypeVar::fresh();
                 generic_bindings.insert(tp.name.to_string(), Ty::Var(tv));
-                generic_param_names.insert(tv.0, tp.name.to_string());
+                generic_param_names.insert(tv.0, *parameter);
                 generic_type_vars.push(tv);
             }
         }
@@ -879,7 +919,7 @@ impl Checker {
                     .collect();
                 self.last_lambda_generic_sig = Some(GenericLambdaSig {
                     call_sig: FnSig {
-                        type_params: tps.iter().map(|tp| tp.name.to_string()).collect(),
+                        type_params: generic_parameters.clone(),
                         type_param_bounds,
                         param_names: params.iter().map(|param| param.name.to_string()).collect(),
                         params: param_tys
@@ -1329,12 +1369,12 @@ impl Checker {
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
             // pre-seed the map from them so field checking constrains against the
             // declared types immediately rather than synthesizing unconstrained.
-            let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
+            let mut type_arg_map: HashMap<crate::ParamHead, Ty> = HashMap::new();
             if let Some(explicit_args) = type_args {
                 if explicit_args.len() == td.type_params.len() {
                     for (tp, te) in td.type_params.iter().zip(explicit_args.iter()) {
                         let resolved = self.resolve_type_expr(te);
-                        type_arg_map.insert(tp.clone(), resolved);
+                        type_arg_map.insert(*tp, resolved);
                     }
                 } else {
                     // Covers both `Foo<>` (zero explicit args) and wrong-count args.
@@ -1362,7 +1402,7 @@ impl Checker {
             // concrete types before the result type is built.
             for tp in &td.type_params {
                 type_arg_map
-                    .entry(tp.clone())
+                    .entry(*tp)
                     .or_insert_with(|| Ty::Var(TypeVar::fresh()));
             }
 
@@ -1371,7 +1411,7 @@ impl Checker {
                     // Substitute already-inferred type params into the expected type.
                     // Use parallel substitution so a swap map {"A": B, "B": A} does not
                     // alias both params: each Named leaf is replaced in one structural pass.
-                    let expected = declared_ty.substitute_named_params_parallel(&type_arg_map);
+                    let expected = declared_ty.substitute_type_params_parallel(&type_arg_map);
 
                     // If the expected type is still an unbound type parameter,
                     // synthesize so the field value determines the type (rather
@@ -1379,7 +1419,7 @@ impl Checker {
                     let is_unbound_param = td
                         .type_params
                         .iter()
-                        .any(|tp| !type_arg_map.contains_key(tp) && expected == (Ty::param(tp)));
+                        .any(|tp| !type_arg_map.contains_key(tp) && expected == (Ty::param(*tp)));
                     let actual = if is_unbound_param {
                         self.synthesize(expr, es)
                     } else {
@@ -1389,8 +1429,8 @@ impl Checker {
 
                     // Infer type params: if field type is a bare type param, bind it
                     for tp in &td.type_params {
-                        if !type_arg_map.contains_key(tp) && *declared_ty == (Ty::param(tp)) {
-                            type_arg_map.insert(tp.clone(), actual.clone());
+                        if !type_arg_map.contains_key(tp) && *declared_ty == (Ty::param(*tp)) {
+                            type_arg_map.insert(*tp, actual.clone());
                         }
                     }
                 } else {
@@ -1475,7 +1515,7 @@ impl Checker {
             self.lookup_struct_variant_init(name)
         {
             // Infer generic type args from field values, mirroring the plain-struct path.
-            let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
+            let mut type_arg_map: HashMap<crate::ParamHead, Ty> = HashMap::new();
             // If the caller supplied explicit type args (e.g. `Keeper::Holding<int> { … }`),
             // pre-seed the map so field checking constrains against the declared types
             // rather than synthesizing unconstrained.
@@ -1483,7 +1523,7 @@ impl Checker {
                 if explicit_args.len() == enum_type_params.len() {
                     for (tp, te) in enum_type_params.iter().zip(explicit_args.iter()) {
                         let resolved = self.resolve_type_expr(te);
-                        type_arg_map.insert(tp.clone(), resolved);
+                        type_arg_map.insert(*tp, resolved);
                     }
                 } else {
                     // Covers both `Variant<>` (zero explicit args) and wrong-count args.
@@ -1505,13 +1545,13 @@ impl Checker {
                     .find(|(n, _)| n == field_name.name.as_str())
                 {
                     // Substitute already-inferred type params into the expected type
-                    let expected = declared_ty.substitute_named_params_parallel(&type_arg_map);
+                    let expected = declared_ty.substitute_type_params_parallel(&type_arg_map);
 
                     // If the expected type is still an unbound type parameter, synthesize
                     // so the field value determines the concrete type.
                     let is_unbound_param = enum_type_params
                         .iter()
-                        .any(|tp| !type_arg_map.contains_key(tp) && expected == (Ty::param(tp)));
+                        .any(|tp| !type_arg_map.contains_key(tp) && expected == (Ty::param(*tp)));
                     let actual = if is_unbound_param {
                         self.synthesize(expr, es)
                     } else {
@@ -1521,8 +1561,8 @@ impl Checker {
 
                     // Bind bare type params from this field's declared type
                     for tp in &enum_type_params {
-                        if !type_arg_map.contains_key(tp) && *declared_ty == (Ty::param(tp)) {
-                            type_arg_map.insert(tp.clone(), actual.clone());
+                        if !type_arg_map.contains_key(tp) && *declared_ty == (Ty::param(*tp)) {
+                            type_arg_map.insert(*tp, actual.clone());
                         }
                     }
                 } else {
@@ -1608,7 +1648,7 @@ impl Checker {
         &mut self,
         actor_name: &str,
         args: &[(Ident, Spanned<Expr>)],
-        type_subst: Option<&HashMap<String, Ty>>,
+        type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
     ) {
         let actor_fields: Option<HashMap<String, Ty>> =
             self.lookup_type_def(actor_name).map(|td| td.fields);
@@ -1712,7 +1752,7 @@ impl Checker {
             // arity-mismatched spawns pass `None` and check against the raw
             // declared type unchanged.
             let declared_owned: Option<Ty> = match (declared, type_subst) {
-                (Some(ty), Some(subst)) => Some(ty.substitute_named_params_parallel(subst)),
+                (Some(ty), Some(subst)) => Some(ty.substitute_type_params_parallel(subst)),
                 _ => None,
             };
             let declared = declared_owned.as_ref().or(declared);
@@ -1886,7 +1926,7 @@ impl Checker {
             }
             let type_subst: HashMap<_, _> = type_params
                 .iter()
-                .cloned()
+                .copied()
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
             self.check_spawn_constructor_args(&name, args, Some(&type_subst));

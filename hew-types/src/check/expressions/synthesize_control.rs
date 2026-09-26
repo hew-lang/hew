@@ -1343,26 +1343,26 @@ impl Checker {
                 if let Some(td) = self.lookup_type_def(name) {
                     if td.type_params.len() == expected_args.len() && !expected_args.is_empty() {
                         // Pre-seed type arg map from the expected type
-                        let mut type_arg_map: HashMap<String, Ty> = td
+                        let mut type_arg_map: HashMap<crate::ParamHead, Ty> = td
                             .type_params
                             .iter()
                             .zip(expected_args.iter())
-                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .map(|(p, a)| (*p, a.clone()))
                             .collect();
 
                         for (field_name, (fexpr, fs)) in fields {
                             if let Some(declared_ty) = td.fields.get(field_name.name.as_str()) {
                                 let field_expected =
-                                    declared_ty.substitute_named_params_parallel(&type_arg_map);
+                                    declared_ty.substitute_type_params_parallel(&type_arg_map);
                                 let actual = self.check_against(fexpr, fs, &field_expected);
                                 self.record_value_transfer(fexpr, fs);
 
                                 // Still infer any remaining unbound type params
                                 for tp in &td.type_params {
                                     if !type_arg_map.contains_key(tp)
-                                        && *declared_ty == (Ty::param(tp))
+                                        && *declared_ty == (Ty::param(*tp))
                                     {
-                                        type_arg_map.insert(tp.clone(), actual.clone());
+                                        type_arg_map.insert(*tp, actual.clone());
                                     }
                                 }
                             } else {
@@ -1505,10 +1505,10 @@ impl Checker {
                                 handled = true;
                                 // Clone early so we can mutably borrow `self`.
                                 let expected_args = expected_args.clone();
-                                let mut type_arg_map: HashMap<String, Ty> = type_params
+                                let mut type_arg_map: HashMap<crate::ParamHead, Ty> = type_params
                                     .iter()
                                     .zip(expected_args.iter())
-                                    .map(|(p, a)| (p.clone(), a.clone()))
+                                    .map(|(p, a)| (*p, a.clone()))
                                     .collect();
 
                                 for (field_name, (fexpr, fs)) in fields {
@@ -1518,15 +1518,15 @@ impl Checker {
                                     {
                                         let declared_ty = declared_ty.clone();
                                         let field_expected = declared_ty
-                                            .substitute_named_params_parallel(&type_arg_map);
+                                            .substitute_type_params_parallel(&type_arg_map);
                                         let actual = self.check_against(fexpr, fs, &field_expected);
                                         self.record_value_transfer(fexpr, fs);
                                         // Bind any remaining unbound type params
                                         for tp in &type_params {
                                             if !type_arg_map.contains_key(tp)
-                                                && declared_ty == (Ty::param(tp))
+                                                && declared_ty == (Ty::param(*tp))
                                             {
-                                                type_arg_map.insert(tp.clone(), actual.clone());
+                                                type_arg_map.insert(*tp, actual.clone());
                                             }
                                         }
                                     } else {
@@ -2291,7 +2291,7 @@ impl Checker {
     }
 
     /// Stable rendering of a substitution, for the visited-set key.
-    pub(super) fn render_substitution(substitution: &HashMap<String, Ty>) -> String {
+    pub(super) fn render_substitution(substitution: &HashMap<crate::ParamHead, Ty>) -> String {
         let mut pairs: Vec<String> = substitution
             .iter()
             .map(|(param, ty)| format!("{param}={}", ty.user_facing()))

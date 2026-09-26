@@ -729,7 +729,10 @@ fn type_expr_to_ty_with_params_and_context(
                     if type_args.as_ref().is_none_or(Vec::is_empty)
                         && type_params.contains(param) =>
                 {
-                    Ty::param(param)
+                    Ty::Named {
+                        head: crate::TypeHead::Unresolved(hew_parser::ast::Symbol::intern(param)),
+                        args: vec![],
+                    }
                 }
                 // Option<T> → Ty::option() helper
                 "Option" => {

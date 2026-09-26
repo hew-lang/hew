@@ -487,13 +487,13 @@ fn collect_instantiated_value_type_fields(
 }
 
 fn instantiate_value_field_ty(field_ty: &Ty, td: &TypeDef, args: &[Ty]) -> Ty {
-    let map: HashMap<String, Ty> = td
+    let map: HashMap<crate::ParamHead, Ty> = td
         .type_params
         .iter()
         .zip(args.iter())
-        .map(|(p, a)| (p.clone(), a.clone()))
+        .map(|(p, a)| (*p, a.clone()))
         .collect();
-    field_ty.substitute_named_params_parallel(&map)
+    field_ty.substitute_type_params_parallel(&map)
 }
 
 fn is_value_type_node(td: &TypeDef) -> bool {
@@ -541,15 +541,15 @@ fn collect_actor_refs(
                         && !visited_structs.contains(&key)
                     {
                         visited_structs.insert(key);
-                        let param_map: HashMap<String, Ty> = td
+                        let param_map: HashMap<crate::ParamHead, Ty> = td
                             .type_params
                             .iter()
                             .zip(args.iter())
-                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .map(|(p, a)| (*p, a.clone()))
                             .collect();
                         for field_ty in td.fields.values() {
                             let instantiated_field =
-                                field_ty.substitute_named_params_parallel(&param_map);
+                                field_ty.substitute_type_params_parallel(&param_map);
                             collect_actor_refs(&instantiated_field, types, out, visited_structs);
                         }
                     }
@@ -723,7 +723,7 @@ mod tests {
 
     fn make_record(
         name: &str,
-        type_params: Vec<String>,
+        type_params: Vec<crate::ParamHead>,
         fields: HashMap<String, Ty>,
     ) -> (NominalId, TypeDef) {
         (
@@ -872,8 +872,11 @@ mod tests {
         let type_defs: HashMap<NominalId, TypeDef> = [
             make_record(
                 "Wrapper",
-                vec!["T".to_string()],
-                HashMap::from([("value".to_string(), Ty::param("T"))]),
+                vec![crate::ParamHead::for_test("T")],
+                HashMap::from([(
+                    "value".to_string(),
+                    Ty::param(crate::ParamHead::for_test("T")),
+                )]),
             ),
             make_enum(
                 "Tree",
@@ -1111,9 +1114,12 @@ mod tests {
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 bounds: HashMap::new(),
-                fields: HashMap::from([("target".to_string(), Ty::param("T"))]),
+                fields: HashMap::from([(
+                    "target".to_string(),
+                    Ty::param(crate::ParamHead::for_test("T")),
+                )]),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -1158,9 +1164,12 @@ mod tests {
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 bounds: HashMap::new(),
-                fields: HashMap::from([("target".to_string(), Ty::param("T"))]),
+                fields: HashMap::from([(
+                    "target".to_string(),
+                    Ty::param(crate::ParamHead::for_test("T")),
+                )]),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,

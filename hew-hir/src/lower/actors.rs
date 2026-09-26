@@ -36,9 +36,10 @@ impl LowerCtx {
         let strategy = decl.strategy.map(lower_supervisor_strategy);
         let previous_type_params = std::mem::replace(
             &mut self.current_fn_type_params,
-            decl.type_params
-                .iter()
-                .map(|parameter| parameter.name.to_string())
+            self.declaration_type_parameters
+                .get(&declaration)
+                .into_iter()
+                .flat_map(|(_, _, parameters)| parameters.iter().copied())
                 .collect(),
         );
 
@@ -140,11 +141,10 @@ impl LowerCtx {
             declaration,
             bootstrap_declaration,
             name: decl.name.to_string(),
-            type_params: decl
-                .type_params
-                .iter()
-                .map(|parameter| parameter.name.to_string())
-                .collect(),
+            type_params: self
+                .declaration_type_parameters
+                .get(&declaration)
+                .map_or_else(Vec::new, |(_, _, parameters)| parameters.clone()),
             params,
             strategy,
             // Decompose the fused `intensity` AST field into the two HIR fields
@@ -252,7 +252,7 @@ impl LowerCtx {
         if let ResolvedTy::Named { head, args, .. } = &ty {
             let name = head.registry_key();
             let builtin = head.builtin();
-            if builtin.is_none() && !self.current_fn_type_params.contains(name) {
+            if builtin.is_none() && !head.is_param() {
                 let actor_name = if self.actor_type_names.contains(name) {
                     Some(name.to_string())
                 } else if !name.contains('.') {
@@ -309,28 +309,30 @@ impl LowerCtx {
             .collect::<Option<Vec<_>>>()?;
         // An actor-body plain `fn` is callable from the actor's own handlers,
         // hooks, `init`, and sibling methods (#3285). The checker files its
-        // signature under `{actor identity}::{name}` and publishes that string
-        // as the call's `c_symbol`, so the direct-call lowering below looks the
-        // callee up under the mangled form of that key. Register the entry
-        // before any of this actor's bodies are lowered — those bodies are the
-        // only call sites the checker admits, so this is the whole visibility
-        // window. `#[on(...)]` hooks are excluded: the runtime enters them.
+        // signature under the actor method declaration. Register its emitted
+        // body under that exact declaration before any caller is lowered.
+        // `#[on(...)]` hooks are excluded: the runtime enters them.
         let registry_owner = decl_module.map_or_else(
             || decl.name.to_string(),
             |module| format!("{module}.{}", decl.name),
         );
-        for method in &decl.methods {
+        for (method, method_declaration) in decl.methods.iter().zip(&method_declarations) {
             if method.attributes.iter().any(|a| a.name == "on") {
                 continue;
             }
             let key = crate::mangle_dotted_name(&format!("{registry_owner}::{}", method.name));
             self.register_fn_entry(&key, method);
+            if let Some(entry) = self.fn_registry.get(&key).cloned() {
+                self.source_fn_entries
+                    .insert(*method_declaration, (key, entry));
+            }
         }
         let previous_type_params = std::mem::replace(
             &mut self.current_fn_type_params,
-            decl.type_params
-                .iter()
-                .map(|parameter| parameter.name.to_string())
+            self.declaration_type_parameters
+                .get(&declaration)
+                .into_iter()
+                .flat_map(|(_, _, parameters)| parameters.iter().copied())
                 .collect(),
         );
         let previous_actor_nominal = self
@@ -410,11 +412,10 @@ impl LowerCtx {
             // genuine root actor still carries `None`. Package-module actors
             // use the same identity through `lower_imported_actor`.
             defining_module: decl_module.map(str::to_string),
-            type_params: decl
-                .type_params
-                .iter()
-                .map(|param| param.name.to_string())
-                .collect(),
+            type_params: self
+                .declaration_type_parameters
+                .get(&declaration)
+                .map_or_else(Vec::new, |(_, _, parameters)| parameters.clone()),
             state_fields,
             init,
             receive_handlers,

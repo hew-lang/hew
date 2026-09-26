@@ -7,11 +7,25 @@ impl LowerCtx {
     /// `ItemId` and records the declared (checker-resolved) type so const
     /// references resolve regardless of source order. The folded value is
     /// produced later, canonically, in [`Self::lower_const`].
-    pub(super) fn register_const_entry(&mut self, decl: &ConstDecl) {
-        let id = self.ids.item();
-        let ty = self.lower_type(&decl.ty);
-        self.const_registry
-            .insert(decl.name.to_string(), ConstEntry { id, ty });
+    pub(super) fn register_const_entry(&mut self, decl: &ConstDecl, span: &Span, bare: bool) {
+        let Some(declaration) = self.source_declaration(span, hew_types::DeclarationKind::Const, 0)
+        else {
+            return;
+        };
+        let path = self.defs.path(declaration).to_string();
+        let entry = if let Some(entry) = self.source_const_entries.get(&declaration) {
+            entry.clone()
+        } else {
+            ConstEntry {
+                id: self.ids.item(),
+                ty: self.lower_type(&decl.ty),
+            }
+        };
+        self.source_const_entries.insert(declaration, entry.clone());
+        self.const_registry.insert(path, entry.clone());
+        if bare {
+            self.const_registry.insert(decl.name.to_string(), entry);
+        }
     }
 
     /// Emit-pass lowering of a module-level `const NAME: T = <expr>;`.
@@ -26,11 +40,19 @@ impl LowerCtx {
         decl: &ConstDecl,
         span: std::ops::Range<usize>,
     ) -> Option<crate::node::HirConst> {
-        // Reuse the stable ItemId + type pre-allocated during the first pass.
-        let (id, ty) = match self.const_registry.get(decl.name.name.as_str()) {
-            Some(entry) => (entry.id, entry.ty.clone()),
-            None => (self.ids.item(), self.lower_type(&decl.ty)),
+        let declaration = self.source_declaration(&span, hew_types::DeclarationKind::Const, 0)?;
+        let Some(entry) = self.source_const_entries.get(&declaration) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: self.defs.path(declaration).to_string(),
+                    reason: "constant declaration has no registered HIR item".into(),
+                },
+                span,
+                "constant registration must preserve the checker declaration",
+            ));
+            return None;
         };
+        let (id, ty) = (entry.id, entry.ty.clone());
 
         let value = self.fold_const_expr(&decl.value.0, &ty, span.clone());
         if let crate::node::HirConstValue::Integer(value) = &value {
@@ -41,7 +63,7 @@ impl LowerCtx {
         Some(crate::node::HirConst {
             id,
             node: self.ids.node(),
-            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Const, 0)?,
+            declaration,
             name: decl.name.to_string(),
             ty,
             value,

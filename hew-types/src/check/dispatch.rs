@@ -101,6 +101,8 @@ pub enum TyPattern {
     /// position (e.g. the `K` in `HashMap<K, V>`). Variable names are local
     /// to a single [`ImplDef`].
     Var(String),
+    /// A resolved source binder carried through a catalogue match.
+    Parameter(crate::ParamHead),
     /// Match a concrete primitive named exactly (e.g. `"i64"`, `"bool"`,
     /// `"String"`). Names follow [`MarkerTrait::Display`]-style canonical
     /// spellings (lowercase for primitives, capitalised for `String`).
@@ -116,6 +118,7 @@ impl std::fmt::Display for TyPattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Var(name) | Self::Primitive(name) => f.write_str(name),
+            Self::Parameter(parameter) => write!(f, "{parameter}"),
             Self::App { ctor, args } => {
                 write!(f, "{ctor}<")?;
                 for (idx, arg) in args.iter().enumerate() {
@@ -640,6 +643,7 @@ fn match_into(pat: &TyPattern, concrete: &TyPattern, out: &mut PatternSubst) -> 
             }
         }
         (TyPattern::Primitive(a), TyPattern::Primitive(b)) => a == b,
+        (TyPattern::Parameter(a), TyPattern::Parameter(b)) => a == b,
         (TyPattern::App { ctor: a, args: aa }, TyPattern::App { ctor: b, args: bb })
             if a == b && aa.len() == bb.len() =>
         {
@@ -794,7 +798,7 @@ fn collect_vars(pat: &TyPattern, order: &mut Vec<String>, seen: &mut HashSet<Str
                 order.push(n.clone());
             }
         }
-        TyPattern::Primitive(_) => {}
+        TyPattern::Primitive(_) | TyPattern::Parameter(_) => {}
         TyPattern::App { args, .. } | TyPattern::Tuple(args) => {
             for a in args {
                 collect_vars(a, order, seen);

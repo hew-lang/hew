@@ -279,13 +279,13 @@ impl Checker {
         let substitutions = definition
             .type_params
             .iter()
-            .cloned()
+            .copied()
             .zip(args.iter().cloned())
             .collect();
         definition
             .fields
             .get(field)
-            .map(|ty| ty.substitute_named_params_parallel(&substitutions))
+            .map(|ty| ty.substitute_type_params_parallel(&substitutions))
     }
 
     pub(super) fn independent_record_or_tuple_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
@@ -311,14 +311,14 @@ impl Checker {
                 let substitutions = definition
                     .type_params
                     .iter()
-                    .cloned()
+                    .copied()
                     .zip(args.iter().cloned())
                     .collect();
                 Some(
                     definition
                         .fields
                         .get(field)?
-                        .substitute_named_params_parallel(&substitutions),
+                        .substitute_type_params_parallel(&substitutions),
                 )
             }
             _ => None,

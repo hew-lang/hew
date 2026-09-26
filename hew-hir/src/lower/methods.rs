@@ -1322,7 +1322,7 @@ impl LowerCtx {
                 // concrete function, causing `UnresolvedStaticDispatchSubstitution`.
                 //
                 // When `current_impl_self_ty` is set (we are inside
-                // `lower_impl_block`) and `receiver_type_param == "Self"`,
+                // `lower_impl_block`) and `receiver_type_param.is_receiver()`,
                 // the receiver is concretely known.  Derive the qualified
                 // symbol `<ConcreteType>::<method>` and emit a direct `Call`
                 // — the same shape a non-default trait-impl method would emit.
@@ -1338,7 +1338,7 @@ impl LowerCtx {
                     _ => None,
                 };
                 if let (true, Some(method_leaf)) =
-                    (receiver_type_param == "Self", trait_method_leaf)
+                    (receiver_type_param.is_receiver(), trait_method_leaf)
                 {
                     if let Some(self_ty) = self.current_impl_self_ty.clone() {
                         if let Some(self_type) = self_ty.impl_receiver_instance(&self.defs) {

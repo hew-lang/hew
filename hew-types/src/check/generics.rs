@@ -50,15 +50,15 @@ impl Checker {
                 // permuted trait args (e.g. `dyn Mapper<B, A>` for a trait
                 // declared `Mapper<A, B>`) don't alias under sequential
                 // per-pair substitution.
-                let subst_map: HashMap<String, Ty> = type_params
+                let subst_map: HashMap<crate::ParamHead, Ty> = type_params
                     .iter()
                     .zip(bound.args.iter())
-                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .map(|(p, a)| (*p, a.clone()))
                     .collect();
                 for param_ty in &mut sig.params {
-                    *param_ty = param_ty.substitute_named_params_parallel(&subst_map);
+                    *param_ty = param_ty.substitute_type_params_parallel(&subst_map);
                 }
-                sig.return_type = sig.return_type.substitute_named_params_parallel(&subst_map);
+                sig.return_type = sig.return_type.substitute_type_params_parallel(&subst_map);
             }
         }
         for param_ty in &mut sig.params {
@@ -208,17 +208,17 @@ impl Checker {
                 resolved_type_args.push(Ty::Var(TypeVar::fresh()));
             }
             {
-                let subst_map: HashMap<String, Ty> = sig
+                let subst_map: HashMap<crate::ParamHead, Ty> = sig
                     .type_params
                     .iter()
                     .zip(resolved_type_args.iter())
-                    .map(|(tp, ta)| (tp.clone(), ta.clone()))
+                    .map(|(tp, ta)| (*tp, ta.clone()))
                     .collect();
                 params = params
                     .iter()
-                    .map(|param| param.substitute_named_params_parallel(&subst_map))
+                    .map(|param| param.substitute_type_params_parallel(&subst_map))
                     .collect();
-                ret = ret.substitute_named_params_parallel(&subst_map);
+                ret = ret.substitute_type_params_parallel(&subst_map);
             }
             // Collapse any `Ty::AssocType` carriers whose `base` has now
             // become concrete (e.g. `I::Item` with `I → Counter` and the
@@ -292,15 +292,15 @@ impl Checker {
         type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
         type_args: &[Ty],
     ) -> HashMap<(String, String, String), Ty> {
-        let subst_map: HashMap<String, Ty> = sig
+        let subst_map: HashMap<crate::ParamHead, Ty> = sig
             .type_params
             .iter()
             .zip(type_args.iter())
-            .map(|(tp, ta)| (tp.clone(), self.subst.resolve(ta)))
+            .map(|(tp, ta)| (*tp, self.subst.resolve(ta)))
             .collect();
         let mut instantiated = HashMap::with_capacity(type_param_assoc_bindings.len());
         for (key, binding) in type_param_assoc_bindings {
-            let ty = binding.substitute_named_params_parallel(&subst_map);
+            let ty = binding.substitute_type_params_parallel(&subst_map);
             instantiated.insert(key.clone(), ty);
         }
         instantiated
@@ -415,36 +415,14 @@ impl Checker {
         if !self.reported_machine_bound_violations.insert(dedup_key) {
             return;
         }
-        // Recover the machine's declared type-param names from the side
-        // table. The table's outer key is the machine name; its keys
-        // are the param names that have at least one bound. Params
-        // without bounds are absent — for those, no enforcement is
-        // required, so the helper builds a positional name vector from
-        // the type-args' arity and only enforces for the slots whose
-        // param has a bound entry.
-        //
-        // Because `enforce_named_type_param_bounds` reads bounds by
-        // param-name lookup, the positional alignment between the
-        // synthesised `type_params` and `type_args` only matters for
-        // the slots with bounds. Empty-slot names are placeholders
-        // (`__unbounded_<idx>`) chosen to never collide with the bound
-        // map, ensuring the helper short-circuits cleanly.
-        let mut type_params: Vec<String> = Vec::with_capacity(type_args.len());
-        for (idx, _) in type_args.iter().enumerate() {
-            // We do not have positional access to the original param
-            // names here without a second lookup. The side table
-            // preserves names but not order; instead, the canonical
-            // type-param-order source is the registered TypeDef. Fall
-            // back to scanning bounds map keys against positional
-            // arity by querying the matching TypeDef entry.
-            if let Some(td) = self.type_def_at(machine_name) {
-                if let Some(name) = td.type_params.get(idx) {
-                    type_params.push(name.clone());
-                    continue;
-                }
-            }
-            type_params.push(format!("__unbounded_{idx}"));
-        }
+        let Some(type_params) = self
+            .type_def_at(machine_name)
+            .map(|definition| definition.type_params.clone())
+        else {
+            self.report_error(TypeErrorKind::InvalidOperation, span,
+                format!("internal compiler error: machine `{machine_name}` has no registered generic declaration"));
+            return;
+        };
         self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
     }
 
@@ -455,7 +433,7 @@ impl Checker {
     /// `check_struct_init`).
     pub(super) fn enforce_named_type_param_bounds(
         &mut self,
-        type_params: &[String],
+        type_params: &[crate::ParamHead],
         type_param_bounds: &HashMap<String, Vec<String>>,
         type_args: &[Ty],
         span: &Span,
@@ -471,7 +449,7 @@ impl Checker {
 
     fn enforce_named_type_param_bounds_with_assoc(
         &mut self,
-        type_params: &[String],
+        type_params: &[crate::ParamHead],
         type_param_bounds: &HashMap<String, Vec<String>>,
         type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
         type_args: &[Ty],
@@ -482,11 +460,13 @@ impl Checker {
         }
         for (idx, param_name) in type_params.iter().enumerate() {
             let bounds = type_param_bounds
-                .get(param_name)
+                .get(param_name.spelling.as_str())
                 .cloned()
                 .unwrap_or_default();
-            let assoc_bindings =
-                Self::assoc_bindings_for_type_param(type_param_assoc_bindings, param_name);
+            let assoc_bindings = Self::assoc_bindings_for_type_param(
+                type_param_assoc_bindings,
+                param_name.spelling.as_str(),
+            );
             if bounds.is_empty() && assoc_bindings.is_empty() {
                 continue;
             }
@@ -509,7 +489,7 @@ impl Checker {
                         .any(|bound| self.bound_marker(bound) == Some(MarkerTrait::Eq)))
             {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
-                    type_param: param_name.clone(),
+                    type_param: param_name.spelling.to_string(),
                     bounds,
                     assoc_bindings,
                     type_arg: type_arg.clone(),
@@ -525,9 +505,14 @@ impl Checker {
             // the call's resolved type args become fully concrete and the
             // monomorphisation registry can mint a key for it.
             self.pin_projection_only_assoc_bindings(&assoc_bindings, &resolved_arg);
-            self.report_unsatisfied_type_param_bounds(param_name, &bounds, &resolved_arg, span);
+            self.report_unsatisfied_type_param_bounds(
+                param_name.spelling.as_str(),
+                &bounds,
+                &resolved_arg,
+                span,
+            );
             self.report_unsatisfied_assoc_type_bindings(
-                param_name,
+                param_name.spelling.as_str(),
                 &assoc_bindings,
                 &resolved_arg,
                 span,
@@ -599,13 +584,7 @@ impl Checker {
             // bound in the active scope.
             if self.bound_marker(bound) == Some(MarkerTrait::Eq)
                 && !matches!(resolved_arg, Ty::Named { args, head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. } if args.is_empty())
-                && Self::ty_mentions_type_params(
-                    resolved_arg,
-                    &self
-                        .current_type_param_names()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                )
+                && resolved_arg.has_type_parameters()
             {
                 self.record_eq_requirement(resolved_arg, span);
                 continue;
@@ -1056,9 +1035,13 @@ impl Checker {
             }
 
             // Return-type mismatch.
-            let expected_ret = trait_sig
-                .return_type
-                .substitute_named_param("Self", &concrete_ty);
+            let expected_ret = trait_sig.return_type.substitute_type_param(
+                crate::ParamHead::receiver(
+                    self.lookup_declaration(&trait_name)
+                        .expect("resolved trait owns Self"),
+                ),
+                &concrete_ty,
+            );
             if expected_ret != type_sig.return_type {
                 return vec![format!(
                     "`{type_name}.{method_name}` returns `{}` but trait `{trait_display}` \
@@ -1075,7 +1058,13 @@ impl Checker {
                 .zip(type_sig.params.iter())
                 .enumerate()
             {
-                let expected = trait_param.substitute_named_param("Self", &concrete_ty);
+                let expected = trait_param.substitute_type_param(
+                    crate::ParamHead::receiver(
+                        self.lookup_declaration(&trait_name)
+                            .expect("resolved trait owns Self"),
+                    ),
+                    &concrete_ty,
+                );
                 if expected != *type_param {
                     return vec![format!(
                         "`{type_name}.{method_name}` parameter {} has type `{}` but \
@@ -1098,10 +1087,6 @@ impl Checker {
         vec![]
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one dispatch over every marker and nominal bound kind"
-    )]
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         // One authority decides Display: the impl lookup f-string interpolation
         // already uses. The structural marker derivation would grant it to
@@ -1149,15 +1134,7 @@ impl Checker {
         if self.bound_marker(trait_name) == Some(MarkerTrait::Send) {
             return self.type_is_send(ty);
         }
-        if self.bound_marker(trait_name) == Some(MarkerTrait::Eq)
-            && !Self::ty_mentions_type_params(
-                ty,
-                &self
-                    .current_type_param_names()
-                    .into_iter()
-                    .collect::<Vec<_>>(),
-            )
-        {
+        if self.bound_marker(trait_name) == Some(MarkerTrait::Eq) && !ty.has_type_parameters() {
             let ty = self.normalize_for_use(ty).materialize_literal_defaults();
             return Self::selected_eq_available(
                 &mut TypeFactService::new(self.type_fact_context(), BTreeMap::new()),
@@ -1269,7 +1246,11 @@ impl Checker {
         let Some(sig) = self.fn_sig(fn_name) else {
             return false;
         };
-        if !sig.type_params.contains(&param_name.to_string()) {
+        if !sig
+            .type_params
+            .iter()
+            .any(|parameter| parameter.spelling.as_str() == param_name)
+        {
             return false;
         }
         let Some(bounds) = sig.type_param_bounds.get(param_name) else {
@@ -1608,16 +1589,26 @@ impl Checker {
             }
 
             // Return-type check (Self → concrete type in trait side).
-            let expected_ret = trait_sig
-                .return_type
-                .substitute_named_param("Self", &concrete_ty);
+            let expected_ret = trait_sig.return_type.substitute_type_param(
+                crate::ParamHead::receiver(
+                    self.lookup_declaration(&trait_name)
+                        .expect("resolved trait owns Self"),
+                ),
+                &concrete_ty,
+            );
             if expected_ret != type_sig.return_type {
                 return false;
             }
 
             // Per-parameter type check (Self → concrete type in trait side).
             for (trait_param, type_param) in trait_sig.params.iter().zip(type_sig.params.iter()) {
-                let expected = trait_param.substitute_named_param("Self", &concrete_ty);
+                let expected = trait_param.substitute_type_param(
+                    crate::ParamHead::receiver(
+                        self.lookup_declaration(&trait_name)
+                            .expect("resolved trait owns Self"),
+                    ),
+                    &concrete_ty,
+                );
                 if expected != *type_param {
                     return false;
                 }
@@ -1701,11 +1692,10 @@ impl Checker {
                 .skip(skip)
                 .map(|p| p.name.to_string())
                 .collect();
-            let type_params = m
-                .type_params
-                .as_ref()
-                .map(|params| params.iter().map(|tp| tp.name.to_string()).collect())
-                .unwrap_or_default();
+            let type_params = self.in_trait_declaring_scope(trait_name, |checker| {
+                checker
+                    .source_parameter_heads(m.type_params.as_deref().unwrap_or_default(), &m.span)
+            });
             let type_param_bounds =
                 self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
             // W3.042 S2-S4: propagate `requires_mutable_receiver` from the
@@ -1973,11 +1963,10 @@ impl Checker {
                 .skip(skip)
                 .map(|p| p.name.to_string())
                 .collect();
-            let type_params = m
-                .type_params
-                .as_ref()
-                .map(|params| params.iter().map(|tp| tp.name.to_string()).collect())
-                .unwrap_or_default();
+            let type_params = self.in_trait_declaring_scope(trait_name, |checker| {
+                checker
+                    .source_parameter_heads(m.type_params.as_deref().unwrap_or_default(), &m.span)
+            });
             let type_param_bounds =
                 self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
             // This trait directly declares the method — it IS the declaring trait.
@@ -2036,7 +2025,7 @@ fn substitute_trait_object_assoc_bindings(
         } if projected_trait.as_ref() == trait_name
             && matches!(
                 base.as_ref(),
-                Ty::Named { head, args } if *head == crate::TypeHead::param("Self") && args.is_empty()
+                Ty::Named { head, args } if matches!(head, crate::TypeHead::Param(parameter) if parameter.is_receiver()) && args.is_empty()
             ) =>
         {
             bound

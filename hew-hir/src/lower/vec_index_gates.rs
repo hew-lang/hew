@@ -414,7 +414,7 @@ pub(super) fn render_elem_ty(ty: &ResolvedTy) -> String {
                 .join(", ");
             format!("closure({params}) -> {}", render_elem_ty(ret))
         }
-        ResolvedTy::TypeParam { name } => name.clone(),
+        ResolvedTy::TypeParam { name } => name.spelling.to_string(),
         ResolvedTy::Named { head, args, .. } if args.is_empty() => head.registry_key().to_string(),
         ResolvedTy::Named { head, args, .. } => {
             let name = head.registry_key();

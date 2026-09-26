@@ -407,7 +407,7 @@ pub struct SemGenericTemplate {
     pub symbol: String,
     pub source_origin: FunctionSourceOrigin,
     /// Canonical source-semantic parameters in substitution order.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Pre-substitution semantic callable signature.
     pub signature: SemSignature,
 }

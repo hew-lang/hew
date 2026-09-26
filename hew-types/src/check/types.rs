@@ -429,6 +429,8 @@ pub struct TypeCheckOutput {
     /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Resolved source annotations, keyed by their defining file and span.
+    pub declaration_type_parameters:
+        HashMap<crate::DefId, (crate::ModuleId, Span, Vec<crate::ParamHead>)>,
     pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
     /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
@@ -1662,6 +1664,7 @@ impl Default for TypeCheckOutput {
             owning_take_vec_cursors: HashSet::new(),
             borrowed_element_option_reads: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            declaration_type_parameters: HashMap::new(),
             resolved_annotation_types: HashMap::new(),
             type_facts: BTreeMap::new(),
             type_fact_context: TypeFactContext::default(),
@@ -2203,7 +2206,7 @@ pub enum MethodCallRewrite {
         /// The type-parameter name on the enclosing function that carries the bound
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
-        receiver_type_param: String,
+        receiver_type_param: crate::ParamHead,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
         /// Checker-owned receiver ownership bit from the declaring trait.
@@ -2500,13 +2503,41 @@ pub(super) struct DeferredBuiltinCloneAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// An associated type bound by a specific generic impl receiver.
+#[derive(Debug, Clone)]
+pub(super) struct ImplAssociatedType {
+    pub(super) ty: Ty,
+    pub(super) receiver: Ty,
+    pub(super) parameters: Vec<crate::ParamHead>,
+}
+
+impl ImplAssociatedType {
+    pub(super) fn instantiate(&self, receiver: &Ty) -> Option<Ty> {
+        let variables: Vec<_> = self
+            .parameters
+            .iter()
+            .map(|_| crate::ty::TypeVar::fresh())
+            .collect();
+        let fresh: HashMap<_, _> = self
+            .parameters
+            .iter()
+            .copied()
+            .zip(variables.iter().copied().map(Ty::Var))
+            .collect();
+        let pattern = self.receiver.substitute_type_params_parallel(&fresh);
+        let mut inference = crate::ty::Substitution::new();
+        crate::unify::unify_exact(&mut inference, &pattern, receiver).ok()?;
+        Some(inference.resolve(&self.ty.substitute_type_params_parallel(&fresh)))
+    }
+}
+
 /// An equality demand in the existing generic instantiation graph.
 /// Concrete comparisons are checked after registration and inference; generic
 /// comparisons use the same selected Eq authority after substitution.
 #[derive(Debug, Clone)]
 pub(super) struct EqRequirement {
     pub(super) ty: Ty,
-    pub(super) owner_type_params: Vec<String>,
+    pub(super) owner_type_params: Vec<crate::ParamHead>,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
 }
@@ -2517,14 +2548,14 @@ pub(super) struct EqRequirement {
 #[derive(Debug, Clone)]
 pub(super) struct GenericFnInstantiationSite {
     pub(super) caller: Option<String>,
-    pub(super) caller_type_params: Vec<String>,
+    pub(super) caller_type_params: Vec<crate::ParamHead>,
     pub(super) callee: String,
     /// Partial, name-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
     /// [`Checker::finalize_eq_requirements`] walk generic → generic call
     /// edges from a concrete root instead of stopping at the first hop.
-    pub(super) substitution: HashMap<String, Ty>,
+    pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
 }
@@ -2565,14 +2596,14 @@ pub(super) enum GenericCallee<'a> {
 #[derive(Debug, Clone)]
 pub(super) struct GenericCallEdge {
     pub(super) callee: String,
-    pub(super) substitution: HashMap<String, Ty>,
+    pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
 /// One instantiation queued for structural-equality discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
     pub(super) callee: String,
-    pub(super) substitution: HashMap<String, Ty>,
+    pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     /// Span and module of the CONCRETE application the diagnostic points at —
     /// carried unchanged along every edge so a nested obligation still reports
     /// where the program pinned the type arguments.
@@ -2769,7 +2800,7 @@ impl FnSigFixture {
 pub struct TypeDef {
     pub kind: TypeDefKind,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub bounds: HashMap<String, Vec<String>>,
     pub fields: HashMap<String, Ty>,
     /// Field names in **declaration order** (source order as written by the user).
@@ -2794,7 +2825,7 @@ pub struct TypeDef {
 #[derive(Debug, Clone)]
 pub struct TypeAliasDef {
     pub declaration: crate::DefId,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub target: Ty,
     pub source_module: Option<String>,
     pub file_index: u32,
@@ -2811,7 +2842,7 @@ impl TypeAliasDef {
             .cloned()
             .zip(args.iter().cloned())
             .collect();
-        Some(self.target.substitute_named_params_parallel(&substitutions))
+        Some(self.target.substitute_type_params_parallel(&substitutions))
     }
 }
 
@@ -2830,7 +2861,7 @@ pub(super) struct TraitInfo {
     pub(super) file_index: u32,
     pub(super) methods: Vec<TraitMethod>,
     pub(super) associated_types: Vec<TraitAssociatedTypeInfo>,
-    pub(super) type_params: Vec<String>,
+    pub(super) type_params: Vec<crate::ParamHead>,
 }
 
 #[derive(Debug, Clone)]
@@ -2903,6 +2934,9 @@ pub struct ImplMethodProvenance {
     pub declaration: crate::DefId,
     /// Nominal declaration, absent for primitive receiver types.
     pub receiver: Option<crate::DefId>,
+    /// Resolved impl receiver arguments and the binders they instantiate.
+    pub receiver_args: Vec<Ty>,
+    pub receiver_parameters: Vec<crate::ParamHead>,
     pub name: String,
     pub is_inherent: bool,
     pub span: Span,
@@ -2918,7 +2952,7 @@ pub struct ImplMethodProvenance {
 )]
 pub struct FnSig {
     pub impl_method: Option<ImplMethodProvenance>,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
@@ -4099,7 +4133,7 @@ pub struct Checker {
     ///
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
-    pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
+    pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), ImplAssociatedType>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -4290,12 +4324,12 @@ pub struct Checker {
     /// instantiate the impl parameters from the receiver's type arguments and
     /// leave method-level parameters (`map<U>`) generic.
     pub(super) builtin_result_option_method_sigs:
-        HashMap<(crate::BuiltinType, String), (Vec<String>, FnSig)>,
+        HashMap<(crate::BuiltinType, String), (Vec<crate::ParamHead>, FnSig)>,
     /// Canonical runtime-backed `Vec<T>` method signatures parsed from the
     /// compiled-in `std/builtins.hew` inherent impl, paired with the impl's
     /// type parameters. Kept origin-separated from user `Vec` declarations so
     /// builtin dispatch cannot be shadowed.
-    pub(super) builtin_vec_method_sigs: HashMap<String, (Vec<String>, FnSig)>,
+    pub(super) builtin_vec_method_sigs: HashMap<String, (Vec<crate::ParamHead>, FnSig)>,
     /// Resolved reporting level for every semantic lint (see [`super::run_lints`]).
     ///
     /// Defaults to [`super::LintLevels::from_defaults`]; the CLI layer threads

@@ -1300,19 +1300,19 @@ impl Checker {
     /// Instantiate generic binders with fresh variables while normalizing, then
     /// restore their names. An unrelated alias with a binder's spelling must
     /// never capture a generic parameter in a published declaration template.
-    pub(super) fn normalize_for_type_params(&self, ty: &Ty, params: &[String]) -> Ty {
+    pub(super) fn normalize_for_type_params(&self, ty: &Ty, params: &[crate::ParamHead]) -> Ty {
         if params.is_empty() {
             return self.normalize_for_use(ty);
         }
         let binders: Vec<_> = params.iter().map(|name| (name, TypeVar::fresh())).collect();
         let substitutions = binders
             .iter()
-            .map(|(name, var)| ((*name).clone(), Ty::Var(*var)))
+            .map(|(name, var)| (*(*name), Ty::Var(*var)))
             .collect();
-        let protected = ty.substitute_named_params_parallel(&substitutions);
+        let protected = ty.substitute_type_params_parallel(&substitutions);
         let resolved = self.normalize_for_use(&protected);
         binders.into_iter().fold(resolved, |ty, (name, var)| {
-            ty.substitute(var, &Ty::param(name))
+            ty.substitute(var, &Ty::param(*name))
         })
     }
 
@@ -1328,7 +1328,7 @@ impl Checker {
         }
     }
 
-    fn resolve_variant_def(&self, variant: &VariantDef, params: &[String]) -> VariantDef {
+    fn resolve_variant_def(&self, variant: &VariantDef, params: &[crate::ParamHead]) -> VariantDef {
         match variant {
             VariantDef::Unit => VariantDef::Unit,
             VariantDef::Tuple(fields) => VariantDef::Tuple(
@@ -2080,7 +2080,29 @@ impl Checker {
             1 => {
                 let trait_name = matches.into_iter().next().expect("len==1");
                 Some(Ty::AssocType {
-                    base: Box::new(Ty::param(base_name)),
+                    base: Box::new(
+                        self.generic_ctx
+                            .iter()
+                            .rev()
+                            .find_map(|scope| scope.get(base_name))
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.current_declaration_module()
+                                    .and_then(|module| {
+                                        self.scopes.source_type_parameter(
+                                            module,
+                                            span,
+                                            Ident::new(base_name),
+                                        )
+                                    })
+                                    .map_or(Ty::Error, |id| {
+                                        Ty::param(crate::ParamHead::new(
+                                            id,
+                                            Symbol::intern(base_name),
+                                        ))
+                                    })
+                            }),
+                    ),
                     trait_name: trait_name.into_boxed_str(),
                     assoc_name: assoc_name.to_string().into_boxed_str(),
                 })
@@ -2118,7 +2140,11 @@ impl Checker {
         }
         if let Some(fn_name) = self.current_function.as_ref() {
             if let Some(sig) = self.fn_sig(fn_name) {
-                if sig.type_params.iter().any(|p| p == param_name) {
+                if sig
+                    .type_params
+                    .iter()
+                    .any(|p| p.spelling.as_str() == param_name)
+                {
                     return Some(
                         sig.type_param_bounds
                             .get(param_name)
@@ -2168,7 +2194,7 @@ impl Checker {
         }
         if let Some(fn_name) = self.current_function.as_ref() {
             if let Some(sig) = self.fn_sig(fn_name) {
-                if sig.type_params.iter().any(|p| p == name) {
+                if sig.type_params.iter().any(|p| p.spelling.as_str() == name) {
                     return true;
                 }
             }
@@ -2189,10 +2215,6 @@ impl Checker {
     /// registration. When no binding exists for `(base_type, trait, assoc)`,
     /// the carrier passes through — `enforce_type_param_bounds` is the
     /// authoritative diagnostic surface for "type does not implement trait".
-    #[expect(
-        clippy::too_many_lines,
-        reason = "TRANSITION(A1 commit 3): the string-keyed projection shrinks to an id-keyed impl lookup"
-    )]
     pub(super) fn project_assoc_types(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::AssocType {
@@ -2288,36 +2310,9 @@ impl Checker {
                             None
                         }
                     });
-                    if let Some(binding) = binding {
-                        // The binding may itself reference impl-level type
-                        // params; substitute them using the impl's declared
-                        // type params (from `type_defs[name].type_params` if
-                        // available) zipped with `args`. The fallback when
-                        // `type_params` is absent is to return the binding
-                        // unchanged — sound when the impl is non-generic.
-                        let args = named_base.map_or(&[][..], |(_, args)| args.as_slice());
-                        let bound = if let Some(td) = self.type_def_exact(&nominal_identity) {
-                            let map: HashMap<String, Ty> = td
-                                .type_params
-                                .iter()
-                                .zip(args.iter())
-                                .map(|(p, a)| (p.clone(), a.clone()))
-                                .collect();
-                            binding.substitute_named_params_parallel(&map)
-                        } else if let Some(type_params) =
-                            named_base.and_then(|(name, _)| builtin_generic_type_params(name))
-                        {
-                            let map: HashMap<String, Ty> = type_params
-                                .iter()
-                                .zip(args.iter())
-                                .map(|(p, a)| ((*p).to_string(), a.clone()))
-                                .collect();
-                            binding.substitute_named_params_parallel(&map)
-                        } else {
-                            binding.clone()
-                        };
-                        // Recurse: the projected binding may itself contain
-                        // further `Ty::AssocType` carriers.
+                    if let Some(bound) =
+                        binding.and_then(|binding| binding.instantiate(&resolved_base))
+                    {
                         return self.project_assoc_types(&bound);
                     }
                 }
@@ -2484,7 +2479,7 @@ impl Checker {
         let placeholder_args: Vec<Ty> = alias
             .type_params
             .iter()
-            .map(|param| Ty::param(param))
+            .map(|param| Ty::param(*param))
             .collect();
         let probe = self.named_ty_for_key(name, placeholder_args);
         self.alias_expansion_has_cycle(&probe, &mut HashSet::new())
@@ -2620,7 +2615,7 @@ impl Checker {
         }
         // A generic type parameter in scope — impl / trait / fn / machine `<T>` —
         // is deliberately left opaque (`Ty::named`) by the resolver so
-        // `substitute_named_param` can replace it with a concrete argument at
+        // `substitute_type_param` can replace it with a concrete argument at
         // call sites. Such a name is resolvable and must not be reported as
         // undefined. Enclosing scopes push their params onto
         // `current_type_param_bounds` (impl methods via `register_impl_method`,
@@ -2637,7 +2632,11 @@ impl Checker {
         }
         if let Some(fn_name) = &self.current_function {
             if let Some(sig) = self.fn_sig(fn_name) {
-                if sig.type_params.iter().any(|param| param == name) {
+                if sig
+                    .type_params
+                    .iter()
+                    .any(|param| param.spelling.as_str() == name)
+                {
                     return true;
                 }
             }
@@ -3045,7 +3044,25 @@ impl Checker {
                     // Outside an impl, `Self` is the declaring trait's abstract
                     // receiver binder.
                     if type_args.as_ref().is_none_or(Vec::is_empty) {
-                        return Ty::named_head(crate::TypeHead::self_param(), Vec::new());
+                        if let Some(id) = self.current_declaration_module().and_then(|module| {
+                            self.scopes
+                                .source_type_parameter(module, &te.1, Ident::new("Self"))
+                        }) {
+                            return Ty::param(crate::ParamHead::new(id, Symbol::intern("Self")));
+                        }
+                        if let Some(owner) = self
+                            .current_trait_for_self_projection
+                            .as_deref()
+                            .and_then(|name| self.lookup_declaration(name))
+                        {
+                            return Ty::param(crate::ParamHead::receiver(owner));
+                        }
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            "Self requires a declaring type or trait".to_string(),
+                        );
+                        return Ty::Error;
                     }
                 }
                 if let Some(alias_name) = name
@@ -3080,7 +3097,10 @@ impl Checker {
                     // its OWN `Self::Item` (projection flag unset).
                     if let Some(trait_name) = self.current_trait_for_self_projection.clone() {
                         return Ty::AssocType {
-                            base: Box::new(Ty::param("Self")),
+                            base: Box::new(Ty::param(crate::ParamHead::receiver(
+                                self.lookup_declaration(&trait_name)
+                                    .expect("resolved trait owns Self"),
+                            ))),
                             trait_name: trait_name.into_boxed_str(),
                             assoc_name: alias_name.to_string().into_boxed_str(),
                         };
@@ -3315,16 +3335,10 @@ impl Checker {
                         return ty.clone();
                     }
                 }
-                if self
-                    .current_type_param_bounds
-                    .iter()
-                    .rev()
-                    .any(|scope| scope.bounds.contains_key(name))
+                if let Some(crate::TypeHead::Param(parameter)) =
+                    self.resolve_type_path_head(named_path)
                 {
-                    return Ty::Named {
-                        head: crate::TypeHead::param(name),
-                        args,
-                    };
+                    return Ty::named_head(crate::TypeHead::Param(parameter), args);
                 }
                 // Whole-module imports are lexical bindings, not declaration
                 // identities.  Canonicalise `lmonobox.Box` through the exact
@@ -3709,21 +3723,7 @@ impl Checker {
                     }
                     Ty::named_head(crate::TypeHead::Builtin(builtin), args)
                 } else {
-                    let ty = self.named_ty_for_key(&resolved_name, args);
-                    // TRANSITION(A1 commit 3): a spelling no declaration claims
-                    // that a generic item declares is that binder.
-                    match ty {
-                        Ty::Named {
-                            head: crate::TypeHead::Unresolved(_),
-                            ref args,
-                        } if args.is_empty()
-                            && (self.is_type_param_in_scope(&resolved_name)
-                                || self.declared_type_param_names.contains(&resolved_name)) =>
-                        {
-                            Ty::param(&resolved_name)
-                        }
-                        other => other,
-                    }
+                    self.named_ty_for_key(&resolved_name, args)
                 }
             }
             TypeExpr::Result { ok, err } => {
@@ -3855,14 +3855,5 @@ impl Checker {
                 Ty::Var(var)
             }
         }
-    }
-}
-
-fn builtin_generic_type_params(name: &str) -> Option<&'static [&'static str]> {
-    match name {
-        "HashMap" => Some(&["K", "V"]),
-        "Vec" | "HashSet" => Some(&["T"]),
-        "Generator" => Some(&["Y", "R"]),
-        _ => None,
     }
 }

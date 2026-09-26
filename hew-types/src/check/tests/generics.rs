@@ -2440,11 +2440,20 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Pair".to_string(),
-            type_params: vec!["T".to_string(), "U".to_string()],
+            type_params: vec![
+                crate::ParamHead::for_test("T"),
+                crate::ParamHead::for_test("U"),
+            ],
             bounds: HashMap::new(),
             fields: HashMap::from([
-                ("first".to_string(), Ty::param("T")),
-                ("second".to_string(), Ty::param("U")),
+                (
+                    "first".to_string(),
+                    Ty::param(crate::ParamHead::for_test("T")),
+                ),
+                (
+                    "second".to_string(),
+                    Ty::param(crate::ParamHead::for_test("U")),
+                ),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -2805,14 +2814,17 @@ fn main() -> i64 {
 
 fn register_generic_wrapper(checker: &mut Checker) {
     let mut fields = HashMap::new();
-    fields.insert("value".to_string(), Ty::param("T"));
+    fields.insert(
+        "value".to_string(),
+        Ty::param(crate::ParamHead::for_test("T")),
+    );
     let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
         __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Wrapper".to_string(),
-            type_params: vec!["T".to_string()],
+            type_params: vec![crate::ParamHead::for_test("T")],
             bounds: HashMap::new(),
             fields,
             variants: HashMap::new(),
@@ -3030,7 +3042,10 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
     let mut variant_fields = HashMap::new();
     variant_fields.insert(
         "Holding".to_string(),
-        VariantDef::Struct(vec![("value".to_string(), Ty::param("T"))]),
+        VariantDef::Struct(vec![(
+            "value".to_string(),
+            Ty::param(crate::ParamHead::for_test("T")),
+        )]),
     );
     let __id = checker.test_declaration("Keeper");
     checker.type_defs.insert(
@@ -3038,7 +3053,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
-            type_params: vec!["T".to_string()],
+            type_params: vec![crate::ParamHead::for_test("T")],
             bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: variant_fields,
@@ -3083,7 +3098,10 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
     let mut variant_fields_map = HashMap::new();
     variant_fields_map.insert(
         "Keeper::Holding".to_string(),
-        VariantDef::Struct(vec![("value".to_string(), Ty::param("T"))]),
+        VariantDef::Struct(vec![(
+            "value".to_string(),
+            Ty::param(crate::ParamHead::for_test("T")),
+        )]),
     );
     let __id = checker.test_declaration("Keeper");
     checker.type_defs.insert(
@@ -3091,7 +3109,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
-            type_params: vec!["T".to_string()],
+            type_params: vec![crate::ParamHead::for_test("T")],
             bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: variant_fields_map,
@@ -4456,12 +4474,12 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     // (callee, substitution, offset) triple for genuinely different sites.
     // Without the module in the visited-set key the second one is swallowed.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let type_param = Ty::param("T");
+    let type_param = Ty::param(crate::ParamHead::for_test("T"));
     checker.eq_requirements.insert(
         Some("same".to_string()),
         vec![crate::check::types::EqRequirement {
             ty: Ty::builtin_named(crate::BuiltinType::Option, vec![type_param]),
-            owner_type_params: vec!["T".to_string()],
+            owner_type_params: vec![crate::ParamHead::for_test("T")],
             span: 0..1,
             source_module: None,
         }],
@@ -4475,7 +4493,7 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
                 caller_type_params: Vec::new(),
                 callee: "same".to_string(),
                 substitution: std::collections::HashMap::from([(
-                    "T".to_string(),
+                    crate::ParamHead::for_test("T"),
                     ineligible.clone(),
                 )]),
                 span: span.clone(),

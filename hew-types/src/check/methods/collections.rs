@@ -497,9 +497,6 @@ impl Checker {
                 "duration" => Ty::Duration,
                 "()" => Ty::Unit,
                 "!" => Ty::Never,
-                // TRANSITION(A1 commit 3): the dispatch pattern carries the
-                // receiver's spelling until the catalog move keys it by head.
-                other if self.is_type_param_in_scope(other) => Ty::param(other),
                 other => self.named_ty_for_key(other, vec![]),
             },
             TyPattern::App { ctor, args } => self.named_ty_for_key(
@@ -514,7 +511,8 @@ impl Checker {
                     .map(|item| self.dispatch_pattern_to_ty(item))
                     .collect(),
             ),
-            TyPattern::Var(name) => Ty::param(name),
+            TyPattern::Parameter(parameter) => Ty::param(*parameter),
+            TyPattern::Var(_) => Ty::Error,
         }
     }
 

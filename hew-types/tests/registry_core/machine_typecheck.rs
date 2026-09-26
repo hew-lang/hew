@@ -941,7 +941,13 @@ fn main() {
     assert_eq!(machine_td.type_params, vec!["T".to_string()]);
     match &machine_td.variants["Loaded"] {
         hew_types::VariantDef::Struct(fields) => {
-            assert_eq!(fields, &vec![("value".to_string(), Ty::param("T"),)]);
+            assert_eq!(
+                fields,
+                &vec![(
+                    "value".to_string(),
+                    Ty::param(crate::ParamHead::for_test("T")),
+                )]
+            );
         }
         other => panic!("expected Loaded to be a struct variant, got: {other:?}"),
     }
@@ -950,7 +956,13 @@ fn main() {
     assert_eq!(event_td.type_params, vec!["T".to_string()]);
     match &event_td.variants["Load"] {
         hew_types::VariantDef::Struct(fields) => {
-            assert_eq!(fields, &vec![("value".to_string(), Ty::param("T"),)]);
+            assert_eq!(
+                fields,
+                &vec![(
+                    "value".to_string(),
+                    Ty::param(crate::ParamHead::for_test("T")),
+                )]
+            );
         }
         other => panic!("expected Load to be a struct variant, got: {other:?}"),
     }
@@ -960,7 +972,7 @@ fn main() {
         vec![Ty::named_in(
             &output.defs,
             "Lifecycle.Event",
-            vec![Ty::param("T")]
+            vec![Ty::param(crate::ParamHead::for_test("T"))]
         )]
     );
 }

@@ -343,12 +343,46 @@ pub fn render_diagnostic(
     notes: &[DiagnosticNote<'_>],
     suggestions: &[String],
 ) {
+    render_diagnostic_impl(source, filename, span, message, notes, suggestions, None);
+}
+
+/// Render a source diagnostic with its stable error code in the header.
+pub fn render_coded_diagnostic(
+    source: &str,
+    filename: &str,
+    span: &Range<usize>,
+    code: &str,
+    message: &str,
+    notes: &[DiagnosticNote<'_>],
+    suggestions: &[String],
+) {
+    render_diagnostic_impl(
+        source,
+        filename,
+        span,
+        message,
+        notes,
+        suggestions,
+        Some(code),
+    );
+}
+
+fn render_diagnostic_impl(
+    source: &str,
+    filename: &str,
+    span: &Range<usize>,
+    message: &str,
+    notes: &[DiagnosticNote<'_>],
+    suggestions: &[String],
+    code: Option<&str>,
+) {
     let palette = diagnostic_palette();
     let (line, col) = offset_to_line_col(source, span.start);
+    let level = code.map_or_else(|| "error".to_string(), |code| format!("error[{code}]"));
 
-    // Header: filename:line:col: error: message
+    // Header: filename:line:col: error[CODE]: message
     diag_println(&format!(
-        "{bold}{filename}:{line}:{col}:{reset} {red}error{reset}{bold}: {message}{reset}",
+        "{bold}{filename}:{line}:{col}:{reset} {red}{level}{reset}{bold}: {message}{reset}",
         bold = palette.bold,
         red = palette.red,
         reset = palette.reset,

@@ -196,16 +196,34 @@ pub(crate) fn render_frontend_diagnostics(
                                 message: &note.message,
                             })
                             .collect();
-                        crate::diagnostic::render_diagnostic(
-                            source,
-                            filename,
-                            span,
-                            &inner.message,
-                            &notes,
-                            &inner.help,
-                        );
+                        if inner.code == "E_MESSAGE" {
+                            crate::diagnostic::render_diagnostic(
+                                source,
+                                filename,
+                                span,
+                                &inner.message,
+                                &notes,
+                                &inner.help,
+                            );
+                        } else {
+                            crate::diagnostic::render_coded_diagnostic(
+                                source,
+                                filename,
+                                span,
+                                &inner.code,
+                                &inner.message,
+                                &notes,
+                                &inner.help,
+                            );
+                        }
                     }
-                    _ => crate::diagnostic::emit_plain_diagnostic_line(&inner.message),
+                    _ if inner.code == "E_MESSAGE" => {
+                        crate::diagnostic::emit_plain_diagnostic_line(&inner.message);
+                    }
+                    _ => crate::diagnostic::emit_plain_diagnostic_line(&format!(
+                        "error[{}]: {}",
+                        inner.code, inner.message
+                    )),
                 }
             }
             FrontendDiagnosticKind::Parse(error) => {

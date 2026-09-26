@@ -11,7 +11,7 @@ use hew_parser::ast::{Item, Program, TypeBodyItem};
 use hew_types::check::dispatch::CallTarget;
 use hew_types::check::scope::Resolution;
 use hew_types::check::SpanKey;
-use hew_types::{DeclarationKind, DeclarationOccurrence, DefId, TypeCheckOutput};
+use hew_types::{DeclarationKind, DeclarationOccurrence, DefId, Ty, TypeCheckOutput, TypeHead};
 
 use crate::{
     configured_stdlib_roots, path_is_below, read_source, DeterministicAdmission, DocumentSet,
@@ -111,6 +111,10 @@ fn module_index(program: &Program, output: &TypeCheckOutput, id: DefId) -> Optio
         .path_index(path)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "call graph construction joins the checker's complementary call ledgers"
+)]
 fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<DefId, Vec<CallEdge>> {
     let bodies: Vec<_> = output
         .defs
@@ -143,9 +147,17 @@ fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<DefId, Vec
     for (span, rewrite) in &output.method_call_rewrites {
         let target = match rewrite {
             hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
-            | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. } => {
-                target.clone()
-            }
+            | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+            | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. } => target.clone(),
+            // These checker-selected rewrites bypass ordinary call targets.
+            // Project them to the codegen ABI endpoint, whose admission policy
+            // remains owned by the capability manifest.
+            hew_types::MethodCallRewrite::RemoteActorAsk => CallTarget::Builtin {
+                endpoint: "hew_remote_call_new".to_string(),
+            },
+            hew_types::MethodCallRewrite::RemoteActorSend => CallTarget::Builtin {
+                endpoint: "hew_node_api_send_location".to_string(),
+            },
             _ => continue,
         };
         if let Some(owner) = owner_for(span) {
@@ -185,6 +197,18 @@ fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<DefId, Vec
                 | DeclarationKind::ActorReceive
                 | DeclarationKind::TraitMethod
         ) {
+            continue;
+        }
+        if output
+            .direct_call_targets
+            .iter()
+            .any(|(call_span, direct)| {
+                call_span.module_idx == span.module_idx
+                    && call_span.start <= span.start
+                    && span.end <= call_span.end
+                    && target_declaration(direct) == Some(declaration)
+            })
+        {
             continue;
         }
         if let Some(owner) = owner_for(span) {
@@ -242,7 +266,7 @@ fn site_for_call(
     let spelling = text.split('(').next().unwrap_or(text).trim().to_string();
     Some((
         SourceSite {
-            span: span.start..span.end,
+            span: display_start..span.end,
             spelling,
         },
         source,
@@ -253,7 +277,6 @@ fn site_for_call(
 fn target_declaration(target: &CallTarget) -> Option<DefId> {
     match target {
         CallTarget::User(id) | CallTarget::ImplMethod(id) => Some(*id),
-        CallTarget::StaticTraitMethod { method, .. } => Some(*method),
         CallTarget::DeclaredRuntime { declaration, .. } => Some(*declaration),
         _ => None,
     }
@@ -311,6 +334,10 @@ fn selected_entries(output: &TypeCheckOutput, admission: &DeterministicAdmission
 }
 
 /// Check each selected root independently using checker-owned call edges.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one breadth-first traversal keeps dispatch candidates and source-site provenance together"
+)]
 pub(super) fn check(
     program: &Program,
     output: &TypeCheckOutput,
@@ -336,11 +363,13 @@ pub(super) fn check(
     let graph = call_graph(program, output);
     let stdlib_roots = configured_stdlib_roots(options);
     let mut diagnostics = Vec::new();
+    let mut reported = HashSet::new();
     for root in roots {
-        let mut queue = VecDeque::from([(root, None::<(SourceSite, String, String)>)]);
+        let mut queue =
+            VecDeque::from([(root, None::<(SourceSite, String, String)>, Vec::<Ty>::new())]);
         let mut visited = HashSet::new();
-        while let Some((caller, user_site)) = queue.pop_front() {
-            if !visited.insert(caller) {
+        while let Some((caller, user_site, type_args)) = queue.pop_front() {
+            if !visited.insert((caller, type_args.clone())) {
                 continue;
             }
             let caller_is_std = output
@@ -363,6 +392,14 @@ pub(super) fn check(
                 };
                 if let Some(operation) = target_operation(output, &call.target, &stdlib_roots) {
                     if let Some((site, source, filename)) = selected_site {
+                        if !reported.insert((
+                            root,
+                            filename.clone(),
+                            site.span.start,
+                            operation.capability,
+                        )) {
+                            continue;
+                        }
                         let name = output.defs.name(root);
                         let message = format!(
                             "`{}` reaches host operation `{}` ({}), which a deterministic entry cannot schedule",
@@ -379,14 +416,70 @@ pub(super) fn check(
                         );
                         if let crate::FrontendDiagnosticKind::Message(detail) = &mut diagnostic.kind
                         {
-                            detail.help.push(format!(
-                                "mark `{name}` `#[real_time]` or remove the host operation from its reachable calls"
-                            ));
+                            let help = match options.deterministic_admission {
+                                DeterministicAdmission::ProcessEntry => "run without `--deterministic` or remove the host operation from reachable calls".to_string(),
+                                DeterministicAdmission::Tests(_) => format!("mark `{name}` `#[real_time]` or remove the host operation from its reachable calls"),
+                                DeterministicAdmission::Off => unreachable!("admission has no selected roots when off"),
+                            };
+                            detail.help.push(help);
                         }
                         diagnostics.push(diagnostic);
                     }
                 } else if let Some(next) = target_declaration(&call.target) {
-                    queue.push_back((next, selected_site));
+                    let next_args = output
+                        .call_type_args
+                        .get(&call.span)
+                        .cloned()
+                        .unwrap_or_default();
+                    queue.push_back((next, selected_site, next_args));
+                } else if let CallTarget::StaticTraitMethod {
+                    declaring_trait,
+                    method,
+                } = &call.target
+                {
+                    let method_name = output.defs.name(*method);
+                    let receiver_param = output.method_call_rewrites.get(&call.span).and_then(
+                        |rewrite| match rewrite {
+                            hew_types::MethodCallRewrite::StaticTraitDispatch {
+                                receiver_type_param,
+                                ..
+                            } => Some(receiver_type_param.as_str()),
+                            _ => None,
+                        },
+                    );
+                    let concrete = receiver_param
+                        .and_then(|param| {
+                            output
+                                .fn_sigs
+                                .get(&caller)?
+                                .type_params
+                                .iter()
+                                .position(|name| name == param)
+                        })
+                        .and_then(|index| type_args.get(index))
+                        .and_then(|ty| match ty {
+                            Ty::Named {
+                                head: TypeHead::Nominal(nominal) | TypeHead::Actor(nominal),
+                                ..
+                            } => Some(nominal.id),
+                            _ => None,
+                        });
+                    let nominals: Vec<_> = concrete
+                        .map_or_else(|| output.type_defs.keys().copied().collect(), |id| vec![id]);
+                    for nominal in nominals {
+                        for (name, owner, candidate) in output.dispatch.methods_of(nominal) {
+                            if name == method_name
+                                && (owner
+                                    == hew_types::check::dispatch_table::MethodOwner::Inherent
+                                    || owner
+                                        == hew_types::check::dispatch_table::MethodOwner::Trait(
+                                            *declaring_trait,
+                                        ))
+                            {
+                                queue.push_back((candidate, selected_site.clone(), Vec::new()));
+                            }
+                        }
+                    }
                 } else if let CallTarget::DynamicVtable { method, .. } = &call.target {
                     // Every concrete-to-dyn coercion publishes its executable
                     // vtable entries by declaration identity. A dyn call can
@@ -398,7 +491,7 @@ pub(super) fn check(
                         .filter(|entry| entry.method == *method)
                         .filter_map(|entry| entry.impl_method);
                     for candidate in candidates {
-                        queue.push_back((candidate, selected_site.clone()));
+                        queue.push_back((candidate, selected_site.clone(), Vec::new()));
                     }
                 }
             }
@@ -514,6 +607,78 @@ mod tests {
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
             "{failure}"
         );
+    }
+
+    #[test]
+    fn static_trait_dispatch_includes_checked_implementer() {
+        let source = "import std.io;\ntrait Reader { fn read(value: Self) -> string; }\ntype Host { n: i64 }\nimpl Host { fn read(value: Host) -> string { io.read_line() } }\nfn inspect<T: Reader>(value: T) -> string { value.read() }\nfn main() { println(inspect(Host { n: 1 })); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn static_trait_dispatch_excludes_unused_implementer() {
+        let source = "import std.io;\ntrait Reader { fn read(value: Self) -> string; }\ntype Safe { n: i64 }\nimpl Safe { fn read(value: Safe) -> string { \"safe\" } }\ntype Host { n: i64 }\nimpl Host { fn read(value: Host) -> string { io.read_line() } }\nfn inspect<T: Reader>(value: T) -> string { value.read() }\nfn main() { println(inspect(Safe { n: 1 })); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn remote_actor_send_and_ask_require_real_time() {
+        let declaration = "#[wire] type Ping { n: i64 @1 }\nactor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\nimpl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n";
+        for call in ["pid.send(Ping { n: 0 })", "pid.ask(Ping { n: 0 }, 1000)"] {
+            let source =
+                format!("{declaration}fn main() {{ let pid: RemotePid<Worker>; let _ = {call}; }}");
+            let failure = check_source(&source, DeterministicAdmission::ProcessEntry).unwrap_err();
+            assert!(
+                failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+                "{failure}"
+            );
+            assert!(failure.contains("pid."), "{failure}");
+        }
+    }
+
+    #[test]
+    fn one_source_call_reports_one_host_operation() {
+        let source = "import std.net;\nfn main() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert_eq!(
+            failure.matches("E_DETERMINISTIC_HOST_OPERATION").count(),
+            1,
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn process_entry_suggests_run_mode_instead_of_test_attribute() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("run.hew");
+        std::fs::write(
+            &path,
+            "import std.io;\nfn main() { let line = io.read_line(); println(line); }",
+        )
+        .unwrap();
+        let options = FrontendOptions {
+            deterministic_admission: DeterministicAdmission::ProcessEntry,
+            ..FrontendOptions::default()
+        };
+        let failure = check_file(path.to_str().unwrap(), &options).unwrap_err();
+        let help = failure
+            .diagnostics
+            .iter()
+            .find_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Message(message)
+                    if message.code == "E_DETERMINISTIC_HOST_OPERATION" =>
+                {
+                    Some(&message.help)
+                }
+                _ => None,
+            })
+            .expect("deterministic host diagnostic");
+        assert!(help.iter().any(|line| line.contains("--deterministic")));
+        assert!(!help.iter().any(|line| line.contains("#[real_time]")));
     }
 
     #[test]

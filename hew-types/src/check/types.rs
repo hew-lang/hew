@@ -630,11 +630,20 @@ pub struct TypeCheckOutput {
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
     pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Checked impl bodies keyed by their declaration. Each signature is
+    /// finalised by the checker, and callees retain selected declaration IDs.
+    /// Imported-body lowering consumes this fact instead of scanning names.
+    pub imported_impl_body_facts: HashMap<crate::DefId, ImportedImplBodyFact>,
     /// Exact possible callees for an accepted indirect call. Unknown origins
     /// remain explicit even when other branches have known candidates.
     pub indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     /// Exact actual-to-formal callable flow at each checked direct call.
     pub callable_argument_flows: HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+    /// Positional actual values at generic static-trait dispatch sites. The
+    /// selected concrete impl may depend on type substitution downstream.
+    pub generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
+    /// Binder identities of each checked callable body, in parameter order.
+    pub callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
     /// Exact field writes of an authored aggregate constructor.
     pub aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
     /// Symbolic return origins of checker-owned function bodies.
@@ -1107,6 +1116,26 @@ pub struct CallableArgumentFlow {
     pub callee: crate::DefId,
     pub formal: TypeBindingId,
     pub candidates: IndirectCallCandidates,
+}
+
+/// One authored actual at a generic static-trait call, indexed by the
+/// selected concrete implementation's parameter slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableDispatchActual {
+    pub slot: usize,
+    pub candidates: IndirectCallCandidates,
+}
+
+/// Exact checked facts needed to decide whether an imported impl body can be
+/// lowered in another module. Source names do not participate in eligibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedImplBodyFact {
+    pub receiver: Option<crate::NominalId>,
+    pub params: Vec<ResolvedTy>,
+    pub return_type: ResolvedTy,
+    /// Direct declaration calls selected inside this method body. A caller is
+    /// skipped only when one of these exact identities cannot emit a body.
+    pub callees: Vec<crate::DefId>,
 }
 
 #[derive(Debug, Clone)]
@@ -1660,8 +1689,11 @@ impl Default for TypeCheckOutput {
             builtin_fn_sigs: HashMap::new(),
             suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
+            imported_impl_body_facts: HashMap::new(),
             indirect_call_candidates: HashMap::new(),
             callable_argument_flows: HashMap::new(),
+            generic_trait_call_arguments: HashMap::new(),
+            callable_formals: HashMap::new(),
             aggregate_field_candidates: HashMap::new(),
             callable_return_candidates: HashMap::new(),
             trait_method_ids: HashMap::new(),
@@ -3341,6 +3373,7 @@ pub struct Checker {
     pub(super) indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
     pub(super) callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    pub(super) generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
     pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
     pub(super) aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
     pub(super) callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
@@ -4426,6 +4459,7 @@ impl Checker {
             indirect_call_candidates: HashMap::new(),
             callable_binding_candidates: HashMap::new(),
             callable_formals: HashMap::new(),
+            generic_trait_call_arguments: HashMap::new(),
             pending_callable_arguments: HashMap::new(),
             aggregate_field_candidates: HashMap::new(),
             callable_return_candidates: HashMap::new(),

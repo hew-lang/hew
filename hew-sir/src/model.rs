@@ -470,6 +470,23 @@ pub struct SemAggregateShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemVtableId(pub u32);
 
+/// Require exact trait declarations before a dispatch table or dynamic call
+/// crosses into a stage that keys by `ResolvedTy`.
+pub(crate) fn require_dyn_trait_ids(dyn_ty: &ResolvedTy) -> Result<(), String> {
+    let ResolvedTy::TraitObject { traits } = dyn_ty else {
+        return Err("dispatch erasure does not name a trait object".to_string());
+    };
+    for bound in traits {
+        if bound.trait_id.is_none() {
+            return Err(format!(
+                "dispatch erasure of `{}` has no checker-owned trait declaration",
+                bound.trait_name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// One dispatchable slot of a demanded trait-object table.
 ///
 /// `slot` is the checker's index (`3 + position` in the trait object's

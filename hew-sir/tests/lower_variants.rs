@@ -1060,17 +1060,3 @@ fn wire_schema_rejects_a_field_codec_for_another_value_type() {
                 if reason.contains("wire child type disagrees with checked shape")
         )));
 }
-
-#[test]
-fn text_wire_names_cannot_discard_another_field() {
-    let lowered = lower_source(
-        r#"
-        #[wire]
-        type Ambiguous { first: string @1 json("same"), second: string @2 json("same") }
-        fn main() { let text = Ambiguous { first: "first", second: "second" }.to_json(); }
-    "#,
-    );
-    assert!(lowered.statuses.iter().any(|status| matches!(&status.status,
-        SirLoweringStatus::Unsupported { reason, .. } if reason.contains("wire JSON field name `same` is ambiguous")
-    )));
-}

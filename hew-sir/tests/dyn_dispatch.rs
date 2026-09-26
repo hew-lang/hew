@@ -95,6 +95,52 @@ fn dispatch_to_a_slot_holding_another_method_is_refused() {
 }
 
 #[test]
+fn dispatch_to_a_method_absent_from_the_table_is_refused() {
+    let mut module = lower(TWO_BOUNDS);
+    let other = module
+        .callables
+        .iter()
+        .find(|callable| callable.symbol == "__hew_fn_main")
+        .expect("main callable")
+        .declaration;
+    for call in dyn_calls(&mut module) {
+        let SemTerminator::DynCall { method, .. } = call else {
+            unreachable!()
+        };
+        *method = other;
+    }
+
+    let errors = verify_module(&module);
+    assert!(
+        errors.iter().any(|error| matches!(
+            &error.kind,
+            SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("names slot") && reason.contains("fills with")
+        )),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn table_without_checked_trait_identity_is_refused() {
+    let mut module = lower(TWO_BOUNDS);
+    let hew_types::ResolvedTy::TraitObject { traits } = &mut module.vtables[0].dyn_ty else {
+        panic!("expected trait-object table")
+    };
+    traits[0].trait_id = None;
+
+    let errors = verify_module(&module);
+    assert!(
+        errors.iter().any(|error| matches!(
+            &error.kind,
+            SirDiagnosticKind::InvalidVtable { reason, .. }
+                if reason.contains("no checker-owned trait declaration")
+        )),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn table_repeating_a_method_is_refused() {
     let mut module = lower(TWO_BOUNDS);
     let alpha = module.vtables[0].slots[0].method;

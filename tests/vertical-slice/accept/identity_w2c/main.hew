@@ -1,0 +1,24 @@
+import ma;
+
+trait Shape {
+    fn kind(self) -> string;
+    fn name(self) -> string;
+}
+
+type Box { v: i64 }
+
+impl Shape for Box {
+    fn kind(self) -> string { "K" }
+    fn name(self) -> string { "N" }
+}
+
+fn local_kind(s: dyn Shape) -> string {
+    s.kind()
+}
+
+fn main() {
+    // Demand both same-named trait tables for the same concrete record.
+    if local_kind(Box { v: 2 }) == "K" {
+        ma.show(Box { v: 1 });
+    }
+}

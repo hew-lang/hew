@@ -1848,39 +1848,40 @@ impl LowerCtx {
         // carries; the inner expression keeps its concrete type.
         let coercion_key = self.mk_key(&span);
         if let Some(coercion) = self.dyn_trait_coercions.get(&coercion_key).cloned() {
-            let mut resolved_bounds = Vec::new();
-            for name in coercion.trait_name.split('+') {
-                let mut assoc_bindings = Vec::new();
-                for binding in coercion
-                    .assoc_bindings
-                    .iter()
-                    .filter(|binding| binding.trait_name == name)
-                {
-                    let Ok(ty) = hew_types::ResolvedTy::from_ty(&binding.ty) else {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "dyn-trait assoc binding".to_string(),
-                                reason: format!(
-                                    "`{}.{}` failed boundary conversion",
-                                    binding.trait_name, binding.assoc_name
-                                ),
-                            },
-                            span.clone(),
-                            "associated type binding from dyn_trait_coercions failed boundary conversion",
-                        ));
-                        return inner;
-                    };
-                    assoc_bindings.push((binding.assoc_name.clone(), ty));
-                }
-                resolved_bounds.push(hew_types::ResolvedTraitBound {
-                    trait_name: name.to_string(),
-                    trait_id: None,
-                    args: vec![],
-                    assoc_bindings,
-                });
+            let declared_traits: Vec<_> = coercion
+                .trait_bounds
+                .iter()
+                .map(|bound| bound.trait_id)
+                .collect();
+            if declared_traits.iter().any(Option::is_none)
+                || declared_traits != coercion.vtable_key.trait_ids
+            {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "dyn-trait coercion".to_string(),
+                        reason: "checked trait bounds disagree with their vtable identities"
+                            .to_string(),
+                    },
+                    span.clone(),
+                    "trait-object identity did not survive the checker boundary",
+                ));
+                return self.unsupported_expr(span, "dyn-trait identity mismatch");
             }
-            let dyn_ty = ResolvedTy::TraitObject {
-                traits: resolved_bounds,
+            let dyn_ty = match ResolvedTy::from_ty(&Ty::TraitObject {
+                traits: coercion.trait_bounds.clone(),
+            }) {
+                Ok(ty) => ty,
+                Err(error) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "dyn-trait coercion".to_string(),
+                            reason: error.to_string(),
+                        },
+                        span.clone(),
+                        "checked trait-object type failed boundary conversion",
+                    ));
+                    return self.unsupported_expr(span, "dyn-trait boundary type");
+                }
             };
             // The checker side table is keyed by source span and may preserve
             // the original concrete provenance when an already-erased value is

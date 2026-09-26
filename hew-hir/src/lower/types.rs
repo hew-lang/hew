@@ -1282,17 +1282,33 @@ impl LowerCtx {
                 pointee: Box::new(self.lower_type(inner)),
             },
             // `dyn Trait` / `dyn Trait<Arg>` / `dyn Trait<Assoc = T>` in any
-            // type-annotation position. Each `TraitBound` maps to a
-            // `ResolvedTraitBound` via the same three-field lowering
-            // `lower_machine_trait_bound` uses; the result reaches the existing
-            // downstream `ResolvedTy::TraitObject` paths in MIR and codegen
-            // (fat-pointer / vtable machinery — W3.031 / W3.042).
-            TypeExpr::TraitObject(bounds) => ResolvedTy::TraitObject {
-                traits: bounds
+            // type-annotation position. The checker publishes the selected
+            // trait declaration on the final path segment of each bound.
+            TypeExpr::TraitObject(bounds) => {
+                let traits: Vec<_> = bounds
                     .iter()
                     .map(|tb| self.lower_machine_trait_bound(tb))
-                    .collect(),
-            },
+                    .collect();
+                for (bound, lowered) in bounds.iter().zip(&traits) {
+                    if lowered.trait_id.is_none() {
+                        let span = bound
+                            .path
+                            .segments
+                            .last()
+                            .map_or_else(|| ty.1.clone(), |(_, span)| span.clone());
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: bound.path.to_string(),
+                                reason: "trait-object bound has no checker-owned declaration"
+                                    .to_string(),
+                            },
+                            span,
+                            "trait-object identity did not survive the checker boundary",
+                        ));
+                    }
+                }
+                ResolvedTy::TraitObject { traits }
+            }
             _ => {
                 self.unsupported(ty.1.clone(), "type-expression", "slice-2");
                 ResolvedTy::Unit

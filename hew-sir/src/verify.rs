@@ -518,8 +518,8 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                 expected.0, vtable.id.0
             ));
         }
-        if !matches!(vtable.dyn_ty, ResolvedTy::TraitObject { .. }) {
-            refuse("a dispatch table must erase into a trait-object type".into());
+        if let Err(reason) = crate::model::require_dyn_trait_ids(&vtable.dyn_ty) {
+            refuse(reason);
         }
         if !erasures.insert((vtable.dyn_ty.clone(), vtable.concrete_ty.clone())) {
             refuse("the same erasure is published twice".into());
@@ -2594,21 +2594,10 @@ fn verify_dyn_call(
     {
         return Err("dynamic dispatch requires an owned trait-object receiver".to_string());
     }
+    crate::model::require_dyn_trait_ids(ty)?;
     let context = context
         .ok_or_else(|| "dynamic dispatch requires its module's dispatch tables".to_string())?;
-    // WHY: `ResolvedTy::TraitObject` names its traits by spelling, so two
-    // same-named traits from different modules erase to one `dyn_ty`. A table
-    // of the call's own trait object publishes the called method somewhere;
-    // a same-spelled neighbour's table never does, because distinct traits
-    // declare distinct methods.
-    // WHEN obsolete: once trait-object types carry trait declaration identity.
-    // WHAT: select the tables by the exact `dyn_ty` alone.
-    let own_tables = context.vtables_for(ty).filter(|table| {
-        table
-            .slots
-            .iter()
-            .any(|published| published.method == *method)
-    });
+    let own_tables = context.vtables_for(ty);
     for table in own_tables {
         let published = table
             .slots

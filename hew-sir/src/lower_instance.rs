@@ -515,6 +515,7 @@ impl<'a> InstanceService<'a> {
         concrete_ty: &ResolvedTy,
         entries: &[hew_types::DynVtableEntry],
     ) -> Result<crate::SemVtableId, String> {
+        crate::model::require_dyn_trait_ids(dyn_ty)?;
         let key = (dyn_ty.clone(), concrete_ty.clone());
         if let Some(id) = self.vtables_by_erasure.get(&key) {
             return Ok(*id);

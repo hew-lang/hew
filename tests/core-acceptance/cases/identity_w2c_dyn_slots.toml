@@ -1,0 +1,10 @@
+[[case]]
+id = "identity_w2c_dyn_slots"
+intent = "Local and imported trait objects with the same trait name keep separate tables and follow each declaration's method order."
+source = "../vertical-slice/accept/identity_w2c/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "name=N kind=K\n"
+exit = 0

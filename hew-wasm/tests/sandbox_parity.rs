@@ -11,16 +11,6 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
-        // A root record with the runtime admission type's display name must
-        // not acquire its resource close when making an actor request.
-        test_name: "identity_w7_sandbox",
-        source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox.hew",
-    },
-    ParityCase {
-        test_name: "identity_w7_sandbox_control",
-        source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox_control.hew",
-    },
-    ParityCase {
         // A lambda built, passed to a function taking a callable, and called
         // there through the same indirect path both engines use.
         test_name: "closure_values",
@@ -544,6 +534,29 @@ fn playground_sources_match_native() {
 
     for case in PARITY_CASES {
         assert_case(case);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn identity_w7_record_resource_does_not_join_runtime_admission() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+
+    // The root record renders like the runtime admission record, while both
+    // programs perform the same actor request and print the same answer.
+    for case in [
+        ParityCase {
+            test_name: "identity_w7_sandbox",
+            source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox.hew",
+        },
+        ParityCase {
+            test_name: "identity_w7_sandbox_control",
+            source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox_control.hew",
+        },
+    ] {
+        assert_case(&case);
     }
 }
 

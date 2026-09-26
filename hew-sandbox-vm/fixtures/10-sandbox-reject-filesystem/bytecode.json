@@ -2494,7 +2494,11 @@
         }
       ],
       "id": 0,
-      "name": "Result<string, std.fs.IoError>"
+      "name": "Result<string, std.fs.IoError>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     },
     {
       "cases": [
@@ -2536,7 +2540,8 @@
         }
       ],
       "id": 1,
-      "name": "std.fs.IoError"
+      "name": "std.fs.IoError",
+      "runtime_tags": {}
     },
     {
       "cases": [
@@ -2554,7 +2559,11 @@
         }
       ],
       "id": 2,
-      "name": "Result<bytes, std.fs.IoError>"
+      "name": "Result<bytes, std.fs.IoError>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     },
     {
       "cases": [
@@ -2572,7 +2581,11 @@
         }
       ],
       "id": 3,
-      "name": "Result<string, std.encoding.utf8.Utf8Error>"
+      "name": "Result<string, std.encoding.utf8.Utf8Error>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     },
     {
       "cases": [
@@ -2588,7 +2601,11 @@
         }
       ],
       "id": 4,
-      "name": "Option<i64>"
+      "name": "Option<i64>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
     }
   ],
   "vtables": []

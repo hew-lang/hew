@@ -3495,7 +3495,11 @@
         }
       ],
       "id": 0,
-      "name": "Result<(Sink<i64>, Stream<i64>), string>"
+      "name": "Result<(Sink<i64>, Stream<i64>), string>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     },
     {
       "cases": [
@@ -3545,7 +3549,20 @@
         }
       ],
       "id": 1,
-      "name": "SendError"
+      "name": "SendError",
+      "runtime_tags": {
+        "SendErrorBackpressure": 9,
+        "SendErrorCancelled": 6,
+        "SendErrorClosed": 1,
+        "SendErrorDead": 10,
+        "SendErrorFull": 0,
+        "SendErrorLocalShutdown": 5,
+        "SendErrorNodeRoutingNotWired": 2,
+        "SendErrorPartition": 3,
+        "SendErrorStaleRef": 4,
+        "SendErrorUnauthorized": 8,
+        "SendErrorVersionMismatch": 7
+      }
     },
     {
       "cases": [
@@ -3563,7 +3580,11 @@
         }
       ],
       "id": 2,
-      "name": "Result<(), SendError>"
+      "name": "Result<(), SendError>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     },
     {
       "cases": [
@@ -3579,7 +3600,11 @@
         }
       ],
       "id": 3,
-      "name": "Option<i64>"
+      "name": "Option<i64>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
     }
   ],
   "vtables": []

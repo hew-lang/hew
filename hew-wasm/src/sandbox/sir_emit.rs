@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 
 use hew_sir::{
     AggregateShapeRef, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, CallableId, Edge,
-    Operand, OwnKind, Provenance, SemBlock, SemFunction, SemModule, SemOp, SemOpKind,
-    SemTerminator, SuspendKind, TrapKind, ValueDef,
+    Operand, OwnKind, Provenance, RuntimeVariantRole, SemBlock, SemFunction, SemModule, SemOp,
+    SemOpKind, SemTerminator, SuspendKind, TrapKind, ValueDef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +94,40 @@ pub struct VariantShape {
     pub id: u32,
     pub name: String,
     pub cases: Vec<VariantCase>,
+    pub runtime_tags: BTreeMap<String, u32>,
+}
+
+fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
+    use RuntimeVariantRole as Role;
+    match role {
+        Role::OptionSome => "OptionSome",
+        Role::OptionNone => "OptionNone",
+        Role::ResultOk => "ResultOk",
+        Role::ResultErr => "ResultErr",
+        Role::ActorErrorRejected => "ActorErrorRejected",
+        Role::ActorErrorFailed => "ActorErrorFailed",
+        Role::ActorErrorTrapped => "ActorErrorTrapped",
+        Role::ActorErrorDead => "ActorErrorDead",
+        Role::ActorErrorTimeout => "ActorErrorTimeout",
+        Role::ActorErrorNodeNotRunning => "ActorErrorNodeNotRunning",
+        Role::ActorErrorRoutingFailed => "ActorErrorRoutingFailed",
+        Role::ActorErrorEncodeFailed => "ActorErrorEncodeFailed",
+        Role::ActorErrorConnectionDropped => "ActorErrorConnectionDropped",
+        Role::ActorErrorPartition => "ActorErrorPartition",
+        Role::SendErrorFull => "SendErrorFull",
+        Role::SendErrorClosed => "SendErrorClosed",
+        Role::SendErrorNodeRoutingNotWired => "SendErrorNodeRoutingNotWired",
+        Role::SendErrorPartition => "SendErrorPartition",
+        Role::SendErrorStaleRef => "SendErrorStaleRef",
+        Role::SendErrorLocalShutdown => "SendErrorLocalShutdown",
+        Role::SendErrorCancelled => "SendErrorCancelled",
+        Role::SendErrorVersionMismatch => "SendErrorVersionMismatch",
+        Role::SendErrorUnauthorized => "SendErrorUnauthorized",
+        Role::SendErrorBackpressure => "SendErrorBackpressure",
+        Role::SendErrorDead => "SendErrorDead",
+        Role::DeliveryAccepted => "DeliveryAccepted",
+        Role::DeliveryDiscarded => "DeliveryDiscarded",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -484,9 +518,8 @@ impl<'m> Walker<'m> {
         let failure_ty = error
             .and_then(|shape| {
                 shape
-                    .variants
-                    .iter()
-                    .find(|variant| variant.name == "Rejected")
+                    .runtime_tag(RuntimeVariantRole::ActorErrorRejected)
+                    .and_then(|tag| shape.variants.get(tag as usize))
             })
             .and_then(|variant| variant.fields.first())
             .map(|field| &field.ty);
@@ -885,6 +918,11 @@ impl<'m> Walker<'m> {
             .map(|shape| VariantShape {
                 id: shape.id.0,
                 name: shape.enum_ty.user_facing().to_string(),
+                runtime_tags: shape
+                    .runtime_tags
+                    .iter()
+                    .map(|(role, tag)| (runtime_role_name(*role).to_string(), *tag))
+                    .collect(),
                 cases: shape
                     .variants
                     .iter()

@@ -645,7 +645,11 @@
         }
       ],
       "id": 0,
-      "name": "Option<i64>"
+      "name": "Option<i64>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
     }
   ],
   "vtables": []

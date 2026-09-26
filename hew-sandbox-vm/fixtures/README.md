@@ -37,3 +37,7 @@ Only intentional checker-error sources have no bytecode. Filesystem access
 compiles to a package and is refused by VM admission before execution. Every
 executable fixture is generated from its source; there are no hand-authored
 actor or scheduler packages.
+
+```json sandbox-fixtures-deferred
+{"deferred": []}
+```

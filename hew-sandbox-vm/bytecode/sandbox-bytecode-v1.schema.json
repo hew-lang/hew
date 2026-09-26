@@ -169,6 +169,12 @@
           "name": {
             "type": "string"
           },
+          "runtime_tags": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/id"
+            }
+          },
           "cases": {
             "type": "array",
             "items": {

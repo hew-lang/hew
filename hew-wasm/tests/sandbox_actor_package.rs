@@ -954,10 +954,12 @@ fn a_late_owned_reply_drains_before_the_next_actor_turn() {
 fn main() {{
     let audit = spawn Audit;
     let worker = spawn Worker;
+    let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     select {{
-        value from worker.create(audit) => println(value.expect("created").id),
+        value from worker.create(audit, gate) => println(value.expect("created").id),
         after 1ms => println("timeout"),
     }}
+    let _ = release.send(1);
     worker.ready().expect("ready");
     assert(audit.receipt().expect("receipt") == 1);
     let closed = audit.last_closed().expect("last");

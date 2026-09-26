@@ -59,6 +59,7 @@ capability, and it never matches a symbol prefix.
     {
       "id": 0,
       "name": "Option",
+      "runtime_tags": { "OptionNone": 0, "OptionSome": 1 },
       "cases": [
         { "name": "None", "fields": [] },
         { "name": "Some", "fields": ["0"] },
@@ -105,6 +106,9 @@ name list, and a field index in an instruction is an index into it.
 `variants` are enum shapes; `cases` is in declaration order, and a case index
 is the tag. `fields` on a case names its payload fields (a tuple variant names
 them `"0"`, `"1"`, ...).
+`runtime_tags` publishes the SIR-selected numeric tag for every closed role
+that the runtime may construct in that exact shape. The VM uses these tags
+directly; display names are never lookup keys.
 
 Tuples are structural and carry no shape entry: `tuple.make` records its arity
 and `tuple.get` its index.

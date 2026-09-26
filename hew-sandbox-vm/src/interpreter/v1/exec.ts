@@ -34,7 +34,9 @@ import type {
   TrapName,
   ValueDef,
   VariantShape,
+  RuntimeVariantRole,
 } from "./package.js";
+import { runtimeTag } from "./package.js";
 import { StructuralRenderer } from "./structural.js";
 import {
   selectedValue,
@@ -349,12 +351,11 @@ class ExecutorV1 {
       },
       prng: new Mt19937(),
       regexPatterns: pkg.regex_patterns,
-      enumValue: (shape, caseName, payload) => ({
+      enumValue: (shape, role, payload) => ({
         kind: "enum",
         typeId: shape.name,
         shape: shape.id,
-        // The tag is the case's position in the descriptor's declaration order.
-        tag: shape.cases.findIndex((entry) => entry.name === caseName),
+        tag: runtimeTag(shape, role),
         payload,
       }),
     };
@@ -1540,7 +1541,7 @@ class ExecutorV1 {
         term,
         this.variant(
           term.result_shape,
-          value ? "Some" : "None",
+          value ? "OptionSome" : "OptionNone",
           value ? [value] : [],
         ),
       );
@@ -1736,7 +1737,7 @@ class ExecutorV1 {
             wake(
               this.variant(
                 term.result_shape,
-                value === null ? "None" : "Some",
+                value === null ? "OptionNone" : "OptionSome",
                 value === null ? [] : [value],
               ),
             );
@@ -1821,7 +1822,7 @@ class ExecutorV1 {
               wake(
                 this.variant(
                   term.result_shape,
-                  value === null ? "None" : "Some",
+                  value === null ? "OptionNone" : "OptionSome",
                   value === null ? [] : [value],
                 ),
               );
@@ -2302,14 +2303,13 @@ class ExecutorV1 {
 
   private variant(
     shapeId: number | null | undefined,
-    name: string,
+    role: RuntimeVariantRole,
     payload: VmValue[] = [],
   ): VmValue {
     const shape = shapeId == null ? undefined : this.pkg.variants[shapeId];
     if (!shape)
       throw new Error(`runtime result has no variant shape ${shapeId}`);
-    const tag = shape.cases.findIndex((entry) => entry.name === name);
-    if (tag < 0) throw new Error(`${shape.name} has no ${name} case`);
+    const tag = runtimeTag(shape, role);
     return { kind: "enum", typeId: shape.name, shape: shape.id, tag, payload };
   }
 
@@ -2337,16 +2337,16 @@ class ExecutorV1 {
     error: string | null,
   ): VmValue {
     return error
-      ? this.variant(result, "Err", [
+      ? this.variant(result, "ResultErr", [
           this.variant(
             errorShape,
-            error,
+            actorErrorRole(error),
             (error === "Failed" || error === "Rejected") && value
               ? [value]
               : [],
           ),
         ])
-      : this.variant(result, "Ok", [value ?? UNIT]);
+      : this.variant(result, "ResultOk", [value ?? UNIT]);
   }
 
   private actorFor(value: VmValue): ActorInstance {
@@ -2546,16 +2546,22 @@ class ExecutorV1 {
         const shapes = term.submission_shapes;
         if (!shapes) throw new Error("submission lacks its result shapes");
         const accepted = (discarded: boolean) =>
-          this.variant(term.result_shape, "Ok", [
-            this.variant(shapes.success, discarded ? "Discarded" : "Accepted"),
+          this.variant(term.result_shape, "ResultOk", [
+            this.variant(
+              shapes.success,
+              discarded ? "DeliveryDiscarded" : "DeliveryAccepted",
+            ),
           ]);
         const rejected = (reason: string) =>
-          this.variant(term.result_shape, "Err", [
+          this.variant(term.result_shape, "ResultErr", [
             {
               kind: "record",
               typeId: this.aggregateName(shapes.failure!),
               shape: shapes.failure!,
-              fields: [this.variant(shapes.reason, reason), request],
+              fields: [
+                this.variant(shapes.reason, sendErrorRole(reason)),
+                request,
+              ],
             },
           ]);
         let parked = false;
@@ -2975,7 +2981,7 @@ class ExecutorV1 {
           ]);
           finish(
             record(shapes.failure, [
-              this.variant(shapes.reason, "Full"),
+              this.variant(shapes.reason, "SendErrorFull"),
               message,
             ]),
             "Rejected",
@@ -3588,6 +3594,62 @@ function payloadOf(value: VmValue): VmValue[] {
     throw new TypeError(`expected an enum value, got ${value.kind}`);
   }
   return value.payload;
+}
+
+function actorErrorRole(reason: string): RuntimeVariantRole {
+  switch (reason) {
+    case "Rejected":
+      return "ActorErrorRejected";
+    case "Failed":
+      return "ActorErrorFailed";
+    case "Trapped":
+      return "ActorErrorTrapped";
+    case "Dead":
+      return "ActorErrorDead";
+    case "Timeout":
+      return "ActorErrorTimeout";
+    case "NodeNotRunning":
+      return "ActorErrorNodeNotRunning";
+    case "RoutingFailed":
+      return "ActorErrorRoutingFailed";
+    case "EncodeFailed":
+      return "ActorErrorEncodeFailed";
+    case "ConnectionDropped":
+      return "ActorErrorConnectionDropped";
+    case "Partition":
+      return "ActorErrorPartition";
+    default:
+      throw new Error(`unknown actor error reason ${reason}`);
+  }
+}
+
+function sendErrorRole(reason: string): RuntimeVariantRole {
+  switch (reason) {
+    case "Full":
+      return "SendErrorFull";
+    case "Closed":
+      return "SendErrorClosed";
+    case "NodeRoutingNotWired":
+      return "SendErrorNodeRoutingNotWired";
+    case "Partition":
+      return "SendErrorPartition";
+    case "StaleRef":
+      return "SendErrorStaleRef";
+    case "LocalShutdown":
+      return "SendErrorLocalShutdown";
+    case "Cancelled":
+      return "SendErrorCancelled";
+    case "VersionMismatch":
+      return "SendErrorVersionMismatch";
+    case "Unauthorized":
+      return "SendErrorUnauthorized";
+    case "Backpressure":
+      return "SendErrorBackpressure";
+    case "Dead":
+      return "SendErrorDead";
+    default:
+      throw new Error(`unknown send error reason ${reason}`);
+  }
 }
 
 function calleeFunction(value: VmValue): number {

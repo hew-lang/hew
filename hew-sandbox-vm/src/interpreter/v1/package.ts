@@ -66,6 +66,51 @@ export interface VariantShape {
   id: number;
   name: string;
   cases: VariantCase[];
+  runtime_tags?: Partial<Record<RuntimeVariantRole, number>>;
+}
+
+export type RuntimeVariantRole =
+  | "OptionSome"
+  | "OptionNone"
+  | "ResultOk"
+  | "ResultErr"
+  | "ActorErrorRejected"
+  | "ActorErrorFailed"
+  | "ActorErrorTrapped"
+  | "ActorErrorDead"
+  | "ActorErrorTimeout"
+  | "ActorErrorNodeNotRunning"
+  | "ActorErrorRoutingFailed"
+  | "ActorErrorEncodeFailed"
+  | "ActorErrorConnectionDropped"
+  | "ActorErrorPartition"
+  | "SendErrorFull"
+  | "SendErrorClosed"
+  | "SendErrorNodeRoutingNotWired"
+  | "SendErrorPartition"
+  | "SendErrorStaleRef"
+  | "SendErrorLocalShutdown"
+  | "SendErrorCancelled"
+  | "SendErrorVersionMismatch"
+  | "SendErrorUnauthorized"
+  | "SendErrorBackpressure"
+  | "SendErrorDead"
+  | "DeliveryAccepted"
+  | "DeliveryDiscarded";
+
+export function runtimeTag(
+  shape: VariantShape,
+  role: RuntimeVariantRole,
+): number {
+  const tag = shape.runtime_tags?.[role];
+  if (
+    tag === undefined ||
+    !Number.isInteger(tag) ||
+    tag < 0 ||
+    tag >= shape.cases.length
+  )
+    throw new Error(`variant shape ${shape.id} has no checked ${role} tag`);
+  return tag;
 }
 
 /// One entry per distinct runtime-call family the instruction stream reaches.

@@ -41,7 +41,10 @@ function mapPackage(cases = [{ name: "Some", fields: ["0"] }, { name: "None", fi
     bytes: [],
     regex_patterns: [],
     aggregates: [],
-    variants: [{ id: 0, name: "Option<i64>", cases }],
+    variants: [{ id: 0, name: "Option<i64>", cases, runtime_tags: {
+      OptionSome: someTag,
+      OptionNone: noneTag
+    } }],
     runtime_families: FAMILIES,
     externs: [],
     suspend_kinds: [],
@@ -213,13 +216,20 @@ test("a map answers contains_key and get for a present key and a missing one", (
 });
 
 test("Map(Get) takes its tag from the descriptor the call names", () => {
-  // The same program with `None` declared first. A shim assuming a tag order of
-  // its own would send the hit down the miss arm; reading the descriptor keeps
-  // both answers where they belong.
+  // The same program with `None` declared first. The published numeric roles
+  // send both answers to the matching arms without a name lookup in the VM.
   const trace = run(
     mapPackage([{ name: "None", fields: [] }, { name: "Some", fields: ["0"] }])
   );
 
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(stdout(trace), "true\nfalse\n95\nmissing\n");
+});
+
+test("Map(Get) refuses a missing checked Option role tag", () => {
+  const bytecode = mapPackage();
+  delete bytecode.variants[0].runtime_tags;
+  const trace = run(bytecode);
+  assert.equal(trace.result, "runtime_failure");
+  assert.match(trace.final_state.runtime_failures[0].message, /no checked OptionSome tag/);
 });

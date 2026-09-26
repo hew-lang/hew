@@ -1,9 +1,5 @@
 import std.encoding.utf8;
 
-extern "C" {
-    fn hew_bytes_from_str(s: string) -> bytes;
-}
-
 type Rec {
     s: string,
 }
@@ -53,12 +49,12 @@ fn test_vec_clone_deep_copies_nested_tuple_fields() {
 #[test]
 fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
     var xs: Vec<((bytes, i64), bool)> = Vec.new();
-    let a: bytes = unsafe {
-        hew_bytes_from_str("ab")
-    };
-    let b: bytes = unsafe {
-        hew_bytes_from_str("cd")
-    };
+    var a: bytes = bytes.new();
+    a.push(97);
+    a.push(98);
+    var b: bytes = bytes.new();
+    b.push(99);
+    b.push(100);
     xs.push(((a, 11), true));
     xs.push(((b, 12), false));
     let ys = xs.clone();

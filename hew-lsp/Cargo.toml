@@ -20,7 +20,7 @@ hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
-tower-lsp-server = "0.21.1"
+tower-lsp-server = "0.23.0"
 tokio = { version = "1", features = ["full"] }
 serde_json.workspace = true
 dashmap = "6.2.1"

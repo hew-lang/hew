@@ -5,7 +5,7 @@ use hew_analysis::calls::{
 };
 use hew_parser::ast::{Item, TypeDeclKind};
 use hew_parser::ParseResult;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Range, SymbolKind,
     TypeHierarchyItem, Uri as Url,
 };

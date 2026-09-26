@@ -3,7 +3,7 @@
 //! The runtime unit test proves the native Rust export. This test compiles a
 //! Hew program that calls `std::text::unicode.is_punct` for every Unicode code
 //! point, runs that program through wasmtime, and compares the complete set to
-//! the pinned Unicode 17 category tables.
+//! the pinned Unicode 18 category tables.
 
 mod support;
 
@@ -12,7 +12,7 @@ use std::fs;
 use support::{repo_root, require_wasi_runner, run_hew_in};
 
 #[test]
-fn hew_wasi_unicode_is_punct_matches_all_unicode_17_punctuation_scalars() {
+fn hew_wasi_unicode_is_punct_matches_all_unicode_18_punctuation_scalars() {
     require_wasi_runner();
 
     let dir = tempfile::tempdir().expect("create punctuation oracle directory");
@@ -65,9 +65,9 @@ fn main() {
         })
         .collect();
 
-    assert_eq!(expected.len(), 856, "Unicode 17 P* population moved");
+    assert_eq!(expected.len(), 860, "Unicode 18 P* population moved");
     assert_eq!(
         actual, expected,
-        "Hew's actual wasm surface disagrees with the exhaustive Unicode 17 P* oracle"
+        "Hew's actual wasm surface disagrees with the exhaustive Unicode 18 P* oracle"
     );
 }

@@ -35,7 +35,7 @@ serde.workspace = true
 serde_json.workspace = true
 notify = "8"
 dirs.workspace = true
-wasmparser = "0.252.0"
+wasmparser = "0.259.0"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -50,8 +50,8 @@ windows-sys = { version = "0.61.2", features = [
 filetime = "0.2"
 hew-cabi = { path = "../hew-cabi" }
 hew-testutil = { path = "../hew-testutil" }
-object = "0.39"
-finl_unicode = { version = "=1.4.0", default-features = false, features = [
+object = "0.40"
+finl_unicode = { version = "=1.5.0", default-features = false, features = [
   "categories",
 ] }
 

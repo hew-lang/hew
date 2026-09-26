@@ -1,5 +1,5 @@
 use tower_lsp_server::jsonrpc::{Error, ErrorCode, Result};
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, ReferenceParams,
     RenameParams, Uri as Url, WorkspaceEdit,
 };
@@ -163,7 +163,7 @@ pub(crate) fn references(
 
 pub(crate) fn prepare_rename(
     server: &HewLanguageServer,
-    params: &tower_lsp_server::lsp_types::TextDocumentPositionParams,
+    params: &tower_lsp_server::ls_types::TextDocumentPositionParams,
 ) -> Option<PrepareRenameResponse> {
     let uri = &params.text_document.uri;
 

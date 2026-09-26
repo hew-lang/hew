@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 hew-types = { path = "../hew-types" }
 hew-wasm = { path = "../hew-wasm" }
-quick-xml = "0.41.0"
+quick-xml = "0.42.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true

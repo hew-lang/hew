@@ -7,7 +7,7 @@ use hew_analysis::symbols::build_document_symbols;
 use hew_analysis::{util::compute_line_offsets, SymbolInfo};
 use hew_parser::ast::{Attribute, Item};
 use hew_parser::ParseResult;
-use tower_lsp_server::lsp_types::{CodeLens, Command, Location, SymbolInformation, Uri as Url};
+use tower_lsp_server::ls_types::{CodeLens, Command, Location, SymbolInformation, Uri as Url};
 
 use super::analysis::source_for_path;
 use super::convert::analysis_symbol_kind_to_lsp;
@@ -112,7 +112,7 @@ pub(super) fn collect_project_workspace_symbols(
         if !seen_paths.insert(normalized_path.clone()) {
             continue;
         }
-        let Some(uri) = Url::from_file_path(&normalized_path) else {
+        let Some(uri) = Url::from_checked_file_path(&normalized_path) else {
             continue;
         };
 
@@ -148,7 +148,7 @@ pub(super) fn collect_project_workspace_symbols(
 
 #[expect(
     deprecated,
-    reason = "SymbolInformation::deprecated field is deprecated in lsp-types"
+    reason = "SymbolInformation::deprecated field is deprecated in ls-types"
 )]
 fn collect_symbol_matches(
     uri: &Url,
@@ -217,7 +217,12 @@ fn workspace_symbol_paths(
 fn open_document_paths(documents: &DashMap<Url, DocumentState>) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = documents
         .iter()
-        .filter_map(|entry| entry.key().to_file_path().map(std::borrow::Cow::into_owned))
+        .filter_map(|entry| {
+            entry
+                .key()
+                .to_checked_file_path()
+                .map(std::borrow::Cow::into_owned)
+        })
         .collect();
     paths.sort();
     paths
@@ -303,7 +308,7 @@ pub(super) fn should_skip_workspace_dir(path: &Path) -> bool {
 /// resolver (`compute_import_path`) and the rename disk-scan use it.
 pub(super) fn find_workspace_root_for_uri(uri: &Url) -> Option<PathBuf> {
     let mut dir = uri
-        .to_file_path()
+        .to_checked_file_path()
         .and_then(|p| p.parent().map(Path::to_path_buf));
     while let Some(d) = dir {
         if d.join("std").is_dir() {

@@ -80,6 +80,5 @@ fn test_dyn_param_passes_through_without_reboxing() {
 fn test_returned_dyn_drops_during_panic_unwind() {
     let value = make_labeled("u", 0);
     assert(inspect(value) == 64);
-    let empty: Vec<i64> = Vec.new();
-    let _missing = empty[0];
+    panic("dyn return unwinds");
 }

@@ -628,6 +628,36 @@ impl Checker {
             })
     }
 
+    /// Direct calls made by checked impl bodies, grouped by the body's exact
+    /// declaration. An unresolved or indirect edge has no declaration to
+    /// propagate; its own HIR lowering still verifies the checked call fact.
+    pub(super) fn checked_impl_body_callees(&self) -> HashMap<crate::DefId, Vec<crate::DefId>> {
+        let mut result: HashMap<crate::DefId, Vec<crate::DefId>> = HashMap::new();
+        for body in self.effect_graph.bodies.keys() {
+            if let EffectBody::Declaration(id) = body {
+                if self.defs.kind(*id) == crate::DeclarationKind::ImplMethod {
+                    result.entry(*id).or_default();
+                }
+            }
+        }
+        for (key, invocation) in &self.effect_graph.calls {
+            let Some(EffectBody::Declaration(owner)) = invocation.owner.as_ref() else {
+                continue;
+            };
+            let Some(callees) = result.get_mut(owner) else {
+                continue;
+            };
+            if let Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) = self.call_target(key) {
+                callees.push(*id);
+            }
+        }
+        for callees in result.values_mut() {
+            callees.sort_unstable();
+            callees.dedup();
+        }
+        result
+    }
+
     fn callee_suspends(&self, invocation: &Invocation, bodies: &HashMap<EffectBody, bool>) -> bool {
         match invocation.callee.as_ref().map(|ty| self.subst.resolve(ty)) {
             Some(Ty::Function { capabilities, .. }) => capabilities.suspends,

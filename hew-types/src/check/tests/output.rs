@@ -304,6 +304,142 @@ fn imported_method_callback_flows_to_its_exact_formal() {
 }
 
 #[test]
+fn imported_generic_aggregate_publishes_selected_callback_field() {
+    let module_source = "pub type Map<A, B> { f: fn(A) -> B } \
+        pub fn map<A, B>(consume f: fn(A) -> B) -> Map<A, B> { Map { f: f } }";
+    let source = "import m; fn main() { let mapped = m.map(|x: i64| x + 1); }";
+    let module = hew_parser::parse(module_source);
+    assert!(module.errors.is_empty(), "{:#?}", module.errors);
+    let parsed_field_spans = module.program.items.iter().find_map(|(item, _)| {
+        let Item::Function(function) = item else {
+            return None;
+        };
+        let (
+            Expr::StructInit {
+                field_name_spans, ..
+            },
+            _,
+        ) = &**function.body.trailing_expr.as_ref()?
+        else {
+            return None;
+        };
+        Some(field_name_spans.clone())
+    });
+    assert!(
+        parsed_field_spans
+            .as_ref()
+            .is_some_and(|spans| spans.len() == 1),
+        "parsed spans: {parsed_field_spans:?}"
+    );
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Import(import), _) = &mut parsed.program.items[0] else {
+        panic!("expected module import");
+    };
+    import.resolved_items = Some(module.program.items.clone().into());
+    let root = ModulePath::root();
+    let m = ModulePath::new(["m"]);
+    let mut graph = ModuleGraph::new(root.clone());
+    for (id, items) in [
+        (m.clone(), module.program.items),
+        (root.clone(), parsed.program.items.clone()),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![m, root];
+    parsed.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let ctor_start = module_source.find("Map { f: f }").unwrap();
+    let fields = output
+        .aggregate_field_candidates
+        .iter()
+        .find(|(key, _)| key.module_idx != 0 && key.start == ctor_start)
+        .map(|(_, fields)| fields)
+        .expect("imported generic constructor");
+    assert_eq!(
+        fields.len(),
+        1,
+        "field origin must be published for imported constructor"
+    );
+    assert_eq!(
+        fields[0].owner,
+        output.defs.lookup_nominal("m.Map").unwrap()
+    );
+    assert_eq!(fields[0].index, 0);
+    assert!(!fields[0].candidates.may_be_unknown);
+}
+
+#[test]
+fn imported_generic_trait_call_publishes_receiver_actual_for_concrete_impl() {
+    let module_source = "pub trait Runner { fn run(self) -> i64; } \
+        pub type Map { f: fn() -> i64 } \
+        impl Runner for Map { fn run(self) -> i64 { (self.f)() } } \
+        pub fn collect<I: Runner>(it: I) -> i64 { it.run() }";
+    let source = "import m; fn main() { println(m.collect(m.Map { f: || 7 })); }";
+    let module = hew_parser::parse(module_source);
+    assert!(module.errors.is_empty(), "{:#?}", module.errors);
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Import(import), _) = &mut parsed.program.items[0] else {
+        panic!("expected module import");
+    };
+    import.resolved_items = Some(module.program.items.clone().into());
+    let root = ModulePath::root();
+    let m = ModulePath::new(["m"]);
+    let mut graph = ModuleGraph::new(root.clone());
+    for (id, items) in [
+        (m.clone(), module.program.items),
+        (root.clone(), parsed.program.items.clone()),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![m, root];
+    parsed.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let call_start = module_source.find("it.run()").unwrap();
+    let actuals = output
+        .generic_trait_call_arguments
+        .iter()
+        .find(|(key, _)| key.module_idx != 0 && key.start == call_start)
+        .map(|(_, actuals)| actuals)
+        .expect("generic trait call actuals");
+    assert_eq!(actuals.len(), 1);
+    assert_eq!(actuals[0].slot, 0);
+    let map_method = output
+        .defs
+        .ids()
+        .find(|id| {
+            output.defs.kind(*id) == crate::DeclarationKind::ImplMethod
+                && output.defs.path(*id).starts_with("m.Map::<impl ")
+                && output.defs.path(*id).ends_with("::run")
+        })
+        .expect("concrete Map.run declaration");
+    assert_eq!(
+        output.callable_formals.get(&map_method).map(Vec::len),
+        Some(1)
+    );
+    assert!(!actuals[0].candidates.may_be_unknown);
+}
+
+#[test]
 fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
     let source = "type Map { f: fn(i64) -> i64 } \
         impl Map { fn next(self, value: i64) -> i64 { (self.f)(value) } } \

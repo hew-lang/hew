@@ -165,7 +165,7 @@ fn primitive_copy_layout_member_on_path(
             let type_param_index = type_def
                 .type_params
                 .iter()
-                .position(|declared| declared == param.spelling.as_str())?;
+                .position(|declared| declared == param)?;
             let type_arg = type_args.get(type_param_index)?;
             // A fresh parameter path is needed for finite Wrap<Wrap<i64>>,
             // but must not erase a declaration cycle through that parameter.
@@ -184,13 +184,13 @@ fn primitive_copy_layout_member_on_path(
             Some((elem_size.checked_mul(count)?, elem_align))
         }
         _ => {
-            let subst: HashMap<String, Ty> = type_def
+            let subst: HashMap<crate::ParamHead, Ty> = type_def
                 .type_params
                 .iter()
                 .zip(type_args.iter())
-                .map(|(param, arg)| (param.clone(), arg.clone()))
+                .map(|(param, arg)| (*param, arg.clone()))
                 .collect();
-            let instantiated = ty.substitute_named_params_parallel(&subst);
+            let instantiated = ty.substitute_type_params_parallel(&subst);
             primitive_copy_layout_on_path(&instantiated, types, visiting)
         }
     }
@@ -669,7 +669,11 @@ impl Checker {
         // drains `self.fn_sigs` via `std::mem::take` before this validator runs.
         let known_type_params: HashSet<&str> = fn_sigs
             .values()
-            .flat_map(|sig| sig.type_params.iter().map(String::as_str))
+            .flat_map(|sig| {
+                sig.type_params
+                    .iter()
+                    .map(|parameter| parameter.spelling.as_str())
+            })
             .collect();
 
         let mut receiver_kinds = std::mem::take(&mut self.method_call_receiver_kinds);
@@ -782,9 +786,7 @@ impl Checker {
             }
         }
         let ty = self.subst.resolve(ty).materialize_literal_defaults();
-        let Ok(resolved) =
-            crate::ResolvedTy::from_ty_with_type_params(&ty, &self.current_type_param_names())
-        else {
+        let Ok(resolved) = crate::ResolvedTy::from_ty(&ty) else {
             return false;
         };
         crate::TypeFactService::new(self.type_fact_context(), BTreeMap::new())
@@ -876,10 +878,9 @@ impl Checker {
         // rule as the parameter it is and refuses with `TypeParam` instead of
         // as a declaration nobody wrote.
         let rendered =
-            ResolvedTy::from_ty_with_type_params(&resolved, &self.current_type_param_names())
-                .map_err(|_| ClassError::UnknownDeclaration {
-                    name: resolved.user_facing().to_string(),
-                })?;
+            ResolvedTy::from_ty(&resolved).map_err(|_| ClassError::UnknownDeclaration {
+                name: resolved.user_facing().to_string(),
+            })?;
         crate::value_class::classify_ty(
             &rendered,
             &crate::value_class::ClassContext::new(&self.class_declarations()),
@@ -1356,15 +1357,15 @@ impl Checker {
 
     pub(super) fn instantiate_type_def_member(
         ty: &Ty,
-        type_params: &[String],
+        type_params: &[crate::ParamHead],
         type_args: &[Ty],
     ) -> Ty {
-        let map: HashMap<String, Ty> = type_params
+        let map: HashMap<crate::ParamHead, Ty> = type_params
             .iter()
             .zip(type_args.iter())
-            .map(|(p, a)| (p.clone(), a.clone()))
+            .map(|(p, a)| (*p, a.clone()))
             .collect();
-        ty.substitute_named_params_parallel(&map)
+        ty.substitute_type_params_parallel(&map)
     }
 
     pub(super) fn vec_element_has_copy_layout(&self, elem_ty: &Ty) -> bool {
@@ -2317,10 +2318,10 @@ mod tests {
             crate::DefId::for_test("display"),
             FnSig {
                 impl_method: None,
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 type_param_bounds: HashMap::new(),
                 param_names: vec!["item".to_string()],
-                params: vec![Ty::param("T")],
+                params: vec![Ty::param(crate::ParamHead::for_test("T"))],
                 return_type: Ty::Unit,
                 doc_comment: None,
                 extern_symbol: None,
@@ -2780,7 +2781,7 @@ mod tests {
 
     fn make_generic_record(name: &str, params: Vec<&str>, fields: Vec<(&str, Ty)>) -> TypeDef {
         let mut td = make_record(name, fields);
-        td.type_params = params.into_iter().map(str::to_string).collect();
+        td.type_params = params.into_iter().map(crate::ParamHead::for_test).collect();
         td
     }
 
@@ -2890,14 +2891,21 @@ mod tests {
         let type_defs = HashMap::from([
             (
                 crate::NominalId::for_test("Wrap"),
-                make_generic_record("Wrap", vec!["T"], vec![("v", Ty::param("T"))]),
+                make_generic_record(
+                    "Wrap",
+                    vec!["T"],
+                    vec![("v", Ty::param(crate::ParamHead::for_test("T")))],
+                ),
             ),
             (
                 crate::NominalId::for_test("Pair"),
                 make_generic_record(
                     "Pair",
                     vec!["A", "B"],
-                    vec![("a", Ty::param("A")), ("b", Ty::param("B"))],
+                    vec![
+                        ("a", Ty::param(crate::ParamHead::for_test("A"))),
+                        ("b", Ty::param(crate::ParamHead::for_test("B"))),
+                    ],
                 ),
             ),
             (
@@ -2906,7 +2914,11 @@ mod tests {
             ),
             (
                 crate::NominalId::for_test("Holder"),
-                make_generic_record("Holder", vec!["T"], vec![("value", Ty::param("T"))]),
+                make_generic_record(
+                    "Holder",
+                    vec!["T"],
+                    vec![("value", Ty::param(crate::ParamHead::for_test("T")))],
+                ),
             ),
         ]);
 

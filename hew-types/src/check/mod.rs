@@ -87,11 +87,12 @@ pub use self::types::{
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
     DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
     EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, ImportedImplBodyFact,
-    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
-    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, ImplMethodProvenance,
+    ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind, MathGenericOp,
+    MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
+    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
     TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
@@ -306,11 +307,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             // convert would be a guess. A marked declaration's class comes
             // from its marker, not its members, so it keeps its row with no
             // members instead - consumers that need the fields refuse there.
-            let parameters = definition.type_params.iter().cloned().collect();
-            let Ok(resolved) = ResolvedTy::from_ty_with_type_params(
-                &ty.materialize_literal_defaults(),
-                &parameters,
-            ) else {
+            let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
                 if marker == DeclarationMarker::None {
                     return None;
                 }
@@ -2094,6 +2091,21 @@ impl Checker {
             }
         }
         self.declare_item_type_parameter_scopes(module, item_ordinal, item, span);
+        if matches!(item, Item::Trait(_)) {
+            if let Some(module) = module {
+                let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    Some(module),
+                    span,
+                    item_ordinal,
+                    crate::DeclarationKind::Trait,
+                    0,
+                );
+                if let Some(owner) = self.defs.declaration(occurrence) {
+                    self.scopes
+                        .declare_receiver_parameter(module, owner, span.clone());
+                }
+            }
+        }
         for id in minted_types {
             if let Some(builtin) = self.declaration_builtin(id) {
                 self.defs.bind_builtin_declaration(builtin, id);
@@ -2863,14 +2875,12 @@ impl Checker {
             .into_iter()
             .filter_map(|(declaration, callees)| {
                 let sig = resolved_fn_sigs.get(&declaration)?;
-                let type_params: HashSet<String> = sig.type_params.iter().cloned().collect();
                 let params = sig
                     .params
                     .iter()
-                    .map(|ty| ResolvedTy::from_ty_with_type_params(ty, &type_params).ok())
+                    .map(|ty| ResolvedTy::from_ty(ty).ok())
                     .collect::<Option<Vec<_>>>()?;
-                let return_type =
-                    ResolvedTy::from_ty_with_type_params(&sig.return_type, &type_params).ok()?;
+                let return_type = ResolvedTy::from_ty(&sig.return_type).ok()?;
                 let receiver = sig
                     .impl_method
                     .as_ref()
@@ -3121,6 +3131,7 @@ impl Checker {
         let resolutions = self.scopes.take_resolutions();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
+            declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             resolved_annotation_types,
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),

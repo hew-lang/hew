@@ -97,7 +97,7 @@ pub struct DeclaredType {
     /// same fact spelled on a type, and only some producers stamp it, so §1.1
     /// reads whichever of the two says yes.
     pub is_opaque: bool,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub members: Vec<ResolvedTy>,
 }
 
@@ -301,7 +301,7 @@ impl Walk {
 /// An argument that mentions none of them is a constant: substituting the
 /// declaration's parameters cannot change it, so an edge carrying it reaches
 /// one fixed instantiation however many times the cycle turns.
-fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
+fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
     if is_own_parameter(ty, params) {
         return true;
     }
@@ -337,14 +337,14 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
 /// the declaration was resolved without a type-parameter scope, as a
 /// zero-argument user `Named`. [`substitute`] reads both spellings and so does
 /// this.
-fn is_own_parameter(arg: &ResolvedTy, params: &[String]) -> bool {
+fn is_own_parameter(arg: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
     let name = match arg {
         ResolvedTy::TypeParam { name } => name,
         ResolvedTy::Named {
             head: crate::TypeHead::Param(param),
             args,
             ..
-        } if args.is_empty() => param.spelling.as_str(),
+        } if args.is_empty() => param,
         _ => return false,
     };
     params.iter().any(|param| param == name)
@@ -529,17 +529,21 @@ fn classify_all(
 }
 
 /// Substitute a declaration's own type parameters out of a member type.
-pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> ResolvedTy {
+pub(crate) fn substitute(
+    ty: &ResolvedTy,
+    params: &[crate::ParamHead],
+    args: &[ResolvedTy],
+) -> ResolvedTy {
     // A declaration's own parameter reaches here spelled either as an abstract
     // `TypeParam` or, when the declaration was resolved without a type-parameter
     // scope, as a zero-argument user `Named`. Both are the same parameter.
     let parameter_name = match ty {
-        ResolvedTy::TypeParam { name } => Some(name.as_str()),
+        ResolvedTy::TypeParam { name } => Some(name),
         ResolvedTy::Named {
             head: crate::TypeHead::Param(param),
             args,
             ..
-        } if args.is_empty() => Some(param.spelling.as_str()),
+        } if args.is_empty() => Some(param),
         _ => None,
     };
     if let Some(index) =
@@ -711,7 +715,11 @@ fn classify(
         ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
         // Arrays own their element storage; copying uses the element recipe.
         ResolvedTy::Array(element, _) => collection_facts(&[classify(element, decls, walk)?]),
-        ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { name: name.clone() }),
+        ResolvedTy::TypeParam { name } => {
+            return Err(ClassError::TypeParam {
+                name: name.spelling.to_string(),
+            })
+        }
         ResolvedTy::Named {
             head: head @ crate::TypeHead::Builtin(builtin),
             args,

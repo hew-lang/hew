@@ -42,7 +42,7 @@ fn substitute_descends_into_borrow_pointee() {
         out,
         ResolvedTy::Borrow {
             pointee: Box::new(ResolvedTy::TypeParam {
-                name: "T".to_string()
+                name: hew_types::ParamHead::for_test("T")
             })
         },
         "borrow pointee must be substituted to the abstract TypeParam, got: {out:?}"
@@ -68,7 +68,7 @@ fn substitute_descends_into_trait_object_args() {
     assert_eq!(
         traits[0].args,
         vec![ResolvedTy::TypeParam {
-            name: "T".to_string()
+            name: hew_types::ParamHead::for_test("T")
         }],
         "trait-object arg must be substituted to the abstract TypeParam"
     );
@@ -95,7 +95,7 @@ fn substitute_descends_into_trait_object_assoc_bindings() {
         vec![(
             "Item".to_string(),
             ResolvedTy::TypeParam {
-                name: "T".to_string()
+                name: hew_types::ParamHead::for_test("T")
             }
         )],
         "assoc-type binding must be substituted to the abstract TypeParam"
@@ -114,7 +114,7 @@ fn substitute_descends_through_nested_borrow_in_tuple() {
         out,
         ResolvedTy::Tuple(vec![ResolvedTy::Borrow {
             pointee: Box::new(ResolvedTy::TypeParam {
-                name: "T".to_string()
+                name: hew_types::ParamHead::for_test("T")
             })
         }]),
         "nested borrow pointee under a tuple must be substituted, got: {out:?}"

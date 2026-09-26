@@ -345,14 +345,14 @@ pub(super) fn make_checker_with_trait(
         lang_item: None,
     };
 
-    let info = Checker::trait_info_from_decl(&td, None, 0);
+    let info = checker.trait_info_from_decl(&td, None, 0);
     checker.test_trait_def(trait_name, info);
     checker
 }
 
 pub(super) fn make_test_type_def(
     name: &str,
-    type_params: Vec<String>,
+    type_params: Vec<crate::ParamHead>,
     methods: HashMap<String, FnSig>,
 ) -> TypeDef {
     TypeDef {

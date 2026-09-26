@@ -152,7 +152,7 @@ impl ResolvedTy {
             // only appears in pre-monomorphisation (polymorphic) form; once
             // substituted it becomes a concrete `ResolvedTy` with its own
             // canonical string, so this never feeds a final linkable symbol.
-            ResolvedTy::TypeParam { name } => name.clone(),
+            ResolvedTy::TypeParam { name } => name.spelling.to_string(),
         }
     }
 

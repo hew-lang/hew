@@ -729,7 +729,7 @@ pub(super) fn check(
                         .get(&call.span)
                         .into_iter()
                         .flatten()
-                        .map(|ty| ty.substitute_named_params_parallel(&substitutions))
+                        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
                         .collect();
                     let next_env = callee_env(output, &call.span, next, &caller_env, 0);
                     queue.push_back((
@@ -749,7 +749,7 @@ pub(super) fn check(
                             hew_types::MethodCallRewrite::StaticTraitDispatch {
                                 receiver_type_param,
                                 ..
-                            } => Some(receiver_type_param.as_str()),
+                            } => Some(receiver_type_param),
                             _ => None,
                         },
                     );

@@ -660,7 +660,7 @@ mod tests {
             Ty::TraitObject { traits: vec![] },
             Ty::Task(Box::new(Ty::I32)),
             Ty::AssocType {
-                base: Box::new(Ty::param("I")),
+                base: Box::new(Ty::param(crate::ParamHead::for_test("I"))),
                 trait_name: "Iterator".into(),
                 assoc_name: "Item".into(),
             },

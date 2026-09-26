@@ -275,21 +275,20 @@ pub(super) fn plan_impl_block_symbols(
     if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
         return;
     }
-    let TypeExpr::Named {
-        path: named_path,
-        type_args,
-    } = &impl_decl.target_type.0
-    else {
+    let TypeExpr::Named { path: _, type_args } = &impl_decl.target_type.0 else {
         return;
     };
-    let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-    if impl_type_param_names(impl_decl)
-        .iter()
-        .any(|type_param| type_param == self_type_name)
-    {
+    if matches!(
+        ctx.lower_type(&impl_decl.target_type),
+        ResolvedTy::TypeParam { .. }
+            | ResolvedTy::Named {
+                head: hew_types::TypeHead::Param(_),
+                ..
+            }
+    ) {
         return;
     }
-    let impl_type_params = impl_type_param_names(impl_decl);
+    let impl_type_params = impl_type_parameters(ctx, impl_decl);
     let concrete_args: Vec<ResolvedTy> = if impl_type_params.is_empty() {
         type_args
             .as_deref()
@@ -407,10 +406,11 @@ pub(super) fn materialized_default_body_plan(
         );
         if ctx.impl_method_symbol_collisions.contains(&declaration) {
             let method = trait_method_to_fn_decl(&default_method.method);
+            let impl_parameters = impl_type_parameters(ctx, impl_decl);
             ctx.register_impl_method_fn_entry_at(
                 symbol_self_name,
                 &method,
-                &impl_type_param_names(impl_decl),
+                &impl_parameters,
                 &symbol,
             );
         }
@@ -526,7 +526,7 @@ pub(super) fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
             .expect("trait_method_to_fn_decl called on method without body"),
         doc_comment: None,
         decl_span: 0..0,
-        fn_span: 0..0,
+        fn_span: method.span.clone(),
         intrinsic: None,
         consumes_self: false,
     }
@@ -718,11 +718,14 @@ pub(super) fn is_builtin_callable_impl(item: &Item) -> bool {
         || is_builtin_request_owner_impl(item)
 }
 
-pub(super) fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
-    decl.type_params
-        .as_ref()
-        .map(|params| params.iter().map(|param| param.name.to_string()).collect())
-        .unwrap_or_default()
+pub(super) fn impl_type_parameters(
+    ctx: &mut LowerCtx,
+    decl: &hew_parser::ast::ImplDecl,
+) -> Vec<hew_types::ParamHead> {
+    ctx.source_type_parameters(
+        &decl.target_type.1,
+        decl.type_params.as_ref().map_or(0, Vec::len),
+    )
 }
 
 pub(super) fn check_builtin_callable_impl_program(

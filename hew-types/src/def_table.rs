@@ -35,6 +35,7 @@ pub enum DeclarationKind {
     TypeMethod,
     ImplMethod,
     ImplBlock,
+    Closure,
     Actor,
     ActorInit,
     ActorReceive,
@@ -559,12 +560,19 @@ pub(crate) enum BuiltinAnchor {
     HashMap,
     ChildRef,
     RemotePid,
+    Stream,
+    Sink,
+    Option,
+    Result,
+    HashSet,
+    HashMapIter,
+    VecIter,
     NodeId,
     Location,
 }
 
 impl BuiltinAnchor {
-    const ALL: [Self; 23] = [
+    const ALL: [Self; 30] = [
         Self::I8,
         Self::I16,
         Self::I32,
@@ -586,6 +594,13 @@ impl BuiltinAnchor {
         Self::HashMap,
         Self::ChildRef,
         Self::RemotePid,
+        Self::Stream,
+        Self::Sink,
+        Self::Option,
+        Self::Result,
+        Self::HashSet,
+        Self::HashMapIter,
+        Self::VecIter,
         Self::NodeId,
         Self::Location,
     ];
@@ -615,6 +630,13 @@ impl BuiltinAnchor {
             Self::HashMap => "HashMap",
             Self::ChildRef => "ChildRef",
             Self::RemotePid => "RemotePid",
+            Self::Stream => "Stream",
+            Self::Sink => "Sink",
+            Self::Option => "Option",
+            Self::Result => "Result",
+            Self::HashSet => "HashSet",
+            Self::HashMapIter => "HashMapIter",
+            Self::VecIter => "VecIter",
             Self::NodeId => "NodeId",
             Self::Location => "Location",
         }
@@ -745,6 +767,55 @@ impl DefTable {
             table.by_path.insert(known.path().to_string(), id);
         }
         table
+    }
+
+    /// A binder owned by a closed compiler builtin type catalogue.
+    ///
+    /// # Panics
+    /// Panics for a builtin without generic catalogue parameters.
+    #[must_use]
+    pub fn builtin_parameter(
+        builtin: crate::BuiltinType,
+        index: usize,
+        spelling: &str,
+    ) -> crate::ParamHead {
+        use crate::BuiltinType;
+        let anchor = match builtin {
+            BuiltinType::Vec => BuiltinAnchor::Vec,
+            BuiltinType::HashMap => BuiltinAnchor::HashMap,
+            BuiltinType::HashSet => BuiltinAnchor::HashSet,
+            BuiltinType::HashMapIter => BuiltinAnchor::HashMapIter,
+            BuiltinType::VecIter => BuiltinAnchor::VecIter,
+            BuiltinType::Option => BuiltinAnchor::Option,
+            BuiltinType::Result => BuiltinAnchor::Result,
+            BuiltinType::Generator => BuiltinAnchor::Generator,
+            BuiltinType::Stream => BuiltinAnchor::Stream,
+            BuiltinType::Sink => BuiltinAnchor::Sink,
+            BuiltinType::RemotePid => BuiltinAnchor::RemotePid,
+            _ => panic!("builtin has no generic catalogue binder owner"),
+        };
+        crate::ParamHead::new(
+            TypeParamId::new(Self::anchor(anchor), index),
+            Symbol::intern(spelling),
+        )
+    }
+
+    /// Intern a compiler-provided callable at its registration boundary.
+    pub(crate) fn builtin_callable(&mut self, name: &str) -> DefId {
+        let path = format!("<builtin>.{name}");
+        if let Some(id) = self.by_path.get(&path) {
+            return *id;
+        }
+        let id = self.push_row(DefRow {
+            name: Symbol::intern(name),
+            kind: DeclarationKind::Function,
+            module: None,
+            owner: None,
+            site: None,
+            path: path.clone(),
+        });
+        self.by_path.insert(path, id);
+        id
     }
 
     /// The row of a known `std.builtins` declaration: known rows follow the

@@ -296,16 +296,36 @@ impl BuiltinTy {
             BuiltinTy::Bytes => ResolvedTy::Bytes,
             BuiltinTy::Unit => ResolvedTy::Unit,
             BuiltinTy::Never => ResolvedTy::Never,
-            BuiltinTy::VecAny => {
-                ResolvedTy::named_builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::param("T")])
-            }
+            BuiltinTy::VecAny => ResolvedTy::named_builtin(
+                hew_types::BuiltinType::Vec,
+                vec![ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                    hew_types::BuiltinType::Vec,
+                    0,
+                    "T",
+                ))],
+            ),
             BuiltinTy::HashMapAny => ResolvedTy::named_builtin(
                 hew_types::BuiltinType::HashMap,
-                vec![ResolvedTy::param("K"), ResolvedTy::param("V")],
+                vec![
+                    ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                        hew_types::BuiltinType::HashMap,
+                        0,
+                        "K",
+                    )),
+                    ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                        hew_types::BuiltinType::HashMap,
+                        1,
+                        "V",
+                    )),
+                ],
             ),
             BuiltinTy::HashSetAny => ResolvedTy::named_builtin(
                 hew_types::BuiltinType::HashSet,
-                vec![ResolvedTy::param("T")],
+                vec![ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                    hew_types::BuiltinType::HashSet,
+                    0,
+                    "T",
+                ))],
             ),
             BuiltinTy::Pointer => ResolvedTy::Pointer {
                 is_mutable: true,

@@ -37,14 +37,20 @@ impl Checker {
             "println",
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::param("T")],
+            vec![Ty::Named {
+                head: crate::TypeHead::Unresolved(Symbol::intern("T")),
+                args: vec![],
+            }],
             Ty::Unit,
         );
         self.register_builtin_fn_with_bounds(
             "print",
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::param("T")],
+            vec![Ty::Named {
+                head: crate::TypeHead::Unresolved(Symbol::intern("T")),
+                args: vec![],
+            }],
             Ty::Unit,
         );
 
@@ -56,7 +62,10 @@ impl Checker {
             "to_string",
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
-            vec![Ty::param("T")],
+            vec![Ty::Named {
+                head: crate::TypeHead::Unresolved(Symbol::intern("T")),
+                args: vec![],
+            }],
             Ty::String,
         );
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
@@ -170,7 +179,10 @@ impl Checker {
             vec![Ty::I64],
             Ty::Named {
                 head: crate::TypeHead::Builtin(BuiltinType::Vec),
-                args: vec![Ty::param("T")],
+                args: vec![Ty::Named {
+                    head: crate::TypeHead::Unresolved(Symbol::intern("T")),
+                    args: vec![],
+                }],
             },
         );
         self.register_collection_constructor(
@@ -245,7 +257,10 @@ impl Checker {
             HashMap::new(),
             vec![Ty::String],
             Ty::result(
-                Ty::remote_pid(Ty::param("T")),
+                Ty::remote_pid(Ty::Named {
+                    head: crate::TypeHead::Unresolved(Symbol::intern("T")),
+                    args: vec![],
+                }),
                 crate::builtin_enums::monomorphic_builtin_enum_ty("LookupError")
                     .expect("generated builtin enum catalog must contain LookupError"),
             ),
@@ -464,7 +479,7 @@ impl Checker {
     /// file under check) must re-register cleanly rather than collide with the
     /// seed.
     pub(super) fn pre_register_builtin_trait(&mut self, tr: &TraitDecl, span: &Span) {
-        let info = Self::trait_info_from_decl(
+        let info = self.trait_info_from_decl(
             tr,
             Some("std.builtins".to_string()),
             self.current_module_idx,
@@ -681,6 +696,19 @@ impl Checker {
         params: Vec<Ty>,
         return_type: Ty,
     ) {
+        let owner = self.defs.builtin_callable(name);
+        let type_params: Vec<_> = type_params
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                crate::ParamHead::new(crate::TypeParamId::new(owner, index), Symbol::intern(name))
+            })
+            .collect();
+        let params = params
+            .iter()
+            .map(|ty| self.canonicalize_registry_signature(ty, "", &type_params))
+            .collect();
+        let return_type = self.canonicalize_registry_signature(&return_type, "", &type_params);
         self.register_builtin_sig(
             name,
             FnSig {

@@ -155,52 +155,7 @@ pub(crate) fn verify_physical_module(module: &PhysicalModule) -> Result<(), Phys
         ));
     }
     verify_structural_glue(module)?;
-    for (index, glue) in module.aggregate_glue.iter().enumerate() {
-        if usize::try_from(glue.id.0).ok() != Some(index) {
-            return Err(PhysicalError::new(format!(
-                "physical aggregate glue {} is not at its canonical table index {index}",
-                glue.id.0
-            )));
-        }
-        if glue.own == OwnKind::Guaranteed {
-            return Err(PhysicalError::new(format!(
-                "physical aggregate glue {} carries a borrow-only ownership class",
-                glue.id.0
-            )));
-        }
-        let layout = required_layout(&module.target, &glue.ty)?;
-        let PhysicalRepr::Struct(layout_fields) = &layout.repr else {
-            return Err(PhysicalError::new(format!(
-                "physical aggregate glue {} has a non-aggregate layout",
-                glue.id.0
-            )));
-        };
-        if layout_fields.len() != glue.fields.len() {
-            return Err(PhysicalError::new(format!(
-                "physical aggregate glue {} has {} recipes for {} layout fields",
-                glue.id.0,
-                glue.fields.len(),
-                layout_fields.len()
-            )));
-        }
-        for (field_index, (field, layout_field)) in
-            glue.fields.iter().zip(layout_fields).enumerate()
-        {
-            if field.own == OwnKind::Guaranteed {
-                return Err(PhysicalError::new(format!(
-                    "physical aggregate glue {} field {field_index} carries a borrow-only obligation",
-                    glue.id.0
-                )));
-            }
-            if module.target.layout(&field.ty) != Some(layout_field) {
-                return Err(PhysicalError::new(format!(
-                    "physical aggregate glue {} field {field_index} layout disagrees with target authority",
-                    glue.id.0
-                )));
-            }
-            verify_value_recipe(module, field)?;
-        }
-    }
+    verify_aggregate_glue(module)?;
     for (index, glue) in module.variant_glue.iter().enumerate() {
         verify_variant_glue(module, index, glue)?;
     }
@@ -1380,6 +1335,56 @@ pub(crate) fn verify_tuple_get(
         return Err(PhysicalError::new(
             "physical tuple projection disagrees with its no-drop field type",
         ));
+    }
+    Ok(())
+}
+
+fn verify_aggregate_glue(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    for (index, glue) in module.aggregate_glue.iter().enumerate() {
+        if usize::try_from(glue.id.0).ok() != Some(index) {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate glue {} is not at its canonical table index {index}",
+                glue.id.0
+            )));
+        }
+        if glue.own == OwnKind::Guaranteed {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate glue {} carries a borrow-only ownership class",
+                glue.id.0
+            )));
+        }
+        let layout = required_layout(&module.target, &glue.ty)?;
+        let PhysicalRepr::Struct(layout_fields) = &layout.repr else {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate glue {} has a non-aggregate layout",
+                glue.id.0
+            )));
+        };
+        if layout_fields.len() != glue.fields.len() {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate glue {} has {} recipes for {} layout fields",
+                glue.id.0,
+                glue.fields.len(),
+                layout_fields.len()
+            )));
+        }
+        for (field_index, (field, layout_field)) in
+            glue.fields.iter().zip(layout_fields).enumerate()
+        {
+            if field.own == OwnKind::Guaranteed {
+                return Err(PhysicalError::new(format!(
+                    "physical aggregate glue {} field {field_index} carries a borrow-only obligation",
+                    glue.id.0
+                )));
+            }
+            if module.target.layout(&field.ty) != Some(layout_field) {
+                return Err(PhysicalError::new(format!(
+                    "physical aggregate glue {} field {field_index} layout disagrees with target authority",
+                    glue.id.0
+                )));
+            }
+            verify_value_recipe(module, field)?;
+        }
     }
     Ok(())
 }

@@ -1,5 +1,7 @@
 trait A {
     fn tag(self) -> string;
+    fn keep(self) -> Self { self }
+    fn relay(self) -> string { self.tag() }
     fn alpha(self) -> string { "alpha default" }
 }
 type T { v: i64 }
@@ -11,6 +13,10 @@ fn main() {
     println(via_a(t));
     let n: i64 = 3;
     println(via_a(n));
+    assert(t.keep().v == 1);
+    assert(n.keep() == 3);
+    assert(t.relay() == "A");
+    assert(n.relay() == "A");
     println(t.alpha());
     println(n.alpha());
 }

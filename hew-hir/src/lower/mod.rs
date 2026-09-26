@@ -493,6 +493,19 @@ impl Iterator for BuiltinEnumVariantNames {
 impl ExactSizeIterator for BuiltinEnumVariantNames {}
 
 impl BuiltinEnumSpec {
+    pub(crate) fn parameter_heads(&self) -> Vec<hew_types::ParamHead> {
+        if self.type_params.is_empty() {
+            return Vec::new();
+        }
+        let builtin = hew_types::lookup_builtin_type(self.canonical_type_name)
+            .expect("generic builtin enum has a typed family");
+        self.type_params
+            .iter()
+            .enumerate()
+            .map(|(index, name)| hew_types::DefTable::builtin_parameter(builtin, index, name))
+            .collect()
+    }
+
     fn variant_names(&self) -> BuiltinEnumVariantNames {
         BuiltinEnumVariantNames {
             variants: self.variants,
@@ -651,7 +664,13 @@ pub(crate) fn builtin_enum_hir_variants(spec: &BuiltinEnumSpec) -> Vec<HirVarian
                     payload_params
                         .iter()
                         .map(|param| ResolvedTy::Named {
-                            head: hew_types::TypeHead::param(param),
+                            head: hew_types::TypeHead::Param(
+                                spec.parameter_heads()[spec
+                                    .type_params
+                                    .iter()
+                                    .position(|name| name == param)
+                                    .expect("variant payload names a declared builtin parameter")],
+                            ),
                             args: Vec::new(),
                             is_opaque: false,
                         })
@@ -777,7 +796,7 @@ struct FnEntry {
     /// non-generic functions. Consulted at `Expr::Call` lowering sites to
     /// decide whether the callee is a generic top-level user fn that
     /// requires a monomorphisation-registry entry.
-    type_params: Vec<String>,
+    type_params: Vec<hew_types::ParamHead>,
     /// `Some(family)` for checker-registered runtime builtins with no
     /// AST `fn` item (`supervisor_stop`, `link`, `monitor`, `unlink`).
     /// `lower_identifier` resolves these to
@@ -816,7 +835,7 @@ struct RecordEntry {
     id: ItemId,
     /// Source-declared generic type-parameter names, in order. Empty for
     /// monomorphic record/type declarations.
-    type_params: Vec<String>,
+    type_params: Vec<hew_types::ParamHead>,
     /// Field shape as written in source — types still mention the
     /// declaration's type params verbatim (no substitution yet). The
     /// record-layout registry walks these and substitutes per
@@ -1123,6 +1142,8 @@ struct LowerCtx {
     /// every fail-open / boundary-violation site. Zero behaviour change in
     /// Phase 1; Phase 2 promotes this to the primary read path.
     resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    declaration_type_parameters:
+        HashMap<hew_types::DefId, (hew_types::ModuleId, Span, Vec<hew_types::ParamHead>)>,
     resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a
@@ -1352,7 +1373,7 @@ struct LowerCtx {
     /// Consumed by the enum-layout discovery pass to know which names in a
     /// variant's field types are type-parameter symbols vs. concrete named
     /// types, so `substitute_type_params` can substitute correctly.
-    enum_type_params: HashMap<String, Vec<String>>,
+    enum_type_params: HashMap<String, Vec<hew_types::ParamHead>>,
     /// Per-enum `ItemId`, keyed by enum type name. Populated alongside
     /// `enum_type_params` so the `EnumMonoKey.origin` field can be set to
     /// the HIR-allocated `ItemId` of the originating enum declaration rather
@@ -1430,6 +1451,7 @@ struct LowerCtx {
     /// Populated in the first pass so const references resolve to a stable id
     /// regardless of source order. See [`ConstEntry`].
     const_registry: HashMap<String, ConstEntry>,
+    source_const_entries: HashMap<hew_types::DefId, ConstEntry>,
     /// Same-module integer const values folded earlier in source order.
     /// Populates `ConstEnv` for subsequent const initializers; values are not
     /// used for ordinary expression lowering, which continues to resolve const
@@ -1496,7 +1518,7 @@ struct LowerCtx {
     /// `T` to `ResolvedTy::Named`, not `ResolvedTy::TypeParam`) so generic
     /// `Display` dispatch can defer to monomorphisation. Empty outside a
     /// function body.
-    current_fn_type_params: HashSet<String>,
+    current_fn_type_params: HashSet<hew_types::ParamHead>,
     /// Checker-selected trait bindings and default source bodies.
     trait_bindings: HashMap<(Option<String>, u32, String), hew_types::DefId>,
     trait_defaults: HashMap<hew_types::DefId, Vec<hew_types::ResolvedTraitDefault>>,

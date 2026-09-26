@@ -80,6 +80,7 @@ impl LowerCtx {
             numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
             extern_method_signatures: tc_output.extern_method_signatures.clone(),
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
+            declaration_type_parameters: tc_output.declaration_type_parameters.clone(),
             resolved_annotation_types: tc_output.resolved_annotation_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -144,6 +145,7 @@ impl LowerCtx {
             regex_literal_index: HashMap::new(),
             machine_ctor_registry: HashMap::new(),
             const_registry: HashMap::new(),
+            source_const_entries: HashMap::new(),
             folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
             indirect_enum_names: HashSet::new(),
@@ -233,6 +235,10 @@ impl LowerCtx {
         tc_output: &TypeCheckOutput,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        let saved_root = self.declaration_module_by_file_index.get(&0).copied();
+        if let Some(root) = tc_output.defs.root_module() {
+            self.declaration_module_by_file_index.insert(0, root);
+        }
         let saved_direct_calls = std::mem::replace(
             &mut self.direct_call_targets,
             tc_output.direct_call_targets.clone(),
@@ -277,6 +283,10 @@ impl LowerCtx {
                 &mut self.resolved_annotation_types,
                 tc_output.resolved_annotation_types.clone(),
             ),
+            std::mem::replace(
+                &mut self.declaration_type_parameters,
+                tc_output.declaration_type_parameters.clone(),
+            ),
             std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
             std::mem::replace(
                 &mut self.call_argument_slots,
@@ -314,6 +324,7 @@ impl LowerCtx {
             self.expr_types,
             self.resolved_expr_types,
             self.resolved_annotation_types,
+            self.declaration_type_parameters,
             self.recovery_kinds,
             self.call_argument_slots,
             self.select_sources,
@@ -325,7 +336,41 @@ impl LowerCtx {
         self.direct_call_targets = saved_direct_calls;
         self.resolutions = saved_resolutions;
         self.numeric_operand_coercions = saved_numeric_coercions;
+        if let Some(root) = saved_root {
+            self.declaration_module_by_file_index.insert(0, root);
+        } else {
+            self.declaration_module_by_file_index.remove(&0);
+        }
 
+        result
+    }
+
+    /// Materialize a trait default using its declaration-owned receiver binder.
+    pub(super) fn with_default_receiver<T>(
+        &mut self,
+        trait_id: hew_types::DefId,
+        receiver: &ResolvedTy,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let parameter = hew_types::ParamHead::receiver(trait_id);
+        let substitutions = HashMap::from([(parameter, receiver.clone())]);
+        let annotations = self.resolved_annotation_types.clone();
+        let expressions = self.resolved_expr_types.clone();
+        let checker_expressions = self.expr_types.clone();
+        for ty in self.resolved_annotation_types.values_mut() {
+            *ty = substitute_ty(ty, &substitutions);
+        }
+        for ty in self.resolved_expr_types.values_mut() {
+            *ty = substitute_ty(ty, &substitutions);
+        }
+        let checker_receiver = receiver.to_ty();
+        for ty in self.expr_types.values_mut() {
+            *ty = ty.substitute_type_param(parameter, &checker_receiver);
+        }
+        let result = f(self);
+        self.resolved_annotation_types = annotations;
+        self.resolved_expr_types = expressions;
+        self.expr_types = checker_expressions;
         result
     }
 
@@ -602,8 +647,7 @@ impl LowerCtx {
     pub(super) fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
         match ty {
             ResolvedTy::Named { head, args, .. } => {
-                let name = head.registry_key();
-                if self.is_type_param_symbol(name) {
+                if head.is_param() {
                     return true;
                 }
                 args.iter().any(|a| self.contains_abstract_type_param(a))
@@ -643,16 +687,6 @@ impl LowerCtx {
             ResolvedTy::TypeParam { .. } => true,
             _ => false,
         }
-    }
-
-    /// Does `name` match any type-parameter declared on any top-level
-    /// fn in `fn_registry`? Used to filter "still-abstract" type args
-    /// from the monomorphisation registry. See
-    /// `contains_abstract_type_param` for the rationale.
-    pub(super) fn is_type_param_symbol(&self, name: &str) -> bool {
-        self.fn_registry
-            .values()
-            .any(|entry| entry.type_params.iter().any(|p| p == name))
     }
 
     /// Read a source callable through its exact checker declaration. Ordinary
@@ -700,21 +734,53 @@ impl LowerCtx {
         None
     }
 
+    pub(super) fn source_type_parameters(
+        &mut self,
+        span: &Span,
+        count: usize,
+    ) -> Vec<hew_types::ParamHead> {
+        if count == 0 {
+            return Vec::new();
+        }
+        let module = self
+            .declaration_module_by_file_index
+            .get(&self.current_module_idx)
+            .copied()
+            .or_else(|| self.defs.root_module());
+        if let Some((_, _, parameters)) = self
+            .declaration_type_parameters
+            .values()
+            .filter(|(file, region, parameters)| {
+                Some(*file) == module
+                    && region.start <= span.start
+                    && span.end <= region.end
+                    && parameters.len() == count
+            })
+            .min_by_key(|(_, region, _)| region.end - region.start)
+        {
+            return parameters.clone();
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "source generic parameters".to_string(),
+                reason: "missing checker declaration binder facts".to_string(),
+            },
+            span.clone(),
+            format!("generic declaration at {span:?} in {module:?} requires {count} checker-owned binder identities"),
+        ));
+        Vec::new()
+    }
+
     pub(super) fn checked_member_ty(
         &mut self,
         ty: &Ty,
-        parameters: &[String],
+        _parameters: &[hew_types::ParamHead],
         span: &Span,
     ) -> ResolvedTy {
-        let binders = parameters.iter().cloned().collect();
-        match ResolvedTy::from_ty_with_type_params(ty, &binders) {
+        match ResolvedTy::from_ty(ty) {
             Ok(resolved) => {
                 let qualified = self.qualify_current_module_record_ty(resolved);
-                let named = parameters
-                    .iter()
-                    .map(|name| ResolvedTy::param(name))
-                    .collect::<Vec<_>>();
-                substitute_type_params(&qualified, parameters, &named)
+                qualified
             }
             Err(error) => {
                 self.diagnostics.push(HirDiagnostic::new(

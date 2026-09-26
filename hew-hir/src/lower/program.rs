@@ -310,7 +310,7 @@ pub fn lower_program_with_mono_cap(
                     if impl_decl.where_clause.is_none()
                         || classify_unsupported_where_clause(impl_decl).is_none()
                     {
-                        let impl_type_params = impl_type_param_names(impl_decl);
+                        let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
                         // For concrete specialised impls (empty impl type-params,
                         // non-empty target type args), compute the mangled self-type
                         // name so the fn_registry key is distinct per instantiation.
@@ -374,7 +374,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Const(const_decl) => {
-                ctx.register_const_entry(const_decl);
+                ctx.register_const_entry(const_decl, span, true);
             }
             // No fn signatures to register for the variants below in this
             // pass. If a new Item variant is added, the compiler will force a
@@ -644,7 +644,8 @@ pub fn lower_program_with_mono_cap(
                                 if impl_decl.where_clause.is_none()
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
-                                    let impl_type_params = impl_type_param_names(impl_decl);
+                                    let impl_type_params =
+                                        impl_type_parameters(&mut ctx, impl_decl);
                                     let symbol_self_name =
                                         imported_impl_symbol_self_name(&module_full_path, name);
                                     for method in &impl_decl.methods {
@@ -696,10 +697,7 @@ pub fn lower_program_with_mono_cap(
                         // name get a stable `ItemId` that matches the
                         // `HirItem::Const` emitted in the later pass.
                         Item::Const(const_decl) => {
-                            let id = ctx.ids.item();
-                            let ty = ctx.lower_type(&const_decl.ty);
-                            let qualified = format!("{module_full_path}.{}", const_decl.name);
-                            ctx.const_registry.insert(qualified, ConstEntry { id, ty });
+                            ctx.register_const_entry(const_decl, item_span, false);
                         }
                         // Non-pub Function/TypeDecl/Record fall here (not exported to importers).
                         Item::Import(_)
@@ -1248,10 +1246,8 @@ pub fn lower_program_with_mono_cap(
         let variants = builtin_enum_hir_variants(spec);
         ctx.enum_variants_by_name
             .insert(spec.canonical_type_name.to_string(), variants);
-        ctx.enum_type_params.insert(
-            spec.canonical_type_name.to_string(),
-            spec.type_params.iter().map(|s| (*s).to_string()).collect(),
-        );
+        ctx.enum_type_params
+            .insert(spec.canonical_type_name.to_string(), spec.parameter_heads());
         ctx.enum_item_ids
             .insert(spec.canonical_type_name.to_string(), spec.item_id);
         // Tag-only / monomorphic builtin enums (e.g. `LookupError`) need a
@@ -1753,7 +1749,7 @@ pub fn lower_program_with_mono_cap(
                     } else {
                         imported_impl_symbol_self_name("std.builtins", name)
                     };
-                    let impl_type_params = impl_type_param_names(impl_decl);
+                    let impl_type_params = impl_type_parameters(ctx, impl_decl);
                     for method in &impl_decl.methods {
                         let emitted_symbol = crate::node::HirImplBlock::method_symbol(
                             &symbol_owner,
@@ -2551,21 +2547,10 @@ pub fn lower_program_with_mono_cap(
                         // `Instr::ConstGlobalLoad` resolves correctly at codegen.
                         //
                         // The pre-pass registered every const under its qualified key
-                        // `"module_short.CONST_NAME"`.  `lower_const` looks up
-                        // `const_registry[decl.name]` for the pre-allocated ItemId,
-                        // so we temporarily alias the qualified entry under the bare
-                        // name, lower, then remove the alias to avoid polluting the
-                        // global registry.
+                        // The declaration's canonical entry owns its ItemId.
                         Item::Const(const_decl) => {
-                            let qualified = format!("{source_module}.{}", const_decl.name);
-                            if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
-                                ctx.const_registry
-                                    .insert(const_decl.name.to_string(), entry);
-                                let lowered = ctx.lower_const(const_decl, span.clone());
-                                ctx.const_registry.remove(const_decl.name.name.as_str());
-                                if let Some(lowered) = lowered {
-                                    items.push(HirItem::Const(lowered));
-                                }
+                            if let Some(lowered) = ctx.lower_const(const_decl, span.clone()) {
+                                items.push(HirItem::Const(lowered));
                             }
                         }
                         // Emit `HirItem::Actor` entries for imported actors

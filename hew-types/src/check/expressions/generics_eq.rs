@@ -26,12 +26,12 @@ use std::collections::VecDeque;
 impl Checker {
     pub(super) fn lambda_generic_schema_ty(
         ty: &Ty,
-        generic_param_names: &HashMap<u32, String>,
+        generic_param_names: &HashMap<u32, crate::ParamHead>,
     ) -> Ty {
         match ty {
             Ty::Var(v) => generic_param_names
                 .get(&v.0)
-                .map_or_else(|| ty.clone(), |name| Ty::param(name)),
+                .map_or_else(|| ty.clone(), |name| Ty::param(*name)),
             Ty::Named { head, args } => Ty::Named {
                 head: *head,
                 args: args
@@ -264,30 +264,12 @@ impl Checker {
         self.fn_sig(fn_name).and_then(|sig| {
             sig.type_params
                 .iter()
-                .any(|param_name| param_name == name)
+                .any(|param_name| param_name.spelling.as_str() == name)
                 .then(|| name.to_string())
         })
     }
 
-    pub(in crate::check) fn current_type_param_names(&self) -> HashSet<String> {
-        let mut names = HashSet::new();
-        for frame in &self.current_type_param_bounds {
-            names.extend(frame.bounds.keys().cloned());
-        }
-        if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sig(fn_name) {
-                names.extend(sig.type_params.iter().cloned());
-            }
-        }
-        names
-    }
-
-    /// Like `current_type_param_names`, but carries each name's declared
-    /// bounds instead of discarding them. A deferred check that replays
-    /// admission after inference settles (`finalize_hashmap_admission`) needs
-    /// the actual bounds to answer `type_param_has_marker_bound`; the
-    /// original declaration scope is gone by then, so this is the one point
-    /// that captures it.
+    /// Capture the active declaration bounds for deferred capability checks.
     pub(in crate::check) fn current_type_param_bounds_map(&self) -> HashMap<String, Vec<String>> {
         let mut bounds: HashMap<String, Vec<String>> = HashMap::new();
         for frame in &self.current_type_param_bounds {
@@ -300,12 +282,14 @@ impl Checker {
         if let Some(fn_name) = &self.current_function {
             if let Some(sig) = self.fn_sig(fn_name) {
                 for param_name in &sig.type_params {
-                    bounds.entry(param_name.clone()).or_insert_with(|| {
-                        sig.type_param_bounds
-                            .get(param_name)
-                            .cloned()
-                            .unwrap_or_default()
-                    });
+                    bounds
+                        .entry(param_name.spelling.to_string())
+                        .or_insert_with(|| {
+                            sig.type_param_bounds
+                                .get(param_name.spelling.as_str())
+                                .cloned()
+                                .unwrap_or_default()
+                        });
                 }
             }
         }
@@ -440,16 +424,16 @@ impl Checker {
     /// in a checked program (`Ty::Never`) and comparing: this reuses the one
     /// substitution traversal instead of adding a second walk that could drift
     /// out of sync with it as `Ty` grows variants.
-    pub(in crate::check) fn ty_mentions_type_params(ty: &Ty, params: &[String]) -> bool {
+    pub(in crate::check) fn ty_mentions_type_params(ty: &Ty, params: &[crate::ParamHead]) -> bool {
         if params.is_empty() {
             return false;
         }
-        let probe: HashMap<String, Ty> = params
+        let probe: HashMap<crate::ParamHead, Ty> = params
             .iter()
-            .cloned()
+            .copied()
             .map(|param| (param, Ty::Never))
             .collect();
-        ty.substitute_named_params_parallel(&probe) != *ty
+        ty.substitute_type_params_parallel(&probe) != *ty
     }
 
     /// Record an Eq demand in the existing instantiation obligation graph.
@@ -487,13 +471,13 @@ impl Checker {
     /// while a method instantiation walked straight into codegen.
     ///
     /// Two independent sources pin the callee's parameters and BOTH are merged
-    /// by name: the signature instantiation (method-level parameters) and the
+    /// by binder identity: the signature instantiation (method-level parameters) and the
     /// receiver's type arguments (impl-level parameters, which
     /// `lookup_named_method_sig` has already substituted out of the signature).
     pub(in crate::check) fn record_generic_application(
         &mut self,
         callee: GenericCallee<'_>,
-        sig_type_params: &[String],
+        sig_type_params: &[crate::ParamHead],
         sig_type_args: &[Ty],
         span: &Span,
     ) {
@@ -516,25 +500,38 @@ impl Checker {
         else {
             return;
         };
-        let mut substitution: HashMap<String, Ty> = HashMap::new();
+        let mut substitution: HashMap<crate::ParamHead, Ty> = HashMap::new();
         if sig_type_params.len() == sig_type_args.len() {
             for (param, arg) in sig_type_params.iter().zip(sig_type_args) {
-                substitution.insert(param.clone(), self.subst.resolve(arg));
+                substitution.insert(*param, self.subst.resolve(arg));
             }
         }
         if let Some((owner_name, owner_args)) = owner {
-            let owner_params = self
-                .type_def_at(owner_name)
-                .map(|type_def| type_def.type_params.clone())
-                .unwrap_or_default();
-            if owner_params.len() == owner_args.len() {
-                for (param, arg) in owner_params.iter().zip(owner_args) {
-                    substitution
-                        .entry(param.clone())
-                        .or_insert_with(|| self.subst.resolve(arg));
-                }
-            }
+            let owner_substitution = if let Some(method) = self
+                .fn_sig(&callee_key)
+                .and_then(|sig| sig.impl_method.as_ref())
+            {
+                crate::method_resolution::impl_receiver_substitution(method, owner_args)
+                    .unwrap_or_default()
+            } else {
+                self.type_def_at(owner_name)
+                    .into_iter()
+                    .flat_map(|owner| {
+                        owner
+                            .type_params
+                            .iter()
+                            .copied()
+                            .zip(owner_args.iter().cloned())
+                    })
+                    .collect()
+            };
+            substitution.extend(
+                owner_substitution
+                    .into_iter()
+                    .map(|(parameter, ty)| (parameter, self.subst.resolve(&ty))),
+            );
         }
+
         // Nothing pinned means nothing to discharge; a partially pinned
         // application still records, and the walk refuses to decide any
         // obligation whose substituted form is still abstract.
@@ -576,12 +573,12 @@ impl Checker {
         let mut roots: Vec<PendingInstantiation> = Vec::new();
         let mut edges: HashMap<String, Vec<GenericCallEdge>> = HashMap::new();
         for site in sites {
-            let substitution: HashMap<String, Ty> = site
+            let substitution: HashMap<crate::ParamHead, Ty> = site
                 .substitution
                 .iter()
                 .map(|(param, ty)| {
                     (
-                        param.clone(),
+                        *param,
                         self.subst.resolve(ty).materialize_literal_defaults(),
                     )
                 })
@@ -778,7 +775,7 @@ impl Checker {
                 let concrete = self.project_assoc_types(
                     &requirement
                         .ty
-                        .substitute_named_params_parallel(&pending.substitution),
+                        .substitute_type_params_parallel(&pending.substitution),
                 );
                 if concrete.contains_error()
                     || concrete.has_inference_var()
@@ -813,8 +810,8 @@ impl Checker {
                         .iter()
                         .map(|(param, ty)| {
                             (
-                                param.clone(),
-                                ty.substitute_named_params_parallel(&pending.substitution),
+                                *param,
+                                ty.substitute_type_params_parallel(&pending.substitution),
                             )
                         })
                         .collect(),

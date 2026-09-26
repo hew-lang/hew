@@ -354,7 +354,7 @@ pub struct HirImplBlock {
     pub self_type: Option<hew_types::NominalId>,
     /// Outer type parameters on the impl, e.g. `["T"]` for
     /// `impl<T> Iterator for VecIter<T>`.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Concrete self-type arguments for a concrete specialised impl, e.g.
     /// `[ResolvedTy::I64]` for `impl Describe for Wrapper<i64>`. Always empty
     /// when `type_params` is non-empty (generic impl) or when the target type
@@ -439,7 +439,7 @@ pub struct HirActorDecl {
     /// SIR uses these names to specialize the actor's state and member bodies
     /// for each demanded closed handle type. Generic origins remain templates;
     /// only their concrete instances reach physical lowering.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// `let <name>: <ty>;` state fields declared in the actor body. Field
     /// ordering is source order; the runtime layout follows the same order.
     pub state_fields: Vec<HirField>,
@@ -684,7 +684,7 @@ pub struct HirRecordDecl {
     /// [`Self::qualified_name`] derives the dotted registry key; root records
     /// qualify to their bare name. The decl `name` stays bare in both cases.
     pub defining_module: Option<String>,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Positional payload types in declaration order for tuple-form records
     /// (`record Pair(i64, string)`). Empty for named-form records.
     ///
@@ -730,7 +730,7 @@ pub struct HirSupervisorDecl {
     /// Exact source-owned identity projected by the later bootstrap adapter.
     pub bootstrap_declaration: DefId,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Construction-time config parameters (`supervisor App(config: T)`). Bound
     /// in scope throughout the body so child init-arg exprs can reference them.
     /// Empty when the declaration omits the `(...)` clause. The MIR bootstrap
@@ -894,7 +894,7 @@ pub struct HirTypeDecl {
     /// registry to (a) decide whether a `StructInit` site needs a
     /// per-instantiation layout and (b) substitute field types when
     /// constructing one.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Struct-form field types in declaration order. Empty for enum-kind
     /// type decls (enums have no struct fields; their variants are in
     /// `variants`).
@@ -1033,7 +1033,7 @@ pub struct HirFn {
     /// reconstructing an owner from a presentation name.
     pub declaration: DefId,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     pub params: Vec<HirBinding>,
     /// Exact receiver binding transferred into a recognized `var self` body
     /// and returned in the second field of its `(result, Self)` result.
@@ -1187,7 +1187,7 @@ pub enum HirVarSelfMethodTarget {
     /// receiver parameter is substituted.
     StaticTrait {
         /// Type-parameter name that carries the bound (e.g. "T").
-        receiver_type_param: String,
+        receiver_type_param: hew_types::ParamHead,
     },
 }
 
@@ -1763,7 +1763,7 @@ pub enum HirExprKind {
         /// declaring method by leaf-name retry.
         target: hew_types::CallTarget,
         /// Type-parameter name that carries the bound (e.g. "T").
-        receiver_type_param: String,
+        receiver_type_param: hew_types::ParamHead,
         /// Arguments in parameter order.
         args: Vec<HirExpr>,
         /// The index into `args` of each argument in the order the source

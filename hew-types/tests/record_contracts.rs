@@ -238,7 +238,12 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
     }
     for capability in [Hash, Eq] {
         assert!(service
-            .capability_plan(&ResolvedTy::TypeParam { name: "T".into() }, capability)
+            .capability_plan(
+                &ResolvedTy::TypeParam {
+                    name: crate::ParamHead::for_test("T")
+                },
+                capability
+            )
             .is_err());
         assert!(service
             .capability_plan(
@@ -320,7 +325,9 @@ fn value_capabilities_refuse_unresolved_method_binders_independently() {
     assert!(service.require(&key).is_err());
     let abstract_fn = ResolvedTy::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![ResolvedTy::TypeParam { name: "U".into() }],
+        params: vec![ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("U"),
+        }],
         ret: Box::new(ResolvedTy::Unit),
     };
     assert_eq!(

@@ -101,7 +101,7 @@ impl LowerCtx {
                     },
                 ],
                 linkage: None,
-                type_params: vec!["T".to_string()],
+                type_params: Vec::new(),
                 builtin_family: Some(RuntimeCallFamily::LinkRemote),
             },
         );
@@ -257,11 +257,8 @@ impl LowerCtx {
             .as_ref()
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
         let param_tys = func.params.iter().map(|p| self.lower_type(&p.ty)).collect();
-        let type_params = func
-            .type_params
-            .as_ref()
-            .map(|params| params.iter().map(|p| p.name.to_string()).collect())
-            .unwrap_or_default();
+        let type_params = self
+            .source_type_parameters(&func.fn_span, func.type_params.as_ref().map_or(0, Vec::len));
         self.fn_registry.insert(
             name.to_string(),
             FnEntry {
@@ -302,7 +299,7 @@ impl LowerCtx {
         &mut self,
         self_type_name: &str,
         method: &FnDecl,
-        impl_type_params: &[String],
+        impl_type_params: &[hew_types::ParamHead],
     ) {
         let symbol =
             crate::node::HirImplBlock::method_symbol(self_type_name, method.name.name.as_str());
@@ -315,7 +312,7 @@ impl LowerCtx {
         &mut self,
         self_type_name: &str,
         method: &FnDecl,
-        impl_type_params: &[String],
+        impl_type_params: &[hew_types::ParamHead],
         symbol: &str,
     ) {
         let bare_type_name = Self::bare_impl_self_type_name(self_type_name);

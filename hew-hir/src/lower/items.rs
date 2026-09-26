@@ -93,10 +93,15 @@ impl LowerCtx {
             }
         }
         // Outer type-parameter names (e.g. `T` in `impl<T> Iterator for VecIter<T>`).
-        let type_params: Vec<String> = decl
-            .type_params
-            .as_ref()
-            .map(|ps| ps.iter().map(|p| p.name.to_string()).collect())
+        let Some(impl_declaration) =
+            self.source_declaration(&span, hew_types::DeclarationKind::ImplBlock, 0)
+        else {
+            return;
+        };
+        let type_params = self
+            .declaration_type_parameters
+            .get(&impl_declaration)
+            .map(|(_, _, parameters)| parameters.clone())
             .unwrap_or_default();
         // For concrete specialised impls (`impl Describe for Wrapper<i64>`, i.e.
         // empty type_params with non-empty target type args), lower the target's
@@ -144,7 +149,14 @@ impl LowerCtx {
         // Blanket-impl guard: reject `impl<T> Trait for T` (target name is
         // itself one of the outer type parameters) — V0b does not handle the
         // monomorphisation of blanket impls.
-        if type_params.iter().any(|p| p == self_type_name) {
+        if matches!(
+            self.lower_type(&decl.target_type),
+            ResolvedTy::TypeParam { .. }
+                | ResolvedTy::Named {
+                    head: hew_types::TypeHead::Param(_),
+                    ..
+                }
+        ) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ImplBlockShapeNotLowered {
                     shape: format!(
@@ -560,14 +572,19 @@ impl LowerCtx {
                         // bodies degrades to a bare fail-closed line (never a false
                         // caret against the root source). This is the exact producer
                         // an absence-from-a-foreign-set proxy misclassified.
-                        let Some(hir_method) = self.lower_fn_with_name_and_impl_params(
-                            &fn_decl,
-                            &symbol,
-                            span.clone(),
-                            &type_params,
-                            Some(&symbol_self_name),
-                            synthetic_default_declaration,
-                        ) else {
+                        let receiver = self.current_impl_self_ty.clone().expect("impl receiver");
+                        let hir_method =
+                            self.with_default_receiver(default_method.trait_id, &receiver, |ctx| {
+                                ctx.lower_fn_with_name_and_impl_params(
+                                    &fn_decl,
+                                    &symbol,
+                                    span.clone(),
+                                    &type_params,
+                                    Some(&symbol_self_name),
+                                    synthetic_default_declaration,
+                                )
+                            });
+                        let Some(hir_method) = hir_method else {
                             continue;
                         };
                         if let Some(declaration) = &synthetic_default_declaration {
@@ -783,7 +800,7 @@ impl LowerCtx {
                     signature
                         .type_params
                         .iter()
-                        .map(String::as_str)
+                        .map(|parameter| parameter.spelling.as_str())
                         .eq(family.source_intrinsic_type_params().iter().copied())
                         && !func.is_generator
                         // A parameter is consumed exactly when the contract moves it.
@@ -839,7 +856,7 @@ impl LowerCtx {
         func: &FnDecl,
         name: &str,
         span: std::ops::Range<usize>,
-        impl_type_params: &[String],
+        impl_type_params: &[hew_types::ParamHead],
         impl_self_type_name: Option<&str>,
         known_declaration: Option<hew_types::DefId>,
     ) -> Option<HirFn> {
@@ -866,6 +883,14 @@ impl LowerCtx {
             self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?
         };
 
+        let mut type_parameters = impl_type_params.to_vec();
+        type_parameters.extend(
+            self.declaration_type_parameters
+                .get(&declaration)
+                .into_iter()
+                .flat_map(|(_, _, parameters)| parameters.iter())
+                .copied(),
+        );
         self.push_scope();
         // Track this function's declared type parameters for the duration of
         // its body so lowering can recognise abstract-`T` operands (the
@@ -873,9 +898,7 @@ impl LowerCtx {
         // on every return path below.
         let prior_fn_type_params = std::mem::replace(
             &mut self.current_fn_type_params,
-            Self::concat_type_params(impl_type_params, func)
-                .into_iter()
-                .collect(),
+            type_parameters.clone().into_iter().collect(),
         );
         let mut params = Vec::new();
         for (index, param) in func.params.iter().enumerate() {
@@ -904,7 +927,7 @@ impl LowerCtx {
                 node: self.ids.node(),
                 declaration,
                 name: name.to_string(),
-                type_params: Self::concat_type_params(impl_type_params, func),
+                type_params: type_parameters.clone(),
                 params,
                 var_self_receiver: None,
                 terminal_receiver: None,
@@ -957,7 +980,7 @@ impl LowerCtx {
             node: self.ids.node(),
             declaration,
             name: name.to_string(),
-            type_params: Self::concat_type_params(impl_type_params, func),
+            type_params: type_parameters.clone(),
             params,
             var_self_receiver: var_self_receiver.map(|receiver| receiver.id),
             terminal_receiver,
@@ -972,18 +995,6 @@ impl LowerCtx {
     /// Concatenate impl-level and method-level type parameters for a lowered
     /// function. A method MAY shadow an impl-level type param name; that is a
     /// checker-level concern, so here we just concatenate.
-    pub(super) fn concat_type_params(impl_type_params: &[String], func: &FnDecl) -> Vec<String> {
-        let method_type_params: Vec<String> = func
-            .type_params
-            .as_ref()
-            .map(|params| params.iter().map(|param| param.name.to_string()).collect())
-            .unwrap_or_default();
-        let mut type_params: Vec<String> =
-            Vec::with_capacity(impl_type_params.len() + method_type_params.len());
-        type_params.extend(impl_type_params.iter().cloned());
-        type_params.extend(method_type_params);
-        type_params
-    }
 
     /// Lower a `gen fn` body into a `(HirBlock, Generator<Yield, Return>)` pair.
     ///

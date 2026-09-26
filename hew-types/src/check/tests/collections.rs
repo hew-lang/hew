@@ -704,11 +704,14 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Pair".to_string(),
-            type_params: vec!["A".to_string(), "B".to_string()],
+            type_params: vec![
+                crate::ParamHead::for_test("A"),
+                crate::ParamHead::for_test("B"),
+            ],
             bounds: HashMap::new(),
             fields: HashMap::from([
-                ("a".to_string(), Ty::param("A")),
-                ("b".to_string(), Ty::param("B")),
+                ("a".to_string(), Ty::param(crate::ParamHead::for_test("A"))),
+                ("b".to_string(), Ty::param(crate::ParamHead::for_test("B"))),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1179,7 +1182,7 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
         TypeDef {
             kind: TypeDefKind::Record,
             name: "PhantomKey".to_string(),
-            type_params: vec!["T".to_string()],
+            type_params: vec![crate::ParamHead::for_test("T")],
             bounds: HashMap::new(),
             fields: HashMap::from([("id".to_string(), Ty::I64)]),
             variants: HashMap::new(),
@@ -1267,9 +1270,12 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Box".to_string(),
-            type_params: vec!["T".to_string()],
+            type_params: vec![crate::ParamHead::for_test("T")],
             bounds: HashMap::new(),
-            fields: HashMap::from([("item".to_string(), Ty::param("T"))]),
+            fields: HashMap::from([(
+                "item".to_string(),
+                Ty::param(crate::ParamHead::for_test("T")),
+            )]),
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1297,11 +1303,14 @@ fn generic_record_clone_unresolved_var_is_nyi() {
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Pair".to_string(),
-            type_params: vec!["A".to_string(), "B".to_string()],
+            type_params: vec![
+                crate::ParamHead::for_test("A"),
+                crate::ParamHead::for_test("B"),
+            ],
             bounds: HashMap::new(),
             fields: HashMap::from([
-                ("a".to_string(), Ty::param("A")),
-                ("b".to_string(), Ty::param("B")),
+                ("a".to_string(), Ty::param(crate::ParamHead::for_test("A"))),
+                ("b".to_string(), Ty::param(crate::ParamHead::for_test("B"))),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1750,13 +1759,16 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Wrap".to_string(),
-            type_params: vec!["T".to_string()],
+            type_params: vec![crate::ParamHead::for_test("T")],
             bounds: HashMap::new(),
             fields: HashMap::from([(
                 "next".to_string(),
                 Ty::named_for_test(
                     "Wrap",
-                    vec![Ty::named_for_test("Wrap", vec![Ty::param("T")])],
+                    vec![Ty::named_for_test(
+                        "Wrap",
+                        vec![Ty::param(crate::ParamHead::for_test("T"))],
+                    )],
                 ),
             )]),
             field_order: vec!["next".to_string()],

@@ -1213,7 +1213,11 @@ impl ActorOperation {
             Self::LocalObservation { .. }
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
-            | Self::CallTake(_) => {
+            | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             Self::Spawn(id)
@@ -1250,6 +1254,10 @@ impl ActorOperation {
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_)
             | Self::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }

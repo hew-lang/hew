@@ -11,14 +11,12 @@
 // and a field, parameter, return or element that holds an actor is written
 // with the actor's own name. There is no separate pid type to declare here.
 //
-// Termination has three spellings:
+// Actor lifecycle has four operations:
 //
-// - `close(actor)` requests a cooperative stop and returns once the actor's
-//   terminal cleanup has run.
-// - `fork close(actor)` makes the same request without waiting; `await` on the
-//   task it yields waits for the same point.
-// - `closed(actor)` waits for an actor another party is stopping, and requests
-//   nothing itself.
+// - `stop(actor)` asks the actor to finish its accepted work and returns.
+// - `terminate(actor)` asks the actor to end forcefully and returns.
+// - `stopped(actor)` waits for release and requests nothing.
+// - `restarted(role)` waits for a supervised role to become live again.
 //
 // Calls to receive handlers wait for completion, including void handlers.
 // Use `mailbox(target, on_full: ...)` for submission and
@@ -174,11 +172,11 @@ pub type DropNewestSend {
 pub type ReplaceLatestSend {
 }
 
-/// Error returned when a pid send cannot be completed.
+/// Error returned when a send cannot be completed.
 pub enum SendError {
     /// The destination mailbox is full.
     Full,
-    /// The destination is closed or no longer alive.
+    /// A sink or connection has closed.
     Closed,
     /// Cross-node routing has not been wired for this runtime path yet.
     NodeRoutingNotWired,
@@ -196,8 +194,7 @@ pub enum SendError {
     Unauthorized,
     /// The destination or route is applying flow control.
     Backpressure,
-    /// The supervised role the send addressed has no occupant and will not
-    /// get one: its restart budget is spent.
+    /// The destination actor accepts no more messages.
     Dead,
 }
 
@@ -205,7 +202,7 @@ impl Display for SendError {
     fn fmt(err: SendError) -> string {
         match err {
             SendError.Full => "the destination mailbox is full",
-            SendError.Closed => "the destination is closed or no longer alive",
+            SendError.Closed => "the sink or connection is closed",
             SendError.NodeRoutingNotWired => "cross-node routing has not been wired for this runtime path yet",
             SendError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
             SendError.StaleRef => "the pid refers to an old session or actor incarnation",
@@ -214,7 +211,7 @@ impl Display for SendError {
             SendError.VersionMismatch => "the peer rejected the send because protocol or schema versions differ",
             SendError.Unauthorized => "the peer rejected the send because the caller lacks authority",
             SendError.Backpressure => "the destination or route is applying flow control",
-            SendError.Dead => "the supervised role has no occupant and its restart budget is spent",
+            SendError.Dead => "the destination actor accepts no more messages",
         }
     }
 }

@@ -1579,11 +1579,116 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             _ => {}
         }
+        if let ActorOperation::Stop(target)
+        | ActorOperation::Terminate(target)
+        | ActorOperation::AwaitStopped(target)
+        | ActorOperation::AwaitRestarted(target) = &operation
+        {
+            let [ArgumentTransfer::Borrow(source)] = transfers else {
+                return Err(CodegenError::FailClosed(
+                    "actor lifecycle requires one borrowed handle".into(),
+                ));
+            };
+            let role = matches!(
+                target,
+                hew_mir::physical::LifecycleTarget::ActorRole(_)
+                    | hew_mir::physical::LifecycleTarget::SupervisorRole(_)
+            );
+            if matches!(operation, ActorOperation::AwaitStopped(_)) {
+                self.emit_actor_await_closed(*source, role.then_some(false), unwind)?;
+            } else if matches!(operation, ActorOperation::AwaitRestarted(_)) {
+                let value = self.load(*source, "restart.role")?.into_struct_value();
+                let owner = self
+                    .builder
+                    .build_extract_value(value, 0, "restart.owner")
+                    .llvm_ctx("read the role owner")?;
+                let slot = self
+                    .builder
+                    .build_extract_value(value, 1, "restart.slot")
+                    .llvm_ctx("read the role slot")?;
+                let role_kind = u64::from(matches!(
+                    target,
+                    hew_mir::physical::LifecycleTarget::SupervisorRole(_)
+                ));
+                let wait = coro::external(
+                    self.llvm,
+                    "hew_supervisor_native_await_restart",
+                    self.ctx.void_type().fn_type(
+                        &[
+                            owner.get_type().into(),
+                            slot.get_type().into(),
+                            self.ctx.i32_type().into(),
+                        ],
+                        false,
+                    ),
+                )?;
+                self.builder
+                    .build_call(
+                        wait,
+                        &[
+                            owner.into(),
+                            slot.into(),
+                            self.ctx.i32_type().const_int(role_kind, false).into(),
+                        ],
+                        "",
+                    )
+                    .llvm_ctx("wait for the role restart")?;
+            } else {
+                let value = self.load(*source, "lifecycle.handle")?;
+                let value = if role {
+                    self.resolve_role_handle(value.into_struct_value())?
+                } else {
+                    value.into_int_value()
+                };
+                let symbol = match (&operation, target) {
+                    (
+                        ActorOperation::Stop(_),
+                        hew_mir::physical::LifecycleTarget::Actor(_)
+                        | hew_mir::physical::LifecycleTarget::ActorRole(_),
+                    ) => "hew_actor_stop_native",
+                    (
+                        ActorOperation::Terminate(_),
+                        hew_mir::physical::LifecycleTarget::Actor(_)
+                        | hew_mir::physical::LifecycleTarget::ActorRole(_),
+                    ) => "hew_actor_terminate_native",
+                    (
+                        ActorOperation::Stop(_),
+                        hew_mir::physical::LifecycleTarget::Supervisor(_)
+                        | hew_mir::physical::LifecycleTarget::SupervisorRole(_),
+                    ) => "hew_supervisor_stop_native",
+                    (
+                        ActorOperation::Terminate(_),
+                        hew_mir::physical::LifecycleTarget::Supervisor(_)
+                        | hew_mir::physical::LifecycleTarget::SupervisorRole(_),
+                    ) => "hew_supervisor_terminate_native",
+                    _ => unreachable!("lifecycle operation selected above"),
+                };
+                let request = coro::external(
+                    self.llvm,
+                    symbol,
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[value.get_type().into()], false),
+                )?;
+                self.builder
+                    .build_call(request, &[value.into()], "")
+                    .llvm_ctx("request actor lifecycle transition")?;
+            }
+            let status = self.ctx.i32_type().const_zero();
+            self.builder
+                .build_store(self.active_status, status)
+                .llvm_ctx("record actor lifecycle status")?;
+            return self.emit_call_outcome(status, result, Some(normal), unwind);
+        }
         let id = match &operation {
             ActorOperation::LocalObservation { .. }
             | ActorOperation::RemoteObservation { .. }
             | ActorOperation::CallStart(_)
             | ActorOperation::CallTake(_)
+            | ActorOperation::Stop(_)
+            | ActorOperation::Terminate(_)
+            | ActorOperation::AwaitStopped(_)
+            | ActorOperation::AwaitRestarted(_)
             | ActorOperation::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }
@@ -1654,6 +1759,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | ActorOperation::RemoteObservation { .. }
             | ActorOperation::CallStart(_)
             | ActorOperation::CallTake(_)
+            | ActorOperation::Stop(_)
+            | ActorOperation::Terminate(_)
+            | ActorOperation::AwaitStopped(_)
+            | ActorOperation::AwaitRestarted(_)
             | ActorOperation::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }

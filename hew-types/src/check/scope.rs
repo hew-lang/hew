@@ -424,9 +424,26 @@ impl Scopes {
         namespace: Namespace,
         head: Ident,
     ) -> Option<Resolution> {
+        let module = self.contexts.def_module(head.ctx, site.file);
+        let file = self.files.get(&module);
+        let own = file.and_then(|file| file.namespace).unwrap_or(module);
+        let item = self
+            .items
+            .get(&own)
+            .and_then(|items| items.get(&head.name))
+            .or_else(|| file.and_then(|file| file.imports.get(&head.name)))
+            .or_else(|| self.prelude.get(&head.name));
         match namespace {
             Namespace::Value => {
-                if let Some(binding) = env.lookup_ref(head) {
+                if let Some((depth, binding)) = env.lookup_ref_with_depth(head) {
+                    // Top-level constants also occupy TypeEnv slots for type
+                    // checking, but their source identity is the declaration.
+                    // A nested lexical binding still shadows that declaration.
+                    if depth == 0 {
+                        if let Some(Binding::Const(id)) = item {
+                            return Some(Resolution::Def(*id));
+                        }
+                    }
                     return Some(Resolution::Local(binding.id));
                 }
             }
@@ -441,15 +458,7 @@ impl Scopes {
                 }
             }
         }
-        let module = self.contexts.def_module(head.ctx, site.file);
-        let file = self.files.get(&module);
-        let own = file.and_then(|file| file.namespace).unwrap_or(module);
-        self.items
-            .get(&own)
-            .and_then(|items| items.get(&head.name))
-            .or_else(|| file.and_then(|file| file.imports.get(&head.name)))
-            .or_else(|| self.prelude.get(&head.name))
-            .map(|binding| binding.resolution())
+        item.map(|binding| binding.resolution())
     }
 
     fn resolve_member(&self, current: Resolution, name: Symbol) -> Option<Resolution> {
@@ -508,6 +517,41 @@ mod tests {
 
     fn at(name: &str, start: usize) -> Spanned<Ident> {
         (Ident::new(name), start..start + name.len())
+    }
+
+    #[test]
+    fn const_item_identity_yields_to_nested_lexical_binding() {
+        let mut defs = DefTable::new();
+        let mut scopes = Scopes::new();
+        let root = defs
+            .mint_root_module(&[std::path::PathBuf::from("/nonexistent/main.hew")])
+            .expect("root");
+        let constant = declare(
+            &mut defs,
+            &mut scopes,
+            root,
+            0..10,
+            DeclarationKind::Const,
+            "C",
+            "C",
+        );
+        let site = ScopeSite {
+            file: root,
+            span_file: 0,
+        };
+        let mut env = TypeEnv::new();
+        env.define("C", Ty::I64, false);
+        assert_eq!(
+            scopes.resolve(&env, site, Namespace::Value, &[at("C", 20)]),
+            Ok(Resolution::Def(constant))
+        );
+        env.push_scope();
+        env.define("C", Ty::I64, false);
+        let local = env.lookup_ref("C").expect("nested binding").id;
+        assert_eq!(
+            scopes.resolve(&env, site, Namespace::Value, &[at("C", 30)]),
+            Ok(Resolution::Local(local))
+        );
     }
 
     /// Hygiene readiness (identity plan §3.8): an identifier written by an

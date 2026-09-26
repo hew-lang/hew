@@ -49,7 +49,10 @@ fn test_pop_cow_leaves_slice_intact() {
     source.push(6);
     source.push(7);
     let view: bytes = source[0..3];
-    let popped: u8 = source.pop();
+    let popped = match source.pop() {
+        .Some(byte) => byte,
+        .None => panic("pop was empty"),
+    };
     assert(popped == 7);
     assert(source.len() == 2);
     // The slice still reads all three bytes.

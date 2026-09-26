@@ -185,6 +185,7 @@ pub fn lower_physical_module(
                     };
                     Ok(PhysicalVtableSlot {
                         slot: slot.slot,
+                        method: slot.method,
                         callee: slot.callee,
                         signature: PhysicalCallSignature {
                             params,

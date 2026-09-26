@@ -1230,6 +1230,7 @@ pub(crate) fn verify_terminator(
         PhysicalTerminator::DynCall {
             receiver,
             slot,
+            method,
             signature,
             args,
             result,
@@ -1237,7 +1238,7 @@ pub(crate) fn verify_terminator(
             unwind,
         } => {
             callable::verify_dyn_call(
-                module, function, *receiver, *slot, signature, args, *result,
+                module, function, *receiver, *slot, *method, signature, args, *result,
             )?;
             if normal.is_none() != (signature.return_ty == ResolvedTy::Never) {
                 return Err(PhysicalError::new(

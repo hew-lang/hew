@@ -128,6 +128,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalTerminator::DynCall {
                 receiver,
                 slot,
+                method: _,
                 signature,
                 args,
                 result,

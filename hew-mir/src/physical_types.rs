@@ -411,6 +411,8 @@ pub struct PhysicalVtableId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVtableSlot {
     pub slot: u32,
+    /// Trait method declaration selected by the checker for this slot.
+    pub method: hew_types::DefId,
     pub callee: CallableId,
     /// The erased boundary: the receiver rides a pointer, the rest of the ABI
     /// is this signature.
@@ -1080,6 +1082,8 @@ pub enum PhysicalTerminator {
     DynCall {
         receiver: ArgumentTransfer,
         slot: u32,
+        /// Exact method declaration expected at the selected slot.
+        method: hew_types::DefId,
         signature: PhysicalCallSignature,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,

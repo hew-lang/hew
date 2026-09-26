@@ -460,6 +460,63 @@ fn lower_source(source: &str) -> SemModule {
 }
 
 #[test]
+fn physical_dyn_call_requires_the_exact_trait_method_at_its_slot() {
+    let semantic = lower_source(
+        r#"
+        trait A { fn tag(self) -> string; }
+        trait B { fn tag(self) -> string; }
+        type T { v: i64 }
+        impl A for T { fn tag(self) -> string { "A" } }
+        impl B for T { fn tag(self) -> string { "B" } }
+        fn via_a(x: dyn A) -> string { x.tag() }
+        fn via_b(x: dyn B) -> string { x.tag() }
+        fn main() {
+            println(via_a(T { v: 1 }));
+            println(via_b(T { v: 2 }));
+        }
+        "#,
+    );
+    let mut target = target_for_inventory(&semantic);
+    let pointer = PhysicalLayout {
+        size: 8,
+        align: 8,
+        repr: PhysicalRepr::Pointer,
+    };
+    let dyn_layout = test_struct_layout(vec![pointer.clone(), pointer]);
+    for table in &semantic.vtables {
+        target.insert_layout(table.dyn_ty.clone(), dyn_layout.clone());
+    }
+    let mut physical = lower_physical_module(&semantic, target)
+        .unwrap()
+        .into_unverified();
+    verify_physical_module(&physical).expect("source dispatch verifies");
+    let methods: Vec<_> = physical
+        .vtables
+        .iter()
+        .flat_map(|table| &table.slots)
+        .map(|slot| slot.method)
+        .collect();
+    assert_eq!(methods.len(), 2, "one table for each trait");
+    let call = physical
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            PhysicalTerminator::DynCall { method, .. } => Some(method),
+            _ => None,
+        })
+        .expect("dynamic call");
+    *call = if *call == methods[0] {
+        methods[1]
+    } else {
+        methods[0]
+    };
+
+    let error = verify_physical_module(&physical).expect_err("wrong method must fail");
+    assert!(error.message.contains("fills with"), "{error:?}");
+}
+
+#[test]
 fn extern_byte_result_rejects_storage_aggregate_return() {
     let semantic = borrow_fixture::lower_source(
         r#"

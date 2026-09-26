@@ -135,56 +135,13 @@ impl Checker {
             }
             Expr::FieldAccess { object, field } => {
                 if field.0.name == hew_parser::ast::sym::EVENT {
-                    let machine = match &object.0 {
-                        Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_none() => {
-                            self.source_nominal_declaration(name.name.as_str())
-                                .or_else(|| {
-                                    self.resolve_nominal_declaration(
-                                        NominalOrigin::Lexical,
-                                        name.name.as_str(),
-                                    )
-                                })
-                        }
-                        Expr::FieldAccess {
-                            object,
-                            field: machine,
-                        } => {
-                            let Expr::Ident(module) = &object.0 else {
-                                return None;
-                            };
-                            if self.env.lookup_ref(module.name.as_str()).is_some() {
-                                return None;
-                            }
-                            self.resolve_module_type(
-                                module.name.as_str(),
-                                machine.0.name.as_str(),
-                            )?;
-                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                self.current_module.clone(),
-                                self.current_module_idx,
-                                module.to_string(),
-                            ));
-                            Some(format!(
-                                "{}.{}",
-                                self.canonical_module_import_owner(module.name.as_str()),
-                                machine.0
-                            ))
-                        }
-                        _ => None,
-                    };
-                    if let Some(machine) = machine.and_then(|path| self.defs.lookup_path(&path)) {
-                        if let Some(event) = self.defs.member_of_kind(
-                            machine,
-                            hew_parser::ast::sym::EVENT,
-                            crate::DeclarationKind::MachineEventType,
-                        ) {
-                            return Some(ResolvedDottedTypeHead {
-                                canonical_type: self.defs.path(event).to_string(),
-                                builtin: None,
-                                type_args,
-                                span: target.1.clone(),
-                            });
-                        }
+                    if let Some(canonical_type) = self.machine_event_type_head(object) {
+                        return Some(ResolvedDottedTypeHead {
+                            canonical_type,
+                            builtin: None,
+                            type_args,
+                            span: target.1.clone(),
+                        });
                     }
                 }
                 let Expr::Ident(module_short) = &object.0 else {
@@ -216,6 +173,49 @@ impl Checker {
             type_args,
             span: target.1.clone(),
         })
+    }
+
+    /// Resolve the machine declaration before selecting its owned event type.
+    /// Whole-module imports are gated through the type export table; a local
+    /// machine follows the same nominal authority as other type heads.
+    fn machine_event_type_head(&mut self, object: &Spanned<Expr>) -> Option<String> {
+        let machine = match &object.0 {
+            Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_none() => self
+                .source_nominal_declaration(name.name.as_str())
+                .or_else(|| {
+                    self.resolve_nominal_declaration(NominalOrigin::Lexical, name.name.as_str())
+                }),
+            Expr::FieldAccess {
+                object,
+                field: machine,
+            } => {
+                let Expr::Ident(module) = &object.0 else {
+                    return None;
+                };
+                if self.env.lookup_ref(module.name.as_str()).is_some() {
+                    return None;
+                }
+                self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    module.to_string(),
+                ));
+                Some(format!(
+                    "{}.{}",
+                    self.canonical_module_import_owner(module.name.as_str()),
+                    machine.0
+                ))
+            }
+            _ => None,
+        }?;
+        let machine = self.defs.lookup_path(&machine)?;
+        let event = self.defs.member_of_kind(
+            machine,
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        )?;
+        Some(self.defs.path(event).to_string())
     }
 
     /// Dispatch a member selected from a resolved type head. The declaration

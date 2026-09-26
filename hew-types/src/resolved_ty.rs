@@ -201,27 +201,12 @@ pub struct ResolvedTraitBound {
     pub assoc_bindings: Vec<(String, ResolvedTy)>,
 }
 
-impl ResolvedTraitBound {
-    fn comparison_key(
-        &self,
-    ) -> (
-        &Option<crate::DefId>,
-        &String,
-        &Vec<ResolvedTy>,
-        &Vec<(String, ResolvedTy)>,
-    ) {
-        (
-            &self.trait_id,
-            &self.trait_name,
-            &self.args,
-            &self.assoc_bindings,
-        )
-    }
-}
-
 impl PartialEq for ResolvedTraitBound {
     fn eq(&self, other: &Self) -> bool {
-        self.comparison_key() == other.comparison_key()
+        self.trait_id == other.trait_id
+            && self.trait_name == other.trait_name
+            && self.args == other.args
+            && self.assoc_bindings == other.assoc_bindings
     }
 }
 
@@ -235,13 +220,20 @@ impl PartialOrd for ResolvedTraitBound {
 
 impl Ord for ResolvedTraitBound {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.comparison_key().cmp(&other.comparison_key())
+        self.trait_id
+            .cmp(&other.trait_id)
+            .then_with(|| self.trait_name.cmp(&other.trait_name))
+            .then_with(|| self.args.cmp(&other.args))
+            .then_with(|| self.assoc_bindings.cmp(&other.assoc_bindings))
     }
 }
 
 impl std::hash::Hash for ResolvedTraitBound {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.comparison_key().hash(state);
+        self.trait_id.hash(state);
+        self.trait_name.hash(state);
+        self.args.hash(state);
+        self.assoc_bindings.hash(state);
     }
 }
 

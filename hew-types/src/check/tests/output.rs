@@ -324,6 +324,33 @@ fn source_resolutions_publish_selected_function_and_method() {
 }
 
 #[test]
+fn source_resolutions_publish_trait_bound_method_declaration() {
+    let source = "trait Describable { fn describe(value: Self) -> string; } \
+        type Label { text: string } \
+        impl Describable for Label { \
+            fn describe(label: Label) -> string { label.text } \
+        } \
+        fn probe<T: Describable>(item: T) -> string { item.describe() }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let method = source.find("item.describe()").unwrap() + "item.".len();
+    let key = SpanKey::in_module(&(method..method + "describe".len()), 0);
+    let Some(crate::check::scope::Resolution::Member(selected)) = output.resolutions.get(&key)
+    else {
+        panic!(
+            "trait-bound call has no selected declaration: {:?}",
+            output.resolutions
+        );
+    };
+    let trait_id = output.defs.lookup_path("Describable").unwrap();
+    assert_eq!(output.defs.owner(*selected), Some(trait_id));
+    assert_eq!(
+        output.defs.kind(*selected),
+        crate::DeclarationKind::TraitMethod
+    );
+}
+
+#[test]
 fn checker_output_contract_intersects_assignment_target_side_tables() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.assign_target_kinds.insert(

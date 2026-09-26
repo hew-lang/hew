@@ -204,7 +204,10 @@ impl Checker {
             self.report_error_with_suggestions(
                 TypeErrorKind::ResultDropped,
                 span,
-                format!("E_RESULT_DROPPED: discarded `Result` with error type `{error}`"),
+                format!(
+                    "{}: discarded `Result` with error type `{error}`",
+                    TypeErrorKind::ResultDropped.as_kind_str()
+                ),
                 vec![
                     "handle it with `?`, `match` or `handle`, or discard it deliberately with \
                      `let _ = <expr>;`"

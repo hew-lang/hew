@@ -5,6 +5,28 @@
 pub(super) use super::*;
 
 #[test]
+fn authored_static_method_wins_over_runtime_name() {
+    let source = "type Node { v: i64 } \
+        impl Node { fn shutdown() { println(\"user shutdown\"); } } \
+        fn main() { Node.shutdown(); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let declaration = *output
+        .impl_method_declaration_ids
+        .get("Node::shutdown")
+        .expect("authored static method identity");
+    let start = source.rfind("Node.shutdown()").unwrap();
+    let key = SpanKey::in_module(&(start..start + "Node.shutdown()".len()), 0);
+    assert!(matches!(
+        output.method_call_rewrites.get(&key),
+        Some(MethodCallRewrite::RewriteModuleQualifiedToFunction {
+            target: crate::check::dispatch::CallTarget::ImplMethod(id),
+            ..
+        }) if *id == declaration
+    ));
+}
+
+#[test]
 fn source_resolutions_keep_top_level_consts_as_declarations() {
     let source = "const A: i64 = 10; const B: i64 = A + 1; \
         fn main() -> i64 { B }";

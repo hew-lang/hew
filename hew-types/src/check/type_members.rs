@@ -425,11 +425,14 @@ impl Checker {
             crate::BuiltinType::Vec,
             "from",
         );
-        let checker_member = if self.has_fn_sig(&internal_member) || is_vec_from {
-            Some(internal_member.clone())
-        } else {
-            None
-        };
+        // A source impl may deliberately use a name also registered by the
+        // runtime (for example `Node::shutdown`). Its declaration owns the
+        // call; only a head without an authored impl uses the builtin route.
+        let checker_member = (!self
+            .impl_method_declaration_ids
+            .contains_key(&internal_member)
+            && (self.has_fn_sig(&internal_member) || is_vec_from))
+            .then_some(internal_member.clone());
         if let Some(checker_member) = checker_member {
             let function = (Expr::Ident(Ident::new(&checker_member)), head.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(result) = expected.and_then(|expected| {

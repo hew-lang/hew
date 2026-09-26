@@ -1,8 +1,13 @@
-actor ProbeSink { 
-    var seen: i64,
-    receive fn take(label: string) { seen = seen + 1; }
-    receive fn count() -> i64 { seen }
+actor ProbeSink {
+    var seen: i64;
+    receive fn take(label: string) {
+        seen = seen + 1;
+    }
+    receive fn count() -> i64 {
+        seen
+    }
 }
+
 fn main() -> i64 {
     let sink = spawn ProbeSink(seen: 0);
     var i: i64 = 0;
@@ -10,5 +15,12 @@ fn main() -> i64 {
         let _ = sink.take("unused".to_upper());
         i = i + 1;
     }
-    match sink.count() { .Ok(n) => if n == 50 { 0 } else { 71 }, .Err(_) => 72 }
+    match sink.count() {
+        .Ok(n) => if n == 50 {
+            0
+        } else {
+            71
+        }
+        .Err(_) => 72,
+    }
 }

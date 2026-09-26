@@ -1,10 +1,14 @@
 // No `import std.failure`: `CrashInfo` and `CrashAction` reach this program
 // through the prelude alone, which is the spelling most users write first.
 actor Worker {
-    var value: i64,
+    var value: i64;
 
-    receive fn get() -> i64 { value }
-    receive fn boom() { panic("crash hook payload"); }
+    receive fn get() -> i64 {
+        value
+    }
+    receive fn boom() {
+        panic("crash hook payload");
+    }
 
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
@@ -18,10 +22,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child w: Worker(value: 42),
+    child w: Worker(value: 42);
 }
 
 fn main() -> i64 {
@@ -29,7 +33,11 @@ fn main() -> i64 {
     let w = sup.w;
     let _ = w.boom();
     // Only a completed restart resolves this role Live again.
-    let fresh = await_restart sup.w;
+    let fresh = {
+        let __hew_migrated_role_979 = sup.w;
+        restarted(__hew_migrated_role_979);
+        __hew_migrated_role_979
+    };
     match fresh.get() {
         .Ok(n) => n,
         .Err(_) => 1,

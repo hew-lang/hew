@@ -2,7 +2,7 @@
 // Generic fields are inspected after concrete substitution.
 #[resource]
 type ResourceToken {
-    id: i64
+    id: i64;
 }
 
 impl ResourceToken {
@@ -11,7 +11,7 @@ impl ResourceToken {
 
 #[linear]
 type LinearTicket {
-    id: i64
+    id: i64;
 }
 
 impl LinearTicket {
@@ -21,24 +21,24 @@ impl LinearTicket {
 }
 
 type PlainWrapper {
-    token: ResourceToken
+    token: ResourceToken;
 }
 
 type GenericWrapper<T> {
-    value: T
+    value: T;
 }
 
 enum ResourceEnvelope {
-    Full(ResourceToken),
-    Empty
+    Full(ResourceToken);
+    Empty;
 }
 
 type TupleWrapper {
-    value: (i64, ResourceEnvelope)
+    value: (i64, ResourceEnvelope);
 }
 
 type ArrayWrapper {
-    values: [LinearTicket; 1]
+    values: [LinearTicket; 1];
 }
 
 fn main() {

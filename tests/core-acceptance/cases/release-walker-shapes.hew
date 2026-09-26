@@ -5,7 +5,9 @@
 // before the fields declared ahead of it, elements in order.
 
 #[resource]
-type Tag { id: i64 }
+type Tag {
+    id: i64;
+}
 
 impl Tag {
     fn close(consume self) {
@@ -13,17 +15,33 @@ impl Tag {
     }
 }
 
-type Item { name: string }
-type Node { child: Vec<Node> }
-type Chain { next: HashMap<i64, Chain> }
-type Holder { tag: Tag, kids: Vec<Holder> }
-type Mixed { tag: Tag, data: Vec<Item> }
+type Item {
+    name: string;
+}
+
+type Node {
+    child: Vec<Node>;
+}
+
+type Chain {
+    next: HashMap<i64, Chain>;
+}
+
+type Holder {
+    tag: Tag;
+    kids: Vec<Holder>;
+}
+
+type Mixed {
+    tag: Tag;
+    data: Vec<Item>;
+}
 
 // A wide collection is released one bounded step at a time, not one worklist
 // entry per element.
 fn wide_records() {
     var items: Vec<Item> = Vec.new();
-    for i in 0..200000 {
+    for i in 0 .. 200000 {
         items.push(Item { name: f"item{i}" });
     }
     println(f"wide={items.len()}");
@@ -33,7 +51,7 @@ fn wide_records() {
 // heap-owning collection, and HashMap is the other one.
 fn deep_map_chain() {
     var chain = Chain { next: HashMap.new() };
-    for i in 0..50000 {
+    for i in 0 .. 50000 {
         var link: HashMap<i64, Chain> = HashMap.new();
         link.insert(1, chain);
         chain = Chain { next: link };
@@ -45,9 +63,9 @@ fn deep_map_chain() {
 // before the scan reaches the next.
 fn map_of_deep_vectors() {
     var roots: HashMap<i64, Node> = HashMap.new();
-    for key in 0..4 {
+    for key in 0 .. 4 {
         var node = Node { child: Vec.new() };
-        for i in 0..5000 {
+        for i in 0 .. 5000 {
             var wrapper: Vec<Node> = Vec.new();
             wrapper.push(node);
             node = Node { child: wrapper };
@@ -71,7 +89,7 @@ fn resource_release_order() {
 // close is not, so the closes still run in element order.
 fn mixed_release_order() {
     var mixed: Vec<Mixed> = Vec.new();
-    for i in 0..2 {
+    for i in 0 .. 2 {
         var data: Vec<Item> = Vec.new();
         data.push(Item { name: f"payload{i}" });
         mixed.push(Mixed { tag: Tag { id: 10 + i }, data: data });

@@ -1,8 +1,8 @@
 actor Worker {
-    var label: string,
-    let count: i64,
-    var mode: string,
-    var attempts: i64 = 0,
+    var label: string;
+    let count: i64;
+    var mode: string;
+    var attempts: i64 = 0;
     init(name: string, size: i64, fast: bool) {
         label = name.to_upper();
         count = size + 1;
@@ -15,11 +15,21 @@ actor Worker {
         attempts = attempts + 1;
         println(describe());
     }
-    fn describe() -> string { label + "/" + mode }
-    receive fn label() -> string { label }
-    receive fn count() -> i64 { count }
-    receive fn mode() -> string { mode }
-    receive fn attempts() -> i64 { attempts }
+    fn describe() -> string {
+        label + "/" + mode
+    }
+    receive fn label() -> string {
+        label
+    }
+    receive fn count() -> i64 {
+        count
+    }
+    receive fn mode() -> string {
+        mode
+    }
+    receive fn attempts() -> i64 {
+        attempts
+    }
 }
 
 fn show(worker: Worker) {
@@ -32,8 +42,16 @@ fn show(worker: Worker) {
 fn main() {
     let quick = spawn Worker(name: "ready", size: 6, fast: true);
     show(quick);
-    close(quick);
+    {
+        let __hew_migrated_actor_1023 = quick;
+        stop(__hew_migrated_actor_1023);
+        stopped(__hew_migrated_actor_1023);
+    };
     let slow = spawn Worker(name: "later", size: 41, fast: false);
     show(slow);
-    close(slow);
+    {
+        let __hew_migrated_actor_1124 = slow;
+        stop(__hew_migrated_actor_1124);
+        stopped(__hew_migrated_actor_1124);
+    };
 }

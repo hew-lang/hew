@@ -9,8 +9,8 @@
 //! error label on each failure path, then exits 0.
 
 enum ConfigError {
-    ParseFailed(string),
-    MissingField(string),
+    ParseFailed(string);
+    MissingField(string);
 }
 
 fn validate(s: string) -> Result<i64, string> {
@@ -25,17 +25,17 @@ fn parse_port(s: string) -> Result<i64, ConfigError> {
     // let-else: bind the port or bail with a wrapped error (return-as-expr in
     // the else block).
     let .Ok(n) = validate(s) else {
-        return .Err(ConfigError.ParseFailed("invalid"))
+        return .Err(ConfigError.ParseFailed("invalid"));
     };
     .Ok(n)
 }
 
 fn load_config(port_str: string, host: string) -> Result<string, ConfigError> {
     let .Ok(port) = parse_port(port_str) else {
-        return .Err(ConfigError.ParseFailed("port"))
+        return .Err(ConfigError.ParseFailed("port"));
     };
     if host.len() == 0 {
-        return .Err(ConfigError.MissingField("host"))
+        return .Err(ConfigError.MissingField("host"));
     }
     .Ok(f"config: {host}:{port}")
 }

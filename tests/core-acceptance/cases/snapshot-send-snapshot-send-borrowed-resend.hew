@@ -1,18 +1,22 @@
-actor Consumer { 
-    var last: string,
+actor Consumer {
+    var last: string;
 
     receive fn take(value: string) {
         last = value;
     }
 
     receive fn received_live() -> i64 {
-        if last.contains("borrow") { 1 } else { 0 }
+        if last.contains("borrow") {
+            1
+        } else {
+            0
+        }
     }
 }
 
-actor Relay { 
-    var consumer: Consumer,
-    var last: string,
+actor Relay {
+    var consumer: Consumer;
+    var last: string;
 
     receive fn forward(value: string) {
         let _ = consumer.take(value);
@@ -20,7 +24,11 @@ actor Relay {
     }
 
     receive fn source_live() -> i64 {
-        if last.contains("borrow") { 1 } else { 0 }
+        if last.contains("borrow") {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -37,8 +45,14 @@ fn main() -> i64 {
         }
         i = i + 1;
     }
-    let source_live = match relay.source_live() { .Ok(v) => v, .Err(_) => -1 };
-    let received_live = match consumer.received_live() { .Ok(v) => v, .Err(_) => -1 };
+    let source_live = match relay.source_live() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    let received_live = match consumer.received_live() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
     print(f"{received_live}:{source_live}:{sender_seen}");
     0
 }

@@ -13,8 +13,8 @@
 //! proving value-semantics (the clone is a copy, not an alias).
 
 type Pair<A, B> {
-    a: A,
-    b: B,
+    a: A;
+    b: B;
 }
 
 // Generic record clone over scalar leaves; mutate the original and assert

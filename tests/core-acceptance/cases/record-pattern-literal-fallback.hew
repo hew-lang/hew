@@ -5,8 +5,8 @@
 //! storage to destructure.
 
 type Reading {
-    code: i64,
-    label: string,
+    code: i64;
+    label: string;
 }
 
 fn make(code: i64, label: string) -> Reading {

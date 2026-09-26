@@ -2,7 +2,10 @@ import std.stream;
 
 actor CarryFallEscape {
     receive fn run(unused: i64) {
-        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         tx.send("escaped").expect("send");
         tx.close();
         var carry = "init";
@@ -14,8 +17,10 @@ actor CarryFallEscape {
                 .Some(item) => {
                     carry = item;
                     keep_going = false;
-                },
-                .None => { keep_going = false; },
+                }
+                .None => {
+                    keep_going = false;
+                }
             }
         }
         println(carry);

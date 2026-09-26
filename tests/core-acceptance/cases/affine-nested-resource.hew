@@ -1,6 +1,9 @@
 import std.stream;
 
-enum Source { File(Stream<string>, string), Missing }
+enum Source {
+    File(Stream<string>, string);
+    Missing;
+}
 
 fn open(path: string) -> Stream<string> {
     match stream.open(path) {

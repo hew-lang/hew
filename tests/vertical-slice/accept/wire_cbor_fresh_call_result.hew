@@ -7,7 +7,7 @@
 // Packet.decode(raw)` sibling worked. Exit 42 proves the full round-trip.
 #[wire]
 type Packet {
-    id: i64 @1,
+    id: i64 @1;
 }
 
 fn mk() -> bytes {

@@ -8,15 +8,15 @@ use hew_types::Ty;
 
 #[test]
 fn spawn_returns_the_actor_type() {
-    let source = r"
-        actor Counter {
-            let n: i32,
-            init() {}
-        }
-        fn main() {
-            let c = spawn Counter(n: 0);
-        }
-    ";
+    let source = r"actor Counter {
+    let n: i32;
+    init() {}
+}
+
+fn main() {
+    let c = spawn Counter(n: 0);
+}
+";
     let (prog, output) = common::parse_and_typecheck_inline(source);
     assert!(
         output.errors.is_empty(),

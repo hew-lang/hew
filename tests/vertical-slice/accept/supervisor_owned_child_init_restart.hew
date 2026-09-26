@@ -11,7 +11,7 @@
 //   1. Initial child: name = "restart-me" (deep-cloned from config), then the
 //      child MUTATES its own name to "x" (length 1).
 //   2. The child crashes; the supervisor restarts it.
-//   3. `await_restart` re-fetches the restarted child. Its name was RE-DERIVED
+//   3. `restarted` re-fetches the restarted child. Its name was RE-DERIVED
 //      from config ("restart-me", length 10) by the thunk — NOT the mutated "x"
 //      (length 1) from the dead instance, and NOT an alias of the dead
 //      instance's freed heap (which would be a UAF, not a clean length).
@@ -20,10 +20,12 @@
 // holds a fresh, independent owned value cloned from config. Length 1 would mean
 // the dead instance's mutated state leaked through; a trap/garbage length would
 // mean an aliasing UAF.
-type AppConfig { label: string }
+type AppConfig {
+    label: string;
+}
 
 actor Tagged {
-    var name: string,
+    var name: string;
     receive fn name_len() -> i64 {
         name.len()
     }
@@ -36,10 +38,10 @@ actor Tagged {
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child t: Tagged(name: config.label),
+    child t: Tagged(name: config.label);
 }
 
 fn main() -> i64 {
@@ -48,19 +50,25 @@ fn main() -> i64 {
     let t = sup.t;
     // Initial deep-cloned owned value: "restart-me" (length 10).
     match t.name_len() {
-        .Err(_) => { return 1; },
+        .Err(_) => {
+            return 1;
+        }
         .Ok(n) => {
             if n != 10 {
                 return 2;
             }
-        },
+        }
     }
     // Mutate the live instance's owned state to a distinct value (length 1),
     // then crash. Both are fire-and-forget tells processed in mailbox order, so
     // the shrink lands before the crash on the SAME (doomed) instance.
     let _ = t.shrink();
     let _ = t.crash_me();
-    let t2 = await_restart sup.t;
+    let t2 = {
+        let __hew_migrated_role_2383 = sup.t;
+        restarted(__hew_migrated_role_2383);
+        __hew_migrated_role_2383
+    };
     // The restarted child re-derived "restart-me" (length 10) from config,
     // independent of the dead instance's mutated "x".
     match t2.name_len() {

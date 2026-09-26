@@ -371,10 +371,9 @@ fn comparison_full_spaces_parses_normally() {
 ///
 #[test]
 fn struct_rest_pattern_does_not_panic() {
-    let source = r"
-type Point {
-    x: i64,
-    y: i64,
+    let source = r"type Point {
+    x: i64;
+    y: i64;
 }
 
 fn main() -> i64 {
@@ -382,7 +381,8 @@ fn main() -> i64 {
     match p {
         Point { x, .. } => x,
     }
-}";
+}
+";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),

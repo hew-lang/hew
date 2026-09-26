@@ -1,7 +1,13 @@
 #[wire]
-type Inner { v: i64 @1, }
+type Inner {
+    v: i64 @1;
+}
+
 #[wire]
-type Container { items: Vec<Inner> @1, seq: i64 @2, }
+type Container {
+    items: Vec<Inner> @1;
+    seq: i64 @2;
+}
 
 fn main() -> i64 {
     var total: i64 = 0;

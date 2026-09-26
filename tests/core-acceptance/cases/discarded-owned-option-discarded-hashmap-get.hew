@@ -3,6 +3,9 @@ fn one() {
     m.insert(1, "discard-get".to_upper());
     m.get(1);
 }
+
 fn main() {
-    for i in 0..50 { one(); }
+    for i in 0 .. 50 {
+        one();
+    }
 }

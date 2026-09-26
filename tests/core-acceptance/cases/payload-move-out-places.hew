@@ -5,7 +5,7 @@
 // scrutinee's own drop afterwards adds nothing.
 #[resource]
 type Tag {
-    id: i64,
+    id: i64;
 }
 
 impl Tag {
@@ -15,20 +15,20 @@ impl Tag {
 }
 
 enum Box {
-    Full(Tag),
-    Empty,
+    Full(Tag);
+    Empty;
 }
 
 type Holder {
-    b: Box,
+    b: Box;
 }
 
 type Inner {
-    b: Box,
+    b: Box;
 }
 
 type Outer {
-    inner: Inner,
+    inner: Inner;
 }
 
 fn mk(id: i64) -> Box {
@@ -42,8 +42,8 @@ fn bare_binding() {
         Box.Full(v) => {
             let w = v;
             println(f"binding {w.id}");
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println("after binding");
 }
@@ -54,8 +54,8 @@ fn ephemeral_call() {
         Box.Full(v) => {
             let w = v;
             println(f"ephemeral {w.id}");
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println("after ephemeral");
 }
@@ -67,8 +67,8 @@ fn field_place() {
         Box.Full(v) => {
             let w = v;
             println(f"field {w.id}");
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println("after field");
 }
@@ -80,8 +80,8 @@ fn nested_field_place() {
         Box.Full(v) => {
             let w = v;
             println(f"nested-field {w.id}");
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println("after nested-field");
 }
@@ -93,8 +93,8 @@ fn tuple_place() {
         Box.Full(v) => {
             let w = v;
             println(f"tuple {w.id}");
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println("after tuple");
 }
@@ -108,8 +108,8 @@ fn block_wrapped_place() {
         Box.Full(v) => {
             let w = v;
             println(f"block {w.id}");
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println("after block");
 }
@@ -125,8 +125,8 @@ fn if_wrapped_place(flag: bool) {
         Box.Full(v) => {
             let w = v;
             println(f"if {w.id}");
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println("after if");
 }

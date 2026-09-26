@@ -2,7 +2,11 @@
 //! with the else branch taken on the fallthrough arm.
 
 fn lookup(key: i64) -> Option<string> {
-    if key > 0 { .Some(("value-" + "x")) } else { .None }
+    if key > 0 {
+        .Some(("value-" + "x"))
+    } else {
+        .None
+    }
 }
 
 fn main() -> i64 {
@@ -11,16 +15,22 @@ fn main() -> i64 {
     } else {
         println("missing-statement");
     }
-
     if let .Some(found) = lookup(0) {
         println(found);
     } else {
         println("missing-statement");
     }
-
-    let chosen = if let .Some(found) = lookup(1) { found } else { "missing-expression" };
+    let chosen = if let .Some(found) = lookup(1) {
+        found
+    } else {
+        "missing-expression"
+    };
     println(chosen);
-    let absent = if let .Some(found) = lookup(0) { found } else { "missing-expression" };
+    let absent = if let .Some(found) = lookup(0) {
+        found
+    } else {
+        "missing-expression"
+    };
     println(absent);
     0
 }

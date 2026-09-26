@@ -7,25 +7,25 @@ fn test_lookup_distinguishes_missing_null_and_wrong_kind() {
     var doc = json.object();
     doc.set("present", json.null()).expect("set succeeds");
     match doc.get_field("missing") {
-        .Ok(.None) => {},
+        .Ok(.None) => {}
         _ => panic("missing field must be None"),
     }
     let value = doc.get_field("present").expect("get_field succeeds").expect("get_field returns a value");
     assert(value.type_of() == Kind.Null);
     match value.get_field("x") {
-        .Err(AccessError.WrongKind(Kind.Object, Kind.Null)) => {},
+        .Err(AccessError.WrongKind(Kind.Object, Kind.Null)) => {}
         _ => panic("null receiver must be a shape error"),
     }
     match json.from_bool(false).get_int() {
-        .Err(AccessError.WrongKind(Kind.Integer, Kind.Bool)) => {},
+        .Err(AccessError.WrongKind(Kind.Integer, Kind.Bool)) => {}
         _ => panic("boolean must not become zero"),
     }
     match json.from_int(0).get_string() {
-        .Err(AccessError.WrongKind(Kind.String, Kind.Integer)) => {},
+        .Err(AccessError.WrongKind(Kind.String, Kind.Integer)) => {}
         _ => panic("integer must not become an empty string"),
     }
     match json.from_string("").get_bool() {
-        .Err(AccessError.WrongKind(Kind.Bool, Kind.String)) => {},
+        .Err(AccessError.WrongKind(Kind.Bool, Kind.String)) => {}
         _ => panic("string must not become false"),
     }
 }
@@ -54,11 +54,11 @@ fn test_failed_mutation_preserves_receiver_and_child() {
     var child = json.array();
     child.push(json.from_int(9)).expect("push succeeds");
     match receiver.set("x", child) {
-        .Err(AccessError.WrongKind(Kind.Object, Kind.String)) => {},
+        .Err(AccessError.WrongKind(Kind.Object, Kind.String)) => {}
         _ => panic("set must reject a scalar receiver"),
     }
     match receiver.push(child) {
-        .Err(AccessError.WrongKind(Kind.Array, Kind.String)) => {},
+        .Err(AccessError.WrongKind(Kind.Array, Kind.String)) => {}
         _ => panic("push must reject a scalar receiver"),
     }
     assert(receiver.get_string().expect("get_string succeeds") == "original");
@@ -71,11 +71,11 @@ fn test_array_absence_and_index_validation() {
     values.push(json.null()).expect("push succeeds");
     assert(values.array_get(0).expect("array_get succeeds").expect("array_get returns a value").type_of() == Kind.Null);
     match values.array_get(1) {
-        .Ok(.None) => {},
+        .Ok(.None) => {}
         _ => panic("missing index"),
     }
     match values.array_get(2147483647) {
-        .Ok(.None) => {},
+        .Ok(.None) => {}
         _ => panic("large missing index"),
     }
     match values.array_get(-1) {
@@ -87,7 +87,7 @@ fn test_array_absence_and_index_validation() {
         _ => panic("index must not wrap to zero"),
     }
     match json.object().array_get(0) {
-        .Err(AccessError.WrongKind(Kind.Array, Kind.Object)) => {},
+        .Err(AccessError.WrongKind(Kind.Array, Kind.Object)) => {}
         _ => panic("wrong container is not an absent element"),
     }
 }
@@ -99,7 +99,7 @@ fn test_exact_signed_and_unsigned_integer_boundaries() {
     assert(unsigned.get_u64().expect("get_u64 succeeds") == maximum);
     assert(json.parse(unsigned.stringify().expect("stringify succeeds")).expect("parse succeeds").get_u64().expect("get_u64 succeeds") == maximum);
     match unsigned.get_int() {
-        .Err(AccessError.IntegerRange) => {},
+        .Err(AccessError.IntegerRange) => {}
         _ => panic("u64 max cannot fit i64"),
     }
     let above_signed: u64 = 9223372036854775807 as u64 + 1;
@@ -110,13 +110,13 @@ fn test_exact_signed_and_unsigned_integer_boundaries() {
     let signed_min = json.parse("-9223372036854775808").expect("parse succeeds");
     assert(signed_min.get_int().expect("get_int succeeds") == -9223372036854775808);
     match signed_min.get_u64() {
-        .Err(AccessError.IntegerRange) => {},
+        .Err(AccessError.IntegerRange) => {}
         _ => panic("negative unsigned conversion"),
     }
     assert(!(json.from_int(9007199254740992) == json.from_int(9007199254740993)));
     assert(json.from_int(9007199254740993).get_int().expect("get_int succeeds") == 9007199254740993);
     match json.from_string("1").get_u64() {
-        .Err(AccessError.WrongKind(Kind.Integer, Kind.String)) => {},
+        .Err(AccessError.WrongKind(Kind.Integer, Kind.String)) => {}
         _ => panic("unsigned access must check kind"),
     }
 }
@@ -129,7 +129,7 @@ fn test_checked_scalars_and_format_equality() {
     assert(floating.get_float().expect("get_float succeeds") == 1.0);
     assert(!(floating == json.from_int(1)));
     match json.from_int(1).get_float() {
-        .Err(AccessError.WrongKind(Kind.Float, Kind.Integer)) => {},
+        .Err(AccessError.WrongKind(Kind.Float, Kind.Integer)) => {}
         _ => panic("integer must not silently become a float"),
     }
     assert(json.parse("-0.0").expect("parse succeeds") == json.parse("0.0").expect("parse succeeds"));
@@ -161,16 +161,16 @@ fn test_float_constructor_rejects_nonfinite_values() {
     let large = json.parse("1e308").expect("parse succeeds").get_float().expect("get_float succeeds");
     let infinity = large * large;
     match json.from_float(infinity) {
-        .Err(EncodeError.NonFiniteFloat) => {},
+        .Err(EncodeError.NonFiniteFloat) => {}
         _ => panic("infinity"),
     }
     assert(infinity > large);
     match json.from_float(-infinity) {
-        .Err(EncodeError.NonFiniteFloat) => {},
+        .Err(EncodeError.NonFiniteFloat) => {}
         _ => panic("negative infinity"),
     }
     match json.from_float(infinity - infinity) {
-        .Err(EncodeError.NonFiniteFloat) => {},
+        .Err(EncodeError.NonFiniteFloat) => {}
         _ => panic("NaN"),
     }
     assert(json.from_float(1.25).expect("from_float succeeds").get_float().expect("get_float succeeds") == 1.25);

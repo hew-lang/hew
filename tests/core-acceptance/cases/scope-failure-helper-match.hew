@@ -4,8 +4,16 @@ import std.stream;
 
 fn verdict(failure: ScopeFailure) -> string {
     match failure {
-        .Deadline { message } => if message.contains("Deadline") { "deadline" } else { "bad deadline" },
-        .Fault { message } => if message.contains("boom") { "fault boom" } else { "bad fault" },
+        .Deadline { message } => if message.contains("Deadline") {
+            "deadline"
+        } else {
+            "bad deadline"
+        }
+        .Fault { message } => if message.contains("boom") {
+            "fault boom"
+        } else {
+            "bad fault"
+        }
     }
 }
 

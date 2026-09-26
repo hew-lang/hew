@@ -8,7 +8,7 @@ import std.encoding.utf8;
 import std.stream;
 
 actor Drainer {
-    let input: stream.Stream<bytes>,
+    let input: stream.Stream<bytes>;
     receive fn run() {
 
         // Consumer: each recv suspends until a frame is ready; None == EOF.
@@ -23,10 +23,10 @@ actor Drainer {
                     };
                     println(f"recv {decoded_frame}");
                     received = received + 1;
-                },
+                }
                 .None => {
                     done = true;
-                },
+                }
             }
         }
         println(f"drained {received} frames");

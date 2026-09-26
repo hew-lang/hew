@@ -7,10 +7,16 @@ fn main() -> i64 {
     var i = 0;
     while i < 50 {
         match f() {
-            .Ok(b) => { total = total + b.len(); }
+            .Ok(b) => {
+                total = total + b.len();
+            }
             .Err(e) => {}
         }
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

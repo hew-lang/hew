@@ -14,7 +14,7 @@
 
 #[resource]
 type Socket {
-    fd: i64,
+    fd: i64;
 }
 
 impl Socket {
@@ -26,7 +26,7 @@ impl Socket {
 
 #[linear]
 type Ticket {
-    id: i64,
+    id: i64;
 }
 
 impl Ticket {
@@ -61,26 +61,26 @@ actor Leaf {
 }
 
 actor Peer {
-    let leaf: Leaf,
+    let leaf: Leaf;
     receive fn relay(n: i64) -> i64 {
         match leaf.value(n) {
             .Ok(v) => {
                 return v;
-            },
+            }
             .Err(_) => {
                 return -1;
-            },
+            }
         }
     }
 }
 
 type Holder {
-    socket: Socket,
+    socket: Socket;
 }
 
 actor Racer {
-    let left: TestSink,
-    let right: TestSink,
+    let left: TestSink;
+    let right: TestSink;
 
     // Two DISTINCT resources, one per arm: each arm's source is issued before
     // dispatch, so each socket is transferred exactly once. The winner's exact
@@ -92,11 +92,11 @@ actor Racer {
             reply from left.take_socket(a) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -1,
-            },
+            }
             reply from right.take_socket(b) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -1,
-            },
+            }
             after 2s => -1,
         };
         return winner;

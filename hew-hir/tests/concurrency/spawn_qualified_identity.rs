@@ -13,10 +13,7 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
-const BANK_SRC: &str = "pub actor Account {\n\
-                        \x20   var balance: i64 = 0,\n\
-                        \x20   receive fn deposit(n: i64) -> i64 { balance = balance + n; balance }\n\
-                        }\n";
+const BANK_SRC: &str = "pub actor Account {\n    var balance: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        balance = balance + n;\n        balance\n    }\n}\n";
 
 /// Build a program whose root resolves `import hew::bank` (resolved items
 /// attached) and whose module graph carries the `bank` module, mirroring the
@@ -154,13 +151,7 @@ fn qualified_spawn_lowers_dotted_actor_name_and_handle_type() {
 #[test]
 fn root_spawn_keeps_bare_actor_name_and_handle_type() {
     let program = build_program(
-        "actor Local {\n\
-         \x20   var total: i64 = 0,\n\
-         \x20   receive fn poke() { total = total + 1; }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let l = spawn Local();\n\
-         }\n",
+        "actor Local {\n    var total: i64 = 0;\n    receive fn poke() {\n        total = total + 1;\n    }\n}\n\nfn main() {\n    let l = spawn Local();\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);

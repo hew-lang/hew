@@ -24,15 +24,15 @@
 // exactly.
 machine Latch {
     events {
-        Try,
+        Try;
     }
 
-    state Closed { code: i64, },
-    state Open,
-    state Bailed,
+    state Closed { code: i64; }
+    state Open;
+    state Bailed;
 
-    on Try: Closed => Open when state.code == 42,
-    on Try: _ => Bailed,
+    on Try: Closed => Open when state.code == 42;
+    on Try: _ => Bailed;
 }
 
 fn main() {

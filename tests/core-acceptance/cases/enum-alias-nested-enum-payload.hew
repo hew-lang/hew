@@ -1,11 +1,11 @@
 enum Inner {
-    Text(string),
-    Empty,
+    Text(string);
+    Empty;
 }
 
 enum Outer {
-    Full(Inner),
-    Empty,
+    Full(Inner);
+    Empty;
 }
 
 fn main() {
@@ -16,10 +16,10 @@ fn main() {
             match inner {
                 .Text(s) => {
                     println(s);
-                },
-                .Empty => {},
+                }
+                .Empty => {}
             }
-        },
-        .Empty => {},
+        }
+        .Empty => {}
     }
 }

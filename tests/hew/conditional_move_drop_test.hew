@@ -12,7 +12,6 @@
 //! in `hew-mir/tests/lowering_expr/conditional_move_drop.rs` and by the
 //! `conditional-move-drop-*` core-acceptance safety cases.
 
-
 fn make_vec() -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
     v.push(40);
@@ -237,7 +236,7 @@ fn test_both_arm_moves_release_once_each() {
 // on the neither path (bounded leak, never a wrong free). Values must stay
 // exact on every path.
 type Crate {
-    items: Vec<i64>
+    items: Vec<i64>;
 }
 
 fn mixed_ingress(a: bool, b: bool) -> i64 {

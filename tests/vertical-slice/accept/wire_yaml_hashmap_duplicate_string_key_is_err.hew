@@ -2,7 +2,7 @@
 // typed text contract as JSON object maps; repeated semantic keys are errors.
 #[wire]
 type DuplicateStringMap {
-    values: HashMap<string, string> @1,
+    values: HashMap<string, string> @1;
 }
 
 fn main() -> i64 {

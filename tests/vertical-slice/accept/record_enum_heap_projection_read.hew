@@ -1,14 +1,14 @@
-enum EnumHeapReadChoice { Pair(string, i64), }
+enum EnumHeapReadChoice {
+    Pair(string, i64);
+}
+
 type EnumHeapReadCarrier {
-    choice: EnumHeapReadChoice,
-    sibling: string,
+    choice: EnumHeapReadChoice;
+    sibling: string;
 }
 
 fn project(i: i64) -> i64 {
-    let r = EnumHeapReadCarrier {
-        choice: EnumHeapReadChoice.Pair(("enum-" + "payload"), i),
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = EnumHeapReadCarrier { choice: EnumHeapReadChoice.Pair(("enum-" + "payload"), i), sibling: ("sibling-" + "payload") };
     match r.choice {
         EnumHeapReadChoice.Pair(text, _) => text.len(),
     }
@@ -21,5 +21,9 @@ fn main() -> i64 {
         total = total + project(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

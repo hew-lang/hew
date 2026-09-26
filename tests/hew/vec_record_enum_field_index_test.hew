@@ -5,13 +5,13 @@
 //! while `hew check` accepted the program).
 
 enum JobKind {
-    Compute(i32),
-    Poison,
+    Compute(i32);
+    Poison;
 }
 
 type Job {
-    id: i32,
-    kind: JobKind,
+    id: i32;
+    kind: JobKind;
 }
 
 fn payload_of(kind: JobKind) -> i64 {

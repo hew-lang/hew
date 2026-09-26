@@ -1,7 +1,15 @@
 #[wire]
-type Inner { name: string @1, }
+type Inner {
+    name: string @1;
+}
+
 #[wire]
-type Packet { label: string @1, tags: Vec<string> @2, inner: Inner @3, seq: i64 @4, }
+type Packet {
+    label: string @1;
+    tags: Vec<string> @2;
+    inner: Inner @3;
+    seq: i64 @4;
+}
 
 fn main() -> i64 {
     var total: i64 = 0;

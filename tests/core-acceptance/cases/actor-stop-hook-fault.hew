@@ -1,12 +1,19 @@
 import std.stream;
 
 actor Keeper {
-    var journal: Stream<string>,
+    var journal: Stream<string>;
     #[on(stop)]
-    fn stopping() { println("stop"); panic("goodbye failed"); }
+    fn stopping() {
+        println("stop");
+        panic("goodbye failed");
+    }
     #[on(stop)]
-    fn never() { println("unreachable hook"); }
-    receive fn ping() -> i64 { 1 }
+    fn never() {
+        println("unreachable hook");
+    }
+    receive fn ping() -> i64 {
+        1
+    }
 }
 
 fn open(path: string) -> Stream<string> {
@@ -22,6 +29,10 @@ fn main() {
         .Ok(value) => println(value),
         .Err(_) => panic("ping failed"),
     }
-    close(keeper);
+    {
+        let __hew_migrated_actor_655 = keeper;
+        stop(__hew_migrated_actor_655);
+        stopped(__hew_migrated_actor_655);
+    };
     println("unreachable");
 }

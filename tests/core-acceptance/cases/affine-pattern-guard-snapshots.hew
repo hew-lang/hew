@@ -1,6 +1,6 @@
 #[resource]
 type Ticket {
-    name: string,
+    name: string;
 }
 
 impl Ticket {
@@ -10,14 +10,14 @@ impl Ticket {
 }
 
 type Pair {
-    text: string,
-    other: string,
+    text: string;
+    other: string;
 }
 
 type OwnedPair {
-    ticket: Ticket,
-    text: string,
-    other: string,
+    ticket: Ticket;
+    text: string;
+    other: string;
 }
 
 fn selected() {
@@ -27,7 +27,7 @@ fn selected() {
             pair.text = "new".to_upper();
             true
         } => println(bound),
-        _ => {},
+        _ => {}
     }
     println(pair.text);
 }
@@ -53,8 +53,8 @@ fn affine() {
         } => {
             println(bound);
             selected.close();
-        },
-        _ => {},
+        }
+        _ => {}
     }
     println(pair.other);
 }

@@ -1,5 +1,7 @@
 import std.fs;
+
 import std.io.scanner;
+
 import std.os;
 
 fn print_line(label: string, line: Option<string>) {
@@ -14,7 +16,6 @@ fn main() {
     // same time and must not delete each other's input.
     let path = f"{os.temp_dir()}/stdlib-io-scanner-oracle-{os.pid()}.txt";
     let _ = fs.write(path, "red\n\nblue\n");
-
     match scanner.from_file(path) {
         .Ok(sc0) => {
             var sc = sc0;
@@ -25,17 +26,14 @@ fn main() {
             let (sc3, third) = scanner.next_line(sc);
             sc = sc3;
             let (_sc4, eof) = scanner.next_line(sc);
-
             print_line("first=", first);
             print_line("blank=", blank);
             print_line("third=", third);
             print_line("eof=", eof);
-        },
+        }
         .Err(e) => println("file_err=" + to_string(e)),
     }
-
     let _ = fs.delete(path);
-
     match scanner.from_file(f"{os.temp_dir()}/stdlib-io-scanner-definitely-missing-{os.pid()}.txt") {
         .Ok(_) => println("missing=unexpected-ok"),
         .Err(e) => println("missing=" + to_string(e)),

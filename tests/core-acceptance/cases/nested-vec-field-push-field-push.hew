@@ -1,4 +1,6 @@
-type Rec { field: [i64] }
+type Rec {
+    field: [i64];
+}
 
 fn main() {
     var xs: [[i64]] = [];

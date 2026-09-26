@@ -1,6 +1,6 @@
 #[resource]
 type Conn {
-    fd: i64,
+    fd: i64;
 }
 
 impl Conn {
@@ -23,7 +23,7 @@ impl Conn {
 
 #[resource]
 type Guard {
-    id: i64,
+    id: i64;
 }
 
 impl Guard {

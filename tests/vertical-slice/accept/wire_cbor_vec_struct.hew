@@ -8,12 +8,12 @@
 // corrupted element changes the exit code.
 #[wire]
 type Inner {
-    v: i64 @1,
+    v: i64 @1;
 }
 
 #[wire]
 type Container {
-    items: Vec<Inner> @1,
+    items: Vec<Inner> @1;
 }
 
 fn main() -> i64 {
@@ -23,6 +23,8 @@ fn main() -> i64 {
     xs.push(Inner { v: 12 });
     let c = Container { items: xs };
     let back = Container.decode(c.encode());
-    if back.items.len() != 3 { return 1; }
+    if back.items.len() != 3 {
+        return 1;
+    }
     back.items[0].v + back.items[1].v + back.items[2].v
 }

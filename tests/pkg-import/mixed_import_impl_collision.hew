@@ -9,6 +9,7 @@
 // dispatch). The provenance-based skip (by module origin, not name) leaves the
 // package impl untouched, so both `local.rows()` and `r.rows()` resolve.
 import hew.testffi;
+
 import "mixed_import_impl_collision_lib.hew";
 
 fn main() {
@@ -29,7 +30,7 @@ fn main() {
             let sum = r.total();
             println(f"total={sum}");
             r.free();
-        },
+        }
         .Err(_) => println("ask failed"),
     }
 }

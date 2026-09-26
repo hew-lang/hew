@@ -13,7 +13,7 @@
 //! not just a crash. `Counter.step()` returns 1, 2, 3, 4, ... across calls.
 
 actor Counter {
-    var n: i64 = 0,
+    var n: i64 = 0;
     receive fn step() -> i64 {
         n = n + 1;
         return n;
@@ -21,7 +21,7 @@ actor Counter {
 }
 
 actor Classifier {
-    let counter: Counter,
+    let counter: Counter;
 
     // Three distinct `return` paths reached through one `await`: the early
     // `return 100` when the stepped value exceeds 3, the `return v`
@@ -34,10 +34,10 @@ actor Classifier {
                     return 100;
                 }
                 return v;
-            },
+            }
             .Err(e) => {
                 return -1;
-            },
+            }
         }
     }
 
@@ -54,10 +54,10 @@ actor Classifier {
                     if v >= limit {
                         return v;
                     }
-                },
+                }
                 .Err(e) => {
                     return -1;
-                },
+                }
             }
             ticks = ticks + 1;
         }

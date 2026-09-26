@@ -1,12 +1,20 @@
-indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
 actor Worker {
-    receive fn score(tag: i64, tree: Tree) -> i64 { tag }
+    receive fn score(tag: i64, tree: Tree) -> i64 {
+        tag
+    }
 }
+
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child worker: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker;
 }
+
 fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
@@ -18,12 +26,16 @@ fn main() -> i64 {
             reply from worker.score(i, .Node(.Leaf(1), .Leaf(2))) => match reply {
                 .Ok(value) => value,
                 .Err(_) => 0 - 1,
-            },
+            }
             after 1ms => i,
         };
         total = total + selected;
         i = i + 1;
     }
-    if total == -50 { print("ok"); } else { print("BAD"); }
+    if total == -50 {
+        print("ok");
+    } else {
+        print("BAD");
+    }
     0
 }

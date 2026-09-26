@@ -3,7 +3,7 @@ import std.stream;
 // Each receiver reports once it holds its first item, so the supervisor stops
 // receivers that are parked on their own pipe.
 actor Ready {
-    var tx: stream.Sink<i64>,
+    var tx: stream.Sink<i64>;
     receive fn mark() {
         tx.send(1).expect("ready");
     }
@@ -11,11 +11,16 @@ actor Ready {
 
 actor ParkedReceiver {
     receive fn run(index: i64, ready: Ready) {
-        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         let payload = f"parked-direct-receiver-{index}";
         tx.send(payload).expect("send");
         for item in rx {
-            if item.len() <= 0 { panic("receiver payload"); }
+            if item.len() <= 0 {
+                panic("receiver payload");
+            }
             println("parked");
             ready.mark().expect("mark ready");
         }
@@ -23,58 +28,58 @@ actor ParkedReceiver {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child receiver0: ParkedReceiver,
-    child receiver1: ParkedReceiver,
-    child receiver2: ParkedReceiver,
-    child receiver3: ParkedReceiver,
-    child receiver4: ParkedReceiver,
-    child receiver5: ParkedReceiver,
-    child receiver6: ParkedReceiver,
-    child receiver7: ParkedReceiver,
-    child receiver8: ParkedReceiver,
-    child receiver9: ParkedReceiver,
-    child receiver10: ParkedReceiver,
-    child receiver11: ParkedReceiver,
-    child receiver12: ParkedReceiver,
-    child receiver13: ParkedReceiver,
-    child receiver14: ParkedReceiver,
-    child receiver15: ParkedReceiver,
-    child receiver16: ParkedReceiver,
-    child receiver17: ParkedReceiver,
-    child receiver18: ParkedReceiver,
-    child receiver19: ParkedReceiver,
-    child receiver20: ParkedReceiver,
-    child receiver21: ParkedReceiver,
-    child receiver22: ParkedReceiver,
-    child receiver23: ParkedReceiver,
-    child receiver24: ParkedReceiver,
-    child receiver25: ParkedReceiver,
-    child receiver26: ParkedReceiver,
-    child receiver27: ParkedReceiver,
-    child receiver28: ParkedReceiver,
-    child receiver29: ParkedReceiver,
-    child receiver30: ParkedReceiver,
-    child receiver31: ParkedReceiver,
-    child receiver32: ParkedReceiver,
-    child receiver33: ParkedReceiver,
-    child receiver34: ParkedReceiver,
-    child receiver35: ParkedReceiver,
-    child receiver36: ParkedReceiver,
-    child receiver37: ParkedReceiver,
-    child receiver38: ParkedReceiver,
-    child receiver39: ParkedReceiver,
-    child receiver40: ParkedReceiver,
-    child receiver41: ParkedReceiver,
-    child receiver42: ParkedReceiver,
-    child receiver43: ParkedReceiver,
-    child receiver44: ParkedReceiver,
-    child receiver45: ParkedReceiver,
-    child receiver46: ParkedReceiver,
-    child receiver47: ParkedReceiver,
-    child receiver48: ParkedReceiver,
-    child receiver49: ParkedReceiver,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child receiver0: ParkedReceiver;
+    child receiver1: ParkedReceiver;
+    child receiver2: ParkedReceiver;
+    child receiver3: ParkedReceiver;
+    child receiver4: ParkedReceiver;
+    child receiver5: ParkedReceiver;
+    child receiver6: ParkedReceiver;
+    child receiver7: ParkedReceiver;
+    child receiver8: ParkedReceiver;
+    child receiver9: ParkedReceiver;
+    child receiver10: ParkedReceiver;
+    child receiver11: ParkedReceiver;
+    child receiver12: ParkedReceiver;
+    child receiver13: ParkedReceiver;
+    child receiver14: ParkedReceiver;
+    child receiver15: ParkedReceiver;
+    child receiver16: ParkedReceiver;
+    child receiver17: ParkedReceiver;
+    child receiver18: ParkedReceiver;
+    child receiver19: ParkedReceiver;
+    child receiver20: ParkedReceiver;
+    child receiver21: ParkedReceiver;
+    child receiver22: ParkedReceiver;
+    child receiver23: ParkedReceiver;
+    child receiver24: ParkedReceiver;
+    child receiver25: ParkedReceiver;
+    child receiver26: ParkedReceiver;
+    child receiver27: ParkedReceiver;
+    child receiver28: ParkedReceiver;
+    child receiver29: ParkedReceiver;
+    child receiver30: ParkedReceiver;
+    child receiver31: ParkedReceiver;
+    child receiver32: ParkedReceiver;
+    child receiver33: ParkedReceiver;
+    child receiver34: ParkedReceiver;
+    child receiver35: ParkedReceiver;
+    child receiver36: ParkedReceiver;
+    child receiver37: ParkedReceiver;
+    child receiver38: ParkedReceiver;
+    child receiver39: ParkedReceiver;
+    child receiver40: ParkedReceiver;
+    child receiver41: ParkedReceiver;
+    child receiver42: ParkedReceiver;
+    child receiver43: ParkedReceiver;
+    child receiver44: ParkedReceiver;
+    child receiver45: ParkedReceiver;
+    child receiver46: ParkedReceiver;
+    child receiver47: ParkedReceiver;
+    child receiver48: ParkedReceiver;
+    child receiver49: ParkedReceiver;
 }
 
 fn main() {
@@ -181,7 +186,7 @@ fn main() {
     mailbox(receiver48, on_full: .Wait).run(48, ready).expect("start receiver");
     let receiver49 = app.receiver49;
     mailbox(receiver49, on_full: .Wait).run(49, ready).expect("start receiver");
-    for _ in 0..50 {
+    for _ in 0 .. 50 {
         ready_rx.recv();
     }
     supervisor_stop(app);

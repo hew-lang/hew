@@ -3,7 +3,6 @@
 fn main() -> i64 {
     let a: isize = 100;
     assert(((a + 1) as i64) == 101);
-
     let b: usize = 256;
     assert(((b * 2) as i64) == 512);
     0

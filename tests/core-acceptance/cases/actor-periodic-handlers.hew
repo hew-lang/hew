@@ -1,6 +1,6 @@
 actor Ticker {
-    var ticks: i64 = 0,
-    var text: string = "owned",
+    var ticks: i64 = 0;
+    var text: string = "owned";
 
     #[every(2ms)]
     receive fn tick() {
@@ -10,20 +10,28 @@ actor Ticker {
     }
 
     #[every(3ms)]
-    receive fn pulse() { text = "pulse".to_upper(); }
+    receive fn pulse() {
+        text = "pulse".to_upper();
+    }
 
-    receive fn count() -> i64 { ticks }
-    receive fn fail() { panic("restart periodic child"); }
+    receive fn count() -> i64 {
+        ticks
+    }
+    receive fn fail() {
+        panic("restart periodic child");
+    }
 }
 
 supervisor Timers {
-    intensity: 2 within 60s,
-    child ticker: Ticker,
+    intensity: 2 within 60s;
+    child ticker: Ticker;
 }
 
 fn wait_for_ticks(ticker: ChildRef<Ticker>) {
-    for i in 0..500 {
-        if ticker.count().expect("live timer") > 0 { return; }
+    for i in 0 .. 500 {
+        if ticker.count().expect("live timer") > 0 {
+            return;
+        }
         sleep(2ms);
     }
     panic("periodic child did not fire");
@@ -32,7 +40,7 @@ fn wait_for_ticks(ticker: ChildRef<Ticker>) {
 fn main() {
     let direct = spawn Ticker;
     var fired = false;
-    for i in 0..500 {
+    for i in 0 .. 500 {
         if direct.count().expect("direct timer") > 0 {
             fired = true;
             break;
@@ -40,14 +48,25 @@ fn main() {
         sleep(2ms);
     }
     assert(fired);
-    close(direct);
-
+    {
+        let __hew_migrated_actor_964 = direct;
+        stop(__hew_migrated_actor_964);
+        stopped(__hew_migrated_actor_964);
+    };
     let tree = spawn Timers;
     let role = tree.ticker;
     wait_for_ticks(role);
     let _ = role.fail();
-    let _ = await_restart tree.ticker;
+    let _ = {
+        let __hew_migrated_role_1099 = tree.ticker;
+        restarted(__hew_migrated_role_1099);
+        __hew_migrated_role_1099
+    };
     wait_for_ticks(role);
-    close(tree);
+    {
+        let __hew_migrated_actor_1156 = tree;
+        stop(__hew_migrated_actor_1156);
+        stopped(__hew_migrated_actor_1156);
+    };
     println("periodic direct and restarted child");
 }

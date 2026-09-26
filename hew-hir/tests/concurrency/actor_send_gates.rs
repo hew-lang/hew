@@ -62,18 +62,16 @@ fn actor_bare_send_no_handler_rejected_at_typecheck() {
     // now a type error even when the actor has a unit-returning handler,
     // because that handler is named `handle`, not `send`).
     let tco = typecheck(
-        r"
-        actor Worker {
-            let count: i64,
-            receive fn handle(n: i64) {
-            }
-        }
+        r"actor Worker {
+    let count: i64;
+    receive fn handle(n: i64) {}
+}
 
-        fn main() {
-            let w = spawn Worker(count: 0);
-            w.send(7);
-        }
-        ",
+fn main() {
+    let w = spawn Worker(count: 0);
+    w.send(7);
+}
+",
     );
     assert!(
         tco.errors
@@ -92,20 +90,19 @@ fn actor_bare_send_non_unit_named_handler_rejected_at_typecheck() {
     // (no `receive fn send` handler).  The old HIR gate
     // (`ActorSendRequiresUnitHandler`) is no longer reachable for this shape.
     let tco = typecheck(
-        r"
-        actor Calculator {
-            let total: i64,
+        r"actor Calculator {
+    let total: i64;
 
-            receive fn compute(x: i64) -> i64 {
-                return x + 1;
-            }
-        }
+    receive fn compute(x: i64) -> i64 {
+        return x + 1;
+    }
+}
 
-        fn main() {
-            let c = spawn Calculator(total: 0);
-            c.send(3);
-        }
-        ",
+fn main() {
+    let c = spawn Calculator(total: 0);
+    c.send(3);
+}
+",
     );
     assert!(
         tco.errors
@@ -125,31 +122,30 @@ fn actor_spawn_and_send_in_machine_transition_refused_by_purity() {
     // `.send()` gate that `actor_bare_send_no_handler_rejected_at_typecheck`
     // covers outside a machine.
     let tco = typecheck(
-        r"
-        actor Calculator {
-            let total: i64,
+        r"actor Calculator {
+    let total: i64;
 
-            receive fn compute(x: i64) -> i64 {
-                return x + 1;
-            }
-        }
+    receive fn compute(x: i64) -> i64 {
+        return x + 1;
+    }
+}
 
-        machine M {
-            events {
-                Tick,
-            }
+machine M {
+    events {
+        Tick;
+    }
 
-            state Active,
-            state Idle,
+    state Active;
+    state Idle;
 
-            on Tick: Active => Active reenter {
-                let c = spawn Calculator(total: 0);
-                c.send(3);
-                Active
-            }
-            on Tick: Idle => Active,
-        }
-        ",
+    on Tick: Active => Active reenter {
+        let c = spawn Calculator(total: 0);
+        c.send(3);
+        Active
+    }
+    on Tick: Idle => Active;
+}
+",
     );
     assert!(
         tco.errors
@@ -167,20 +163,19 @@ fn actor_spawn_and_send_in_machine_transition_refused_by_purity() {
 fn actor_ask_non_unit_handler_accepted() {
     // Named handler invoked via ask form (`await`) — correct shape.
     let output = lower_clean(
-        r"
-        actor Calculator {
-            let total: i64,
+        r"actor Calculator {
+    let total: i64;
 
-            receive fn compute(x: i64) -> i64 {
-                return x + 1;
-            }
-        }
+    receive fn compute(x: i64) -> i64 {
+        return x + 1;
+    }
+}
 
-        fn main() {
-            let c = spawn Calculator(total: 0);
-            let _ = c.compute(3);
-        }
-        ",
+fn main() {
+    let c = spawn Calculator(total: 0);
+    let _ = c.compute(3);
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),

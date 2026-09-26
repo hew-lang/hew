@@ -1,6 +1,9 @@
 import std.encoding.utf8;
+
 import std.fs;
+
 import std.os;
+
 import std.stream;
 
 fn main() {
@@ -13,8 +16,12 @@ fn main() {
     var seen = "";
     loop {
         match first_two.recv() {
-            .Some(line) => { seen = seen + line + ";"; },
-            .None => { break; },
+            .Some(line) => {
+                seen = seen + line + ";";
+            }
+            .None => {
+                break;
+            }
         }
     }
     assert(seen == "alpha;bravo;");
@@ -26,12 +33,15 @@ fn main() {
     var chunks = "";
     loop {
         match two_chunks.recv() {
-            .Some(chunk) => { chunks = chunks + utf8.decode(chunk).expect("utf-8 chunk") + "|"; },
-            .None => { break; },
+            .Some(chunk) => {
+                chunks = chunks + utf8.decode(chunk).expect("utf-8 chunk") + "|";
+            }
+            .None => {
+                break;
+            }
         }
     }
     assert(chunks == "alph|a\nbr|");
-
     fs.delete(path).expect("remove input");
     println("stream adaptors");
 }

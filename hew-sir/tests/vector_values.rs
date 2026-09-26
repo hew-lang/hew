@@ -47,12 +47,12 @@ fn ordinary_vector_values_share_one_operation_family() {
         ("", "i64", "42"),
         ("", "string", "\"hello\""),
         (
-            "type Leaf { text: string, }",
+            "type Leaf {\n    text: string;\n}\n",
             "Leaf",
             "Leaf { text: \"hello\" }",
         ),
         (
-            "enum Item { Text(string), Empty, }",
+            "enum Item {\n    Text(string);\n    Empty;\n}\n",
             "Item",
             "Item.Text(\"hello\")",
         ),
@@ -161,14 +161,20 @@ fn optional_get_and_mutations_keep_receiver_writeback_explicit() {
 #[test]
 fn nested_vector_demands_shapes_without_constructing_elements() {
     let module = lower_source(
-        r"
-        type Leaf { text: string, }
-        enum Item { Entry(Leaf), Children(Vec<Leaf>), }
-        fn main() -> i64 {
-            let values: Vec<Vec<Item>> = Vec.new();
-            return values.len();
-        }
-    ",
+        r"type Leaf {
+    text: string;
+}
+
+enum Item {
+    Entry(Leaf);
+    Children(Vec<Leaf>);
+}
+
+fn main() -> i64 {
+    let values: Vec<Vec<Item>> = Vec.new();
+    return values.len();
+}
+",
     );
     assert!(module
         .aggregate_shapes
@@ -393,10 +399,15 @@ fn verifier_requires_index_failure_and_its_owner_cleanup() {
 #[test]
 fn verifier_requires_recursive_vector_shape_and_type_facts() {
     let valid = lower_source(
-        r"
-        type Leaf { text: string, }
-        fn main() -> i64 { let values: Vec<Leaf> = Vec.new(); values.len() }
-    ",
+        r"type Leaf {
+    text: string;
+}
+
+fn main() -> i64 {
+    let values: Vec<Leaf> = Vec.new();
+    values.len()
+}
+",
     );
     let mut missing_shape = valid.clone();
     missing_shape.aggregate_shapes.clear();
@@ -421,15 +432,17 @@ fn verifier_requires_recursive_vector_shape_and_type_facts() {
 #[test]
 fn affine_vector_accepts_nested_non_clone_values_without_copy_capability() {
     let module = lower_source(
-        r"
-        type Holder { callbacks: Vec<fn() -> i64>, }
-        fn main() -> i64 {
-            var values: Vec<Holder> = [];
-            let holder = Holder { callbacks: [] };
-            values.push(holder);
-            return values.len();
-        }
-        ",
+        r"type Holder {
+    callbacks: Vec<fn() -> i64>;
+}
+
+fn main() -> i64 {
+    var values: Vec<Holder> = [];
+    let holder = Holder { callbacks: [] };
+    values.push(holder);
+    return values.len();
+}
+",
     );
     let pushed = module
         .functions

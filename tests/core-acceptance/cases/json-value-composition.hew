@@ -1,6 +1,8 @@
 import std.encoding.json;
 
-type Envelope { value: json.Value }
+type Envelope {
+    value: json.Value;
+}
 
 fn retained() -> json.Value {
     var child = json.array();

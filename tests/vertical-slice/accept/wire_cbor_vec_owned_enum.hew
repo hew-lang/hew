@@ -5,9 +5,16 @@
 // so `hew_vec_free` releases each decoded variant's owned string. Exit 2 (the
 // count of `Full` payloads) proves the array round-trips with the right shape.
 #[wire]
-enum Payload { Empty, Full(string), }
+enum Payload {
+    Empty;
+    Full(string);
+}
+
 #[wire]
-type Bag { items: Vec<Payload> @1, n: i64 @2, }
+type Bag {
+    items: Vec<Payload> @1;
+    n: i64 @2;
+}
 
 fn main() -> i64 {
     var xs: Vec<Payload> = Vec.new();
@@ -16,12 +23,16 @@ fn main() -> i64 {
     xs.push(Payload.Full("second-owned"));
     let b = Bag { items: xs, n: 3 };
     let back = Bag.decode(b.encode());
-    if back.items.len() != 3 { return 100; }
+    if back.items.len() != 3 {
+        return 100;
+    }
     var full: i64 = 0;
     var i: i64 = 0;
     while i < 3 {
         match back.items[i] {
-            Payload.Full(_) => { full = full + 1; }
+            Payload.Full(_) => {
+                full = full + 1;
+            }
             Payload.Empty => {}
         }
         i = i + 1;

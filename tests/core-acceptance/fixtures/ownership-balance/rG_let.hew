@@ -1,9 +1,13 @@
 import std.string;
 
-type Snap { label: string, n: i64, terminal: bool }
+type Snap {
+    label: string;
+    n: i64;
+    terminal: bool;
+}
 
 actor Svc {
-    let seed: i64,
+    let seed: i64;
 
     receive fn snapshot() -> Snap {
         Snap { label: "snap-" + string.from_int(seed), n: seed, terminal: seed > 2 }
@@ -23,8 +27,8 @@ fn poll(svc: Svc) -> Snap {
                 if s.terminal {
                     return s;
                 }
-            },
-            .Err(_) => {},
+            }
+            .Err(_) => {}
         }
         i = i + 1;
     }

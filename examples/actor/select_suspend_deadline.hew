@@ -20,13 +20,13 @@ actor Slow {
 }
 
 actor Coordinator {
-    let slow: Slow,
+    let slow: Slow;
     receive fn race_deadline(n: i64) -> i64 {
         let result = select {
             reply from slow.compute(n) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -7,
-            },
+            }
             after 20ms => -7,
         };
         result

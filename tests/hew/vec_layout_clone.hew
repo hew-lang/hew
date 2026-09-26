@@ -6,8 +6,8 @@
 //! type; the runtime memcpys all element bytes into a fresh allocation.
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 // ── record-element clone preserves contents ──────────────────────────────────

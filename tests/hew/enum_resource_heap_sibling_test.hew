@@ -1,19 +1,19 @@
 import std.encoding.xml;
 
 type ParseError {
-    message: string,
-    offset: i64,
+    message: string;
+    offset: i64;
 }
 
 enum ParseOutcome {
-    Parsed(xml.Node),
-    Failed(ParseError),
-    Skipped(string),
+    Parsed(xml.Node);
+    Failed(ParseError);
+    Skipped(string);
 }
 
 enum ScalarSibling {
-    Loaded(xml.Node),
-    Count(i64),
+    Loaded(xml.Node);
+    Count(i64);
 }
 
 fn classify(s: string) -> ParseOutcome {
@@ -37,7 +37,7 @@ fn result_resource_and_string_variants() {
         .Ok(node) => {
             node.close();
             assert(false);
-        },
+        }
         .Err(message) => assert(message.starts_with("xml:")),
     }
 }
@@ -53,18 +53,18 @@ fn user_enum_resource_and_heap_siblings() {
         ParseOutcome.Parsed(node) => {
             node.close();
             assert(false);
-        },
+        }
         ParseOutcome.Failed(error) => {
             assert(error.offset == 0);
             assert(error.message.starts_with("xml:"));
-        },
+        }
         ParseOutcome.Skipped(_) => assert(false),
     }
     match classify("") {
         ParseOutcome.Parsed(node) => {
             node.close();
             assert(false);
-        },
+        }
         ParseOutcome.Failed(_) => assert(false),
         ParseOutcome.Skipped(message) => assert(message == "EMPTY"),
     }

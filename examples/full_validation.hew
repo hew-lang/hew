@@ -20,13 +20,13 @@ fn test_pattern_match() {
     match x {
         0 => {
             println("zero")
-        },
+        }
         42 => {
             println("PASS: pattern match")
-        },
+        }
         _ => {
             println("other")
-        },
+        }
     }
 }
 

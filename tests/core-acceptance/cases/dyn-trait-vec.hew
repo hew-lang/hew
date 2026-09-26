@@ -3,7 +3,7 @@ trait Named {
 }
 
 type Person {
-    label: string,
+    label: string;
 }
 
 impl Named for Person {
@@ -13,7 +13,7 @@ impl Named for Person {
 }
 
 type Machine {
-    id: i64,
+    id: i64;
 }
 
 impl Named for Machine {
@@ -36,7 +36,7 @@ fn main() {
         println(member.name());
         if seen == 2 {
             // The untaken trait object is released with the cursor's vector.
-            break
+            break;
         }
     }
     println(f"seen={seen}");

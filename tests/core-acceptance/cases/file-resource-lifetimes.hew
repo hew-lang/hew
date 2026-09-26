@@ -1,7 +1,11 @@
 import std.fs;
+
 import std.stream;
 
-type Reader { input: Stream<string>, label: string }
+type Reader {
+    input: Stream<string>;
+    label: string;
+}
 
 fn open(path: string) -> Stream<string> {
     match stream.open(path) {
@@ -12,7 +16,9 @@ fn open(path: string) -> Stream<string> {
 
 fn early_return() -> i64 {
     let input = open("resource-return.bin");
-    if true { return 7; }
+    if true {
+        return 7;
+    }
     input.close();
     0
 }
@@ -28,15 +34,15 @@ fn main() -> i64 {
     closed.close();
     {
         let _scoped = open("resource-scope.bin");
-    }
+    };
     println(early_return());
     {
         let _record = Reader { input: open("resource-record.bin"), label: "record".to_upper() };
-    }
+    };
     {
         let input = open("resource-capture-drop.bin");
         let _uncalled: fn[once]() -> string = move || input.collect();
-    }
+    };
     let input = open("resource-capture-call.bin");
     let once: fn[once]() -> string = move || input.collect();
     println(once());

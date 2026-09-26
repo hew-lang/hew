@@ -1,2 +1,5 @@
 fn println(s: string) {}
-fn main() { println("x"); }
+
+fn main() {
+    println("x");
+}

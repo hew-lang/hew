@@ -57,13 +57,19 @@ fn ownership_markers_on_nominal_types_still_check_clean() {
     std::fs::write(
         &source,
         r"#[resource]
-type ResourceToken { id: i64 }
+type ResourceToken {
+    id: i64;
+}
+
 impl ResourceToken {
     fn close(consume self) {}
 }
 
 #[linear]
-type LinearTicket { id: i64 }
+type LinearTicket {
+    id: i64;
+}
+
 impl LinearTicket {
     fn redeem(consume self) {}
 }

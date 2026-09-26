@@ -1,5 +1,11 @@
 import std.link_monitor.{MonitorRef};
-actor Target { receive fn ping() -> i64 { 42 } }
+
+actor Target {
+    receive fn ping() -> i64 {
+        42
+    }
+}
+
 actor Watcher {
     receive fn observe(target: Target) -> i64 {
         link(target).expect("link live target");
@@ -14,22 +20,45 @@ actor Watcher {
         1
     }
     receive fn observe_dead(target: Target) -> i64 {
-        assert(match link(target) { .Err(LinkError.Dead) => true, _ => false });
+        assert(match link(target) {
+            .Err(LinkError.Dead) => true,
+            _ => false,
+        });
         unlink(target);
         2
     }
 }
-fn link_from_helper(target: Target) -> Result<(), LinkError> { link(target) }
-fn monitor_from_helper(target: Target) -> Result<MonitorRef, LinkError> { monitor(target) }
+
+fn link_from_helper(target: Target) -> Result<(), LinkError> {
+    link(target)
+}
+
+fn monitor_from_helper(target: Target) -> Result<MonitorRef, LinkError> {
+    monitor(target)
+}
 
 fn main() {
     let target = spawn Target;
-    assert(match link_from_helper(target) { .Err(LinkError.NoContext) => true, _ => false });
-    assert(match monitor_from_helper(target) { .Err(LinkError.NoContext) => true, _ => false });
+    assert(match link_from_helper(target) {
+        .Err(LinkError.NoContext) => true,
+        _ => false,
+    });
+    assert(match monitor_from_helper(target) {
+        .Err(LinkError.NoContext) => true,
+        _ => false,
+    });
     let watcher = spawn Watcher;
     assert(watcher.observe(target).expect("live observations") == 1);
-    close(target);
+    {
+        let __hew_migrated_actor_1384 = target;
+        stop(__hew_migrated_actor_1384);
+        stopped(__hew_migrated_actor_1384);
+    };
     assert(watcher.observe_dead(target).expect("retired observations") == 2);
-    close(watcher);
+    {
+        let __hew_migrated_actor_1481 = watcher;
+        stop(__hew_migrated_actor_1481);
+        stopped(__hew_migrated_actor_1481);
+    };
     println("local observations own subscriptions and report context");
 }

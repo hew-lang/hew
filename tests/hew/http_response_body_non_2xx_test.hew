@@ -15,9 +15,9 @@ import std.net.http.http_client;
 import std.net.http;
 
 actor Client {
-    let url: string,
-    var status: i64,
-    var body: string,
+    let url: string;
+    var status: i64;
+    var body: string;
 
     receive fn fetch(unused: i64) {
         assert(http_client.set_timeout(3000).is_ok());
@@ -58,9 +58,9 @@ fn test_non_2xx_response_body_round_trips() {
                 .Ok(body) => assert(body == "not found: the resource does not exist"),
                 .Err(_e) => assert(false),
             }
-        },
+        }
         .Err(_err) => {
             assert(false);
-        },
+        }
     }
 }

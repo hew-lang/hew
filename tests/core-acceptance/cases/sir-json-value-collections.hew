@@ -21,7 +21,6 @@ fn main() {
     println(values[1].get_string().expect("text"));
     println(values.len());
     println(total([json.from_int(4), json.from_int(5)]));
-
     let index = named();
     match index.get("count") {
         .Some(count) => println(count.get_int().expect("count")),

@@ -57,10 +57,9 @@ fn q004_map_next_body_passes() {
     // `type Item = B`) so `f: fn(A) -> B` accepts it.
     let src = format!(
         "{ITER_PRELUDE}{}",
-        r"
-pub type Map<I, A, B> {
-    iter: I,
-    f: fn(A) -> B,
+        r"pub type Map<I, A, B> {
+    iter: I;
+    f: fn(A) -> B;
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
@@ -94,9 +93,8 @@ fn q004_inherent_impl_next_passes() {
     // `x > 0`.
     let src = format!(
         "{ITER_PRELUDE}{}",
-        r"
-pub type IsPositive<I> {
-    inner: I,
+        r"pub type IsPositive<I> {
+    inner: I;
 }
 
 impl<I> Iterator for IsPositive<I> where I: Iterator<Item = i64> {

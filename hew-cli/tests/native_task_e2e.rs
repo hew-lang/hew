@@ -192,21 +192,32 @@ fn main() { println(choose()); }
 #[test]
 fn recovery_preserves_child_and_deferred_fault_diagnostics() {
     run_task(
-        r#"
-fn fail() -> i64 {
+        r#"fn fail() -> i64 {
     defer println("child cleanup");
     panic("child fault");
 }
+
 fn main() {
     let result = scope {
-        defer { scope { println("scope cleanup"); panic("cleanup fault"); }; }
-        let child = fork { fail() };
+        defer {
+            scope {
+                println("scope cleanup");
+                panic("cleanup fault");
+            };
+        }
+        let child = fork {
+            fail()
+        };
         await child;
         "unreachable"
     } handle failure {
         match failure {
-            .Deadline { message } => { println("unexpected deadline"); },
-            .Fault { message } => { println(message); },
+            .Deadline { message } => {
+                println("unexpected deadline");
+            }
+            .Fault { message } => {
+                println(message);
+            }
         }
         "recovered"
     };
@@ -222,20 +233,29 @@ fn main() {
 #[test]
 fn recovery_handler_failure_reaches_the_outer_boundary() {
     run_task(
-        r#"
-fn main() {
+        r#"fn main() {
     scope {
-        scope { panic("inner"); } handle failure {
+        scope {
+            panic("inner");
+        } handle failure {
             println("inner recovered");
             panic("handler fault");
         };
     } handle failure {
         match failure {
-            .Deadline { message } => { println("unexpected deadline"); },
-            .Fault { message } => { println(message); },
+            .Deadline { message } => {
+                println("unexpected deadline");
+            }
+            .Fault { message } => {
+                println(message);
+            }
         }
     };
-    let result = scope { "success" } handle failure { panic("incorrect handler"); };
+    let result = scope {
+        "success"
+    } handle failure {
+        panic("incorrect handler");
+    };
     println(result);
 }
 "#,
@@ -248,16 +268,19 @@ fn main() {
 #[test]
 fn recovery_transfers_an_owned_result_after_fault_cleanup() {
     run_task(
-        r#"
-fn main() {
+        r#"fn main() {
     let result = scope {
         defer println("scope cleanup");
         panic("broken é");
         "unreachable"
     } handle failure {
         match failure {
-            .Deadline { message } => { println("unexpected deadline"); },
-            .Fault { message } => { println(message); },
+            .Deadline { message } => {
+                println("unexpected deadline");
+            }
+            .Fault { message } => {
+                println(message);
+            }
         }
         "recovered"
     };
@@ -297,18 +320,23 @@ fn main() {
 #[test]
 fn parent_cancellation_bypasses_inner_recovery() {
     run_task(
-        r#"
-fn main() {
+        r#"fn main() {
     scope within 1ms {
         defer println("outer cleanup");
         scope {
             defer println("inner cleanup");
             sleep(1s);
-        } handle failure { println("incorrect inner handler"); };
+        } handle failure {
+            println("incorrect inner handler");
+        };
     } handle failure {
         match failure {
-            .Deadline { message } => { println("outer recovered"); },
-            .Fault { message } => { println("unexpected fault"); },
+            .Deadline { message } => {
+                println("outer recovered");
+            }
+            .Fault { message } => {
+                println("unexpected fault");
+            }
         }
     };
     println("done");
@@ -323,13 +351,23 @@ fn main() {
 #[test]
 fn task_selection_preserves_the_loser_and_transfers_owned_results() {
     run_task(
-        r#"
-fn main() {
-    let first = fork { sleep(1ms); "first" };
-    let second = fork { "second" };
+        r#"fn main() {
+    let first = fork {
+        sleep(1ms);
+        "first"
+    };
+    let second = fork {
+        "second"
+    };
     let result = select {
-        a from first => { let b = await second; a + ":" + b },
-        b from second => { let a = await first; a + ":" + b },
+        a from first => {
+            let b = await second;
+            a + ":" + b
+        }
+        b from second => {
+            let a = await first;
+            a + ":" + b
+        }
     };
     println(result);
 }
@@ -343,18 +381,32 @@ fn main() {
 #[test]
 fn task_selection_timer_preserves_both_tasks_and_evaluates_duration_once() {
     run_task(
-        r#"
-fn duration() -> duration { println("timer"); 0ms }
+        r#"fn duration() -> duration {
+    println("timer");
+    0ms
+}
+
 fn main() {
-    let first = fork { sleep(100ms); 17 };
-    let second = fork { sleep(100ms); 42 };
+    let first = fork {
+        sleep(100ms);
+        17
+    };
+    let second = fork {
+        sleep(100ms);
+        42
+    };
     let result = select {
         a from first => a + await second,
         b from second => b + await first,
-        after duration() => { println("timeout"); await first + await second },
+        after duration() => {
+            println("timeout");
+            await first + await second
+        }
     };
     println(result);
-    select { after 0ms => println("only timer") };
+    select {
+        after 0ms => println("only timer"),
+    };
 }
 "#,
         "timer\ntimeout\n59\nonly timer\n",

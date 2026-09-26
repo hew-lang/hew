@@ -1,8 +1,8 @@
 fn greeting() -> string {
-  let s = "hello";
-  return s;
+    let s = "hello";
+    return s;
 }
 
 fn main() {
-  println(greeting());
+    println(greeting());
 }

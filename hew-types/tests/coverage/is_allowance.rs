@@ -76,18 +76,17 @@ fn assert_has_mismatch(src: &str) {
 #[test]
 fn actor_ref_is_actor_ref_accepted() {
     assert_clean(
-        r"
-            actor Worker {
-                let _id: i64,
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            fn main() {
-                let a = spawn Worker(_id: 1);
-                let b = spawn Worker(_id: 2);
-                let _eq: bool = a is b;
-            }
-        ",
+fn main() {
+    let a = spawn Worker(_id: 1);
+    let b = spawn Worker(_id: 2);
+    let _eq: bool = a is b;
+}
+",
     );
 }
 
@@ -165,18 +164,17 @@ fn bytes_is_bytes_rejected() {
 #[test]
 fn negative_control_local_pid_still_accepted() {
     assert_clean(
-        r"
-            actor Worker {
-                let _id: i64,
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            fn main() {
-                let a = spawn Worker(_id: 1);
-                let b = spawn Worker(_id: 2);
-                let _eq: bool = a is b;
-            }
-        ",
+fn main() {
+    let a = spawn Worker(_id: 1);
+    let b = spawn Worker(_id: 2);
+    let _eq: bool = a is b;
+}
+",
     );
 }
 
@@ -202,27 +200,26 @@ fn negative_control_rc_still_rejected() {
 #[test]
 fn negative_control_dyn_trait_still_rejected() {
     assert_has_e_is_value_type(
-        r#"
-            trait Greeter {
-                fn greet(self) -> string;
-            }
+        r#"trait Greeter {
+    fn greet(self) -> string;
+}
 
-            type EnglishGreeter {
-                name: string,
-            }
+type EnglishGreeter {
+    name: string;
+}
 
-            impl Greeter for EnglishGreeter {
-                fn greet(self) -> string {
-                    self.name
-                }
-            }
+impl Greeter for EnglishGreeter {
+    fn greet(self) -> string {
+        self.name
+    }
+}
 
-            fn main() {
-                let a: dyn Greeter = EnglishGreeter { name: "a" };
-                let b: dyn Greeter = EnglishGreeter { name: "b" };
-                let _eq: bool = a is b;
-            }
-        "#,
+fn main() {
+    let a: dyn Greeter = EnglishGreeter { name: "a" };
+    let b: dyn Greeter = EnglishGreeter { name: "b" };
+    let _eq: bool = a is b;
+}
+"#,
     );
 }
 
@@ -251,18 +248,17 @@ fn negative_control_closures_still_rejected() {
 #[test]
 fn enum_is_enum_rejected() {
     assert_has_e_is_value_type(
-        r"
-            enum Colour {
-                Red,
-                Green,
-            }
+        r"enum Colour {
+    Red;
+    Green;
+}
 
-            fn main() {
-                let a = Colour.Red;
-                let b = Colour.Green;
-                let _eq: bool = a is b;
-            }
-        ",
+fn main() {
+    let a = Colour.Red;
+    let b = Colour.Green;
+    let _eq: bool = a is b;
+}
+",
     );
 }
 
@@ -271,18 +267,17 @@ fn enum_is_enum_rejected() {
 #[test]
 fn payload_enum_is_payload_enum_rejected() {
     assert_has_e_is_value_type(
-        r"
-            enum Shape {
-                Circle(f64),
-                Square(f64),
-            }
+        r"enum Shape {
+    Circle(f64);
+    Square(f64);
+}
 
-            fn main() {
-                let a = Shape.Circle(1.0);
-                let b = Shape.Square(2.0);
-                let _eq: bool = a is b;
-            }
-        ",
+fn main() {
+    let a = Shape.Circle(1.0);
+    let b = Shape.Square(2.0);
+    let _eq: bool = a is b;
+}
+",
     );
 }
 
@@ -295,18 +290,17 @@ fn payload_enum_is_payload_enum_rejected() {
 #[test]
 fn indirect_enum_is_indirect_enum_rejected() {
     assert_has_e_is_value_type(
-        r"
-            indirect enum Expr {
-                Lit(i64),
-                Neg(Expr),
-            }
+        r"indirect enum Expr {
+    Lit(i64);
+    Neg(Expr);
+}
 
-            fn main() {
-                let a = Expr.Lit(1);
-                let b = Expr.Lit(2);
-                let _eq: bool = a is b;
-            }
-        ",
+fn main() {
+    let a = Expr.Lit(1);
+    let b = Expr.Lit(2);
+    let _eq: bool = a is b;
+}
+",
     );
 }
 
@@ -315,26 +309,25 @@ fn indirect_enum_is_indirect_enum_rejected() {
 #[test]
 fn machine_is_machine_rejected() {
     assert_has_e_is_value_type(
-        r"
-            machine Tank {
-                events {
-                    Fill,
-                }
+        r"machine Tank {
+    events {
+        Fill;
+    }
 
-                state Filling,
-                state Draining,
+    state Filling;
+    state Draining;
 
-                on Fill: Filling => Draining,
+    on Fill: Filling => Draining;
 
-                default { state }
-            }
+    default { state }
+}
 
-            fn main() {
-                let t = Tank.Filling;
-                let u = Tank.Draining;
-                let _eq: bool = t is u;
-            }
-        ",
+fn main() {
+    let t = Tank.Filling;
+    let u = Tank.Draining;
+    let _eq: bool = t is u;
+}
+",
     );
 }
 
@@ -343,18 +336,17 @@ fn machine_is_machine_rejected() {
 #[test]
 fn enum_rejection_names_the_type_and_suggests_equality() {
     let output = typecheck_isolated(
-        r"
-            enum Colour {
-                Red,
-                Green,
-            }
+        r"enum Colour {
+    Red;
+    Green;
+}
 
-            fn main() {
-                let a = Colour.Red;
-                let b = Colour.Green;
-                let _eq: bool = a is b;
-            }
-        ",
+fn main() {
+    let a = Colour.Red;
+    let b = Colour.Green;
+    let _eq: bool = a is b;
+}
+",
     );
     let named = output
         .errors
@@ -380,17 +372,16 @@ fn enum_rejection_names_the_type_and_suggests_equality() {
 #[test]
 fn record_type_is_record_type_rejected() {
     assert_has_e_is_value_type(
-        r"
-            type Point {
-                x: i64,
-            }
+        r"type Point {
+    x: i64;
+}
 
-            fn main() {
-                let p = Point { x: 1 };
-                let q = Point { x: 1 };
-                let _eq: bool = p is q;
-            }
-        ",
+fn main() {
+    let p = Point { x: 1 };
+    let q = Point { x: 1 };
+    let _eq: bool = p is q;
+}
+",
     );
 }
 
@@ -400,17 +391,16 @@ fn record_type_is_record_type_rejected() {
 #[test]
 fn record_type_rejection_is_reported_once_per_expression() {
     let output = typecheck_isolated(
-        r"
-            type Point {
-                x: i64,
-            }
+        r"type Point {
+    x: i64;
+}
 
-            fn main() {
-                let p = Point { x: 1 };
-                let q = Point { x: 1 };
-                let _eq: bool = p is q;
-            }
-        ",
+fn main() {
+    let p = Point { x: 1 };
+    let q = Point { x: 1 };
+    let _eq: bool = p is q;
+}
+",
     );
     let count = output
         .errors
@@ -455,17 +445,16 @@ fn distinct_value_type_operands_are_each_reported() {
 #[test]
 fn record_type_rejection_names_the_type_and_suggests_equality() {
     let output = typecheck_isolated(
-        r"
-            type Point {
-                x: i64,
-            }
+        r"type Point {
+    x: i64;
+}
 
-            fn main() {
-                let p = Point { x: 1 };
-                let q = Point { x: 1 };
-                let _eq: bool = p is q;
-            }
-        ",
+fn main() {
+    let p = Point { x: 1 };
+    let q = Point { x: 1 };
+    let _eq: bool = p is q;
+}
+",
     );
     let named = output
         .errors
@@ -486,17 +475,16 @@ fn record_type_rejection_names_the_type_and_suggests_equality() {
 #[test]
 fn record_type_structural_equality_still_accepted() {
     assert_clean(
-        r"
-            type Point {
-                x: i64,
-            }
+        r"type Point {
+    x: i64;
+}
 
-            fn main() {
-                let p = Point { x: 1 };
-                let q = Point { x: 1 };
-                let _eq: bool = p == q;
-            }
-        ",
+fn main() {
+    let p = Point { x: 1 };
+    let q = Point { x: 1 };
+    let _eq: bool = p == q;
+}
+",
     );
 }
 
@@ -509,20 +497,19 @@ fn is_result_typed_as_bool() {
     // The `if` enforces the condition is `bool`; if `is` returned anything
     // else the `if` would fail to check.
     assert_clean(
-        r"
-            actor Worker {
-                let _id: i64,
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            fn main() {
-                let a = spawn Worker(_id: 1);
-                let b = spawn Worker(_id: 2);
-                if a is b {
-                    let _x: i64 = 1;
-                }
-            }
-        ",
+fn main() {
+    let a = spawn Worker(_id: 1);
+    let b = spawn Worker(_id: 2);
+    if a is b {
+        let _x: i64 = 1;
+    }
+}
+",
     );
 }
 
@@ -596,23 +583,22 @@ fn tuple_is_tuple_rejected() {
 #[test]
 fn actor_refs_of_different_actor_types_rejected_as_mismatch() {
     assert_has_mismatch(
-        r"
-            actor Worker {
-                let _id: i64,
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            actor Other {
-                let _id: i64,
-                receive fn ping() {}
-            }
+actor Other {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            fn main() {
-                let a = spawn Worker(_id: 1);
-                let b = spawn Other(_id: 1);
-                let _eq: bool = a is b;
-            }
-        ",
+fn main() {
+    let a = spawn Worker(_id: 1);
+    let b = spawn Other(_id: 1);
+    let _eq: bool = a is b;
+}
+",
     );
 }
 
@@ -626,20 +612,19 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
     // the actor send snapshots `h` rather than moving it, so the sender's
     // binding is still live afterwards. `is` would reject `bytes` on its own
     // terms regardless of the move question this test is actually about.
-    let src = r"
-        actor SnapshotSink {
-            let _id: i64,
-            receive fn consume(p: bytes) {}
-        }
+    let src = r"actor SnapshotSink {
+    let _id: i64;
+    receive fn consume(p: bytes) {}
+}
 
-        fn main() {
-            let s = spawn SnapshotSink(_id: 0);
-            let h = bytes.new();
-            let q = bytes.new();
-            let _ = s.consume(h);
-            let _eq: bool = h == q;
-        }
-    ";
+fn main() {
+    let s = spawn SnapshotSink(_id: 0);
+    let h = bytes.new();
+    let q = bytes.new();
+    let _ = s.consume(h);
+    let _eq: bool = h == q;
+}
+";
     let output = typecheck_isolated(src);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -666,16 +651,15 @@ fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
     // never equals the bare `Worker` type pattern, so the checker reports the
     // Mismatch this test's name promises, not the static-tautology warning.
     let output = common::typecheck_isolated(
-        r"
-            actor Worker {
-                let _id: i64,
-                receive fn ping() -> bool {
-                    self is Worker
-                }
-            }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() -> bool {
+        self is Worker
+    }
+}
 
-            fn main() {}
-        ",
+fn main() {}
+",
     );
     let redundant = common::warnings_of_kind(&output, &TypeErrorKind::RedundantIs);
     assert!(
@@ -723,33 +707,31 @@ fn is_on_an_enum_through_an_inferred_closure_is_rejected() {
     // span-less `IdentityCompare lhs must be a pointer or integer value`
     // (#3134); the obligation is re-run after unification instead.
     assert_has_e_is_value_type(
-        r"
-            enum Colour {
-                Red,
-                Green,
-            }
+        r"enum Colour {
+    Red;
+    Green;
+}
 
-            fn main() {
-                let same = |a, b| a is b;
-                let _eq: bool = same(Colour.Red, Colour.Green);
-            }
-        ",
+fn main() {
+    let same = |a, b| a is b;
+    let _eq: bool = same(Colour.Red, Colour.Green);
+}
+",
     );
 }
 
 #[test]
 fn is_on_a_record_through_an_inferred_closure_is_rejected() {
     assert_has_e_is_value_type(
-        r"
-            type Point {
-                x: i64,
-            }
+        r"type Point {
+    x: i64;
+}
 
-            fn main() {
-                let same = |a, b| a is b;
-                let _eq: bool = same(Point { x: 1 }, Point { x: 2 });
-            }
-        ",
+fn main() {
+    let same = |a, b| a is b;
+    let _eq: bool = same(Point { x: 1 }, Point { x: 2 });
+}
+",
     );
 }
 
@@ -759,19 +741,18 @@ fn is_on_an_actor_ref_through_an_inferred_closure_is_accepted() {
     // this, rejecting every unresolved operand would also pass the two tests
     // above.
     assert_clean(
-        r"
-            actor Worker {
-                let _id: i64,
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            fn main() {
-                let same = |a, b| a is b;
-                let x = spawn Worker(_id: 1);
-                let y = spawn Worker(_id: 2);
-                let _eq: bool = same(x, y);
-            }
-        ",
+fn main() {
+    let same = |a, b| a is b;
+    let x = spawn Worker(_id: 1);
+    let y = spawn Worker(_id: 2);
+    let _eq: bool = same(x, y);
+}
+",
     );
 }
 
@@ -781,24 +762,23 @@ fn mismatched_handle_types_through_an_inferred_closure_are_reported() {
     // identity-capable, so the rejection is the cross-type `Mismatch` rather
     // than `E_IS_VALUE_TYPE`, and it must survive the deferral too.
     assert_has_mismatch(
-        r"
-            actor Worker {
-                let _id: i64,
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            actor Other {
-                let _id: i64,
-                receive fn ping() {}
-            }
+actor Other {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-            fn main() {
-                let same = |a, b| a is b;
-                let w = spawn Worker(_id: 1);
-                let o = spawn Other(_id: 1);
-                let _eq: bool = same(w, o);
-            }
-        ",
+fn main() {
+    let same = |a, b| a is b;
+    let w = spawn Worker(_id: 1);
+    let o = spawn Other(_id: 1);
+    let _eq: bool = same(w, o);
+}
+",
     );
 }
 

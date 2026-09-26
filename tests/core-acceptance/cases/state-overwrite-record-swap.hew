@@ -1,10 +1,10 @@
 type Pair {
-    a: string,
-    b: string,
+    a: string;
+    b: string;
 }
 
 actor Swapper {
-    var pair: Pair,
+    var pair: Pair;
 
     receive fn swap() {
         pair = Pair { a: pair.b, b: pair.a };

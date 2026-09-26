@@ -1,6 +1,6 @@
 type Node {
-    label: string,
-    parent: Option<Weak<Node>>,
+    label: string;
+    parent: Option<Weak<Node>>;
 }
 
 fn expired() -> Weak<i64> {
@@ -28,7 +28,6 @@ fn main() {
     let rc = Rc.new(7);
     print(rc.strong_count());
     print(rc.weak_count());
-
     let alias = rc.clone();
     print(rc.strong_count());
     let weak = rc.downgrade();
@@ -36,20 +35,20 @@ fn main() {
     print(rc.weak_count());
     print(upgraded_value(weak));
     print(rc.strong_count());
-
     rc.set(9);
     print(alias.get());
-    print(if rc.is_unique() { 1 } else { 0 });
+    print(if rc.is_unique() {
+        1
+    } else {
+        0
+    });
     print(graph_replacement_counts());
-
     let empty = Rc.new(());
     print(empty.strong_count());
-
     let dead = expired();
     println(match dead.upgrade() {
         .Some(_) => 9,
         .None => 0,
     });
-
     let _ = weak_alias;
 }

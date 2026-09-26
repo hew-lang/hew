@@ -7,7 +7,7 @@ trait Mine: Left {
 }
 
 type Block {
-    n: i64,
+    n: i64;
 }
 
 impl Core for Block {

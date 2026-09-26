@@ -97,23 +97,26 @@ fn a_module_constant_reads_as_its_folded_literal() {
 #[test]
 fn record_and_vector_clones_are_semantic_copies() {
     let lowered = lower_source(
-        r#"
-        type Point { x: i64, name: string }
+        r#"type Point {
+    x: i64;
+    name: string;
+}
 
-        fn keep(point: Point) {}
-        fn keep_all(values: Vec<i64>) {}
+fn keep(point: Point) {}
 
-        fn main() {
-            let point = Point { x: 1, name: "n" };
-            let copy = point.clone();
-            var values: Vec<i64> = Vec.new();
-            let snapshot = values.clone();
-            keep(point);
-            keep(copy);
-            keep_all(values);
-            keep_all(snapshot);
-        }
-        "#,
+fn keep_all(values: Vec<i64>) {}
+
+fn main() {
+    let point = Point { x: 1, name: "n" };
+    let copy = point.clone();
+    var values: Vec<i64> = Vec.new();
+    let snapshot = values.clone();
+    keep(point);
+    keep(copy);
+    keep_all(values);
+    keep_all(snapshot);
+}
+"#,
     );
     let main = verified_main(&lowered);
     assert_eq!(

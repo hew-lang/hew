@@ -36,11 +36,10 @@ fn main() {
 #[test]
 fn enum_constructor_mistakes_are_structured_user_errors() {
     let output = lower_through_checker(
-        r"
-enum Shape {
-    Pair(i64, i64),
-    Record { left: i64, right: i64 },
-    Unit,
+        r"enum Shape {
+    Pair(i64, i64);
+    Record { left: i64; right: i64;  }
+    Unit;
 }
 
 fn main() {
@@ -50,7 +49,8 @@ fn main() {
     let _unknown = Record { left: 1, right: 2, extra: 3 };
     let _unit_call = Shape.Unit();
     let _record_call = Record(1, 2);
-}",
+}
+",
     );
 
     assert!(

@@ -94,7 +94,7 @@ fn test_counter_ok_for_valid_name() {
             // `.` renders as `_` in the Prometheus series name, so
             // `test.try_ok` scrapes as `test_try_ok`, not `test_ok`.
             assert(scrape.contains("test_try_ok 1"));
-        },
+        }
         .Err(_) => assert(false),
     }
 }

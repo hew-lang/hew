@@ -12,7 +12,7 @@ trait MutBump {
     fn bump(var self) -> i64;
 }
 
-type Box { v: i64 }
+type Box { v: i64; }
 
 impl MutBump for Box {
     fn bump(var self) -> i64 { 0 }

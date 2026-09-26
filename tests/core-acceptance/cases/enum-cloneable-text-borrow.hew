@@ -1,6 +1,6 @@
 enum Mixed {
-    Text(string),
-    Scalar(i64),
+    Text(string);
+    Scalar(i64);
 }
 
 fn inspect(x: Mixed) -> i64 {

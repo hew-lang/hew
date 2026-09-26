@@ -446,7 +446,7 @@ fn test_empty_program() {
 #[test]
 fn result_field_access_requires_handling_the_result() {
     let output = check_source(
-        "type Record { value: i64 } fn main() { let result: Result<Record, string> = .Ok(Record { value: 3 }); let _value = result.value; }",
+        "type Record {\n    value: i64;\n}\n\nfn main() {\n    let result: Result<Record, string> = .Ok(Record { value: 3 });\n    let _value = result.value;\n}\n",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -473,17 +473,20 @@ fn tuple_numeric_field_access_out_of_bounds_is_rejected() {
 #[test]
 fn user_impl_drop_rejected_fail_closed() {
     let output = check_source(
-        r"
-        type Token { id: i64 }
-        impl Drop for Token {
-            fn drop(token: Token) {
-                println(token.id);
-            }
-        }
-        fn main() {
-            let _token = Token { id: 1 };
-        }
-        ",
+        r"type Token {
+    id: i64;
+}
+
+impl Drop for Token {
+    fn drop(token: Token) {
+        println(token.id);
+    }
+}
+
+fn main() {
+    let _token = Token { id: 1 };
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {

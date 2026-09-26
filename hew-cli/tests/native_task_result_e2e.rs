@@ -43,16 +43,27 @@ fn nested_result_closes_through_its_shared_layout() {
     run_task(
         &format!(
             "{STARTED}{}",
-            r#"
-type Holder { value: Generator<string, ()>, label: string }
-enum Wrapped { Full(Holder), Empty }
+            r#"type Holder {
+    value: Generator<string, ()>;
+    label: string;
+}
+
+enum Wrapped {
+    Full(Holder);
+    Empty;
+}
+
 fn work() {
     defer println("parent cleanup");
     let _child = fork {
         Wrapped.Full(Holder { value: started("nested"), label: "owned".to_upper() })
     };
 }
-fn main() { work(); println("done"); }
+
+fn main() {
+    work();
+    println("done");
+}
 "#
         ),
         "nested\nnested closed\nparent cleanup\ndone\n",

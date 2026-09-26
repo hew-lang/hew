@@ -8,9 +8,13 @@ fn main() {
         match f() {
             .Ok(b) => {
                 print("o");
-                if i == 2 { break; }
+                if i == 2 {
+                    break;
+                }
             }
-            .Err(e) => { print("e"); }
+            .Err(e) => {
+                print("e");
+            }
         }
         i = i + 1;
     }

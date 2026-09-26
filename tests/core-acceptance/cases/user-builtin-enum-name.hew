@@ -1,4 +1,7 @@
-enum Delivery { Idle, SendNow(string, Vec<string>) }
+enum Delivery {
+    Idle;
+    SendNow(string, Vec<string>);
+}
 
 fn describe(value: Delivery) -> string {
     match value {

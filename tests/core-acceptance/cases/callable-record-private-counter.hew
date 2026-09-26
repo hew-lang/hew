@@ -1,15 +1,13 @@
 type Holder {
-    next: fn[var, clone]() -> i64,
+    next: fn[var, clone]() -> i64;
 }
 
 fn main() -> i64 {
     let count = 0;
-    var holder = Holder {
-        next: capture(var count) || {
-            count += 1;
-            count
-        },
-    };
+    var holder = Holder { next: capture(var count) || {
+        count += 1;
+        count
+    } };
     println(holder.next());
     var copied = holder;
     var cloned = Holder { next: clone holder.next };

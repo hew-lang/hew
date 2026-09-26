@@ -3,11 +3,11 @@ type T = i64;
 type Pair<T> = (T, T);
 
 type Box<T> {
-    value: Pair<T>,
+    value: Pair<T>;
 }
 
 enum Delivery<T> {
-    Ready(Pair<T>),
+    Ready(Pair<T>);
 }
 
 fn echo<T>(value: Pair<T>) -> Pair<T> {

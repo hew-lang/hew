@@ -1,13 +1,15 @@
 type Boxed {
-    payload: Vec<i64>,
+    payload: Vec<i64>;
 }
 
-actor ProbeSink { 
-    var seen: i64,
+actor ProbeSink {
+    var seen: i64;
     receive fn take(value: Boxed) {
         seen = seen + value.payload.len();
     }
-    receive fn count() -> i64 { seen }
+    receive fn count() -> i64 {
+        seen
+    }
 }
 
 fn main() -> i64 {
@@ -18,7 +20,13 @@ fn main() -> i64 {
         i = i + 1;
     }
     match sink.count() {
-        .Ok(v) => { if v == 50 { 0 } else { 1 } },
+        .Ok(v) => {
+            if v == 50 {
+                0
+            } else {
+                1
+            }
+        }
         .Err(_) => 2,
     }
 }

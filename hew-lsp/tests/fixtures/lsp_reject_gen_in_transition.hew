@@ -1,16 +1,16 @@
 machine Door {
     events {
-        Toggle,
+        Toggle;
     }
 
-    state Closed,
-    state Open,
+    state Closed;
+    state Open;
 
     on Toggle: Closed => Open {
         let _g = gen { yield Open; };
         Open
     }
-    on Toggle: Open => Closed,
+    on Toggle: Open => Closed;
 }
 
 fn gen_transition_rejection_probe() -> i32 {

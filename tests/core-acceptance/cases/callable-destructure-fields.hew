@@ -1,11 +1,11 @@
 type OncePair {
-    a: fn[once]() -> string,
-    b: fn() -> string,
+    a: fn[once]() -> string;
+    b: fn() -> string;
 }
 
 type ClonePair {
-    a: fn[once, clone]() -> string,
-    b: fn() -> string,
+    a: fn[once, clone]() -> string;
+    b: fn() -> string;
 }
 
 fn take_record() {

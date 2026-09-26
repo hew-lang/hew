@@ -1,11 +1,11 @@
 type HeapRow {
-    payload: [i64],
-    value: i64
+    payload: [i64];
+    value: i64;
 }
 
 type Holder {
-    rows: Vec<HeapRow>,
-    value: i64
+    rows: Vec<HeapRow>;
+    value: i64;
 }
 
 fn make_rows(value: i64) -> Vec<HeapRow> {

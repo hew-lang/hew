@@ -3,13 +3,15 @@
 import std.misc.log;
 
 enum Reading {
-    Level(i64),
-    Idle,
+    Level(i64);
+    Idle;
 }
 
 type Pair(i64, i64);
 
-fn sub(a: i64, b: i64) -> i64 { a - b }
+fn sub(a: i64, b: i64) -> i64 {
+    a - b
+}
 
 fn main() {
     let twice = |x: i64, y: i64| x + y;

@@ -7,8 +7,8 @@
 import std.stream;
 
 indirect enum Tree {
-    Leaf(i64),
-    Node(Tree, Tree),
+    Leaf(i64);
+    Node(Tree, Tree);
 }
 
 fn total(t: Tree) -> i64 {
@@ -29,11 +29,16 @@ actor Builder {
 }
 
 actor Caller {
-    var builder: Builder,
+    var builder: Builder;
     receive fn walk(depth: i64) -> i64 {
         match builder.build(depth) {
-            .Ok(tree) => { total(tree) }
-            .Err(e) => { let _ = e; -1 }
+            .Ok(tree) => {
+                total(tree)
+            }
+            .Err(e) => {
+                let _ = e;
+                -1
+            }
         }
     }
 }
@@ -52,10 +57,15 @@ fn main() {
     let builder = spawn Builder;
     let caller = spawn Caller(builder: builder);
     var sum = 0;
-    for depth in 0..8 {
+    for depth in 0 .. 8 {
         match caller.walk(depth) {
-            .Ok(walked) => { sum = sum + walked; }
-            .Err(e) => { let _ = e; sum = -1; }
+            .Ok(walked) => {
+                sum = sum + walked;
+            }
+            .Err(e) => {
+                let _ = e;
+                sum = -1;
+            }
         }
     }
     println(f"sum={sum}");
@@ -63,7 +73,7 @@ fn main() {
     // The reply lands after the caller has given up: the payload is deposited
     // into a channel nobody reads, and its registered destructor frees it.
     let slow = spawn Slow;
-    for i in 0..4 {
+    for i in 0 .. 4 {
         let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
         let outcome = scope within 1ms {
             match slow.echo("abandoned", gate) {
@@ -71,7 +81,10 @@ fn main() {
                 .Err(_) => "unexpected-error",
             }
         } handle failure {
-            match failure { .Deadline { message } => "timed-out", .Fault { message } => "unexpected-fault", }
+            match failure {
+                .Deadline { message } => "timed-out",
+                .Fault { message } => "unexpected-fault",
+            }
         };
         // A request the deadline withdrew before dispatch took its gate with
         // it, so the release may find no reader.

@@ -16,7 +16,6 @@ fn main() {
     }
     tx.close();
     rx.close();
-
     let (stx, srx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
@@ -29,7 +28,6 @@ fn main() {
     }
     stx.close();
     srx.close();
-
     let (btx, brx): (stream.Sink<bytes>, stream.Stream<bytes>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(error) => panic(error),

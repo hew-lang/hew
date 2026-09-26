@@ -1,7 +1,7 @@
 gen fn words(prefix: string, count: i64) -> string {
     let label = prefix.to_upper();
     defer println(label + " cleaned");
-    for index in 0..count {
+    for index in 0 .. count {
         yield f"{label}:{index}";
     }
 }
@@ -19,10 +19,10 @@ fn main() {
             println(value);
             break;
         }
-    }
+    };
     println("after early");
     {
         let _unused = words("unused", 3);
-    }
+    };
     println("done");
 }

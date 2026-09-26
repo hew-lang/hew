@@ -16,5 +16,9 @@ fn main() {
         println(x);
     };
     let _ = printer.send(42);
-    printer.close();
+    {
+        let __hew_migrated_actor_838 = printer;
+        stop(__hew_migrated_actor_838);
+        stopped(__hew_migrated_actor_838);
+    };
 }

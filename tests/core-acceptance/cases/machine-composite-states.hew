@@ -7,18 +7,18 @@
 
 machine Session {
     events {
-        Open,
-        Authed,
-        Drain,
-        Close,
+        Open;
+        Authed;
+        Drain;
+        Close;
     }
 
     emits {
-        Trace { text: string },
+        Trace { text: string; }
     }
 
-    state Closed,
-    state Kicked,
+    state Closed;
+    state Kicked;
 
     state Live {
         entry {
@@ -27,7 +27,6 @@ machine Session {
         exit {
             emit Trace { text: "Live.exit" };
         }
-
         initial state Authing {
             entry {
                 emit Trace { text: "Authing.entry" };
@@ -35,7 +34,7 @@ machine Session {
             exit {
                 emit Trace { text: "Authing.exit" };
             }
-        },
+        }
         state Active {
             entry {
                 emit Trace { text: "Active.entry" };
@@ -43,7 +42,7 @@ machine Session {
             exit {
                 emit Trace { text: "Active.exit" };
             }
-        },
+        }
         state Draining {
             entry {
                 emit Trace { text: "Draining.entry" };
@@ -51,16 +50,16 @@ machine Session {
             exit {
                 emit Trace { text: "Draining.exit" };
             }
-        },
+        }
 
-        on Close: _ => Closed,
-    },
+        on Close: _ => Closed;
+    }
 
-    on Open: Closed => Live,
-    on Authed: Authing => Active,
-    on Drain: Active => Draining,
+    on Open: Closed => Live;
+    on Authed: Authing => Active;
+    on Drain: Active => Draining;
 
-    on Close: Draining => Kicked,
+    on Close: Draining => Kicked;
 
     default { state }
 }
@@ -76,18 +75,15 @@ fn show(report: SessionStep) {
 fn main() {
     var session: Session = .Closed;
     println(session.state_name());
-
     show(session.step(.Open));
     println(session.state_name());
     show(session.step(.Close));
     println(session.state_name());
-
     show(session.step(.Open));
     show(session.step(.Authed));
     println(session.state_name());
     show(session.step(.Close));
     println(session.state_name());
-
     show(session.step(.Open));
     show(session.step(.Authed));
     show(session.step(.Drain));

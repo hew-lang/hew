@@ -64,12 +64,9 @@ fn typecheck_with_resolved_std(source: &str) -> hew_types::TypeCheckOutput {
 /// the authority boundary under test.
 fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::TypeCheckOutput {
     let module_source = match owner {
-        "failure" => "pub type CrashNotification { actor_id: u64, }\npub enum CrashKind { Crashed, }",
+        "failure" => "pub type CrashNotification {\n    actor_id: u64;\n}\n\npub enum CrashKind {\n    Crashed;\n}\n",
         "link_monitor" => {
-            "pub type MonitorId { value: u64, }\n\
-             pub enum DownTarget { Local(u64), }\n\
-             pub enum DownReason { Exited, }\n\
-             pub type DownNotification { monitor: MonitorId, target: DownTarget, reason: DownReason, }"
+            "pub type MonitorId {\n    value: u64;\n}\n\npub enum DownTarget {\n    Local(u64);\n}\n\npub enum DownReason {\n    Exited;\n}\n\npub type DownNotification {\n    monitor: MonitorId;\n    target: DownTarget;\n    reason: DownReason;\n}\n"
         }
         _ => panic!("unsupported lifecycle owner fixture: {owner}"),
     };
@@ -458,8 +455,10 @@ fn canonical_std_module_named_import_is_seeded_before_member_resolution() {
         output.errors
     );
 
-    let spoof =
-        typecheck_link_monitor_import_edge(&["app", "failure"], "pub enum CrashKind { Crashed, }");
+    let spoof = typecheck_link_monitor_import_edge(
+        &["app", "failure"],
+        "pub enum CrashKind {\n    Crashed;\n}\n",
+    );
     assert!(
         spoof
             .errors
@@ -855,18 +854,21 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
 #[test]
 fn local_lifecycle_shadow_does_not_forge_imported_payload() {
     let output = typecheck_with_resolved_std(
-        r"
-        import std.failure.{CrashNotification};
+        r"import std.failure.{CrashNotification};
 
-        type CrashNotification { value: i64, }
+type CrashNotification {
+    value: i64;
+}
 
-        actor Watcher {
-            #[on(exit)]
-            fn on_peer_exit(note: CrashNotification) { let _value = note.value; }
-        }
+actor Watcher {
+    #[on(exit)]
+    fn on_peer_exit(note: CrashNotification) {
+        let _value = note.value;
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -882,18 +884,17 @@ fn local_lifecycle_shadow_does_not_forge_imported_payload() {
 #[test]
 fn accept_on_start_only() {
     let output = typecheck(
-        r"
-        actor Cache {
-            let entries: i32,
+        r"actor Cache {
+    let entries: i32;
 
-            #[on(start)]
-            fn warm() {
-                entries
-            }
-        }
+    #[on(start)]
+    fn warm() {
+        entries
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -905,18 +906,17 @@ fn accept_on_start_only() {
 #[test]
 fn accept_on_stop_only() {
     let output = typecheck(
-        r"
-        actor Cache {
-            let entries: i32,
+        r"actor Cache {
+    let entries: i32;
 
-            #[on(stop)]
-            fn flush() {
-                entries
-            }
-        }
+    #[on(stop)]
+    fn flush() {
+        entries
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -931,24 +931,23 @@ fn accept_multiple_on_stop_in_declared_order() {
     // order (HEW-SPEC-2026 §9.1.2 rule 6). The type-checker accepts
     // them without complaint.
     let output = typecheck(
-        r"
-        actor Cache {
-            let entries: i32,
-            let socket: i32,
+        r"actor Cache {
+    let entries: i32;
+    let socket: i32;
 
-            #[on(stop)]
-            fn flush_cache() {
-                entries
-            }
+    #[on(stop)]
+    fn flush_cache() {
+        entries
+    }
 
-            #[on(stop)]
-            fn close_socket() {
-                socket
-            }
-        }
+    #[on(stop)]
+    fn close_socket() {
+        socket
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -983,20 +982,19 @@ fn accept_typed_on_down_hook() {
 #[test]
 fn reject_user_down_notification_collision_in_typed_hook() {
     let output = typecheck(
-        r"
-        type DownNotification {
-            value: i64,
-        }
+        r"type DownNotification {
+    value: i64;
+}
 
-        actor Watcher {
-            #[on(down)]
-            fn on_down(note: DownNotification) {
-                let _value = note.value;
-            }
-        }
+actor Watcher {
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        let _value = note.value;
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -1111,18 +1109,17 @@ fn reject_hook_with_parameters() {
     // name. A parameter list (e.g. attempting `self`-style receivers,
     // imported from other ecosystems) is rejected.
     let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32,
+        r"actor Worker {
+    let count: i32;
 
-            #[on(stop)]
-            fn shutdown(unused: i32) {
-                count
-            }
-        }
+    #[on(stop)]
+    fn shutdown(unused: i32) {
+        count
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.iter().any(|e| e.message.contains("must take")
@@ -1139,23 +1136,22 @@ fn reject_duplicate_on_start() {
     // `#[on(start)]` is at-most-once per actor (rule 6). Declaring two
     // is a structural error.
     let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32,
+        r"actor Worker {
+    let count: i32;
 
-            #[on(start)]
-            fn first() {
-                count
-            }
+    #[on(start)]
+    fn first() {
+        count
+    }
 
-            #[on(start)]
-            fn second() {
-                count
-            }
-        }
+    #[on(start)]
+    fn second() {
+        count
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -1173,18 +1169,17 @@ fn reject_unknown_hook_kind() {
     // the checker emits a diagnostic listing the valid kinds (start, stop).
     // Uses a plain identifier that is not a reserved keyword.
     let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32,
+        r"actor Worker {
+    let count: i32;
 
-            #[on(restart)]
-            fn setup() {
-                count
-            }
-        }
+    #[on(restart)]
+    fn setup() {
+        count
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -1214,18 +1209,17 @@ fn on_crash_still_works() {
     // `CrashAction`-return path is fail-closed (see
     // `reject_crash_action_return_not_yet_wired`).
     let output = typecheck(
-        r#"
-        actor Worker {
-            let count: i32,
+        r#"actor Worker {
+    let count: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                panic("handled")
-            }
-        }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        panic("handled")
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1239,18 +1233,17 @@ fn on_upgrade_attribute_compile_errors() {
     // `upgrade` left the `#[on(..)]` hook-kind list (HEW-SPEC-2026 §12.6):
     // `#[on(upgrade)]` is rejected the same way as any other unrecognised
     // hook kind, not through a bespoke reserved-attribute diagnostic.
-    let source = r"
-        actor Worker {
-            let count: i32,
+    let source = r"actor Worker {
+    let count: i32;
 
-            #[on(upgrade)]
-            fn on_upgrade() {
-                count
-            }
-        }
+    #[on(upgrade)]
+    fn on_upgrade() {
+        count
+    }
+}
 
-        fn main() {}
-        ";
+fn main() {}
+";
     let output = typecheck(source);
     let error = output
         .errors
@@ -1463,21 +1456,20 @@ fn accept_crash_action_return_inside_if_then_more_code() {
     // A `return CrashAction::Escalate;` inside an `if` branch, with a diverging
     // fallthrough, type-checks: every return position is a valid CrashAction
     // return now that the fail-closed gate is removed.
-    let source = r"
-        actor Worker {
-            let flag: i32,
+    let source = r"actor Worker {
+    let flag: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                if flag == 1 {
-                    return CrashAction.Escalate;
-                }
-                CrashAction.Kill
-            }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        if flag == 1 {
+            return CrashAction.Escalate;
         }
+        CrashAction.Kill
+    }
+}
 
-        fn main() {}
-        ";
+fn main() {}
+";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
@@ -1491,22 +1483,21 @@ fn accept_crash_hook_with_if_and_diverging_body() {
     // Accept twin: an `#[on(crash)]` hook that uses an `if` branch with a
     // diverging expression (`panic(...)`) in each arm still type-checks cleanly.
     let output = typecheck(
-        r#"
-        actor Worker {
-            let flag: i32,
+        r#"actor Worker {
+    let flag: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                if flag == 1 {
-                    panic("restart path")
-                } else {
-                    panic("kill path")
-                }
-            }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        if flag == 1 {
+            panic("restart path")
+        } else {
+            panic("kill path")
         }
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1528,21 +1519,20 @@ fn accept_closure_inside_crash_hook_returning_crash_action() {
     // closure is a valid closure return statement; the hook body itself diverges
     // via `panic(...)`. Both type-check cleanly.
     let output = typecheck(
-        r#"
-        actor Worker {
-            let flag: i32,
+        r#"actor Worker {
+    let flag: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                let handler = || -> CrashAction {
-                    return CrashAction.Restart;
-                };
-                panic("diverging hook body")
-            }
-        }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        let handler = || -> CrashAction {
+            return CrashAction.Restart;
+        };
+        panic("diverging hook body")
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1641,18 +1631,17 @@ fn on_crash_signature_pinned() {
     // `crash_action_variants_recognised_by_type_checker` test for the
     // non-diverging case).
     let output = typecheck(
-        r#"
-        actor Worker {
-            let count: i32,
+        r#"actor Worker {
+    let count: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                panic("crash")
-            }
-        }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        panic("crash")
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),

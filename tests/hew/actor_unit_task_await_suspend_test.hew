@@ -15,7 +15,7 @@
 //! separate follow-on; this fixture covers only the unit reroute.
 
 actor Worker {
-    var ticks: i64 = 0,
+    var ticks: i64 = 0;
 
     // A unit child task: the scope joins it; awaiting it suspends until it is
     // done. The handler increments after the await resumes.

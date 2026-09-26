@@ -23,7 +23,7 @@ extern "C" {
 }
 
 type Box<T> {
-    item: T,
+    item: T;
 }
 
 fn main() -> i64 {

@@ -43,7 +43,7 @@ fn serve_request(root: string, consume req: Request) {
     let request_path = req.path();
     if request_path.contains("..") {
         match req.respond_text(403, "403 Forbidden") {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => panic("failed to send forbidden response"),
         }
     } else {
@@ -55,12 +55,12 @@ fn serve_request(root: string, consume req: Request) {
             };
             let content_type = mime.from_path(file_path);
             match req.respond(200, content_type, body) {
-                .Ok(_) => {},
+                .Ok(_) => {}
                 .Err(_) => panic("failed to send file response"),
             }
         } else {
             match req.respond_text(404, "404 Not Found") {
-                .Ok(_) => {},
+                .Ok(_) => {}
                 .Err(_) => panic("failed to send not-found response"),
             }
         }
@@ -88,10 +88,10 @@ fn main() {
     match http.listen(addr) {
         .Ok(server) => {
             serve_forever(root, server);
-        },
+        }
         .Err(_) => {
             let detail = http.listen_error();
             println(f"cannot listen on {addr}: {detail}");
-        },
+        }
     }
 }

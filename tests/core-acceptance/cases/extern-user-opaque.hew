@@ -6,7 +6,7 @@ type Slot {
 
 #[resource]
 type Bag {
-    slot: Slot,
+    slot: Slot;
 }
 
 trait BagMethods {
@@ -65,16 +65,13 @@ fn main() -> i64 {
     explicit.put(5);
     println(explicit.count());
     println(drained(explicit));
-
     let scoped = make();
     scoped.put(7);
     println(scoped.count());
-
     let bags = [make(), make()];
     bags[0].put(8);
     bags[1].put(9);
     println(bags[0].take() + bags[1].take());
-
     println(faulted(make(), 0));
     0
 }

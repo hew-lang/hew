@@ -1,3 +1,7 @@
-fn tag() -> string { "lib" }
+fn tag() -> string {
+    "lib"
+}
 
-pub fn describe() -> string { tag() }
+pub fn describe() -> string {
+    tag()
+}

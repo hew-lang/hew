@@ -4,22 +4,24 @@
 // the way an actor is, and a plain spawned actor of the same declaration still
 // travels through a function by that type.
 actor Worker {
-    let id: i64,
-    var seen: i64 = 0,
+    let id: i64;
+    var seen: i64 = 0;
     receive fn work(n: i64) -> i64 {
         seen = seen + 1;
         n * id
     }
-    receive fn seen_count() -> i64 { seen }
+    receive fn seen_count() -> i64 {
+        seen
+    }
 }
 
 supervisor Pool {
-    strategy: simple_one_for_one,
-    pool workers: Worker(id: 3) count: 2,
+    strategy: simple_one_for_one;
+    pool workers: Worker(id: 3) count: 2;
 }
 
 supervisor Desk {
-    child primary: Worker(id: 7),
+    child primary: Worker(id: 7);
 }
 
 fn ask(worker: Worker, n: i64) -> i64 {
@@ -32,7 +34,6 @@ fn ask(worker: Worker, n: i64) -> i64 {
 fn main() {
     let pool: Pool = spawn Pool();
     let desk: Desk = spawn Desk();
-
     // A pool member is the child's actor type: its handlers and their reply
     // types are the child's own.
     match pool.workers[0].work(4) {
@@ -43,7 +44,6 @@ fn main() {
         .Ok(v) => println(v),
         .Err(_) => panic("pool member lost its state"),
     }
-
     // A static role is the same.
     match desk.primary.work(6) {
         .Ok(v) => println(v),
@@ -53,12 +53,22 @@ fn main() {
         .Ok(v) => println(v),
         .Err(_) => panic("static role lost its state"),
     }
-
     // An ordinary spawned actor of the same declaration travels by its type.
     let free = spawn Worker(id: 11);
     println(ask(free, 2));
-
-    close(free);
-    close(desk);
-    close(pool);
+    {
+        let __hew_migrated_actor_1754 = free;
+        stop(__hew_migrated_actor_1754);
+        stopped(__hew_migrated_actor_1754);
+    };
+    {
+        let __hew_migrated_actor_1771 = desk;
+        stop(__hew_migrated_actor_1771);
+        stopped(__hew_migrated_actor_1771);
+    };
+    {
+        let __hew_migrated_actor_1788 = pool;
+        stop(__hew_migrated_actor_1788);
+        stopped(__hew_migrated_actor_1788);
+    };
 }

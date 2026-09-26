@@ -421,20 +421,24 @@ fn receive_gen_fn_state_field_capture_passes_verify() {
     // `verify_hir` wrongly rejected a stateful receive-gen as a dangling
     // capture, blocking the whole `hew run` pipeline before MIR.
     let output = typecheck_and_lower(
-        r"
-        actor Ticker {
-            var base: i64,
-            init(b: i64) { base = b; }
-            receive gen fn stream(n: i64) -> i64 {
-                var i = 0;
-                while i < n {
-                    yield base + i;
-                    i = i + 1;
-                }
-            }
+        r"actor Ticker {
+    var base: i64;
+    init(b: i64) {
+        base = b;
+    }
+    receive gen fn stream(n: i64) -> i64 {
+        var i = 0;
+        while i < n {
+            yield base + i;
+            i = i + 1;
         }
-        fn main() { let _t = spawn Ticker(b: 100); }
-        ",
+    }
+}
+
+fn main() {
+    let _t = spawn Ticker(b: 100);
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),

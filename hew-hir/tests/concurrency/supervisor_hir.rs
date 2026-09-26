@@ -36,17 +36,24 @@ fn find_child<'a>(sup: &'a HirSupervisorDecl, name: &str) -> &'a HirSupervisorCh
 #[test]
 fn static_children_get_sequential_slot_indices() {
     let output = lower(
-        r"
-        actor Cache { receive fn query() {} }
-        actor Log   { receive fn write() {} }
-        actor Db    { receive fn exec() {}  }
+        r"actor Cache {
+    receive fn query() {}
+}
 
-        supervisor App {
-            child cache: Cache,
-            child log:   Log,
-            child db:    Db
-        }
-        ",
+actor Log {
+    receive fn write() {}
+}
+
+actor Db {
+    receive fn exec() {}
+}
+
+supervisor App {
+    child cache: Cache;
+    child log: Log;
+    child db: Db;
+}
+",
     );
     let sup = find_supervisor(&output, "App");
     let cache = find_child(sup, "cache");
@@ -65,14 +72,15 @@ fn static_children_get_sequential_slot_indices() {
 #[test]
 fn pool_child_gets_pool_slot_index_zero() {
     let output = lower(
-        r"
-        actor Worker { receive fn ping() {} }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor Pool {
-            strategy: simple_one_for_one,
-            pool worker: Worker count: 2
-        }
-        ",
+supervisor Pool {
+    strategy: simple_one_for_one;
+    pool worker: Worker count: 2;
+}
+",
     );
     let sup = find_supervisor(&output, "Pool");
     let worker = find_child(sup, "worker");
@@ -88,14 +96,15 @@ fn pool_child_gets_pool_slot_index_zero() {
 #[test]
 fn pool_count_clause_lowers_into_pool_count() {
     let output = lower(
-        r"
-        actor Worker { receive fn ping() {} }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor Pool {
-            strategy: simple_one_for_one,
-            pool worker: Worker count: 3
-        }
-        ",
+supervisor Pool {
+    strategy: simple_one_for_one;
+    pool worker: Worker count: 3;
+}
+",
     );
     let sup = find_supervisor(&output, "Pool");
     let worker = find_child(sup, "worker");
@@ -116,17 +125,16 @@ fn pool_count_clause_lowers_into_pool_count() {
 #[test]
 fn pool_count_and_member_init_arg_are_separated() {
     let output = lower(
-        r"
-        actor Worker {
-            var id: i64,
-            receive fn ping() {}
-        }
+        r"actor Worker {
+    var id: i64;
+    receive fn ping() {}
+}
 
-        supervisor Pool {
-            strategy: simple_one_for_one,
-            pool worker: Worker(id: 7) count: 4
-        }
-        ",
+supervisor Pool {
+    strategy: simple_one_for_one;
+    pool worker: Worker(id: 7) count: 4;
+}
+",
     );
     let sup = find_supervisor(&output, "Pool");
     let worker = find_child(sup, "worker");
@@ -147,16 +155,15 @@ fn pool_count_and_member_init_arg_are_separated() {
 #[test]
 fn static_child_keeps_count_as_init_field() {
     let output = lower(
-        r"
-        actor Counter {
-            var count: i64,
-            receive fn tick() {}
-        }
+        r"actor Counter {
+    var count: i64;
+    receive fn tick() {}
+}
 
-        supervisor App {
-            child counter: Counter(count: 0)
-        }
-        ",
+supervisor App {
+    child counter: Counter(count: 0);
+}
+",
     );
     let sup = find_supervisor(&output, "App");
     let counter = find_child(sup, "counter");
@@ -179,15 +186,19 @@ fn static_child_keeps_count_as_init_field() {
 #[test]
 fn static_and_pool_indices_are_disjoint() {
     let output = lower(
-        r"
-        actor Cache  { receive fn query() {} }
-        actor Worker { receive fn ping()  {} }
+        r"actor Cache {
+    receive fn query() {}
+}
 
-        supervisor App {
-            child cache:  Cache,
-            pool  worker: Worker
-        }
-        ",
+actor Worker {
+    receive fn ping() {}
+}
+
+supervisor App {
+    child cache: Cache;
+    pool worker: Worker;
+}
+",
     );
     let sup = find_supervisor(&output, "App");
     let cache = find_child(sup, "cache");

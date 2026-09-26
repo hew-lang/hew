@@ -3,15 +3,21 @@
 // ends the previous generation at the overwrite and the loop back-edge
 // re-arms the next one; no generation may leak or be released twice.
 type Status {
-    state: string,
-    detail: string,
+    state: string;
+    detail: string;
 }
 
 fn fetch(n: i64) -> Result<Status, string> {
-    if n > 0 { .Ok(Status { state: "passing", detail: "ok" }) } else { .Err("boom") }
+    if n > 0 {
+        .Ok(Status { state: "passing", detail: "ok" })
+    } else {
+        .Err("boom")
+    }
 }
 
-fn note(a: string, b: string) { println(a + b); }
+fn note(a: string, b: string) {
+    println(a + b);
+}
 
 fn poll(attempts: i64) -> Result<Status, string> {
     var last = Status { state: "pending", detail: "start" };
@@ -21,7 +27,7 @@ fn poll(attempts: i64) -> Result<Status, string> {
             .Err(err) => {
                 note(err.clone(), "x");
                 Status { state: "unavailable", detail: err }
-            },
+            }
         };
         note(last.state.clone(), last.detail.clone());
         if last.state == "passing" {

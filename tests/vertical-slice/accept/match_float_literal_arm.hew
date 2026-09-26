@@ -4,13 +4,11 @@ fn main() {
         _ => 0,
     };
     println(a);
-
     let b = match 1.4 {
         1.5 => 1,
         _ => 0,
     };
     println(b);
-
     let c: f32 = 2.5;
     let d = match c {
         2.5 => 3,

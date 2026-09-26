@@ -21,7 +21,7 @@ fn main() {
     };
     let consumer = spawn Consumer;
     let _ = mailbox(consumer, on_full: .Reject).drain(rx);
-    for i in 1..6 {
+    for i in 1 .. 6 {
         tx.send(i).expect("send");
     }
     tx.finish();

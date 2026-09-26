@@ -4,7 +4,9 @@
 // as long as some weak handle names it.
 
 #[resource]
-type Tag { id: i64 }
+type Tag {
+    id: i64;
+}
 
 impl Tag {
     fn close(consume self) {
@@ -37,7 +39,6 @@ fn main() {
     println(f"after upgrade strong={owner.strong_count()} weak={owner.weak_count()}");
     let _ = second;
     let _ = observer;
-
     let expired = outlives_payload();
     println(f"upgrade after release={upgraded_count(expired.clone())}");
     let _ = expired;

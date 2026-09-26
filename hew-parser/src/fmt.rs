@@ -148,6 +148,77 @@ impl std::fmt::Display for MigrationError {
 
 impl std::error::Error for MigrationError {}
 
+/// Reprint a source file after recovering punctuation and other mechanically
+/// migratable spellings. Other parse errors refuse the entire file, so the
+/// first migration phase cannot conceal malformed source.
+///
+/// # Errors
+///
+/// Returns every unrelated parse error or an error if reprinting changes the
+/// parsed program.
+pub fn migrate_punctuation(source: &str) -> Result<String, MigrationError> {
+    use crate::parser::{ParseDiagnosticKind, Severity};
+
+    let parsed = crate::parse(source);
+    let refusals = parsed
+        .errors
+        .iter()
+        .filter(|error| {
+            error.severity == Severity::Error
+                && !matches!(
+                    error.kind,
+                    ParseDiagnosticKind::MemberTerminator
+                        | ParseDiagnosticKind::SeparatorAfterBody
+                        | ParseDiagnosticKind::ListSeparator
+                        | ParseDiagnosticKind::ActorFieldBinding
+                        | ParseDiagnosticKind::LegacyPathSeparator
+                        | ParseDiagnosticKind::LegacyTurbofish
+                        | ParseDiagnosticKind::AwaitRestartRetired
+                        | ParseDiagnosticKind::SupervisorStopClauseRetired
+                )
+        })
+        .map(|error| MigrationRefusal {
+            span: error.span.clone(),
+            reason: error.message.clone(),
+        })
+        .collect::<Vec<_>>();
+    if !refusals.is_empty() {
+        return Err(MigrationError { refusals });
+    }
+    let formatted = format_source(source, &parsed.program);
+    let checked = crate::parse(&formatted);
+    let refusals = checked
+        .errors
+        .iter()
+        .filter(|error| {
+            error.severity == Severity::Error
+                && !matches!(
+                    error.kind,
+                    ParseDiagnosticKind::AwaitRestartRetired
+                        | ParseDiagnosticKind::LegacyPathSeparator
+                        | ParseDiagnosticKind::LegacyTurbofish
+                        | ParseDiagnosticKind::SupervisorStopClauseRetired
+                )
+        })
+        .map(|error| MigrationRefusal {
+            span: error.span.clone(),
+            reason: format!("migrated source: {}", error.message),
+        })
+        .collect::<Vec<_>>();
+    if !refusals.is_empty() {
+        return Err(MigrationError { refusals });
+    }
+    if !crate::ast_eq::program_eq_ignoring_spans(&parsed.program, &checked.program) {
+        return Err(MigrationError {
+            refusals: vec![MigrationRefusal {
+                span: 0..0,
+                reason: "source migration changed the program".to_string(),
+            }],
+        });
+    }
+    Ok(formatted)
+}
+
 /// Rewrite legacy path separators and checker-approved bare variants.
 ///
 /// Every edit is anchored to lexer tokens.  Comments and string literals never
@@ -1310,15 +1381,13 @@ impl<'a> Formatter<'a> {
             RecordKind::Named(fields) => {
                 self.write(" {\n");
                 self.indent += 1;
-                for (i, field) in fields.iter().enumerate() {
+                for field in fields {
                     self.write_outer_doc(field.doc_comment.as_ref());
                     self.write_indent();
                     self.write_ident(field.name);
                     self.write(": ");
                     self.format_type_expr(&field.ty.0);
-                    if i + 1 < fields.len() {
-                        self.write(",");
-                    }
+                    self.write(";");
                     self.write("\n");
                 }
                 self.indent -= 1;
@@ -1382,7 +1451,7 @@ impl<'a> Formatter<'a> {
                     self.write_ident(*name);
                     self.write(": ");
                     self.format_type_expr(&ty.0);
-                    self.write(",");
+                    self.write(";");
                     self.newline();
                     // flush any trailing comment on this line; span.end is the
                     // first token of the next item (or closing brace), so any
@@ -1397,7 +1466,7 @@ impl<'a> Formatter<'a> {
                     // the trailing-comment flush below counts only newlines
                     // between the variant name and any trailing comment
                     self.prev_source_pos = v.span.start;
-                    self.format_variant(v, true);
+                    self.format_variant(v);
                     // flush any trailing comment on this line; v.span.end is
                     // the first token of the next item (or closing brace), so
                     // any comment between content and v.span.end is captured
@@ -1521,7 +1590,7 @@ impl<'a> Formatter<'a> {
                                 meta.yaml_name.as_deref(),
                             );
                         }
-                        self.write(",");
+                        self.write(";");
                         self.newline();
                         self.flush_comments_before(span.end);
                         self.prev_source_pos = self.prev_source_pos.max(span.end);
@@ -1549,7 +1618,7 @@ impl<'a> Formatter<'a> {
                     if let TypeBodyItem::Variant(v) = item {
                         self.flush_comments_before(v.span.start);
                         self.prev_source_pos = v.span.start;
-                        self.format_variant(v, true);
+                        self.format_variant(v);
                         self.flush_comments_before(v.span.end);
                         self.prev_source_pos = self.prev_source_pos.max(v.span.end);
                     }
@@ -1648,7 +1717,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_variant(&mut self, v: &VariantDecl, trailing_comma: bool) {
+    fn format_variant(&mut self, v: &VariantDecl) {
         self.write_outer_doc(v.doc_comment.as_ref());
         self.write_indent();
         self.write_ident(v.name);
@@ -1663,16 +1732,17 @@ impl<'a> Formatter<'a> {
             }
             VariantKind::Struct(fields) => {
                 self.write(" { ");
-                self.comma_sep(fields, |f, (name, ty)| {
-                    f.write_ident(*name);
-                    f.write(": ");
-                    f.format_type_expr(&ty.0);
-                });
-                self.write(" }");
+                for (name, ty) in fields {
+                    self.write_ident(*name);
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                    self.write("; ");
+                }
+                self.write("}");
             }
         }
-        if trailing_comma {
-            self.write(",");
+        if !matches!(v.kind, VariantKind::Struct(_)) {
+            self.write(";");
         }
         self.newline();
     }
@@ -2003,7 +2073,7 @@ impl<'a> Formatter<'a> {
                 }
             }
         }
-        self.write(",\n");
+        self.write(";\n");
     }
 
     #[expect(clippy::too_many_lines, reason = "machine formatting has many clauses")]
@@ -2204,10 +2274,10 @@ impl<'a> Formatter<'a> {
         self.write("}\n");
     }
 
-    /// Emit `{ name: Type, … }` after an event/state name, or `,` when empty.
+    /// Emit `{ name: Type; … }` after an event/state name, or `;` when empty.
     fn format_machine_field_list(&mut self, fields: &[(Ident, Spanned<TypeExpr>)]) {
         if fields.is_empty() {
-            self.write(",");
+            self.write(";");
         } else {
             self.write(" { ");
             for (i, (name, ty)) in fields.iter().enumerate() {
@@ -2217,9 +2287,9 @@ impl<'a> Formatter<'a> {
                 self.write_ident(*name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(",");
+                self.write(";");
             }
-            self.write(" },");
+            self.write(" }");
         }
     }
 
@@ -2237,7 +2307,7 @@ impl<'a> Formatter<'a> {
                 self.write_ident(*name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(",\n");
+                self.write(";\n");
             }
             if let Some(entry) = &state.entry {
                 self.write_indent();
@@ -2253,7 +2323,7 @@ impl<'a> Formatter<'a> {
             }
             self.indent -= 1;
             self.write_indent();
-            self.write("},\n");
+            self.write("}\n");
         } else if !state.fields.is_empty() {
             self.write(" {");
             for (name, ty) in &state.fields {
@@ -2261,11 +2331,11 @@ impl<'a> Formatter<'a> {
                 self.write_ident(*name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(",");
+                self.write(";");
             }
-            self.write(" },\n");
+            self.write(" }\n");
         } else {
-            self.write(",\n");
+            self.write(";\n");
         }
     }
 
@@ -2334,7 +2404,7 @@ impl<'a> Formatter<'a> {
             &stripped_body
         };
         match transition.body_form {
-            MachineTransitionBodyForm::Implicit => self.write(","),
+            MachineTransitionBodyForm::Implicit => self.write(";"),
             MachineTransitionBodyForm::PayloadShorthand => {
                 // The head already wrote the target name (with its authored
                 // dot); the shorthand re-emits only the payload field list.
@@ -2482,7 +2552,7 @@ impl<'a> Formatter<'a> {
             self.write_ident(*name);
             self.write(": ");
             self.format_type_expr(&ty.0);
-            self.write(",\n");
+            self.write(";\n");
         }
         if let Some(entry) = &group.entry {
             self.write_indent();
@@ -2544,7 +2614,7 @@ impl<'a> Formatter<'a> {
 
         self.indent -= 1;
         self.write_indent();
-        self.write("},\n");
+        self.write("}\n");
     }
 
     /// Emit a substate declaration inside a composite block. The `initial`
@@ -2567,7 +2637,7 @@ impl<'a> Formatter<'a> {
                 self.write_ident(*fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(",\n");
+                self.write(";\n");
             }
             if let Some(entry) = &state.entry {
                 self.write_indent();
@@ -2583,7 +2653,7 @@ impl<'a> Formatter<'a> {
             }
             self.indent -= 1;
             self.write_indent();
-            self.write("},\n");
+            self.write("}\n");
         } else if !own_fields.is_empty() {
             self.write(" {");
             for (fname, ty) in own_fields {
@@ -2591,28 +2661,20 @@ impl<'a> Formatter<'a> {
                 self.write_ident(*fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(",");
+                self.write(";");
             }
-            self.write(" },\n");
+            self.write(" }\n");
         } else {
-            self.write(",\n");
+            self.write(";\n");
         }
     }
 
     fn format_field_decl(&mut self, f: &FieldDecl) {
         self.write_outer_doc(f.doc_comment.as_ref());
         self.write_indent();
-        // An immutable field may be written without `let`; keep the author's
-        // spelling.
-        let bare = self.source.get(f.span.clone()).is_some_and(|text| {
-            matches!(
-                hew_lexer::Lexer::new(text).next(),
-                Some((hew_lexer::Token::Identifier(_), _))
-            )
-        });
         if f.is_mutable {
             self.write("var ");
-        } else if !bare {
+        } else {
             self.write("let ");
         }
         self.write_ident(f.name);
@@ -2622,7 +2684,7 @@ impl<'a> Formatter<'a> {
             self.write(" = ");
             self.format_expr(default);
         }
-        self.write(",\n");
+        self.write(";\n");
     }
 
     fn format_actor_init(&mut self, init: &ActorInit, scope_end: usize) {
@@ -2810,7 +2872,7 @@ impl<'a> Formatter<'a> {
                 self.write(" within ");
                 self.write(&intensity.window);
             }
-            self.write(",\n");
+            self.write(";\n");
         }
         if self.has_comments() {
             self.flush_block_end_comments(span_end);
@@ -2909,7 +2971,7 @@ impl<'a> Formatter<'a> {
                 self.write(" }");
             }
         }
-        self.write(",\n");
+        self.write(";\n");
     }
 
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
@@ -3904,6 +3966,29 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    fn is_block_arm_expr(&self, body: &Spanned<Expr>) -> bool {
+        if !crate::parser::Parser::is_block_expr(&body.0) {
+            return false;
+        }
+        if self.source.is_empty() {
+            return true;
+        }
+        matches!(
+            self.tokens
+                .get(self.token_at_or_after(body.1.start))
+                .map(|(token, _)| token),
+            Some(
+                hew_lexer::Token::LeftBrace
+                    | hew_lexer::Token::If
+                    | hew_lexer::Token::Match
+                    | hew_lexer::Token::Unsafe
+                    | hew_lexer::Token::Select
+                    | hew_lexer::Token::Scope
+                    | hew_lexer::Token::Fork
+            )
+        )
+    }
+
     fn format_match_arm(&mut self, arm: &MatchArm) {
         self.write_indent();
         self.format_pattern(&arm.pattern);
@@ -3913,7 +3998,9 @@ impl<'a> Formatter<'a> {
         }
         self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
         self.format_expr(&arm.body);
-        self.write(",");
+        if !self.is_block_arm_expr(&arm.body) {
+            self.write(",");
+        }
         self.newline();
     }
 
@@ -4701,7 +4788,9 @@ impl<'a> Formatter<'a> {
         self.format_expr(&arm.source);
         self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
         self.format_expr(&arm.body);
-        self.write(",");
+        if !self.is_block_arm_expr(&arm.body) {
+            self.write(",");
+        }
         self.newline();
     }
 
@@ -4718,7 +4807,9 @@ impl<'a> Formatter<'a> {
         self.format_expr(&tc.duration);
         self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
         self.format_expr(&tc.body);
-        self.write(",");
+        if !self.is_block_arm_expr(&tc.body) {
+            self.write(",");
+        }
         self.newline();
     }
 
@@ -5551,7 +5642,7 @@ mod tests {
         // block was collected by the parser and then dropped on the floor.
         let src = "\
 enum Foo {
-    A,
+    A;
 }
 
 /// Doc comment for Foo Display.
@@ -5592,7 +5683,7 @@ fn main() -> i32 {
     fn actor_declaration() {
         let src = "\
 actor Counter {
-    let count: i32,
+    let count: i32;
 
     receive fn increment() {
         self.count = self.count + 1;
@@ -5611,9 +5702,9 @@ actor Counter {
     fn enum_declaration() {
         let src = "\
 enum Colour {
-    Red,
-    Green,
-    Blue,
+    Red;
+    Green;
+    Blue;
 }
 ";
         let formatted = roundtrip(src);
@@ -5667,7 +5758,7 @@ fn main() {
         // formatted supervisor invisible to its importer.
         let src = "\
 pub actor Worker {
-    let id: i64,
+    let id: i64;
 
     receive fn identify() -> i64 {
         id
@@ -5675,9 +5766,9 @@ pub actor Worker {
 }
 
 pub supervisor Inner {
-    strategy: one_for_one,
+    strategy: one_for_one;
 
-    child worker: Worker(id: 23) restart: temporary,
+    child worker: Worker(id: 23) restart: temporary;
 }
 ";
         let formatted = roundtrip(src);
@@ -5913,12 +6004,12 @@ fn main() {
     }
 
     #[test]
-    fn enum_all_variants_comma() {
+    fn enum_all_variants_terminate() {
         let src = "\
 enum Colour {
-    Red,
-    Green,
-    Blue,
+    Red;
+    Green;
+    Blue;
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -5929,9 +6020,9 @@ enum Colour {
         let src = "\
 #[wire]
 enum Status {
-    Pending,
-    Active,
-    Completed,
+    Pending;
+    Active;
+    Completed;
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -5943,9 +6034,9 @@ enum Status {
 #[json(camelCase)]
 #[wire]
 enum Status {
-    PendingReview,
-    ActiveNow,
-    Completed,
+    PendingReview;
+    ActiveNow;
+    Completed;
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -5956,7 +6047,7 @@ enum Status {
         let src = "\
 #[wire]
 type Msg {
-    added: String @2 repeated since 3 yaml(\"added\"),
+    added: String @2 repeated since 3 yaml(\"added\");
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -5967,9 +6058,9 @@ type Msg {
         let src = "\
 #[wire]
 type Msg {
-    id: i64 @1,
-    name: Option<String> @2 optional since 2,
-    tags: Vec<String> @3 repeated,
+    id: i64 @1;
+    name: Option<String> @2 optional since 2;
+    tags: Vec<String> @3 repeated;
     reserved @4;
 }
 ";
@@ -5987,10 +6078,10 @@ type Msg {
         let src = "\
 pub enum IoError {
     // The target path does not exist.
-    NotFound(int),
+    NotFound(int);
     // The process lacks permission for the operation.
-    PermissionDenied(int),
-    Other(int), // catch-all
+    PermissionDenied(int);
+    Other(int); // catch-all
 }
 ";
         assert_eq!(roundtrip_source(src), src);
@@ -6001,8 +6092,8 @@ pub enum IoError {
         let src = "\
 type Config {
     // The server port to bind on.
-    port: int,
-    host: string, // hostname or IP
+    port: int;
+    host: string; // hostname or IP
 }
 ";
         assert_eq!(roundtrip_source(src), src);
@@ -6061,19 +6152,17 @@ fn main() -> string {
         let src = "\
 fn assert_ok(result: Result<(), int>) {
     match result {
-        Ok(_) => {
-        },
+        Ok(_) => {}
         Err(e) => panic(\"op failed\"),
     }
 }
 
-fn empty_fn() {
-}
+fn empty_fn() {}
 ";
         let expected = "\
 fn assert_ok(result: Result<(), int>) {
     match result {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic(\"op failed\"),
     }
 }
@@ -6091,15 +6180,15 @@ fn empty_fn() {}
 // module-level comment
 enum Status {
     // ok variant
-    Ok,
+    Ok;
     // error variant
-    Err(int), // with payload
+    Err(int); // with payload
 }
 
 type Cfg {
     // host to connect to
-    host: string,
-    port: int, // default 8080
+    host: string;
+    port: int; // default 8080
 }
 
 fn handle(s: Status) -> int {
@@ -6187,7 +6276,7 @@ fn handle(x: int) -> int {
         0 => {
             1
         // documents next arm
-        },
+        }
         _ => 2,
     }
 }
@@ -6306,7 +6395,7 @@ fn main() {
         // The formatter must emit `Name<T> { ... }` when type_args is Some.
         let src = "\
 type Wrapper<T> {
-    value: T,
+    value: T;
 }
 
 fn main() {
@@ -6321,7 +6410,7 @@ fn main() {
         // The formatter must emit `Name { ... }` (no `<>`) when type_args is None.
         let src = "\
 type Wrapper<T> {
-    value: T,
+    value: T;
 }
 
 fn main() {
@@ -6831,7 +6920,7 @@ impl<T> Vec<T> {
 
     #[test]
     fn generic_supervisor_and_child_arguments_roundtrip() {
-        let source = "supervisor Group<T: Send>(seed: Vec<T>) { child worker: module.Worker<Vec<T>>(value: seed), }";
+        let source = "supervisor Group<T: Send>(seed: Vec<T>) {\n    child worker: module.Worker<Vec<T>>(value: seed);\n}\n";
         let formatted = roundtrip(source);
         let parsed = parse(&formatted);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -6858,11 +6947,14 @@ impl<T> Vec<T> {
     #[test]
     fn supervisor_config_param_roundtrips() {
         let src = "\
-type AppConfig { size: i64, label: string }
+type AppConfig {
+    size: i64;
+    label: string;
+}
 
 actor Cache {
-    var capacity: i64,
-    var name: string,
+    var capacity: i64;
+    var name: string;
     receive fn get_cap(_n: i64) -> i64 {
         capacity;
         name.len()
@@ -6870,10 +6962,10 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child cache: Cache(capacity: config.size, name: config.label),
+    child cache: Cache(capacity: config.size, name: config.label);
 }
 
 fn main() -> i64 {
@@ -6911,7 +7003,7 @@ fn main() -> i64 {
     fn supervisor_without_config_param_no_parens() {
         let src = "\
 supervisor Simple {
-    strategy: one_for_one,
+    strategy: one_for_one;
 }
 ";
         let formatted = roundtrip(src);
@@ -6926,16 +7018,16 @@ supervisor Simple {
         let src = "\
 machine Socket {
     events {
-        Connect { fd: i64, }
+        Connect { fd: i64; }
     }
 
-    state Idle,
-    state Active { h: Handle, },
+    state Idle;
+    state Active { h: Handle; }
 
     on Connect(fd): Idle => _ { Socket.Active { h: Handle { fd: fd } } }
     on Connect(fd): Active => Active { h: Handle { fd: fd } }
-    on Connect(fd): Active => Active reenter { h: Handle { fd: fd }, ..state }
-    on Connect(fd): Active => Idle,
+    on Connect(fd): Active => Active reenter { ..state, h: Handle { fd: fd } }
+    on Connect(fd): Active => Idle;
 }
 ";
         let formatted = roundtrip(src);
@@ -6955,7 +7047,7 @@ machine Socket {
             "a transition field list writes its spread base first; got:\n{formatted}"
         );
         assert!(
-            formatted.contains("on Connect(fd): Active => Idle,"),
+            formatted.contains("on Connect(fd): Active => Idle;"),
             "implicit transition must remain implicit; got:\n{formatted}"
         );
         assert_eq!(roundtrip(&formatted), formatted);
@@ -6965,7 +7057,7 @@ machine Socket {
     fn impl_block_doc_comment_is_preserved() {
         let src = "\
 enum Foo {
-    A,
+    A;
 }
 
 /// Doc comment for Foo Display.

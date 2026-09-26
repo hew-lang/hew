@@ -48,8 +48,8 @@
 /// `A` is the inner `Item` type (carried in the type parameters so the
 /// closure's input projection is explicit); `B` is the produced `Item`.
 pub type Map<I, A, B> {
-    iter: I,
-    f: fn(A) -> B,
+    iter: I;
+    f: fn(A) -> B;
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
@@ -69,8 +69,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
 /// Lazy filter adapter: yields only those items for which `pred` returns
 /// `true`. Inner `Item` and produced `Item` agree on `A`.
 pub type Filter<I, A> {
-    iter: I,
-    pred: fn(A) -> bool,
+    iter: I;
+    pred: fn(A) -> bool;
 }
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
@@ -86,10 +86,10 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
                     if (self.pred)(x) {
                         return .Some(x);
                     }
-                },
+                }
                 .None => {
                     return .None;
-                },
+                }
             }
         }
     }
@@ -106,8 +106,8 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
 /// stays free and terminals (`count`/`collect`/`fold`) fail to monomorphise
 /// (mir-gap-where-clause-proj-monomorph).
 pub type Take<I, A> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
 impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
@@ -132,8 +132,8 @@ impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
 /// only item param cannot be pinned by the collector, so terminals over
 /// `Skip` fail to monomorphise.
 pub type Skip<I, A> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
 impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
@@ -146,10 +146,10 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
             match self.iter.next() {
                 .Some(_) => {
                     self.remaining = self.remaining - 1;
-                },
+                }
                 .None => {
                     return .None;
-                },
+                }
             }
         }
         self.iter.next()
@@ -161,8 +161,8 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
 /// The index advances only when the inner iterator yields an item, so an
 /// exhausted iterator remains exhausted without manufacturing a final index.
 pub type Enumerate<I, A> {
-    iter: I,
-    index: i64,
+    iter: I;
+    index: i64;
 }
 
 impl<I, A> Iterator for Enumerate<I, A> where I: Iterator<Item = A> {
@@ -173,7 +173,7 @@ impl<I, A> Iterator for Enumerate<I, A> where I: Iterator<Item = A> {
                 let index = self.index;
                 self.index = self.index + 1;
                 .Some((index, item))
-            },
+            }
             .None => .None,
         }
     }
@@ -224,10 +224,10 @@ pub fn fold<I, A, B>(consume it: I, init: B, f: fn(B, A) -> B) -> B where I: Ite
         match iter.next() {
             .Some(x) => {
                 acc = f(acc, x);
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     acc
@@ -241,10 +241,10 @@ pub fn count<I, A>(consume it: I) -> i64 where I: Iterator<Item = A> {
         match iter.next() {
             .Some(_) => {
                 n = n + 1;
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     n
@@ -258,10 +258,10 @@ pub fn collect<I, A>(consume it: I) -> Vec<A> where I: Iterator<Item = A> {
         match iter.next() {
             .Some(x) => {
                 out.push(x);
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     out
@@ -277,10 +277,10 @@ pub fn any<I, A>(consume it: I, f: fn(A) -> bool) -> bool where I: Iterator<Item
                 if f(x) {
                     return true;
                 }
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     false
@@ -296,10 +296,10 @@ pub fn all<I, A>(consume it: I, f: fn(A) -> bool) -> bool where I: Iterator<Item
                 if !f(x) {
                     return false;
                 }
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     true
@@ -317,10 +317,10 @@ pub fn find<I, A>(consume it: I, pred: fn(A) -> bool) -> Option<A> where I: Iter
                 if pred(item) {
                     return .Some(item);
                 }
-            },
+            }
             .None => {
                 return .None;
-            },
+            }
         }
     }
 }

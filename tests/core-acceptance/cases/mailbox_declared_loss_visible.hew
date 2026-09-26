@@ -6,7 +6,7 @@
 // handler occupies the only thread that could activate Cache, so the
 // capacity-one queue stays full across all three submissions.
 actor Cache {
-    mailbox 1 overflow coalesce(channel) fallback drop_new,
+    mailbox 1 overflow coalesce(channel) fallback drop_new;
     receive fn update(channel: i64, reading: i64) {}
 }
 

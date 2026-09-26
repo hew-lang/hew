@@ -4,7 +4,9 @@ fn main() {
     let addr = "10.11.12.13:8080".to_upper();
     let Endpoint { host, port } = match net.parse_endpoint("oracle", addr) {
         .Ok(e) => e,
-        .Err(err) => { panic(f"bad: {err}"); }
+        .Err(err) => {
+            panic(f"bad: {err}");
+        }
     };
     println(host);
     println(f"{port}");

@@ -3,9 +3,9 @@
 
 // Enum and Option/Result type test
 enum Colour {
-    Red,
-    Green,
-    Blue,
+    Red;
+    Green;
+    Blue;
 }
 
 fn colour_name(c: Colour) -> i32 {
@@ -13,15 +13,15 @@ fn colour_name(c: Colour) -> i32 {
         .Red => {
             println("red");
             0
-        },
+        }
         .Green => {
             println("green");
             1
-        },
+        }
         .Blue => {
             println("blue");
             2
-        },
+        }
     }
 }
 
@@ -35,19 +35,19 @@ fn test_option_match() {
         .Some(v) => {
             println("PASS: Some pattern");
             println(v)
-        },
+        }
         .None => {
             println("FAIL: expected Some")
-        },
+        }
     }
     let empty: Option<i64> = .None;
     match empty {
         .Some(v) => {
             println("FAIL: expected None")
-        },
+        }
         .None => {
             println("PASS: None pattern")
-        },
+        }
     }
 }
 
@@ -57,20 +57,20 @@ fn test_result_match() {
         .Ok(val) => {
             println("PASS: Ok pattern");
             println(val)
-        },
+        }
         .Err(msg) => {
             println("FAIL: expected Ok")
-        },
+        }
     }
     let err_val: Result<i64, string> = .Err("something went wrong");
     match err_val {
         .Ok(val) => {
             println("FAIL: expected Err")
-        },
+        }
         .Err(msg) => {
             println("PASS: Err pattern");
             println(msg)
-        },
+        }
     }
 }
 

@@ -24,7 +24,7 @@ actor FastWorker {
 }
 
 actor SlowWorker {
-    var gate: stream.Stream<i64>,
+    var gate: stream.Stream<i64>;
 
     receive fn compute(query: i64) -> i64 {
         // Wait on a gate main opens only after the select, so FastWorker

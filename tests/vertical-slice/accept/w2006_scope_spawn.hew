@@ -9,7 +9,9 @@ fn worker() {
 actor _Driver {
     receive fn drive() {
         scope {
-            fork { worker(); }
+            fork {
+                worker();
+            }
         };
         println("scope joined");
     }

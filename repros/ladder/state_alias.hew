@@ -1,5 +1,5 @@
 actor Example {
-    var data: Vec<i64> = Vec.new(),
+    var data: Vec<i64> = Vec.new();
     receive fn demo() {
         var ref1 = data;
         var ref2 = data;
@@ -10,6 +10,7 @@ actor Example {
         println(ref2.len());
     }
 }
+
 fn main() {
     let e = spawn Example();
     let _ = e.demo();

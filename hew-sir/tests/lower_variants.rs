@@ -120,23 +120,29 @@ fn empty_enum_cannot_be_constructed_as_a_record_or_variant() {
 #[test]
 fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
     let lowered = lower_source(
-        r#"
-        enum Choice { Text(string), Empty }
+        r#"enum Choice {
+    Text(string);
+    Empty;
+}
 
-        fn keep_text(value: string) {}
-        fn inspect(value: Choice) -> i64 {
-            match value {
-                .Text(text) => { keep_text(text); 1 },
-                .Empty => 0,
-            }
-        }
+fn keep_text(value: string) {}
 
-        fn main() {
-            let original = Choice.Text("hello");
-            inspect(original);
-            inspect(original);
+fn inspect(value: Choice) -> i64 {
+    match value {
+        .Text(text) => {
+            keep_text(text);
+            1
         }
-        "#,
+        .Empty => 0,
+    }
+}
+
+fn main() {
+    let original = Choice.Text("hello");
+    inspect(original);
+    inspect(original);
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -312,26 +318,31 @@ fn fresh_option_match_accounts_for_unbound_owned_payload() {
 #[test]
 fn bitcopy_record_and_option_use_exact_descriptors_without_owner_glue() {
     let lowered = lower_source(
-        r"
-        type Point { x: i64, y: i64 }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn point_x(point: Point) -> i64 { point.x }
-        fn option_value(value: Option<i64>) -> i64 {
-            match value {
-                .Some(number) => number,
-                .None => 0,
-            }
-        }
+fn point_x(point: Point) -> i64 {
+    point.x
+}
 
-        fn main() {
-            let point = Point { x: 2, y: 3 };
-            point_x(point);
-            point_x(point);
-            let optional = Option.Some(5);
-            option_value(optional);
-            option_value(optional);
-        }
-        ",
+fn option_value(value: Option<i64>) -> i64 {
+    match value {
+        .Some(number) => number,
+        .None => 0,
+    }
+}
+
+fn main() {
+    let point = Point { x: 2, y: 3 };
+    point_x(point);
+    point_x(point);
+    let optional = Option.Some(5);
+    option_value(optional);
+    option_value(optional);
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -419,21 +430,23 @@ fn guarded_variant_match_lowers_explicit_predicate_cfg() {
 #[test]
 fn scalar_literal_payloads_use_their_exact_sir_constants() {
     let lowered = lower_source(
-        r"
-        enum Token { Value(f64, char), Empty }
+        r"enum Token {
+    Value(f64, char);
+    Empty;
+}
 
-        fn classify(value: Token) -> i64 {
-            match value {
-                .Value(1.5, 'x') => 1,
-                .Value(_, _) => 2,
-                .Empty => 0,
-            }
-        }
+fn classify(value: Token) -> i64 {
+    match value {
+        .Value(1.5, 'x') => 1,
+        .Value(_, _) => 2,
+        .Empty => 0,
+    }
+}
 
-        fn main() {
-            classify(Token.Value(1.5, 'x'));
-        }
-        ",
+fn main() {
+    classify(Token.Value(1.5, 'x'));
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -459,21 +472,23 @@ fn scalar_literal_payloads_use_their_exact_sir_constants() {
 #[test]
 fn verifier_refuses_scalar_literals_with_forged_result_types() {
     let mut lowered = lower_source(
-        r"
-        enum Token { Value(f64, char), Empty }
+        r"enum Token {
+    Value(f64, char);
+    Empty;
+}
 
-        fn classify(value: Token) -> i64 {
-            match value {
-                .Value(1.5, 'x') => 1,
-                .Value(_, _) => 2,
-                .Empty => 0,
-            }
-        }
+fn classify(value: Token) -> i64 {
+    match value {
+        .Value(1.5, 'x') => 1,
+        .Value(_, _) => 2,
+        .Empty => 0,
+    }
+}
 
-        fn main() {
-            classify(Token.Value(1.5, 'x'));
-        }
-        ",
+fn main() {
+    classify(Token.Value(1.5, 'x'));
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -564,24 +579,32 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
 #[test]
 fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
     let lowered = lower_source(
-        r"
-        enum Number { Some(i64), None }
+        r"enum Number {
+    Some(i64);
+    None;
+}
 
-        fn classify(value: Number) -> i64 {
-            var attempts = 0;
-            match value {
-                .Some(number) if { attempts = attempts + 1; number < 0 } => attempts,
-                .Some(number) if { attempts = attempts + 1; number > 0 } => attempts,
-                .Some(0) => attempts,
-                .Some(_) => attempts,
-                .None => attempts,
-            }
-        }
+fn classify(value: Number) -> i64 {
+    var attempts = 0;
+    match value {
+        .Some(number) if {
+            attempts = attempts + 1;
+            number < 0
+        } => attempts,
+        .Some(number) if {
+            attempts = attempts + 1;
+            number > 0
+        } => attempts,
+        .Some(0) => attempts,
+        .Some(_) => attempts,
+        .None => attempts,
+    }
+}
 
-        fn main() {
-            classify(Number.Some(5));
-        }
-        ",
+fn main() {
+    classify(Number.Some(5));
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -660,20 +683,23 @@ fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
 #[test]
 fn unit_match_allows_a_selected_divergent_handler() {
     let lowered = lower_source(
-        r#"
-        fn report(value: string) {}
-        fn handle(value: Result<string, string>) {
-            match value {
-                .Ok(text) => report(text),
-                .Err(error) => { report(error); return; },
-            }
-        }
+        r#"fn report(value: string) {}
 
-        fn main() {
-            handle(.Ok("ok"));
-            handle(.Err("error"));
+fn handle(value: Result<string, string>) {
+    match value {
+        .Ok(text) => report(text),
+        .Err(error) => {
+            report(error);
+            return;
         }
-        "#,
+    }
+}
+
+fn main() {
+    handle(.Ok("ok"));
+    handle(.Err("error"));
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -810,27 +836,38 @@ fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
 #[test]
 fn owning_if_expression_joins_independent_string_values() {
     let lowered = lower_source(
-        r#"
-        enum Setting { Small(bool), Missing }
+        r#"enum Setting {
+    Small(bool);
+    Missing;
+}
 
-        fn describe(value: Setting) -> string {
-            match value {
-                .Small(enabled) => if enabled { "small" } else { "disabled" },
-                .Missing => "missing",
-            }
+fn describe(value: Setting) -> string {
+    match value {
+        .Small(enabled) => if enabled {
+            "small"
+        } else {
+            "disabled"
         }
+        .Missing => "missing",
+    }
+}
 
-        fn discard(enabled: bool) {
-            let ignored = if enabled { "unused" } else { "also unused" };
-        }
+fn discard(enabled: bool) {
+    let ignored = if enabled {
+        "unused"
+    } else {
+        "also unused"
+    };
+}
 
-        fn keep_text(value: string) {}
-        fn main() {
-            keep_text(describe(Setting.Small(true)));
-            keep_text(describe(Setting.Small(false)));
-            discard(true);
-        }
-        "#,
+fn keep_text(value: string) {}
+
+fn main() {
+    keep_text(describe(Setting.Small(true)));
+    keep_text(describe(Setting.Small(false)));
+    discard(true);
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -848,25 +885,33 @@ fn owning_if_expression_joins_independent_string_values() {
     }));
 }
 
-const NESTED_AFFINE_SOURCE: &str = r#"
-    enum Choice { Values(Generator<string, ()>, i64), Empty }
+const NESTED_AFFINE_SOURCE: &str = r#"enum Choice {
+    Values(Generator<string, ()>, i64);
+    Empty;
+}
 
-    gen fn words() -> string { yield "word"; }
+gen fn words() -> string {
+    yield "word";
+}
 
-    fn drive(consume choice: Option<Choice>) -> string {
-        match choice {
-            .Some(.Values(_, 0)) => "zero",
-            .Some(.Values(values, weight)) if weight > 10 => "heavy",
-            .Some(.Values(values, weight)) => { let _kept = values; "kept" }
-            .Some(.Empty) => "empty",
-            .None => "none",
+fn drive(consume choice: Option<Choice>) -> string {
+    match choice {
+        .Some(.Values(_, 0)) => "zero",
+        .Some(.Values(values, weight)) if weight > 10 => "heavy",
+        .Some(.Values(values, weight)) => {
+            let _kept = values;
+            "kept"
         }
+        .Some(.Empty) => "empty",
+        .None => "none",
     }
+}
 
-    fn keep_text(value: string) {}
-    fn main() {
-        keep_text(drive(.Some(Choice.Values(words(), 7))));
-    }
+fn keep_text(value: string) {}
+
+fn main() {
+    keep_text(drive(.Some(Choice.Values(words(), 7))));
+}
 "#;
 
 fn drive_function(lowered: &hew_sir::LoweredModule) -> &hew_sir::SemFunction {
@@ -1017,26 +1062,33 @@ fn variant_projection_requires_an_exact_case_and_field() {
 #[test]
 fn guard_cannot_consume_a_candidate_binding() {
     let lowered = lower_source(
-        r#"
-        enum Choice { Values(Generator<string, ()>, i64), Empty }
+        r#"enum Choice {
+    Values(Generator<string, ()>, i64);
+    Empty;
+}
 
-        gen fn words() -> string { yield "word"; }
+gen fn words() -> string {
+    yield "word";
+}
 
-        fn drain(consume values: Generator<string, ()>) -> bool { true }
+fn drain(consume values: Generator<string, ()>) -> bool {
+    true
+}
 
-        fn drive(consume choice: Choice) -> string {
-            match choice {
-                .Values(values, weight) if drain(values) => "drained",
-                .Values(_, weight) => "kept",
-                .Empty => "empty",
-            }
-        }
+fn drive(consume choice: Choice) -> string {
+    match choice {
+        .Values(values, weight) if drain(values) => "drained",
+        .Values(_, weight) => "kept",
+        .Empty => "empty",
+    }
+}
 
-        fn keep_text(value: string) {}
-        fn main() {
-            keep_text(drive(Choice.Values(words(), 1)));
-        }
-        "#,
+fn keep_text(value: string) {}
+
+fn main() {
+    keep_text(drive(Choice.Values(words(), 1)));
+}
+"#,
     );
     assert!(
         lowered.statuses.iter().any(|status| status.name == "drive"
@@ -1050,16 +1102,19 @@ fn guard_cannot_consume_a_candidate_binding() {
 #[test]
 fn wire_schema_rejects_a_field_codec_for_another_value_type() {
     let mut lowered = lower_source(
-        r#"
-        #[wire]
-        type WireRecordProbe { label: string @7, code: u8 @2 }
-        fn main() {
-            let message = WireRecordProbe { label: "owned", code: 7 };
-            let encoded = message.encode();
-            let decoded = WireRecordProbe.decode(encoded);
-            println(decoded.label);
-        }
-    "#,
+        r#"#[wire]
+type WireRecordProbe {
+    label: string @7;
+    code: u8 @2;
+}
+
+fn main() {
+    let message = WireRecordProbe { label: "owned", code: 7 };
+    let encoded = message.encode();
+    let decoded = WireRecordProbe.decode(encoded);
+    println(decoded.label);
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let mut changed = false;

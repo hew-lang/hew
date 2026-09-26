@@ -1,1 +1,3 @@
-pub fn peer_note() -> string { "+peer" }
+pub fn peer_note() -> string {
+    "+peer"
+}

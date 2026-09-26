@@ -1,9 +1,9 @@
 import std.stream;
 
 actor Audit {
-    var created: i64 = 0,
-    var closed: i64 = 0,
-    var last: i64 = 0,
+    var created: i64 = 0;
+    var closed: i64 = 0;
+    var last: i64 = 0;
     receive fn create(id: i64) {
         created += 1;
     }
@@ -25,8 +25,8 @@ actor Audit {
 
 #[resource]
 type Ticket {
-    audit: Audit,
-    id: i64,
+    audit: Audit;
+    id: i64;
 }
 
 impl Ticket {
@@ -66,7 +66,7 @@ fn main() {
             match failure {
                 .Deadline { message } => {
                     timed_out = true;
-                },
+                }
                 .Fault { message } => panic(message),
             }
         };
@@ -83,6 +83,14 @@ fn main() {
     assert(last == 9);
     println(f"closed {last}");
     println("ready");
-    close(worker);
-    close(audit);
+    {
+        let __hew_migrated_actor_2481 = worker;
+        stop(__hew_migrated_actor_2481);
+        stopped(__hew_migrated_actor_2481);
+    };
+    {
+        let __hew_migrated_actor_2500 = audit;
+        stop(__hew_migrated_actor_2500);
+        stopped(__hew_migrated_actor_2500);
+    };
 }

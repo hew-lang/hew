@@ -16,8 +16,8 @@ fn preserved() -> string {
     match missing {
         .Some(_) => {
             return "incorrect bounds";
-        },
-        .None => {},
+        }
+        .None => {}
     }
     match saved {
         .Some(value) => value,

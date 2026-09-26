@@ -1,8 +1,12 @@
 machine Gate {
-    events { Open { divisor: i64 } }
-    emits { Pending { label: string } }
-    state Closed { label: string },
-    state Opened { label: string, value: i64 },
+    events {
+        Open { divisor: i64; }
+    }
+    emits {
+        Pending { label: string; }
+    }
+    state Closed { label: string; }
+    state Opened { label: string; value: i64; }
     on Open: Closed => Opened {
         emit Pending { label: state.label + ":pending" };
         Opened { label: state.label + ":candidate", value: 8 / event.divisor }

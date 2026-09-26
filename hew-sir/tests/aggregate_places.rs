@@ -682,12 +682,22 @@ fn call_failure_cleanup_keeps_the_partially_consumed_root() {
 
 fn record_fixture() -> SemModule {
     let mut module = fixture_source(
-        r#"
-        type Inner { name: string, payload: bytes }
-        type Outer { label: string, inner: Inner }
-        fn probe(consume value: Outer, flag: bool) {}
-        fn main() { probe(Outer { label: "outer", inner: Inner { name: "inner", payload: b"payload" } }, true); }
-    "#,
+        r#"type Inner {
+    name: string;
+    payload: bytes;
+}
+
+type Outer {
+    label: string;
+    inner: Inner;
+}
+
+fn probe(consume value: Outer, flag: bool) {}
+
+fn main() {
+    probe(Outer { label: "outer", inner: Inner { name: "inner", payload: b"payload" } }, true);
+}
+"#,
     );
     let root = probe(&mut module).params[0].ty.clone();
     let outer = module

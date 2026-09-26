@@ -1,7 +1,7 @@
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -11,8 +11,8 @@ impl Token {
 }
 
 type Holder {
-    token: Token,
-    tag: i64,
+    token: Token;
+    tag: i64;
 }
 
 fn hold() {
@@ -30,9 +30,9 @@ fn collect() {
 fn early(stop: bool) -> i64 {
     let token = Token { label: "e", id: 1 };
     if stop {
-        return 0
+        return 0;
     }
-    return token.id
+    return token.id;
 }
 
 fn main() {

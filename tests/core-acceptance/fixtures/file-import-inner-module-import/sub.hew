@@ -1,4 +1,4 @@
-import lib.{ LIB_K, Widget, bump };
+import lib.{LIB_K, Widget, bump};
 
 pub const SUB_BASE: i64 = 10;
 

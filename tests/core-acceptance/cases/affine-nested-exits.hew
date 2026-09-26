@@ -1,4 +1,7 @@
-enum Choice { Values(Generator<string, ()>, i64), Empty }
+enum Choice {
+    Values(Generator<string, ()>, i64);
+    Empty;
+}
 
 gen fn words(label: string) -> string {
     defer println(label + " cleaned");
@@ -8,7 +11,10 @@ gen fn words(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = words(label);
-    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() {
+        .Some(value) => println(value),
+        .None => panic("empty"),
+    }
     values
 }
 

@@ -1,6 +1,6 @@
 #[resource]
 type Ticket {
-    name: string,
+    name: string;
 }
 
 impl Ticket {
@@ -10,14 +10,14 @@ impl Ticket {
 }
 
 type Inner {
-    ticket: Ticket,
-    spare: Ticket,
-    label: string,
+    ticket: Ticket;
+    spare: Ticket;
+    label: string;
 }
 
 type Outer {
-    inner: Inner,
-    other: string,
+    inner: Inner;
+    other: string;
 }
 
 fn fail(divisor: i64) -> i64 {

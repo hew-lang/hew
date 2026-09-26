@@ -21,17 +21,19 @@ fn rewrite_symbols(output: &hew_types::TypeCheckOutput) -> HashSet<String> {
 #[test]
 fn layout_element_hashset_methods_dual_emit_resolved_calls() {
     let output = typecheck(
-        r"
-        type Point { x: i64, y: i64 }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn main() {
-            var s: HashSet<Point> = HashSet.new();
-            s.insert(Point { x: 1, y: 2 });
-            let _has = s.contains(Point { x: 1, y: 2 });
-            let _removed = s.remove(Point { x: 1, y: 2 });
-            let _len = s.len();
-        }
-        ",
+fn main() {
+    var s: HashSet<Point> = HashSet.new();
+    s.insert(Point { x: 1, y: 2 });
+    let _has = s.contains(Point { x: 1, y: 2 });
+    let _removed = s.remove(Point { x: 1, y: 2 });
+    let _len = s.len();
+}
+",
     );
 
     assert!(

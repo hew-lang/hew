@@ -3,28 +3,34 @@
 // window leaves the supervisor to runtime cleanup, which reclaims it once the
 // hook finishes.
 actor Worker {
-    var name: string,
+    var name: string;
     #[on(start)]
-    fn started() { println("start " + name); }
+    fn started() {
+        println("start " + name);
+    }
     #[on(stop)]
     fn stopping() {
-        if name == "mid" { sleep(3000ms); }
-        if name == "slow" { sleep(6000ms); }
+        if name == "mid" {
+            sleep(3000ms);
+        }
+        if name == "slow" {
+            sleep(6000ms);
+        }
         println("stop " + name);
     }
 }
 
 supervisor Waits {
-    strategy: one_for_one,
-    intensity: 10 within 60s,
-    child quick: Worker(name: "quick"),
-    child mid: Worker(name: "mid"),
+    strategy: one_for_one;
+    intensity: 10 within 60s;
+    child quick: Worker(name: "quick");
+    child mid: Worker(name: "mid");
 }
 
 supervisor Outlasted {
-    strategy: one_for_one,
-    intensity: 10 within 60s,
-    child slow: Worker(name: "slow"),
+    strategy: one_for_one;
+    intensity: 10 within 60s;
+    child slow: Worker(name: "slow");
 }
 
 fn main() {

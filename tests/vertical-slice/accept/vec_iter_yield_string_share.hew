@@ -55,7 +55,9 @@ fn match_pick(names: Vec<string>) -> string {
     var chosen = "none";
     for name in names {
         match name.starts_with("z") {
-            true => { chosen = name; }
+            true => {
+                chosen = name;
+            }
             false => {}
         }
     }
@@ -87,9 +89,7 @@ fn main() {
     totals.insert("groceries" + "-heap", 1200);
     totals.insert("transit" + "-heap", 400);
     totals.insert("rent" + "-heap", 90000);
-
     let names = ["alpha" + "-heap", "beta" + "-heap", "zeta" + "-heap"];
-
     // Loop the whole matrix so a per-iteration imbalance amplifies: a missing
     // release trips the leak oracle's slope, a double release aborts before
     // the final line prints.
@@ -98,7 +98,7 @@ fn main() {
     var picked = "";
     var broke = "";
     var over = "";
-    for i in 0..40 {
+    for i in 0 .. 40 {
         kept = keep_expensive(totals.clone());
         best = best_category(totals.clone());
         picked = match_pick(names.clone());

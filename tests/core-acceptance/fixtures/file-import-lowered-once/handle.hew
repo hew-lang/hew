@@ -3,5 +3,5 @@
 // the splice pass lowers it once, so the refusal appears once.
 #[linear]
 pub type Handle {
-    id: i64,
+    id: i64;
 }

@@ -294,7 +294,7 @@ fn injected_ordinary_function_borrow_fails_closed() {
 
 #[test]
 fn injected_ordinary_field_and_alias_borrows_fail_closed() {
-    let mut field_program = hew_parser::parse("type Holder { value: i64 }").program;
+    let mut field_program = hew_parser::parse("type Holder {\n    value: i64;\n}\n").program;
     let field_span = 21..22;
     let Item::TypeDecl(decl) = &mut field_program.items[0].0 else {
         panic!("expected type declaration");
@@ -495,16 +495,21 @@ fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
 #[test]
 fn user_extern_with_stdlib_endpoint_is_not_promoted_to_runtime_family() {
     let output = check_source(
-        r#"
-        type Encoder { value: string }
+        r#"type Encoder {
+    value: string;
+}
 
-        impl Encoder {
-            #[extern_symbol(hew_string_to_bytes)]
-            fn encode(self) -> bytes { b"" }
-        }
+impl Encoder {
+    #[extern_symbol(hew_string_to_bytes)]
+    fn encode(self) -> bytes {
+        b""
+    }
+}
 
-        fn use_encoder(value: Encoder) -> bytes { value.encode() }
-        "#,
+fn use_encoder(value: Encoder) -> bytes {
+    value.encode()
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(output.method_call_rewrites.values().any(|rewrite| matches!(
@@ -547,16 +552,17 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
 #[test]
 fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
     let output = check_source(
-        r#"
-        type Holder { x: i64 }
+        r#"type Holder {
+    x: i64;
+}
 
-        impl Holder {
-            #[extern_symbol("hew_holder_clone")]
-            fn cloned(self) -> Holder {
-                self
-            }
-        }
-        "#,
+impl Holder {
+    #[extern_symbol("hew_holder_clone")]
+    fn cloned(self) -> Holder {
+        self
+    }
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -671,11 +677,11 @@ fn empty_extern_symbol_template_is_rejected_with_empty_reason() {
 fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
     use std::path::PathBuf;
     let pkg_source = if divergent {
-        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
+        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
     } else {
         "pub fn unrelated() -> i64 {\n    0\n}\n"
     };
-    let aaa_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let aaa_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let pkg_file = PathBuf::from("/nonexistent/oracle/pkg/pkg.hew");
     let aaa_file = PathBuf::from("/nonexistent/oracle/pkg/aaa.hew");
 
@@ -797,8 +803,8 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
     let primary_source = "pub fn unrelated() -> i64 {\n    0\n}\n";
     let inert_source = "pub fn filler() -> i64 {\n    1\n}\n";
     let two_field_source =
-        "type Tok {\n    a: i64,\n    b: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let three_field_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64;\n    b: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let three_field_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/tri/pkg/pkg.hew");
     let inert_file = PathBuf::from("/nonexistent/tri/pkg/a-b.hew");
     let two_field_file = PathBuf::from("/nonexistent/tri/pkg/a+b.hew");
@@ -868,9 +874,9 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
 fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
     use std::path::PathBuf;
     let primary_source =
-        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let peer_source =
-        "type Tag {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
+        "type Tag {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/distinct/pkg/pkg.hew");
     let peer_file = PathBuf::from("/nonexistent/distinct/pkg/peer.hew");
 
@@ -952,8 +958,8 @@ enum ImportLexicalShape {
 fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     use std::path::PathBuf;
     let sm_source =
-        "pub type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let om_source = "pub type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n";
+        "pub type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let om_source = "pub type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n";
     let nt_source = "extern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let sm_file = PathBuf::from("/nonexistent/implex/sm.hew");
     let om_file = PathBuf::from("/nonexistent/implex/om.hew");

@@ -1,6 +1,6 @@
 type Holder {
-    next: fn[var, clone]() -> i64,
-    label: string,
+    next: fn[var, clone]() -> i64;
+    label: string;
 }
 
 fn advance(var holder: Holder, enabled: bool) -> i64 {
@@ -13,7 +13,7 @@ fn advance(var holder: Holder, enabled: bool) -> i64 {
 
 fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
     var result = 0;
-    for _index in 0..2 {
+    for _index in 0 .. 2 {
         result = pair.0();
     }
     println(pair.1);
@@ -22,13 +22,10 @@ fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
 
 fn main() -> i64 {
     let count = 10;
-    var holder = Holder {
-        next: capture(var count) || {
-            count += 1;
-            count
-        },
-        label: "private record".to_upper(),
-    };
+    var holder = Holder { next: capture(var count) || {
+        count += 1;
+        count
+    }, label: "private record".to_upper() };
     println(advance(holder, true));
     println(holder.next());
     var pair: (fn[var, clone]() -> i64, string) = (holder.next, "private tuple".to_upper());

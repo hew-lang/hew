@@ -25,8 +25,7 @@ fn assert_faithful(source: &str) {
 #[test]
 fn issue_repro_keeps_comment_in_main_and_hook_before_handler() {
     assert_faithful(
-        "actor W { var n: i64, #[on(start)] fn started() { println(\"s\"); } receive fn boom() { panic(\"x\"); } }\n\
-         fn main() { let w = spawn W(n: 1);\n    // note about the next line\n    let _ = w.boom(); }\n",
+        "actor W {\n    var n: i64;\n    #[on(start)]\n    fn started() {\n        println(\"s\");\n    }\n    receive fn boom() {\n        panic(\"x\");\n    }\n}\n\nfn main() {\n    let w = spawn W(n: 1);\n    // note about the next line\n    let _ = w.boom();\n}\n",
     );
 }
 
@@ -68,8 +67,8 @@ fn comments_between_array_elements() {
 fn comments_between_record_literal_fields() {
     assert_faithful(
         r"type P {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 fn main() {
@@ -174,9 +173,9 @@ fn comments_between_enum_variants() {
     assert_faithful(
         r#"enum Colour {
     // warm
-    Red, // hot
+    Red; // hot
     // cool
-    Blue,
+    Blue;
     // trailing inside
 }
 
@@ -195,7 +194,7 @@ fn main() {
 fn comments_between_actor_members_and_attributes() {
     assert_faithful(
         r#"actor W {
-    var n: i64, // count
+    var n: i64; // count
     // hook next
     #[on(start)]
     // between attr and fn
@@ -258,7 +257,7 @@ fn comments_in_trait_and_impl_bodies() {
 }
 
 type Sq {
-    s: i64,
+    s: i64;
 }
 
 impl Shape for Sq {
@@ -318,8 +317,7 @@ fn literal_and_attribute_spellings_survive() {
 #[test]
 fn bare_actor_field_and_bare_break_keep_their_spelling() {
     assert_faithful(
-        "actor A {\n    name: string,\n    receive fn go() {}\n}\n\n\
-         fn main() {\n    loop {\n        match 1 {\n            1 => break,\n            _ => continue,\n        }\n    }\n}\n",
+        "actor A {\n    let name: string;\n    receive fn go() {}\n}\n\nfn main() {\n    loop {\n        match 1 {\n            1 => break,\n            _ => continue,\n        }\n    }\n}\n",
     );
 }
 
@@ -335,21 +333,21 @@ fn doc_comments_keep_their_place_among_attributes() {
 #[test]
 fn comments_between_record_fields() {
     assert_faithful(
-        "type Pair {\n    // the left side\n    left: i64,\n    /// The right side.\n    right: i64, // trailing\n    // end of record\n}\n\nfn main() {}\n",
+        "type Pair {\n    // the left side\n    left: i64;\n    /// The right side.\n    right: i64; // trailing\n    // end of record\n}\n\nfn main() {}\n",
     );
 }
 
 #[test]
 fn comment_after_last_type_method() {
     assert_faithful(
-        "type Counter {\n    n: i64,\n\n    fn get(c: Counter) -> i64 {\n        c.n\n    }\n    // after the last method\n}\n\nfn main() {}\n",
+        "type Counter {\n    n: i64;\n\n    fn get(c: Counter) -> i64 {\n        c.n\n    }\n    // after the last method\n}\n\nfn main() {}\n",
     );
 }
 
 #[test]
 fn comments_inside_wire_declarations() {
     assert_faithful(
-        "#[wire]\ntype Message {\n    // the id\n    id: i32 @1, // first\n    text: string @2,\n    // end of message\n}\n\n#[wire]\nenum Kind {\n    // plain\n    Plain,\n    Rich,\n    // end of kind\n}\n\nfn main() {}\n",
+        "#[wire]\ntype Message {\n    // the id\n    id: i32 @1; // first\n    text: string @2;\n    // end of message\n}\n\n#[wire]\nenum Kind {\n    // plain\n    Plain;\n    Rich;\n    // end of kind\n}\n\nfn main() {}\n",
     );
 }
 
@@ -386,8 +384,8 @@ fn trailing_comment_on_last_parameter_and_field() {
 }
 
 type P {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 fn main() {
@@ -495,12 +493,12 @@ fn comments_around_or_patterns_and_guards() {
 fn comment_after_trailing_record_base() {
     assert_faithful(
         r"type P {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 fn f(b: P) -> P {
-    P { x: 1, ..b /* rest */ }
+    P { ..b /* rest */, x: 1 }
 }
 
 fn main() {
@@ -552,9 +550,9 @@ fn comment_before_supervisor_strategy() {
 
 supervisor App {
     // restart one at a time
-    strategy: one_for_one,
+    strategy: one_for_one;
     // the only child
-    child a: Ping,
+    child a: Ping;
 }
 
 fn main() {}
@@ -568,13 +566,13 @@ fn comments_between_machine_members() {
         r"machine Door {
     // Input-event vocabulary
     events {
-        Open,
-        Close,
+        Open;
+        Close;
     }
-    state Closed,
-    state Opened,
-    on Open: Closed => Opened, // opens it
-    on Close: Opened => Closed,
+    state Closed;
+    state Opened;
+    on Open: Closed => Opened; // opens it
+    on Close: Opened => Closed;
     // nothing else
     default { state }
 }
@@ -589,17 +587,17 @@ fn spec_machine_with_trailing_comments_on_rules() {
     assert_faithful(
         r#"machine Session {
     events {
-        Open,
-        Authed,
-        Close,
+        Open;
+        Authed;
+        Close;
     }
 
     emits {
-        Trace { text: string },
+        Trace { text: string; }
     }
 
-    state Closed,
-    state Kicked,
+    state Closed;
+    state Kicked;
 
     state Live {
         entry {
@@ -608,16 +606,15 @@ fn spec_machine_with_trailing_comments_on_rules() {
         exit {
             emit Trace { text: "Live.exit" };
         }
+        initial state Authing;
+        state Active;
 
-        initial state Authing,
-        state Active,
+        on Close: _ => Closed;
+    }
 
-        on Close: _ => Closed,
-    },
-
-    on Open: Closed => Live,          // enters Authing
-    on Authed: Authing => Active,     // no composite hook
-    on Close: Active => Kicked,       // beats the parent Close rule
+    on Open: Closed => Live; // enters Authing
+    on Authed: Authing => Active; // no composite hook
+    on Close: Active => Kicked; // beats the parent Close rule
 
     default { state }
 }
@@ -729,11 +726,11 @@ fn grouping_parentheses_and_empty_argument_lists_are_kept() {
 
 // ── Negative controls ────────────────────────────────────────────────────
 
-const ACTOR: &str = "actor W {\n    var n: i64,\n\n    // starts it\n    #[on(start)]\n    fn started() {}\n\n    receive fn boom() {}\n}\n";
+const ACTOR: &str = "actor W {\n    var n: i64;\n\n    // starts it\n    #[on(start)]\n    fn started() {}\n\n    receive fn boom() {}\n}\n";
 
 #[test]
 fn a_comment_moved_across_a_token_is_rejected() {
-    let moved = "actor W {\n    var n: i64,\n\n    #[on(start)]\n    // starts it\n    fn started() {}\n\n    receive fn boom() {}\n}\n";
+    let moved = "actor W {\n    var n: i64;\n\n    #[on(start)]\n    // starts it\n    fn started() {}\n\n    receive fn boom() {}\n}\n";
     assert!(matches!(
         check(ACTOR, moved),
         Err(FidelityError::TraceChanged { .. })
@@ -742,7 +739,7 @@ fn a_comment_moved_across_a_token_is_rejected() {
 
 #[test]
 fn reordered_members_are_rejected() {
-    let reordered = "actor W {\n    var n: i64,\n\n    receive fn boom() {}\n\n    // starts it\n    #[on(start)]\n    fn started() {}\n}\n";
+    let reordered = "actor W {\n    var n: i64;\n\n    receive fn boom() {}\n\n    // starts it\n    #[on(start)]\n    fn started() {}\n}\n";
     assert!(matches!(
         check(ACTOR, reordered),
         Err(FidelityError::TraceChanged { .. })
@@ -751,7 +748,7 @@ fn reordered_members_are_rejected() {
 
 #[test]
 fn a_dropped_comment_is_rejected() {
-    let dropped = "actor W {\n    var n: i64,\n\n    #[on(start)]\n    fn started() {}\n\n    receive fn boom() {}\n}\n";
+    let dropped = "actor W {\n    var n: i64;\n\n    #[on(start)]\n    fn started() {}\n\n    receive fn boom() {}\n}\n";
     assert!(matches!(
         check(ACTOR, dropped),
         Err(FidelityError::TraceChanged { .. })
@@ -808,14 +805,14 @@ fn output_that_does_not_parse_is_rejected() {
 fn only_the_record_base_may_move() {
     // D488: base-first is the one written spelling of a record literal.
     let source =
-        "type P {\n    x: i64,\n    y: i64,\n}\n\nfn f(b: P) -> P {\n    P { x: 1, ..b }\n}\n";
+        "type P {\n    x: i64;\n    y: i64;\n}\n\nfn f(b: P) -> P {\n    P { ..b, x: 1 }\n}\n";
     let hoisted =
-        "type P {\n    x: i64,\n    y: i64,\n}\n\nfn f(b: P) -> P {\n    P { ..b, x: 1 }\n}\n";
+        "type P {\n    x: i64;\n    y: i64;\n}\n\nfn f(b: P) -> P {\n    P { ..b, x: 1 }\n}\n";
     assert_eq!(check(source, hoisted), Ok(()));
     let source =
-        "type P {\n    x: i64,\n    y: i64,\n}\n\nfn f(b: P) -> P {\n    P { x: 1, y: 2 }\n}\n";
+        "type P {\n    x: i64;\n    y: i64;\n}\n\nfn f(b: P) -> P {\n    P { x: 1, y: 2 }\n}\n";
     let swapped =
-        "type P {\n    x: i64,\n    y: i64,\n}\n\nfn f(b: P) -> P {\n    P { y: 2, x: 1 }\n}\n";
+        "type P {\n    x: i64;\n    y: i64;\n}\n\nfn f(b: P) -> P {\n    P { y: 2, x: 1 }\n}\n";
     assert!(check(source, swapped).is_err(), "only the base may move");
 }
 

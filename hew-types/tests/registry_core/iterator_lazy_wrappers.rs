@@ -55,16 +55,12 @@ pub fn panic(message: string) {}
 /// trip the Q004 checker substitution rule fail loud via `panic(...)` (the
 /// deferred-work invariant: deferrals must not look like working code).
 /// The wrapper shapes and `Item` projections are what this stage locks.
-const ITER_WRAPPER_SURFACE: &str = r#"
-pub type Map<I, A, B> {
-    iter: I,
-    f: fn(A) -> B,
+const ITER_WRAPPER_SURFACE: &str = r#"pub type Map<I, A, B> {
+    iter: I;
+    f: fn(A) -> B;
 }
 
-impl<I, A, B> Iterator for Map<I, A, B>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
     fn next(it: Map<I, A, B>) -> Option<B> {
         panic("Map.next deferred pending Q004");
@@ -73,14 +69,11 @@ where
 }
 
 pub type Filter<I, A> {
-    iter: I,
-    pred: fn(A) -> bool,
+    iter: I;
+    pred: fn(A) -> bool;
 }
 
-impl<I, A> Iterator for Filter<I, A>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(it: Filter<I, A>) -> Option<A> {
         panic("Filter.next deferred (by-move self cannot loop)");
@@ -89,14 +82,11 @@ where
 }
 
 pub type Take<I> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
-impl<I, A> Iterator for Take<I>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
     type Item = A;
     fn next(it: Take<I>) -> Option<A> {
         panic("Take.next deferred (by-move self cannot persist remaining)");
@@ -105,14 +95,11 @@ where
 }
 
 pub type Skip<I> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
-impl<I, A> Iterator for Skip<I>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
     type Item = A;
     fn next(it: Skip<I>) -> Option<A> {
         panic("Skip.next deferred (by-move self cannot loop)");
@@ -120,54 +107,33 @@ where
     }
 }
 
-pub fn map<I, A, B>(it: I, consume f: fn(A) -> B) -> Map<I, A, B>
-where
-    I: Iterator<Item = A>,
-{
+pub fn map<I, A, B>(it: I, consume f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
     Map { iter: it, f: f }
 }
 
-pub fn filter<I, A>(it: I, consume pred: fn(A) -> bool) -> Filter<I, A>
-where
-    I: Iterator<Item = A>,
-{
+pub fn filter<I, A>(it: I, consume pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
     Filter { iter: it, pred: pred }
 }
 
-pub fn take<I, A>(it: I, n: i64) -> Take<I>
-where
-    I: Iterator<Item = A>,
-{
+pub fn take<I, A>(it: I, n: i64) -> Take<I> where I: Iterator<Item = A> {
     Take { iter: it, remaining: n }
 }
 
-pub fn skip<I, A>(it: I, n: i64) -> Skip<I>
-where
-    I: Iterator<Item = A>,
-{
+pub fn skip<I, A>(it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
     Skip { iter: it, remaining: n }
 }
 
-pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B
-where
-    I: Iterator<Item = A>,
-{
+pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<Item = A> {
     panic("iter.fold deferred pending Q004");
     init
 }
 
-pub fn count<I, A>(it: I) -> i64
-where
-    I: Iterator<Item = A>,
-{
+pub fn count<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
     panic("iter.count deferred pending Q004");
     0
 }
 
-pub fn collect<I, A>(it: I) -> Vec<A>
-where
-    I: Iterator<Item = A>,
-{
+pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
     panic("iter.collect deferred pending Q004");
     Vec.new()
 }
@@ -384,11 +350,9 @@ fn chained_adapters_typecheck() {
     // `skip(_, k)` type-checks end-to-end. Drives the chain through a
     // user-defined `Iterator` impl so no compiler-magic special-case is
     // involved.
-    let driver = r"
-
-pub type Counter {
-    n: i64,
-    limit: i64,
+    let driver = r"pub type Counter {
+    n: i64;
+    limit: i64;
 }
 
 impl Iterator for Counter {
@@ -417,11 +381,9 @@ pub fn drive() {
 
 #[test]
 fn terminal_helpers_typecheck() {
-    let driver = r"
-
-pub type Counter {
-    n: i64,
-    limit: i64,
+    let driver = r"pub type Counter {
+    n: i64;
+    limit: i64;
 }
 
 impl Iterator for Counter {

@@ -2315,10 +2315,12 @@ mod warning_source_attribution {
     fn error_return_type_does_not_suppress_receive_fn_body_mismatch() {
         // receive fn handler() -> UnknownType { let x: i32 = "bad"; x }
         // inside an actor; body mismatch must be reported.
-        let source = r#"
-actor MyActor {
-    var value: i32 = 0,
-    receive fn handler() -> UnknownType { let x: i32 = "bad"; x }
+        let source = r#"actor MyActor {
+    var value: i32 = 0;
+    receive fn handler() -> UnknownType {
+        let x: i32 = "bad";
+        x
+    }
 }
 "#;
         let result = hew_parser::parse(source);

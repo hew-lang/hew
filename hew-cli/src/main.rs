@@ -2024,7 +2024,15 @@ fn cmd_fmt(a: &args::FmtArgs) {
         }
     };
 
-    if checked_migration_in_snapshot(a, &files) {
+    if a.migrate {
+        let root = a
+            .files
+            .is_empty()
+            .then(|| a.root.as_deref().unwrap_or_else(|| Path::new(".")));
+        match migrate_in_snapshot(&files, root, a.check) {
+            Ok(false) => {}
+            Ok(true) | Err(()) => std::process::exit(1),
+        }
         return;
     }
 
@@ -2043,39 +2051,12 @@ fn cmd_fmt(a: &args::FmtArgs) {
             }
         };
 
-        let migrated = if a.migrate {
-            if let Ok(migrated) = migrate_source_file(file_path, &file, &source) {
-                migrated
-            } else {
-                had_errors = true;
-                continue;
-            }
-        } else {
-            source.clone()
-        };
-
-        let Some(formatted) = format_for_display(&file, &migrated) else {
+        let Some(formatted) = format_for_display(&file, &source) else {
             had_errors = true;
             continue;
         };
 
         formatted_files.push((file_path, file, source, formatted));
-    }
-
-    // A migration is a cross-file rewrite.  Compute every checker-backed edit
-    // against the original tree before writing anything, so one migrated import
-    // cannot affect the semantic decision for a later source file.
-    if a.migrate && had_errors {
-        std::process::exit(1);
-    }
-    if a.migrate {
-        let outputs = formatted_files
-            .iter()
-            .map(|(path, file, _, formatted)| (path.as_path(), file.as_str(), formatted.as_str()))
-            .collect::<Vec<_>>();
-        if !recheck_migrated_sources(&outputs) {
-            std::process::exit(1);
-        }
     }
 
     for (file_path, file, source, formatted) in formatted_files {
@@ -2175,6 +2156,12 @@ fn insert_format_file(
     Ok(())
 }
 
+fn skip_format_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') || matches!(name, "target" | "node_modules"))
+}
+
 fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|error| format!("cannot read format directory `{}`: {error}", dir.display()))?;
@@ -2192,10 +2179,7 @@ fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), 
             .map_err(|error| format!("cannot inspect format path `{}`: {error}", path.display()))?;
 
         if file_type.is_dir() {
-            if !matches!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".git" | "target" | ".hew")
-            ) {
+            if !skip_format_directory(&path) {
                 collect_format_directory(&path, files)?;
             }
         } else if file_type.is_file()
@@ -2206,20 +2190,6 @@ fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), 
     }
 
     Ok(())
-}
-
-fn checked_migration_in_snapshot(a: &args::FmtArgs, files: &[PathBuf]) -> bool {
-    if !a.migrate || !a.check {
-        return false;
-    }
-    let root = a
-        .files
-        .is_empty()
-        .then(|| a.root.as_deref().unwrap_or_else(|| Path::new(".")));
-    match migration_snapshot_needs_changes(files, root) {
-        Ok(false) => true,
-        Ok(true) | Err(()) => std::process::exit(1),
-    }
 }
 
 fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -2239,10 +2209,7 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
             let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
             let path = entry.path();
             if path.is_dir() {
-                if !matches!(
-                    path.file_name().and_then(|name| name.to_str()),
-                    Some(".git" | "target")
-                ) {
+                if !skip_format_directory(&path) {
                     pending.push(path);
                 }
             } else if path.extension().is_some_and(|extension| extension == "hew") {
@@ -2260,7 +2227,7 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> Result<bool, ()> {
+fn migrate_in_snapshot(files: &[PathBuf], root: Option<&Path>, check: bool) -> Result<bool, ()> {
     let snapshot = tempfile::tempdir().map_err(|error| {
         eprintln!("Error: cannot create migration check snapshot: {error}");
     })?;
@@ -2281,17 +2248,27 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
             mapped_files.push((file.clone(), snapshot_root.join(relative)));
         }
     } else {
-        for (index, file) in files.iter().enumerate() {
+        let mut snapshot_parents: std::collections::BTreeMap<PathBuf, PathBuf> =
+            std::collections::BTreeMap::new();
+        for file in files {
             let parent = file
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
-            let snapshot_parent = snapshot.path().join(format!("input-{index}"));
-            copy_migration_snapshot_tree(parent, &snapshot_parent, snapshot.path()).map_err(
-                |error| {
-                    eprintln!("Error: cannot create migration check snapshot: {error}");
-                },
-            )?;
+            let snapshot_parent = if let Some(mapped) = snapshot_parents.get(parent) {
+                mapped.clone()
+            } else {
+                let mapped = snapshot
+                    .path()
+                    .join(format!("input-{}", snapshot_parents.len()));
+                copy_migration_snapshot_tree(parent, &mapped, snapshot.path()).map_err(
+                    |error| {
+                        eprintln!("Error: cannot create migration check snapshot: {error}");
+                    },
+                )?;
+                snapshot_parents.insert(parent.to_path_buf(), mapped.clone());
+                mapped
+            };
             let Some(file_name) = file.file_name() else {
                 eprintln!(
                     "Error: migration input has no file name: {}",
@@ -2301,6 +2278,41 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
             };
             mapped_files.push((file.clone(), snapshot_parent.join(file_name)));
         }
+    }
+
+    // Punctuation is parsed before type checking. Rewrite every snapshot file
+    // first so imported modules use the same grammar during checker-selected
+    // lifecycle and variant migration. Refusals leave the original tree alone.
+    let mut punctuation = Vec::with_capacity(mapped_files.len());
+    let mut refused = false;
+    for (original, mapped) in &mapped_files {
+        let file = original.display().to_string();
+        let source = std::fs::read_to_string(mapped).map_err(|error| {
+            eprintln!("Error: cannot read migration snapshot for {file}: {error}");
+        })?;
+        match hew_parser::fmt::migrate_punctuation(&source) {
+            Ok(formatted) => punctuation.push((mapped, formatted)),
+            Err(error) => {
+                refused = true;
+                for site in error.refusals {
+                    eprintln!(
+                        "Error: migration refused {file}:{}-{}: {}",
+                        site.span.start, site.span.end, site.reason
+                    );
+                }
+            }
+        }
+    }
+    if refused {
+        return Err(());
+    }
+    for (mapped, formatted) in punctuation {
+        std::fs::write(mapped, formatted).map_err(|error| {
+            eprintln!(
+                "Error: cannot write migration snapshot {}: {error}",
+                mapped.display()
+            );
+        })?;
     }
 
     let mut regenerated = Vec::with_capacity(mapped_files.len());
@@ -2354,11 +2366,18 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
             );
         })?;
         if original_bytes != regenerated_bytes {
-            eprintln!("{}: needs formatting", original.display());
+            if check {
+                eprintln!("{}: needs formatting", original.display());
+            } else {
+                std::fs::write(&original, regenerated_bytes).map_err(|error| {
+                    eprintln!("Error: cannot write {}: {error}", original.display());
+                })?;
+                eprintln!("Formatted {}", original.display());
+            }
             needs_changes = true;
         }
     }
-    Ok(needs_changes)
+    Ok(check && needs_changes)
 }
 
 fn copy_migration_snapshot_tree(
@@ -2381,10 +2400,7 @@ fn copy_migration_snapshot_tree(
             {
                 continue;
             }
-            if !matches!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".git" | "target")
-            ) {
+            if !skip_format_directory(&path) {
                 copy_migration_snapshot_tree(&path, &target, snapshot_root)?;
             }
             continue;

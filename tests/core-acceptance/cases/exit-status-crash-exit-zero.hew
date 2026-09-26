@@ -1,6 +1,8 @@
 // `exit(0)` cannot report success over a crash no supervisor recovered.
 actor Worker {
-    receive fn boom() { panic("worker failed"); }
+    receive fn boom() {
+        panic("worker failed");
+    }
 }
 
 fn main() {

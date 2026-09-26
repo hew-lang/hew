@@ -90,7 +90,7 @@ fn run_actor(source: &str, expected: &str, status: i32, diagnostic: &str) {
 fn messages_and_state_preserve_independent_values() {
     run_actor(
         r#"actor Recorder {
-    var label: string,
+    var label: string;
     receive fn append(text: string) {
         label = label + text;
         println(label);
@@ -117,20 +117,23 @@ fn main() {
 fn actor_handles_copy_through_records_and_vectors() {
     run_actor(
         r"actor Ledger {
-    var total: i64,
+    var total: i64;
     receive fn add(amount: i64) {
         total += amount;
         println(total);
     }
 }
+
 type Directory {
-    ledgers: Vec<Ledger>,
+    ledgers: Vec<Ledger>;
 }
+
 fn deliver(directory: Directory) {
     for ledger in directory.ledgers {
         let _ = mailbox(ledger, on_full: .Reject).add(3);
     }
 }
+
 fn main() {
     let ledger = spawn Ledger(total: 4);
     let directory = Directory { ledgers: [ledger] };
@@ -149,7 +152,7 @@ fn main() {
 fn initializer_finishes_before_message_delivery() {
     run_actor(
         r#"actor Recorder {
-    var label: string = "boot:",
+    var label: string = "boot:";
     init(initial: string) {
         label = label + initial;
     }
@@ -158,6 +161,7 @@ fn initializer_finishes_before_message_delivery() {
         println(label);
     }
 }
+
 fn main() {
     let recorder = spawn Recorder(initial: "ready:");
     let _ = mailbox(recorder, on_full: .Reject).append("done");
@@ -172,13 +176,20 @@ fn main() {
 #[test]
 fn spawn_arguments_evaluate_in_source_order_before_defaults() {
     run_actor(
-        r#"fn mark(label: string) -> string { println(label); label }
-actor Ordered {
-    var first: string,
-    var second: string,
-    var third: string = mark("default"),
-    receive fn show() { println(first + second + third); }
+        r#"fn mark(label: string) -> string {
+    println(label);
+    label
 }
+
+actor Ordered {
+    var first: string;
+    var second: string;
+    var third: string = mark("default");
+    receive fn show() {
+        println(first + second + third);
+    }
+}
+
 fn main() {
     let ordered = spawn Ordered(second: mark("second"), first: mark("first"));
     let _ = mailbox(ordered, on_full: .Reject).show();
@@ -194,14 +205,19 @@ fn main() {
 fn handler_fault_runs_message_and_state_defers() {
     run_actor(
         r#"actor Worker {
-    var label: string,
+    var label: string;
     receive fn fail(message: string) {
-        defer { println(label); }
-        defer { println(message); }
+        defer {
+            println(label);
+        }
+        defer {
+            println(message);
+        }
         label = "actor-cleanup";
         panic("handler-fault");
     }
 }
+
 fn main() {
     let worker = spawn Worker(label: "initial");
     let _ = mailbox(worker, on_full: .Reject).fail("message-cleanup");
@@ -216,9 +232,21 @@ fn main() {
 #[test]
 fn native_ask_aggregate_reply_preserves_fields_and_argument_order() {
     run_actor(
-        r#"type Parcel { label: string, notes: Vec<string> }
-fn number() -> i64 { println("number"); 7 }
-fn text() -> string { println("text"); "label".to_upper() }
+        r#"type Parcel {
+    label: string;
+    notes: Vec<string>;
+}
+
+fn number() -> i64 {
+    println("number");
+    7
+}
+
+fn text() -> string {
+    println("text");
+    "label".to_upper()
+}
+
 actor Maker {
     receive fn make(number: i64, label: string) -> Parcel {
         sleep(1ms);
@@ -226,10 +254,14 @@ actor Maker {
         Parcel { label: label, notes: ["owned".to_upper()] }
     }
 }
+
 fn main() {
     let maker = spawn Maker();
     match maker.make(label: text(), number: number()) {
-        .Ok(parcel) => { println(parcel.label); println(parcel.notes[0]); }
+        .Ok(parcel) => {
+            println(parcel.label);
+            println(parcel.notes[0]);
+        }
         .Err(_) => panic("unexpected ask failure"),
     }
 }
@@ -275,18 +307,26 @@ fn native_ask_preserves_strict_turn_while_another_actor_replies() {
         message.to_upper()
     }
 }
+
 actor Relay {
-    var phase: string,
+    var phase: string;
     receive fn run(echo: Echo, message: string) {
         phase = "waiting";
         match echo.echo(message) {
-            .Ok(value) => { phase = value; }
-            .Err(_) => { phase = "unexpected-error"; }
+            .Ok(value) => {
+                phase = value;
+            }
+            .Err(_) => {
+                phase = "unexpected-error";
+            }
         }
         println("reply-complete");
     }
-    receive fn observe() { println(phase); }
+    receive fn observe() {
+        println(phase);
+    }
 }
+
 fn main() {
     let echo = spawn Echo();
     let relay = spawn Relay(phase: "initial");
@@ -338,16 +378,21 @@ fn main() {
 fn native_ask_deadline_settles_receiver_and_releases_owned_values() {
     run_actor(
         r#"actor Slow {
-    var entered: bool = false,
-    var cleaned: bool = false,
+    var entered: bool = false;
+    var cleaned: bool = false;
     receive fn echo(message: string) -> string {
         entered = true;
-        defer { cleaned = true; }
+        defer {
+            cleaned = true;
+        }
         sleep(30ms);
         message.to_upper()
     }
-    receive fn settled() -> bool { entered == cleaned }
+    receive fn settled() -> bool {
+        entered == cleaned
+    }
 }
+
 fn main() {
     let slow = spawn Slow();
     let outcome = scope within 1ms {
@@ -356,7 +401,10 @@ fn main() {
             .Err(_) => "unexpected-error",
         }
     } handle failure {
-        match failure { .Deadline { message } => "timed-out", .Fault { message } => "unexpected fault", }
+        match failure {
+            .Deadline { message } => "timed-out",
+            .Fault { message } => "unexpected fault",
+        }
     };
     println(outcome);
     println("caller-continues");
@@ -386,9 +434,12 @@ actor Probe {
         ran.send(1).expect("ran");
     }
 }
+
 actor Gate {
-    var phase: string,
-    receive fn observe() { println(phase); }
+    var phase: string;
+    receive fn observe() {
+        println(phase);
+    }
     // Suspends until Probe has run on the only worker.
     receive fn slow(message: string, probe_ran: stream.Stream<i64>) {
         phase = "before";
@@ -397,6 +448,7 @@ actor Gate {
         println("finished");
     }
 }
+
 fn main() {
     let (ran, probe_ran): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
     let probe = spawn Probe();
@@ -416,15 +468,20 @@ fn main() {
 fn resumed_handler_fault_runs_owned_defers_before_actor_failure() {
     run_actor(
         r#"actor Worker {
-    var label: string,
+    var label: string;
     receive fn fail(message: string) {
-        defer { println(label); }
-        defer { println(message); }
+        defer {
+            println(label);
+        }
+        defer {
+            println(message);
+        }
         sleep(1ms);
         label = "actor-cleanup";
         panic("resumed-handler-fault");
     }
 }
+
 fn main() {
     let worker = spawn Worker(label: "initial");
     let _ = mailbox(worker, on_full: .Reject).fail("message-cleanup".to_upper());
@@ -440,16 +497,23 @@ fn main() {
 fn initializer_fault_cleans_state_and_root_before_publication() {
     run_actor(
         r#"actor Broken {
-    var label: string = "seed".to_upper(),
+    var label: string = "seed".to_upper();
     init(message: string) {
-        defer { println(label); }
+        defer {
+            println(label);
+        }
         label = message;
         panic("init-fault");
     }
-    receive fn show() { println("must-not-run"); }
+    receive fn show() {
+        println("must-not-run");
+    }
 }
+
 fn main() {
-    defer { println("root-cleanup"); }
+    defer {
+        println("root-cleanup");
+    }
     let broken = spawn Broken(message: "init-cleanup".to_upper());
     let _ = mailbox(broken, on_full: .Reject).show();
 }
@@ -480,14 +544,21 @@ fn main() {
 #[test]
 fn full_mailbox_returns_message_for_retry_and_explicit_discard_drops_it() {
     run_actor(
-        r#"type Parcel { label: string, notes: Vec<string> }
+        r#"type Parcel {
+    label: string;
+    notes: Vec<string>;
+}
+
 fn payload(label: string) -> Parcel {
     Parcel { label: label.to_upper(), notes: ["owned".to_upper()] }
 }
+
 actor Worker {
-    mailbox 1,
+    mailbox 1;
     receive fn process(parcel: Parcel) {
-        if parcel.label == "RETRY" { println(parcel.label + ":" + parcel.notes[0]); }
+        if parcel.label == "RETRY" {
+            println(parcel.label + ":" + parcel.notes[0]);
+        }
     }
     receive fn exercise(me: Worker, backup: Worker) {
         let _ = mailbox(me, on_full: .Reject).process(payload("filler"));
@@ -508,6 +579,7 @@ actor Worker {
         }
     }
 }
+
 fn main() {
     let worker = spawn Worker();
     let backup = spawn Worker();
@@ -546,23 +618,27 @@ fn waiting_submission_releases_worker_and_transfers_owned_message_on_capacity() 
         r#"import std.stream;
 
 actor Probe {
-    var ran: stream.Sink<i64>,
+    var ran: stream.Sink<i64>;
     receive fn run() {
         println("other-actor");
         ran.send(1).expect("ran");
     }
 }
+
 actor Queue {
-    var probe_ran: stream.Stream<i64>,
-    mailbox 1,
+    var probe_ran: stream.Stream<i64>;
+    mailbox 1;
     // Holds the queue until Probe has run, which happens only once the
     // waiting Driver has released the only worker.
     receive fn hold(me: Queue, driver: Driver, probe: Probe) {
         let _ = mailbox(driver, on_full: .Reject).run(me, probe);
         probe_ran.recv();
     }
-    receive fn process(value: string) { println(value); }
+    receive fn process(value: string) {
+        println(value);
+    }
 }
+
 actor Driver {
     receive fn run(sink: Queue, probe: Probe) {
         let _ = mailbox(sink, on_full: .Reject).process("first".to_upper());
@@ -574,6 +650,7 @@ actor Driver {
         }
     }
 }
+
 fn main() {
     let (ran, probe_ran): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
     let sink = spawn Queue(probe_ran: probe_ran);
@@ -598,15 +675,23 @@ fn main() {
 #[test]
 fn waiting_submission_deadline_cleans_sender_without_delivering_pending_message() {
     run_actor(
-        r#"actor Probe { receive fn run() { println("other-actor"); } }
+        r#"actor Probe {
+    receive fn run() {
+        println("other-actor");
+    }
+}
+
 actor Sink {
-    mailbox 1,
+    mailbox 1;
     receive fn hold(me: Sink, driver: Driver, probe: Probe) {
         let _ = mailbox(driver, on_full: .Reject).run(me, probe);
         sleep(500ms);
     }
-    receive fn process(value: string) { println(value); }
+    receive fn process(value: string) {
+        println(value);
+    }
 }
+
 actor Driver {
     receive fn run(sink: Sink, probe: Probe) {
         let _ = mailbox(sink, on_full: .Reject).process("first".to_upper());
@@ -617,12 +702,15 @@ actor Driver {
             let _ = waiting.process("must-not-arrive".to_upper());
             "unexpected acceptance"
         } handle failure {
-            match failure { .Deadline { message } => "deadline", .Fault { message } => "unexpected fault", }
+            match failure {
+                .Deadline { message } => "deadline",
+                .Fault { message } => "unexpected fault",
+            }
         };
         println(outcome);
-
     }
 }
+
 fn main() {
     let sink = spawn Sink();
     let driver = spawn Driver();
@@ -642,7 +730,7 @@ fn actor_close_waits_for_handler_cleanup() {
         r#"import std.stream;
 
 actor Holder {
-    label: string,
+    let label: string;
     // Parks on a pipe nothing feeds, so only close can end the turn.
     receive fn slow(me: Holder, closer: Closer) {
         defer println(label);
@@ -652,19 +740,24 @@ actor Holder {
         println("must-not-complete");
     }
 }
+
 actor Closer {
     receive fn started(holder: Holder) {
         let result = scope within 1ms {
             closed(holder);
             "unexpected clean wait"
         } handle failure {
-            match failure { .Deadline { message } => "waiter-deadline", .Fault { message } => "unexpected fault", }
+            match failure {
+                .Deadline { message } => "waiter-deadline",
+                .Fault { message } => "unexpected fault",
+            }
         };
         println(result);
         close(holder);
         println("closed");
     }
 }
+
 fn main() {
     let holder = spawn Holder(label: "cleaned".to_upper());
     let closer = spawn Closer();
@@ -700,24 +793,42 @@ fn main() {
 fn local_actor_ask_cycle_runs_cleanup_and_can_be_recovered() {
     run_actor(r#"actor Peer {
     receive fn run(other: Peer, me: Peer) -> string {
-        match other.reply(me) { .Ok(value) => value, .Err(_) => "unexpected ask failure", }
+        match other.reply(me) {
+            .Ok(value) => value,
+            .Err(_) => "unexpected ask failure",
+        }
     }
     receive fn reply(other: Peer) -> string {
         let answer = scope {
             defer println("cycle-cleanup");
             let result = other.leaf();
-            match result { .Ok(value) => value, .Err(_) => "unexpected response", }
+            match result {
+                .Ok(value) => value,
+                .Err(_) => "unexpected response",
+            }
         } handle failure {
-            match failure { .Fault { message } => { println(message); "recovered" }, .Deadline { message } => "unexpected deadline", }
+            match failure {
+                .Fault { message } => {
+                    println(message);
+                    "recovered"
+                }
+                .Deadline { message } => "unexpected deadline",
+            }
         };
         answer
     }
-    receive fn leaf() -> string { "leaf" }
+    receive fn leaf() -> string {
+        "leaf"
+    }
 }
+
 fn main() {
     let first = spawn Peer();
     let second = spawn Peer();
-    match first.run(second, first) { .Ok(value) => println(value), .Err(_) => panic("unexpected failure"), }
+    match first.run(second, first) {
+        .Ok(value) => println(value),
+        .Err(_) => panic("unexpected failure"),
+    }
     println("caller-continues");
 }
 "#, "cycle-cleanup\nhew: failure: UserPanic (212): local actor wait cycle at ask: 2 -> 1 -> 2\n\nrecovered\ncaller-continues\n", 0, "");

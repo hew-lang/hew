@@ -28,20 +28,19 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 #[test]
 fn static_child_access_compiles_cleanly() {
     let output = lower(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App {
-            strategy: one_for_one,
-            child worker: Worker
-        }
+supervisor App {
+    strategy: one_for_one;
+    child worker: Worker;
+}
 
-        fn get_worker(app: App) -> ChildRef<Worker> {
-            app.worker
-        }
-        ",
+fn get_worker(app: App) -> ChildRef<Worker> {
+    app.worker
+}
+",
     );
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert!(output.into_result().is_ok());
@@ -50,25 +49,24 @@ fn static_child_access_compiles_cleanly() {
 #[test]
 fn pool_field_access_lowers_as_first_class_view() {
     let output = lower(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor Pool {
-            strategy: simple_one_for_one,
-            pool workers: Worker count: 2
-        }
+supervisor Pool {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: 2;
+}
 
-        fn inspect(sup: Pool) -> i64 {
-            let workers = sup.workers;
-            let first = workers[0];
-            let maybe = workers.get(1);
-            let _ = first;
-            let _ = maybe;
-            workers.len()
-        }
-        ",
+fn inspect(sup: Pool) -> i64 {
+    let workers = sup.workers;
+    let first = workers[0];
+    let maybe = workers.get(1);
+    let _ = first;
+    let _ = maybe;
+    workers.len()
+}
+",
     );
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert!(output.into_result().is_ok());
@@ -77,25 +75,24 @@ fn pool_field_access_lowers_as_first_class_view() {
 #[test]
 fn nested_supervisor_chained_accessor_lowers_cleanly() {
     let output = lower(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor SubSupervisor {
-            strategy: one_for_one,
-            child worker: Worker
-        }
+supervisor SubSupervisor {
+    strategy: one_for_one;
+    child worker: Worker;
+}
 
-        supervisor RootSupervisor {
-            strategy: one_for_one,
-            child sub: SubSupervisor
-        }
+supervisor RootSupervisor {
+    strategy: one_for_one;
+    child sub: SubSupervisor;
+}
 
-        fn get_nested_worker(root: RootSupervisor) -> ChildRef<Worker> {
-            root.sub.worker
-        }
-        ",
+fn get_nested_worker(root: RootSupervisor) -> ChildRef<Worker> {
+    root.sub.worker
+}
+",
     );
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert!(output.into_result().is_ok());

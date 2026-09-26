@@ -1,18 +1,24 @@
-type Job { name: string, run: fn() -> string, retries: i64 }
+type Job {
+    name: string;
+    run: fn() -> string;
+    retries: i64;
+}
 
 fn make(name: string, answer: string) -> Job {
-    Job { name: name, run: || -> string { answer }, retries: 0 }
+    Job { name: name, run: || -> string {
+        answer
+    }, retries: 0 }
 }
 
 fn renamed(consume job: Job) -> Job {
-    Job { name: "renamed", ..job }
+    Job { ..job, name: "renamed" }
 }
 
 fn main() {
-    let first = Job { retries: 3, ..make("first", "one") };
+    let first = Job { ..make("first", "one"), retries: 3 };
     let second = renamed(make("second", "two"));
     let seed = make("seed", "three");
-    let third = Job { name: "third", retries: 7, ..seed };
+    let third = Job { ..seed, name: "third", retries: 7 };
     let run_first = first.run;
     let run_second = second.run;
     let run_third = third.run;

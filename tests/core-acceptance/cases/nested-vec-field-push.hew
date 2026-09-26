@@ -1,4 +1,6 @@
-type Rec { field: [i64] }
+type Rec {
+    field: [i64];
+}
 
 fn main() -> i64 {
     var total: i64 = 0;

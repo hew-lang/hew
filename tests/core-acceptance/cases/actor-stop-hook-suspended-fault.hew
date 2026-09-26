@@ -2,13 +2,18 @@
 // a synchronous fault does: the next hook is skipped, the resource field still
 // closes once, and the closing observer receives the retained diagnostic.
 #[resource]
-type Ledger { name: string, }
+type Ledger {
+    name: string;
+}
+
 impl Ledger {
-    fn close(consume self) { println(f"{self.name} closed"); }
+    fn close(consume self) {
+        println(f"{self.name} closed");
+    }
 }
 
 actor Keeper {
-    ledger: Ledger,
+    let ledger: Ledger;
     #[on(stop)]
     fn stopping() {
         sleep(1ms);
@@ -16,8 +21,12 @@ actor Keeper {
         panic("goodbye failed after suspending");
     }
     #[on(stop)]
-    fn never() { println("unreachable hook"); }
-    receive fn ping() -> i64 { 1 }
+    fn never() {
+        println("unreachable hook");
+    }
+    receive fn ping() -> i64 {
+        1
+    }
 }
 
 fn main() {
@@ -26,6 +35,10 @@ fn main() {
         .Ok(value) => println(value),
         .Err(_) => panic("ping failed"),
     }
-    close(keeper);
+    {
+        let __hew_migrated_actor_875 = keeper;
+        stop(__hew_migrated_actor_875);
+        stopped(__hew_migrated_actor_875);
+    };
     println("unreachable");
 }

@@ -4,7 +4,7 @@
 // Negative control: reject/gen_fn_unbounded_param_capture.hew.
 #[resource]
 type Token {
-    id: i64,
+    id: i64;
 }
 
 impl Token {

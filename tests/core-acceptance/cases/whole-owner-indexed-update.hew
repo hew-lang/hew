@@ -1,18 +1,18 @@
 import std.failure;
 
 type Row {
-    x: i64,
-    name: string,
+    x: i64;
+    name: string;
 }
 
 type Table {
-    rows: [Row],
-    cells: [i64],
-    tag: string,
+    rows: [Row];
+    cells: [i64];
+    tag: string;
 }
 
 actor Keeper {
-    var table: Table,
+    var table: Table;
 
     receive fn poke() -> string {
         table.cells[0] = 5;
@@ -36,17 +36,24 @@ actor Keeper {
 }
 
 supervisor Group {
-    intensity: 1 within 60s,
-    child keeper: Keeper(table: Table { rows: [Row { x: 1, name: "a" }], cells: [0, 0], tag: "new" }),
+    intensity: 1 within 60s;
+    child keeper: Keeper(table: Table { rows: [Row { x: 1, name: "a" }], cells: [0, 0], tag: "new" });
 }
 
 fn main() {
     let group = spawn Group;
     println(group.keeper.poke().expect("poke"));
     let _ = group.keeper.out_of_bounds();
-    let _ = await_restart group.keeper;
-    close(group);
-
+    let _ = {
+        let __hew_migrated_role_1035 = group.keeper;
+        restarted(__hew_migrated_role_1035);
+        __hew_migrated_role_1035
+    };
+    {
+        let __hew_migrated_actor_1067 = group;
+        stop(__hew_migrated_actor_1067);
+        stopped(__hew_migrated_actor_1067);
+    };
     let t = Table { rows: [Row { x: 1, name: "a" }], cells: [0], tag: "captured" };
     var step = capture(var t) || {
         t.cells[0] = t.cells[0] + 1;

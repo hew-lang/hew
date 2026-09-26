@@ -30,7 +30,7 @@ extern "C" {
 
 #[resource]
 type Slot {
-    addr: i64,
+    addr: i64;
 }
 
 impl Slot {
@@ -42,13 +42,13 @@ impl Slot {
 }
 
 type Pair {
-    slot: Slot,
-    tag: i64,
+    slot: Slot;
+    tag: i64;
 }
 
 type Two {
-    a: Slot,
-    b: Slot,
+    a: Slot;
+    b: Slot;
 }
 
 fn acquire() -> Slot {
@@ -105,8 +105,8 @@ fn enum_payload_read() -> i64 {
 // Enum payload bound and never touched.
 fn enum_payload_untouched() {
     match acquire_result(true) {
-        .Ok(_s) => {},
-        .Err(_) => {},
+        .Ok(_s) => {}
+        .Err(_) => {}
     }
 }
 
@@ -114,7 +114,7 @@ fn enum_payload_untouched() {
 fn enum_payload_explicit_close() {
     match acquire_result(true) {
         .Ok(s) => s.close(),
-        .Err(_) => {},
+        .Err(_) => {}
     }
 }
 
@@ -124,7 +124,7 @@ fn enum_payload_declined() -> i64 {
         .Ok(s) => {
             s.close();
             1
-        },
+        }
         .Err(_) => 0,
     }
 }

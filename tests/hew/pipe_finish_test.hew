@@ -35,7 +35,6 @@ fn test_empty_payload_is_data_not_eof() {
     }
     btx.close();
     brx.close();
-
     let (stx, srx): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("string pipe");
     stx.send("").expect("send");
     match srx.recv() {
@@ -110,7 +109,6 @@ fn test_send_after_finish_reports_closed() {
     }
     tx.close();
     rx.close();
-
     let (stx, srx): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
     stx.finish();
     match stx.send("late") {
@@ -120,7 +118,6 @@ fn test_send_after_finish_reports_closed() {
     }
     stx.close();
     srx.close();
-
     let (btx, brx): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(4).expect("pipe");
     btx.finish();
     match btx.send("late".to_bytes()) {

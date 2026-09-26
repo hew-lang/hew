@@ -11,15 +11,15 @@ type Hidden = bool;
 type T = i64;
 
 pub type Envelope<T> {
-    value: T,
-    names: Names,
-    order: Number,
+    value: T;
+    names: Names;
+    order: Number;
 }
 
 pub enum Delivery<T> {
-    Empty,
-    Label(Value),
-    Bundle { value: T, names: Names, order: Number },
+    Empty;
+    Label(Value);
+    Bundle { value: T; names: Names; order: Number;  }
 }
 
 pub type Cargo<T>(T, Names);
@@ -30,11 +30,11 @@ pub fn names() -> Names {
 
 // A nominal with the binder's spelling must not change stored generic members.
 type U {
-    tag: string,
+    tag: string;
 }
 
 pub type Bound<U> {
-    value: U,
+    value: U;
 }
 
 type Cache(string, Names);

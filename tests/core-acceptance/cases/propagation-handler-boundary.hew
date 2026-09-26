@@ -1,6 +1,10 @@
 fn source(mode: i64) -> Result<Result<string, string>, string> {
-    if mode == 0 { return .Err("outer".to_upper()); }
-    if mode == 1 { return .Ok(.Err("inner".to_upper())); }
+    if mode == 0 {
+        return .Err("outer".to_upper());
+    }
+    if mode == 1 {
+        return .Ok(.Err("inner".to_upper()));
+    }
     .Ok(.Ok("value".to_upper()))
 }
 
@@ -13,7 +17,9 @@ fn route(mode: i64) -> Result<string, string> {
 }
 
 fn report(mode: i64) {
-    let text = route(mode) handle error { return println(error); };
+    let text = route(mode) handle error {
+        return println(error);
+    };
     println(text);
 }
 

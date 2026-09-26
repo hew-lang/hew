@@ -4,19 +4,25 @@
 // code; the success path returns 42.
 #[wire]
 type Point {
-    x: i64 @1,
-    y: i64 @2,
+    x: i64 @1;
+    y: i64 @2;
 }
 
 fn main() -> i64 {
     let p = Point { x: 3, y: 4 };
     let j = p.to_json();
     // Exact JSON text, keyed by field NAME (not the @N tag).
-    if j != "{\"x\":3,\"y\":4}" { return 1; }
+    if j != "{\"x\":3,\"y\":4}" {
+        return 1;
+    }
     match Point.from_json(j) {
         .Ok(back) => {
-            if back.x != 3 { return 2; }
-            if back.y != 4 { return 3; }
+            if back.x != 3 {
+                return 2;
+            }
+            if back.y != 4 {
+                return 3;
+            }
             42
         }
         .Err(_) => 4,

@@ -1,7 +1,11 @@
 import std.text.semver;
 
 fn weighted(matched: bool, weight: i64) -> i64 {
-    if matched { weight } else { 0 }
+    if matched {
+        weight
+    } else {
+        0
+    }
 }
 
 /// One call per recognized operator (true AND false), plus the no-prefix
@@ -36,7 +40,7 @@ fn run_case() -> i64 {
 
 fn main() -> i64 {
     var total = 0;
-    for frame in 0..50 {
+    for frame in 0 .. 50 {
         total = total + run_case();
         println("frame");
     }

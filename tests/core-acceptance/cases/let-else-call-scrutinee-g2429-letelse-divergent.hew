@@ -1,11 +1,16 @@
-fn f() -> Option<string> { .None }
+fn f() -> Option<string> {
+    .None
+}
 
 fn body() -> i64 {
     var misses = 0;
     var i = 0;
     while i < 64 {
         i = i + 1;
-        let .Some(b) = f() else { misses = misses + 1; continue; };
+        let .Some(b) = f() else {
+            misses = misses + 1;
+            continue;
+        };
         misses = misses + b.len();
     }
     misses
@@ -18,5 +23,9 @@ fn main() -> i64 {
         acc = acc + body();
         i = i + 1;
     }
-    if acc > 0 { 0 } else { 1 }
+    if acc > 0 {
+        0
+    } else {
+        1
+    }
 }

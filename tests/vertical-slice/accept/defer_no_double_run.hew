@@ -37,6 +37,6 @@ fn main() -> i64 {
         // If defer ran a second time, this would observe n==2 and
         // assert(n == 1) would abort with exit 134.
         assert(n == 1);
-    };
+    }
     5
 }

@@ -186,25 +186,24 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
             describe(Label { text: "hello" })
         }
     "#;
-    let module_source = r"
-        pub trait Describable {
-            fn describe(val: Self) -> string;
-        }
+    let module_source = r"pub trait Describable {
+    fn describe(val: Self) -> string;
+}
 
-        pub type Label {
-            text: string,
-        }
+pub type Label {
+    text: string;
+}
 
-        impl Describable for Label {
-            fn describe(label: Label) -> string {
-                label.text
-            }
-        }
+impl Describable for Label {
+    fn describe(label: Label) -> string {
+        label.text
+    }
+}
 
-        pub fn describe<T: Describable>(item: T) -> string {
-            item.describe()
-        }
-    ";
+pub fn describe<T: Describable>(item: T) -> string {
+    item.describe()
+}
+";
 
     let mut root = hew_parser::parse(root_source);
     assert!(

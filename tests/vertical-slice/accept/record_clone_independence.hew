@@ -2,7 +2,7 @@
 // after a clone. Both can be passed to a function without aliasing issues.
 
 type Score {
-    value: i64,
+    value: i64;
 }
 
 fn double(s: Score) -> i64 {

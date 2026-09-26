@@ -5,11 +5,14 @@ import std.stream;
 
 #[resource]
 #[opaque]
-type Dq {}
+type Dq {
+}
 
 impl Dq {
     fn close(consume self) {
-        unsafe { hew_deque_free(self) };
+        unsafe {
+            hew_deque_free(self)
+        };
         println("closed");
     }
 }
@@ -20,17 +23,23 @@ extern "C" {
 }
 
 type Holder {
-    handle: Dq,
-    label: string,
+    handle: Dq;
+    label: string;
 }
 
 fn in_record() {
-    let holder = Holder { handle: unsafe { hew_deque_new() }, label: "record" };
+    let holder = Holder { handle: unsafe {
+        hew_deque_new()
+    }, label: "record" };
     println(holder.label);
 }
 
 fn in_vector() {
-    let handles: Vec<Dq> = [unsafe { hew_deque_new() }, unsafe { hew_deque_new() }];
+    let handles: Vec<Dq> = [unsafe {
+        hew_deque_new()
+    }, unsafe {
+        hew_deque_new()
+    }];
     println("vector " + to_string(handles.len()));
 }
 
@@ -38,7 +47,9 @@ fn in_vector() {
 // reached it: the losing frame's record is still held, so the cancellation
 // edge runs the field's close exactly once.
 fn cancelled(parked: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
-    let holder = Holder { handle: unsafe { hew_deque_new() }, label: "cancelled" };
+    let holder = Holder { handle: unsafe {
+        hew_deque_new()
+    }, label: "cancelled" };
     println(holder.label);
     parked.send(1).expect("parked");
     gate.recv();
@@ -56,6 +67,9 @@ fn main() {
     in_vector();
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
-    let picked = race { winner(parked), cancelled(parked_tx, gate) };
+    let picked = race {
+        winner(parked),
+        cancelled(parked_tx, gate),
+    };
     println("picked " + to_string(picked));
 }

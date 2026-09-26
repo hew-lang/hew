@@ -1,9 +1,10 @@
 import std.string;
+
 import std.stream;
 
 enum Setting {
-    Raw(string),
-    Missing,
+    Raw(string);
+    Missing;
 }
 
 fn lookup(key: string) -> Setting {
@@ -37,8 +38,12 @@ fn port(key: string) -> Result<i64, string> {
 
 fn scan(limit: i64) -> i64 {
     var total = 0;
-    for i in 0..limit {
-        let .Raw(text) = lookup(if i == 0 { "port" } else { "other" }) else {
+    for i in 0 .. limit {
+        let .Raw(text) = lookup(if i == 0 {
+            "port"
+        } else {
+            "other"
+        }) else {
             break;
         };
         total = total + text.len();
@@ -48,8 +53,12 @@ fn scan(limit: i64) -> i64 {
 
 fn skip(limit: i64) -> i64 {
     var seen = 0;
-    for i in 0..limit {
-        let .Raw(text) = lookup(if i == 1 { "other" } else { "name" }) else {
+    for i in 0 .. limit {
+        let .Raw(text) = lookup(if i == 1 {
+            "other"
+        } else {
+            "name"
+        }) else {
             continue;
         };
         seen = seen + text.len();
@@ -58,9 +67,9 @@ fn skip(limit: i64) -> i64 {
 }
 
 enum Reading {
-    Cached(string),
-    Fresh(string),
-    Stale,
+    Cached(string);
+    Fresh(string);
+    Stale;
 }
 
 fn reading(kind: i64) -> Reading {
@@ -82,8 +91,8 @@ fn read_text(kind: i64) -> string {
 }
 
 enum Config {
-    Named { key: string, value: string },
-    Anonymous,
+    Named { key: string; value: string;  }
+    Anonymous;
 }
 
 fn config(flag: i64) -> Config {
@@ -118,8 +127,8 @@ fn describe_labeled(n: i64, label: string) -> string {
 }
 
 enum Source {
-    File(Stream<string>, string),
-    Missing,
+    File(Stream<string>, string);
+    Missing;
 }
 
 fn source(has_file: i64) -> Source {
@@ -159,20 +168,15 @@ fn main() {
     }
     println(f"scan {scan(3)}");
     println(f"skip {skip(3)}");
-
     println(read_text(0));
     println(read_text(1));
     println(read_text(2));
-
     println(config_value(1));
     println(config_value(0));
-
     println(describe_labeled(0, f"kept {0}"));
     println(describe_labeled(5, f"dropped {5}"));
-
     println(describe_source(1));
     println(describe_source(0));
-
     println(confirm_missing("nothing"));
     println(confirm_missing("port"));
 }

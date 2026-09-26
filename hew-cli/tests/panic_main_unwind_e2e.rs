@@ -16,10 +16,9 @@ use std::path::Path;
 use support::{describe_output, repo_root, require_codegen, run_bounded_hew_run, tempdir};
 
 /// `main` panics with a live `#[resource]` binding.
-const PANIC_WITH_LIVE_RESOURCE: &str = r#"
-#[resource]
+const PANIC_WITH_LIVE_RESOURCE: &str = r#"#[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
 
 impl Conn {
@@ -40,10 +39,9 @@ fn main() -> i64 {
 /// The same program without the panic. Counterfactual for the close output:
 /// it proves `7` marks a scope exit that ran, not a line the fixture prints
 /// unconditionally, and it pins the status difference to the panic alone.
-const RETURNS_WITH_LIVE_RESOURCE: &str = r#"
-#[resource]
+const RETURNS_WITH_LIVE_RESOURCE: &str = r#"#[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
 
 impl Conn {

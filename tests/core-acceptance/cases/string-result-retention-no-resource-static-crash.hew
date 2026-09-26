@@ -1,15 +1,18 @@
 actor Gate {
-    receive fn tick() -> i64 { 1 }
+    receive fn tick() -> i64 {
+        1
+    }
 }
 
-actor Crasher { 
-    let gate: Gate,
+actor Crasher {
+    let gate: Gate;
 
     receive fn go(trigger: i64) -> i64 {
         let gate_pid = gate;
         let read_once = move |value: string| {
             if trigger >= 0 {
-                panic("crash before child suspend") }
+                panic("crash before child suspend")
+            }
             let _ = gate_pid.tick();
             value
         };
@@ -20,7 +23,7 @@ actor Crasher {
 
 fn main() {
     let gate = spawn Gate;
-    for _ in 0..1 {
+    for _ in 0 .. 1 {
         let crasher = spawn Crasher(gate: gate);
         match crasher.go(0) {
             .Ok(_) => panic("crasher unexpectedly returned"),

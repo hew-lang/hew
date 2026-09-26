@@ -1,5 +1,5 @@
 type Rec {
-    s: string,
+    s: string;
 }
 
 fn main() {
@@ -15,11 +15,17 @@ fn main() {
     // back an independent owner — the stronger check for this clone fixture.
     let first = match ys.get(0) {
         .Some(v) => v,
-        .None => { println("oob"); return; }
+        .None => {
+            println("oob");
+            return;
+        }
     };
     let second = match ys.get(1) {
         .Some(v) => v,
-        .None => { println("oob"); return; }
+        .None => {
+            println("oob");
+            return;
+        }
     };
     let (f_inner, f_flag) = first;
     let (f_rec, f_n) = f_inner;

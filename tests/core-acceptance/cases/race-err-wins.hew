@@ -6,13 +6,18 @@ import std.stream;
 fn fails() -> Result<i64, string> {
     Result.Err("fast failure")
 }
+
 fn succeeds(gate: stream.Stream<i64>) -> Result<i64, string> {
     gate.recv();
     Result.Ok(7)
 }
+
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    let result = race { fails(), succeeds(gate) };
+    let result = race {
+        fails(),
+        succeeds(gate),
+    };
     match result {
         .Ok(value) => println("ok " + to_string(value)),
         .Err(message) => println("err " + message),

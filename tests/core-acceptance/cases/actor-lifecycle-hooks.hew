@@ -1,15 +1,26 @@
 import std.stream;
 
 actor Keeper {
-    var journal: Stream<string>,
-    var count: i64 = 0,
+    var journal: Stream<string>;
+    var count: i64 = 0;
     #[on(start)]
-    fn started() { println("start"); count = 1; }
+    fn started() {
+        println("start");
+        count = 1;
+    }
     #[on(stop)]
-    fn stopping() { println("stop"); println(count); }
+    fn stopping() {
+        println("stop");
+        println(count);
+    }
     #[on(stop)]
-    fn stopping_again() { println("stop again"); }
-    receive fn bump() -> i64 { count = count + 1; count }
+    fn stopping_again() {
+        println("stop again");
+    }
+    receive fn bump() -> i64 {
+        count = count + 1;
+        count
+    }
 }
 
 fn open(path: string) -> Stream<string> {
@@ -25,6 +36,10 @@ fn main() {
         .Ok(count) => println(count),
         .Err(_) => panic("bump failed"),
     }
-    close(keeper);
+    {
+        let __hew_migrated_actor_791 = keeper;
+        stop(__hew_migrated_actor_791);
+        stopped(__hew_migrated_actor_791);
+    };
     println("closed");
 }

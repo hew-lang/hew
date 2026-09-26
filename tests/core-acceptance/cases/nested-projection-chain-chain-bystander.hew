@@ -1,25 +1,19 @@
 type Mid {
-    a: string,
-    b: string,
+    a: string;
+    b: string;
 }
 
 type Outer {
-    mid: Mid,
-    c: string,
+    mid: Mid;
+    c: string;
 }
 
 type Bystander {
-    name: string,
+    name: string;
 }
 
 fn make_outer(k: i64) -> Outer {
-    Outer {
-        mid: Mid {
-            a: "by-a-heap-payload".to_upper(),
-            b: "by-b-heap-payload".to_upper(),
-        },
-        c: "by-c-heap-payload".to_upper(),
-    }
+    Outer { mid: Mid { a: "by-a-heap-payload".to_upper(), b: "by-b-heap-payload".to_upper() }, c: "by-c-heap-payload".to_upper() }
 }
 
 fn make_bystander(k: i64) -> Bystander {
@@ -43,5 +37,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

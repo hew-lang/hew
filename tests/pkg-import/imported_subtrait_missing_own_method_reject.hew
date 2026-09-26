@@ -5,10 +5,10 @@
 // still are — so omitting `tag` must REJECT with the "missing required method(s)"
 // diagnostic. Guards against the super-edge change relaxing the sub's own
 // required set.
-import hew.supertraits.{ Sub };
+import hew.supertraits.{Sub};
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl Sub for W {

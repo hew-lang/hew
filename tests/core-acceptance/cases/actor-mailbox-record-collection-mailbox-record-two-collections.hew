@@ -1,14 +1,23 @@
-type Boxed { payload: [i64], extra: [i64] }
+type Boxed {
+    payload: [i64];
+    extra: [i64];
+}
 
-actor ProbeSink { 
-    var seen: i64,
+actor ProbeSink {
+    var seen: i64;
     receive fn take(b: Boxed) {
         var s: i64 = 0;
-        for v in b.payload { s = s + v; }
-        for v in b.extra { s = s + v; }
+        for v in b.payload {
+            s = s + v;
+        }
+        for v in b.extra {
+            s = s + v;
+        }
         seen = seen + s;
     }
-    receive fn total() -> i64 { seen }
+    receive fn total() -> i64 {
+        seen
+    }
 }
 
 fn main() -> i64 {
@@ -20,7 +29,13 @@ fn main() -> i64 {
         i = i + 1;
     }
     match sink.total() {
-        .Ok(v) => { if v < 0 { 75 } else { 0 } },
+        .Ok(v) => {
+            if v < 0 {
+                75
+            } else {
+                0
+            }
+        }
         .Err(_e) => 1,
     }
 }

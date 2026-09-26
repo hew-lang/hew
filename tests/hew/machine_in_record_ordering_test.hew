@@ -24,31 +24,31 @@
 // ── Order A: container declared FIRST (this failed silently before the fix) ──
 machine OuterG {
     events {
-        step,
+        step;
     }
 
-    state HoldingG { w: WrapG, },
-    state EmptyG,
+    state HoldingG { w: WrapG; }
+    state EmptyG;
 
-    on step: HoldingG => EmptyG,
+    on step: HoldingG => EmptyG;
     on step: _ => _ {
         state
     }
 }
 
 type WrapG {
-    inner: InnerG,
+    inner: InnerG;
 }
 
 machine InnerG {
     events {
-        go,
+        go;
     }
 
-    state ReadyG { payload: string, },
-    state DoneG,
+    state ReadyG { payload: string; }
+    state DoneG;
 
-    on go: ReadyG => DoneG,
+    on go: ReadyG => DoneG;
     on go: _ => _ {
         state
     }
@@ -59,7 +59,7 @@ fn payload_of_g(o: OuterG) -> string {
         .HoldingG { w } => match w.inner {
             .ReadyG { payload } => payload,
             .DoneG => "done",
-        },
+        }
         .EmptyG => "empty",
     }
 }
@@ -73,31 +73,31 @@ fn machine_through_record_container_declared_first() {
 // ── Order B: embedded machine declared FIRST (this always worked) ────────────
 machine InnerH {
     events {
-        go,
+        go;
     }
 
-    state ReadyH { payload: string, },
-    state DoneH,
+    state ReadyH { payload: string; }
+    state DoneH;
 
-    on go: ReadyH => DoneH,
+    on go: ReadyH => DoneH;
     on go: _ => _ {
         state
     }
 }
 
 type WrapH {
-    inner: InnerH,
+    inner: InnerH;
 }
 
 machine OuterH {
     events {
-        step,
+        step;
     }
 
-    state HoldingH { w: WrapH, },
-    state EmptyH,
+    state HoldingH { w: WrapH; }
+    state EmptyH;
 
-    on step: HoldingH => EmptyH,
+    on step: HoldingH => EmptyH;
     on step: _ => _ {
         state
     }
@@ -108,7 +108,7 @@ fn payload_of_h(o: OuterH) -> string {
         .HoldingH { w } => match w.inner {
             .ReadyH { payload } => payload,
             .DoneH => "done",
-        },
+        }
         .EmptyH => "empty",
     }
 }

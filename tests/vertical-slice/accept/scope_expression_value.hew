@@ -5,7 +5,9 @@
 // `unawaited` proves the scope still drains a fork that nothing ever awaits
 // before it yields (the print in `slow` lands before "after scope").
 
-fn square(n: i64) -> i64 { n * n }
+fn square(n: i64) -> i64 {
+    n * n
+}
 
 fn slow() -> i64 {
     sleep(20ms);
@@ -20,7 +22,6 @@ fn main() {
         (await a) + (await b)
     };
     println(f"total={total}");
-
     let unawaited = scope {
         fork slow();
         1

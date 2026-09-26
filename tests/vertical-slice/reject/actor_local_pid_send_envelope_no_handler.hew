@@ -8,11 +8,11 @@
 //
 // Sibling of `actor_builtin_send_no_handler.hew` (no envelope either).
 type Job {
-    n: i64,
+    n: i64;
 }
 
 actor Adder {
-    var count: i64,
+    var count: i64;
     receive fn increment(job: Job) {
         count = count + job.n;
     }

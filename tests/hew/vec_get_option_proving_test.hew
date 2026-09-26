@@ -9,14 +9,14 @@
 //! Element classes exercised: scalar (i64), string, owned record, enum.
 
 type Rec {
-    label: string,
-    count: i64,
+    label: string;
+    count: i64;
 }
 
 enum Shade {
-    Light,
-    Medium,
-    Dark,
+    Light;
+    Medium;
+    Dark;
 }
 
 // ── scalar ──────────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ fn test_vec_get_owned_record_some_is_independent_clone() {
         .Some(r) => {
             assert(r.label == "alpha-heap-owned-label");
             assert(r.count == 1);
-        },
+        }
         .None => assert(false),
     }
     // And the source mutation actually landed (sanity).
@@ -104,7 +104,7 @@ fn test_vec_get_owned_record_some_survives_clear() {
         .Some(r) => {
             assert(r.label == "survives-the-clear-heap-zzzz");
             assert(r.count == 77);
-        },
+        }
         .None => assert(false),
     }
 }
@@ -129,7 +129,7 @@ fn test_vec_get_enum_some_and_oob_none() {
         .Some(s) => match s {
             Shade.Dark => assert(true),
             _ => assert(false),
-        },
+        }
         .None => assert(false),
     }
     match v.get(2) {

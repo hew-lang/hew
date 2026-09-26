@@ -16,37 +16,37 @@
 //   hew machine diagram examples/machine/tcp_handshake.hew --machine TcpHandshake
 machine TcpHandshake {
     events {
-        SynReceive { remote_port: u16, },
-        AckReceive,
-        FinReceive,
-        Reset,
+        SynReceive { remote_port: u16; }
+        AckReceive;
+        FinReceive;
+        Reset;
     }
 
     emits {
-        AckReceive,
-        Log { message: string, },
+        AckReceive;
+        Log { message: string; }
     }
 
-    state Closed,
+    state Closed;
     state SynReceived {
-        remote_port: u16,
+        remote_port: u16;
         entry {
             emit Log { message: "SYN received — sent SYN-ACK" };
         }
-    },
+    }
     state Established {
-        remote_port: u16,
+        remote_port: u16;
         entry {
             emit Log { message: "connection established" };
         }
-    },
+    }
     state CloseWait {
         entry {
 
             // Passive close: we received a FIN from the peer.
             emit Log { message: "received FIN — entering close-wait" };
         }
-    },
+    }
 
     on SynReceive(remote_port): Closed => SynReceived {
 
@@ -64,14 +64,14 @@ machine TcpHandshake {
         emit AckReceive {};
         CloseWait
     }
-    on AckReceive: CloseWait => Closed,
-    on Reset: _ => Closed,
+    on AckReceive: CloseWait => Closed;
+    on Reset: _ => Closed;
     on SynReceive: SynReceived => SynReceived reenter { remote_port: state.remote_port }
     on SynReceive: Established => Established reenter { remote_port: state.remote_port }
-    on SynReceive: CloseWait => CloseWait reenter,
-    on AckReceive: Closed => Closed reenter,
+    on SynReceive: CloseWait => CloseWait reenter;
+    on AckReceive: Closed => Closed reenter;
     on AckReceive: Established => Established reenter { remote_port: state.remote_port }
-    on FinReceive: Closed => Closed reenter,
+    on FinReceive: Closed => Closed reenter;
     on FinReceive: SynReceived => SynReceived reenter { remote_port: state.remote_port }
-    on FinReceive: CloseWait => CloseWait reenter,
+    on FinReceive: CloseWait => CloseWait reenter;
 }

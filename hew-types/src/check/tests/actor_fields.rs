@@ -9,10 +9,11 @@ const OWNING_ACTOR_HELP: &str = "keep the resource inside one owning actor and s
 #[test]
 fn non_send_actor_state_points_to_the_owning_actor_pattern() {
     let output = check_source(
-        r"
-actor Holder {
-    let value: Rc<i64>,
-    receive fn count() -> i64 { value.strong_count() }
+        r"actor Holder {
+    let value: Rc<i64>;
+    receive fn count() -> i64 {
+        value.strong_count()
+    }
 }
 
 fn main() {
@@ -32,10 +33,11 @@ fn main() {
 #[test]
 fn sendable_actor_state_has_no_owning_actor_help() {
     let output = check_source(
-        r"
-actor Holder {
-    let value: i64,
-    receive fn get() -> i64 { value }
+        r"actor Holder {
+    let value: i64;
+    receive fn get() -> i64 {
+        value
+    }
 }
 
 fn main() {
@@ -74,9 +76,8 @@ fn immutable_field_errors(output: &TypeCheckOutput, field: &str) -> Vec<String> 
 #[test]
 fn let_field_assignment_in_receive_fn_is_rejected() {
     let output = check_source(
-        r"
-actor Counter {
-    let count: i64,
+        r"actor Counter {
+    let count: i64;
     receive fn bump() {
         count = count + 1;
     }
@@ -112,9 +113,8 @@ fn bare_field_assignment_in_receive_fn_is_rejected() {
     // A bare field declaration defaults to immutable (parser default),
     // so it follows the same rule as `let`.
     let output = check_source(
-        r"
-actor Counter {
-    count: i64,
+        r"actor Counter {
+    let count: i64;
     receive fn bump() {
         count = count + 1;
     }
@@ -132,9 +132,8 @@ actor Counter {
 #[test]
 fn compound_assignment_to_let_field_is_rejected() {
     let output = check_source(
-        r"
-actor Counter {
-    let count: i64,
+        r"actor Counter {
+    let count: i64;
     receive fn bump() {
         count += 1;
     }
@@ -152,9 +151,8 @@ actor Counter {
 #[test]
 fn let_field_assignment_in_actor_method_is_rejected() {
     let output = check_source(
-        r"
-actor Counter {
-    let count: i64,
+        r"actor Counter {
+    let count: i64;
     receive fn poke() {
         bump();
     }
@@ -182,12 +180,16 @@ actor Counter {
 #[test]
 fn pid_call_to_plain_actor_method_is_rejected() {
     let output = check_source(
-        r"
-actor Counter {
-    var n: i64 = 0,
-    fn bump() { n = n + 1; }
-    receive fn get() -> i64 { n }
+        r"actor Counter {
+    var n: i64 = 0;
+    fn bump() {
+        n = n + 1;
+    }
+    receive fn get() -> i64 {
+        n
+    }
 }
+
 fn main() {
     let c = spawn Counter(n: 0);
     c.bump();
@@ -223,11 +225,13 @@ fn main() {
 #[test]
 fn pid_call_to_plain_send_method_is_rejected() {
     let output = check_source(
-        r"
-actor Counter {
-    var n: i64 = 0,
-    fn send() { n = n + 1; }
+        r"actor Counter {
+    var n: i64 = 0;
+    fn send() {
+        n = n + 1;
+    }
 }
+
 fn main() {
     let c = spawn Counter(n: 0);
     c.send();
@@ -279,9 +283,8 @@ fn plain_method_self_call_from_receive_fn_does_not_gain_undefined_method() {
     // actor-handle arm must not additionally fire `UndefinedMethod` on a
     // fixture it was never meant to see.
     let output = check_source(
-        r"
-actor Counter {
-    let count: i64,
+        r"actor Counter {
+    let count: i64;
     receive fn poke() {
         bump();
     }
@@ -311,11 +314,14 @@ actor Counter {
 #[test]
 fn bare_call_to_sibling_actor_method_resolves() {
     let output = check_source(
-        r"
-actor Counter {
-    var count: i64 = 0,
-    fn helper() -> i64 { count + 1 }
-    receive fn bump() { count = helper(); }
+        r"actor Counter {
+    var count: i64 = 0;
+    fn helper() -> i64 {
+        count + 1
+    }
+    receive fn bump() {
+        count = helper();
+    }
 }
 ",
     );
@@ -332,12 +338,19 @@ fn bare_call_to_actor_method_prefers_a_free_function_of_the_same_name() {
     // so a module function keeps its meaning inside an actor body. The oracle
     // is the return type: the free fn returns `string`, the method `i64`.
     let output = check_source(
-        r#"
-fn helper() -> string { "free" }
+        r#"fn helper() -> string {
+    "free"
+}
+
 actor Counter {
-    var count: i64 = 0,
-    fn helper() -> i64 { count + 1 }
-    receive fn bump() { let picked: string = helper(); println(picked); }
+    var count: i64 = 0;
+    fn helper() -> i64 {
+        count + 1
+    }
+    receive fn bump() {
+        let picked: string = helper();
+        println(picked);
+    }
 }
 "#,
     );
@@ -351,14 +364,18 @@ actor Counter {
 #[test]
 fn bare_call_to_another_actors_method_is_undefined() {
     let output = check_source(
-        r"
-actor Other {
-    var count: i64 = 0,
-    fn helper() -> i64 { count + 1 }
+        r"actor Other {
+    var count: i64 = 0;
+    fn helper() -> i64 {
+        count + 1
+    }
 }
+
 actor Counter {
-    var count: i64 = 0,
-    receive fn bump() { count = helper(); }
+    var count: i64 = 0;
+    receive fn bump() {
+        count = helper();
+    }
 }
 ",
     );
@@ -375,12 +392,16 @@ actor Counter {
 #[test]
 fn qualified_actor_method_call_from_main_is_refused_on_the_user_channel() {
     let output = check_source(
-        r"
-actor Counter {
-    var count: i64 = 0,
-    fn helper() -> i64 { count + 1 }
-    receive fn bump() { count = helper(); }
+        r"actor Counter {
+    var count: i64 = 0;
+    fn helper() -> i64 {
+        count + 1
+    }
+    receive fn bump() {
+        count = helper();
+    }
 }
+
 fn main() {
     let c = spawn Counter(count: 0);
     c.bump();
@@ -409,14 +430,18 @@ fn main() {
 #[test]
 fn qualified_actor_method_call_from_a_different_actor_is_refused() {
     let output = check_source(
-        r"
-actor Other {
-    var count: i64 = 0,
-    fn helper() -> i64 { count + 1 }
+        r"actor Other {
+    var count: i64 = 0;
+    fn helper() -> i64 {
+        count + 1
+    }
 }
+
 actor Counter {
-    var count: i64 = 0,
-    receive fn bump() { count = Other.helper(); }
+    var count: i64 = 0;
+    receive fn bump() {
+        count = Other.helper();
+    }
 }
 ",
     );
@@ -436,12 +461,15 @@ fn bare_call_to_a_lifecycle_hook_stays_undefined() {
     // identity kind, but the runtime enters it through its own trampoline: it
     // publishes no declaration row and stays uncallable from Hew code.
     let output = check_source(
-        r"
-actor Counter {
-    var count: i64 = 0,
+        r"actor Counter {
+    var count: i64 = 0;
     #[on(start)]
-    fn started() { count = 1; }
-    receive fn bump() { started(); }
+    fn started() {
+        count = 1;
+    }
+    receive fn bump() {
+        started();
+    }
 }
 ",
     );
@@ -458,9 +486,8 @@ actor Counter {
 #[test]
 fn let_field_assignment_in_on_stop_hook_is_rejected() {
     let output = check_source(
-        r"
-actor Counter {
-    let count: i64,
+        r"actor Counter {
+    let count: i64;
     receive fn poke() {}
     #[on(stop)]
     fn drain() {
@@ -480,9 +507,8 @@ actor Counter {
 #[test]
 fn let_field_assignment_in_init_is_accepted() {
     let output = check_source(
-        r"
-actor Counter {
-    let count: i64,
+        r"actor Counter {
+    let count: i64;
     init(initial: i64) {
         count = initial;
     }
@@ -502,9 +528,8 @@ actor Counter {
 #[test]
 fn var_field_assignment_in_receive_fn_is_accepted() {
     let output = check_source(
-        r"
-actor Counter {
-    var count: i64,
+        r"actor Counter {
+    var count: i64;
     receive fn bump() {
         count = count + 1;
     }
@@ -521,10 +546,9 @@ actor Counter {
 #[test]
 fn let_field_read_in_receive_fn_is_accepted() {
     let output = check_source(
-        r"
-actor Counter {
-    let step: i64,
-    var count: i64,
+        r"actor Counter {
+    let step: i64;
+    var count: i64;
     receive fn bump() {
         count = count + step;
     }
@@ -558,7 +582,7 @@ mod every_attribute {
     #[test]
     fn valid_millisecond_interval_accepted() {
         let output = check_source(
-            "actor Ticker { var count: i64 = 0, #[every(50ms)] receive fn tick() { count += 1; } } fn main() {}",
+            "actor Ticker {\n    var count: i64 = 0;\n    #[every(50ms)]\n    receive fn tick() {\n        count += 1;\n    }\n}\n\nfn main() {}\n",
         );
         assert!(
             output.errors.is_empty(),
@@ -649,18 +673,17 @@ mod every_attribute {
     #[test]
     fn supervisor_child_with_periodic_handler_accepted() {
         let output = check_source(
-            r"
-            actor Heartbeat {
-                #[every(100ms)]
-                receive fn beat() {}
-            }
+            r"actor Heartbeat {
+    #[every(100ms)]
+    receive fn beat() {}
+}
 
-            supervisor App {
-                child hb: Heartbeat,
-            }
+supervisor App {
+    child hb: Heartbeat;
+}
 
-            fn main() {}
-            ",
+fn main() {}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -731,8 +754,7 @@ mod every_attribute {
         // `let Point { x, y } = p;` — irrefutable product type in let position.
         // Must emit zero checker errors; binders x and y must resolve.
         let output = check_source(
-            "type Point { x: i64, y: i64, }
-             fn main() -> i64 { let p = Point { x: 1, y: 2 }; let Point { x, y } = p; x + y }",
+            "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() -> i64 {\n    let p = Point { x: 1, y: 2 };\n    let Point { x, y } = p;\n    x + y\n}\n",
         );
         assert!(
             output.errors.is_empty(),
@@ -870,9 +892,7 @@ mod every_attribute {
         // pattern resolution must be recorded so HIR lowering does not cascade
         // into "pattern has no resolution" / verifier leakage.
         let output = check_source(
-            "enum E { A, B(i64), }
-             fn make_e(g: bool) -> E { if g { E.A } else { E.B(3) } }
-             fn f(g: bool) -> Result<i64, string> { let E.A = make_e(g) else { return .Err(\"x\") }; .Ok(1) }",
+            "enum E {\n    A;\n    B(i64);\n}\n\nfn make_e(g: bool) -> E {\n    if g {\n        E.A\n    } else {\n        E.B(3)\n    }\n}\n\nfn f(g: bool) -> Result<i64, string> {\n    let E.A = make_e(g) else {\n        return .Err(\"x\");\n    };\n    .Ok(1)\n}\n",
         );
         assert!(
             output.errors.is_empty(),
@@ -1018,8 +1038,7 @@ mod every_attribute {
     fn let_irrefutable_struct_record_keyword_no_error() {
         // `record`-keyword product type is also irrefutable.
         let output = check_source(
-            "type Pair { a: i64, b: i64 }
-             fn main() -> i64 { let p = Pair { a: 3, b: 4 }; let Pair { a, b } = p; a + b }",
+            "type Pair {\n    a: i64;\n    b: i64;\n}\n\nfn main() -> i64 {\n    let p = Pair { a: 3, b: 4 };\n    let Pair { a, b } = p;\n    a + b\n}\n",
         );
         assert!(
             output.errors.is_empty(),
@@ -1037,8 +1056,7 @@ mod every_attribute {
         // `let { x, y } = p` — shorthand with no type name must bind both
         // fields with zero checker errors.
         let output = check_source(
-            "type Point { x: i64, y: i64, }
-             fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, y } = p; x + y }",
+            "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() -> i64 {\n    let p = Point { x: 1, y: 2 };\n    let { x, y } = p;\n    x + y\n}\n",
         );
         assert!(
             output.errors.is_empty(),
@@ -1052,8 +1070,7 @@ mod every_attribute {
         // `let { x, z } = p` where `z` does not exist on `Point` must emit
         // exactly one UndefinedField error (not cascade into UnresolvedSymbol).
         let output = check_source(
-            "type Point { x: i64, y: i64, }
-             fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, z } = p; x }",
+            "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() -> i64 {\n    let p = Point { x: 1, y: 2 };\n    let { x, z } = p;\n    x\n}\n",
         );
         let undef_field: Vec<_> = output
             .errors
@@ -1240,14 +1257,16 @@ mod every_attribute {
     fn non_opaque_struct_construct_is_not_affected() {
         // A plain struct (not `#[opaque]`) must still construct without error.
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64, }
+            r"type Point {
+    x: i64;
+    y: i64;
+}
 
-            fn main() -> i64 {
-                let p = Point { x: 1, y: 2 };
-                p.x
-            }
-            ",
+fn main() -> i64 {
+    let p = Point { x: 1, y: 2 };
+    p.x
+}
+",
         );
         let opaque_errors: Vec<_> = output
             .errors
@@ -1624,21 +1643,20 @@ mod reserved_names {
     #[test]
     fn user_payload_variant_shadows_builtin_unit() {
         let output = check_source(
-            r#"
-            enum AppError {
-                NotFound(string),
-                Timeout,
-                Forbidden,
-            }
+            r#"enum AppError {
+    NotFound(string);
+    Timeout;
+    Forbidden;
+}
 
-            fn get_error() -> AppError {
-                .NotFound("resource missing")
-            }
+fn get_error() -> AppError {
+    .NotFound("resource missing")
+}
 
-            fn main() {
-                let _e = get_error();
-            }
-            "#,
+fn main() {
+    let _e = get_error();
+}
+"#,
         );
         assert!(
             output.errors.is_empty(),
@@ -1656,21 +1674,20 @@ mod reserved_names {
     #[test]
     fn user_unit_variant_shadows_builtin_unit() {
         let output = check_source(
-            r"
-            enum Status {
-                Timeout,
-                Ready,
-            }
+            r"enum Status {
+    Timeout;
+    Ready;
+}
 
-            fn check_timeout(s: Status) -> bool {
-                s == Status.Timeout
-            }
+fn check_timeout(s: Status) -> bool {
+    s == Status.Timeout
+}
 
-            fn main() {
-                let s: Status = .Timeout;
-                let _b = check_timeout(s);
-            }
-            ",
+fn main() {
+    let s: Status = .Timeout;
+    let _b = check_timeout(s);
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -1726,14 +1743,18 @@ mod reserved_names {
         // registers first, B overwrites.  The expression `Conflict` resolves
         // to whichever won the slot — no type error.
         let output = check_source(
-            r"
-            enum A { Conflict, }
-            enum B { Conflict, }
+            r"enum A {
+    Conflict;
+}
 
-            fn main() {
-                let _x = B.Conflict;
-            }
-            ",
+enum B {
+    Conflict;
+}
+
+fn main() {
+    let _x = B.Conflict;
+}
+",
         );
         // Type checker does not enforce uniqueness for bare variants when there
         // are multiple user-declared types with the same variant name — that
@@ -1755,24 +1776,27 @@ mod reserved_names {
     #[test]
     fn user_task_enum_shadows_reserved_name() {
         let output = check_source_allowing_prelude_redeclaration(
-            r#"
-            enum Task {
-                Pending,
-                Done,
-            }
+            r#"enum Task {
+    Pending;
+    Done;
+}
 
-            fn describe(t: Task) -> string {
-                match t {
-                    .Pending => { return "pending"; }
-                    .Done    => { return "done"; }
-                }
-            }
+fn describe(t: Task) -> string {
+    match t {
+        .Pending => {
+            return "pending";
+        }
+        .Done => {
+            return "done";
+        }
+    }
+}
 
-            fn main() {
-                let t: Task = .Pending;
-                let _s = describe(t);
-            }
-            "#,
+fn main() {
+    let t: Task = .Pending;
+    let _s = describe(t);
+}
+"#,
         );
         assert!(
             output.errors.is_empty(),
@@ -1825,16 +1849,21 @@ fn deferred_field_errors(output: &TypeCheckOutput, code: &str) -> Vec<String> {
 #[test]
 fn deferred_field_initialized_in_every_arm_is_accepted() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
-    let count: i64,
+        r#"actor Worker {
+    var label: string;
+    let count: i64;
     init(name: string, fast: bool) {
         count = 1;
-        if fast { label = name; } else { label = name.to_upper(); }
+        if fast {
+            label = name;
+        } else {
+            label = name.to_upper();
+        }
         label = label + "!";
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -1863,14 +1892,15 @@ fn main() {
 #[test]
 fn deferred_field_read_before_its_store_is_rejected() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
+        r#"actor Worker {
+    var label: string;
     init(name: string) {
         let seen = label;
         label = name;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -1890,13 +1920,16 @@ fn main() {
 #[test]
 fn deferred_field_missing_on_one_arm_is_rejected() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
+        r#"actor Worker {
+    var label: string;
     init(name: string, fast: bool) {
-        if fast { label = name; }
+        if fast {
+            label = name;
+        }
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -1916,16 +1949,19 @@ fn main() {
 #[test]
 fn deferred_field_left_uninitialized_at_return_is_rejected() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
-    var count: i64,
+        r#"actor Worker {
+    var label: string;
+    var count: i64;
     init(name: string) {
         count = 1;
-        if name == "" { return; }
+        if name == "" {
+            return;
+        }
         label = name;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -1947,13 +1983,16 @@ fn main() {
 #[test]
 fn deferred_field_initialized_inside_a_loop_is_rejected() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
+        r#"actor Worker {
+    var label: string;
     init(names: Vec<string>) {
-        for name in names { label = name; }
+        for name in names {
+            label = name;
+        }
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -1973,13 +2012,14 @@ fn main() {
 #[test]
 fn spawn_naming_a_deferred_field_is_rejected() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
+        r#"actor Worker {
+    var label: string;
     init(name: string) {
         label = name;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -2003,13 +2043,14 @@ fn defaulted_or_parameter_shadowed_fields_are_not_deferred() {
     // A field with a default is never deferred to init, regardless of what
     // init assigns or names its parameters.
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string = "start",
+        r#"actor Worker {
+    var label: string = "start";
     init(suffix: string) {
         label = label + suffix;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -2031,13 +2072,14 @@ fn main() {
     // D458: an init parameter sharing a field's name is refused outright,
     // not treated as the field's initializer (D447's retired carve-out).
     let shadowed = check_source(
-        r"
-actor Bag {
-    var count: i64,
+        r"actor Bag {
+    var count: i64;
     init(count: i64) {
         count = count;
     }
-    receive fn get() -> i64 { count }
+    receive fn get() -> i64 {
+        count
+    }
 }
 
 fn main() {
@@ -2060,13 +2102,14 @@ fn main() {
     // Positive control: a differently named parameter is not a shadow and
     // is accepted plainly.
     let accepted = check_source(
-        r"
-actor Bag {
-    var count: i64,
+        r"actor Bag {
+    var count: i64;
     init(initial: i64) {
         count = initial;
     }
-    receive fn get() -> i64 { count }
+    receive fn get() -> i64 {
+        count
+    }
 }
 
 fn main() {
@@ -2089,13 +2132,14 @@ fn spawn_plus_init_parameter_of_the_same_name_is_refused() {
     // collides with the field the moment `init` declares it, and the
     // actor is refused rather than accepted with the ambiguous binding.
     let output = check_source(
-        r"
-actor Bag {
-    var items: i64,
+        r"actor Bag {
+    var items: i64;
     init(items: i64) {
         items = items;
     }
-    receive fn get() -> i64 { items }
+    receive fn get() -> i64 {
+        items
+    }
 }
 
 fn main() {
@@ -2121,15 +2165,18 @@ fn deferred_field_method_call_before_its_store_is_rejected() {
     // A plain actor method reads the whole state, so calling one while a
     // deferred field still awaits its store would observe an empty seat.
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
-    fn describe() -> string { label }
+        r#"actor Worker {
+    var label: string;
+    fn describe() -> string {
+        label
+    }
     init(name: string) {
         let seen = describe();
         label = name;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -2151,14 +2198,15 @@ fn main() {
 #[test]
 fn deferred_field_self_read_before_its_store_is_rejected() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
+        r#"actor Worker {
+    var label: string;
     init(name: string) {
         let seen = self.label;
         label = name;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -2178,17 +2226,24 @@ fn main() {
 #[test]
 fn deferred_field_method_call_after_every_store_is_accepted() {
     let output = check_source(
-        r#"
-actor Worker {
-    var label: string,
-    let count: i64,
-    fn describe() -> string { if count > 0 { label } else { "" } }
+        r#"actor Worker {
+    var label: string;
+    let count: i64;
+    fn describe() -> string {
+        if count > 0 {
+            label
+        } else {
+            ""
+        }
+    }
     init(name: string) {
         label = name;
         count = 1;
         println(describe());
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {
@@ -2212,9 +2267,8 @@ fn an_unshadowed_immutable_field_write_keeps_the_field_diagnostic() {
     // see `defaulted_or_parameter_shadowed_fields_are_not_deferred` — so it
     // no longer reaches an assignment-target diagnostic at all.)
     let output = check_source(
-        r"
-actor Bag {
-    let items: i64 = 0,
+        r"actor Bag {
+    let items: i64 = 0;
     receive fn bump() {
         items = 1;
     }

@@ -33,7 +33,7 @@ fn test_match_resource_can_close_explicitly() {
         .Ok(sink) => {
             sink.send("match").expect("send");
             sink.close();
-        },
+        }
         .Err(_) => panic("expected a sink"),
     }
     assert(input.collect() == "match");
@@ -50,10 +50,13 @@ fn test_while_let_resource_can_close_explicitly() {
     assert(input.collect() == "while");
 }
 
-type Endpoint { host: string, port: i64 }
+type Endpoint {
+    host: string;
+    port: i64;
+}
 
 enum ParseError {
-    Invalid(string),
+    Invalid(string);
 }
 
 fn parse_error_message(e: ParseError) -> string {
@@ -64,7 +67,7 @@ fn parse_error_message(e: ParseError) -> string {
 
 fn try_parse(addr: string) -> Result<Endpoint, ParseError> {
     if addr == "" {
-        return .Err(ParseError.Invalid("empty address"))
+        return .Err(ParseError.Invalid("empty address"));
     }
     .Ok(Endpoint { host: addr, port: 7 })
 }
@@ -79,7 +82,7 @@ fn describe_endpoint(addr: string) -> string {
         .Err(err) => {
             panic(f"describe_endpoint failed: {parse_error_message(err)}");
             Endpoint { host: "", port: 0 }
-        },
+        }
     };
     f"{host}:{port}"
 }
@@ -103,7 +106,7 @@ fn test_if_let_resource_can_be_returned() {
         .Ok(sink) => {
             sink.send("returned").expect("send");
             sink.close();
-        },
+        }
         .Err(_) => panic("expected a sink"),
     }
     assert(input.collect() == "returned");

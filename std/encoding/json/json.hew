@@ -5,18 +5,18 @@
 
 /// The represented JSON kind, without exposing runtime tags.
 pub enum Kind {
-    Null,
-    Bool,
-    Integer,
-    Float,
-    String,
-    Array,
-    Object,
+    Null;
+    Bool;
+    Integer;
+    Float;
+    String;
+    Array;
+    Object;
 }
 
 /// Malformed JSON input.
 pub enum ParseError {
-    Invalid(string),
+    Invalid(string);
 }
 
 impl Display for ParseError {
@@ -29,8 +29,8 @@ impl Display for ParseError {
 
 /// A value cannot be represented as JSON text.
 pub enum EncodeError {
-    Invalid(string),
-    NonFiniteFloat,
+    Invalid(string);
+    NonFiniteFloat;
 }
 
 impl Display for EncodeError {
@@ -45,11 +45,11 @@ impl Display for EncodeError {
 /// A checked access or mutation failed without changing the value.
 pub enum AccessError {
     /// Expected kind, followed by the actual kind.
-    WrongKind(Kind, Kind),
+    WrongKind(Kind, Kind);
     /// The integer does not fit the requested signed or unsigned type.
-    IntegerRange,
+    IntegerRange;
     /// The index is negative or exceeds the supported runtime index range.
-    InvalidIndex(i64),
+    InvalidIndex(i64);
 }
 
 impl Display for AccessError {

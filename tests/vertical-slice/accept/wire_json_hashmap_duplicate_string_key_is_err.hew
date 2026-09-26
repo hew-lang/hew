@@ -3,7 +3,7 @@
 // would silently change the wire value and must never be accepted.
 #[wire]
 type DuplicateStringMap {
-    values: HashMap<string, string> @1,
+    values: HashMap<string, string> @1;
 }
 
 fn main() -> i64 {

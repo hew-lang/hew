@@ -240,25 +240,23 @@ fn visit_block<'a>(block: &'a hew_hir::HirBlock, out: &mut Vec<&'a HirExpr>) {
 #[test]
 fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
     let output = lower_checked(
-        r"
-        actor Counter {
-            let count: i64,
+        r"actor Counter {
+    let count: i64;
 
-            receive fn increment(n: i64) {
-            }
+    receive fn increment(n: i64) {}
 
-            receive fn print_total() -> i64 {
-                return 1;
-            }
-        }
+    receive fn print_total() -> i64 {
+        return 1;
+    }
+}
 
-        fn main() -> i64 {
-            let c = spawn Counter(count: 0);
-            let _ = c.increment(10);
-            _ = c.print_total();
-            return 0;
-        }
-        ",
+fn main() -> i64 {
+    let c = spawn Counter(count: 0);
+    let _ = c.increment(10);
+    let _ = c.print_total();
+    return 0;
+}
+",
     );
 
     assert!(

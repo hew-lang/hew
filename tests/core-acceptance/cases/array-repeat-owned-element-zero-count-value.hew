@@ -1,4 +1,6 @@
-type Person { name: string }
+type Person {
+    name: string;
+}
 
 fn make() -> Person {
     Person { name: "z" + "z" }

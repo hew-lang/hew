@@ -3,7 +3,9 @@
 // the payload survives exactly as long as some owner names it.
 
 #[resource]
-type Tag { id: i64 }
+type Tag {
+    id: i64;
+}
 
 impl Tag {
     fn close(consume self) {
@@ -11,7 +13,10 @@ impl Tag {
     }
 }
 
-type Holder { name: string, shared: Rc<Tag> }
+type Holder {
+    name: string;
+    shared: Rc<Tag>;
+}
 
 // Building the record retains, and cloning the record retains again.
 fn record_member(source: Rc<Tag>) {
@@ -30,7 +35,7 @@ fn tuple_member(source: Rc<Tag>) {
 
 fn collection_members(source: Rc<Tag>) {
     var handles: Vec<Rc<Tag>> = Vec.new();
-    for _i in 0..3 {
+    for _i in 0 .. 3 {
         handles.push(source.clone());
     }
     println(f"vector len={handles.len()} strong={source.strong_count()}");
@@ -45,15 +50,14 @@ fn collection_members(source: Rc<Tag>) {
 // replacement `set` installs displaces the old payload through the same path.
 fn managed_payload() {
     var deep: Vec<i64> = Vec.new();
-    for i in 0..4000 {
+    for i in 0 .. 4000 {
         deep.push(i);
     }
     let held = Rc.new(deep);
     let alias = held.clone();
     println(f"managed strong={alias.strong_count()}");
-
     var table: HashMap<i64, string> = HashMap.new();
-    for i in 0..2000 {
+    for i in 0 .. 2000 {
         table.insert(i, f"entry{i}");
     }
     let mapped = Rc.new(table);

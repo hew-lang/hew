@@ -1,9 +1,20 @@
 #[wire]
-enum Payload { Empty, Full(string), }
+enum Payload {
+    Empty;
+    Full(string);
+}
+
 #[wire]
-type BagGood { items: Vec<Payload> @1, tail: string @2, }
+type BagGood {
+    items: Vec<Payload> @1;
+    tail: string @2;
+}
+
 #[wire]
-type BagBad { items: Vec<Payload> @1, tail: i64 @2, }
+type BagBad {
+    items: Vec<Payload> @1;
+    tail: i64 @2;
+}
 
 fn main() -> i64 {
     var xs: Vec<Payload> = Vec.new();

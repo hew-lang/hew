@@ -450,8 +450,7 @@ fn one(a: string) -> [i64; 2] {
 #[test]
 fn hashmap_remove_typechecks_as_option() {
     assert_inline_typechecks_cleanly(
-        r#"
-fn main() {
+        r#"fn main() {
     var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     let removed: Option<i64> = m.remove("a");
@@ -460,7 +459,7 @@ fn main() {
         .Some(_) => match missing {
             .Some(_) => {}
             .None => println("ok"),
-        },
+        }
         .None => {}
     }
 }
@@ -494,9 +493,8 @@ fn main() {
 #[test]
 fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
     let output = typecheck_inline(
-        r"
-type Widget {
-    value: i64,
+        r"type Widget {
+    value: i64;
 }
 
 impl Widget {
@@ -532,13 +530,12 @@ fn use_widget(w: Widget) -> i64 {
 #[test]
 fn method_call_receiver_kinds_record_trait_object_dispatch() {
     let output = typecheck_inline(
-        r"
-trait Greeter {
+        r"trait Greeter {
     fn greet(g: Self) -> string;
 }
 
 type Bot {
-    name: string,
+    name: string;
 }
 
 impl Greeter for Bot {
@@ -786,24 +783,21 @@ fn main() {
 #[test]
 fn assign_target_kinds_record_assignment_target_authority() {
     let output = typecheck_inline(
-        r"
-type Boxed {
-    value: i64,
+        r"type Boxed {
+    value: i64;
 }
 
 fn mutate() {
     var local = 0;
     local = 1;
-
     var boxed = Boxed { value: 0 };
     boxed.value = 2;
-
     var nums = [1, 2];
     nums[0] = 3;
 }
 
 actor Counter {
-    var total: i64,
+    var total: i64;
 
     receive fn set(v: i64) {
         total = v;
@@ -915,24 +909,21 @@ fn assign_target_shapes_accompanies_kinds_for_every_accepted_target() {
     // Verify that every span present in assign_target_kinds also has a
     // corresponding entry in assign_target_shapes.
     let output = typecheck_inline(
-        r"
-type Boxed {
-    value: i64,
+        r"type Boxed {
+    value: i64;
 }
 
 fn mutate() {
     var local = 0;
     local = 1;
-
     var boxed = Boxed { value: 0 };
     boxed.value = 2;
-
     var nums = [1, 2];
     nums[0] = 3;
 }
 
 actor Counter {
-    var total: i64,
+    var total: i64;
 
     receive fn set(v: i64) {
         total = v;
@@ -1127,22 +1118,25 @@ fn for_stream_int_ok() {
 #[test]
 fn for_stream_record_element_admitted() {
     let output = typecheck_inline(
-        r#"
-        import std.stream;
+        r#"import std.stream;
 
-        type Row { value: i64 }
+type Row {
+    value: i64;
+}
 
-        extern "C" {
-            fn fake_stream() -> Stream<Row>;
-        }
+extern "C" {
+    fn fake_stream() -> Stream<Row>;
+}
 
-        fn main() {
-            let input = unsafe { fake_stream() };
-            for row in input {
-                println("seen");
-            }
-        }
-        "#,
+fn main() {
+    let input = unsafe {
+        fake_stream()
+    };
+    for row in input {
+        println("seen");
+    }
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1467,13 +1461,13 @@ fn rc_weak_surface_records_typed_intrinsics() {
 #[test]
 fn weak_breaks_recursive_value_size_cycle() {
     let output = typecheck_inline(
-        r"
-        type Node {
-            parent: Option<Weak<Node>>,
-            value: i64,
-        }
-        fn main() {}
-        ",
+        r"type Node {
+    parent: Option<Weak<Node>>;
+    value: i64;
+}
+
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1485,18 +1479,18 @@ fn weak_breaks_recursive_value_size_cycle() {
 #[test]
 fn weak_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
-        r"
-        actor BoundarySink {
-            let _unused: i64,
-            receive fn consume(value: Weak<i64>) {}
-        }
-        fn main() {
-            let rc = Rc.new(1);
-            let weak = rc.downgrade();
-            let sink = spawn BoundarySink(_unused: 0);
-            let _ = sink.consume(weak);
-        }
-        ",
+        r"actor BoundarySink {
+    let _unused: i64;
+    receive fn consume(value: Weak<i64>) {}
+}
+
+fn main() {
+    let rc = Rc.new(1);
+    let weak = rc.downgrade();
+    let sink = spawn BoundarySink(_unused: 0);
+    let _ = sink.consume(weak);
+}
+",
     );
     assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
     assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidSend);
@@ -1614,17 +1608,17 @@ fn weak_param_return_requires_clone() {
 #[test]
 fn rc_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
-        r"
-        actor BoundarySink {
-            let _unused: i64,
-            receive fn consume(val: Rc<i64>) {}
-        }
-        fn main() {
-            let rc: Rc<i64> = Rc.new(1);
-            let a = spawn BoundarySink(_unused: 0);
-            let _ = a.consume(rc);
-        }
-        ",
+        r"actor BoundarySink {
+    let _unused: i64;
+    receive fn consume(val: Rc<i64>) {}
+}
+
+fn main() {
+    let rc: Rc<i64> = Rc.new(1);
+    let a = spawn BoundarySink(_unused: 0);
+    let _ = a.consume(rc);
+}
+",
     );
     assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
     assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidSend);
@@ -1637,25 +1631,24 @@ fn rc_rejected_at_actor_send_boundary() {
 #[test]
 fn ordinary_actor_send_keeps_sender_binding_readable() {
     let output = typecheck_inline(
-        r"
-        type Boxed {
-            payload: Vec<i64>,
-        }
+        r"type Boxed {
+    payload: Vec<i64>;
+}
 
-        actor BoundarySink {
-            let _unused: i64,
-            receive fn take(value: Boxed) {}
-        }
+actor BoundarySink {
+    let _unused: i64;
+    receive fn take(value: Boxed) {}
+}
 
-        fn main() {
-            let sink = spawn BoundarySink(_unused: 0);
-            var value = Boxed { payload: [1, 2] };
-            let _ = sink.take(value);
-            let _ = sink.take(value);
-            value.payload.push(3);
-            println(value.payload[2]);
-        }
-        ",
+fn main() {
+    let sink = spawn BoundarySink(_unused: 0);
+    var value = Boxed { payload: [1, 2] };
+    let _ = sink.take(value);
+    let _ = sink.take(value);
+    value.payload.push(3);
+    println(value.payload[2]);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1667,19 +1660,21 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
 #[test]
 fn actor_spawn_still_moves_affine_handle_arguments() {
     let output = typecheck_inline(
-        r#"
-        import std.stream;
+        r#"import std.stream;
 
-        actor Writer {
-            let sink: stream.Sink<string>,
-        }
+actor Writer {
+    let sink: stream.Sink<string>;
+}
 
-        fn main() {
-            let (sink, _input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            let _writer = spawn Writer(sink: sink);
-            sink.send("after-move");
-        }
-        "#,
+fn main() {
+    let (sink, _input) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let _writer = spawn Writer(sink: sink);
+    sink.send("after-move");
+}
+"#,
     );
     assert!(
         output
@@ -1695,29 +1690,28 @@ fn actor_spawn_still_moves_affine_handle_arguments() {
 #[test]
 fn nested_rc_and_weak_send_rejections_do_not_cascade() {
     let output = typecheck_inline(
-        r"
-        type RcBox {
-            value: Rc<i64>,
-        }
+        r"type RcBox {
+    value: Rc<i64>;
+}
 
-        actor BoundarySink {
-            let _unused: i64,
-            receive fn take_box(value: RcBox) {}
-            receive fn take_tuple(value: (i64, Weak<i64>)) {}
-        }
+actor BoundarySink {
+    let _unused: i64;
+    receive fn take_box(value: RcBox) {}
+    receive fn take_tuple(value: (i64, Weak<i64>)) {}
+}
 
-        fn main() {
-            let sink = spawn BoundarySink(_unused: 0);
-            let rc = Rc.new(1);
-            let weak = rc.downgrade();
-            let boxed = RcBox { value: rc.clone() };
-            let pair = (2, weak);
-            let _ = sink.take_box(boxed);
-            let _ = sink.take_tuple(pair);
-            println(boxed.value.strong_count());
-            println(pair.0);
-        }
-        ",
+fn main() {
+    let sink = spawn BoundarySink(_unused: 0);
+    let rc = Rc.new(1);
+    let weak = rc.downgrade();
+    let boxed = RcBox { value: rc.clone() };
+    let pair = (2, weak);
+    let _ = sink.take_box(boxed);
+    let _ = sink.take_tuple(pair);
+    println(boxed.value.strong_count());
+    println(pair.0);
+}
+",
     );
     assert_eq!(output.errors.len(), 2, "{:#?}", output.errors);
     assert!(
@@ -1819,17 +1813,16 @@ fn actor_ref_send_method_requires_send_payload() {
     // that the call is indeed rejected with `UndefinedMethod` (actionable
     // diagnostic: "add `receive fn send(...)` or use a named handler").
     let output = typecheck_inline(
-        r"
-        actor Sink {
-            let _unused: i64,
-        }
+        r"actor Sink {
+    let _unused: i64;
+}
 
-        fn main() {
-            let sink = spawn Sink(_unused: 0);
-            let rc: Rc<i64> = Rc.new(1);
-            sink.send(rc);
-        }
-        ",
+fn main() {
+    let sink = spawn Sink(_unused: 0);
+    let rc: Rc<i64> = Rc.new(1);
+    sink.send(rc);
+}
+",
     );
     assert!(
         output
@@ -1850,19 +1843,18 @@ fn actor_ref_send_method_requires_send_payload() {
 #[test]
 fn actor_receive_fn_option_reply_accepted() {
     let output = typecheck_inline(
-        r"
-        actor Queue {
-            let items: Vec<i64>,
-            receive fn dequeue() -> Option<i64> {
-                .None
-            }
-        }
+        r"actor Queue {
+    let items: Vec<i64>;
+    receive fn dequeue() -> Option<i64> {
+        .None
+    }
+}
 
-        fn main() {
-            let q = spawn Queue(items: Vec.new());
-            let _item = q.dequeue();
-        }
-        ",
+fn main() {
+    let q = spawn Queue(items: Vec.new());
+    let _item = q.dequeue();
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2124,16 +2116,15 @@ fn rc_non_copy_construction_ok() {
 #[test]
 fn rc_copy_struct_construction_ok() {
     let output = typecheck_inline(
-        r"
-        type Point {
-            x: i64
-            ,y: i64
-        }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn main() {
-            let _rc = Rc.new(Point { x: 1, y: 2 });
-        }
-        ",
+fn main() {
+    let _rc = Rc.new(Point { x: 1, y: 2 });
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2164,15 +2155,14 @@ fn rc_owned_option_payload_supported() {
 #[test]
 fn rc_owned_struct_payload_supported() {
     assert_inline_typechecks_cleanly(
-        r#"
-        type Labelled {
-            name: string
-        }
+        r#"type Labelled {
+    name: string;
+}
 
-        fn main() {
-            let _rc = Rc.new(Labelled { name: "hello" });
-        }
-        "#,
+fn main() {
+    let _rc = Rc.new(Labelled { name: "hello" });
+}
+"#,
         "Rc::new with an owned struct should use aggregate clone/drop support",
     );
 }
@@ -2183,21 +2173,20 @@ fn rc_owned_struct_payload_supported() {
 #[test]
 fn rc_user_drop_payload_rejected() {
     let output = typecheck_inline(
-        r"
-        type Token {
-            id: i64
-        }
+        r"type Token {
+    id: i64;
+}
 
-        impl Drop for Token {
-            fn drop(token: Token) {
-                print(token.id);
-            }
-        }
+impl Drop for Token {
+    fn drop(token: Token) {
+        print(token.id);
+    }
+}
 
-        fn main() {
-            let _rc = Rc.new(Token { id: 1 });
-        }
-        ",
+fn main() {
+    let _rc = Rc.new(Token { id: 1 });
+}
+",
     );
     assert!(
         output.errors.iter().any(|e| {
@@ -2221,19 +2210,18 @@ fn rc_owned_payload_annotation_supported() {
 #[test]
 fn rc_generic_wrapper_payload_rejected() {
     let output = typecheck_inline(
-        r#"
-        type Labelled {
-            name: string
-        }
+        r#"type Labelled {
+    name: string;
+}
 
-        fn wrap<T>(val: T) -> Rc<T> {
-            Rc.new(val)
-        }
+fn wrap<T>(val: T) -> Rc<T> {
+    Rc.new(val)
+}
 
-        fn main() {
-            let _ = wrap(Labelled { name: "hello" });
-        }
-        "#,
+fn main() {
+    let _ = wrap(Labelled { name: "hello" });
+}
+"#,
     );
     assert!(
         output.errors.iter().any(|e| {
@@ -2251,17 +2239,18 @@ fn rc_generic_lambda_payload_rejected() {
     // The Rc<non-Copy> restriction is still enforced: use a named generic
     // function, which is the correct post-v0.5 spelling.
     let output = typecheck_inline(
-        r#"
-        type Labelled {
-            name: string
-        }
+        r#"type Labelled {
+    name: string;
+}
 
-        fn wrap<T>(val: T) -> Rc<T> { Rc.new(val) }
+fn wrap<T>(val: T) -> Rc<T> {
+    Rc.new(val)
+}
 
-        fn main() {
-            let _ = wrap(Labelled { name: "hello" });
-        }
-        "#,
+fn main() {
+    let _ = wrap(Labelled { name: "hello" });
+}
+"#,
     );
     assert!(
         output.errors.iter().any(|e| {
@@ -2299,21 +2288,20 @@ fn rc_get_non_copy_rejected() {
 #[test]
 fn http_respond_three_arg_typechecks() {
     let output = typecheck_inline(
-        r#"
-        import std.net.http;
+        r#"import std.net.http;
 
-        fn main() {
-            match http.listen(":8080") {
-                .Ok(server) => {
-                    let req = server.accept();
-                    req.respond(200, "text/plain", "Hello, Hew!").expect("respond succeeds");
-                    req.close();
-                    server.close();
-                },
-                .Err(_err) => {},
-            }
+fn main() {
+    match http.listen(":8080") {
+        .Ok(server) => {
+            let req = server.accept();
+            req.respond(200, "text/plain", "Hello, Hew!").expect("respond succeeds");
+            req.close();
+            server.close();
         }
-        "#,
+        .Err(_err) => {}
+    }
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -2328,21 +2316,20 @@ fn http_respond_three_arg_typechecks() {
 #[test]
 fn http_respond_four_arg_rejected() {
     let output = typecheck_inline(
-        r#"
-        import std.net.http;
+        r#"import std.net.http;
 
-        fn main() {
-            match http.listen(":8080") {
-                .Ok(server) => {
-                    let req = server.accept();
-                    req.respond(200, "text/plain", 11, "Hello, Hew!");
-                    req.close();
-                    server.close();
-                },
-                .Err(_err) => {},
-            }
+fn main() {
+    match http.listen(":8080") {
+        .Ok(server) => {
+            let req = server.accept();
+            req.respond(200, "text/plain", 11, "Hello, Hew!");
+            req.close();
+            server.close();
         }
-        "#,
+        .Err(_err) => {}
+    }
+}
+"#,
     );
     assert!(
         !output.errors.is_empty(),
@@ -3397,15 +3384,16 @@ fn rc_param_tuple_wrap_errors_borrowed_rc() {
 #[test]
 fn rc_param_struct_init_errors_borrowed_rc() {
     let output = typecheck_inline(
-        r"
-        type Holder {
-            val: Rc<i64>,
-        }
-        fn wrap(r: Rc<i64>) -> Holder {
-            Holder { val: r }
-        }
-        fn main() {}
-        ",
+        r"type Holder {
+    val: Rc<i64>;
+}
+
+fn wrap(r: Rc<i64>) -> Holder {
+    Holder { val: r }
+}
+
+fn main() {}
+",
     );
     let rc_errors: Vec<_> = output
         .errors
@@ -3774,17 +3762,18 @@ fn rc_readonly_method_does_not_taint() {
 #[test]
 fn rc_field_assignment_escape_errors() {
     let output = typecheck_inline(
-        r"
-        type Wrapper {
-            value: Rc<i64>,
-        }
-        fn bad(r: Rc<i64>) -> Wrapper {
-            var s = Wrapper { value: Rc.new(0) };
-            s.value = r;
-            s
-        }
-        fn main() {}
-        ",
+        r"type Wrapper {
+    value: Rc<i64>;
+}
+
+fn bad(r: Rc<i64>) -> Wrapper {
+    var s = Wrapper { value: Rc.new(0) };
+    s.value = r;
+    s
+}
+
+fn main() {}
+",
     );
     let rc_errors: Vec<_> = output
         .errors
@@ -3837,11 +3826,19 @@ fn fixed_arrays_compose_with_collection_element_types() {
 #[test]
 fn fixed_array_repeat_refuses_implicit_affine_duplication() {
     assert_invalid_operation_contains(
-        r"
-        #[resource] type Token { id: i64 }
-        impl Token { fn close(consume self) {} }
-        fn main() { let values: [Token; 2] = [Token { id: 1 }; 2]; }
-    ",
+        r"#[resource]
+type Token {
+    id: i64;
+}
+
+impl Token {
+    fn close(consume self) {}
+}
+
+fn main() {
+    let values: [Token; 2] = [Token { id: 1 }; 2];
+}
+",
         "requires a Clone element",
         "fixed array repeat cannot duplicate a resource",
     );
@@ -3907,12 +3904,15 @@ fn rc_vec_append_supported() {
 #[test]
 fn rc_vec_pop_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder { v: Vec<Rc<i64>> }
-        fn extract(h: Holder) -> Rc<i64> {
-            var local = h.v;
-            local.pop()
-        }",
+        r"type Holder {
+    v: Vec<Rc<i64>>;
+}
+
+fn extract(h: Holder) -> Rc<i64> {
+    var local = h.v;
+    local.pop()
+}
+",
         "Vec.pop() on Vec<Rc<i64>>",
     );
 }
@@ -3920,11 +3920,14 @@ fn rc_vec_pop_supported() {
 #[test]
 fn rc_vec_get_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder { v: Vec<Rc<i64>> }
-        fn extract(h: Holder) -> Option<Rc<i64>> {
-            h.v.get(0)
-        }",
+        r"type Holder {
+    v: Vec<Rc<i64>>;
+}
+
+fn extract(h: Holder) -> Option<Rc<i64>> {
+    h.v.get(0)
+}
+",
         "Vec.get(_) on Vec<Rc<i64>>",
     );
 }
@@ -3932,12 +3935,15 @@ fn rc_vec_get_supported() {
 #[test]
 fn rc_vec_remove_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder { v: Vec<Rc<i64>> }
-        fn extract(h: Holder) -> Rc<i64> {
-            var items = h.v;
-            items.remove(0)
-        }",
+        r"type Holder {
+    v: Vec<Rc<i64>>;
+}
+
+fn extract(h: Holder) -> Rc<i64> {
+    var items = h.v;
+    items.remove(0)
+}
+",
         "Vec.remove(_) on Vec<Rc<i64>>",
     );
 }
@@ -3945,11 +3951,14 @@ fn rc_vec_remove_supported() {
 #[test]
 fn rc_vec_map_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder { v: Vec<Rc<i64>> }
-        fn extract(h: Holder) -> Vec<Rc<i64>> {
-            h.v.map(|x: Rc<i64>| x)
-        }",
+        r"type Holder {
+    v: Vec<Rc<i64>>;
+}
+
+fn extract(h: Holder) -> Vec<Rc<i64>> {
+    h.v.map(|x: Rc<i64>| x)
+}
+",
         "Vec.map(_) on Vec<Rc<i64>>",
     );
 }
@@ -3957,11 +3966,14 @@ fn rc_vec_map_supported() {
 #[test]
 fn rc_vec_filter_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder { v: Vec<Rc<i64>> }
-        fn extract(h: Holder) -> Vec<Rc<i64>> {
-            h.v.filter(|x: Rc<i64>| x.get() > 0)
-        }",
+        r"type Holder {
+    v: Vec<Rc<i64>>;
+}
+
+fn extract(h: Holder) -> Vec<Rc<i64>> {
+    h.v.filter(|x: Rc<i64>| x.get() > 0)
+}
+",
         "Vec.filter(_) on Vec<Rc<i64>>",
     );
 }
@@ -3969,11 +3981,14 @@ fn rc_vec_filter_supported() {
 #[test]
 fn rc_vec_fold_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder { v: Vec<Rc<i64>> }
-        fn extract(h: Holder) -> Rc<i64> {
-            h.v.fold(Rc.new(0), |acc: Rc<i64>, x: Rc<i64>| x)
-        }",
+        r"type Holder {
+    v: Vec<Rc<i64>>;
+}
+
+fn extract(h: Holder) -> Rc<i64> {
+    h.v.fold(Rc.new(0), |acc: Rc<i64>, x: Rc<i64>| x)
+}
+",
         "Vec.fold(_, _) on Vec<Rc<i64>>",
     );
 }
@@ -4014,13 +4029,14 @@ fn rc_hashmap_insert_key_rejected_without_hash_eq() {
 #[test]
 fn rc_hashmap_get_value_supported() {
     assert_inline_typechecks_cleanly(
-        r#"
-        type Holder {
-            items: HashMap<string, Rc<i64>>
-        }
-        fn leak(h: Holder) -> Option<Rc<i64>> {
-            h.items.get("key")
-        }"#,
+        r#"type Holder {
+    items: HashMap<string, Rc<i64>>;
+}
+
+fn leak(h: Holder) -> Option<Rc<i64>> {
+    h.items.get("key")
+}
+"#,
         "HashMap.get() on HashMap<string, Rc<i64>>",
     );
 }
@@ -4028,14 +4044,15 @@ fn rc_hashmap_get_value_supported() {
 #[test]
 fn rc_hashmap_remove_value_supported() {
     assert_inline_typechecks_cleanly(
-        r#"
-        type Holder {
-            items: HashMap<string, Rc<i64>>
-        }
-        fn remove_key(h: Holder) -> Option<Rc<i64>> {
-            var items = h.items;
-            items.remove("key")
-        }"#,
+        r#"type Holder {
+    items: HashMap<string, Rc<i64>>;
+}
+
+fn remove_key(h: Holder) -> Option<Rc<i64>> {
+    var items = h.items;
+    items.remove("key")
+}
+"#,
         "HashMap.remove() on HashMap<string, Rc<i64>>",
     );
 }
@@ -4043,13 +4060,14 @@ fn rc_hashmap_remove_value_supported() {
 #[test]
 fn rc_hashmap_keys_supported_when_value_type_is_rc() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder {
-            items: HashMap<string, Rc<i64>>
-        }
-        fn leak(h: Holder) -> Vec<string> {
-            h.items.keys()
-        }",
+        r"type Holder {
+    items: HashMap<string, Rc<i64>>;
+}
+
+fn leak(h: Holder) -> Vec<string> {
+    h.items.keys()
+}
+",
         "HashMap.keys() on HashMap<string, Rc<i64>>",
     );
 }
@@ -4057,13 +4075,14 @@ fn rc_hashmap_keys_supported_when_value_type_is_rc() {
 #[test]
 fn rc_hashmap_values_share_collection_value_admission() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder {
-            items: HashMap<string, Rc<i64>>
-        }
-        fn leak(h: Holder) -> Vec<Rc<i64>> {
-            h.items.values()
-        }",
+        r"type Holder {
+    items: HashMap<string, Rc<i64>>;
+}
+
+fn leak(h: Holder) -> Vec<Rc<i64>> {
+    h.items.values()
+}
+",
         "HashMap.values() preserves independently owned Rc values",
     );
 }
@@ -4396,15 +4415,16 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
 #[test]
 fn rc_in_named_struct_field_vec_push_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Holder {
-            val: Rc<i64>
-        }
-        fn main() {
-            var v = Vec.new();
-            let h = Holder { val: Rc.new(1) };
-            v.push(h);
-        }",
+        r"type Holder {
+    val: Rc<i64>;
+}
+
+fn main() {
+    var v = Vec.new();
+    let h = Holder { val: Rc.new(1) };
+    v.push(h);
+}
+",
         "Vec.push(Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
     );
 }
@@ -4412,15 +4432,16 @@ fn rc_in_named_struct_field_vec_push_supported() {
 #[test]
 fn rc_in_named_struct_field_hashmap_value_supported() {
     assert_inline_typechecks_cleanly(
-        r#"
-        type Holder {
-            val: Rc<i64>
-        }
-        fn main() {
-            var m = HashMap.new();
-            let h = Holder { val: Rc.new(1) };
-            m.insert("k", h);
-        }"#,
+        r#"type Holder {
+    val: Rc<i64>;
+}
+
+fn main() {
+    var m = HashMap.new();
+    let h = Holder { val: Rc.new(1) };
+    m.insert("k", h);
+}
+"#,
         "HashMap.insert(_, Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
     );
 }
@@ -4428,18 +4449,20 @@ fn rc_in_named_struct_field_hashmap_value_supported() {
 #[test]
 fn rc_in_doubly_nested_named_struct_vec_push_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        type Inner {
-            x: Rc<i64>
-        }
-        type Outer {
-            inner: Inner
-        }
-        fn main() {
-            var v = Vec.new();
-            let o = Outer { inner: Inner { x: Rc.new(1) } };
-            v.push(o);
-        }",
+        r"type Inner {
+    x: Rc<i64>;
+}
+
+type Outer {
+    inner: Inner;
+}
+
+fn main() {
+    var v = Vec.new();
+    let o = Outer { inner: Inner { x: Rc.new(1) } };
+    v.push(o);
+}
+",
         "Vec.push(Outer wrapping Inner wrapping Rc<i64>) should carry nested Rc drop facts",
     );
 }
@@ -4447,15 +4470,16 @@ fn rc_in_doubly_nested_named_struct_vec_push_supported() {
 #[test]
 fn rc_in_named_enum_variant_vec_push_supported() {
     assert_inline_typechecks_cleanly(
-        r"
-        enum MaybeHolder {
-            Some(Rc<i64>),
-            None,
-        }
-        fn main() {
-            var v = Vec.new();
-            v.push(MaybeHolder.Some(Rc.new(1)));
-        }",
+        r"enum MaybeHolder {
+    Some(Rc<i64>);
+    None;
+}
+
+fn main() {
+    var v = Vec.new();
+    v.push(MaybeHolder.Some(Rc.new(1)));
+}
+",
         "Vec.push(MaybeHolder::Some(Rc<i64>)) should carry enum Rc drop facts",
     );
 }
@@ -4463,16 +4487,17 @@ fn rc_in_named_enum_variant_vec_push_supported() {
 #[test]
 fn plain_named_struct_no_rc_vec_push_ok() {
     assert_no_unsafe_collection_element(
-        r"
-        type Point {
-            x: i64,
-            y: i64
-        }
-        fn main() {
-            var v = Vec.new();
-            let p = Point { x: 1, y: 2 };
-            v.push(p);
-        }",
+        r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    var v = Vec.new();
+    let p = Point { x: 1, y: 2 };
+    v.push(p);
+}
+",
         "Vec<Point> with no Rc should be fine",
     );
 }
@@ -5149,12 +5174,11 @@ fn type_def_with_error_field_is_pruned_from_output() {
     // Use `Task<i64>` instead: it is compiler-internal and resolves to Ty::Error
     // via the TaskNotNameable path, which is exactly what triggers pruning.
     let output = typecheck_inline(
-        r"
-        type Broken {
-            value: Task<i64>,
-            ok: i64,
-        }
-        ",
+        r"type Broken {
+    value: Task<i64>;
+    ok: i64;
+}
+",
     );
     assert!(
         output
@@ -5178,12 +5202,11 @@ fn enum_with_error_variant_payload_is_pruned_from_output() {
     // returns Ty::Error directly via the TaskNotNameable path, which is exactly
     // what triggers variant pruning.
     let output = typecheck_inline(
-        r"
-        enum Broken {
-            Bad(Task<i64>),
-            Good(i64),
-        }
-        ",
+        r"enum Broken {
+    Bad(Task<i64>);
+    Good(i64);
+}
+",
     );
     assert!(
         output
@@ -5207,21 +5230,20 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
     // returns Ty::Error directly via the TaskNotNameable path, which is what
     // triggers method pruning.
     let output = typecheck_inline(
-        r"
-        type Widget {
-            value: i64,
-        }
+        r"type Widget {
+    value: i64;
+}
 
-        impl Widget {
-            fn good(w: Widget) -> i64 {
-                w.value
-            }
+impl Widget {
+    fn good(w: Widget) -> i64 {
+        w.value
+    }
 
-            fn broken(w: Widget, bad: Task<i64>) -> i64 {
-                w.value
-            }
-        }
-        ",
+    fn broken(w: Widget, bad: Task<i64>) -> i64 {
+        w.value
+    }
+}
+",
     );
     assert!(
         output
@@ -5253,21 +5275,20 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
     // returns Ty::Error directly via the TaskNotNameable path, which is what
     // triggers method pruning.
     let output = typecheck_inline(
-        r"
-        type Widget {
-            value: i64,
-        }
+        r"type Widget {
+    value: i64;
+}
 
-        impl Widget {
-            fn good(w: Widget) -> i64 {
-                w.value
-            }
+impl Widget {
+    fn good(w: Widget) -> i64 {
+        w.value
+    }
 
-            fn broken(w: Widget) -> Task<i64> {
-                w.value
-            }
-        }
-        ",
+    fn broken(w: Widget) -> Task<i64> {
+        w.value
+    }
+}
+",
     );
     assert!(
         output
@@ -5543,24 +5564,7 @@ fn deferred_pipe_unresolved_inner_fails_closed() {
 #[test]
 fn await_stream_recv_bytes_typechecks() {
     let output = typecheck_inline(
-        "import std.stream;\n\
-         #[opaque]\n\
-         type Pair {}\n\
-         extern \"C\" {\n\
-         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
-         \x20   fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n\
-         \x20   fn hew_stream_pair_free(pair: Pair);\n\
-         }\n\
-         actor Runner {\n\
-         \x20   receive fn go(unused: i64) {\n\
-         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
-         \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
-         \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       let item = input.recv();\n\
-         \x20       match item { .Some(v) => {}, .None => {}, }\n\
-         \x20   }\n\
-         }\n\
-         fn main() { let r = spawn Runner(); let _ = r.go(0); }\n",
+        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_bytes(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner();\n    let _ = r.go(0);\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -5575,24 +5579,7 @@ fn await_stream_recv_bytes_typechecks() {
 #[test]
 fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
-        "import std.stream;\n\
-         #[opaque]\n\
-         type Pair {}\n\
-         extern \"C\" {\n\
-         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
-         \x20   fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n\
-         \x20   fn hew_stream_pair_free(pair: Pair);\n\
-         }\n\
-         actor Runner {\n\
-         \x20   receive fn go(unused: i64) {\n\
-         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
-         \x20       let input = unsafe { hew_stream_pair_stream_i64(pair) };\n\
-         \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       let item = input.recv();\n\
-         \x20       match item { .Some(v) => {}, .None => {}, }\n\
-         \x20   }\n\
-         }\n\
-         fn main() { let r = spawn Runner(); let _ = r.go(0); }\n",
+        "import std.stream;\n\n#[opaque]\ntype Pair {\n}\n\nextern \"C\" {\n    fn hew_stream_channel(capacity: i64) -> Pair;\n    fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n    fn hew_stream_pair_free(pair: Pair);\n}\n\nactor Runner {\n    receive fn go(unused: i64) {\n        let pair = unsafe {\n            hew_stream_channel(4)\n        };\n        let input = unsafe {\n            hew_stream_pair_stream_i64(pair)\n        };\n        unsafe {\n            hew_stream_pair_free(pair);\n        };\n        let item = input.recv();\n        match item {\n            .Some(v) => {}\n            .None => {}\n        }\n    }\n}\n\nfn main() {\n    let r = spawn Runner();\n    let _ = r.go(0);\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -5718,27 +5705,29 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 #[test]
 fn monomorphic_machine_pipe_element_admitted() {
     let output = typecheck_inline(
-        r"
-        import std.stream;
+        r"import std.stream;
 
-        machine Light {
-            events {
-                Flip,
-            }
-            state Off,
-            state On,
-            on Flip: Off => .On,
-            on Flip: On => .Off,
-        }
+machine Light {
+    events {
+        Flip;
+    }
+    state Off;
+    state On;
+    on Flip: Off => .On;
+    on Flip: On => .Off;
+}
 
-        fn main() {
-            let (tx, rx): (stream.Sink<Light>, stream.Stream<Light>) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            let _ = tx.send(Light.Off);
-            tx.close();
-            let _ = rx.recv();
-            rx.close();
-        }
-        ",
+fn main() {
+    let (tx, rx): (stream.Sink<Light>, stream.Stream<Light>) = match stream.pipe(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let _ = tx.send(Light.Off);
+    tx.close();
+    let _ = rx.recv();
+    rx.close();
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -5785,27 +5774,31 @@ fn generic_machine_instantiation_pipe_element_refused() {
 #[test]
 fn container_bearing_machine_pipe_element_refused() {
     let output = typecheck_inline(
-        r"
-        import std.stream;
+        r"import std.stream;
 
-        machine Buffered {
-            events {
-                Load { items: Vec<i64>, }
-            }
-            state Empty,
-            state Loaded { items: Vec<i64>, },
-            on Load: Empty => Loaded { items: event.items }
-            on Load: _ => _ { state }
-        }
+machine Buffered {
+    events {
+        Load { items: Vec<i64>; }
+    }
+    state Empty;
+    state Loaded { items: Vec<i64>; }
+    on Load: Empty => Loaded { items: event.items }
+    on Load: _ => _ {
+        state
+    }
+}
 
-        fn main() {
-            let (tx, rx): (stream.Sink<Buffered>, stream.Stream<Buffered>) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            let _ = tx.send(Buffered.Empty);
-            tx.close();
-            let _ = rx.recv();
-            rx.close();
-        }
-        ",
+fn main() {
+    let (tx, rx): (stream.Sink<Buffered>, stream.Stream<Buffered>) = match stream.pipe(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let _ = tx.send(Buffered.Empty);
+    tx.close();
+    let _ = rx.recv();
+    rx.close();
+}
+",
     );
     assert!(
         output
@@ -5874,7 +5867,7 @@ fn remote_ask_source(ping: &str) -> String {
 /// plain record is refused at the remote call, naming the type and the fix.
 #[test]
 fn remote_ask_requires_explicit_wire_schema() {
-    let plain = typecheck_inline(&remote_ask_source("type Ping { seq: i64 }"));
+    let plain = typecheck_inline(&remote_ask_source("type Ping {\n    seq: i64;\n}\n"));
     let refusal = plain
         .errors
         .iter()
@@ -5891,7 +5884,9 @@ fn remote_ask_requires_explicit_wire_schema() {
         "refusal must suggest a tagged #[wire] schema: {refusal:#?}"
     );
 
-    let wire = typecheck_inline(&remote_ask_source("#[wire] type Ping { seq: i64 @1 }"));
+    let wire = typecheck_inline(&remote_ask_source(
+        "#[wire]\ntype Ping {\n    seq: i64 @1;\n}\n",
+    ));
     assert!(
         wire.errors.is_empty(),
         "a tagged #[wire] message crosses the node: {:#?}",

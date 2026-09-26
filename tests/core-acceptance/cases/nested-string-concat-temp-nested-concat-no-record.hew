@@ -2,9 +2,12 @@ fn emit_full(print_it: bool) -> i64 {
     let first = "Ada";
     let last = "Lovelace";
     let full = first + " " + last;
-    if print_it { println(full); }
+    if print_it {
+        println(full);
+    }
     full.len()
 }
+
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
@@ -12,6 +15,8 @@ fn main() -> i64 {
         total = total + emit_full(i == 0);
         i = i + 1;
     }
-    if total != 2400 { return 92; }
+    if total != 2400 {
+        return 92;
+    }
     0
 }

@@ -25,9 +25,9 @@ fn main() {
     match a {
         .Ok(v) => {
             let _ = out.send(v);
-        },
+        }
         .Err(_) => {
             let _ = out.send(-1);
-        },
+        }
     }
 }

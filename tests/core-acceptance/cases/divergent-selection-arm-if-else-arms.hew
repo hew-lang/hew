@@ -8,13 +8,17 @@ fn make() -> Vec<i64> {
 fn probe(c: bool) -> i64 {
     let a = make();
     let b = make();
-    let out = if c { a } else { b };
+    let out = if c {
+        a
+    } else {
+        b
+    };
     out.len()
 }
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for seed in 0..50 {
+    for seed in 0 .. 50 {
         total = total + probe(seed % 2 == 0);
         println("frame");
     }

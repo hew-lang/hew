@@ -5,10 +5,10 @@
 // declaring-trait walk must reach `Mid` through the owner-qualified chain and
 // reject the mismatch — proving the signature check covers EVERY level, not just
 // the direct super.
-import hew.supertraits.{ Deep };
+import hew.supertraits.{Deep};
 
 type DW {
-    id: i64,
+    id: i64;
 }
 
 impl Deep for DW {

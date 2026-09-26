@@ -1452,12 +1452,17 @@ fn test_timeout() {
         assert_eq!(names, vec!["alpha", "beta", "gamma"]);
     }
 
-    const LEDGER: &str = r"
-actor Account {
-    var balance: i64 = 0,
-    receive fn balance() -> i64 { balance }
-    receive fn set(amount: i64) { balance = amount; }
-    receive fn deposit(amount: i64) { balance = balance + amount; }
+    const LEDGER: &str = r"actor Account {
+    var balance: i64 = 0;
+    receive fn balance() -> i64 {
+        balance
+    }
+    receive fn set(amount: i64) {
+        balance = amount;
+    }
+    receive fn deposit(amount: i64) {
+        balance = balance + amount;
+    }
 }
 
 fn read_then_write(account: Account, amount: i64) -> () fails ActorError {

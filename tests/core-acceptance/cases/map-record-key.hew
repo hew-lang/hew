@@ -1,6 +1,6 @@
 type Key {
-    label: string,
-    code: i64,
+    label: string;
+    code: i64;
 }
 
 fn main() -> i64 {

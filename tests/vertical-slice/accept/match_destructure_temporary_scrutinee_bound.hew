@@ -9,15 +9,12 @@
 //! RSS.
 
 type Pair {
-    a: string,
-    b: string,
+    a: string;
+    b: string;
 }
 
 fn make() -> Pair {
-    Pair {
-        a: ("a-" + "payload"),
-        b: ("b-" + "payload"),
-    }
+    Pair { a: ("a-" + "payload"), b: ("b-" + "payload") }
 }
 
 fn main() -> i64 {

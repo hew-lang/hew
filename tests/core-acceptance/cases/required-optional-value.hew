@@ -1,6 +1,12 @@
 fn choose(value: Option<string>, uppercase: bool) -> string {
-    let text = value else { return "missing".to_upper(); };
-    let selected = if uppercase { text.to_upper() } else { text };
+    let text = value else {
+        return "missing".to_upper();
+    };
+    let selected = if uppercase {
+        text.to_upper()
+    } else {
+        text
+    };
     selected
 }
 

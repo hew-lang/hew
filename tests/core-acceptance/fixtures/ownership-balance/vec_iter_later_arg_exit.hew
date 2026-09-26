@@ -4,10 +4,11 @@ fn call_or_return(k: i64, enter: bool) -> i64 {
     var xs: Vec<i64> = Vec.new();
     xs.push(k);
     xs.push(k + 1);
-    xs.into_iter().fold(
-        if enter { 0 } else { return -1 },
-        |acc: i64, x: i64| acc + x,
-    )
+    xs.into_iter().fold(if enter {
+        0
+    } else {
+        return -1;
+    }, |acc: i64, x: i64| acc + x)
 }
 
 fn main() {

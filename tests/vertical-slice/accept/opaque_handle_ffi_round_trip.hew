@@ -8,7 +8,8 @@
 // Expected: clean compile + exit 3 (three elements pushed).
 
 #[opaque]
-type Dq {}
+type Dq {
+}
 
 extern "C" {
     fn hew_deque_new() -> Dq;
@@ -18,11 +19,23 @@ extern "C" {
 }
 
 fn main() -> i64 {
-    let dq = unsafe { hew_deque_new() };
-    unsafe { hew_deque_push_back(dq, 10) };
-    unsafe { hew_deque_push_back(dq, 20) };
-    unsafe { hew_deque_push_back(dq, 30) };
-    let n = unsafe { hew_deque_len(dq) };
-    unsafe { hew_deque_free(dq) };
+    let dq = unsafe {
+        hew_deque_new()
+    };
+    unsafe {
+        hew_deque_push_back(dq, 10)
+    };
+    unsafe {
+        hew_deque_push_back(dq, 20)
+    };
+    unsafe {
+        hew_deque_push_back(dq, 30)
+    };
+    let n = unsafe {
+        hew_deque_len(dq)
+    };
+    unsafe {
+        hew_deque_free(dq)
+    };
     n
 }

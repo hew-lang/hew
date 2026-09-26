@@ -323,11 +323,15 @@ fn ordinary_decode_lookalike_remains_a_user_call() {
 #[test]
 fn malformed_canonical_utf8_decode_signature_is_not_admitted() {
     let output = check_source_in_canonical_std_module(
-        r#"
-        pub type Utf8Error { valid_up_to: i64, error_len: Option<i64> }
-        #[intrinsic("utf8.decode")]
-        pub fn decode(data: string) -> string;
-        "#,
+        r#"pub type Utf8Error {
+    valid_up_to: i64;
+    error_len: Option<i64>;
+}
+
+#[intrinsic("utf8.decode")]
+pub fn decode(data: string) -> string {
+}
+"#,
         &[
             "std".to_string(),
             "encoding".to_string(),

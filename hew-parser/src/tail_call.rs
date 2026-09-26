@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn match_statement_arm_blocks_mark_nested_return_calls_as_tail() {
         let function = first_function(
-            "fn example(cond: bool) -> int { match cond { true => { return expensive_call(); }, false => { return other_call(); } } }",
+            "fn example(cond: bool) -> int {\n    match cond {\n        true => {\n            return expensive_call();\n        }\n        false => {\n            return other_call();\n        }\n    }\n}\n",
         );
 
         // A bare `match` as the last item in a block is a trailing expression.
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn return_match_block_arms_mark_trailing_calls_as_tail() {
         let function = first_function(
-            "fn example(cond: bool) -> int { return match cond { true => { expensive_call() }, false => { other_call() } }; }",
+            "fn example(cond: bool) -> int {\n    return match cond {\n        true => {\n            expensive_call()\n        }\n        false => {\n            other_call()\n        }\n    };\n}\n",
         );
 
         let Stmt::Return(Some((Expr::Match { arms, .. }, _))) = &function.body.stmts[0].0 else {
@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn non_tail_match_block_arms_leave_trailing_calls_unmarked() {
         let function = first_function(
-            "fn example(cond: bool) -> int { let value = match cond { true => { expensive_call() }, false => { other_call() } }; value }",
+            "fn example(cond: bool) -> int {\n    let value = match cond {\n        true => {\n            expensive_call()\n        }\n        false => {\n            other_call()\n        }\n    };\n    value\n}\n",
         );
 
         let Stmt::Let {

@@ -1,12 +1,12 @@
 enum Label {
-    Text(string),
-    Empty,
+    Text(string);
+    Empty;
 }
 
 type Key {
-    group: i64,
-    labels: Vec<Label>,
-    suffix: Option<string>,
+    group: i64;
+    labels: Vec<Label>;
+    suffix: Option<string>;
 }
 
 impl Hash for Key {

@@ -3,11 +3,11 @@
 //! payload fields survive lowering.
 
 type Foo<T> {
-    value: T,
+    value: T;
 }
 
 type Foo_i64 {
-    value: i64,
+    value: i64;
 }
 
 #[test]

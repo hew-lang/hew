@@ -26,8 +26,7 @@ fn main() -> i64 {
     let decimal: u64 = 18446744073709551615;
     let hex: u64 = 0xFFFF_FFFF_FFFF_FFFF;
     let octal: u64 = 0o1777777777777777777777;
-    let binary: u64 =
-        0b1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111;
+    let binary: u64 = 0b1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111;
     println(f"{decimal}");
     println(decimal == hex);
     println(decimal == octal);
@@ -66,6 +65,5 @@ fn main() -> i64 {
     let one_less: u64 = 18446744073709551614;
     println(decimal - one_less);
     println(decimal > one_less);
-
     0
 }

@@ -1,8 +1,14 @@
-type Inner { name: string }
-type Outer { inner: Inner }
-actor Fan { 
-    var seen: i64,
-    var held: Outer,
+type Inner {
+    name: string;
+}
+
+type Outer {
+    inner: Inner;
+}
+
+actor Fan {
+    var seen: i64;
+    var held: Outer;
     receive fn route(label: string, count: i64) {
         var j: i64 = 0;
         while j < count {
@@ -17,8 +23,11 @@ actor Fan {
         }
         seen = seen + 1;
     }
-    receive fn total() -> i64 { seen + held.inner.name.len() }
+    receive fn total() -> i64 {
+        seen + held.inner.name.len()
+    }
 }
+
 fn main() -> i64 {
     let fan = spawn Fan(seen: 0, held: Outer { inner: Inner { name: "seed" } });
     var i: i64 = 0;
@@ -26,5 +35,12 @@ fn main() -> i64 {
         let _ = fan.route("nested-branch".to_upper(), i % 5);
         i = i + 1;
     }
-    match fan.total() { .Ok(n) => if n > 50 { 0 } else { 93 }, .Err(_) => 94 }
+    match fan.total() {
+        .Ok(n) => if n > 50 {
+            0
+        } else {
+            93
+        }
+        .Err(_) => 94,
+    }
 }

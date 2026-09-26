@@ -139,10 +139,21 @@ impl Parser<'_> {
                     self.refuse_statement_block_continuation();
                 }
                 stmts.push(stmt);
+                let mut first_semicolon = true;
                 while self.peek() == Some(&Token::Semicolon) {
                     let span = self.peek_span();
                     self.advance();
-                    self.warning_at("unnecessary semicolon".to_string(), span);
+                    if first_semicolon {
+                        self.warning_at("unnecessary semicolon".to_string(), span);
+                        first_semicolon = false;
+                    } else {
+                        self.error_at_with_kind_and_hint(
+                            "unnecessary second semicolon".to_string(),
+                            span,
+                            "remove this separator",
+                            ParseDiagnosticKind::SeparatorAfterBody,
+                        );
+                    }
                 }
                 continue;
             }
@@ -205,7 +216,12 @@ impl Parser<'_> {
                     while self.peek() == Some(&Token::Semicolon) {
                         let semi_span = self.peek_span();
                         self.advance();
-                        self.warning_at("unnecessary semicolon".to_string(), semi_span);
+                        self.error_at_with_kind_and_hint(
+                            "unnecessary second semicolon".to_string(),
+                            semi_span,
+                            "remove this separator",
+                            ParseDiagnosticKind::SeparatorAfterBody,
+                        );
                     }
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));

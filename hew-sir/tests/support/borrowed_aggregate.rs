@@ -6,13 +6,19 @@ use hew_types::{module_registry::ModuleRegistry, Checker};
 /// places borrow their leaf directly, so they cannot witness parent-loan rules.
 pub(super) fn nested_borrow_module() -> SemModule {
     let module = lower_source(
-        r#"
-        type Inner { items: Vec<string>, }
-        type Outer { inner: Inner, sibling: string, }
-        fn main() -> i64 {
-            (Outer { inner: Inner { items: ["first", "second"] }, sibling: "keep" }).inner.items[0].len()
-        }
-        "#,
+        r#"type Inner {
+    items: Vec<string>;
+}
+
+type Outer {
+    inner: Inner;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    (Outer { inner: Inner { items: ["first", "second"] }, sibling: "keep" }).inner.items[0].len()
+}
+"#,
     );
     assert_eq!(
         module.functions[0]

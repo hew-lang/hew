@@ -1,6 +1,6 @@
 enum Box {
-    Full(string),
-    Empty,
+    Full(string);
+    Empty;
 }
 
 fn self_alias(i: i64) -> i64 {
@@ -14,9 +14,13 @@ fn self_alias(i: i64) -> i64 {
 
 fn main() -> i64 {
     var total = 0;
-    for i in 0..50 {
+    for i in 0 .. 50 {
         total = total + self_alias(i);
         println("frame");
     }
-    if total > 0 { 0 } else { 91 }
+    if total > 0 {
+        0
+    } else {
+        91
+    }
 }

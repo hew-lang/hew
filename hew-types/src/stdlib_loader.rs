@@ -2150,15 +2150,7 @@ mod tests {
         // binding than the receiver. Only a genuine `self.<field>` forward may
         // register; `good` (forwarding the receiver's own field) is the control.
         let result = parse(
-            "#[resource]\n\
-             pub type Wrap { handle: i64, }\n\
-             impl Wrap {\n\
-             \x20   fn good(w: Wrap) -> i64 { unsafe { c_use(w.handle) } }\n\
-             \x20   fn bad(w: Wrap, other: Wrap) -> i64 { unsafe { c_use(other.handle) } }\n\
-             }\n\
-             extern \"C\" {\n\
-             \x20   fn c_use(h: i64) -> i64;\n\
-             }\n",
+            "#[resource]\npub type Wrap {\n    handle: i64;\n}\n\nimpl Wrap {\n    fn good(w: Wrap) -> i64 {\n        unsafe {\n            c_use(w.handle)\n        }\n    }\n    fn bad(w: Wrap, other: Wrap) -> i64 {\n        unsafe {\n            c_use(other.handle)\n        }\n    }\n}\n\nextern \"C\" {\n    fn c_use(h: i64) -> i64;\n}\n",
         );
         assert!(
             result.errors.is_empty(),
@@ -2182,20 +2174,7 @@ mod tests {
     #[test]
     fn opaque_handle_method_registers_resource_wrapper_return() {
         let result = parse(
-            "#[opaque]\n\
-             pub type Server {}\n\
-             #[opaque]\n\
-             type RequestHandle {}\n\
-             #[resource]\n\
-             pub type Request { handle: RequestHandle, }\n\
-             impl Server {\n\
-             \x20   fn accept(server: Server) -> Request {\n\
-             \x20       unsafe { Request { handle: c_accept(server) } }\n\
-             \x20   }\n\
-             }\n\
-             extern \"C\" {\n\
-             \x20   fn c_accept(server: Server) -> RequestHandle;\n\
-             }\n",
+            "#[opaque]\npub type Server {\n}\n\n#[opaque]\ntype RequestHandle {\n}\n\n#[resource]\npub type Request {\n    handle: RequestHandle;\n}\n\nimpl Server {\n    fn accept(server: Server) -> Request {\n        unsafe {\n            Request { handle: c_accept(server) }\n        }\n    }\n}\n\nextern \"C\" {\n    fn c_accept(server: Server) -> RequestHandle;\n}\n",
         );
         assert!(
             result.errors.is_empty(),
@@ -2217,16 +2196,7 @@ mod tests {
         // clone idiom registers only when it constructs the SAME wrapper type;
         // `good` (constructing `Wrap`) is the control.
         let result = parse(
-            "#[resource]\n\
-             pub type Wrap { handle: i64, }\n\
-             pub type Other { handle: i64, }\n\
-             impl Wrap {\n\
-             \x20   fn good(w: Wrap) -> Wrap { unsafe { Wrap { handle: c_clone(w.handle) } } }\n\
-             \x20   fn bad(w: Wrap) -> Other { unsafe { Other { handle: c_clone(w.handle) } } }\n\
-             }\n\
-             extern \"C\" {\n\
-             \x20   fn c_clone(h: i64) -> i64;\n\
-             }\n",
+            "#[resource]\npub type Wrap {\n    handle: i64;\n}\n\npub type Other {\n    handle: i64;\n}\n\nimpl Wrap {\n    fn good(w: Wrap) -> Wrap {\n        unsafe {\n            Wrap { handle: c_clone(w.handle) }\n        }\n    }\n    fn bad(w: Wrap) -> Other {\n        unsafe {\n            Other { handle: c_clone(w.handle) }\n        }\n    }\n}\n\nextern \"C\" {\n    fn c_clone(h: i64) -> i64;\n}\n",
         );
         assert!(
             result.errors.is_empty(),
@@ -2253,16 +2223,7 @@ mod tests {
         // it is not a C-backed method; `good` (calling the extern `c_use`) is the
         // control.
         let result = parse(
-            "#[resource]\n\
-             pub type Wrap { handle: i64, }\n\
-             impl Wrap {\n\
-             \x20   fn good(w: Wrap) -> i64 { unsafe { c_use(w.handle) } }\n\
-             \x20   fn bad(w: Wrap) -> i64 { helper(w.handle) }\n\
-             }\n\
-             fn helper(h: i64) -> i64 { h }\n\
-             extern \"C\" {\n\
-             \x20   fn c_use(h: i64) -> i64;\n\
-             }\n",
+            "#[resource]\npub type Wrap {\n    handle: i64;\n}\n\nimpl Wrap {\n    fn good(w: Wrap) -> i64 {\n        unsafe {\n            c_use(w.handle)\n        }\n    }\n    fn bad(w: Wrap) -> i64 {\n        helper(w.handle)\n    }\n}\n\nfn helper(h: i64) -> i64 {\n    h\n}\n\nextern \"C\" {\n    fn c_use(h: i64) -> i64;\n}\n",
         );
         assert!(
             result.errors.is_empty(),
@@ -2286,22 +2247,7 @@ mod tests {
     #[test]
     fn guarded_wrapper_forward_requires_single_early_return_guard() {
         let result = parse(
-            "#[resource]\n\
-             pub type Wrap { handle: i64, }\n\
-             impl Wrap {\n\
-             \x20   fn good(w: Wrap, status: i64) -> i64 {\n\
-             \x20       if status < 0 { return -1; }\n\
-             \x20       unsafe { c_use(w.handle, status) }\n\
-             \x20   }\n\
-             \x20   fn bad(w: Wrap, status: i64) -> i64 {\n\
-             \x20       if status < 0 { c_touch(w.handle); return -1; }\n\
-             \x20       unsafe { c_use(w.handle, status) }\n\
-             \x20   }\n\
-             }\n\
-             extern \"C\" {\n\
-             \x20   fn c_use(h: i64, status: i64) -> i64;\n\
-             \x20   fn c_touch(h: i64);\n\
-             }\n",
+            "#[resource]\npub type Wrap {\n    handle: i64;\n}\n\nimpl Wrap {\n    fn good(w: Wrap, status: i64) -> i64 {\n        if status < 0 {\n            return -1;\n        }\n        unsafe {\n            c_use(w.handle, status)\n        }\n    }\n    fn bad(w: Wrap, status: i64) -> i64 {\n        if status < 0 {\n            c_touch(w.handle);\n            return -1;\n        }\n        unsafe {\n            c_use(w.handle, status)\n        }\n    }\n}\n\nextern \"C\" {\n    fn c_use(h: i64, status: i64) -> i64;\n    fn c_touch(h: i64);\n}\n",
         );
         assert!(
             result.errors.is_empty(),

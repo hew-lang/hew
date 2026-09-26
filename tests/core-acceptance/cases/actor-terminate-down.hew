@@ -2,17 +2,21 @@ import std.link_monitor;
 
 actor Target {
     #[on(stop)]
-    fn stopped_hook() { println("unexpected stop hook"); }
+    fn stopped_hook() {
+        println("unexpected stop hook");
+    }
 }
 
 actor Watcher {
-    var downs: i64 = 0,
+    var downs: i64 = 0;
 
     receive fn watch(target: Target) -> link_monitor.MonitorRef {
         monitor(target).expect("monitor target")
     }
 
-    receive fn count() -> i64 { downs }
+    receive fn count() -> i64 {
+        downs
+    }
 
     #[on(down)]
     fn down(note: link_monitor.DownNotification) {
@@ -20,7 +24,7 @@ actor Watcher {
             .Terminated => {
                 downs += 1;
                 println("terminated");
-            },
+            }
             _ => panic("wrong end reason"),
         }
     }

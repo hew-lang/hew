@@ -1,8 +1,8 @@
 import std.iter;
 
 type Claim {
-    run_id: string,
-    amount: i64,
+    run_id: string;
+    amount: i64;
 }
 
 fn retained_total(frame: i64) -> i64 {
@@ -22,12 +22,16 @@ fn retained_total(frame: i64) -> i64 {
 
 fn main() -> i64 {
     var checksum: i64 = 0;
-    for frame in 0..50 {
+    for frame in 0 .. 50 {
         let total = retained_total(frame);
-        if total != 50 { return 91; }
+        if total != 50 {
+            return 91;
+        }
         checksum = checksum + total;
         print("frame");
     }
-    if checksum != 50 * 50 { return 92; }
+    if checksum != 50 * 50 {
+        return 92;
+    }
     0
 }

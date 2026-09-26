@@ -137,7 +137,7 @@ pub fn forward<T>(consume from: Stream<T>, consume to: Sink<T>) {}
 /// Why a frame could not be decoded.
 pub enum CodecError {
     /// The bytes do not form a frame of this codec.
-    Malformed(string),
+    Malformed(string);
 }
 
 impl Display for CodecError {
@@ -151,8 +151,8 @@ impl Display for CodecError {
 /// One `decode` step: a complete frame with the bytes after it, or the
 /// buffer handed back unchanged because more bytes are needed.
 pub enum Decoded<T> {
-    Frame(T, bytes),
-    Incomplete(bytes),
+    Frame(T, bytes);
+    Incomplete(bytes);
 }
 
 /// Frames bytes into typed items and back.
@@ -201,7 +201,7 @@ impl Codec<string> for Lines {
 
 /// Frames prefixed by a big-endian length of `width` bytes (1, 2 or 4).
 pub type LengthPrefixed {
-    width: i64,
+    width: i64;
 }
 
 impl Codec<bytes> for LengthPrefixed {

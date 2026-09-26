@@ -1,36 +1,36 @@
 enum Inner {
-    Text(string),
-    Empty,
+    Text(string);
+    Empty;
 }
 
 enum Outer {
-    Wrap(Inner),
-    Empty,
+    Wrap(Inner);
+    Empty;
 }
 
 enum Middle {
-    Wrap(Inner),
-    Empty,
+    Wrap(Inner);
+    Empty;
 }
 
 enum DeepOuter {
-    Wrap(Middle),
-    Empty,
+    Wrap(Middle);
+    Empty;
 }
 
 type Holder {
-    value: Inner,
-    sibling: i64,
+    value: Inner;
+    sibling: i64;
 }
 
 enum RecordOuter {
-    Wrap(Holder),
-    Empty,
+    Wrap(Holder);
+    Empty;
 }
 
 enum TupleOuter {
-    Wrap((Inner, i64)),
-    Empty,
+    Wrap((Inner, i64));
+    Empty;
 }
 
 fn whole(i: i64) -> i64 {
@@ -42,7 +42,7 @@ fn whole(i: i64) -> i64 {
                 .Text(s) => s.len(),
                 .Empty => 0,
             }
-        },
+        }
         .Empty => 0,
     }
 }
@@ -53,7 +53,7 @@ fn direct(i: i64) -> i64 {
         .Wrap(st) => match st {
             .Text(s) => s.len(),
             .Empty => 0,
-        },
+        }
         .Empty => 0,
     }
 }
@@ -65,18 +65,15 @@ fn depth_two(i: i64) -> i64 {
             .Wrap(st) => match st {
                 .Text(s) => s.len(),
                 .Empty => 0,
-            },
+            }
             .Empty => 0,
-        },
+        }
         .Empty => 0,
     }
 }
 
 fn record_field(i: i64) -> i64 {
-    let outer = RecordOuter.Wrap(Holder {
-        value: Inner.Text(f"record-{i}"),
-        sibling: i,
-    });
+    let outer = RecordOuter.Wrap(Holder { value: Inner.Text(f"record-{i}"), sibling: i });
     match outer {
         .Wrap(st) => {
             let w = st.value;
@@ -84,7 +81,7 @@ fn record_field(i: i64) -> i64 {
                 .Text(s) => s.len() + st.sibling,
                 .Empty => st.sibling,
             }
-        },
+        }
         .Empty => 0,
     }
 }
@@ -98,17 +95,20 @@ fn tuple_field(i: i64) -> i64 {
                 .Text(s) => s.len() + st.1,
                 .Empty => st.1,
             }
-        },
+        }
         .Empty => 0,
     }
 }
 
 fn main() -> i64 {
     var total = 0;
-    for i in 0..50 {
-        total = total + direct(i) + depth_two(i) + whole(i)
-            + record_field(i) + tuple_field(i);
+    for i in 0 .. 50 {
+        total = total + direct(i) + depth_two(i) + whole(i) + record_field(i) + tuple_field(i);
         println("frame");
     }
-    if total > 0 { 0 } else { 91 }
+    if total > 0 {
+        0
+    } else {
+        91
+    }
 }

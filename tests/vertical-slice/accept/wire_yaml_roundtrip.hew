@@ -3,8 +3,8 @@
 // equal value. The recovered fields sum to 42.
 #[wire]
 type Point {
-    x: i64 @1,
-    y: i64 @2,
+    x: i64 @1;
+    y: i64 @2;
 }
 
 fn main() -> i64 {

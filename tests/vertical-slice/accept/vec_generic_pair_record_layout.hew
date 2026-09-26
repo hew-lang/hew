@@ -1,6 +1,6 @@
 type Pair<A, B> {
-    a: A,
-    b: B,
+    a: A;
+    b: B;
 }
 
 fn main() {
@@ -8,16 +8,13 @@ fn main() {
     values.push(Pair { a: 1, b: 10 });
     values.push(Pair { a: 2, b: 20 });
     values.push(Pair { a: 3, b: 30 });
-
     let first = values[0];
     let second = values[1];
     values.set(1, Pair { a: 4, b: 40 });
     let popped = values.pop();
-
     var sum: i64 = 0;
     for item in values {
         sum = sum + item.a + item.b;
     }
-
     println(f"pair-total={first.a + first.b + second.a + second.b + popped.a + popped.b + sum}");
 }

@@ -1,5 +1,7 @@
 fn make(success: bool) -> Result<string, string> {
-    if success { return .Ok("accepted".to_upper()); }
+    if success {
+        return .Ok("accepted".to_upper());
+    }
     .Err("rejected".to_upper())
 }
 

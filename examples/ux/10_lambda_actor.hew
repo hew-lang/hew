@@ -4,15 +4,15 @@ fn main() {
         println(msg * 2);
     };
     match worker(5) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("lambda call failed for 5"),
     }
     match worker(10) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("lambda call failed for 10"),
     }
     match worker(15) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("lambda call failed for 15"),
     }
     close(worker);

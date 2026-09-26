@@ -1,6 +1,8 @@
 // Returning from `main` after an unrecovered crash reports the fault, not 0.
 actor Worker {
-    receive fn boom() { panic("worker failed"); }
+    receive fn boom() {
+        panic("worker failed");
+    }
 }
 
 fn main() {

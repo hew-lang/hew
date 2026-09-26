@@ -1,6 +1,6 @@
 #[linear]
 type Transaction {
-    id: i64,
+    id: i64;
 }
 
 pub fn run() {

@@ -2,19 +2,20 @@ trait Source {
     type Item;
 }
 
-type Text {}
+type Text {
+}
 
 impl Source for Text {
     type Item = string;
 }
 
 type Message {
-    body: <Text as Source>.Item,
+    body: <Text as Source>.Item;
 }
 
 enum Delivery {
-    Empty,
-    Ready { body: <Text as Source>.Item },
+    Empty;
+    Ready { body: <Text as Source>.Item;  }
 }
 
 fn main() {

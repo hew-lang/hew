@@ -1,12 +1,14 @@
 actor Worker {
-    let name: string,
+    let name: string;
     #[on(stop)]
-    fn done() { println(name); }
+    fn done() {
+        println(name);
+    }
 }
 
 supervisor Team(grace: duration) {
-    child first: Worker(name: "first") stop: 100ms,
-    child second: Worker(name: "second") stop: grace,
+    child first: Worker(name: "first") stop: 100ms;
+    child second: Worker(name: "second") stop: grace;
 }
 
 fn main() {

@@ -1,8 +1,8 @@
 import std.failure;
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 impl Point {
@@ -15,8 +15,8 @@ impl Point {
 }
 
 type Rect {
-    origin: Point,
-    label: string,
+    origin: Point;
+    label: string;
 }
 
 actor Worker {
@@ -37,7 +37,7 @@ actor Worker {
 }
 
 actor Holder {
-    var p: Point,
+    var p: Point;
 
     receive fn poke(fail: bool) -> i64 {
         p.bump(fail);
@@ -52,8 +52,8 @@ actor Holder {
 }
 
 supervisor Group {
-    intensity: 1 within 60s,
-    child holder: Holder(p: Point { x: 1, y: 0 }),
+    intensity: 1 within 60s;
+    child holder: Holder(p: Point { x: 1, y: 0 });
 }
 
 fn main() {
@@ -70,8 +70,16 @@ fn main() {
     let group = spawn Group;
     println(group.holder.poke(false).expect("poke"));
     let _ = group.holder.poke(true);
-    let _ = await_restart group.holder;
+    let _ = {
+        let __hew_migrated_role_1498 = group.holder;
+        restarted(__hew_migrated_role_1498);
+        __hew_migrated_role_1498
+    };
     println(group.holder.poke(false).expect("fresh"));
-    close(group);
+    {
+        let __hew_migrated_actor_1585 = group;
+        stop(__hew_migrated_actor_1585);
+        stopped(__hew_migrated_actor_1585);
+    };
     println("done");
 }

@@ -1,7 +1,11 @@
 fn make_counter() -> fn[var, clone]() -> i64 {
     var count: i64 = 0;
-    capture(var count) || { count = count + 1; count }
+    capture(var count) || {
+        count = count + 1;
+        count
+    }
 }
+
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;

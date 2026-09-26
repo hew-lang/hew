@@ -1,13 +1,13 @@
 enum Item {
-    Text(string),
-    Pair(string, i64),
-    Tagged { name: string, size: i64 },
-    Blank,
+    Text(string);
+    Pair(string, i64);
+    Tagged { name: string; size: i64;  }
+    Blank;
 }
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 fn describe(item: Item) -> string {
@@ -36,19 +36,16 @@ fn main() {
     } else {
         println("not blank");
     }
-
     // Record pattern with an owned field.
     let point = Point { x: 3, y: 4 };
     if let Point { x, y } = point {
         println(f"point {x} {y}");
     }
-
     // Tuple pattern carrying an owned string.
     let entry = (f"tuple {point.x}", 9);
     if let (label, count) = entry {
         println(f"{label} {count}");
     }
-
     // Or-pattern over two payload variants, both binding an owned string.
     let first: Item = .Text(f"first {point.y}");
     if let .Text(owned) | .Pair(owned, _) = first {
@@ -56,19 +53,16 @@ fn main() {
     } else {
         println("none");
     }
-
     // Nested pattern.
     let nested: Option<Option<i64>> = .Some(.Some(11));
     if let .Some(.Some(inner)) = nested {
         println(f"nested {inner}");
     }
-
     // Literal pattern.
     let n = 7;
     if let 7 = n {
         println("seven");
     }
-
     // Enum struct-variant pattern in a function that returns from both paths.
     println(describe(.Tagged { name: f"boxed {n}", size: 2 }));
     println(describe(.Blank));

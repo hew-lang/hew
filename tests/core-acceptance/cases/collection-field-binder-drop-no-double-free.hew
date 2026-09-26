@@ -1,4 +1,7 @@
-type Pair { a: i64, b: Vec<i64> }
+type Pair {
+    a: i64;
+    b: Vec<i64>;
+}
 
 fn main() {
     var inner: Vec<i64> = Vec.new();

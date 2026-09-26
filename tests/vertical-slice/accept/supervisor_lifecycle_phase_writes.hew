@@ -5,7 +5,7 @@
 // initialized by init, so the child declaration names no arguments.
 
 actor Worker {
-    var value: i64,
+    var value: i64;
 
     init() {
         value = 10;
@@ -31,10 +31,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child worker: Worker,
+    child worker: Worker;
 }
 
 fn main() -> i64 {
@@ -44,7 +44,11 @@ fn main() -> i64 {
         .Err(_) => return 1,
     };
     let _ = sup.worker.crash();
-    let restarted = await_restart sup.worker;
+    let restarted = {
+        let __hew_migrated_role_1026 = sup.worker;
+        restarted(__hew_migrated_role_1026);
+        __hew_migrated_role_1026
+    };
     let second = match restarted.get() {
         .Ok(value) => value,
         .Err(_) => return 2,

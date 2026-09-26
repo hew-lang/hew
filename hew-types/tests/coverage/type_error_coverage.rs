@@ -6,18 +6,23 @@ use hew_types::error::{Severity, TypeErrorKind};
 #[test]
 fn test_non_exhaustive_match() {
     let output = typecheck(
-        r"
-        enum Colour { Red, Green, Blue, }
-        fn check(c: Colour) -> i64 {
-            match c {
-                .Red => 1,
-                .Green => 2,
-            }
-        }
-        fn main() {
-            check(.Red);
-        }
-    ",
+        r"enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn check(c: Colour) -> i64 {
+    match c {
+        .Red => 1,
+        .Green => 2,
+    }
+}
+
+fn main() {
+    check(.Red);
+}
+",
     );
     // Enum-like non-exhaustive match → hard error, not a warning.
     assert!(
@@ -40,16 +45,20 @@ fn test_non_exhaustive_match() {
 #[test]
 fn test_non_exhaustive_match_stmt() {
     let output = typecheck(
-        r"
-        enum Colour { Red, Green, Blue, }
-        fn main() {
-            let colour: Colour = .Red;
-            match colour {
-                .Red => {},
-                .Green => {},
-            }
-        }
-    ",
+        r"enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn main() {
+    let colour: Colour = .Red;
+    match colour {
+        .Red => {}
+        .Green => {}
+    }
+}
+",
     );
     // Enum-like non-exhaustive match → hard error, not a warning.
     assert!(
@@ -149,19 +158,18 @@ fn test_non_exhaustive_option_match() {
 #[test]
 fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
     let output = typecheck(
-        r"
-        enum Packet {
-            Empty,
-            Value(i64),
-            Named { count: i64 },
-        }
+        r"enum Packet {
+    Empty;
+    Value(i64);
+    Named { count: i64;  }
+}
 
-        fn label(packet: Packet) -> i64 {
-            match packet {
-                .Empty => 0,
-            }
-        }
-    ",
+fn label(packet: Packet) -> i64 {
+    match packet {
+        .Empty => 0,
+    }
+}
+",
     );
     let err = output
         .errors
@@ -215,17 +223,22 @@ fn test_exhaustive_or_result_match() {
 #[test]
 fn test_exhaustive_or_enum_match() {
     let output = typecheck(
-        r"
-        enum Colour { Red, Green, Blue, }
-        fn check(c: Colour) -> i64 {
-            match c {
-                .Red | .Green | .Blue => 1,
-            }
-        }
-        fn main() {
-            check(.Red);
-        }
-    ",
+        r"enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn check(c: Colour) -> i64 {
+    match c {
+        .Red | .Green | .Blue => 1,
+    }
+}
+
+fn main() {
+    check(.Red);
+}
+",
     );
     assert!(
         !output
@@ -391,16 +404,21 @@ fn test_lambda_arity_mismatch() {
 #[test]
 fn test_receiver_param_rejects_mismatched_generics() {
     let output = typecheck(
-        r"
-        type Box<T> { value: T, }
-        impl Box<i64> {
-            fn bad(b: Box<string>) -> i64 { 0 }
-        }
-        fn main() {
-            let b = Box { value: 42 };
-            b.bad();
-        }
-        ",
+        r"type Box<T> {
+    value: T;
+}
+
+impl Box<i64> {
+    fn bad(b: Box<string>) -> i64 {
+        0
+    }
+}
+
+fn main() {
+    let b = Box { value: 42 };
+    b.bad();
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -415,20 +433,23 @@ fn test_receiver_param_rejects_mismatched_generics() {
 #[test]
 fn test_non_receiver_param_same_type_not_flagged() {
     let output = typecheck(
-        r"
-        type Box { value: i64, }
-        impl Box {
-            fn combine(b: Box, var other: Box) -> i64 {
-                other.value = other.value + 1;
-                b.value + other.value
-            }
-        }
-        fn main() {
-            let b1 = Box { value: 1 };
-            let b2 = Box { value: 2 };
-            println(b1.combine(b2));
-        }
-    ",
+        r"type Box {
+    value: i64;
+}
+
+impl Box {
+    fn combine(b: Box, var other: Box) -> i64 {
+        other.value = other.value + 1;
+        b.value + other.value
+    }
+}
+
+fn main() {
+    let b1 = Box { value: 1 };
+    let b2 = Box { value: 2 };
+    println(b1.combine(b2));
+}
+",
     );
     assert!(
         output.errors.is_empty(),

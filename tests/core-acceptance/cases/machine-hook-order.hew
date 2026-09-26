@@ -3,10 +3,16 @@ fn mark(label: string, suffix: string) -> string {
 }
 
 machine Cycle {
-    events { Tick, Bounce, Stop }
-    emits { Trace { text: string } }
+    events {
+        Tick;
+        Bounce;
+        Stop;
+    }
+    emits {
+        Trace { text: string; }
+    }
     state Ready {
-        label: string,
+        label: string;
         entry {
             emit Trace { text: "entry:" + state.label };
             state.label = mark(state.label, "E");
@@ -15,8 +21,8 @@ machine Cycle {
             emit Trace { text: "exit:" + state.label };
             state.label = mark(state.label, "X");
         }
-    },
-    state Done { label: string },
+    }
+    state Done { label: string; }
     on Tick: Ready => Ready {
         emit Trace { text: "body:" + state.label };
         Ready { label: mark(state.label, "T") }
@@ -34,11 +40,13 @@ machine Cycle {
 
 fn show(report: CycleStep) {
     match report.disposition {
-        .Taken => {},
+        .Taken => {}
         .Ignored => panic("transition ignored"),
     }
     for output in report.outputs {
-        match output { .Trace { text } => println(text), }
+        match output {
+            .Trace { text } => println(text),
+        }
     }
 }
 

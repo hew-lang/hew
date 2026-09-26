@@ -1,17 +1,15 @@
-type NestedScalarMoveInner { text: string, value: i64 }
+type NestedScalarMoveInner {
+    text: string;
+    value: i64;
+}
+
 type NestedScalarMoveCarrier {
-    inner: NestedScalarMoveInner,
-    sibling: string,
+    inner: NestedScalarMoveInner;
+    sibling: string;
 }
 
 fn project(i: i64) -> i64 {
-    let r = NestedScalarMoveCarrier {
-        inner: NestedScalarMoveInner {
-            text: ("inner-" + "payload"),
-            value: i,
-        },
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = NestedScalarMoveCarrier { inner: NestedScalarMoveInner { text: ("inner-" + "payload"), value: i }, sibling: ("sibling-" + "payload") };
     let moved = r.inner.value;
     moved
 }
@@ -23,5 +21,9 @@ fn main() -> i64 {
         total = total + project(i);
         i = i + 1;
     }
-    if total == 2016 { 0 } else { 1 }
+    if total == 2016 {
+        0
+    } else {
+        1
+    }
 }

@@ -7,8 +7,8 @@
 // use-after-free garbles the totals; a double-free aborts), Ok and Err arms
 // are both taken, and break/continue exercise the loop-exit edges.
 type Row {
-    name: string,
-    id: i64,
+    name: string;
+    id: i64;
 }
 
 fn ok_bytes(n: i64) -> Result<bytes, string> {
@@ -38,10 +38,10 @@ fn bytes_loop() -> i64 {
         match ok_bytes(i) {
             .Ok(b) => {
                 total = total + b.len();
-            },
+            }
             .Err(e) => {
                 total = total - e.len();
-            },
+            }
         }
         i = i + 1;
     }
@@ -56,10 +56,10 @@ fn mixed_arms_loop() -> i64 {
         match mixed(i) {
             .Ok(s) => {
                 oks = oks + s.len();
-            },
+            }
             .Err(e) => {
                 errs = errs + e.len();
-            },
+            }
         }
         i = i + 1;
     }
@@ -73,8 +73,8 @@ fn composite_loop() -> i64 {
         match ok_row(i) {
             .Ok(r) => {
                 total = total + r.id;
-            },
-            .Err(e) => {},
+            }
+            .Err(e) => {}
         }
         i = i + 1;
     }
@@ -95,8 +95,8 @@ fn break_continue_loop() -> i64 {
                     break;
                 }
                 seen = seen + 1;
-            },
-            .Err(e) => {},
+            }
+            .Err(e) => {}
         }
     }
     seen

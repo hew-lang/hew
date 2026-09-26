@@ -1,17 +1,15 @@
-type NestedHeapReadInner { text: string, value: i64 }
+type NestedHeapReadInner {
+    text: string;
+    value: i64;
+}
+
 type NestedHeapReadCarrier {
-    inner: NestedHeapReadInner,
-    sibling: string,
+    inner: NestedHeapReadInner;
+    sibling: string;
 }
 
 fn project(i: i64) -> i64 {
-    let r = NestedHeapReadCarrier {
-        inner: NestedHeapReadInner {
-            text: ("inner-" + "payload"),
-            value: i,
-        },
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = NestedHeapReadCarrier { inner: NestedHeapReadInner { text: ("inner-" + "payload"), value: i }, sibling: ("sibling-" + "payload") };
     r.inner.text.len()
 }
 
@@ -22,5 +20,9 @@ fn main() -> i64 {
         total = total + project(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

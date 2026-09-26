@@ -50,7 +50,7 @@ fn main() {
     // A parse failure returns an error without an owning value payload.
     match json.parse("{") {
         .Ok(_) => panic("malformed JSON unexpectedly parsed"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
     early_exit(true);
 }

@@ -23,25 +23,22 @@ actor Ticker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child ticker: Ticker,
+    child ticker: Ticker;
 }
 
 fn main() {
     let sup = spawn App;
     let t = sup.ticker;
     let s = t.stream();
-
     let first = s.recv();
     match first {
         .Some(v) => println(f"{v}"),
         .None => println("unexpected-close"),
     }
-
     supervisor_stop(sup);
-
     var i = 0;
     while i < 8 {
         match s.recv() {
@@ -50,7 +47,6 @@ fn main() {
         }
         i = i + 1;
     }
-
     let overflow = s.recv();
     match overflow {
         .Some(v) => println(f"overflow={v}"),

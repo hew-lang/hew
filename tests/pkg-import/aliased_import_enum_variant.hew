@@ -14,7 +14,7 @@
 //
 // Harness verb: hew run
 // Expected: values from variant construction and match dispatch.
-import hew.aliassrc.{ Color as Hue };
+import hew.aliassrc.{Color as Hue};
 
 fn color_value(h: Hue) -> i64 {
     match h {

@@ -10,7 +10,7 @@ trait Formatter {
 }
 
 type TagFormatter {
-    tag: string,
+    tag: string;
 }
 
 impl Formatter for TagFormatter {
@@ -25,7 +25,7 @@ fn make_formatter(tag: string) -> dyn Formatter {
 }
 
 actor Plugins {
-    var plugins: Vec<dyn Formatter> = Vec.new(),
+    var plugins: Vec<dyn Formatter> = Vec.new();
     receive fn add(tag: string) {
         plugins.push(make_formatter(tag));
     }
@@ -50,7 +50,7 @@ actor Plugins {
 // the end faults between the take and the publish, so the seat is only intact
 // there because the failure edge re-published it.
 actor Labels {
-    var items: Vec<string> = Vec.new(),
+    var items: Vec<string> = Vec.new();
     receive fn fail_in_transform() -> string {
         items.push("gamma");
         items.remove(9)
@@ -77,7 +77,6 @@ fn main() {
     plugins.add("W").expect("add");
     println(f"after refill {plugins.count().expect("count")}");
     println(plugins.drain("m2").expect("drain"));
-
     let faulting = spawn Labels;
     let _ = faulting.fail_in_transform();
     let quiet = spawn Labels;

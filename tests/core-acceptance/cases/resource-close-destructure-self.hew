@@ -2,12 +2,13 @@
 // handle field to the foreign release. The destructure binds the handle with
 // the same opaque identity the record field declares.
 #[opaque]
-type Raw {}
+type Raw {
+}
 
 #[resource]
 type Handle {
-    raw: Raw,
-    tag: i64,
+    raw: Raw;
+    tag: i64;
 }
 
 impl Handle {
@@ -17,7 +18,9 @@ impl Handle {
 
     fn close(consume self) {
         let Handle { raw, tag } = self;
-        unsafe { hew_deque_free(raw) };
+        unsafe {
+            hew_deque_free(raw)
+        };
         println(f"closed {tag}");
     }
 }
@@ -28,11 +31,13 @@ extern "C" {
 }
 
 fn open(tag: i64) -> Handle {
-    Handle { raw: unsafe { hew_deque_new() }, tag: tag }
+    Handle { raw: unsafe {
+        hew_deque_new()
+    }, tag: tag }
 }
 
 fn main() {
-    for i in 0..3 {
+    for i in 0 .. 3 {
         let handle = open(i);
         if handle.tag() == 1 {
             handle.close();

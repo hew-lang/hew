@@ -1,4 +1,7 @@
-fn index() -> i32 { 1 }
+fn index() -> i32 {
+    1
+}
+
 fn main() {
     var values: Vec<string> = ["first", "second", "third"];
     println(values[index()]);

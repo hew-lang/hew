@@ -17,18 +17,17 @@ use support::leak_slope::{
 };
 use support::{describe_output, require_codegen};
 
-const SOURCE_TEMPLATE: &str = r#"
-enum CleanupError {
-    Dirty(string),
+const SOURCE_TEMPLATE: &str = r#"enum CleanupError {
+    Dirty(string);
 }
 
 type Retirement {
-    blocked: bool,
-    detail: string,
+    blocked: bool;
+    detail: string;
 }
 
 type Outcome {
-    status: string,
+    status: string;
 }
 
 fn persist(value: string) {
@@ -47,7 +46,7 @@ fn retire() -> Result<Retirement, string> {
         .Err(CleanupError.Dirty(message)) => {
             persist(message.clone());
             .Ok(Retirement { blocked: true, detail: __DETAIL__ })
-        },
+        }
     }
 }
 
@@ -56,20 +55,22 @@ fn lifecycle() -> Result<Outcome, string> {
         .Err(message) => return .Err(message),
         .Ok(value) => value,
     };
-    .Ok(Outcome {
-        status: if retirement.blocked { "blocked" } else { "merged" },
-    })
+    .Ok(Outcome { status: if retirement.blocked {
+        "blocked"
+    } else {
+        "merged"
+    } })
 }
 
 fn main() {
-    for _ in 0..64 {
+    for _ in 0 .. 64 {
         match lifecycle() {
             .Err(message) => panic(message),
             .Ok(outcome) => {
                 if outcome.status != "blocked" {
                     panic("wrong outcome");
                 }
-            },
+            }
         }
     }
     println("ok");

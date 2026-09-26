@@ -30,15 +30,40 @@ fn raii_handle_bindings_suppress_unused_lint_but_plain_still_warns() {
     // must stay silent. A plain scalar in the same scope must still warn — the
     // suppression is type-targeted, not a blanket disable.
     let source = "\
-#[resource]\n\
-type Guard { id: i64, }\n\
-impl Guard { fn close(consume self) { } }\n\
-fn open() -> Guard { Guard { id: 1 } }\n\
-#[linear]\n\
-type Txn { id: i64, }\n\
-impl Txn { fn commit(consume self) -> i64 { 0 } }\n\
-fn mk() -> Txn { Txn { id: 0 } }\n\
-fn main() { let g = open(); let t = mk(); let plain = 42; }\n";
+#[resource]
+type Guard {
+    id: i64;
+}
+
+impl Guard {
+    fn close(consume self) {}
+}
+
+fn open() -> Guard {
+    Guard { id: 1 }
+}
+
+#[linear]
+type Txn {
+    id: i64;
+}
+
+impl Txn {
+    fn commit(consume self) -> i64 {
+        0
+    }
+}
+
+fn mk() -> Txn {
+    Txn { id: 0 }
+}
+
+fn main() {
+    let g = open();
+    let t = mk();
+    let plain = 42;
+}
+";
     let result = hew_parser::parse(source);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
@@ -310,35 +335,31 @@ fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
 #[test]
 fn where_clause_assoc_binding_projects_non_iterator_assoc_type() {
     let (errors, warnings) = parse_and_check(
-        r"
-        trait Projector {
-            type Output;
-            fn get(self) -> Self.Output;
-        }
+        r"trait Projector {
+    type Output;
+    fn get(self) -> Self.Output;
+}
 
-        type Meter {
-            value: i64,
-        }
+type Meter {
+    value: i64;
+}
 
-        impl Projector for Meter {
-            type Output = i64;
+impl Projector for Meter {
+    type Output = i64;
 
-            fn get(self) -> i64 {
-                self.value
-            }
-        }
+    fn get(self) -> i64 {
+        self.value
+    }
+}
 
-        fn read<P>(p: P) -> i64
-        where
-            P: Projector<Output = i64>,
-        {
-            p.get()
-        }
+fn read<P>(p: P) -> i64 where P: Projector<Output = i64> {
+    p.get()
+}
 
-        fn main() -> i64 {
-            read(Meter { value: 42 })
-        }
-        ",
+fn main() -> i64 {
+    read(Meter { value: 42 })
+}
+",
     );
 
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
@@ -475,17 +496,16 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
 #[test]
 fn print_and_println_reject_struct_without_display_impl() {
     let (errors, warnings) = parse_and_check_with_stdlib(
-        r"
-        type Hidden {
-            value: i64,
-        }
+        r"type Hidden {
+    value: i64;
+}
 
-        fn main() {
-            let hidden = Hidden { value: 1 };
-            print(hidden);
-            println(hidden);
-        }
-        ",
+fn main() {
+    let hidden = Hidden { value: 1 };
+    print(hidden);
+    println(hidden);
+}
+",
     );
 
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
@@ -505,24 +525,23 @@ fn print_and_println_reject_struct_without_display_impl() {
 #[test]
 fn equality_assertions_reject_a_type_without_eq() {
     let (errors, warnings) = parse_and_check_with_stdlib(
-        r#"
-        type Holder {
-            action: fn() -> i64,
-        }
+        r#"type Holder {
+    action: fn() -> i64;
+}
 
-        impl Display for Holder {
-            fn fmt(holder: Holder) -> string {
-                "holder"
-            }
-        }
+impl Display for Holder {
+    fn fmt(holder: Holder) -> string {
+        "holder"
+    }
+}
 
-        fn main() {
-            let left = Holder { action: || 1 };
-            let right = Holder { action: || 2 };
-            assert(left == right);
-            assert(left != right, "the message form checks its condition too");
-        }
-        "#,
+fn main() {
+    let left = Holder { action: || 1 };
+    let right = Holder { action: || 2 };
+    assert(left == right);
+    assert(left != right, "the message form checks its condition too");
+}
+"#,
     );
 
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
@@ -543,25 +562,24 @@ fn equality_assertions_reject_a_type_without_eq() {
 #[test]
 fn display_impl_satisfies_bounded_magic_builtins() {
     let (errors, warnings) = parse_and_check_with_stdlib(
-        r#"
-        type Widget {
-            value: i64,
-        }
+        r#"type Widget {
+    value: i64;
+}
 
-        impl Display for Widget {
-            fn fmt(widget: Widget) -> string {
-                "widget"
-            }
-        }
+impl Display for Widget {
+    fn fmt(widget: Widget) -> string {
+        "widget"
+    }
+}
 
-        fn main() {
-            let widget = Widget { value: 1 };
-            print(widget);
-            println(widget);
-            let text = to_string(widget);
-            println(text);
-        }
-        "#,
+fn main() {
+    let widget = Widget { value: 1 };
+    print(widget);
+    println(widget);
+    let text = to_string(widget);
+    println(text);
+}
+"#,
     );
 
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
@@ -775,7 +793,7 @@ fn immutable_param_cannot_be_reassigned() {
 #[test]
 fn immutable_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64, }\n",
+        "type Point {\n    x: i64;\n}\n",
         "fn main() { let p = Point { x: 1 }; p.x = 2; }\n",
     ));
     assert!(
@@ -795,7 +813,7 @@ fn immutable_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_param_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64, }\n",
+        "type Point {\n    x: i64;\n}\n",
         "fn bump(p: Point) { p.x = 2; }\n",
     ));
     assert!(
@@ -815,7 +833,7 @@ fn immutable_param_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_compound_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64, }\n",
+        "type Point {\n    x: i64;\n}\n",
         "fn main() { let p = Point { x: 1 }; p.x += 2; }\n",
     ));
     assert!(
@@ -835,7 +853,7 @@ fn immutable_compound_field_assignment_root_is_rejected() {
 #[test]
 fn mutable_field_assignment_root_counts_as_mutation() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64, }\n",
+        "type Point {\n    x: i64;\n}\n",
         "fn main() { var p = Point { x: 1 }; p.x = 2; println(p.x); }\n",
     ));
     assert!(errors.is_empty(), "errors: {errors:?}");
@@ -1085,7 +1103,7 @@ fn suggest_similar_function() {
 fn suggest_similar_type() {
     // Use a misspelled type in a constructor position, which triggers undefined type lookup
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: i32, y: i32, }\n",
+        "type Point {\n    x: i32;\n    y: i32;\n}\n",
         "fn make() { let p = Pont { x: 0, y: 0 }; println(p.x); }\n",
     ));
     let err = errors
@@ -1102,7 +1120,7 @@ fn suggest_similar_type() {
 #[test]
 fn suggest_similar_field() {
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: i32, y: i32, }\n",
+        "type Point {\n    x: i32;\n    y: i32;\n}\n",
         "fn get_z(p: Point) -> i32 { p.z }\n",
     ));
     let err = errors
@@ -1224,17 +1242,21 @@ fn needless_range_loop_flags_index_access() {
 #[test]
 fn needless_range_loop_flagged_when_vec_element_lacks_semantic_clone() {
     let (errors, warnings) = parse_and_check(
-        r"
-        #[resource]
-        type Guard { id: i64, }
-        impl Guard { fn close(consume self) { } }
+        r"#[resource]
+type Guard {
+    id: i64;
+}
 
-        fn drain(inputs: Vec<Guard>) {
-            for i in 0..inputs.len() {
-                let _ = inputs[i];
-            }
-        }
-        ",
+impl Guard {
+    fn close(consume self) {}
+}
+
+fn drain(inputs: Vec<Guard>) {
+    for i in 0 .. inputs.len() {
+        let _ = inputs[i];
+    }
+}
+",
     );
     assert!(
         errors.is_empty(),
@@ -1978,8 +2000,9 @@ fn len_zero_not_flagged_for_gt_one() {
 fn len_zero_not_flagged_for_len_field() {
     // `len` is a record field here, not the collection method — the rewrite to
     // `is_empty()` does not apply.
-    let (errors, warnings) =
-        parse_and_check("type Buf { len: i64 }\nfn f(b: Buf) -> bool { b.len == 0 }");
+    let (errors, warnings) = parse_and_check(
+        "type Buf {\n    len: i64;\n}\n\nfn f(b: Buf) -> bool {\n    b.len == 0\n}\n",
+    );
     assert!(
         errors.is_empty(),
         "fixture should type-check, got: {errors:?}"
@@ -2494,14 +2517,13 @@ fn warn_deeply_nested_scope_shadowing() {
 fn test_actor_field_shadowing_is_error() {
     // Shadowing an actor field is a hard error — bare field access requires
     // unambiguous names.
-    let source = r"
-        actor Counter {
-            var count: i64 = 0,
-            receive fn update(count: i64) {
-                println(count);
-            }
-        }
-    ";
+    let source = r"actor Counter {
+    var count: i64 = 0;
+    receive fn update(count: i64) {
+        println(count);
+    }
+}
+";
     let (errors, _warnings) = parse_and_check(source);
     assert!(
         errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
@@ -2518,16 +2540,15 @@ fn for_binder_shadowing_actor_field_is_error() {
     // actor field by name and landed in state while the read resolved to the
     // innermost binding and came back as the loop variable, so one statement
     // reached two storages and the program silently computed the wrong total.
-    let source = r"
-        actor Counter {
-            var count: i64 = 0,
-            receive fn go() {
-                for count in [10, 20, 30] {
-                    count = count + 1;
-                }
-            }
+    let source = r"actor Counter {
+    var count: i64 = 0;
+    receive fn go() {
+        for count in [10, 20, 30] {
+            count = count + 1;
         }
-    ";
+    }
+}
+";
     let (errors, _warnings) = parse_and_check(source);
     assert!(
         errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
@@ -2542,18 +2563,17 @@ fn for_binder_shadowing_a_local_stays_exempt() {
     // The carve-out is scoped to state field names. Reusing a loop variable
     // over an enclosing local is idiomatic and unambiguous, so it must stay
     // silent — neither an error nor the shadowing warning a `let` would draw.
-    let source = r"
-        actor Counter {
-            var count: i64 = 0,
-            receive fn go() {
-                let step = 100;
-                for step in 0..3 {
-                    count = count + step;
-                }
-                count = count + step;
-            }
+    let source = r"actor Counter {
+    var count: i64 = 0;
+    receive fn go() {
+        let step = 100;
+        for step in 0 .. 3 {
+            count = count + step;
         }
-    ";
+        count = count + step;
+    }
+}
+";
     let (errors, warnings) = parse_and_check(source);
     assert!(
         !errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing),
@@ -2568,12 +2588,13 @@ fn for_binder_shadowing_a_local_stays_exempt() {
 #[test]
 fn test_actor_fn_method_field_shadowing_is_error() {
     // Shadowing an actor field via an fn helper method is also a hard error.
-    let source = r"
-        actor Counter {
-            var count: i64 = 0,
-            fn helper(count: i64) -> i64 { count }
-        }
-    ";
+    let source = r"actor Counter {
+    var count: i64 = 0;
+    fn helper(count: i64) -> i64 {
+        count
+    }
+}
+";
     let (errors, _warnings) = parse_and_check(source);
     assert!(
         errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
@@ -2741,14 +2762,13 @@ fn unused_free_fn_param_is_not_warned() {
 fn this_is_not_a_word_in_hew() {
     // `this` carries no actor meaning: inside an actor the handle is `self`,
     // so `this` is an ordinary (undefined) identifier.
-    let source = r"
-        actor Counter {
-            let count: i64,
-            receive fn get() -> i64 {
-                this.count
-            }
-        }
-    ";
+    let source = r"actor Counter {
+    let count: i64;
+    receive fn get() -> i64 {
+        this.count
+    }
+}
+";
     let (errors, _) = parse_and_check(source);
     assert!(
         errors
@@ -3030,8 +3050,7 @@ fn check_resolved_selective_import(child_source: &str, root_source: &str) -> Typ
     checker.check_program(&root.program)
 }
 
-const D8_FIXTURE_SOURCE: &str = "pub type Widget { label: string, }\n\
-                                  pub enum Status { Ok(string), Err(string), }\n";
+const D8_FIXTURE_SOURCE: &str = "pub type Widget {\n    label: string;\n}\n\npub enum Status {\n    Ok(string);\n    Err(string);\n}\n";
 
 #[test]
 fn no_warn_selective_import_used_only_as_record_literal() {
@@ -3094,30 +3113,28 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
             semver.describe(semver.make_label())
         }
     ";
-    let module_source = r#"
-        pub trait Describable {
-            fn describe(val: Self) -> string;
-        }
+    let module_source = r#"pub trait Describable {
+    fn describe(val: Self) -> string;
+}
 
-        pub type Label {
-            text: string,
-        }
+pub type Label {
+    text: string;
+}
 
-        pub fn make_label() -> Label {
-            Label { text: "hello" }
-        }
+pub fn make_label() -> Label {
+    Label { text: "hello" }
+}
 
-        impl Describable for Label {
-            fn describe(label: Label) -> string {
-                label.text
-            }
-        }
+impl Describable for Label {
+    fn describe(label: Label) -> string {
+        label.text
+    }
+}
 
-        pub fn describe<T: Describable>(item: T) -> string {
-            item.describe()
-        }
-
-    "#;
+pub fn describe<T: Describable>(item: T) -> string {
+    item.describe()
+}
+"#;
 
     let mut root = hew_parser::parse(root_source);
     assert!(
@@ -3268,21 +3285,20 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
     // The side table must stay empty for user-defined struct receivers —
     // those flow through `type_defs` and would create duplicate dispatch
     // paths if the helper accepted them.
-    let source = r#"
-        pub trait Display {
-            fn fmt(val: Self) -> string;
-        }
+    let source = r#"pub trait Display {
+    fn fmt(val: Self) -> string;
+}
 
-        pub type MyType {
-            value: i64,
-        }
+pub type MyType {
+    value: i64;
+}
 
-        impl Display for MyType {
-            fn fmt(m: MyType) -> string {
-                ""
-            }
-        }
-    "#;
+impl Display for MyType {
+    fn fmt(m: MyType) -> string {
+        ""
+    }
+}
+"#;
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -3562,19 +3578,25 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
     // side table (the primitive table only houses receivers that
     // `type_defs` cannot reach).  The receiver-kind metadata for the
     // call must be `NamedTypeInstance`, not `PrimitiveTraitImpl`.
-    let source = r#"
-        pub trait Display { fn fmt(val: Self) -> string; }
-        pub type Foo {
-            value: i64,
-        }
-        impl Display for Foo {
-            fn fmt(f: Foo) -> string { "" }
-        }
-        fn main() {
-            let f: Foo = Foo { value: 1 };
-            let _: string = f.fmt();
-        }
-    "#;
+    let source = r#"pub trait Display {
+    fn fmt(val: Self) -> string;
+}
+
+pub type Foo {
+    value: i64;
+}
+
+impl Display for Foo {
+    fn fmt(f: Foo) -> string {
+        ""
+    }
+}
+
+fn main() {
+    let f: Foo = Foo { value: 1 };
+    let _: string = f.fmt();
+}
+"#;
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -3636,17 +3658,25 @@ fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
     // the helper returns `None` immediately.  The test asserts no
     // `PrimitiveTraitImpl` metadata is recorded — the call is handled
     // entirely by the receiver-form dispatch path.
-    let source = r#"
-        pub trait UserDisplay { fn show(val: Self) -> string; }
-        pub type Widget { value: i64, }
-        impl UserDisplay for Widget {
-            fn show(w: Widget) -> string { "" }
-        }
-        fn main() {
-            let w: Widget = Widget { value: 1 };
-            let _: string = w.show();
-        }
-    "#;
+    let source = r#"pub trait UserDisplay {
+    fn show(val: Self) -> string;
+}
+
+pub type Widget {
+    value: i64;
+}
+
+impl UserDisplay for Widget {
+    fn show(w: Widget) -> string {
+        ""
+    }
+}
+
+fn main() {
+    let w: Widget = Widget { value: 1 };
+    let _: string = w.show();
+}
+"#;
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -3988,15 +4018,14 @@ fn print_user_struct_without_display_impl_is_rejected_by_checker() {
     // unless the checker has resolved a Display impl for the printed type.
     // Without that bound, `print(Foo { ... })` should fail here rather than
     // relying on PrintOpLowering's unsupported-aggregate terminal.
-    let source = r#"
-        pub type Foo {
-            label: string,
-        }
+    let source = r#"pub type Foo {
+    label: string;
+}
 
-        fn main() {
-            print(Foo { label: "no display" });
-        }
-    "#;
+fn main() {
+    print(Foo { label: "no display" });
+}
+"#;
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -4251,11 +4280,7 @@ fn count_sleep_loop_blocks_mailbox(diags: &[TypeError]) -> usize {
         .count()
 }
 
-const SLEEP_LOOP_REPRO: &str = "actor Worker {\n\
-     var running: bool = true,\n\
-     receive fn run() { while running { sleep(10ms); } }\n\
-     receive fn halt() { running = false; }\n\
-     }\n";
+const SLEEP_LOOP_REPRO: &str = "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        while running {\n            sleep(10ms);\n        }\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n";
 
 #[test]
 fn sleep_loop_blocks_mailbox_flags_sibling_stopped_loop() {
@@ -4327,11 +4352,7 @@ fn sleep_loop_blocks_mailbox_ignores_non_actor_function() {
 #[test]
 fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
     let (errors, warnings) = parse_and_check(
-        "actor Worker {\n\
-         var running: bool = true,\n\
-         receive fn run() { let f = || { while running { sleep(10ms); } }; let _ = f; }\n\
-         receive fn halt() { running = false; }\n\
-         }\n",
+        "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        let f = || {\n            while running {\n                sleep(10ms);\n            }\n        };\n        let _ = f;\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n",
     );
     assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
     assert_eq!(
@@ -4344,10 +4365,7 @@ fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
 #[test]
 fn sleep_loop_blocks_mailbox_ignores_loop_with_reachable_break() {
     let (errors, warnings) = parse_and_check(
-        "actor Worker {\n\
-         var flag: bool = false,\n\
-         receive fn run() { while true { sleep(1s); if flag { break; } } }\n\
-         }\n",
+        "actor Worker {\n    var flag: bool = false;\n    receive fn run() {\n        while true {\n            sleep(1s);\n            if flag {\n                break;\n            }\n        }\n    }\n}\n",
     );
     assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
     assert_eq!(
@@ -4372,10 +4390,7 @@ fn sleep_loop_blocks_mailbox_ignores_bare_sleep_without_loop() {
 #[test]
 fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
     let (errors, warnings) = parse_and_check(
-        "actor Worker {\n\
-         var running: bool = true,\n\
-         receive fn run() { while running { sleep(10ms); running = false; } }\n\
-         }\n",
+        "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        while running {\n            sleep(10ms);\n            running = false;\n        }\n    }\n}\n",
     );
     assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
     assert_eq!(
@@ -4387,14 +4402,7 @@ fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
 
 #[test]
 fn sleep_loop_blocks_mailbox_suppressed_by_directive() {
-    const SOURCE: &str = "actor Worker {\n\
-         var running: bool = true,\n\
-         receive fn run() {\n\
-             // hew:allow(sleep_loop_blocks_mailbox)\n\
-             while running { sleep(10ms); }\n\
-         }\n\
-         receive fn halt() { running = false; }\n\
-         }\n";
+    const SOURCE: &str = "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        // hew:allow(sleep_loop_blocks_mailbox)\n        while running {\n            sleep(10ms);\n        }\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n";
     let out = check_with_lint_level(SOURCE, LintId::SleepLoopBlocksMailbox, LintLevel::Warn);
     assert!(
         out.errors.is_empty(),

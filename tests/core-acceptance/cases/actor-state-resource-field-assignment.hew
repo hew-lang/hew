@@ -3,8 +3,8 @@
 // handler leaves one complete resource for teardown to close.
 #[resource]
 type Conn {
-    fd: i64,
-    tag: string,
+    fd: i64;
+    tag: string;
 }
 
 impl Conn {
@@ -14,7 +14,7 @@ impl Conn {
 }
 
 actor Holder {
-    var conn: Conn = Conn { fd: 10, tag: "start" },
+    var conn: Conn = Conn { fd: 10, tag: "start" };
 
     receive fn poke(step: i64) -> i64 {
         conn.fd = conn.fd + step;

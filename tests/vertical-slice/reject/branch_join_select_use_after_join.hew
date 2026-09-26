@@ -11,7 +11,7 @@
 // select is the accept half; the single diagnostic after it is the reject half.
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
 
 impl Conn {
@@ -34,15 +34,15 @@ fn select_bodies_are_alternatives(consume held: Conn) -> i64 {
         x from a.ping(1) => {
             held.close();
             x.expect("ask reply")
-        },
+        }
         y from b.ping(2) => {
             held.close();
             y.expect("ask reply")
-        },
+        }
         after 100ms => {
             held.close();
             0
-        },
+        }
     };
     held.detach()
 }

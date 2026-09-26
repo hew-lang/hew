@@ -196,7 +196,7 @@ fn test_decompress_rejects_output_over_the_limit() {
 fn test_codec_failure_does_not_leak_into_the_next_call() {
     match compress.gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(_) => panic("expected a malformed gzip stream to fail"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
     var input: bytes = bytes.new();
     input.push(90);

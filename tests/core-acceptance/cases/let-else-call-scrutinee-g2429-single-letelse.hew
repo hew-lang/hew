@@ -3,6 +3,10 @@ fn f() -> Option<string> {
 }
 
 fn main() {
-    let .Some(b) = f() else { return; };
-    if b.len() == 20 { print("m"); }
+    let .Some(b) = f() else {
+        return;
+    };
+    if b.len() == 20 {
+        print("m");
+    }
 }

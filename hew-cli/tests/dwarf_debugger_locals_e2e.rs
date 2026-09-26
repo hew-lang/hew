@@ -90,7 +90,7 @@ actor Source {
 }
 
 actor Handler {
-    let source: Source,
+    let source: Source;
 
     receive fn run() -> i64 {
         let before: i64 = 7;
@@ -202,12 +202,12 @@ fn main() {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const ENUM_SRC: &str = "\
 type Payload {
-    code: i64,
+    code: i64;
 }
 
 enum Status {
-    Idle,
-    Packet(Payload),
+    Idle;
+    Packet(Payload);
 }
 
 fn main() {

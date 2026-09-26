@@ -5,13 +5,13 @@
 import std.iter;
 
 type Line {
-    label: string,
-    qty: i64,
+    label: string;
+    qty: i64;
 }
 
 fn counts() -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
-    for i in 1..7 {
+    for i in 1 .. 7 {
         v.push(i);
     }
     v
@@ -39,11 +39,7 @@ fn main() {
     println(iter.fold(iter.take(counts().into_iter(), 3), 0, |acc: i64, x: i64| acc + x));
 
     // enumerate + fold over the (index, item) pairs
-    println(iter.fold(
-        iter.enumerate(counts().into_iter()),
-        0,
-        |acc: i64, pair: (i64, i64)| acc + pair.0 * pair.1,
-    ));
+    println(iter.fold(iter.enumerate(counts().into_iter()), 0, |acc: i64, pair: (i64, i64)| acc + pair.0 * pair.1));
 
     // any / find
     println(iter.any(counts().into_iter(), |x: i64| x == 5));
@@ -52,7 +48,6 @@ fn main() {
         .Some(found) => println(found),
         .None => println(-1),
     }
-
     // The fluent VecIter spelling selects the same implementations.
     println(counts().into_iter().fold(0, |acc: i64, x: i64| acc + x));
     println(iter.count(counts().into_iter().skip(4)));
@@ -61,7 +56,6 @@ fn main() {
     // Records through into_iter: the projection owns its strings.
     let quantities = iter.collect(iter.map(lines().into_iter(), |l: Line| l.qty));
     println(iter.fold(quantities.into_iter(), 0, |acc: i64, x: i64| acc + x));
-
     let busy = iter.collect(iter.filter(lines().into_iter(), |l: Line| l.qty > 3));
     println(busy.len());
     println(busy[0].label);

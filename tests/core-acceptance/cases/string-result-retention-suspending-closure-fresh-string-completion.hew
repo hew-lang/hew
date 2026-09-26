@@ -9,7 +9,7 @@ fn borrow_len(value: string) -> i64 {
 }
 
 actor Runner {
-    let gate: Gate,
+    let gate: Gate;
 
     receive fn go(frames: i64) -> i64 {
         let gate_pid = gate;
@@ -20,7 +20,7 @@ actor Runner {
             };
             value
         };
-        for _ in 0..frames {
+        for _ in 0 .. frames {
             let returned = delayed_identity("suspending-owner".to_upper());
             if borrow_len(returned) != 16 {
                 panic("suspending closure returned the wrong string");

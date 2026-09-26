@@ -9,7 +9,9 @@
 // exactly once, by the synthesized state dropper at actor shutdown.
 fn main() {
     let greeting = "hello";
-    let greet = actor |name: string| -> string { f"{greeting}, {name}" };
+    let greet = actor |name: string| -> string {
+        f"{greeting}, {name}"
+    };
     let a = greet("ada");
     match a {
         .Ok(s) => println(s),

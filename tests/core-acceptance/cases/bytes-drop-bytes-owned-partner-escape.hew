@@ -4,6 +4,7 @@ fn make_escape() -> bytes {
     let _len = alias.len();
     source
 }
+
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;

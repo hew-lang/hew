@@ -7,8 +7,8 @@
 import std.stream;
 
 actor Gate {
-    mailbox 1,
-    var done: i64 = 0,
+    mailbox 1;
+    var done: i64 = 0;
 
     // A one-way handler the mailbox view can submit to, and a value-returning
     // one the completion views call. `occupy` runs until its gate opens.
@@ -17,12 +17,18 @@ actor Gate {
         done = done + 1;
     }
 
-    receive fn tally() -> i64 { done }
-    receive fn echo(value: string) -> string { value }
+    receive fn tally() -> i64 {
+        done
+    }
+    receive fn echo(value: string) -> string {
+        value
+    }
 }
 
 actor Spare {
-    receive fn echo(value: string) -> string { value }
+    receive fn echo(value: string) -> string {
+        value
+    }
 }
 
 fn describe<Req>(problem: ActorError<Never, Req>) -> string {
@@ -48,7 +54,7 @@ fn main() {
         .Err(_) => panic("the first submission was refused"),
     }
     match inbox.occupy(open) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("the queued submission was refused"),
     }
     // No seat left while the long turn runs, so the refusing view refuses.
@@ -67,7 +73,7 @@ fn main() {
                 .Ok(value) => println(value == "DÉJÀ\0VU"),
                 .Err(_) => panic("redirection failed"),
             }
-        },
+        }
         _ => panic("the full mailbox accepted a request"),
     }
     // Dropping another rejection must release its original owned string.
@@ -97,13 +103,21 @@ fn main() {
         .Ok(value) => println(value == "RETRY\0ME"),
         .Err(_) => panic("retry failed after capacity became available"),
     }
-    close(gate);
+    {
+        let __hew_migrated_actor_4110 = gate;
+        stop(__hew_migrated_actor_4110);
+        stopped(__hew_migrated_actor_4110);
+    };
     // The original destination is terminal. The detached request still owns
     // its payload, and redirection selects Spare.echo's own handler identity.
     match orphaned.to(spare) {
         .Ok(value) => println(value == "TERMINAL\0ORIGIN"),
         .Err(_) => panic("redirection after origin termination failed"),
     }
-    close(spare);
+    {
+        let __hew_migrated_actor_4453 = spare;
+        stop(__hew_migrated_actor_4453);
+        stopped(__hew_migrated_actor_4453);
+    };
     println("closed");
 }

@@ -5,7 +5,7 @@
 import hew.mixreply;
 
 type Colliding {
-    c: i64,
+    c: i64;
 }
 
 fn main() {
@@ -16,7 +16,7 @@ fn main() {
         .Ok(inner) => match inner {
             .Ok(u) => println(u.u),
             .Err(cc) => println(cc.c),
-        },
+        }
         .Err(_) => println("askerr"),
     }
 }

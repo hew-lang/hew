@@ -4,12 +4,14 @@ fn expect_byte(value: Option<u8>, expected: u8) {
         .None => panic("expected byte"),
     }
 }
+
 fn expect_none(value: Option<u8>) {
     match value {
         .Some(_) => panic("unexpected byte"),
-        .None => {},
+        .None => {}
     }
 }
+
 fn main() {
     var value = bytes.new();
     expect_none(value.get(0));

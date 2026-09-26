@@ -3,8 +3,8 @@
 // affect the clone.
 
 type Label {
-    text: string,
-    rank: i64,
+    text: string;
+    rank: i64;
 }
 
 fn main() -> i64 {

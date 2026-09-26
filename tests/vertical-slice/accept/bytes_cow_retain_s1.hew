@@ -1,7 +1,7 @@
 // A240 retain-on-share Stage S1: compiled ownership probe for every bytes
 // co-owner mint plus mutation-triggered copy-on-write.
 type Holder {
-    payload: bytes,
+    payload: bytes;
 }
 
 fn duplicate(value: bytes) -> (bytes, bytes) {

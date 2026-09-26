@@ -1,6 +1,6 @@
 type Key<T> {
-    label: T,
-    group: i64,
+    label: T;
+    group: i64;
 }
 
 impl<T> Eq for Key<T> {
@@ -10,8 +10,8 @@ impl<T> Eq for Key<T> {
 }
 
 type Envelope {
-    key: Key<string>,
-    tags: Vec<string>,
+    key: Key<string>;
+    tags: Vec<string>;
 }
 
 fn contains<T: Eq>(values: Vec<T>, wanted: T) -> bool {

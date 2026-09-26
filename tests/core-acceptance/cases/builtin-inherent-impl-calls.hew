@@ -5,11 +5,9 @@ fn main() {
     var nums: Vec<i64> = [1, 2];
     let more: Vec<i64> = [3, 4];
     nums.append(more);
-
     var words: Vec<string> = ["alpha"];
     let rest: Vec<string> = ["beta", "gamma"];
     words.append(rest);
-
     let empty: Vec<string> = Vec.new();
     let joined = words.join("-");
     let nothing = empty.join(",");

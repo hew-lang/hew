@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn semantic_tokens_mark_function_and_type_declarations() {
-        let source = "type Point { x: i32 }\ntrait Stream { type Item; fn next() -> i32; }\nfn calc(v: i32) -> i32 { v }";
+        let source = "type Point {\n    x: i32;\n}\n\ntrait Stream {\n    type Item;\n    fn next() -> i32;\n}\n\nfn calc(v: i32) -> i32 {\n    v\n}\n";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
         let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
@@ -1085,7 +1085,7 @@ mod tests {
         // Place the cursor right after the dot (before the field name) to simulate
         // the user typing `p.` and requesting completions.
         let source =
-            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1265,7 +1265,7 @@ mod tests {
 
     #[test]
     fn completions_enum_variant_after_dot() {
-        let source = "enum Color { Blue, Point { x: i32, y: i32 }, Rgb(u8, u8, u8), }\nfn main() { let color = Color.Blue; }";
+        let source = "enum Color {\n    Blue;\n    Point { x: i32; y: i32;  }\n    Rgb(u8, u8, u8);\n}\n\nfn main() {\n    let color = Color.Blue;\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1464,9 +1464,15 @@ mod tests {
 
     #[test]
     fn completions_cover_type_impl_methods_if_else_match_and_patterns() {
-        let source = r"
-type Point { x: i32, y: i32, }
-enum Result { Ok(i32), Err(i32), }
+        let source = r"type Point {
+    x: i32;
+    y: i32;
+}
+
+enum Result {
+    Ok(i32);
+    Err(i32);
+}
 
 type Worker {
     fn process(input: i32, point: Point, result: Result) -> i32 {
@@ -1482,10 +1488,10 @@ type Worker {
                     let Point { x, y: y_value } = point;
                     let match_local = ok_value + x + y_value;
                     match_local
-                },
+                }
                 Result.Err(err_a) | Result.Err(err_b) => {
                     err_a + err_b
-                },
+                }
             }
         }
     }
@@ -1563,7 +1569,7 @@ impl Worker {
 
     #[test]
     fn goto_def_receive_method() {
-        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\nfn main() { let c = spawn Counter(count: 0); c.increment(1); }";
+        let source = "actor Counter {\n    let count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    c.increment(1);\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let call_offset = source.rfind("increment").unwrap();
@@ -1607,7 +1613,7 @@ impl Worker {
     #[test]
     fn goto_def_resolves_checked_struct_field_access() {
         let source =
-            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let doc = make_typed_doc(source);
         let offset = source.rfind("p.x").unwrap() + 2;
         let word = word_at_offset(source, offset).unwrap();
@@ -1634,7 +1640,7 @@ impl Worker {
 
     #[test]
     fn checked_field_navigation_and_references_keep_nominal_owners_distinct() {
-        let source = "type A { x: i64 }\ntype B { x: i64 }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.x); println(b.x); }";
+        let source = "type A {\n    x: i64;\n}\n\ntype B {\n    x: i64;\n}\n\nfn main() {\n    let a = A { x: 1 };\n    let b = B { x: 2 };\n    println(a.x);\n    println(b.x);\n}\n";
         let doc = make_typed_doc(source);
         let uri = make_test_uri("/identity-fields.hew");
         let a_use = source.find("a.x").unwrap() + 2;
@@ -1720,7 +1726,7 @@ impl Worker {
 
     #[test]
     fn checked_field_rename_edits_only_the_selected_owner() {
-        let source = "type A { x: i64 }\ntype B { x: i64 }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.x); println(b.x); }";
+        let source = "type A {\n    x: i64;\n}\n\ntype B {\n    x: i64;\n}\n\nfn main() {\n    let a = A { x: 1 };\n    let b = B { x: 2 };\n    println(a.x);\n    println(b.x);\n}\n";
         let doc = make_typed_doc(source);
         let uri = make_test_uri("/identity-rename.hew");
         let offset = source.find("b.x").unwrap() + 2;
@@ -1752,7 +1758,7 @@ impl Worker {
     #[test]
     fn checked_field_rename_rejects_an_existing_field() {
         let source =
-            "type B { x: i64, y: i64 }\nfn main() { let b = B { x: 1, y: 2 }; println(b.x); }";
+            "type B {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let b = B { x: 1, y: 2 };\n    println(b.x);\n}\n";
         let doc = make_typed_doc(source);
         let uri = make_test_uri("/identity-field-conflict.hew");
         let offset = source.find("b.x").unwrap() + 2;
@@ -1767,7 +1773,7 @@ impl Worker {
 
     #[test]
     fn checked_method_navigation_selects_second_impl() {
-        let source = "type A { x: i64 }\nimpl A { fn get(self) -> i64 { self.x } }\ntype B { x: i64 }\nimpl B { fn get(self) -> i64 { self.x } }\nfn main() { let b = B { x: 2 }; println(b.get()); }";
+        let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\ntype B {\n    x: i64;\n}\n\nimpl B {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\nfn main() {\n    let b = B { x: 2 };\n    println(b.get());\n}\n";
         let doc = make_typed_doc(source);
         let uri = make_test_uri("/identity-methods.hew");
         let call = source.rfind("b.get").unwrap() + 2;
@@ -1804,7 +1810,7 @@ impl Worker {
 
     #[test]
     fn checked_call_hierarchy_incoming_keeps_same_named_methods_separate() {
-        let source = "type A { x: i64 }\nimpl A { fn get(self) -> i64 { self.x } }\ntype B { x: i64 }\nimpl B { fn get(self) -> i64 { self.x } }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.get()); println(b.get()); }";
+        let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\ntype B {\n    x: i64;\n}\n\nimpl B {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\nfn main() {\n    let a = A { x: 1 };\n    let b = B { x: 2 };\n    println(a.get());\n    println(b.get());\n}\n";
         let doc = make_typed_doc(source);
         let uri = make_test_uri("/identity-call-hierarchy.hew");
         let declaration = source.rfind("fn get").unwrap() + 3;
@@ -1858,7 +1864,7 @@ impl Worker {
 
     #[test]
     fn checked_signature_help_selects_overloaded_method_identity() {
-        let source = "type A { x: i64 }\nimpl A { fn pick(self, first: i64) -> i64 { first } }\ntype B { x: i64 }\nimpl B { fn pick(self, second: bool) -> bool { second } }\nfn main() { let b = B { x: 2 }; println(b.pick(true)); }";
+        let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn pick(self, first: i64) -> i64 {\n        first\n    }\n}\n\ntype B {\n    x: i64;\n}\n\nimpl B {\n    fn pick(self, second: bool) -> bool {\n        second\n    }\n}\n\nfn main() {\n    let b = B { x: 2 };\n    println(b.pick(true));\n}\n";
         let doc = make_typed_doc(source);
         let offset = source.find("b.pick(true)").unwrap() + "b.pick(".len();
         let help = hew_analysis::signature_help::build_signature_help(
@@ -1876,8 +1882,8 @@ impl Worker {
     fn checked_imported_type_navigation_uses_its_source_module() {
         let main_source =
             "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { x: 1 }; println(shape.x); }";
-        let imported_source = "pub type Shape { x: i64 }";
-        let other_source = "pub type Shape { x: bool }";
+        let imported_source = "pub type Shape {\n    x: i64;\n}\n";
+        let other_source = "pub type Shape {\n    x: bool;\n}\n";
         let main_uri = make_test_uri("/fake/identity/main.hew");
         let imported_uri = make_test_uri("/fake/identity/ma.hew");
         let other_uri = make_test_uri("/fake/identity/mb.hew");
@@ -1925,8 +1931,8 @@ impl Worker {
     #[test]
     fn checked_imported_record_completion_uses_the_selected_module() {
         let main_source = "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { width: 1 }; println(shape.width); }";
-        let selected_source = "pub type Shape { width: i64 }";
-        let other_source = "pub type Shape { colour: i64 }";
+        let selected_source = "pub type Shape {\n    width: i64;\n}\n";
+        let other_source = "pub type Shape {\n    colour: i64;\n}\n";
         let main_uri = make_test_uri("/fake/identity-completion/main.hew");
         let documents = DashMap::new();
         documents.insert(
@@ -1957,7 +1963,7 @@ impl Worker {
 
     #[test]
     fn user_stream_completion_excludes_builtin_stream_methods() {
-        let source = "type Stream { value: i64 }\nimpl Stream { fn own(self) -> i64 { self.value } }\nfn main() { let stream = Stream { value: 1 }; println(stream.own()); }";
+        let source = "type Stream {\n    value: i64;\n}\n\nimpl Stream {\n    fn own(self) -> i64 {\n        self.value\n    }\n}\n\nfn main() {\n    let stream = Stream { value: 1 };\n    println(stream.own());\n}\n";
         let doc = make_typed_doc(source);
         let offset = source.find("stream.own").unwrap() + "stream.".len();
         let items = hew_analysis::completions::complete(
@@ -1976,7 +1982,7 @@ impl Worker {
     #[test]
     fn goto_def_resolves_nominal_type_name_to_declaration_span() {
         let source =
-            "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
+            "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn origin() -> Point {\n    Point { x: 0, y: 0 }\n}\n";
         let doc = make_typed_doc(source);
         let offset = source.find("-> Point").unwrap() + "-> ".len();
 
@@ -2098,7 +2104,7 @@ impl Worker {
     #[test]
     fn hover_on_type_name() {
         let source =
-            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let parse_result = hew_parser::parse(source);
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
@@ -2161,14 +2167,15 @@ impl Worker {
     #[test]
     fn folding_ranges_for_actor() {
         let source = r"actor Counter {
-    count: i32,
+    let count: i32;
     receive fn increment(n: i32) {
         count = count + n;
     }
     receive fn get() -> i32 {
         count
     }
-}";
+}
+";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2245,7 +2252,7 @@ impl Worker {
 
     #[test]
     fn type_hierarchy_item_for_struct() {
-        let source = "type Point { x: i32, y: i32 }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2294,7 +2301,7 @@ impl Worker {
 
     #[test]
     fn subtypes_via_impl_for() {
-        let source = "trait Drawable { fn draw() -> i32; }\ntype Circle { r: i32 }\nimpl Drawable for Circle { fn draw() -> i32 { 0 } }";
+        let source = "trait Drawable {\n    fn draw() -> i32;\n}\n\ntype Circle {\n    r: i32;\n}\n\nimpl Drawable for Circle {\n    fn draw() -> i32 {\n        0\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2305,7 +2312,7 @@ impl Worker {
 
     #[test]
     fn supertypes_via_impl_for() {
-        let source = "trait Drawable { fn draw() -> i32; }\ntype Circle { r: i32 }\nimpl Drawable for Circle { fn draw() -> i32 { 0 } }";
+        let source = "trait Drawable {\n    fn draw() -> i32;\n}\n\ntype Circle {\n    r: i32;\n}\n\nimpl Drawable for Circle {\n    fn draw() -> i32 {\n        0\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2618,7 +2625,7 @@ impl Worker {
 
     #[test]
     fn workspace_symbols_finds_functions_and_types() {
-        let source = "fn compute() -> i32 { 0 }\ntype Widget { w: i32 }\nconst MAX: i32 = 100;";
+        let source = "fn compute() -> i32 {\n    0\n}\n\ntype Widget {\n    w: i32;\n}\n\nconst MAX: i32 = 100;\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2646,7 +2653,7 @@ impl Worker {
 
     #[test]
     fn workspace_symbols_filters_by_query() {
-        let source = "fn compute() -> i32 { 0 }\nfn render() -> i32 { 0 }\ntype Widget { w: i32 }";
+        let source = "fn compute() -> i32 {\n    0\n}\n\nfn render() -> i32 {\n    0\n}\n\ntype Widget {\n    w: i32;\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2709,17 +2716,18 @@ impl Worker {
     #[test]
     fn workspace_symbols_include_fields_states_and_events() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 machine Traffic {
     events {
-        Start,
+        Start;
     }
 
-    state Idle,
-    on Start: Idle => .Idle,
-}";
+    state Idle;
+    on Start: Idle => .Idle;
+}
+";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -3090,7 +3098,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_actor_with_receive() {
-        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) { count = count + n; }\n}";
+        let source = "actor Counter {\n    let count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -3106,7 +3114,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_enum() {
-        let source = "enum Colour { Red, Green, Blue, }";
+        let source = "enum Colour {\n    Red;\n    Green;\n    Blue;\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -3122,7 +3130,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_with_children() {
-        let source = "type Point { x: i32, y: i32, fn distance() -> i32 { 0 } }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n    fn distance() -> i32 {\n        0\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -3146,17 +3154,18 @@ machine Traffic {
     #[test]
     fn document_symbols_use_child_definition_ranges() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 machine Traffic {
     events {
-        Start,
+        Start;
     }
 
-    state Idle,
-    on Start: Idle => .Idle,
-}";
+    state Idle;
+    on Start: Idle => .Idle;
+}
+";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -3386,14 +3395,17 @@ machine Traffic {
     #[test]
     fn code_actions_for_non_exhaustive_match() {
         use hew_analysis::code_actions::{build_code_actions, DiagnosticInfo};
-        let source = r#"
-            enum Colour { Red, Blue, }
-            fn label(colour: Colour) -> string {
-                match colour {
-                    .Red => "red",
-                }
-            }
-        "#;
+        let source = r#"enum Colour {
+    Red;
+    Blue;
+}
+
+fn label(colour: Colour) -> string {
+    match colour {
+        .Red => "red",
+    }
+}
+"#;
         let uri = Url::parse("file:///test.hew").unwrap();
         let lo = compute_line_offsets(source);
         let diag = analyzed_diagnostics(&uri, source)
@@ -4597,7 +4609,7 @@ machine Traffic {
     fn cross_file_goto_named_import_resolves_to_open_document() {
         // `main.hew` imports `Counter` from `counter.hew` (open in the editor).
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4631,7 +4643,7 @@ machine Traffic {
         // span.
         let main_source =
             "import counter.{ Counter };\nfn main() -> Counter { Counter { value: 1 } }";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4692,7 +4704,7 @@ machine Traffic {
     fn cross_file_goto_aliased_import_resolves_by_alias() {
         // `import counter::{ Counter as Cnt }` — cursor on `Cnt` in usage.
         let main_source = "import counter.{ Counter as Cnt };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4713,7 +4725,7 @@ machine Traffic {
     #[test]
     fn cross_file_goto_selected_import_resolves_to_open_document() {
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4734,7 +4746,7 @@ machine Traffic {
     fn cross_file_goto_absent_name_returns_none() {
         // `NotDefined` is not in counter.hew.
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4752,7 +4764,7 @@ machine Traffic {
     fn cross_file_goto_name_not_in_explicit_imports_returns_none() {
         // `Bar` is not in the explicit import list even though counter.hew defines it.
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }\ntype Bar { x: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n\ntype Bar {\n    x: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4773,7 +4785,7 @@ machine Traffic {
     fn cross_file_goto_transitive_import_resolves_one_hop_deeper() {
         let main_source = "import middle.{ Counter };\nfn main() {}";
         let middle_source = "import leaf.{ Counter };\nfn helper() {}";
-        let leaf_source = "type Counter { value: i32 }";
+        let leaf_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let middle_uri = make_test_uri("/project/middle.hew");
@@ -4819,7 +4831,8 @@ machine Traffic {
     #[test]
     fn cross_file_goto_multiple_imports_from_same_file_do_not_leak_seen() {
         let main_source = "import middle.{ Timer };\nimport middle.{ Counter };\nfn main() {}";
-        let middle_source = "type Counter { value: i32 }\ntype Timer { ticks: i32 }";
+        let middle_source =
+            "type Counter {\n    value: i32;\n}\n\ntype Timer {\n    ticks: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let middle_uri = make_test_uri("/project/middle.hew");
@@ -6984,22 +6997,7 @@ machine Traffic {
     /// the hew-corpus gate compiles every tracked `.hew` in the tree, and a
     /// refused program there would need a ratchet row it has not earned. The
     /// accepted `Worker` actor-handle value form lives in the fixture instead.
-    const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n\
-         First,\n\
-         Second,\n\
-         }\n\
-         \n\
-         fn is_probe() -> i32 {\n\
-         7\n\
-         }\n\
-         \n\
-         fn is_operator(value: Payload) -> i32 {\n\
-         if value is Payload {\n\
-         is_probe()\n\
-         } else {\n\
-         0\n\
-         }\n\
-         }\n";
+    const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n    First;\n    Second;\n}\n\nfn is_probe() -> i32 {\n    7\n}\n\nfn is_operator(value: Payload) -> i32 {\n    if value is Payload {\n        is_probe()\n    } else {\n        0\n    }\n}\n";
 
     #[test]
     fn v05_is_operator_value_form_fixture_is_accepted() {

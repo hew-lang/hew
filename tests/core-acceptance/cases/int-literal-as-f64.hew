@@ -2,7 +2,7 @@
 // same constant at float width: it reaches a binding, a record field, a call
 // argument and an accumulator without a written decimal point.
 type Reading {
-    level: f64,
+    level: f64;
 }
 
 fn scale(factor: f64, value: f64) -> f64 {
@@ -18,7 +18,7 @@ fn main() {
     let reading = Reading { level: 7 };
     println(reading.level + 0.5);
     var total: f64 = 0;
-    for i in 0..4 {
+    for i in 0 .. 4 {
         total = total + 1;
     }
     println(total);

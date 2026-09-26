@@ -1,7 +1,7 @@
 //! Generic Vec<T> scalar indexing must admit type-parameter elements.
 
 type VecIndexName {
-    label: string,
+    label: string;
 }
 
 fn generic_at<T>(xs: Vec<T>, idx: i64) -> T {

@@ -13,7 +13,7 @@
 //! legible.
 
 type Countdown {
-    n: i64,
+    n: i64;
 }
 
 impl Iterator for Countdown {
@@ -38,10 +38,10 @@ fn count_items<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
         match cur.next() {
             .Some(_x) => {
                 c = c + 1;
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     c
@@ -56,10 +56,10 @@ fn collect_items<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
         match cur.next() {
             .Some(x) => {
                 out.push(x);
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     out

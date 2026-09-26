@@ -129,19 +129,22 @@ fn user_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
     );
 
     let (_, output) = parse_and_typecheck_inline(
-        r"
-        type Widget { tag: i64 }
+        r"type Widget {
+    tag: i64;
+}
 
-        impl Widget {
-            #[extern_symbol(hew_duration_hours)]
-            fn poke(self) -> i64 { return 0; }
-        }
+impl Widget {
+    #[extern_symbol(hew_duration_hours)]
+    fn poke(self) -> i64 {
+        return 0;
+    }
+}
 
-        fn main() {
-            let w: Widget = Widget { tag: 1 };
-            let _: i64 = w.poke();
-        }
-        ",
+fn main() {
+    let w: Widget = Widget { tag: 1 };
+    let _: i64 = w.poke();
+}
+",
     );
     assert!(
         output.errors.is_empty(),

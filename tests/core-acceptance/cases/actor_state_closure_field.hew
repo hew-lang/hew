@@ -6,14 +6,22 @@ actor Audit {
 }
 
 #[resource]
-type Ticket { audit: Audit, id: i64, }
+type Ticket {
+    audit: Audit;
+    id: i64;
+}
+
 impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("audit close"); }
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit close");
+    }
 }
 
 actor Worker {
-    var callback: fn(i64) -> i64 = |value: i64| value,
-    receive fn apply(value: i64) -> i64 { callback(value) }
+    var callback: fn(i64) -> i64 = |value: i64| value;
+    receive fn apply(value: i64) -> i64 {
+        callback(value)
+    }
     receive fn configure(audit: Audit) {
         let held = Rc.new(Ticket { audit: audit, id: 5 });
         callback = move |value: i64| {
@@ -29,7 +37,15 @@ fn main() {
     println(worker.apply(1).expect("default closure"));
     worker.configure(audit).expect("configure closure");
     println(worker.apply(2).expect("capturing closure"));
-    close(worker);
+    {
+        let __hew_migrated_actor_895 = worker;
+        stop(__hew_migrated_actor_895);
+        stopped(__hew_migrated_actor_895);
+    };
     println("barrier");
-    close(audit);
+    {
+        let __hew_migrated_actor_938 = audit;
+        stop(__hew_migrated_actor_938);
+        stopped(__hew_migrated_actor_938);
+    };
 }

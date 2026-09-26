@@ -18,14 +18,14 @@
 import std.stream;
 
 actor Fast {
-    let tag: i64,
+    let tag: i64;
     receive fn compute(n: i64) -> i64 {
         n + tag
     }
 }
 
 actor Slow {
-    var gate: stream.Stream<i64>,
+    var gate: stream.Stream<i64>;
     receive fn compute(n: i64) -> i64 {
         gate.recv();
         n
@@ -33,18 +33,18 @@ actor Slow {
 }
 
 actor Coordinator {
-    let fast: Fast,
-    let slow: Slow,
+    let fast: Fast;
+    let slow: Slow;
     receive fn race_two(n: i64) -> i64 {
         let winner = select {
             reply from fast.compute(n) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -7,
-            },
+            }
             reply from slow.compute(99) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -7,
-            },
+            }
         };
         winner
     }

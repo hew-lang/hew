@@ -1168,12 +1168,15 @@ mod tests {
             AuthoritySource::embedded(
                 StdlibRoot::Builtins,
                 "std/builtins.hew",
-                r#"
-#[lang_item("option")]
-pub enum Maybe<T> { Some(T), None, }
+                r#"#[lang_item("option")]
+pub enum Maybe<T> {
+    Some(T);
+    None;
+}
 
 #[intrinsic("math.sqrt")]
-pub fn sqrt(x: f64) -> f64;
+pub fn sqrt(x: f64) -> f64 {
+}
 
 #[diagnostic_item("fs")]
 pub fn read_file() {}
@@ -1184,7 +1187,6 @@ pub fn println_i64(value: i64) {}
 extern "C" {
     #[abi(ret = bytes_triple, bytes_param = ptr, drop = cow_null_tolerant)]
     fn hew_bytes();
-
     #[runtime_capability("blocking_offload")]
     fn hew_connect();
 }

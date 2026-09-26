@@ -7,7 +7,7 @@ actor Worker {
 }
 
 supervisor Team {
-    child worker: Worker() stop: 50ms,
+    child worker: Worker() stop: 50ms;
 }
 
 fn main() {

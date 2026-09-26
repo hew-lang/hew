@@ -3,7 +3,7 @@ pub trait Base {
 }
 
 pub type Badge {
-    code: i64,
+    code: i64;
 }
 
 pub fn decorate(value: string) -> string {

@@ -3,12 +3,16 @@
 // elements the failing one left behind are still closed exactly once, and the
 // statement after the clear never runs.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {
         println(f"close {self.fd}");
-        if self.fd == 2 { panic("close failed"); }
+        if self.fd == 2 {
+            panic("close failed");
+        }
     }
 }
 

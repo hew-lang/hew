@@ -39,17 +39,17 @@ pub type Location {
 }
 
 pub type NodeConfig {
-    bind: string,
-    transport: string,
-    key: string,
-    trust: string,
-    peers: Vec<string>,
-    seeds: Vec<string>,
+    bind: string;
+    transport: string;
+    key: string;
+    trust: string;
+    peers: Vec<string>;
+    seeds: Vec<string>;
 }
 
 /// A node lifecycle operation could not apply the supplied configuration.
 pub enum NodeError {
-    Config,
+    Config;
 }
 
 impl NodeConfig {
@@ -78,7 +78,7 @@ pub type RemotePid<T> {
 /// type records whether submission can suspend. A call on the actor handle itself waits for the
 /// handler to finish instead.
 pub type ActorMailbox<Target, Policy> {
-    target: Target,
+    target: Target;
 }
 
 /// An immutable completion view choosing how its own calls are admitted.
@@ -88,15 +88,15 @@ pub type ActorMailbox<Target, Policy> {
 /// `.Wait` is the bare-handle behaviour; `.Reject` yields
 /// `ActorError.Rejected(failure)` instead of parking the caller.
 pub type ActorPolicy<Target, Policy> {
-    target: Target,
+    target: Target;
 }
 
 /// Owned request description for one-way submission recovery.
 /// Consuming `retry()` and `to(target)` retain the request's typing.
 pub type Message<Target, Payload, Policy> {
-    target: Target,
-    message_id: u32,
-    payload: Payload,
+    target: Target;
+    message_id: u32;
+    payload: Payload;
 }
 
 /// Internal owner of an unaccepted completion request.
@@ -125,21 +125,21 @@ extern "C" {
 /// The request protocol is a sealed, inferred type parameter. The original
 /// payload stays inside its runtime owner until admission or cleanup.
 pub type ActorRequest<Protocol> {
-    owner: ActorRequestOwner,
+    owner: ActorRequestOwner;
 }
 
 /// A rejected submission retains its complete unaccepted message.
 pub type SendFailure<M> {
-    reason: SendError,
-    message: M,
+    reason: SendError;
+    message: M;
 }
 
 /// Successful submission describes acceptance or a discard. A discard is a
 /// loss either the destination's declared mailbox policy or the sender's own
 /// `on_full` chose; the message is gone either way and nothing is retryable.
 pub enum Delivery {
-    Accepted,
-    Discarded,
+    Accepted;
+    Discarded;
 }
 
 impl Display for Delivery {
@@ -153,10 +153,10 @@ impl Display for Delivery {
 
 /// A sender chooses how its own submission responds to a full mailbox.
 pub enum OnFull {
-    Reject,
-    Wait,
-    DropNewest,
-    ReplaceLatest,
+    Reject;
+    Wait;
+    DropNewest;
+    ReplaceLatest;
 }
 
 // Compiler-selected immutable policy witnesses. They contain no runtime state.
@@ -175,27 +175,27 @@ pub type ReplaceLatestSend {
 /// Error returned when a send cannot be completed.
 pub enum SendError {
     /// The destination mailbox is full.
-    Full,
+    Full;
     /// A sink or connection has closed.
-    Closed,
+    Closed;
     /// Cross-node routing has not been wired for this runtime path yet.
-    NodeRoutingNotWired,
+    NodeRoutingNotWired;
     /// The route to the peer is unavailable or the peer is suspected dead.
-    Partition,
+    Partition;
     /// The pid refers to an old session or actor incarnation.
-    StaleRef,
+    StaleRef;
     /// The local node is shutting down before the send can complete.
-    LocalShutdown,
+    LocalShutdown;
     /// The caller cancelled the send before it completed.
-    Cancelled,
+    Cancelled;
     /// The peer rejected the send because protocol or schema versions differ.
-    VersionMismatch,
+    VersionMismatch;
     /// The peer rejected the send because the caller lacks authority.
-    Unauthorized,
+    Unauthorized;
     /// The destination or route is applying flow control.
-    Backpressure,
+    Backpressure;
     /// The destination actor accepts no more messages.
-    Dead,
+    Dead;
 }
 
 impl Display for SendError {
@@ -226,21 +226,21 @@ impl Display for SendError {
 /// per `set_last_error` for the diagnostic detail.
 pub enum LookupError {
     /// No actor is registered under the requested name.
-    NotFound,
+    NotFound;
     /// The lookup route is unavailable or the peer is suspected dead.
-    Partition,
+    Partition;
     /// The caller's lookup deadline elapsed before a result arrived.
-    Timeout,
+    Timeout;
     /// The name resolved to an old session or actor incarnation.
-    StaleRef,
+    StaleRef;
     /// The caller cancelled the lookup before it completed.
-    Cancelled,
+    Cancelled;
     /// The local node is shutting down before the lookup can complete.
-    LocalShutdown,
+    LocalShutdown;
     /// The peer rejected the lookup because protocol or schema versions differ.
-    VersionMismatch,
+    VersionMismatch;
     /// The peer rejected the lookup because the caller lacks authority.
-    Unauthorized,
+    Unauthorized;
 }
 
 impl Display for LookupError {
@@ -284,25 +284,25 @@ impl Display for Never {
 pub enum ActorError<E, Req> {
     /// Nothing was accepted. `failure.reason` explains why;
     /// `failure.message.retry()` or `.to(target)` consumes the sealed request.
-    Rejected(SendFailure<Req>),
+    Rejected(SendFailure<Req>);
     /// The handler ran and returned its declared error.
-    Failed(E),
+    Failed(E);
     /// The handler faulted; its actor retains ownership of the fault.
-    Trapped,
+    Trapped;
     /// The destination actor is gone and will not come back.
-    Dead,
+    Dead;
     /// The caller's deadline elapsed before a reply arrived.
-    Timeout,
+    Timeout;
     /// The local node is not running.
-    NodeNotRunning,
+    NodeNotRunning;
     /// The destination node or actor could not be routed.
-    RoutingFailed,
+    RoutingFailed;
     /// The request payload could not be encoded.
-    EncodeFailed,
+    EncodeFailed;
     /// The remote connection closed before the reply arrived.
-    ConnectionDropped,
+    ConnectionDropped;
     /// The route to the peer is unavailable or the peer is suspected dead.
-    Partition,
+    Partition;
 }
 
 impl<E, Req> Display for ActorError<E, Req> {
@@ -331,7 +331,7 @@ impl<E, Req> Display for ActorError<E, Req> {
 /// timer arm; there is no timeout combinator on the call itself.
 pub enum TimeoutError {
     /// The deadline fired before the recv completed.
-    Timeout,
+    Timeout;
 }
 
 impl Display for TimeoutError {
@@ -345,9 +345,9 @@ impl Display for TimeoutError {
 /// Failure to subscribe to an actor's exit through `link` or `monitor`.
 /// Both operations require a current actor to receive the notification.
 pub enum LinkError {
-    Dead,
-    Partition,
-    NoContext,
+    Dead;
+    Partition;
+    NoContext;
 }
 
 impl Display for LinkError {
@@ -565,8 +565,8 @@ impl<T> Vec<T> {
 /// per-stdlib-module receiver-impl harness only handles a fixed set of
 /// receivers; auto-registration on builtin nominals belongs in builtins).
 pub type VecIter<T> {
-    vec: Vec<T>,
-    idx: i64,
+    vec: Vec<T>;
+    idx: i64;
 }
 
 impl<T> Iterator for VecIter<T> {
@@ -622,9 +622,9 @@ impl<T> IntoIterator for Vec<T> {
 /// receiver stays `Live` after exhaustion and drops at scope exit — the
 /// `Iterator` "exhaustion ≠ drop" invariant.
 pub type HashMapIter<K, V> {
-    ks: Vec<K>,
-    vs: Vec<V>,
-    idx: i64,
+    ks: Vec<K>;
+    vs: Vec<V>;
+    idx: i64;
 }
 
 impl<K, V> Iterator for HashMapIter<K, V> {
@@ -1122,6 +1122,6 @@ pub fn panic(message: string) {}
 /// A structured scope failure, available only after child and deferred cleanup.
 /// Parent cancellation propagates to the enclosing scope and is not recoverable here.
 pub enum ScopeFailure {
-    Deadline { message: string },
-    Fault { message: string },
+    Deadline { message: string; }
+    Fault { message: string; }
 }

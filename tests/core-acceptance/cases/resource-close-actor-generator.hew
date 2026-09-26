@@ -6,9 +6,15 @@ actor Audit {
 }
 
 #[resource]
-type Ticket { audit: Audit, id: i64, }
+type Ticket {
+    audit: Audit;
+    id: i64;
+}
+
 impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("generator close"); }
+    fn close(consume self) {
+        self.audit.record(self.id).expect("generator close");
+    }
 }
 
 gen fn numbers(consume held: Ticket) -> i64 {
@@ -18,11 +24,13 @@ gen fn numbers(consume held: Ticket) -> i64 {
 
 actor Worker {
     receive fn run(audit: Audit) {
-        { let _unused = numbers(Ticket { audit: audit, id: 1 }); }
+        {
+            let _unused = numbers(Ticket { audit: audit, id: 1 });
+        };
         {
             let started = numbers(Ticket { audit: audit, id: 2 });
             println(started.next().expect("first yield"));
-        }
+        };
         for value in numbers(Ticket { audit: audit, id: 3 }) {
             println(value);
             break;
@@ -35,6 +43,14 @@ fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
     worker.run(audit).expect("generator cleanup");
-    close(worker);
-    close(audit);
+    {
+        let __hew_migrated_actor_945 = worker;
+        stop(__hew_migrated_actor_945);
+        stopped(__hew_migrated_actor_945);
+    };
+    {
+        let __hew_migrated_actor_964 = audit;
+        stop(__hew_migrated_actor_964);
+        stopped(__hew_migrated_actor_964);
+    };
 }

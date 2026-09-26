@@ -5,7 +5,7 @@ trait Labeled {
 }
 
 type Person {
-    label: string,
+    label: string;
 }
 
 impl Labeled for Person {
@@ -15,8 +15,8 @@ impl Labeled for Person {
 }
 
 type Parcel {
-    label: string,
-    route: string,
+    label: string;
+    route: string;
 }
 
 impl Labeled for Parcel {
@@ -29,10 +29,7 @@ fn make_labeled(seed: string, kind: i64) -> dyn Labeled {
     if kind == 0 {
         Person { label: string.repeat(seed, 64) }
     } else {
-        Parcel {
-            label: string.repeat(seed, 96),
-            route: string.repeat(seed, 17),
-        }
+        Parcel { label: string.repeat(seed, 96), route: string.repeat(seed, 17) }
     }
 }
 
@@ -41,10 +38,12 @@ fn inspect(value: dyn Labeled) -> i64 {
 }
 
 fn main() -> i64 {
-    for frame in 0..50 {
+    for frame in 0 .. 50 {
         let person = make_labeled(f"person-{frame}", 0);
         let parcel = make_labeled(f"parcel-{frame}", 1);
-        if inspect(person) < 64 || inspect(parcel) < 96 { return 91; }
+        if inspect(person) < 64 || inspect(parcel) < 96 {
+            return 91;
+        }
     }
     print("OK");
     0

@@ -11,11 +11,11 @@ fn main() {
             }
             server.close();
             println("websocket:ok");
-        },
+        }
         .Err(err) => {
             let reason = to_string(err);
             let detail = websocket.last_error();
             println(f"websocket:listen-failed {reason} - {detail}");
-        },
+        }
     }
 }

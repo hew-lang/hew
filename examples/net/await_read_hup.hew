@@ -14,7 +14,7 @@ actor Reader {
             .Err(_) => {
                 println("connect refused");
                 return;
-            },
+            }
         };
         match conn.recv() {
             .Some(body) => println(f"read {body.len()} bytes"),

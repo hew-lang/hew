@@ -16,7 +16,7 @@
 
 /// Legacy aggregation record; current scope recovery uses `ScopeFailure`.
 pub type ScopeError<E> {
-    primary: E,
-    also_failed: Vec<E>,
-    cancelled_count: i64,
+    primary: E;
+    also_failed: Vec<E>;
+    cancelled_count: i64;
 }

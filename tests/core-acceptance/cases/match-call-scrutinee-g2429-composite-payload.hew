@@ -1,6 +1,6 @@
 type Row {
-    name: string,
-    id: i64,
+    name: string;
+    id: i64;
 }
 
 fn f(n: i64) -> Result<Row, string> {
@@ -12,10 +12,16 @@ fn main() -> i64 {
     var i = 0;
     while i < 50 {
         match f(i) {
-            .Ok(r) => { total = total + r.id; }
+            .Ok(r) => {
+                total = total + r.id;
+            }
             .Err(e) => {}
         }
         i = i + 1;
     }
-    if total >= 0 { 0 } else { 1 }
+    if total >= 0 {
+        0
+    } else {
+        1
+    }
 }

@@ -30,7 +30,7 @@
 /// `ParseError.Invalid(message)` constructor/pattern style.
 pub enum ParseError {
     /// The input was not valid TOML. Carries the native parser message.
-    Invalid(string),
+    Invalid(string);
 }
 
 impl Display for ParseError {

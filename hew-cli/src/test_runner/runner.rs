@@ -587,16 +587,22 @@ fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult 
     let mut first_failure: Option<(Execution, TestFailure, String)> = None;
     let mut failed_runs = 0usize;
     for execution in &runs {
-        let report_dir = tempfile::tempdir();
-        let (run_result, report) = match report_dir {
+        let report_dir = tempfile::Builder::new().prefix("hew_test_run_").tempdir();
+        let (run_result, report) = match report_dir.as_ref() {
             Ok(dir) => {
                 let path = dir.path().join("report.json");
-                let run = crate::process::run_binary_with_driver(
-                    &artifact.binary_path,
-                    options.timeout,
-                    execution.environment().as_deref(),
-                    &path,
-                );
+                let scratch = dir.path().join("tmp");
+                let run = std::fs::create_dir(&scratch)
+                    .map_err(|error| format!("cannot create test scratch directory: {error}"))
+                    .and_then(|()| {
+                        crate::process::run_binary_with_driver(
+                            &artifact.binary_path,
+                            options.timeout,
+                            execution.environment().as_deref(),
+                            &path,
+                            &scratch,
+                        )
+                    });
                 let report = std::fs::read(&path)
                     .ok()
                     .and_then(|bytes| serde_json::from_slice::<TestReport>(&bytes).ok());
@@ -609,9 +615,16 @@ fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult 
         };
         let (outcome, output) = judge_run(test, run_result, options.timeout, report.as_ref());
         match outcome {
-            TestOutcome::Failed(failure) => {
+            TestOutcome::Failed(mut failure) => {
                 failed_runs += 1;
                 if first_failure.is_none() {
+                    if let Ok(dir) = report_dir {
+                        if dir.path().join("tmp").is_dir() {
+                            let scratch = dir.keep().join("tmp");
+                            let _ =
+                                write!(failure.message, "\ntest scratch: {}", scratch.display());
+                        }
+                    }
                     first_failure = Some((*execution, failure, output));
                 }
             }

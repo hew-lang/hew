@@ -352,9 +352,14 @@ pub(crate) fn run_binary_with_driver(
     timeout: Duration,
     deterministic: Option<&str>,
     test_report: &Path,
+    scratch_dir: &Path,
 ) -> Result<BinaryRunOutcome, String> {
     let mut command = Command::new(binary);
-    command.env("HEW_TEST_REPORT", test_report);
+    command
+        .env("HEW_TEST_REPORT", test_report)
+        .env("TMPDIR", scratch_dir)
+        .env("TMP", scratch_dir)
+        .env("TEMP", scratch_dir);
     match deterministic {
         Some(config) => command.env("HEW_DETERMINISTIC", config),
         None => command.env_remove("HEW_DETERMINISTIC"),

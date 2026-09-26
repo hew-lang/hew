@@ -215,6 +215,52 @@ fn failing_suite_exits_non_zero() {
 }
 
 #[test]
+fn test_processes_get_isolated_scratch_and_keep_failed_run() {
+    require_codegen();
+
+    let project = support::tempdir();
+    let pool = project.path().join("scratch-pool");
+    std::fs::create_dir(&pool).expect("create test scratch pool");
+    write_file(
+        project.path(),
+        "scratch_test.hew",
+        "import std.os;\n\
+         #[test]\nfn passes() { assert(os.temp_dir() != \"\"); }\n\
+         #[test]\nfn fails() { panic(os.temp_dir()); }\n",
+    );
+    let output = Command::new(hew_binary())
+        .args(["test", "scratch_test.hew", "--no-color", "--jobs", "1"])
+        .env("HEW_STD", repo_root().join("std"))
+        .env("TMPDIR", &pool)
+        .env("TMP", &pool)
+        .env("TEMP", &pool)
+        .current_dir(project.path())
+        .output()
+        .expect("run isolated scratch test");
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test passes ... ok"), "{stdout}");
+    assert!(stdout.contains("test fails ... FAILED"), "{stdout}");
+    let kept = stdout
+        .split_once("test scratch: ")
+        .and_then(|(_, rest)| rest.lines().next())
+        .map(Path::new)
+        .expect("failed test reports its scratch directory");
+    assert!(kept.starts_with(&pool), "{stdout}");
+    assert!(kept.is_dir(), "failed test scratch must remain inspectable");
+    assert!(stdout.contains(&format!("UserPanic (212): {}", kept.display())));
+    let retained: Vec<_> = std::fs::read_dir(&pool)
+        .expect("read test scratch pool")
+        .map(|entry| entry.expect("read scratch entry").path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("hew_test_run_"))
+        })
+        .collect();
+    assert_eq!(retained.len(), 1, "passing test scratch must be removed");
+}
+
+#[test]
 fn mixed_suite_reports_each_test_and_exits_non_zero() {
     require_codegen();
 

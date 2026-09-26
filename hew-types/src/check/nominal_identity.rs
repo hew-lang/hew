@@ -422,6 +422,46 @@ impl Checker {
         );
     }
 
+    /// Publish labels after the record constructor has selected its nominal.
+    pub(super) fn record_struct_init_field_resolutions(
+        &mut self,
+        fields: &[(
+            hew_parser::ast::Ident,
+            hew_parser::ast::Spanned<hew_parser::ast::Expr>,
+        )],
+        label_spans: &[hew_parser::ast::Span],
+        ty: &crate::Ty,
+    ) {
+        let crate::Ty::Named { head, .. } = self.subst.resolve(ty) else {
+            return;
+        };
+        let Some(nominal) = head.nominal() else {
+            return;
+        };
+        let Some(definition) = self.type_defs.get(&nominal) else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        for ((field, _), span) in fields.iter().zip(label_spans) {
+            if let Some(index) = definition
+                .field_order
+                .iter()
+                .position(|name| name == field.name.as_str())
+            {
+                self.scopes.record_resolution(
+                    site,
+                    span,
+                    super::scope::Resolution::Field(
+                        nominal,
+                        u32::try_from(index).expect("more than u32::MAX record fields"),
+                    ),
+                );
+            }
+        }
+    }
+
     /// Publish the declaration the completed call checker selected for its
     /// written callee segment. Runtime and indirect calls have no source
     /// declaration to publish here.

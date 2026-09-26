@@ -4439,6 +4439,7 @@ impl<'a> Formatter<'a> {
                 fields,
                 type_args,
                 base,
+                ..
             } => {
                 self.format_path(path);
                 if let Some(type_args) = type_args {

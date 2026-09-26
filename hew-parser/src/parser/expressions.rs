@@ -114,7 +114,8 @@ impl Parser<'_> {
     fn parse_record_init_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let expr_start = lhs.1.start;
         self.advance();
-        let (fields, base) = self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
+        let (fields, field_name_spans, base) =
+            self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
         let end = self.peek_span().start;
         Some(match lhs {
             (Expr::ContextVariant(mut context), _) => {
@@ -127,6 +128,7 @@ impl Parser<'_> {
                         Expr::StructInit {
                             path,
                             fields,
+                            field_name_spans,
                             type_args: Some(type_args),
                             base,
                         },
@@ -920,11 +922,12 @@ impl Parser<'_> {
                         self.advance(); // consume {
                                         // Inside the struct body the `{` is consumed, so any
                                         // nested bare-ident struct literal is unambiguous again.
-                        let (fields, base) =
+                        let (fields, field_name_spans, base) =
                             self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                         Expr::StructInit {
                             path: Path::single(name, name_span),
                             fields,
+                            field_name_spans,
                             type_args: explicit_type_args,
                             base,
                         }
@@ -1780,13 +1783,14 @@ impl Parser<'_> {
             if let Some(mut path) = Path::from_chain(&lhs) {
                 path.segments.push(method);
                 self.advance();
-                let (fields, base) =
+                let (fields, field_name_spans, base) =
                     self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                 let end = self.peek_span().start;
                 return Some((
                     Expr::StructInit {
                         path,
                         fields,
+                        field_name_spans,
                         type_args: None,
                         base,
                     },
@@ -1837,6 +1841,7 @@ impl Parser<'_> {
 
     pub(crate) fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
         let mut fields = Vec::new();
+        let mut field_name_spans = Vec::new();
         let mut base: Option<Box<Spanned<Expr>>> = None;
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::DotDot) {
@@ -1860,17 +1865,18 @@ impl Parser<'_> {
                 }
                 continue;
             }
-            let field_name = self.expect_ident()?;
+            let (field_name, field_name_span) = self.expect_ident_spanned()?;
             self.expect(&Token::Colon)?;
             let value = self.parse_expr()?;
             fields.push((field_name, value));
+            field_name_spans.push(field_name_span);
 
             if !self.eat(&Token::Comma) {
                 break;
             }
         }
         self.expect(&Token::RightBrace)?;
-        Some((fields, base))
+        Some((fields, field_name_spans, base))
     }
 
     /// Parse a comma-separated list of call arguments, supporting both

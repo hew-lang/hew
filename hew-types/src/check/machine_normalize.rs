@@ -291,6 +291,7 @@ impl Builder {
         self.expr(Expr::StructInit {
             path,
             fields,
+            field_name_spans: Vec::new(),
             type_args: None,
             base: None,
         })
@@ -794,6 +795,7 @@ impl Builder {
                 (Ident::new("outputs"), output_value),
                 (Ident::new("disposition"), disposition_value),
             ],
+            field_name_spans: Vec::new(),
             type_args: None,
             base: None,
         });
@@ -1139,6 +1141,7 @@ impl Builder {
             Expr::StructInit {
                 path,
                 fields,
+                field_name_spans,
                 base,
                 type_args,
             } => {
@@ -1172,6 +1175,7 @@ impl Builder {
                             field: (*field, field_span),
                         });
                         fields.push((*field, read));
+                        field_name_spans.push(self.span());
                     }
                     *base = None;
                 }

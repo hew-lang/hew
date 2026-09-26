@@ -1326,34 +1326,7 @@ impl Parser<'_> {
                 let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
-                let consuming_self_span = self.peek_span();
-                let consuming_self_name_span = self
-                    .tokens
-                    .get(self.pos + 1)
-                    .map_or_else(|| consuming_self_span.clone(), |(_, span)| span.clone());
-                let consumes_self = self.eat_consume_self_receiver();
-                let mut params = self.parse_params_with_implicit_self(true);
-                if consumes_self {
-                    params.insert(
-                        0,
-                        Param {
-                            name: Ident::from_symbol(sym::SELF_VALUE),
-                            name_span: consuming_self_name_span,
-                            ty: (
-                                TypeExpr::Named {
-                                    path: Path::single(
-                                        Ident::from_symbol(sym::SELF_TYPE),
-                                        consuming_self_span.clone(),
-                                    ),
-                                    type_args: None,
-                                },
-                                consuming_self_span,
-                            ),
-                            is_mutable: false,
-                            is_consume: false,
-                        },
-                    );
-                }
+                let (params, consumes_self) = self.parse_trait_method_params();
                 self.expect(&Token::RightParen)?;
 
                 let return_type = self.parse_opt_return_type()?;
@@ -1423,6 +1396,38 @@ impl Parser<'_> {
                 None
             }
         }
+    }
+
+    fn parse_trait_method_params(&mut self) -> (Vec<Param>, bool) {
+        let consuming_self_span = self.peek_span();
+        let consuming_self_name_span = self
+            .tokens
+            .get(self.pos + 1)
+            .map_or_else(|| consuming_self_span.clone(), |(_, span)| span.clone());
+        let consumes_self = self.eat_consume_self_receiver();
+        let mut params = self.parse_params_with_implicit_self(true);
+        if consumes_self {
+            params.insert(
+                0,
+                Param {
+                    name: Ident::from_symbol(sym::SELF_VALUE),
+                    name_span: consuming_self_name_span,
+                    ty: (
+                        TypeExpr::Named {
+                            path: Path::single(
+                                Ident::from_symbol(sym::SELF_TYPE),
+                                consuming_self_span.clone(),
+                            ),
+                            type_args: None,
+                        },
+                        consuming_self_span,
+                    ),
+                    is_mutable: false,
+                    is_consume: false,
+                },
+            );
+        }
+        (params, consumes_self)
     }
 
     pub(crate) fn parse_impl_decl(&mut self) -> Option<ImplDecl> {

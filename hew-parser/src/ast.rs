@@ -496,6 +496,9 @@ pub enum Expr {
     StructInit {
         path: Path,
         fields: Vec<(Ident, Spanned<Expr>)>,
+        /// Source tokens for named field labels, in `fields` order.
+        #[serde(skip)]
+        field_name_spans: Vec<Span>,
         /// Explicit type arguments supplied at the struct literal site,
         /// e.g. `Wrapper<String> { value: "hello" }`.
         /// Absent when the user omits them and inference fills the gap.

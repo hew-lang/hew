@@ -695,6 +695,7 @@ impl Checker {
                     Expr::StructInit {
                         path: Path::single(Ident::new(&qualified_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
                         fields: record.fields.clone(),
+                        field_name_spans: Vec::new(),
                         type_args: None,
                         base: record.base.clone(),
                     }

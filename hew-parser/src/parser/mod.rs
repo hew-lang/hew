@@ -59,7 +59,11 @@ pub(crate) use attributes::AttrPosition;
 mod tests;
 
 pub(crate) type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
-pub(crate) type StructInitFields = (Vec<(Ident, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
+pub(crate) type StructInitFields = (
+    Vec<(Ident, Spanned<Expr>)>,
+    Vec<Span>,
+    Option<Box<Spanned<Expr>>>,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeParseContext {

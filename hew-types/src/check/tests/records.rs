@@ -68,6 +68,7 @@ mod cross_module_same_name {
                                     0..0,
                                 ),
                                 fields: vec![(Ident::new(field_name), make_int_literal(1, 0..0))],
+                                field_name_spans: Vec::new(),
                                 type_args: None,
                                 base: None,
                             },

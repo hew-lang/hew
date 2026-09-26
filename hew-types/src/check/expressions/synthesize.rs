@@ -335,15 +335,23 @@ impl Checker {
             Expr::StructInit {
                 path,
                 fields,
+                field_name_spans,
                 type_args,
                 base,
-            } => self.check_struct_init(
-                &path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                fields,
-                type_args.as_deref(),
-                base.as_deref(),
-                span,
-            ),
+            } => {
+                let ty = self.check_struct_init(
+                    &path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                    fields,
+                    type_args.as_deref(),
+                    base.as_deref(),
+                    span,
+                );
+                if !matches!(&ty, Ty::Error) {
+                    self.resolve_type_path_head(path);
+                    self.record_struct_init_field_resolutions(fields, field_name_spans, &ty);
+                }
+                ty
+            }
 
             // Spawn
             Expr::Spawn {

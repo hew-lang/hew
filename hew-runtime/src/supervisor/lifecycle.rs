@@ -1025,6 +1025,39 @@ mod tests {
     }
 
     #[test]
+    fn driver_wheel_cancellation_reclaims_restart_payload() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns the supervisor and wheel. Cancellation removes
+        // the wheel entry before either allocation is freed.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let timers = Arc::clone(&(*sup).restart_timers);
+            let wheel = crate::timer_wheel::hew_timer_wheel_new();
+            let record = crate::exit_status::open_supervised_fault();
+            let lease = timers.begin(record).expect("fresh timer admission");
+            assert!(arm_driver_restart_timer(
+                lease,
+                wheel,
+                sup as usize,
+                0,
+                Duration::from_secs(24),
+                record,
+            ));
+            assert_eq!(timers.pending_for_test(), 1);
+
+            timers.cancel();
+            assert_eq!(timers.pending_for_test(), 0);
+            assert!(!crate::exit_status::supervised_fault_is_open(record));
+            assert_eq!(
+                crate::timer_wheel::hew_timer_wheel_next_deadline_ms(wheel),
+                -1,
+            );
+            crate::timer_wheel::hew_timer_wheel_free(wheel);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
     fn cancelled_restart_timer_settles_record_before_publishing_drain() {
         let _rt = crate::runtime_test_guard();
         // SAFETY: the supervisor outlives the timer lease, which drains before

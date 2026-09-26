@@ -21,7 +21,7 @@
 
 use std::collections::VecDeque;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::activation::{activate_queued_actor, SchedulerQueueEntry};
@@ -264,17 +264,12 @@ static READY: Mutex<ReadyList> = Mutex::new(ReadyList {
     random: None,
 });
 
-/// Signalled when a host thread (the reactor, a supervisor restart timer)
-/// publishes while the driver waits for it.
+/// Signalled when a host reactor thread publishes while the driver waits.
 #[cfg(not(target_arch = "wasm32"))]
 static HOST_PUBLISHED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// Picks taken so far.
 static STEPS: AtomicU64 = AtomicU64::new(0);
-
-/// Host operations in flight that will publish to the ready list from another
-/// thread: a supervisor restart timer. Reactor waits are counted by the reactor.
-static HOST_WORK: AtomicUsize = AtomicUsize::new(0);
 
 fn publish(participant: Participant) {
     READY.lock_or_recover().entries.push_back(participant);
@@ -306,30 +301,7 @@ pub(crate) fn has_queued_work() -> bool {
     !READY.lock_or_recover().entries.is_empty()
 }
 
-/// A host operation that will publish to the driver from another thread.
-/// While one is held the driver waits for it instead of reporting a deadlock.
-#[derive(Debug)]
-pub(crate) struct HostWork(());
-
-impl HostWork {
-    pub(crate) fn begin() -> Self {
-        HOST_WORK.fetch_add(1, Ordering::AcqRel);
-        Self(())
-    }
-}
-
-impl Drop for HostWork {
-    fn drop(&mut self) {
-        HOST_WORK.fetch_sub(1, Ordering::AcqRel);
-        #[cfg(not(target_arch = "wasm32"))]
-        HOST_PUBLISHED.notify_one();
-    }
-}
-
 fn host_work_in_flight() -> bool {
-    if HOST_WORK.load(Ordering::Acquire) != 0 {
-        return true;
-    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         !crate::reactor::drain_is_idle()
@@ -450,8 +422,8 @@ pub(crate) fn step() {
 fn wait_for_host() {
     let ready = READY.lock_or_recover();
     if ready.entries.is_empty() {
-        // Bounded so a host completion that publishes nothing (a timer lease
-        // ending in cancellation) is re-examined promptly.
+        // Bounded so a reactor completion that publishes nothing is
+        // re-examined promptly.
         let _ = HOST_PUBLISHED.wait_timeout(ready, std::time::Duration::from_millis(10));
     }
 }

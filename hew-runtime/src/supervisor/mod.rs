@@ -28,6 +28,9 @@ use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
 use crate::scheduler;
 use crate::set_last_error;
+use crate::timer_wheel::{
+    hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, HewTimerEntry, HewTimerWheel,
+};
 use crate::util::{CondvarExt, MutexExt};
 
 #[cfg(feature = "profiler")]
@@ -1032,9 +1035,9 @@ const SUPERVISOR_PIN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// and hand it back to canonical post-worker cleanup rather than free live
 /// state.
 const SUPERVISOR_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Canonical cleanup runs after workers have stopped, but delayed-restart
-/// threads can still hold a raw supervisor borrow.  It gets the same bounded
-/// lease: expiry retains the allocation instead of freeing under that borrow.
+/// Canonical cleanup runs after workers have stopped, but an in-flight
+/// delayed-restart callback can still hold a raw supervisor borrow. Its
+/// bounded lease retains the allocation instead of freeing under that borrow.
 const SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
@@ -1044,6 +1047,16 @@ struct RestartTimerState {
     /// One authority per admitted lease. Cancellation rules on every still-
     /// armed record before a lease can publish drain completion.
     records: Vec<Arc<RestartTimerRecord>>,
+    wheel_entries: Vec<RestartWheelEntry>,
+}
+
+/// A pending driver-wheel reference. Pointer values are only passed back to
+/// the wheel's generation-checked removal API; they are never dereferenced.
+struct RestartWheelEntry {
+    wheel: usize,
+    entry: usize,
+    generation: u64,
+    record: Arc<RestartTimerRecord>,
 }
 
 /// Arc-owned cancellation and raw-borrow authority for delayed restarts.
@@ -1083,12 +1096,33 @@ impl RestartTimerControl {
     fn cancel(&self) {
         let mut state = self.state.lock_or_recover();
         state.cancelled = true;
-        // Rule before waking timer threads: dropping a woken lease is what
+        // Rule before releasing timer leases: dropping a cancelled lease
         // publishes drain completion, so settlement must precede that drop.
         for record in &state.records {
             record.settle_cancelled();
         }
+        let wheel_entries = std::mem::take(&mut state.wheel_entries);
         self.changed.notify_all();
+        drop(state);
+        // Removal wins ownership only for entries still linked in the wheel.
+        // An entry already collected for firing is owned by its callback,
+        // which observes `cancelled` before any supervisor access.
+        for entry in wheel_entries {
+            // SAFETY: the wheel lives for the process; the entry and generation
+            // came from this wheel's schedule handle. The returned pointer is
+            // the boxed callback payload only when removal won the race.
+            let data = unsafe {
+                hew_timer_wheel_remove(
+                    entry.wheel as *mut HewTimerWheel,
+                    entry.entry as *mut HewTimerEntry,
+                    entry.generation,
+                )
+            };
+            if !data.is_null() {
+                // SAFETY: removal transferred the unique wheel-owned Box.
+                drop(unsafe { Box::from_raw(data.cast::<RestartWheelTimer>()) });
+            }
+        }
     }
 
     fn wait_for_drain(&self, deadline: Instant) -> bool {
@@ -1168,6 +1202,14 @@ impl RestartTimerRecord {
 }
 
 impl RestartTimerLease {
+    /// Fire on the driver's wheel while holding the cancellation authority.
+    fn fire_and_run(&self, on_elapsed: impl FnOnce() -> bool) {
+        let state = self.control.state.lock_or_recover();
+        if !state.cancelled && self.record.fire() && !on_elapsed() {
+            self.record.settle_failed_fire();
+        }
+    }
+
     /// Wait interruptibly, then perform the raw supervisor access while the
     /// cancellation mutex excludes shutdown from publishing cancellation.
     ///
@@ -1205,6 +1247,9 @@ impl Drop for RestartTimerLease {
         state
             .records
             .retain(|record| !Arc::ptr_eq(record, &self.record));
+        state
+            .wheel_entries
+            .retain(|entry| !Arc::ptr_eq(&entry.record, &self.record));
         debug_assert_eq!(state.pending, state.records.len());
         self.control.changed.notify_all();
         drop(state);
@@ -1746,10 +1791,17 @@ unsafe impl Send for DeferredSupervisorStop {}
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Get the current monotonic time in nanoseconds, anchored on the process-wide
-/// epoch ([`crate::monotonic`]).
+/// Get supervisor time in nanoseconds from the virtual driver clock or the
+/// threaded process's shared monotonic epoch.
 fn monotonic_time_ns() -> u64 {
-    crate::monotonic::monotonic_ns()
+    if crate::driver::hew_test_driver_active() {
+        // Supervisor backoff must share the driver's virtual clock. The
+        // process-wide host monotonic epoch remains the threaded-mode clock.
+        // SAFETY: the runtime clock entrypoint has no preconditions.
+        unsafe { hew_now_ms() }.saturating_mul(1_000_000)
+    } else {
+        crate::monotonic::monotonic_ns()
+    }
 }
 
 /// Count restarts within the sliding window.
@@ -2066,17 +2118,108 @@ fn apply_restart_backoff(spec: &mut InternalChildSpec) {
     spec.next_restart_time_ns = monotonic_time_ns().wrapping_add(delay_ns);
 }
 
+struct RestartWheelTimer {
+    lease: RestartTimerLease,
+    supervisor: usize,
+    child_identity: u64,
+    record: FaultRecord,
+}
+
+fn send_delayed_restart(supervisor: usize, child_identity: u64, record: FaultRecord) -> bool {
+    let sup_ptr = supervisor as *mut HewSupervisor;
+    // SAFETY: the timer lease's pending count keeps `sup_ptr` allocated, and
+    // its state mutex excludes cancellation for the whole raw access.
+    unsafe {
+        let self_actor = (*sup_ptr).self_actor;
+        if (*sup_ptr).cancelled.load(Ordering::Acquire)
+            || (*sup_ptr).running.load(Ordering::Acquire) == 0
+            || self_actor.is_null()
+        {
+            return false;
+        }
+        let event = DelayedRestartEvent {
+            child_identity,
+            fault_record: record.as_raw(),
+        };
+        actor::send_system_message(
+            self_actor,
+            HewSysMsg::DelayedRestart,
+            (&raw const event).cast::<c_void>().cast_mut(),
+            std::mem::size_of::<DelayedRestartEvent>(),
+        )
+    }
+}
+
+unsafe extern "C" fn restart_wheel_elapsed(data: *mut c_void) {
+    // SAFETY: the wheel owns exactly one Box while linked or collected for
+    // firing; cancellation can reclaim it only by removing a linked entry.
+    let timer = unsafe { Box::from_raw(data.cast::<RestartWheelTimer>()) };
+    timer.lease.fire_and_run(|| {
+        send_delayed_restart(timer.supervisor, timer.child_identity, timer.record)
+    });
+}
+
+fn arm_driver_restart_timer(
+    lease: RestartTimerLease,
+    wheel: *mut HewTimerWheel,
+    supervisor: usize,
+    child_identity: u64,
+    delay: Duration,
+    record: FaultRecord,
+) -> bool {
+    if wheel.is_null() {
+        return false;
+    }
+    let control = Arc::clone(&lease.control);
+    let record_key = Arc::clone(&lease.record);
+    let data = Box::into_raw(Box::new(RestartWheelTimer {
+        lease,
+        supervisor,
+        child_identity,
+        record,
+    }));
+    let mut state = control.state.lock_or_recover();
+    let armed = if state.cancelled {
+        false
+    } else {
+        let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX - 1);
+        // SAFETY: the process-owned wheel outlives this timer; `data` remains
+        // owned by the wheel until firing or generation-checked removal.
+        let handle = unsafe {
+            hew_timer_wheel_schedule_handle(
+                wheel,
+                delay_ms,
+                restart_wheel_elapsed,
+                data.cast::<c_void>(),
+            )
+        };
+        if handle.entry.is_null() {
+            false
+        } else {
+            state.wheel_entries.push(RestartWheelEntry {
+                wheel: wheel as usize,
+                entry: handle.entry as usize,
+                generation: handle.generation,
+                record: record_key,
+            });
+            true
+        }
+    };
+    drop(state);
+    if !armed {
+        // SAFETY: no wheel entry took ownership when admission was refused.
+        drop(unsafe { Box::from_raw(data) });
+    }
+    armed
+}
+
 /// Arm a delayed restart, transferring `record` to the timer.
 ///
-/// Returns whether the timer was ARMED — admitted AND its thread spawned. A
-/// refused admission or a failed spawn means no restart will ever be attempted,
-/// so the caller settles the record `Unrecovered`: requesting a timer is not a
-/// recovery, an armed one that fires is.
-///
-/// Once armed, the timer thread owns the record and settles it on every ending
-/// it can have: a restart that runs rules through the `DelayedRestart` dispatch,
-/// while a wake-up that reaches nobody and a cancellation that preempts the
-/// wait both settle `Unrecovered` here.
+/// The driver uses its wheel; the threaded runtime spawns a timer thread. A
+/// refused admission or failed spawn means no restart will be attempted, so
+/// the caller settles the record `Unrecovered`. An armed timer transfers its
+/// ruling to `DelayedRestart` when it fires, or settles `Unrecovered` when
+/// cancellation or a failed send prevents that dispatch.
 fn schedule_delayed_restart(
     sup: *mut HewSupervisor,
     child_identity: u64,
@@ -2098,39 +2241,21 @@ fn schedule_delayed_restart(
         return false;
     };
     let sup_addr = sup as usize;
-    // WHY: the restart timer is a host thread on the real clock; the
-    // single-thread driver waits for it rather than reporting a deadlock.
-    // WHEN obsolete: restart timers move onto the driver's timer wheel.
-    let host_work = crate::driver::active().then(crate::driver::HostWork::begin);
+    if crate::driver::active() {
+        return arm_driver_restart_timer(
+            timer,
+            crate::driver::global_wheel(),
+            sup_addr,
+            child_identity,
+            delay,
+            record,
+        );
+    }
     let spawn_result = std::thread::Builder::new()
         .name("hew-supervisor-restart-timer".to_owned())
         .spawn(move || {
-            let _host_work = host_work;
             timer.wait_and_run(delay, || {
-                let sup_ptr = sup_addr as *mut HewSupervisor;
-                // SAFETY: the timer lease's pending count keeps `sup_ptr`
-                // allocated, and its state mutex excludes cancellation for the
-                // complete raw access. Once cancellation is published this
-                // closure can never run.
-                unsafe {
-                    let self_actor = (*sup_ptr).self_actor;
-                    if (*sup_ptr).cancelled.load(Ordering::Acquire)
-                        || (*sup_ptr).running.load(Ordering::Acquire) == 0
-                        || self_actor.is_null()
-                    {
-                        return false;
-                    }
-                    let event = DelayedRestartEvent {
-                        child_identity,
-                        fault_record: record.as_raw(),
-                    };
-                    actor::send_system_message(
-                        self_actor,
-                        HewSysMsg::DelayedRestart,
-                        (&raw const event).cast::<c_void>().cast_mut(),
-                        std::mem::size_of::<DelayedRestartEvent>(),
-                    )
-                }
+                send_delayed_restart(sup_addr, child_identity, record)
             });
         });
     if let Err(error) = spawn_result {

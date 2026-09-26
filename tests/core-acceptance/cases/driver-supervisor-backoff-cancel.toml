@@ -1,0 +1,14 @@
+[[case]]
+id = "driver-supervisor-backoff-cancel"
+intent = "Stopping a supervisor removes its pending virtual backoff timer, reclaims the callback payload, and settles the interrupted fault unrecovered."
+source = "cases/driver-supervisor-backoff-cancel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "true\n"
+stderr = "hew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 3): UserPanic\n"
+exit = 1

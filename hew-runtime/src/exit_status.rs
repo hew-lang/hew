@@ -476,6 +476,14 @@ pub(crate) fn role_barrier_outcome(role: RoleKey, live: bool, seen: u64) -> Role
     if state.generation != seen {
         return RoleBarrier::Changed;
     }
+    if crate::driver::active() {
+        // `main` has no actor continuation to park. Drive the next ready
+        // activation or virtual deadline instead of blocking the sole driver
+        // thread on this condition variable.
+        drop(state);
+        crate::driver::step();
+        return RoleBarrier::Changed;
+    }
     let _unblocked = ROLE_FAULTS.changed.wait_or_recover(state);
     RoleBarrier::Changed
 }

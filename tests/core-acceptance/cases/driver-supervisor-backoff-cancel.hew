@@ -1,0 +1,23 @@
+import std.testing;
+import std.time.datetime;
+
+actor Worker {
+    receive fn crash_me() { panic("restart the child"); }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 20 within 60s,
+    child worker: Worker(),
+}
+
+fn main() {
+    let app = spawn App;
+    let started = datetime.now_ms();
+    let _ = app.worker.crash_me();
+    let _ = await_restart app.worker;
+    let _ = app.worker.crash_me();
+    testing.settle();
+    supervisor_stop(app);
+    println(datetime.now_ms() - started < 200);
+}

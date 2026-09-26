@@ -1818,7 +1818,7 @@ impl Checker {
                     0,
                     Symbol::intern("impl"),
                     None,
-                    fn_path(&format!("<impl@{}:{}>", span.start, item_ordinal)),
+                    fn_path(&format!("<impl@{}:{}>", span.start, span.end)),
                     false,
                 );
             }

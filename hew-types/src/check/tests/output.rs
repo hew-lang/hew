@@ -5,6 +5,77 @@
 pub(super) use super::*;
 
 #[test]
+fn source_resolutions_keep_top_level_consts_as_declarations() {
+    let source = "const A: i64 = 10; const B: i64 = A + 1; \
+        fn main() -> i64 { B }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let a = output.defs.lookup_path("A").expect("A declaration");
+    let b = output.defs.lookup_path("B").expect("B declaration");
+    let at = |start| SpanKey::in_module(&(start..start + 1), 0);
+    let initializer_a = source.find("= A +").unwrap() + 2;
+    let body_b = source.rfind("{ B").unwrap() + 2;
+    assert_eq!(
+        output.resolutions.get(&at(initializer_a)),
+        Some(&crate::check::scope::Resolution::Def(a))
+    );
+    assert_eq!(
+        output.resolutions.get(&at(body_b)),
+        Some(&crate::check::scope::Resolution::Def(b))
+    );
+}
+
+#[test]
+fn source_resolutions_publish_imported_const_declarations() {
+    let source = "import ma; fn main() -> i64 { ma.C }";
+    let module = hew_parser::parse("pub const C: i64 = 7;");
+    assert!(module.errors.is_empty(), "{:#?}", module.errors);
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Import(import), _) = &mut parsed.program.items[0] else {
+        panic!("expected module import");
+    };
+    import.resolved_items = Some(module.program.items.into());
+    import.resolved_source_paths = vec![std::path::PathBuf::from("ma.hew")];
+    let root = ModulePath::root();
+    let ma = ModulePath::new(["ma"]);
+    let mut graph = ModuleGraph::new(root.clone());
+    for (id, items, path) in [
+        (root.clone(), Vec::new(), "main.hew"),
+        (
+            ma.clone(),
+            import.resolved_items.as_ref().unwrap().as_ref().clone(),
+            "ma.hew",
+        ),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: vec![std::path::PathBuf::from(path)],
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![ma, root];
+    parsed.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let c = output
+        .defs
+        .lookup_path("ma.C")
+        .expect("imported C declaration");
+    let use_site = source.rfind("ma.C").unwrap() + 3;
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(use_site..use_site + 1), 0)),
+        Some(&crate::check::scope::Resolution::Def(c))
+    );
+}
+
+#[test]
 fn source_resolutions_join_local_definition_and_use() {
     let source = "fn main() { let value: i64 = 1; let next = value; }";
     let output = check_source(source);

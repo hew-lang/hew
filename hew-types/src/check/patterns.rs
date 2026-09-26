@@ -293,7 +293,7 @@ impl Checker {
 
     fn machine_event_type_outside_transition(&self, ty: &Ty) -> Option<String> {
         let type_name = ty.type_name()?;
-        let machine_name = type_name.strip_suffix("Event")?;
+        let machine_name = type_name.strip_suffix(".Event")?;
         if !self
             .type_def_at(machine_name)
             .is_some_and(|td| td.kind == TypeDefKind::Machine)

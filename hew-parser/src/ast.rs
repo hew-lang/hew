@@ -1212,6 +1212,12 @@ pub enum DeclarationOrigin {
     #[default]
     Authored,
     MachineState,
+    /// Event union owned by a machine's declaration occurrence.
+    MachineEventType {
+        machine_start: usize,
+        machine_end: usize,
+        machine_ordinal: usize,
+    },
     MachineStep,
     MachineReport,
     MachineCompanion,

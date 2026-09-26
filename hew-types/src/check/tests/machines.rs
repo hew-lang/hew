@@ -1,5 +1,47 @@
 use super::*;
 
+#[test]
+fn machine_event_type_is_an_owned_member() {
+    let source = "machine Tank { events { Tick, } state Idle, on Tick: Idle => Idle, } \
+        fn feed(event: Tank.Event) -> i64 { 1 }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let machine = output
+        .defs
+        .lookup_path("Tank")
+        .expect("machine declaration");
+    let event = output
+        .defs
+        .member_of_kind(
+            machine,
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        )
+        .expect("machine-owned event type");
+    assert_eq!(output.defs.owner(event), Some(machine));
+    assert_eq!(output.defs.path(event), "Tank.Event");
+    assert!(output.defs.lookup_path("TankEvent").is_none());
+    let start = source.find("Tank.Event").unwrap();
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(start..start + 4), 0)),
+        Some(&crate::check::scope::Resolution::Nominal(
+            crate::NominalId::from_minted_declaration(machine)
+        ))
+    );
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(start + 5..start + 10), 0)),
+        Some(&crate::check::scope::Resolution::Nominal(
+            crate::NominalId::from_minted_declaration(event)
+        ))
+    );
+}
+
 fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {
     let source = format!(
         "{helper}\n machine Gate {{ events {{ Open, }} emits {{ Changed {{ label: string }}, }} state Closed {{ label: string }}, state Opened {{ label: string }}, on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"

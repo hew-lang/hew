@@ -548,7 +548,7 @@ impl Checker {
                 Item::Actor(item) if item.visibility.is_pub() => push(item.name.name.as_str()),
                 Item::Machine(item) if item.visibility.is_pub() => {
                     push(item.name.name.as_str());
-                    push(&format!("{}Event", item.name));
+                    push(&format!("{}.Event", item.name));
                 }
                 Item::Record(item) if item.visibility.is_pub() => push(item.name.name.as_str()),
                 _ => {}
@@ -1266,7 +1266,7 @@ impl Checker {
                     }
                 }
                 Item::Machine(md) if md.visibility.is_pub() => {
-                    let event_name = format!("{}Event", md.name);
+                    let event_name = format!("{}.Event", md.name);
                     for name in [&md.name.to_string(), &event_name] {
                         if let Some(binding) = publication.bare_binding(name) {
                             self.publish_stdlib_hew_type_binding(
@@ -1407,7 +1407,7 @@ impl Checker {
                         skipped_type_names.insert(md.name.to_string());
                         continue;
                     }
-                    let event_type_name = format!("{}Event", md.name);
+                    let event_type_name = format!("{}.Event", md.name);
                     if !self.register_flat_file_import_type_name(
                         &mut current_import_pub_spans,
                         &event_type_name,
@@ -1418,9 +1418,9 @@ impl Checker {
                     }
                     self.register_machine_decl(md, span);
                     self.known_types.insert(md.name.to_string());
-                    self.known_types.insert(format!("{}Event", md.name));
+                    self.known_types.insert(format!("{}.Event", md.name));
                     self.publish_file_import_type_name(owner, md.name.name.as_str());
-                    self.publish_file_import_type_name(owner, &format!("{}Event", md.name));
+                    self.publish_file_import_type_name(owner, &format!("{}.Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {

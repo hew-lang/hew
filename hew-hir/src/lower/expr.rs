@@ -1433,6 +1433,50 @@ impl LowerCtx {
                 }
             }
             Expr::FieldAccess { object, field } => {
+                // A machine event is a type member: `Tank.Event.Tick` (or
+                // `m.Tank.Event.Tick`) names a constructor, not a sequence of
+                // runtime field reads. The checker-selected result type fixes
+                // the event declaration before the constructor registry is read.
+                if let Some(path) = hew_parser::ast::Path::from_chain(object) {
+                    if path
+                        .segments
+                        .last()
+                        .is_some_and(|(name, _)| name.name == hew_parser::ast::sym::EVENT)
+                        && path
+                            .segments
+                            .first()
+                            .is_some_and(|(name, _)| self.lookup(name.name.as_str()).is_none())
+                    {
+                        let checker_ty = self.checker_expr_ty_if_present(&span);
+                        if let Some(ResolvedTy::Named { head, .. }) = checker_ty.as_ref() {
+                            if self
+                                .defs
+                                .lookup_path(head.registry_key())
+                                .is_some_and(|id| {
+                                    self.defs.kind(id)
+                                        == hew_types::DeclarationKind::MachineEventType
+                                })
+                            {
+                                if let Some((type_name, variant_idx, HirVariantKind::Unit)) = self
+                                    .lookup_variant_ctor(field.0.name.as_str(), checker_ty.as_ref())
+                                {
+                                    return HirExpr {
+                                        node: self.ids.node(),
+                                        site,
+                                        ty: checker_ty.expect("checked event constructor type"),
+                                        intent,
+                                        kind: HirExprKind::MachineVariantCtor {
+                                            machine_name: type_name,
+                                            state_idx: variant_idx,
+                                            payload: None,
+                                        },
+                                        span,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
                 // Dotted module-qualified unit constructor:
                 // `module.Type.Variant`. The checker has already resolved
                 // this nested field-access surface to the exact tagged-union

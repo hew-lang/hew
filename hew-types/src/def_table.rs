@@ -41,6 +41,7 @@ pub enum DeclarationKind {
     Supervisor,
     SupervisorBootstrap,
     Machine,
+    MachineEventType,
     MachineState,
     MachineEvent,
     MachineStateEntry,

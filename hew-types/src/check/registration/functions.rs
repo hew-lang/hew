@@ -228,7 +228,7 @@ impl Checker {
                             Item::Machine(md) => {
                                 self.local_type_defs.insert(md.name.to_string());
                                 self.source_type_defs.insert(md.name.to_string());
-                                let event_type_name = format!("{}Event", md.name);
+                                let event_type_name = format!("{}.Event", md.name);
                                 self.local_type_defs.insert(event_type_name.clone());
                                 self.source_type_defs.insert(event_type_name);
                             }

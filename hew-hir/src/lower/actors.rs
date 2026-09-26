@@ -177,7 +177,7 @@ impl LowerCtx {
             .collect();
         for (name, variants) in [
             (decl.name.to_string(), state_names),
-            (format!("{}Event", decl.name), event_names),
+            (format!("{}.Event", decl.name), event_names),
         ] {
             let canonical =
                 module.map_or_else(|| name.clone(), |module| format!("{module}.{name}"));

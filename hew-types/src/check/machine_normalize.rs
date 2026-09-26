@@ -425,7 +425,7 @@ impl Builder {
                 .expansions
                 .get(&key)
                 .cloned()
-                .map_or_else(|| self.machine(machine), Ok);
+                .map_or_else(|| self.machine(machine, ordinal), Ok);
             match expansion {
                 Ok(mut generated) => {
                     self.expansions.insert(key, generated.clone());
@@ -449,7 +449,25 @@ impl Builder {
         clippy::too_many_lines,
         reason = "build the six ordinary declarations from one machine"
     )]
-    fn machine(&mut self, machine: &MachineDecl) -> Result<Vec<Spanned<Item>>, TypeError> {
+    fn machine(
+        &mut self,
+        machine: &MachineDecl,
+        machine_ordinal: usize,
+    ) -> Result<Vec<Spanned<Item>>, TypeError> {
+        if let Some(state) = machine
+            .states
+            .iter()
+            .find(|state| state.name.name == hew_parser::ast::sym::EVENT)
+        {
+            return Err(TypeError::new(
+                TypeErrorKind::DuplicateDefinition,
+                state.span.clone(),
+                format!(
+                    "state `Event` conflicts with the event type `{}.Event`",
+                    machine.name
+                ),
+            ));
+        }
         self.validate_relation(machine)?;
         let params = if machine.type_params.is_empty() {
             None
@@ -469,7 +487,7 @@ impl Builder {
         state_enum.type_params.clone_from(&params);
         state_enum.where_clause.clone_from(&machine.where_clause);
         let mut event_enum = self.enum_decl(
-            format!("{}Event", machine.name),
+            format!("{}.Event", machine.name),
             &machine
                 .events
                 .iter()
@@ -477,6 +495,11 @@ impl Builder {
                 .collect::<Vec<_>>(),
             machine.visibility,
         );
+        event_enum.origin = DeclarationOrigin::MachineEventType {
+            machine_start: self.origin.start,
+            machine_end: self.origin.end,
+            machine_ordinal,
+        };
         event_enum.type_params.clone_from(&params);
         event_enum.where_clause.clone_from(&machine.where_clause);
         let mut output_enum = self.enum_decl(
@@ -513,7 +536,7 @@ impl Builder {
         };
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
-        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>, disposition: {name}StepDisposition }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }}", name = machine.name);
+        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>, disposition: {name}StepDisposition }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }}", name = machine.name);
         let parsed = hew_parser::parse(&source);
         if !parsed.errors.is_empty() {
             return Err(self.error(format!(

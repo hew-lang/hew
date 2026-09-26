@@ -903,7 +903,7 @@ fn tagged_union_surface_ctor_key(owner: &str, variant: &str) -> String {
 
 /// The user-facing companion type for a machine's events.
 fn machine_event_surface_type(machine: &str) -> String {
-    format!("{machine}Event")
+    format!("{machine}.Event")
 }
 
 type TraitMethodBindingKey = (Option<String>, u32, String, String);

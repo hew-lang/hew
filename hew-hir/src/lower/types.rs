@@ -6,10 +6,14 @@ impl LowerCtx {
     pub(super) fn lower_type_decl(&mut self, decl: &TypeDecl, span: Span) -> Option<HirTypeDecl> {
         let declaration = self.source_declaration(
             &span,
-            if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
-                hew_types::DeclarationKind::Machine
-            } else {
-                hew_types::DeclarationKind::Type
+            match decl.origin {
+                hew_parser::ast::DeclarationOrigin::MachineState => {
+                    hew_types::DeclarationKind::Machine
+                }
+                hew_parser::ast::DeclarationOrigin::MachineEventType { .. } => {
+                    hew_types::DeclarationKind::MachineEventType
+                }
+                _ => hew_types::DeclarationKind::Type,
             },
             0,
         )?;

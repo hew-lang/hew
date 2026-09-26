@@ -2511,16 +2511,26 @@ impl Checker {
         has_cycle.get()
     }
 
-    fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Ty {
-        if let Ty::Named { head, args } = ty {
-            let name = head.registry_key();
-            if let Some(target) = self.alias_target_for_instance(name, args) {
-                if !visiting.insert(name.to_string()) {
-                    return Ty::Error;
+    fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<crate::DefId>) -> Ty {
+        if let Ty::Named {
+            head: crate::TypeHead::Nominal(head),
+            args,
+        } = ty
+        {
+            let declaration = head.id.declaration();
+            if let Some(alias) = self
+                .type_aliases
+                .values()
+                .find(|alias| alias.declaration == declaration)
+            {
+                if let Some(target) = alias.instantiate(args) {
+                    if !visiting.insert(declaration) {
+                        return Ty::Error;
+                    }
+                    let expanded = self.expand_type_aliases(&target, visiting);
+                    visiting.remove(&declaration);
+                    return expanded;
                 }
-                let expanded = self.expand_type_aliases(&target, visiting);
-                visiting.remove(name);
-                return expanded;
             }
         }
         ty.map_children_pub(&|child| {

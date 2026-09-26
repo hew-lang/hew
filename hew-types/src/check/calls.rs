@@ -660,6 +660,7 @@ impl Checker {
                     span,
                 },
             ) {
+                self.record_construct_call(span);
                 return Some(result);
             }
         }
@@ -991,6 +992,7 @@ impl Checker {
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
             let result_ty = Self::variant_nominal_from_expected(&resolved_expected, resolved_args)
                 .expect("constructor expected-type match requires a named nominal");
+            self.record_construct_call(span);
             self.record_type(span, &result_ty);
             return Some(result_ty);
         }
@@ -1017,6 +1019,7 @@ impl Checker {
             &resolved_expected,
             span,
         )?;
+        self.record_construct_call(span);
         // Only the bare source spelling reaches here: dotted heads check their
         // builtin constructor directly.
         self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
@@ -1975,6 +1978,7 @@ impl Checker {
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
             let result_ty = self.variant_nominal_ty(&type_name, resolved_args);
+            self.record_construct_call(span);
             return result_ty;
         }
 
@@ -2089,9 +2093,11 @@ impl Checker {
                     "Result"
                 };
                 self.report_bare_variant_expr(&func_name, &format!("{owner}.{func_name}"), span);
-                return self
+                let result = self
                     .check_builtin_variant_call(&func_name, args, span)
                     .expect("builtin variant constructor names are matched above");
+                self.record_construct_call(span);
+                return result;
             }
             // Lifecycle requests and waits are distinct checked operations.
             // A source declaration with the same name owns its call site.

@@ -146,6 +146,11 @@ pub(super) struct EffectGraph {
     /// The construct or call that first made each body suspend.
     witnesses: HashMap<EffectBody, String>,
     calls: HashMap<SpanKey, Invocation>,
+    /// Every authored call the body checker visited, including unresolved
+    /// calls. Imported-body eligibility refuses a body missing a selected
+    /// target instead of inferring one from the callee spelling.
+    seen_calls: HashMap<SpanKey, Option<EffectBody>>,
+    construct_calls: HashSet<SpanKey>,
     submission_effects: HashMap<SpanKey, bool>,
     bindings: HashMap<TypeBindingId, CallableOrigin>,
     fork_transfers: Vec<PendingForkTransfer>,
@@ -531,6 +536,11 @@ impl Checker {
 
     pub(super) fn record_expression_effect(&mut self, expr: &Expr, span: &Span) {
         let key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
+            self.effect_graph
+                .seen_calls
+                .insert(key.clone(), self.effect_graph.current_body.clone());
+        }
         let checked_invocation = self.direct_call_targets.contains_key(&key)
             || self.resolved_calls.contains_key(&key)
             || self.method_call_rewrites.contains_key(&key)
@@ -589,6 +599,15 @@ impl Checker {
         self.record_intrinsic_suspension(expr);
     }
 
+    /// A checked variant constructor is a call-form expression with no
+    /// executable callee. Mark it at the selection site so body eligibility
+    /// does not mistake it for an unresolved function call.
+    pub(super) fn record_construct_call(&mut self, span: &Span) {
+        self.effect_graph
+            .construct_calls
+            .insert(SpanKey::in_module(span, self.current_module_idx));
+    }
+
     /// Task joins and structured child teardown suspend independently of the
     /// child callable's own effect. Awaiting an ordinary call instead takes
     /// its effect from the invocation edge.
@@ -626,6 +645,46 @@ impl Checker {
                 ) => Some(target),
                 _ => None,
             })
+    }
+
+    /// Direct calls made by checked impl bodies, grouped by the body's exact
+    /// declaration. An unresolved or indirect edge has no declaration to
+    /// propagate; its own HIR lowering still verifies the checked call fact.
+    pub(super) fn checked_impl_body_callees(&self) -> HashMap<crate::DefId, Vec<crate::DefId>> {
+        let mut result: HashMap<crate::DefId, Vec<crate::DefId>> = HashMap::new();
+        for body in self.effect_graph.bodies.keys() {
+            if let EffectBody::Declaration(id) = body {
+                if self.defs.kind(*id) == crate::DeclarationKind::ImplMethod {
+                    result.entry(*id).or_default();
+                }
+            }
+        }
+        for (key, owner) in &self.effect_graph.seen_calls {
+            if self.effect_graph.calls.contains_key(key)
+                || self.effect_graph.construct_calls.contains(key)
+            {
+                continue;
+            }
+            if let Some(EffectBody::Declaration(declaration)) = owner {
+                result.remove(declaration);
+            }
+        }
+        for (key, invocation) in &self.effect_graph.calls {
+            let Some(EffectBody::Declaration(owner)) = invocation.owner.as_ref() else {
+                continue;
+            };
+            let Some(callees) = result.get_mut(owner) else {
+                continue;
+            };
+            if let Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) = self.call_target(key) {
+                callees.push(*id);
+            }
+        }
+        for callees in result.values_mut() {
+            callees.sort_unstable();
+            callees.dedup();
+        }
+        result
     }
 
     fn callee_suspends(&self, invocation: &Invocation, bodies: &HashMap<EffectBody, bool>) -> bool {

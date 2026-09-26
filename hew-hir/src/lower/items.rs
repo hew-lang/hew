@@ -383,11 +383,6 @@ impl LowerCtx {
             if pub_only && !method.visibility.is_pub() {
                 continue;
             }
-            if let Some(imp) = imported {
-                if imp.skip_methods.contains(method.name.name.as_str()) {
-                    continue;
-                }
-            }
             let legacy_symbol = crate::node::HirImplBlock::method_symbol(
                 &symbol_self_name,
                 method.name.name.as_str(),
@@ -402,6 +397,9 @@ impl LowerCtx {
             let Some(declaration) = declaration else {
                 continue;
             };
+            if imported.is_some_and(|imp| imp.skip_methods.contains(&declaration)) {
+                continue;
+            }
             let symbol = self.emitted_impl_method_symbol(
                 declaration,
                 &symbol_self_name,
@@ -1095,96 +1093,50 @@ impl LowerCtx {
         false
     }
 
-    /// The single eligibility authority for imported impl bodies.  The
-    /// pre-lowering body plan and the actual imported-module emitter both use
-    /// this result, so a first-pass signature can never masquerade as an
-    /// executable body for a method this gate skips.
+    /// The pre-lowering plan and emitter consume the same checker-owned method
+    /// facts. Physical availability is checked against exact nominal IDs.
     pub(super) fn imported_impl_skip_methods(
-        &self,
+        &mut self,
         impl_decl: &hew_parser::ast::ImplDecl,
-        source_module: &str,
-    ) -> HashSet<String> {
-        let TypeExpr::Named {
-            path: named_path, ..
-        } = &impl_decl.target_type.0
-        else {
-            return impl_decl
-                .methods
-                .iter()
-                .map(|method| method.name.to_string())
-                .collect();
-        };
-        let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-        let impl_generic_params: HashSet<String> = impl_decl
-            .type_params
-            .as_ref()
-            .map(|tps| tps.iter().map(|tp| tp.name.to_string()).collect())
-            .unwrap_or_default();
-        let mut skip_methods: HashSet<String> = HashSet::new();
+    ) -> HashSet<hew_types::DefId> {
+        let mut skip_methods = HashSet::new();
+        let mut method_ids = Vec::with_capacity(impl_decl.methods.len());
         for method in &impl_decl.methods {
-            let callable_params: HashSet<&str> = method
-                .params
-                .iter()
-                .filter(|param| matches!(&param.ty.0, TypeExpr::Function { .. }))
-                .map(|param| param.name.name.as_str())
-                .collect();
-            let body_unresolvable =
-                collect_all_bare_call_names(&method.body)
-                    .into_iter()
-                    .any(|callee| {
-                        !is_builtin_enum_variant_bare_name(&callee)
-                            && self.resolved_bare_function_symbol(&callee).is_none()
-                            && !self.fn_registry.contains_key(&callee)
-                            && !callable_params.contains(callee.as_str())
-                            && !stdlib_catalog::is_overloaded_builtin(&callee)
-                    });
-            let mut method_generic_params = impl_generic_params.clone();
-            if let Some(tps) = &method.type_params {
-                method_generic_params.extend(tps.iter().map(|tp| tp.name.to_string()));
-            }
-            let is_known_registered_type = |name: &str| {
-                self.enum_variants_by_name.contains_key(name)
-                    || self.type_classes.contains_key(name)
-                    || self.record_registry.contains_key(name)
-                    || self
-                        .source_type_identities
-                        .contains(&format!("{source_module}.{name}"))
-                    || name.rsplit_once('.').is_some_and(|(binding, item)| {
-                        self.module_import_bindings
-                            .get(&(
-                                Some(source_module.to_string()),
-                                self.current_module_idx,
-                                binding.to_string(),
-                            ))
-                            .is_some_and(|owner| {
-                                self.source_type_identities
-                                    .contains(&format!("{owner}.{item}"))
-                            })
-                    })
+            let Some(declaration) =
+                self.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
+            else {
+                continue;
             };
-            let sig_unresolvable = method_signature_type_exprs(method).any(|ty| {
-                !imported_impl_signature_type_is_safe(
-                    ty,
-                    self_type_name,
-                    &method_generic_params,
-                    &is_known_registered_type,
-                )
-            });
-            if body_unresolvable || sig_unresolvable {
-                skip_methods.insert(method.name.to_string());
+            method_ids.push(declaration);
+            let available = self
+                .imported_impl_body_facts
+                .get(&declaration)
+                .is_some_and(|fact| {
+                    fact.params
+                        .iter()
+                        .all(|ty| self.imported_signature_type_available(ty, fact.receiver))
+                        && self.imported_signature_type_available(&fact.return_type, fact.receiver)
+                });
+            if !available {
+                skip_methods.insert(declaration);
             }
         }
         loop {
             let mut grew = false;
-            for method in &impl_decl.methods {
-                if skip_methods.contains(method.name.name.as_str()) {
+            for declaration in &method_ids {
+                if skip_methods.contains(declaration) {
                     continue;
                 }
-                if collect_all_method_call_names(&method.body)
-                    .iter()
-                    .any(|callee| skip_methods.contains(callee))
+                if self
+                    .imported_impl_body_facts
+                    .get(declaration)
+                    .is_some_and(|fact| {
+                        fact.callees
+                            .iter()
+                            .any(|callee| skip_methods.contains(callee))
+                    })
                 {
-                    skip_methods.insert(method.name.to_string());
+                    skip_methods.insert(*declaration);
                     grew = true;
                 }
             }
@@ -1193,6 +1145,50 @@ impl LowerCtx {
             }
         }
         skip_methods
+    }
+
+    fn imported_signature_type_available(
+        &self,
+        ty: &ResolvedTy,
+        receiver: Option<hew_types::NominalId>,
+    ) -> bool {
+        use hew_types::TypeHead;
+        match ty {
+            ResolvedTy::Named { head, args, .. } => {
+                let known = match head {
+                    TypeHead::Nominal(nominal) | TypeHead::Actor(nominal) => {
+                        Some(nominal.id) == receiver
+                            || self
+                                .source_type_identities
+                                .contains(self.defs.path(nominal.id.declaration()))
+                    }
+                    TypeHead::Builtin(_) | TypeHead::Param(_) => true,
+                    TypeHead::Unresolved(_) => false,
+                };
+                known
+                    && args
+                        .iter()
+                        .all(|arg| self.imported_signature_type_available(arg, receiver))
+            }
+            ResolvedTy::Tuple(parts) => parts
+                .iter()
+                .all(|part| self.imported_signature_type_available(part, receiver)),
+            ResolvedTy::Array(inner, _)
+            | ResolvedTy::Slice(inner)
+            | ResolvedTy::Task(inner)
+            | ResolvedTy::Pointer { pointee: inner, .. }
+            | ResolvedTy::Borrow { pointee: inner } => {
+                self.imported_signature_type_available(inner, receiver)
+            }
+            ResolvedTy::Function { params, ret, .. } | ResolvedTy::Closure { params, ret, .. } => {
+                params
+                    .iter()
+                    .all(|part| self.imported_signature_type_available(part, receiver))
+                    && self.imported_signature_type_available(ret, receiver)
+            }
+            ResolvedTy::TraitObject { .. } => false,
+            _ => true,
+        }
     }
 
     /// The direct-body identity of a trait default materialised in a concrete

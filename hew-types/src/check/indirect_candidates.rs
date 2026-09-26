@@ -2,8 +2,8 @@
 
 use super::scope::Resolution;
 use super::types::{
-    CallableArgumentFlow, CallableCandidate, CallableFieldFlow, Checker, IndirectCallCandidates,
-    PendingCallableArguments, SpanKey,
+    CallableArgumentFlow, CallableCandidate, CallableDispatchActual, CallableFieldFlow, Checker,
+    IndirectCallCandidates, PendingCallableArguments, SpanKey,
 };
 use super::{CallTarget, MethodCallRewrite};
 use crate::DeclarationKind;
@@ -202,7 +202,7 @@ impl Checker {
         }
     }
 
-    fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {
+    fn selected_callable_target(&self, span: &Span) -> Option<&CallTarget> {
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.method_call_rewrites
             .get(&key)
@@ -213,6 +213,11 @@ impl Checker {
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key))
+            .or_else(|| self.resolved_calls.get(&key).map(|call| &call.target))
+    }
+
+    fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {
+        self.selected_callable_target(span)
             .and_then(Self::callable_target_declaration)
     }
 
@@ -226,6 +231,29 @@ impl Checker {
             _ => return,
         };
         let key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(
+            self.selected_callable_target(span),
+            Some(CallTarget::StaticTraitMethod { .. })
+        ) {
+            let receiver_offset = usize::from(receiver.is_some());
+            let mut actuals = Vec::with_capacity(args.len() + receiver_offset);
+            if let Some(receiver) = receiver {
+                actuals.push(CallableDispatchActual {
+                    slot: 0,
+                    candidates: self.callable_candidates_for_expr(&receiver.0, &receiver.1),
+                });
+            }
+            let slots = self.call_argument_slots.get(&key);
+            for (index, arg) in args.iter().enumerate() {
+                let (value, value_span) = arg.expr();
+                actuals.push(CallableDispatchActual {
+                    slot: slots.map_or(index, |slots| slots[index]) + receiver_offset,
+                    candidates: self.callable_candidates_for_expr(value, value_span),
+                });
+            }
+            self.generic_trait_call_arguments.insert(key, actuals);
+            return;
+        }
         let Some(callee) = self.selected_callable_declaration(span) else {
             return;
         };

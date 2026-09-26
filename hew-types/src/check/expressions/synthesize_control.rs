@@ -1284,6 +1284,7 @@ impl Checker {
                 Expr::StructInit {
                     path: named_path,
                     fields,
+                    field_name_spans,
                     type_args,
                     ..
                 },
@@ -1421,6 +1422,11 @@ impl Checker {
                         // the user is committing to. Route through the
                         // canonical helper; bound-free names short-circuit.
                         self.enforce_type_def_instantiation_bounds(name, &resolved_args, span);
+                        self.record_struct_init_field_resolutions(
+                            fields,
+                            field_name_spans,
+                            expected,
+                        );
                         self.record_type(span, expected);
                         return expected.clone();
                     }

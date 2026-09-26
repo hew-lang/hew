@@ -82,16 +82,16 @@ use self::types::{
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, CallableArgumentFlow, CallableCandidate, CallableFieldFlow,
-    CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact,
-    ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget, EntryExitAction,
-    EntryExitPlan, EntryIntegerType, ExecutionContextReader, ExternMethodCallIdentity,
-    ExternMethodSignature, FnSig, FnSigView, IndirectCallCandidates, MachineMethodKind,
-    MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
-    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    AssignTargetShape, CallableArgumentFlow, CallableCandidate, CallableDispatchActual,
+    CallableFieldFlow, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
+    DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, ImportedImplBodyFact,
+    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
+    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
     TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
@@ -2583,6 +2583,7 @@ impl Checker {
         // Effect and transfer checks consume capture and actor-dispatch facts
         // before those facts are moved into the checked-program handoff.
         self.report_completion_call_cycles();
+        let checked_impl_body_callees = self.checked_impl_body_callees();
         let suspension_effects = self.finish_suspension_effects();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()
@@ -2708,6 +2709,34 @@ impl Checker {
         for sig in resolved_fn_sigs.values_mut() {
             *sig = self.resolve_fn_sig(sig);
         }
+        let imported_impl_body_facts = checked_impl_body_callees
+            .into_iter()
+            .filter_map(|(declaration, callees)| {
+                let sig = resolved_fn_sigs.get(&declaration)?;
+                let type_params: HashSet<String> = sig.type_params.iter().cloned().collect();
+                let params = sig
+                    .params
+                    .iter()
+                    .map(|ty| ResolvedTy::from_ty_with_type_params(ty, &type_params).ok())
+                    .collect::<Option<Vec<_>>>()?;
+                let return_type =
+                    ResolvedTy::from_ty_with_type_params(&sig.return_type, &type_params).ok()?;
+                let receiver = sig
+                    .impl_method
+                    .as_ref()
+                    .and_then(|method| method.receiver)
+                    .map(crate::NominalId::of_declaration);
+                Some((
+                    declaration,
+                    ImportedImplBodyFact {
+                        receiver,
+                        params,
+                        return_type,
+                        callees,
+                    },
+                ))
+            })
+            .collect();
         let fn_sig_keys = self.fn_sig_keys.clone();
         let resolved_sigs =
             FnSigView::new(&resolved_fn_sigs, &fn_sig_keys, &resolved_builtin_fn_sigs);
@@ -3002,8 +3031,11 @@ impl Checker {
             fn_sig_keys: self.fn_sig_keys.clone(),
             builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
+            imported_impl_body_facts,
             indirect_call_candidates: std::mem::take(&mut self.indirect_call_candidates),
             callable_argument_flows,
+            generic_trait_call_arguments: std::mem::take(&mut self.generic_trait_call_arguments),
+            callable_formals: std::mem::take(&mut self.callable_formals),
             aggregate_field_candidates: std::mem::take(&mut self.aggregate_field_candidates),
             callable_return_candidates: std::mem::take(&mut self.callable_return_candidates),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),

@@ -502,9 +502,8 @@ impl Checker {
             .get(&key)
             .and_then(|rewrite| match rewrite {
                 MethodCallRewrite::RewriteToFunction { target, .. }
-                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. } => {
-                    Some(target)
-                }
+                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key));

@@ -51,6 +51,22 @@ fn function_value_and_direct_call_segments_keep_declarations() {
 }
 
 #[test]
+fn explicit_generic_function_value_keeps_its_bare_declaration() {
+    let source = "fn id<T>(value: T) -> T { value } \
+        fn main() { let f = id<i64>; let _ = f(4); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let declaration = output.defs.lookup_path("id").expect("generic function");
+    let start = source.rfind("id<i64>").unwrap();
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(start..start + 2), 0)),
+        Some(&crate::check::scope::Resolution::Def(declaration))
+    );
+}
+
+#[test]
 fn actor_self_projection_publishes_the_state_member() {
     let source = "actor Counter { let value: i64, receive fn get() -> i64 { self.value } }";
     let output = check_source(source);
@@ -171,6 +187,62 @@ fn imported_generic_function_value_publishes_module_and_member_segments() {
             Some(&crate::check::scope::Resolution::Def(function))
         );
     }
+}
+
+#[test]
+fn root_extern_function_shadows_an_imported_function() {
+    let source = "import m.{answer}; extern \"C\" { fn answer() -> i64; } \
+        fn main() -> i64 { unsafe { answer() } }";
+    let imported = hew_parser::parse("pub fn answer() -> i64 { 7 }");
+    assert!(imported.errors.is_empty(), "{:#?}", imported.errors);
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Import(import), _) = &mut parsed.program.items[0] else {
+        panic!("expected import");
+    };
+    import.resolved_items = Some(imported.program.items.clone().into());
+    let root = ModulePath::root();
+    let m = ModulePath::new(["m"]);
+    let mut graph = ModuleGraph::new(root.clone());
+    for (id, items) in [
+        (m.clone(), imported.program.items),
+        (root.clone(), parsed.program.items.clone()),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![m, root];
+    parsed.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let extern_id = output.defs.lookup_path("answer").expect("root extern");
+    let start = source.rfind("answer()").unwrap();
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(start..start + 6), 0)),
+        Some(&crate::check::scope::Resolution::Def(extern_id))
+    );
+    let selected = output
+        .direct_call_targets
+        .iter()
+        .find(|(site, _)| site.module_idx == 0 && site.start == start)
+        .map(|(_, target)| target);
+    assert!(
+        matches!(
+            selected,
+            Some(crate::check::dispatch::CallTarget::Extern { declaration, .. })
+                if *declaration == extern_id
+        ),
+        "selected target: {selected:?}"
+    );
 }
 
 #[test]

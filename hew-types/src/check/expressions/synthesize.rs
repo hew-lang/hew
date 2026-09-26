@@ -168,11 +168,17 @@ impl Checker {
                 Ty::Error
             }
             Expr::GenericApplySuffix { target, type_args } => match &target.0 {
-                Expr::Ident(name) => self.synthesize_identifier_with_type_args(
-                    name.name.as_str(),
-                    Some(type_args),
-                    span,
-                ),
+                Expr::Ident(name) => {
+                    let ty = self.synthesize_identifier_with_type_args(
+                        name.name.as_str(),
+                        Some(type_args),
+                        span,
+                    );
+                    if !matches!(ty, Ty::Error) {
+                        self.record_value_path_resolution(&target.0, &target.1);
+                    }
+                    ty
+                }
                 Expr::FieldAccess { object, field } => {
                     let ty = self.check_field_access_with_type_args(
                         object,

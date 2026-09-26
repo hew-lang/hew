@@ -785,6 +785,20 @@ impl Checker {
     /// the signatures, leaving ambient builtin signatures intact.
     pub(super) fn visible_fn_signature_key(&self, name: &str) -> Option<String> {
         let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
+        // The current source scope owns an authored function or extern before
+        // any imported binding with the same spelling. Extern declarations do
+        // not populate fn_def_spans, so that index alone cannot establish this
+        // precedence. Join the exact scoped DefId to its registered signature.
+        if let Some(scope::Binding::Fn(declaration)) = self
+            .current_declaration_module()
+            .and_then(|module| self.scopes.item(module, Symbol::intern(name)))
+        {
+            for key in [&canonical, name] {
+                if self.fn_sig_keys.get(key) == Some(&declaration) {
+                    return Some(key.to_string());
+                }
+            }
+        }
         for key in [&canonical, name] {
             if self.fn_def_spans.contains_key(key) && self.has_fn_sig(key) {
                 return Some(key.to_string());

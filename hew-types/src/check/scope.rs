@@ -45,7 +45,8 @@ impl Binding {
             | DeclarationKind::TypeAlias
             | DeclarationKind::Record
             | DeclarationKind::Supervisor
-            | DeclarationKind::Machine => Self::Type(nominal()),
+            | DeclarationKind::Machine
+            | DeclarationKind::MachineEventType => Self::Type(nominal()),
             DeclarationKind::Actor => Self::Actor(nominal()),
             DeclarationKind::Trait if DefTable::as_predicate(id).is_some() => Self::Predicate(id),
             DeclarationKind::Trait => Self::Trait(id),
@@ -55,7 +56,7 @@ impl Binding {
         })
     }
 
-    fn resolution(self) -> Resolution {
+    pub(super) fn resolution(self) -> Resolution {
         match self {
             Self::Type(id) | Self::Actor(id) => Resolution::Nominal(id),
             Self::Trait(id) | Self::Fn(id) | Self::Const(id) | Self::Predicate(id) => {
@@ -196,7 +197,7 @@ pub struct Scopes {
     items: HashMap<ModuleId, HashMap<Symbol, Binding>>,
     files: HashMap<ModuleId, FileScope>,
     prelude: HashMap<Symbol, Binding>,
-    members: HashMap<(DefId, Symbol), DefId>,
+    members: HashMap<(DefId, Symbol), Resolution>,
     variants: HashMap<(NominalId, Symbol), u32>,
     /// Generic binders in scope, innermost last.
     type_params: Vec<HashMap<Ident, TypeParamId>>,
@@ -271,7 +272,7 @@ impl Scopes {
     }
 
     /// Bind a member row under its owner.
-    pub fn declare_member(&mut self, owner: DefId, name: Symbol, member: DefId) {
+    pub fn declare_member(&mut self, owner: DefId, name: Symbol, member: Resolution) {
         self.members.entry((owner, name)).or_insert(member);
     }
 
@@ -473,9 +474,7 @@ impl Scopes {
     }
 
     fn member(&self, owner: DefId, name: Symbol) -> Option<Resolution> {
-        self.members
-            .get(&(owner, name))
-            .map(|member| Resolution::Member(*member))
+        self.members.get(&(owner, name)).copied()
     }
 }
 

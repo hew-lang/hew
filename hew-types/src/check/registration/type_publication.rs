@@ -694,7 +694,7 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let event_name = format!("{}Event", md.name);
+                    let event_name = format!("{}.Event", md.name);
                     // Resolved stdlib items are registered while the importer
                     // is the active checker frame. Re-enter the declaration's
                     // assembled module before building the machine and its
@@ -1071,7 +1071,7 @@ impl Checker {
                     if !md.visibility.is_pub() {
                         continue;
                     }
-                    let event_name = format!("{}Event", md.name);
+                    let event_name = format!("{}.Event", md.name);
                     if let Some(source_def) = self
                         .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
                         .cloned()
@@ -1601,7 +1601,7 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let event_name = format!("{}Event", md.name);
+                    let event_name = format!("{}.Event", md.name);
                     // Qualified authority is always published for the machine
                     // and its companion event enum.
                     let saved_importer_module =
@@ -2158,7 +2158,7 @@ impl Checker {
                     );
                 }
                 Item::Machine(md) if md.visibility.is_pub() => {
-                    let event_name = format!("{}Event", md.name);
+                    let event_name = format!("{}.Event", md.name);
                     if let Some(source_def) = self
                         .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
                         .cloned()

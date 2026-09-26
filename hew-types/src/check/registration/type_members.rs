@@ -173,12 +173,12 @@ impl Checker {
                                 // Pre-seed the machine name so that resolve_type_expr
                                 // inside state/event field resolution sees the machine
                                 // as locally-non-generic instead of injecting a fresh var.
-                                // Also seed the synthesised `<Name>Event` companion so
+                                // Also seed the machine-owned `Name.Event` companion so
                                 // imported machines surface their event union as a
                                 // locally-defined type for the non-root module body.
                                 self.local_type_defs.insert(md.name.to_string());
                                 self.source_type_defs.insert(md.name.to_string());
-                                let event_type_name = format!("{}Event", md.name);
+                                let event_type_name = format!("{}.Event", md.name);
                                 self.local_type_defs.insert(event_type_name.clone());
                                 self.source_type_defs.insert(event_type_name);
                             }
@@ -937,8 +937,8 @@ impl Checker {
             }
         }
 
-        // --- Event fields → `{Name}Event` companion enum ---
-        let event_type_name = format!("{}Event", md.name);
+        // --- Event fields → `Name.Event` companion enum ---
+        let event_type_name = format!("{}.Event", md.name);
         let mut event_variants = HashMap::new();
         let mut event_hole_vars = Vec::new();
         for event in &md.events {
@@ -1272,13 +1272,7 @@ impl Checker {
         machine_name: &str,
         span: &Span,
     ) -> bool {
-        if self.reject_protected_prelude_declaration_for_owner(module_owner, machine_name, span)
-            || self.reject_protected_prelude_declaration_for_owner(
-                module_owner,
-                &format!("{machine_name}Event"),
-                span,
-            )
-        {
+        if self.reject_protected_prelude_declaration_for_owner(module_owner, machine_name, span) {
             return false;
         }
         if crate::ty::is_reserved_type_name(machine_name) {
@@ -1292,20 +1286,9 @@ impl Checker {
             return false;
         }
 
-        let event_type_name = format!("{machine_name}Event");
-        let event_key = (module_owner.map(str::to_string), event_type_name.clone());
-        if let Some(prev_span) = self.type_namespace_owners.get(&event_key).cloned() {
-            self.report_duplicate_type_namespace_name(&event_type_name, span, prev_span);
-            return false;
-        }
-
         self.type_namespace_owners.insert(machine_key, span.clone());
-        self.type_namespace_owners.insert(event_key, span.clone());
         self.type_def_spans
             .entry(machine_name.to_string())
-            .or_insert_with(|| span.clone());
-        self.type_def_spans
-            .entry(event_type_name)
             .or_insert_with(|| span.clone());
         true
     }
@@ -2127,7 +2110,7 @@ impl Checker {
         let machine_identity = self.declaration_identity(md.name.name.as_str());
         let machine_ty = self.named_ty_for_key(&machine_identity, machine_generic_args.clone());
 
-        let event_type_name = format!("{}Event", md.name);
+        let event_type_name = format!("{}.Event", md.name);
         let event_identity = self.declaration_identity(&event_type_name);
         let event_ty = self.named_ty_for_key(&event_identity, machine_generic_args.clone());
 

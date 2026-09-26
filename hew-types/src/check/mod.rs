@@ -1507,6 +1507,30 @@ impl Checker {
             NominalNamespace::FlattenedFile => Some(leaf.to_string()),
             NominalNamespace::Owned => None,
         };
+        let machine_event_owner = if let Item::TypeDecl(decl) = item {
+            if let hew_parser::ast::DeclarationOrigin::MachineEventType {
+                machine_start,
+                machine_end,
+                machine_ordinal,
+            } = decl.origin
+            {
+                let machine_span = machine_start..machine_end;
+                let occurrence = Occurrence::new_with_synthetic_ordinal(
+                    module,
+                    &machine_span,
+                    machine_ordinal,
+                    Kind::Machine,
+                    0,
+                );
+                self.defs
+                    .declaration(occurrence)
+                    .map(|owner| (owner, format!("{}.Event", self.defs.path(owner))))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         // `alias` marks the other name a nominal answers to in its namespace.
         // It is claimed there for collision reporting and never becomes a
         // second spelling of the declaration's identity.
@@ -1541,11 +1565,17 @@ impl Checker {
                 match self.defs.declare(occurrence, name, owner, path.clone()) {
                     Ok(id) => {
                         minted = Some(id);
-                        if matches!(kind, Kind::Type | Kind::Record) {
+                        if matches!(kind, Kind::Type | Kind::Record | Kind::MachineEventType) {
                             minted_types.push(id);
                         }
                         match owner {
-                            Some(owner) => self.scopes.declare_member(owner, name, id),
+                            Some(owner) => {
+                                let resolution = scope::Binding::of_item(&self.defs, id)
+                                    .map_or(scope::Resolution::Member(id), |binding| {
+                                        binding.resolution()
+                                    });
+                                self.scopes.declare_member(owner, name, resolution);
+                            }
                             None => {
                                 if let (Some(namespace_module), Some(binding)) =
                                     (namespace_module, scope::Binding::of_item(&self.defs, id))
@@ -1666,16 +1696,35 @@ impl Checker {
                 }
             }
             Item::TypeDecl(decl) => {
-                let name = decl.name.name;
-                let path = owner_path(name.as_str());
-                let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
-                    Kind::Machine
+                let generated_event = matches!(
+                    decl.origin,
+                    hew_parser::ast::DeclarationOrigin::MachineEventType { .. }
+                );
+                let (name, path, kind, parent) = if let Some((parent, path)) = &machine_event_owner
+                {
+                    (
+                        Symbol::intern("Event"),
+                        path.clone(),
+                        Kind::MachineEventType,
+                        Some(*parent),
+                    )
                 } else {
-                    Kind::Type
+                    let name = decl.name.name;
+                    let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                        Kind::Machine
+                    } else {
+                        Kind::Type
+                    };
+                    (name, owner_path(name.as_str()), kind, None)
                 };
-                let owner = declare(kind, 0, name, None, path.clone(), false);
-                if let Some(alias) = nominal_alias(name.as_str()) {
-                    declare(kind, 0, name, None, alias, true);
+                if generated_event && parent.is_none() {
+                    return;
+                }
+                let owner = declare(kind, 0, name, parent, path.clone(), false);
+                if !generated_event {
+                    if let Some(alias) = nominal_alias(name.as_str()) {
+                        declare(kind, 0, name, None, alias, true);
+                    }
                 }
                 // An enum's variants and a desugared machine's states are
                 // members of their declaration.
@@ -2156,7 +2205,7 @@ impl Checker {
                                 // locally-non-generic.
                                 self.local_type_defs.insert(md.name.to_string());
                                 self.source_type_defs.insert(md.name.to_string());
-                                let event_type_name = format!("{}Event", md.name);
+                                let event_type_name = format!("{}.Event", md.name);
                                 self.local_type_defs.insert(event_type_name.clone());
                                 self.source_type_defs.insert(event_type_name);
                             }

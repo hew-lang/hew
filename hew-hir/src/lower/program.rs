@@ -229,7 +229,7 @@ pub fn lower_program_with_mono_cap(
                         // the MIR value-class boundary.
                         Item::Machine(decl) => Some(vec![
                             format!("{module_full_path}.{}", decl.name),
-                            format!("{module_full_path}.{}Event", decl.name),
+                            format!("{module_full_path}.{}.Event", decl.name),
                         ]),
                         _ => None,
                     }
@@ -530,12 +530,14 @@ pub fn lower_program_with_mono_cap(
                                     && decl.type_params.is_none()) =>
                         {
                             let id = ctx.ids.item();
-                            let kind = if decl.origin
-                                == hew_parser::ast::DeclarationOrigin::MachineState
-                            {
-                                hew_types::DeclarationKind::Machine
-                            } else {
-                                hew_types::DeclarationKind::Type
+                            let kind = match decl.origin {
+                                hew_parser::ast::DeclarationOrigin::MachineState => {
+                                    hew_types::DeclarationKind::Machine
+                                }
+                                hew_parser::ast::DeclarationOrigin::MachineEventType { .. } => {
+                                    hew_types::DeclarationKind::MachineEventType
+                                }
+                                _ => hew_types::DeclarationKind::Type,
                             };
                             let Some(declaration) = ctx.source_declaration(item_span, kind, 0)
                             else {
@@ -740,10 +742,14 @@ pub fn lower_program_with_mono_cap(
         match item {
             Item::TypeDecl(decl) => {
                 let id = ctx.ids.item();
-                let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
-                    hew_types::DeclarationKind::Machine
-                } else {
-                    hew_types::DeclarationKind::Type
+                let kind = match decl.origin {
+                    hew_parser::ast::DeclarationOrigin::MachineState => {
+                        hew_types::DeclarationKind::Machine
+                    }
+                    hew_parser::ast::DeclarationOrigin::MachineEventType { .. } => {
+                        hew_types::DeclarationKind::MachineEventType
+                    }
+                    _ => hew_types::DeclarationKind::Type,
                 };
                 let Some(declaration) = ctx.source_declaration(item_span, kind, 0) else {
                     continue;
@@ -1010,7 +1016,7 @@ pub fn lower_program_with_mono_cap(
         for (item, _) in &program.items {
             match item {
                 Item::Machine(md) => {
-                    let event_type_name = format!("{}Event", md.name);
+                    let event_type_name = format!("{}.Event", md.name);
                     for (idx, state) in md.states.iter().enumerate() {
                         let qualified = format!("{}::{}", md.name, state.name);
                         ctx.machine_ctor_registry
@@ -1101,7 +1107,7 @@ pub fn lower_program_with_mono_cap(
                     for (item, _) in &module.items {
                         match item {
                             Item::Machine(md) => {
-                                let event_type_name = format!("{}Event", md.name);
+                                let event_type_name = format!("{}.Event", md.name);
                                 let source_state_type = format!("{source_module}.{}", md.name);
                                 let source_event_type =
                                     format!("{source_module}.{event_type_name}");

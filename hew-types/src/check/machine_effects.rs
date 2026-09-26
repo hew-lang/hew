@@ -261,12 +261,17 @@ fn prove_instantiation_releases(
         let ResolvedTy::Named { head, args, .. } = machine else {
             continue;
         };
-        let name = head.registry_key();
-        // TRANSITION(A1 commit 4): the companion event is found by its minted
-        // spelling until it is an owner member of the machine (A428).
-        let Some(event_nominal) = output.defs.lookup_nominal(&format!("{name}Event")) else {
+        let Some(machine_nominal) = head.nominal() else {
             continue;
         };
+        let Some(event_type) = output.defs.member_of_kind(
+            machine_nominal.declaration(),
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        ) else {
+            continue;
+        };
+        let event_nominal = crate::NominalId::from_minted_declaration(event_type);
         let event = ResolvedTy::named_user(
             crate::NominalHead::new(event_nominal, output.defs.path(event_nominal.declaration())),
             args.clone(),

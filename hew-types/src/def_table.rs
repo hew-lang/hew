@@ -34,6 +34,7 @@ pub enum DeclarationKind {
     TraitMethod,
     TypeMethod,
     ImplMethod,
+    ImplBlock,
     Actor,
     ActorInit,
     ActorReceive,

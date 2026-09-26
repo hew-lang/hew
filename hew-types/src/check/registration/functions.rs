@@ -2339,12 +2339,23 @@ impl Checker {
             crate::DeclarationKind::ImplMethod,
             0,
         );
-        // An impl block has no row of its own, so an impl method carries no
-        // owner until A1 gives it one.
         if let Ok(declaration) = self
             .defs
             .declare(occurrence, method.name.name, None, path.clone())
         {
+            if let Some(module) = self.current_declaration_module() {
+                self.scopes.declare_type_parameters(
+                    module,
+                    declaration,
+                    method.fn_span.clone(),
+                    method
+                        .type_params
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|param| param.name),
+                );
+            }
             return Some(declaration);
         }
         // Impl methods are registered per route, and a shipped module reached

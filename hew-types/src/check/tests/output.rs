@@ -1739,3 +1739,40 @@ fn expected_variant_type_reaches_nested_binding_blocks() {
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
+
+#[test]
+fn source_type_parameters_publish_distinct_declaration_owned_ids() {
+    let source = "type T { value: i64 } fn first<T>(consume value: T) -> T { value } fn second<T>(consume value: T) -> T { value }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let mut parameters = Vec::new();
+    for (item, _) in &parsed.program.items {
+        let Item::Function(function) = item else {
+            continue;
+        };
+        let hew_parser::ast::TypeExpr::Named { path, .. } = &function.params[0].ty.0 else {
+            panic!("parameter annotation");
+        };
+        let key = SpanKey::in_module(&path.segments[0].1, 0);
+        let Some(crate::check::scope::Resolution::Param(parameter)) = output.resolutions.get(&key)
+        else {
+            panic!(
+                "generic annotation did not select its binder: {:?}",
+                output.resolutions.get(&key)
+            );
+        };
+        assert_eq!(
+            parameter.owner,
+            output
+                .defs
+                .lookup_path(function.name.name.as_str())
+                .unwrap()
+        );
+        assert_eq!(parameter.index, 0);
+        parameters.push(*parameter);
+    }
+    assert_eq!(parameters.len(), 2);
+    assert_ne!(parameters[0], parameters[1]);
+}

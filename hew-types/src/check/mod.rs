@@ -1811,7 +1811,17 @@ impl Checker {
             minted
         };
         match item {
-            Item::Import(_) | Item::Impl(_) => {}
+            Item::Import(_) => {}
+            Item::Impl(_) => {
+                declare(
+                    Kind::ImplBlock,
+                    0,
+                    Symbol::intern("impl"),
+                    None,
+                    fn_path(&format!("<impl@{}:{}>", span.start, item_ordinal)),
+                    false,
+                );
+            }
             Item::Const(decl) => {
                 let name = decl.name.name;
                 declare(Kind::Const, 0, name, None, owner_path(name.as_str()), false);
@@ -2083,10 +2093,149 @@ impl Checker {
                 }
             }
         }
+        self.declare_item_type_parameter_scopes(module, item_ordinal, item, span);
         for id in minted_types {
             if let Some(builtin) = self.declaration_builtin(id) {
                 self.defs.bind_builtin_declaration(builtin, id);
             }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive declaration walk publishes lexical generic scopes under their owners"
+    )]
+    fn declare_item_type_parameter_scopes(
+        &mut self,
+        module: Option<crate::ModuleId>,
+        item_ordinal: usize,
+        item: &Item,
+        span: &Span,
+    ) {
+        use crate::{DeclarationKind as Kind, DeclarationOccurrence};
+        let Some(module) = module else {
+            return;
+        };
+        let mut declare =
+            |kind, ordinal, region: &Span, parameters: &[hew_parser::ast::TypeParam]| {
+                let occurrence = DeclarationOccurrence::new_with_synthetic_ordinal(
+                    Some(module),
+                    span,
+                    item_ordinal,
+                    kind,
+                    ordinal,
+                );
+                if let Some(owner) = self.defs.declaration(occurrence) {
+                    self.scopes.declare_type_parameters(
+                        module,
+                        owner,
+                        region.clone(),
+                        parameters.iter().map(|param| param.name),
+                    );
+                }
+            };
+        match item {
+            Item::Function(function) => declare(
+                Kind::Function,
+                0,
+                span,
+                function.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::Impl(block) => declare(
+                Kind::ImplBlock,
+                0,
+                span,
+                block.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::TypeDecl(decl) => {
+                let kind = match decl.origin {
+                    hew_parser::ast::DeclarationOrigin::MachineState => Kind::Machine,
+                    hew_parser::ast::DeclarationOrigin::MachineEventType { .. } => {
+                        Kind::MachineEventType
+                    }
+                    _ => Kind::Type,
+                };
+                declare(
+                    kind,
+                    0,
+                    span,
+                    decl.type_params.as_deref().unwrap_or_default(),
+                );
+                for (index, method) in decl
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
+                        _ => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        Kind::TypeMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Record(decl) => declare(
+                Kind::Record,
+                0,
+                span,
+                decl.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::TypeAlias(decl) => declare(
+                Kind::TypeAlias,
+                0,
+                span,
+                decl.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::Trait(decl) => {
+                declare(
+                    Kind::Trait,
+                    0,
+                    span,
+                    decl.type_params.as_deref().unwrap_or_default(),
+                );
+                for (index, method) in decl
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TraitItem::Method(method) => Some(method),
+                        hew_parser::ast::TraitItem::AssociatedType { .. } => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        Kind::TraitMethod,
+                        index,
+                        &method.span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Actor(decl) => {
+                declare(Kind::Actor, 0, span, &decl.type_params);
+                for (index, method) in decl.receive_fns.iter().enumerate() {
+                    declare(
+                        Kind::ActorReceive,
+                        index,
+                        &method.span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::ActorMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Supervisor(decl) => declare(Kind::Supervisor, 0, span, &decl.type_params),
+            Item::Machine(decl) => declare(Kind::Machine, 0, span, &decl.type_params),
+            _ => {}
         }
     }
 

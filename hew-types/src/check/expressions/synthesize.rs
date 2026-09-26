@@ -260,6 +260,7 @@ impl Checker {
                 if !matches!(&ty, Ty::Error) {
                     self.record_value_path_resolution(expr, span);
                     self.record_field_resolution(object, field);
+                    self.record_actor_state_projection_resolution(span, field);
                 }
                 ty
             }

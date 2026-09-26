@@ -472,6 +472,47 @@ impl Checker {
         );
     }
 
+    /// The checker has already selected `self.field` as actor state. Publish
+    /// that member at both the whole projection used by HIR and its written
+    /// field token used by source navigation.
+    pub(super) fn record_actor_state_projection_resolution(
+        &mut self,
+        span: &hew_parser::ast::Span,
+        field: &hew_parser::ast::Spanned<hew_parser::ast::Ident>,
+    ) {
+        let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+        if !self.actor_self_state_fields.contains(&key) {
+            return;
+        }
+        let Some(crate::Ty::Named { head, .. }) = self.current_actor_type.as_ref() else {
+            return;
+        };
+        let Some(owner) = head.nominal() else {
+            return;
+        };
+        let Some(index) = self
+            .current_actor_fields
+            .iter()
+            .position(|member| member.name == field.0.name.as_str())
+        else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        let resolution = super::scope::Resolution::Field(
+            owner,
+            u32::try_from(index).expect("more than u32::MAX actor fields"),
+        );
+        self.scopes.record_resolution(site, span, resolution);
+        self.scopes.record_resolution(site, &field.1, resolution);
+        let token_end = field.1.start + field.0.name.as_str().len();
+        if token_end < field.1.end {
+            self.scopes
+                .record_resolution(site, &(field.1.start..token_end), resolution);
+        }
+    }
+
     /// Publish labels after the record constructor has selected its nominal.
     pub(super) fn record_struct_init_field_resolutions(
         &mut self,

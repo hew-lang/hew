@@ -43,6 +43,62 @@ fn machine_event_type_is_an_owned_member() {
 }
 
 #[test]
+fn generated_machine_parameters_keep_distinct_binding_spans() {
+    let source = "machine First { events { Go, } state Idle, on Go: Idle => Idle, } \
+        machine Second { events { Go, } state Idle, on Go: Idle => Idle, }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let normalized = output.normalized_machines.as_ref().expect("normalization");
+    let mut bindings = std::collections::HashSet::new();
+    let mut generated = 0;
+    for (item, _) in &normalized.program.items {
+        let Item::Impl(implementation) = item else {
+            continue;
+        };
+        for method in &implementation.methods {
+            if !matches!(
+                method.origin,
+                hew_parser::ast::DeclarationOrigin::MachineStep
+                    | hew_parser::ast::DeclarationOrigin::MachineCompanion
+            ) {
+                continue;
+            }
+            generated += 1;
+            for param in &method.params {
+                let binder = SpanKey::in_module(&param.name_span, 0);
+                let resolution = output
+                    .resolutions
+                    .get(&binder)
+                    .expect("generated parameter binder row");
+                assert!(matches!(
+                    resolution,
+                    crate::check::scope::Resolution::Local(_)
+                ));
+                assert!(bindings.insert(resolution), "generated binder collision");
+                assert!(
+                    output.resolutions.iter().any(|(use_span, use_resolution)| {
+                        *use_span != binder
+                            && use_resolution == resolution
+                            && normalized
+                                .source_spans
+                                .contains_key(&(use_span.start..use_span.end))
+                    }),
+                    "generated parameter use did not join its binder: {param:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(generated, 4, "two machines each generate two methods");
+    assert_eq!(
+        bindings.len(),
+        6,
+        "each generated parameter has one identity"
+    );
+}
+
+#[test]
 fn flat_machine_event_spelling_has_an_owned_path_fix_it() {
     let source = "machine Tank { events { Tick, } state Idle, on Tick: Idle => Idle, } \
         fn feed(event: TankEvent) -> i64 { 1 } \

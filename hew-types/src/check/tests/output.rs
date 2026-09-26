@@ -27,6 +27,122 @@ fn authored_static_method_wins_over_runtime_name() {
 }
 
 #[test]
+fn function_value_and_direct_call_segments_keep_declarations() {
+    let source = "fn helper(value: i64) -> i64 { value } \
+        fn main() { let f: fn(i64) -> i64 = helper; \
+        let _ = f(4); let _ = helper(5); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let declaration = output
+        .defs
+        .lookup_path("helper")
+        .expect("helper declaration");
+    for start in [
+        source.find("= helper").unwrap() + 2,
+        source.rfind("helper(5)").unwrap(),
+    ] {
+        assert_eq!(
+            output
+                .resolutions
+                .get(&SpanKey::in_module(&(start..start + 6), 0)),
+            Some(&crate::check::scope::Resolution::Def(declaration))
+        );
+    }
+}
+
+#[test]
+fn actor_self_projection_publishes_the_state_member() {
+    let source = "actor Counter { let value: i64, receive fn get() -> i64 { self.value } }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let owner = output
+        .defs
+        .lookup_path("Counter")
+        .expect("actor declaration");
+    let field =
+        crate::check::scope::Resolution::Field(crate::NominalId::from_minted_declaration(owner), 0);
+    let start = source.find("self.value").unwrap();
+    let projection = output
+        .actor_self_state_fields
+        .iter()
+        .find(|site| site.start == start)
+        .expect("checked actor projection");
+    for span in [projection.start..projection.end, start + 5..start + 10] {
+        assert_eq!(
+            output.resolutions.get(&SpanKey::in_module(&span, 0)),
+            Some(&field),
+            "actor state use at {span:?}"
+        );
+    }
+}
+
+#[test]
+fn imported_generic_function_value_publishes_module_and_member_segments() {
+    for (source, surface) in [
+        (
+            "import m; fn main() { let f: fn(i64) -> i64 = m.id; let _ = f(4); }",
+            "m",
+        ),
+        (
+            "import m as alias; fn main() { let f: fn(i64) -> i64 = alias.id; let _ = f(4); }",
+            "alias",
+        ),
+    ] {
+        let module = hew_parser::parse("pub fn id<T>(value: T) -> T { value }");
+        assert!(module.errors.is_empty(), "{:#?}", module.errors);
+        let mut parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let (Item::Import(import), _) = &mut parsed.program.items[0] else {
+            panic!("expected module import");
+        };
+        import.resolved_items = Some(module.program.items.into());
+        // In-memory graphs can identify a module by path without carrying
+        // source-file paths. The scope binding must still use that exact graph
+        // module for every written segment.
+        let root = ModulePath::root();
+        let m = ModulePath::new(["m"]);
+        let mut graph = ModuleGraph::new(root.clone());
+        for (id, items) in [
+            (root.clone(), Vec::new()),
+            (
+                m.clone(),
+                import.resolved_items.as_ref().unwrap().as_ref().clone(),
+            ),
+        ] {
+            graph
+                .add_module(Module {
+                    id,
+                    items,
+                    imports: Vec::new(),
+                    source_paths: Vec::new(),
+                    doc: None,
+                })
+                .unwrap();
+        }
+        graph.topo_order = vec![m, root];
+        parsed.program.module_graph = Some(graph);
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let function = output.defs.lookup_path("m.id").expect("imported function");
+        let module = output.defs.module(function).expect("function owner module");
+        let alias = source.rfind(&format!("{surface}.id")).unwrap();
+        let member = alias + surface.len() + 1;
+        assert_eq!(
+            output
+                .resolutions
+                .get(&SpanKey::in_module(&(alias..alias + surface.len()), 0)),
+            Some(&crate::check::scope::Resolution::Module(module))
+        );
+        assert_eq!(
+            output
+                .resolutions
+                .get(&SpanKey::in_module(&(member..member + 2), 0)),
+            Some(&crate::check::scope::Resolution::Def(function))
+        );
+    }
+}
+
+#[test]
 fn source_resolutions_keep_top_level_consts_as_declarations() {
     let source = "const A: i64 = 10; const B: i64 = A + 1; \
         fn main() -> i64 { B }";

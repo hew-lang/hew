@@ -1034,6 +1034,7 @@ impl Checker {
             .resolved_source_paths
             .first()
             .and_then(|source| self.defs.module_for_source(source))
+            .or_else(|| self.defs.module_for_path(&decl.path.to_string()))
         else {
             return;
         };

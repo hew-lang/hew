@@ -924,6 +924,7 @@ impl Builder {
         function.fn_span = self.span();
         function.decl_span = self.span();
         for param in &mut function.params {
+            param.name_span = self.span();
             self.refresh_type(&mut param.ty);
         }
         if let Some(ty) = &mut function.return_type {

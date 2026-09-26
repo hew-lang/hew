@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, MessageType, ServerCapabilities,
 };
@@ -17,7 +17,7 @@ fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
     let mut roots = Vec::with_capacity(params.workspace_folders.as_ref().map_or(1, Vec::len));
     if let Some(folders) = &params.workspace_folders {
         for folder in folders {
-            if let Some(path) = folder.uri.to_file_path() {
+            if let Some(path) = folder.uri.to_checked_file_path() {
                 roots.push(normalize_workspace_root(path.into_owned()));
             }
         }
@@ -29,7 +29,7 @@ fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
         )]
         {
             if let Some(root_uri) = &params.root_uri {
-                if let Some(path) = root_uri.to_file_path() {
+                if let Some(path) = root_uri.to_checked_file_path() {
                     roots.push(normalize_workspace_root(path.into_owned()));
                 }
             }
@@ -55,8 +55,8 @@ fn build_initialize_result(capabilities: &ServerCapabilities) -> Result<Initiali
 
     // Serialise to Value so that the test helper `build_initialize_result_from_caps_json`
     // can share the decode path.  The `experimental.typeHierarchyProvider` field set in
-    // `build_server_capabilities()` is a standard `ServerCapabilities` field in lsp-types
-    // 0.94.1 and therefore survives this round-trip intact.
+    // `experimental` is a standard `ServerCapabilities` field in ls-types,
+    // so the type hierarchy advertisement survives this round-trip.
     let caps_json = serde_json::to_value(capabilities).map_err(|error| Error {
         code: ErrorCode::InternalError,
         message: format!("failed to encode LSP server capabilities: {error}").into(),

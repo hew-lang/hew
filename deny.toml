@@ -16,6 +16,7 @@
 allow = [
   # Core permissive
   "MIT",
+  "MIT-0",                          # borrow-or-share in the Argon2 0.6 password hashing chain
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception", # LLVM/inkwell ecosystem — static link
   "ISC",
@@ -28,7 +29,7 @@ allow = [
   "Unicode-3.0",
   # Unicode License Agreement for Data Files and Software (2016 version) —
   # same permissive Unicode-data family as Unicode-3.0.  Required by
-  # finl_unicode v1.4.0, which ships a read-only General_Category table.
+  # finl_unicode v1.5.0, which ships a read-only General_Category table.
   "Unicode-DFS-2016",
 
   # Public domain / permissive data

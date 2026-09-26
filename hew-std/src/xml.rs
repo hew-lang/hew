@@ -120,13 +120,13 @@ impl ParseXmlError {
 fn extract_tag_and_attrs(
     e: &BytesStart<'_>,
 ) -> Result<(String, Vec<(String, String)>), ParseXmlError> {
-    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+    let tag = e.name().as_ref().to_string();
     let mut attributes = Vec::new();
     for attribute in e.attributes() {
         let Ok(a) = attribute else {
             return Err(ParseXmlError::InvalidAttribute(tag));
         };
-        let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
+        let key = a.key.as_ref().to_string();
         let Ok(val) = a.normalized_value(quick_xml::XmlVersion::Implicit1_0) else {
             return Err(ParseXmlError::InvalidAttribute(tag));
         };
@@ -220,7 +220,7 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
             }
             Ok(Event::End(ref e)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
-                let closing = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let closing = e.name().as_ref().to_string();
                 let Some(frame) = stack.pop() else {
                     return Err(ParseXmlError::UnexpectedClose(closing));
                 };
@@ -251,32 +251,27 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
                 push_node(&mut stack, &mut top_level, node);
             }
             Ok(Event::Text(ref e)) => {
-                text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                text_buf.push_str(e.as_ref());
             }
-            // Deref `BytesRef` to its `[u8]` target explicitly: `as_ref()` is
-            // ambiguous once sibling stdlib modules pull `winnow`, which adds
-            // its own `AsRef` impls on `[u8]` into scope.
             Ok(Event::GeneralRef(ref e)) => match &**e {
-                b"lt" => text_buf.push('<'),
-                b"gt" => text_buf.push('>'),
-                b"amp" => text_buf.push('&'),
-                b"quot" => text_buf.push('"'),
-                b"apos" => text_buf.push('\''),
+                "lt" => text_buf.push('<'),
+                "gt" => text_buf.push('>'),
+                "amp" => text_buf.push('&'),
+                "quot" => text_buf.push('"'),
+                "apos" => text_buf.push('\''),
                 _ => {
                     // An unresolvable reference is malformed XML. Echoing it
                     // back as literal text would silently turn a broken
                     // document into one that parses.
                     let Ok(Some(ch)) = e.resolve_char_ref() else {
-                        return Err(ParseXmlError::UnknownEntity(
-                            String::from_utf8_lossy(e.as_ref()).to_string(),
-                        ));
+                        return Err(ParseXmlError::UnknownEntity(e.as_ref().to_string()));
                     };
                     text_buf.push(ch);
                 }
             },
             Ok(Event::CData(ref e)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
-                let text = String::from_utf8_lossy(e.as_ref()).to_string();
+                let text = e.as_ref().to_string();
                 if !text.is_empty() {
                     push_node(&mut stack, &mut top_level, XmlNodeKind::Text(text));
                 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use dashmap::DashMap;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Diagnostic,
     DocumentFormattingParams, DocumentLink, DocumentLinkParams, DocumentSymbol,

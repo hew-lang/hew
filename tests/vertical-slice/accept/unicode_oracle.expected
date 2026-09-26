@@ -7,6 +7,7 @@ letter_thai=true letter_armenian=true letter_cjk_ext_b=true
 punct_bang=true punct_ideo=true punct_A=false
 punct_pc=true punct_pd=true punct_ps=true punct_pe=true
 punct_pi=true punct_pf=true punct_po=true punct_astral=true
+punct_u18_2e60=true punct_u18_2e61=true punct_u18_2e62=true punct_u18_2e63=true
 punct_sm=false punct_sc=false punct_surrogate=false punct_wrapped=false
 title_a=65 title_eacute=201 title_digit=49
 rune_len=1,2,3,4

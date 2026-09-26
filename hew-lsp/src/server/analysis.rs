@@ -8,7 +8,7 @@ use hew_hir::{
 use hew_parser::ParseDiagnosticKind;
 use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::{LintId, TypeCheckOutput};
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
     NumberOrString, Uri as Url,
 };
@@ -44,7 +44,7 @@ pub(super) fn source_for_path(
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<String> {
     // Prefer in-memory content if the file is currently open in the editor.
-    if let Some(url) = Url::from_file_path(path) {
+    if let Some(url) = Url::from_checked_file_path(path) {
         if let Some(doc) = documents.get(&open_document_uri(&url, documents)) {
             return Some(doc.source.clone());
         }
@@ -72,7 +72,7 @@ pub(super) fn build_module_source_map(
         let Some(source_path) = module.source_paths.first() else {
             continue;
         };
-        let Some(uri) = Url::from_file_path(source_path) else {
+        let Some(uri) = Url::from_checked_file_path(source_path) else {
             continue;
         };
         let Some(source) = source_for_path(source_path, documents) else {
@@ -154,7 +154,7 @@ fn document_set(
 ) -> hew_compile::DocumentSet {
     let mut set = hew_compile::DocumentSet::new();
     for entry in documents {
-        if let Some(path) = entry.key().to_file_path() {
+        if let Some(path) = entry.key().to_checked_file_path() {
             set.insert(path.into_owned(), entry.value().source.clone());
         }
     }
@@ -183,7 +183,7 @@ fn dependency_uris(program: &hew_parser::ast::Program) -> Option<Vec<Url>> {
         .modules
         .values()
         .flat_map(|module| module.source_paths.iter())
-        .filter_map(Url::from_file_path)
+        .filter_map(Url::from_checked_file_path)
         .collect();
     uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     uris.dedup();
@@ -201,7 +201,7 @@ pub(super) fn analyze_document(
     // checked as a standalone source under the server's working directory.
     // Its own text is what the driver reads either way, so both kinds of
     // document take the same run.
-    let root_path = uri.to_file_path().map_or_else(
+    let root_path = uri.to_checked_file_path().map_or_else(
         || std::path::PathBuf::from("./untitled.hew"),
         std::borrow::Cow::into_owned,
     );
@@ -428,7 +428,7 @@ struct DiagnosticTarget {
 }
 
 impl DiagnosticTarget {
-    fn range(&self, span: &hew_parser::ast::Span) -> tower_lsp_server::lsp_types::Range {
+    fn range(&self, span: &hew_parser::ast::Span) -> tower_lsp_server::ls_types::Range {
         super::span_to_range(&self.source, &self.line_offsets, span)
     }
 }
@@ -442,7 +442,7 @@ fn diagnostic_target(
 ) -> DiagnosticTarget {
     let mut uri = filename
         .map(std::path::Path::new)
-        .and_then(Url::from_file_path)
+        .and_then(Url::from_checked_file_path)
         .unwrap_or_else(|| root_uri.clone());
     if same_source_file(&uri, root_uri) {
         uri = root_uri.clone();
@@ -474,7 +474,7 @@ fn type_related_information(
             .map(|(index, (note_span, note_msg, _))| {
                 let note_target = note_sources.get(index).and_then(Option::as_ref).and_then(
                     |(text, filename)| {
-                        let uri = Url::from_file_path(std::path::Path::new(filename))?;
+                        let uri = Url::from_checked_file_path(std::path::Path::new(filename))?;
                         Some(DiagnosticTarget {
                             uri,
                             line_offsets: compute_line_offsets(text),
@@ -815,10 +815,10 @@ fn hir_diagnostic_data(kind: &HirDiagnosticKind) -> serde_json::Value {
     })
 }
 
-fn zero_range() -> tower_lsp_server::lsp_types::Range {
-    tower_lsp_server::lsp_types::Range::new(
-        tower_lsp_server::lsp_types::Position::new(0, 0),
-        tower_lsp_server::lsp_types::Position::new(0, 0),
+fn zero_range() -> tower_lsp_server::ls_types::Range {
+    tower_lsp_server::ls_types::Range::new(
+        tower_lsp_server::ls_types::Position::new(0, 0),
+        tower_lsp_server::ls_types::Position::new(0, 0),
     )
 }
 
@@ -867,7 +867,7 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
 pub(super) mod tests {
     use hew_hir::{HirItem, HirModule, HirNodeId};
     use hew_parser::ast::Span;
-    use tower_lsp_server::lsp_types::Position;
+    use tower_lsp_server::ls_types::Position;
 
     use super::*;
 
@@ -1185,7 +1185,7 @@ pub(super) mod tests {
         let path = std::path::PathBuf::from("C:/hew-lsp-test/main.hew");
         #[cfg(not(windows))]
         let path = std::path::PathBuf::from("/hew-lsp-test/main.hew");
-        Url::from_file_path(path).expect("test path is absolute")
+        Url::from_checked_file_path(path).expect("test path is absolute")
     }
 
     #[test]
@@ -1280,7 +1280,7 @@ pub(super) mod tests {
             .expect("hew-lsp has a parent (repo root)")
             .to_path_buf();
         let path = repo_root.join(format!("{file_stem}.hew"));
-        let uri = Url::from_file_path(&path).expect("repo-rooted path is absolute");
+        let uri = Url::from_checked_file_path(&path).expect("repo-rooted path is absolute");
         let docs: DashMap<Url, DocumentState> = DashMap::new();
         analyze_document(&uri, source, &docs, &[])
     }
@@ -1760,7 +1760,7 @@ pub(super) mod tests {
             ("main.hew", SOURCE),
         ]);
         let path = root.join("main.hew");
-        let uri = Url::from_file_path(&path).expect("workspace path is absolute");
+        let uri = Url::from_checked_file_path(&path).expect("workspace path is absolute");
 
         let failure = hew_compile::check_file(
             &path.display().to_string(),
@@ -1840,7 +1840,7 @@ pub(super) mod tests {
         let root = make_temp_workspace_dir(&[("main.hew", source)]);
         let alias = root.join("open.hew");
         std::os::unix::fs::symlink(root.join("main.hew"), &alias).unwrap();
-        let uri = Url::from_file_path(&alias).unwrap();
+        let uri = Url::from_checked_file_path(&alias).unwrap();
         let diagnostics = published_for(&uri, source, &[]);
         assert!(
             diagnostics.iter().any(|d| d.message.contains("not found")),
@@ -1863,7 +1863,7 @@ pub(super) mod tests {
             ("main.hew", main_src),
         ]);
         let main_uri =
-            Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
+            Url::from_checked_file_path(root.join("main.hew")).expect("workspace path is absolute");
 
         let diagnostics = published_for(&main_uri, main_src, &[]);
         assert!(
@@ -1885,7 +1885,7 @@ pub(super) mod tests {
         let main_src = "import a.b;\n\nfn main() -> i64 { 0 }\n";
         let root = make_temp_workspace_dir(&[("a/b.hew", lib), ("main.hew", main_src)]);
         let main_uri =
-            Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
+            Url::from_checked_file_path(root.join("main.hew")).expect("workspace path is absolute");
 
         let diagnostics = published_for(&main_uri, main_src, &[]);
         assert!(
@@ -1906,8 +1906,8 @@ pub(super) mod tests {
         let main_src = "import \"lib.hew\";\n\nfn main() -> i64 { 0 }\n";
         let local = make_temp_workspace_dir(&[("main.hew", main_src)]);
         let root = make_temp_workspace_dir(&[("lib.hew", lib)]);
-        let main_uri =
-            Url::from_file_path(local.join("main.hew")).expect("workspace path is absolute");
+        let main_uri = Url::from_checked_file_path(local.join("main.hew"))
+            .expect("workspace path is absolute");
 
         let diagnostics = published_for(&main_uri, main_src, std::slice::from_ref(&root));
         assert!(
@@ -1931,8 +1931,8 @@ pub(super) mod tests {
         let main_src = "import \"lib.hew\";\n\nfn main() -> i64 { val() }\n";
         let local = make_temp_workspace_dir(&[("main.hew", main_src), ("lib.hew", local_lib)]);
         let root = make_temp_workspace_dir(&[("lib.hew", root_lib)]);
-        let main_uri =
-            Url::from_file_path(local.join("main.hew")).expect("workspace path is absolute");
+        let main_uri = Url::from_checked_file_path(local.join("main.hew"))
+            .expect("workspace path is absolute");
 
         let diagnostics = published_for(&main_uri, main_src, std::slice::from_ref(&root));
         assert!(
@@ -1953,8 +1953,8 @@ pub(super) mod tests {
         let main_src = "import acme.widgets;\nfn main() -> i64 { widgets.widget_fn() }\n";
         let pkg_dir = make_temp_workspace_dir(&[("acme/widgets.hew", pkg_source)]);
         let project_dir = make_temp_workspace_dir(&[("main.hew", main_src)]);
-        let main_uri =
-            Url::from_file_path(project_dir.join("main.hew")).expect("project path is absolute");
+        let main_uri = Url::from_checked_file_path(project_dir.join("main.hew"))
+            .expect("project path is absolute");
 
         // Negative control: without the package path there is nowhere to find it.
         let without = published_for(&main_uri, main_src, &[]);
@@ -1983,8 +1983,8 @@ pub(super) mod tests {
         let main_src = "import hew.template;\nfn main() -> i64 { template.apply() }\n";
         let pkg_dir = make_temp_workspace_dir(&[("template/template.hew", template_src)]);
         let project_dir = make_temp_workspace_dir(&[("main.hew", main_src)]);
-        let main_uri =
-            Url::from_file_path(project_dir.join("main.hew")).expect("project path is absolute");
+        let main_uri = Url::from_checked_file_path(project_dir.join("main.hew"))
+            .expect("project path is absolute");
 
         let without = published_for(&main_uri, main_src, &[]);
         assert!(

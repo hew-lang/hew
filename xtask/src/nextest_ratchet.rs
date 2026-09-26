@@ -352,7 +352,7 @@ fn scan(xml: &str) -> Result<Report> {
             Ok(Event::Empty(event)) => scanner.open(&event, true)?,
             Ok(Event::End(_)) => scanner.close()?,
             Ok(Event::Text(event)) => {
-                let bytes: &[u8] = event.as_ref();
+                let bytes = event.as_ref().as_bytes();
                 if !bytes.iter().all(u8::is_ascii_whitespace)
                     && !matches!(
                         scanner.stack.last().copied(),
@@ -383,7 +383,7 @@ fn scan(xml: &str) -> Result<Report> {
 
 impl Scanner {
     fn open(&mut self, event: &BytesStart<'_>, empty: bool) -> Result<()> {
-        let tag = str_value(event.name().as_ref(), "element name")?;
+        let tag = event.name().as_ref().to_string();
         let parent = self.stack.last().copied();
         let role = match parent {
             None if tag == "testsuites" && self.root.is_none() => {
@@ -582,19 +582,14 @@ fn parse_count(value: &str) -> Result<usize> {
 }
 
 fn required_attr(event: &BytesStart<'_>, name: &str) -> Result<String> {
-    attr(event, name)?.ok_or_else(|| {
-        format!(
-            "<{}> requires {name:?}",
-            String::from_utf8_lossy(event.name().as_ref())
-        )
-    })
+    attr(event, name)?.ok_or_else(|| format!("<{}> requires {name:?}", event.name().as_ref()))
 }
 
 fn attr(event: &BytesStart<'_>, wanted: &str) -> Result<Option<String>> {
     let mut found = None;
     for attribute in event.attributes() {
         let attribute = attribute.map_err(|error| format!("invalid XML attribute: {error}"))?;
-        if attribute.key.as_ref() == wanted.as_bytes() {
+        if attribute.key.as_ref() == wanted {
             if found.is_some() {
                 return Err(format!("duplicate XML attribute {wanted:?}"));
             }
@@ -605,12 +600,6 @@ fn attr(event: &BytesStart<'_>, wanted: &str) -> Result<Option<String>> {
         }
     }
     Ok(found)
-}
-
-fn str_value(bytes: &[u8], what: &str) -> Result<String> {
-    std::str::from_utf8(bytes)
-        .map(str::to_string)
-        .map_err(|_| format!("{what} is not UTF-8"))
 }
 
 fn parse_ledger(text: &str, platform: &str) -> Result<BTreeMap<Identity, Expected>> {

@@ -5010,7 +5010,7 @@ pub fn is_printable_non_ascii(c: char) -> bool {
 }
 
 /// Unicode `Default_Ignorable_Code_Point` property (from
-/// `DerivedCoreProperties.txt`).  `finl_unicode` 1.4 exposes only
+/// `DerivedCoreProperties.txt`).  `finl_unicode` 1.5 exposes only
 /// `General_Category`, so this property is encoded explicitly.  These scalars
 /// are rendered as nothing by conforming renderers; several (e.g. U+FE0F
 /// VARIATION SELECTOR-16, U+034F COMBINING GRAPHEME JOINER) sit in *readable*

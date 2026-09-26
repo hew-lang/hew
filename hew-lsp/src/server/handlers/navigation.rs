@@ -7,8 +7,32 @@ use tower_lsp_server::lsp_types::{
 use super::super::{
     collect_import_items, find_cross_file_definition, find_definition_in_ast,
     find_stdlib_definition, non_empty, offset_range_to_lsp, plan_workspace_rename,
-    position_to_offset, word_at_offset, HewLanguageServer,
+    position_to_offset, word_at_offset, DocumentState, HewLanguageServer,
 };
+
+fn source_definition_location(
+    uri: &tower_lsp_server::lsp_types::Uri,
+    doc: &DocumentState,
+    word: &str,
+    offset: usize,
+) -> Option<Location> {
+    let span = hew_analysis::definition::find_local_binding_definition(
+        &doc.source,
+        &doc.parse_result,
+        word,
+        offset,
+    )
+    .or_else(|| hew_analysis::definition::find_param_definition(&doc.parse_result, word, offset));
+    let range = if let Some(span) = span {
+        offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end)
+    } else {
+        find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, word)?
+    };
+    Some(Location {
+        uri: uri.clone(),
+        range,
+    })
+}
 
 pub(crate) fn rename_error_to_jsonrpc(
     err: &hew_analysis::RenameError,
@@ -74,27 +98,8 @@ pub(crate) fn goto_definition(
     }
     let word = word_at_offset(&doc.source, offset)?;
 
-    if let Some(span) = hew_analysis::definition::find_local_binding_definition(
-        &doc.source,
-        &doc.parse_result,
-        &word,
-        offset,
-    )
-    .or_else(|| hew_analysis::definition::find_param_definition(&doc.parse_result, &word, offset))
-    {
-        let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
-        return Some(GotoDefinitionResponse::Scalar(Location {
-            uri: uri.clone(),
-            range,
-        }));
-    }
-    if let Some(range) =
-        find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word)
-    {
-        return Some(GotoDefinitionResponse::Scalar(Location {
-            uri: uri.clone(),
-            range,
-        }));
+    if let Some(location) = source_definition_location(uri, &doc, &word, offset) {
+        return Some(GotoDefinitionResponse::Scalar(location));
     }
 
     if let Some(method) = word.rsplit('.').next() {

@@ -1277,6 +1277,13 @@ pub(super) fn plan_workspace_rename(
     build_workspace_edit(uri, doc, offset, new_name, documents)
 }
 
+fn checked_field_index(index: usize, uri: &Url) -> Result<u32, hew_analysis::RenameError> {
+    u32::try_from(index).map_err(|_| hew_analysis::RenameError::Io {
+        path: uri.as_str().to_string(),
+        message: "field index exceeds the supported range".to_string(),
+    })
+}
+
 /// Rename a checked field through its nominal owner and declaration index.
 /// The current compilation supplies exact uses in the root source. A request
 /// involving other source modules is refused until the workspace can prove a
@@ -1347,7 +1354,7 @@ fn plan_checked_field_rename(
             .position(|field| field == new_name)
         {
             let mut other = target.clone();
-            other.field_index = Some(other_index as u32);
+            other.field_index = Some(checked_field_index(other_index, uri)?);
             other.name = new_name.to_string();
             let existing = hew_analysis::identity::declaration_name_span(
                 &doc.source,

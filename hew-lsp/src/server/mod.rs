@@ -1925,17 +1925,17 @@ impl Worker {
     #[test]
     fn checked_imported_record_completion_uses_the_selected_module() {
         let main_source = "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { width: 1 }; println(shape.width); }";
-        let ma_source = "pub type Shape { width: i64 }";
-        let mb_source = "pub type Shape { colour: i64 }";
+        let selected_source = "pub type Shape { width: i64 }";
+        let other_source = "pub type Shape { colour: i64 }";
         let main_uri = make_test_uri("/fake/identity-completion/main.hew");
         let documents = DashMap::new();
         documents.insert(
             make_test_uri("/fake/identity-completion/ma.hew"),
-            make_doc(ma_source),
+            make_doc(selected_source),
         );
         documents.insert(
             make_test_uri("/fake/identity-completion/mb.hew"),
-            make_doc(mb_source),
+            make_doc(other_source),
         );
         let doc = analyze_document(&main_uri, main_source, &documents, &[]);
         let errors = published_errors(&doc, &main_uri);

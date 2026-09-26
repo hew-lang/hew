@@ -15,14 +15,19 @@ use tower_lsp_server::lsp_types::{
 
 use super::span_to_range;
 
+#[derive(PartialEq, Eq, Hash)]
+enum Target {
+    Declaration(DefId),
+    Name(String),
+}
+
 fn callable_item(
     uri: &Url,
     source: &str,
     lo: &[usize],
     name: &str,
     kind: SymbolKind,
-    span: &std::ops::Range<usize>,
-    selection: &std::ops::Range<usize>,
+    spans: (&std::ops::Range<usize>, &std::ops::Range<usize>),
     detail: Option<String>,
 ) -> CallHierarchyItem {
     CallHierarchyItem {
@@ -31,8 +36,8 @@ fn callable_item(
         tags: None,
         detail,
         uri: uri.clone(),
-        range: span_to_range(source, lo, span),
-        selection_range: span_to_range(source, lo, selection),
+        range: span_to_range(source, lo, spans.0),
+        selection_range: span_to_range(source, lo, spans.1),
         data: None,
     }
 }
@@ -56,8 +61,7 @@ pub(super) fn find_callable_at_offset(
                     lo,
                     function.name.name.as_str(),
                     SymbolKind::FUNCTION,
-                    &function.fn_span,
-                    &function.decl_span,
+                    (&function.fn_span, &function.decl_span),
                     None,
                 ))
             }
@@ -70,8 +74,7 @@ pub(super) fn find_callable_at_offset(
                             lo,
                             method.name.name.as_str(),
                             SymbolKind::METHOD,
-                            &method.fn_span,
-                            &method.decl_span,
+                            (&method.fn_span, &method.decl_span),
                             None,
                         ));
                     }
@@ -89,54 +92,21 @@ pub(super) fn find_callable_at_offset(
                             lo,
                             method.name.name.as_str(),
                             SymbolKind::METHOD,
-                            &method.fn_span,
-                            &method.decl_span,
+                            (&method.fn_span, &method.decl_span),
                             Some(format!("type {}", declaration.name)),
                         ));
                     }
                 }
             }
             Item::Actor(actor) => {
-                for method in &actor.methods {
-                    if contains(&method.decl_span) {
-                        return Some(callable_item(
-                            uri,
-                            source,
-                            lo,
-                            method.name.name.as_str(),
-                            SymbolKind::METHOD,
-                            &method.fn_span,
-                            &method.decl_span,
-                            Some(format!("actor {}", actor.name)),
-                        ));
-                    }
-                }
-                for receive in &actor.receive_fns {
-                    let name = super::navigation::find_identifier_span_in_range(
-                        source,
-                        receive.span.clone(),
-                        receive.name.name.as_str(),
-                    );
-                    if let Some(name) =
-                        name.filter(|name| name.start <= offset && offset < name.end)
-                    {
-                        return Some(callable_item(
-                            uri,
-                            source,
-                            lo,
-                            receive.name.name.as_str(),
-                            SymbolKind::METHOD,
-                            &receive.span,
-                            &(name.start..name.end),
-                            Some(format!("actor {}", actor.name)),
-                        ));
-                    }
+                if let Some(callable) = actor_callable_at_offset(uri, source, lo, actor, offset) {
+                    return Some(callable);
                 }
             }
             Item::Trait(trait_decl) => {
                 for method in trait_decl.items.iter().filter_map(|part| match part {
                     TraitItem::Method(method) => Some(method),
-                    _ => None,
+                    TraitItem::AssociatedType { .. } => None,
                 }) {
                     let name = super::navigation::find_identifier_span_in_range(
                         source,
@@ -152,14 +122,54 @@ pub(super) fn find_callable_at_offset(
                             lo,
                             method.name.name.as_str(),
                             SymbolKind::METHOD,
-                            &method.span,
-                            &(name.start..name.end),
+                            (&method.span, &(name.start..name.end)),
                             Some(format!("trait {}", trait_decl.name)),
                         ));
                     }
                 }
             }
             _ => {}
+        }
+    }
+    None
+}
+
+fn actor_callable_at_offset(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    actor: &hew_parser::ast::ActorDecl,
+    offset: usize,
+) -> Option<CallHierarchyItem> {
+    for method in &actor.methods {
+        if method.decl_span.start <= offset && offset < method.decl_span.end {
+            return Some(callable_item(
+                uri,
+                source,
+                lo,
+                method.name.name.as_str(),
+                SymbolKind::METHOD,
+                (&method.fn_span, &method.decl_span),
+                Some(format!("actor {}", actor.name)),
+            ));
+        }
+    }
+    for receive in &actor.receive_fns {
+        let name = super::navigation::find_identifier_span_in_range(
+            source,
+            receive.span.clone(),
+            receive.name.name.as_str(),
+        );
+        if let Some(name) = name.filter(|name| name.start <= offset && offset < name.end) {
+            return Some(callable_item(
+                uri,
+                source,
+                lo,
+                receive.name.name.as_str(),
+                SymbolKind::METHOD,
+                (&receive.span, &(name.start..name.end)),
+                Some(format!("actor {}", actor.name)),
+            ));
         }
     }
     None
@@ -220,8 +230,7 @@ fn callable_for_declaration(
         lo,
         &target.name,
         kind,
-        &site,
-        &(name.start..name.end),
+        (&site, &(name.start..name.end)),
         None,
     ))
 }
@@ -738,11 +747,6 @@ pub(super) fn find_outgoing_calls(
         collect_calls_in_named_body(item, caller_name, &mut call_sites);
     }
 
-    #[derive(PartialEq, Eq, Hash)]
-    enum Target {
-        Declaration(DefId),
-        Name(String),
-    }
     let mut grouped: HashMap<Target, Vec<Range>> = HashMap::new();
     for cs in &call_sites {
         let target = match type_output

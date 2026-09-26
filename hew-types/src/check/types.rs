@@ -637,6 +637,10 @@ pub struct TypeCheckOutput {
     pub indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
     /// Exact actual-to-formal callable flow at each checked direct call.
     pub callable_argument_flows: HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+    /// Exact field writes of an authored aggregate constructor.
+    pub aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    /// Symbolic return origins of checker-owned function bodies.
+    pub callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
@@ -1079,6 +1083,24 @@ pub enum CallableCandidate {
     Closure(SpanKey),
     /// A checker-bound formal supplied by a caller at the selected call site.
     Formal(TypeBindingId),
+    /// Intermediate value origin: an authored aggregate constructor.
+    Aggregate(SpanKey),
+    /// Intermediate value origin: the result of a selected call.
+    CallResult(SpanKey),
+    /// Intermediate value origin: a checker-selected field of a receiver.
+    Field {
+        receiver: Box<Self>,
+        owner: crate::NominalId,
+        index: u32,
+    },
+}
+
+/// One checker-selected field write in a record initializer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableFieldFlow {
+    pub owner: crate::NominalId,
+    pub index: u32,
+    pub candidates: IndirectCallCandidates,
 }
 
 /// One checked actual-to-formal edge at a selected direct call.
@@ -1643,6 +1665,8 @@ impl Default for TypeCheckOutput {
             direct_call_targets: HashMap::new(),
             indirect_call_candidates: HashMap::new(),
             callable_argument_flows: HashMap::new(),
+            aggregate_field_candidates: HashMap::new(),
+            callable_return_candidates: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_bindings: HashMap::new(),
             trait_defaults: HashMap::new(),
@@ -3323,6 +3347,8 @@ pub struct Checker {
     pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
     pub(super) callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
     pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
+    pub(super) aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    pub(super) callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
@@ -4407,6 +4433,8 @@ impl Checker {
             callable_binding_candidates: HashMap::new(),
             callable_formals: HashMap::new(),
             pending_callable_arguments: HashMap::new(),
+            aggregate_field_candidates: HashMap::new(),
+            callable_return_candidates: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_bindings: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),

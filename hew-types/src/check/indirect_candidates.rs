@@ -2,7 +2,7 @@
 
 use super::scope::Resolution;
 use super::types::{
-    CallableArgumentFlow, CallableCandidate, Checker, IndirectCallCandidates,
+    CallableArgumentFlow, CallableCandidate, CallableFieldFlow, Checker, IndirectCallCandidates,
     PendingCallableArguments, SpanKey,
 };
 use super::{CallTarget, MethodCallRewrite};
@@ -43,9 +43,39 @@ impl Checker {
                 SpanKey::in_module(span, self.current_module_idx),
             )),
             Expr::Ident(_) => self.resolved_callable_candidate(span),
-            Expr::FieldAccess { field, .. } => self.resolved_callable_candidate(&field.1),
+            Expr::FieldAccess { object, field } => {
+                let key = SpanKey::in_module(&field.1, self.current_module_idx);
+                if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+                    let receiver = self.callable_candidates_for_expr(&object.0, &object.1);
+                    IndirectCallCandidates {
+                        known: receiver
+                            .known
+                            .into_iter()
+                            .map(|receiver| CallableCandidate::Field {
+                                receiver: Box::new(receiver),
+                                owner: *owner,
+                                index: *index,
+                            })
+                            .collect(),
+                        may_be_unknown: receiver.may_be_unknown,
+                    }
+                } else {
+                    self.resolved_callable_candidate(&field.1)
+                }
+            }
             Expr::GenericApplySuffix { target, .. } => {
                 self.callable_candidates_for_expr(&target.0, &target.1)
+            }
+            Expr::StructInit { .. } => IndirectCallCandidates::single(
+                CallableCandidate::Aggregate(SpanKey::in_module(span, self.current_module_idx)),
+            ),
+            Expr::Call { .. } | Expr::MethodCall { .. }
+                if self.selected_callable_declaration(span).is_some() =>
+            {
+                IndirectCallCandidates::single(CallableCandidate::CallResult(SpanKey::in_module(
+                    span,
+                    self.current_module_idx,
+                )))
             }
             Expr::If {
                 then_block,
@@ -172,6 +202,20 @@ impl Checker {
         }
     }
 
+    fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.method_call_rewrites
+            .get(&key)
+            .and_then(|rewrite| match rewrite {
+                MethodCallRewrite::RewriteToFunction { target, .. }
+                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+                _ => None,
+            })
+            .or_else(|| self.direct_call_targets.get(&key))
+            .and_then(Self::callable_target_declaration)
+    }
+
     /// Capture authored actuals after checking selected this call's exact
     /// declaration. Formal IDs may be registered later in source order; the
     /// completed table joins them at the output boundary.
@@ -182,17 +226,7 @@ impl Checker {
             _ => return,
         };
         let key = SpanKey::in_module(span, self.current_module_idx);
-        let target = self
-            .method_call_rewrites
-            .get(&key)
-            .and_then(|rewrite| match rewrite {
-                MethodCallRewrite::RewriteToFunction { target, .. }
-                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
-                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
-                _ => None,
-            })
-            .or_else(|| self.direct_call_targets.get(&key));
-        let Some(callee) = target.and_then(Self::callable_target_declaration) else {
+        let Some(callee) = self.selected_callable_declaration(span) else {
             return;
         };
         let receiver = receiver.map(|value| self.callable_candidates_for_expr(&value.0, &value.1));
@@ -211,6 +245,50 @@ impl Checker {
                 arguments,
             },
         );
+    }
+
+    /// The initializer's written labels already carry checker-selected field
+    /// identities. Preserve their value origins under the constructor site.
+    pub(super) fn record_aggregate_field_sources(&mut self, expr: &Expr, span: &Span) {
+        let Expr::StructInit {
+            fields,
+            field_name_spans,
+            ..
+        } = expr
+        else {
+            return;
+        };
+        let mut writes = Vec::new();
+        for ((_, value), label_span) in fields.iter().zip(field_name_spans) {
+            let key = SpanKey::in_module(label_span, self.current_module_idx);
+            let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) else {
+                continue;
+            };
+            writes.push(CallableFieldFlow {
+                owner: *owner,
+                index: *index,
+                candidates: self.callable_candidates_for_expr(&value.0, &value.1),
+            });
+        }
+        self.aggregate_field_candidates
+            .insert(SpanKey::in_module(span, self.current_module_idx), writes);
+    }
+
+    /// Return expressions are interpreted under the caller's actual-to-formal
+    /// environment. Keep their symbolic origin rather than joining callers.
+    pub(super) fn record_callable_body_return(
+        &mut self,
+        declaration: crate::DefId,
+        body: &hew_parser::ast::Block,
+    ) {
+        let Some(tail) = &body.trailing_expr else {
+            return;
+        };
+        let candidates = self.callable_candidates_for_expr(&tail.0, &tail.1);
+        self.callable_return_candidates
+            .entry(declaration)
+            .and_modify(|existing| existing.join(candidates.clone()))
+            .or_insert(candidates);
     }
 
     pub(super) fn finish_callable_argument_flows(

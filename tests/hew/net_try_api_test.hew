@@ -10,6 +10,7 @@ import std.net;
 
 // ── try_connect ───────────────────────────────────────────────────────
 #[test]
+#[real_time]
 fn test_try_connect_refused_returns_connection_refused() {
     // Port 1 is never open in test environments (privileged, nothing binds it).
     match net.connect("127.0.0.1:1") {
@@ -22,6 +23,7 @@ fn test_try_connect_refused_returns_connection_refused() {
 }
 
 #[test]
+#[real_time]
 fn test_try_connect_bad_address_returns_err() {
     match net.connect("256.256.256.256:9999") {
         .Ok(_) => panic("expected invalid address to fail"),
@@ -31,6 +33,7 @@ fn test_try_connect_bad_address_returns_err() {
 
 // ── try_listen ────────────────────────────────────────────────────────
 #[test]
+#[real_time]
 fn test_try_listen_returns_ok_on_available_port() {
     // Use an ephemeral port unlikely to be in use.
     match net.listen(":0") {
@@ -40,6 +43,7 @@ fn test_try_listen_returns_ok_on_available_port() {
 }
 
 #[test]
+#[real_time]
 #[serial]
 fn test_try_listen_address_in_use_returns_address_in_use() {
     // Bind the same ephemeral address twice; the second bind must fail.
@@ -60,6 +64,7 @@ fn test_try_listen_address_in_use_returns_address_in_use() {
 }
 
 #[test]
+#[real_time]
 fn test_listener_close_surface_returns_unit() {
     let listener = match net.listen(":0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     listener.close();
@@ -138,6 +143,7 @@ extern "C" {
 }
 
 #[test]
+#[real_time]
 fn test_recv_reports_an_orderly_eof_as_none() {
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = unsafe {
@@ -176,6 +182,7 @@ fn test_recv_reports_an_orderly_eof_as_none() {
 // for FFI callers that bypass the checker. It is unreachable from Hew source now, so it
 // belongs to the runtime's own test surface rather than a `.hew` test.
 #[test]
+#[real_time]
 fn test_recv_delivers_payload_bytes_unchanged() {
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = unsafe {
@@ -194,6 +201,7 @@ fn test_recv_delivers_payload_bytes_unchanged() {
 }
 
 #[test]
+#[real_time]
 fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowing() {
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = unsafe {

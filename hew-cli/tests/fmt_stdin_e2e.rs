@@ -365,10 +365,10 @@ fn fmt_migrate_selects_actor_lifecycle_without_touching_resource_close() {
         #[resource] type Gate { value: i64, }
         impl Gate { fn close(consume self) {} }
         actor Worker { receive fn ping() {} }
-        supervisor Team { child worker: Worker, }
+        supervisor Team { child after: Worker, }
         fn main() {
             let team = spawn Team;
-            let _ = await_restart team.worker;
+            let _ = await_restart team.after;
             close(team);
             let gate = Gate { value: 1 };
             gate.close();

@@ -150,8 +150,79 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        let key = self.mk_key(&span);
+        if let Some(Resolution::Def(declaration)) = self.resolutions.get(&key).copied() {
+            if self.defs.kind(declaration) == hew_types::DeclarationKind::Const {
+                if let Some(entry) = self.const_registry.get(self.defs.path(declaration)) {
+                    return (
+                        HirExprKind::BindingRef {
+                            name: name.to_string(),
+                            resolved: ResolvedRef::Const(entry.id),
+                        },
+                        entry.ty.clone(),
+                    );
+                }
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.to_string(),
+                        reason: format!("Const resolution at {key:?} has no HIR declaration entry"),
+                    },
+                    span,
+                    "checker-selected constant has no lowered item",
+                ));
+                return (
+                    HirExprKind::Unsupported("unbound checked constant".into()),
+                    ResolvedTy::Unit,
+                );
+            }
+        }
+        if let Some(Resolution::Local(source)) = self.resolutions.get(&key).copied() {
+            if let Some((id, ty)) = self.lookup_checked(source) {
+                return (
+                    HirExprKind::BindingRef {
+                        name: name.to_string(),
+                        resolved: ResolvedRef::Binding(id),
+                    },
+                    ty,
+                );
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: format!("Local resolution at {key:?} has no HIR binding"),
+                },
+                span,
+                "checker-selected local has no lowered source binding",
+            ));
+            return (
+                HirExprKind::Unsupported("unbound checked local".into()),
+                ResolvedTy::Unit,
+            );
+        }
+        if let Some(Resolution::Field(owner, index)) = self.resolutions.get(&key).copied() {
+            if let Some((id, ty)) = self.lookup_checked_field(owner, index) {
+                return (
+                    HirExprKind::BindingRef {
+                        name: name.to_string(),
+                        resolved: ResolvedRef::Binding(id),
+                    },
+                    ty,
+                );
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: format!("Field resolution at {key:?} has no actor state seat"),
+                },
+                span,
+                "checker-selected actor field has no lowered state binding",
+            ));
+            return (
+                HirExprKind::Unsupported("unbound checked actor field".into()),
+                ResolvedTy::Unit,
+            );
+        }
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
-            let key = self.mk_key(&span);
             if self
                 .expr_types
                 .get(&key)
@@ -162,6 +233,20 @@ impl LowerCtx {
             }
         }
         if let Some((id, ty)) = self.lookup(name) {
+            if self.authored_bindings.contains(&id) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.to_string(),
+                        reason: format!("authored local use lacks Resolution::Local at {key:?}"),
+                    },
+                    span,
+                    "source local use has no checker-owned identity",
+                ));
+                return (
+                    HirExprKind::Unsupported("unresolved source local".into()),
+                    ResolvedTy::Unit,
+                );
+            }
             return (
                 HirExprKind::BindingRef {
                     name: name.to_string(),

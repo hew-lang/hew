@@ -362,17 +362,11 @@ pub struct HirImplBlock {
     /// Associated-type bindings declared on the impl
     /// (e.g. `type Item = T;` → `("Item", ResolvedTy::TypeParam("T"))`).
     pub type_aliases: Vec<(String, ResolvedTy)>,
-    /// Names of the per-method symbols emitted as separate
-    /// `HirItem::Function` entries (`<self_type_name>::<method>`). Order
-    /// matches `impl_decl.methods`.
-    pub method_symbols: Vec<String>,
-    /// Surface method names (e.g. `"show"`), parallel to `method_symbols`
-    /// in length and order. Carried as structured metadata so static-dispatch
-    /// resolution can look up `(declaring_trait, self_type_name, method_name)
-    /// → method_symbol` without reverse-parsing the flattened symbol.
+    /// Surface method names (e.g. `"show"`), parallel to `method_item_ids`.
+    /// The emitted `HirFn` owns each physical symbol.
     pub method_names: Vec<String>,
     /// Declaring trait for each method in `method_names`, parallel to
-    /// `method_symbols`. For an inline supertrait method in `impl Sub for T`,
+    /// `method_item_ids`. For an inline supertrait method in `impl Sub for T`,
     /// this records the supertrait that declared the method, not `Sub`.
     pub method_declaring_traits: Vec<String>,
     /// Checker-published declaring-trait identities, parallel to
@@ -398,11 +392,8 @@ pub struct HirImplBlock {
 }
 
 impl HirImplBlock {
-    /// Build the qualified method symbol used by both the `Impl` metadata
-    /// (in `method_symbols`) and the corresponding flattened
-    /// `HirItem::Function` entry (in `HirFn::name`). Centralised so call-site
-    /// dispatch can re-derive the symbol from the receiver type without
-    /// scanning the impl-block table.
+    /// Build the legacy physical spelling of a uniquely named method.
+    /// Colliding implementations add a declaration-owned suffix in HIR.
     #[must_use]
     pub fn method_symbol(self_type_name: &str, method_name: &str) -> String {
         format!("{self_type_name}::{method_name}")

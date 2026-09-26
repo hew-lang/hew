@@ -317,7 +317,6 @@ impl LowerCtx {
         // When `pub_only` is true (imported-module path) only pub-visibility
         // methods are lowered; private methods are not accessible to importers
         // and must not leak into the emitted HirItem list.
-        let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
         let mut method_names: Vec<String> = Vec::with_capacity(decl.methods.len());
         let mut method_declaring_traits: Vec<String> = Vec::with_capacity(decl.methods.len());
         let mut method_declaring_trait_ids: Vec<Option<hew_types::DefId>> =
@@ -389,20 +388,29 @@ impl LowerCtx {
                     continue;
                 }
             }
-            let symbol = crate::node::HirImplBlock::method_symbol(
+            let legacy_symbol = crate::node::HirImplBlock::method_symbol(
                 &symbol_self_name,
                 method.name.name.as_str(),
             );
-            let declaration = self.impl_method_declaration_ids.get(&symbol).copied();
-            if let Some((declaration, selected)) = declaration.as_ref().and_then(|declaration| {
-                self.impl_body_plan
-                    .symbols
-                    .get(declaration)
-                    .map(|selected| (declaration, selected))
-            }) {
+            let declaration = if self.lowering_injected_items {
+                self.impl_method_declaration_ids
+                    .get(&legacy_symbol)
+                    .copied()
+            } else {
+                self.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
+            };
+            let Some(declaration) = declaration else {
+                continue;
+            };
+            let symbol = self.emitted_impl_method_symbol(
+                declaration,
+                &symbol_self_name,
+                method.name.name.as_str(),
+            );
+            if let Some(selected) = self.impl_body_plan.symbols.get(&declaration) {
                 if impl_body_symbols_alias_one_declaration(
                     &self.defs,
-                    *declaration,
+                    declaration,
                     selected,
                     &symbol,
                 ) {
@@ -421,7 +429,7 @@ impl LowerCtx {
                 span.clone(),
                 &type_params,
                 Some(&symbol_self_name),
-                None,
+                Some(declaration),
             ) else {
                 continue;
             };
@@ -443,18 +451,15 @@ impl LowerCtx {
             // The plan deliberately excludes imported methods skipped for an
             // unresolved body/signature, so a checker compatibility alias can
             // never be promoted into a callable implementation body.
-            if let Some(declaration) = &declaration {
-                if self.lowering_injected_items
-                    || self.validate_impl_body_plan(*declaration, &symbol, &span)
-                {
-                    self.impl_method_body_symbols
-                        .entry(*declaration)
-                        .or_insert_with(|| symbol.clone());
-                }
+            if self.lowering_injected_items
+                || self.validate_impl_body_plan(declaration, &symbol, &span)
+            {
+                self.impl_method_body_symbols
+                    .entry(declaration)
+                    .or_insert_with(|| symbol.clone());
             }
             method_item_ids.push(hir_method.id);
             items.push(HirItem::Function(hir_method));
-            method_symbols.push(symbol.clone());
             method_names.push(method.name.to_string());
             let declaring_trait = decl
                 .trait_bound
@@ -467,7 +472,7 @@ impl LowerCtx {
             method_declaring_traits.push(declaring_trait);
             method_declaring_trait_ids.push(ids.as_ref().map(|(trait_id, _)| *trait_id));
             method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| *method_id));
-            method_ids.push(declaration);
+            method_ids.push(Some(declaration));
         }
 
         // Lower trait default methods that are NOT overridden in this impl.
@@ -491,10 +496,6 @@ impl LowerCtx {
                         self.current_module_name
                             .clone_from(&default_method.source_module);
                         let fn_decl = trait_method_to_fn_decl(&default_method.method);
-                        let symbol = crate::node::HirImplBlock::method_symbol(
-                            &symbol_self_name,
-                            fn_decl.name.name.as_str(),
-                        );
                         let declaring_trait = self.defs.path(default_method.trait_id).to_string();
                         let ids = Some((default_method.trait_id, default_method.method_id));
                         // Trait declaration IDs own static lookup; this
@@ -511,6 +512,21 @@ impl LowerCtx {
                                     fn_decl.name.name,
                                 )
                             });
+                        let symbol = synthetic_default_declaration.map_or_else(
+                            || {
+                                crate::node::HirImplBlock::method_symbol(
+                                    &symbol_self_name,
+                                    fn_decl.name.name.as_str(),
+                                )
+                            },
+                            |declaration| {
+                                self.emitted_impl_method_symbol(
+                                    declaration,
+                                    &symbol_self_name,
+                                    fn_decl.name.name.as_str(),
+                                )
+                            },
+                        );
                         if let Some(declaration) = &synthetic_default_declaration {
                             if let Some(existing) = self
                                 .impl_body_plan
@@ -562,7 +578,6 @@ impl LowerCtx {
                         }
                         method_item_ids.push(hir_method.id);
                         items.push(HirItem::Function(hir_method));
-                        method_symbols.push(symbol.clone());
                         method_names.push(fn_decl.name.to_string());
                         let declaring_trait =
                             ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
@@ -605,7 +620,6 @@ impl LowerCtx {
             type_params,
             self_type_concrete_args,
             type_aliases,
-            method_symbols,
             method_names,
             method_declaring_traits,
             method_declaring_trait_ids,

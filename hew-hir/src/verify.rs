@@ -186,8 +186,8 @@ impl Verifier {
                     // V0b: impl-block metadata only contributes its own
                     // HirNodeId. The per-method bodies are emitted as
                     // sibling `HirItem::Function` entries and are walked
-                    // through the `Function` arm above, so no recursion
-                    // into `block.method_symbols` is needed here.
+                    // through the `Function` arm above, so this arm only
+                    // verifies the block's own node.
                     self.node(block.node, block.span.clone());
                 }
                 HirItem::ExternFn(ef) => {

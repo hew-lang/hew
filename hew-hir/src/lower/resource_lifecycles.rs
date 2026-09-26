@@ -3,20 +3,42 @@
 use super::*;
 use hew_parser::ast::Ident;
 
-/// Whether an inherent impl block's receiver names `declaration`.
-///
-/// `HirImplBlock::self_type_name` is the checker's resolved receiver spelling.
-/// The comparison resolves it through the identity table, which carries one
-/// canonical render per declaration, rather than matching text.
+/// Match the receiver of a resource's inherent `close` implementation.
+/// Some source-owned resource carriers still lack a nominal receiver identity
+/// in HIR, so retain the exact checker declaration path as their fallback.
 pub(super) fn impl_receiver_is(
     identity: &hew_types::DefTable,
     impl_block: &crate::node::HirImplBlock,
     declaration: hew_types::DefId,
 ) -> bool {
-    impl_block.self_type_name == identity.path(declaration)
+    impl_block.self_type == Some(hew_types::NominalId::of_declaration(declaration))
+        || impl_block.self_type_name == identity.path(declaration)
         || identity
             .lookup_path(&impl_block.self_type_name)
             .is_some_and(|resolved| resolved == declaration)
+}
+
+/// The exact close bodies declared on one nominal. Method names only select
+/// the `close` member within an already checked inherent impl; body symbols
+/// come from the emitted function's declaration identity.
+fn inherent_close_methods(
+    items: &[HirItem],
+    identity: &hew_types::DefTable,
+    declaration: hew_types::DefId,
+) -> Vec<hew_types::DefId> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(block)
+                if block.trait_name.is_none() && impl_receiver_is(identity, block, declaration) =>
+            {
+                Some(block)
+            }
+            _ => None,
+        })
+        .flat_map(|block| block.method_names.iter().zip(&block.method_ids))
+        .filter_map(|(name, method)| (name == "close").then_some(*method).flatten())
+        .collect()
 }
 
 /// Admit field-bearing resource lifecycles while exact HIR declaration and
@@ -41,32 +63,9 @@ pub(super) fn admit_resource_record_lifecycles(
         _ => None,
     }) {
         let exact_owner = identity.path(decl.declaration);
-        let close_methods: Vec<_> = items
-            .iter()
-            .filter_map(|item| match item {
-                HirItem::Impl(impl_block)
-                    if impl_block.trait_name.is_none()
-                        && impl_receiver_is(identity, impl_block, decl.declaration) =>
-                {
-                    Some(impl_block)
-                }
-                _ => None,
-            })
-            .flat_map(|impl_block| {
-                impl_block
-                    .method_names
-                    .iter()
-                    .zip(&impl_block.method_ids)
-                    .zip(&impl_block.method_symbols)
-            })
-            .filter_map(|((name, declaration), symbol)| {
-                (name == "close")
-                    .then(|| declaration.as_ref().map(|id| (*id, symbol.clone())))
-                    .flatten()
-            })
-            .collect();
+        let close_methods = inherent_close_methods(items, identity, decl.declaration);
 
-        let [(close_declaration, close_symbol)] = close_methods.as_slice() else {
+        let [close_declaration] = close_methods.as_slice() else {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
                 exact_owner,
                 format!(
@@ -82,10 +81,7 @@ pub(super) fn admit_resource_record_lifecycles(
         let close_bodies: Vec<_> = items
             .iter()
             .filter_map(|item| match item {
-                HirItem::Function(function)
-                    if function.declaration == *close_declaration
-                        && function.name == *close_symbol =>
-                {
+                HirItem::Function(function) if function.declaration == *close_declaration => {
                     Some(function)
                 }
                 _ => None,
@@ -103,6 +99,7 @@ pub(super) fn admit_resource_record_lifecycles(
             ));
             continue;
         };
+        let close_symbol = &close_body.name;
         if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
                 identity.path(*close_declaration),
@@ -399,31 +396,8 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             continue;
         }
         let exact_owner = identity.path(decl.declaration);
-        let close_methods: Vec<_> = items
-            .iter()
-            .filter_map(|item| match item {
-                HirItem::Impl(impl_block)
-                    if impl_block.trait_name.is_none()
-                        && impl_receiver_is(identity, impl_block, decl.declaration) =>
-                {
-                    Some(impl_block)
-                }
-                _ => None,
-            })
-            .flat_map(|impl_block| {
-                impl_block
-                    .method_names
-                    .iter()
-                    .zip(&impl_block.method_ids)
-                    .zip(&impl_block.method_symbols)
-            })
-            .filter_map(|((name, declaration), symbol)| {
-                (name == "close")
-                    .then(|| declaration.as_ref().map(|id| (*id, symbol.clone())))
-                    .flatten()
-            })
-            .collect();
-        let [(close_declaration, close_symbol)] = close_methods.as_slice() else {
+        let close_methods = inherent_close_methods(items, identity, decl.declaration);
+        let [close_declaration] = close_methods.as_slice() else {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
                 exact_owner,
                 format!(
@@ -438,10 +412,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
         let close_bodies: Vec<_> = items
             .iter()
             .filter_map(|item| match item {
-                HirItem::Function(function)
-                    if function.declaration == *close_declaration
-                        && function.name == *close_symbol =>
-                {
+                HirItem::Function(function) if function.declaration == *close_declaration => {
                     Some(function)
                 }
                 _ => None,
@@ -459,6 +430,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             ));
             continue;
         };
+        let close_symbol = &close_body.name;
         if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
                 identity.path(*close_declaration),

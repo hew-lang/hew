@@ -357,6 +357,9 @@ impl LowerCtx {
                 .map(|parameter| parameter.name.to_string())
                 .collect(),
         );
+        let previous_actor_nominal = self
+            .current_actor_nominal
+            .replace(hew_types::NominalId::of_declaration(declaration));
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -376,7 +379,7 @@ impl LowerCtx {
                     deferred: self
                         .actor_deferred_field_decls
                         .contains(&self.mk_key(&f.ty.1)),
-                    span: f.ty.1.clone(),
+                    span: f.span.clone(),
                 }
             })
             .collect();
@@ -418,6 +421,7 @@ impl LowerCtx {
         let cycle_capable = self.cycle_capable_actors.contains(actor_identity.as_str());
 
         self.current_fn_type_params = previous_type_params;
+        self.current_actor_nominal = previous_actor_nominal;
 
         Some(HirActorDecl {
             id: self.ids.item(),
@@ -463,14 +467,8 @@ impl LowerCtx {
         self.push_scope();
         let state_bindings = state_fields
             .iter()
-            .map(|field| {
-                self.bind(
-                    field.name.clone(),
-                    field.ty.clone(),
-                    true,
-                    field.span.clone(),
-                )
-            })
+            .enumerate()
+            .map(|(index, field)| self.bind_actor_state_field(field, index))
             .collect();
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
@@ -504,13 +502,8 @@ impl LowerCtx {
         self.push_scope();
         let mut state_field_bindings: HashSet<BindingId> = HashSet::new();
         let mut state_bindings = Vec::with_capacity(state_fields.len());
-        for field in state_fields {
-            let binding = self.bind(
-                field.name.clone(),
-                field.ty.clone(),
-                true,
-                field.span.clone(),
-            );
+        for (index, field) in state_fields.iter().enumerate() {
+            let binding = self.bind_actor_state_field(field, index);
             state_field_bindings.insert(binding.id);
             state_bindings.push(binding);
         }

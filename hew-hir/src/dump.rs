@@ -250,7 +250,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                     block.id,
                     block.trait_name.as_deref().unwrap_or("<inherent>"),
                     block.self_type_name,
-                    block.method_symbols.join(", "),
+                    block.method_names.join(", "),
                 )
                 .expect("write to string");
                 for (name, ty) in &block.type_aliases {

@@ -1,0 +1,11 @@
+[[case]]
+id = "identity_w1d_methods"
+intent = "Same-named methods with different trait return types retain their own signatures and bodies."
+source = "../vertical-slice/accept/identity_w1d.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1\nb\n"
+exit = 0

@@ -147,7 +147,8 @@ impl LowerCtx {
                 .ty
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
-            let binding = self.bind(param.name.to_string(), ty, false, param.name_span.clone());
+            let binding =
+                self.bind_checked(param.name.to_string(), ty, false, param.name_span.clone());
             param_ids.insert(binding.id);
             hir_params.push(binding);
         }

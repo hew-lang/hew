@@ -2,15 +2,12 @@
 //!
 //! `CallTraitMethodStatic` carries a checker-selected `CallTarget` containing
 //! the declaring trait and method identities. Monomorphisation needs to
-//! resolve that identity into the concrete impl method symbol (`<Self>::<method>`) plus
-//! the impl-level type-parameter names — without reverse-parsing the
-//! flattened symbol or inferring impl identity from display-name strings.
+//! resolve that identity into the emitted function body's symbol plus the
+//! impl-level type-parameter names.
 //!
 //! The lookup is keyed on `(declaring_trait, self_type, method)`, all of which
 //! come straight from `HirImplBlock` declaration IDs / `CallTraitMethodStatic`
-//! fields. The final `<Self>::<method>` symbol comes back from the
-//! `HirImplBlock` (where it was emitted via `HirImplBlock::method_symbol`)
-//! so the canonical encoding lives in exactly one place.
+//! fields. The corresponding `HirItem::Function` owns the physical symbol.
 //!
 //! See `docs/internal/engineering-invariants.md` for the single semantic
 //! authority principle and
@@ -51,10 +48,9 @@ pub struct TraitImplKey {
 /// Build `(declaring_trait, self_type, method) → TraitImplMethodEntry`
 /// from the module's `HirItem::Impl` entries.
 ///
-/// Iterates trait-bearing impl blocks (`HirImplBlock::trait_name == Some(_)`)
-/// and zips `method_names` with `method_symbols` (parallel arrays maintained
-/// by `lower_impl_block`). Inherent impls (no trait bound) do not participate
-/// in static trait dispatch and are skipped.
+/// Iterates trait-bearing impl blocks and joins each method item identity to
+/// its emitted `HirFn`. Inherent impls do not participate in static trait
+/// dispatch.
 ///
 /// A concrete specialised impl (empty `type_params`, non-empty
 /// `self_type_concrete_args`) keys on its concrete args, so
@@ -65,6 +61,13 @@ pub fn build_trait_impl_method_index(
     items: &[HirItem],
 ) -> HashMap<TraitImplKey, TraitImplMethodEntry> {
     let mut index: HashMap<TraitImplKey, TraitImplMethodEntry> = HashMap::new();
+    let functions: HashMap<ItemId, _> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(function) => Some((function.id, function)),
+            _ => None,
+        })
+        .collect();
     for item in items {
         let HirItem::Impl(block) = item else { continue };
         // A target with no impl-dispatch anchor can never be reached from a
@@ -83,24 +86,24 @@ pub fn build_trait_impl_method_index(
                 Vec::new()
             },
         };
-        // `method_names` and `method_symbols` are produced together in
-        // `lower_impl_block` and MUST be parallel. Defensive zip: any
-        // length mismatch indicates upstream HIR construction drift and
-        // produces no entries for the extra slots.
-        for ((((method_symbol, declaring_trait), trait_method_id), impl_method_id), method_item) in
-            block
-                .method_symbols
-                .iter()
-                .zip(block.method_declaring_trait_ids.iter())
-                .zip(block.method_trait_method_ids.iter())
-                .zip(block.method_ids.iter())
-                .zip(block.method_item_ids.iter())
+        for (((declaring_trait, trait_method_id), impl_method_id), method_item) in block
+            .method_declaring_trait_ids
+            .iter()
+            .zip(block.method_trait_method_ids.iter())
+            .zip(block.method_ids.iter())
+            .zip(block.method_item_ids.iter())
         {
             let (Some(declaring_trait), Some(trait_method_id), Some(impl_method_id)) =
                 (declaring_trait, trait_method_id, impl_method_id)
             else {
                 continue;
             };
+            let Some(function) = functions.get(method_item) else {
+                continue;
+            };
+            if function.declaration != *impl_method_id {
+                continue;
+            }
             let key = TraitImplKey {
                 // Static calls carry the trait declaration identity.  The
                 // emitted method has a separate implementation declaration
@@ -114,7 +117,7 @@ pub fn build_trait_impl_method_index(
                 TraitImplMethodEntry {
                     item: *method_item,
                     method: *impl_method_id,
-                    method_symbol: method_symbol.clone(),
+                    method_symbol: function.name.clone(),
                     impl_type_params: block.type_params.clone(),
                 },
             );
@@ -134,14 +137,6 @@ pub fn build_direct_call_symbol_index(items: &[HirItem]) -> HashMap<DefId, Strin
         match item {
             HirItem::Function(function) => {
                 index.insert(function.declaration, function.name.clone());
-            }
-            HirItem::Impl(block) => {
-                for (method_id, method_symbol) in block.method_ids.iter().zip(&block.method_symbols)
-                {
-                    if let Some(method_id) = method_id {
-                        index.insert(*method_id, method_symbol.clone());
-                    }
-                }
             }
             HirItem::ExternFn(extern_fn) => {
                 index.insert(extern_fn.declaration, extern_fn.name.clone());

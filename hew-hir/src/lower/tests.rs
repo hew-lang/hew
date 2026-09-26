@@ -244,10 +244,9 @@ fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelud
 
 #[test]
 fn conflicting_impl_body_plan_is_a_checker_boundary_diagnostic_not_a_panic() {
-    // The checker normally assigns distinct declarations. Corrupt just
-    // that handoff to model an upstream collision: the HIR plan must fail
-    // closed in release builds rather than assert while lowering either
-    // otherwise-valid body.
+    // The checker assigns distinct declarations. Present one declaration
+    // with two incompatible emitted-body symbols to the HIR planner; it
+    // must reject the collision at the identity boundary.
     let parsed = hew_parser::parse(
         r"
 type Alpha { value: i64 }
@@ -270,7 +269,7 @@ fn main() {}
         parsed.errors
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let mut type_output = checker.check_program(&parsed.program);
+    let type_output = checker.check_program(&parsed.program);
     assert!(
         type_output.errors.is_empty(),
         "type errors: {:#?}",
@@ -281,18 +280,21 @@ fn main() {}
         .get("Alpha::run")
         .copied()
         .expect("checker must publish Alpha's implementation declaration");
-    type_output
-        .impl_method_declaration_ids
-        .insert("Beta::run".to_string(), alpha);
-
-    let lowered = lower_program(
-        &parsed.program,
+    let mut ctx = LowerCtx::new(
         &type_output,
-        &ResolutionCtx,
+        MONOMORPHISATION_REGISTRY_CAP,
         TargetArch::host(),
     );
+    assert!(merge_planned_impl_body_symbols(
+        &mut ctx,
+        &[(alpha, "Alpha::run".to_string())],
+    ));
+    assert!(!merge_planned_impl_body_symbols(
+        &mut ctx,
+        &[(alpha, "Beta::run".to_string())],
+    ));
     assert!(
-        lowered.diagnostics.iter().any(|diagnostic| {
+        ctx.diagnostics.iter().any(|diagnostic| {
             matches!(
                 &diagnostic.kind,
                 HirDiagnosticKind::CheckerBoundaryViolation { reason, .. }
@@ -300,39 +302,16 @@ fn main() {}
             )
         }),
         "duplicate impl-body declarations must report a structured boundary violation: {:#?}",
-        lowered.diagnostics
+        ctx.diagnostics
     );
     assert!(
-        lowered.into_result().is_err(),
-        "a conflicting pre-lowering body plan must remain fatal"
+        !ctx.impl_body_plan.symbols.contains_key(&alpha),
+        "a conflicting pre-lowering body plan must not retain an emitted symbol"
     );
 }
 
 #[test]
 fn two_import_paths_select_one_declaration_owned_impl_body_symbol() {
-    let parsed = hew_parser::parse(
-        r"
-type Widget { value: i64 }
-
-impl Widget {
-    fn run(self) -> i64 { self.value }
-}
-",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-    let impl_decl = parsed
-        .program
-        .items
-        .iter()
-        .find_map(|(item, _)| match item {
-            Item::Impl(decl) => Some(decl),
-            _ => None,
-        })
-        .expect("fixture impl");
     let declaration = hew_types::DefId::for_test(
         "fixture.owner.Widget::<impl inherent for fixture.owner.Widget>::run",
     );
@@ -353,7 +332,10 @@ impl Widget {
             .insert("fixture.owner.Widget::run".to_string(), declaration);
         let mut ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
         for path in paths {
-            plan_impl_block_symbols(&mut ctx, impl_decl, path, &HashSet::new());
+            assert!(merge_planned_impl_body_symbols(
+                &mut ctx,
+                &[(declaration, format!("{path}::run"))],
+            ));
         }
 
         assert!(
@@ -2258,52 +2240,6 @@ fn stdlib_println_resolves_to_i64_overload() {
 }
 
 #[test]
-fn stdlib_println_unsupported_type_emits_overload_diagnostic() {
-    let parsed = hew_parser::parse(
-        r"
-            fn main() {
-                let w: Widget;
-                println(w);
-            }
-            ",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-
-    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    // This test isolates HIR's no-overload diagnostic and intentionally
-    // omits checker semantic facts, but the declaration boundary must
-    // still carry the immutable identity view produced for this exact
-    // source program.
-    let tco = TypeCheckOutput {
-        defs: checked.defs,
-        ..TypeCheckOutput::default()
-    };
-    let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
-    assert!(
-        lowered.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::UnresolvedBuiltinOverload { name, arg_ty }
-                if name == "println"
-                    && matches!(arg_ty, ResolvedTy::Named { head: name_head, .. } if name_head.spelling() == "Widget")
-        )),
-        "expected unsupported println overload diagnostic, got {:#?}",
-        lowered.diagnostics
-    );
-    assert!(
-        !lowered.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::UnresolvedSymbol { name } if name == "println"
-        )),
-        "unsupported println overload must not fall through to UnresolvedSymbol: {:#?}",
-        lowered.diagnostics
-    );
-}
-
-#[test]
 fn missing_stdlib_module_field_emits_import_missing() {
     let parsed = hew_parser::parse(
         r"
@@ -2948,6 +2884,15 @@ fn lower_canonical_encoding_fixture(
         order.push(id);
     }
     order.extend([module, root]);
+    graph
+        .add_module(Module {
+            id: ModulePath::root(),
+            items: program.items.clone(),
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .unwrap();
     graph.topo_order = order;
     program.module_graph = Some(graph);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));

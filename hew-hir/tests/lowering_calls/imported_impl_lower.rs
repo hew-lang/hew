@@ -425,7 +425,20 @@ fn main() -> i64 {
         })
         .expect("expected imported opaque `Touch for Handle` impl metadata");
     assert_eq!(impl_block.self_type_name, "shapes.Handle");
-    assert_eq!(impl_block.method_symbols, vec!["shapes.Handle::touch"]);
+    let method = output.module.items.iter().find_map(|item| match item {
+        HirItem::Function(function) if Some(&function.id) == impl_block.method_item_ids.first() => {
+            Some(function)
+        }
+        _ => None,
+    });
+    assert_eq!(
+        method.map(|function| function.name.as_str()),
+        Some("shapes.Handle::touch")
+    );
+    assert_eq!(
+        method.map(|function| function.declaration),
+        impl_block.method_ids[0]
+    );
 
     let result = output.into_result();
     assert!(

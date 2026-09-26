@@ -380,7 +380,7 @@ impl LowerCtx {
                     // we can detect a self-reference inside the body
                     // walk via builder state.
                     let pre_binding =
-                        self.bind(name.to_string(), binding_ty, false, pattern.1.clone());
+                        self.bind_checked(name.to_string(), binding_ty, false, pattern.1.clone());
                     let prior = self
                         .current_actor_self
                         .replace((pre_binding.id, name.to_string()));
@@ -693,7 +693,16 @@ impl LowerCtx {
                         // errors for the loop variable.  The primary diagnostic
                         // above is the actionable one.
                         self.push_scope();
-                        let _ = self.bind(binding_name, ResolvedTy::I64, false, pattern.1.clone());
+                        let _ = if matches!(pattern.0, Pattern::Identifier(_)) {
+                            self.bind_checked(
+                                binding_name,
+                                ResolvedTy::I64,
+                                false,
+                                pattern.1.clone(),
+                            )
+                        } else {
+                            self.bind(binding_name, ResolvedTy::I64, false, pattern.1.clone())
+                        };
                         let _ = self.lower_block(body, &ResolvedTy::Unit);
                         self.pop_scope();
                         HirExprKind::Unsupported(
@@ -781,7 +790,11 @@ impl LowerCtx {
                         // Bind the loop variable inside a fresh scope so it is
                         // scoped to the body but visible during body lowering.
                         self.push_scope();
-                        let binding = self.bind(binding_name, elem_ty, false, pattern.1.clone());
+                        let binding = if matches!(pattern.0, Pattern::Identifier(_)) {
+                            self.bind_checked(binding_name, elem_ty, false, pattern.1.clone())
+                        } else {
+                            self.bind(binding_name, elem_ty, false, pattern.1.clone())
+                        };
                         let body_block = self.lower_block(body, &ResolvedTy::Unit);
                         self.pop_scope();
 
@@ -1041,7 +1054,7 @@ impl LowerCtx {
             1 => {
                 let (name, ty, binding_span) =
                     escapees.into_iter().next().expect("checked len == 1");
-                let bound = self.bind(name, ty, false, binding_span);
+                let bound = self.bind_checked(name, ty, false, binding_span);
                 HirStmtKind::Let(bound, Some(match_expr))
             }
             _ => {
@@ -1052,7 +1065,7 @@ impl LowerCtx {
                         selector: HirDestructureSelector::Tuple(
                             u32::try_from(idx).expect("let-else binding count exceeds u32::MAX"),
                         ),
-                        binding: Some(self.bind(name, ty, false, binding_span)),
+                        binding: Some(self.bind_checked(name, ty, false, binding_span)),
                         nested: false,
                     })
                     .collect();

@@ -123,7 +123,7 @@ impl LowerCtx {
         };
         self.try_register_enum_instantiation_ty(&failure_ty, binding_span);
         self.push_scope();
-        let error = self.bind(name.to_string(), failure_ty, false, binding_span.clone());
+        let error = self.bind_checked(name.to_string(), failure_ty, false, binding_span.clone());
         let handler = self.lower_expr(body, IntentKind::Read);
         self.pop_scope();
         (
@@ -191,7 +191,7 @@ impl LowerCtx {
         self.push_scope();
         let error_bindings = if let (Some((name, binding_span)), Some(error_ty)) = (error, error_ty)
         {
-            let binding = self.bind(
+            let binding = self.bind_checked(
                 name.to_string(),
                 error_ty.clone(),
                 false,

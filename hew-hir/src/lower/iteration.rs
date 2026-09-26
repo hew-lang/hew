@@ -608,9 +608,6 @@ impl LowerCtx {
         elem_ty: &ResolvedTy,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
-        self.register_option_layout(elem_ty, &span, "VecIter::next");
-        let option_ty = Self::resolved_option_ty(elem_ty.clone());
-        let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
         let lowered_receiver = self.lower_expr(receiver, IntentKind::Modify);
         let HirExprKind::BindingRef {
             name: receiver_name,
@@ -624,11 +621,31 @@ impl LowerCtx {
             );
             return (
                 HirExprKind::Unsupported("VecIter::next receiver is not a binding".into()),
-                option_ty,
+                Self::resolved_option_ty(elem_ty.clone()),
             );
         };
-        let receiver_name = receiver_name.clone();
-        let receiver_binding = *receiver_binding;
+        self.lower_builtin_vec_iter_next_binding(
+            receiver_name.clone(),
+            *receiver_binding,
+            elem_ty,
+            span,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "synthetic VecIter::next expansion keeps one checked iterator binding"
+    )]
+    pub(super) fn lower_builtin_vec_iter_next_binding(
+        &mut self,
+        receiver_name: String,
+        receiver_binding: BindingId,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        self.register_option_layout(elem_ty, &span, "VecIter::next");
+        let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
 
         if self
             .owning_take_vec_cursors
@@ -1041,14 +1058,14 @@ impl LowerCtx {
     pub(super) fn lower_for_sequence_index_desugar(
         &mut self,
         sequence: HirExpr,
-        element: (&str, &Span, &ResolvedTy),
+        element: (&str, &Span, &ResolvedTy, bool),
         body: &Block,
         label: Option<&String>,
         span: Span,
         source: (&Span, Option<&Spanned<Expr>>),
         borrowed: bool,
     ) -> HirExprKind {
-        let (var_name, pattern_span, element_ty) = element;
+        let (var_name, pattern_span, element_ty, checked_binding) = element;
         let (iterable_span, place_source) = source;
         let element_ty = element_ty.clone();
         let sequence_ty = sequence.ty.clone();
@@ -1117,12 +1134,21 @@ impl LowerCtx {
         let step = self.make_i64_literal(1, iterable_span.clone());
 
         self.push_scope();
-        let element_binding = self.bind(
-            var_name.to_string(),
-            element_ty.clone(),
-            false,
-            pattern_span.clone(),
-        );
+        let element_binding = if checked_binding {
+            self.bind_checked(
+                var_name.to_string(),
+                element_ty.clone(),
+                false,
+                pattern_span.clone(),
+            )
+        } else {
+            self.bind(
+                var_name.to_string(),
+                element_ty.clone(),
+                false,
+                pattern_span.clone(),
+            )
+        };
         let container = match (&sequence_ref, place_source) {
             (Some((name, id)), _) => self.make_binding_ref(
                 name.clone(),
@@ -1231,7 +1257,12 @@ impl LowerCtx {
             };
             return self.lower_for_sequence_index_desugar(
                 lowered_iterable,
-                (&var_name, &pattern.1, &element_ty),
+                (
+                    &var_name,
+                    &pattern.1,
+                    &element_ty,
+                    destructure_pattern.is_none(),
+                ),
                 body,
                 label,
                 span,
@@ -1248,7 +1279,12 @@ impl LowerCtx {
                 (borrowed && Self::for_in_iterable_is_place(&iterable.0)).then_some(iterable);
             return self.lower_for_sequence_index_desugar(
                 lowered_iterable,
-                (&var_name, &pattern.1, &element_ty),
+                (
+                    &var_name,
+                    &pattern.1,
+                    &element_ty,
+                    destructure_pattern.is_none(),
+                ),
                 body,
                 label,
                 span,
@@ -1276,7 +1312,12 @@ impl LowerCtx {
                 let source = Self::for_in_iterable_is_place(&iterable.0).then_some(iterable);
                 return self.lower_for_sequence_index_desugar(
                     lowered_iterable,
-                    (&var_name, &pattern.1, &element_ty),
+                    (
+                        &var_name,
+                        &pattern.1,
+                        &element_ty,
+                        destructure_pattern.is_none(),
+                    ),
                     body,
                     label,
                     span,
@@ -1423,7 +1464,16 @@ impl LowerCtx {
                         "for-stream-runtime-dispatch",
                     );
                     self.push_scope();
-                    let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
+                    let _ = if destructure_pattern.is_none() {
+                        self.bind_checked(
+                            var_name.clone(),
+                            elem_ty.clone(),
+                            false,
+                            pattern.1.clone(),
+                        )
+                    } else {
+                        self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone())
+                    };
                     let _ = self.lower_block(body, &ResolvedTy::Unit);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
@@ -1507,9 +1557,12 @@ impl LowerCtx {
 
         let next_expr = match next_call {
             ForIterNextCall::BuiltinVecIter => {
-                let next_receiver = (Expr::Ident(Ident::new(&iter_name)), iterable.1.clone());
-                let (next_kind, next_ty) =
-                    self.lower_builtin_vec_iter_next(&next_receiver, &elem_ty, iterable.1.clone());
+                let (next_kind, next_ty) = self.lower_builtin_vec_iter_next_binding(
+                    iter_name.clone(),
+                    iter_binding.id,
+                    &elem_ty,
+                    iterable.1.clone(),
+                );
                 self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone())
             }
             ForIterNextCall::VarSelf => {
@@ -1543,8 +1596,13 @@ impl LowerCtx {
                         iterable.1.clone(),
                     )
                 } else {
-                    let next_receiver = (Expr::Ident(Ident::new(&iter_name)), iterable.1.clone());
-                    let lowered_receiver = self.lower_expr(&next_receiver, IntentKind::Consume);
+                    let lowered_receiver = self.make_binding_ref(
+                        iter_name.clone(),
+                        iter_binding.id,
+                        iter_ty.clone(),
+                        IntentKind::Consume,
+                        iterable.1.clone(),
+                    );
                     let receiver_ty = iter_ty.clone();
                     let next = self.make_expr(
                         HirExprKind::VarSelfMethodCall {
@@ -1633,7 +1691,11 @@ impl LowerCtx {
         };
 
         self.push_scope();
-        let loop_binding = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
+        let loop_binding = if destructure_pattern.is_none() {
+            self.bind_checked(var_name.clone(), elem_ty.clone(), false, pattern.1.clone())
+        } else {
+            self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone())
+        };
         let some_binding = HirMatchArmBinding {
             span: loop_binding.span.clone(),
             binding: loop_binding.id,

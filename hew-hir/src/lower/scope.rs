@@ -33,6 +33,84 @@ impl LowerCtx {
         }
     }
 
+    /// Bind an authored declaration using the identity published by the
+    /// checker at the declaration's source span. A missing row is a broken
+    /// checker/HIR contract, never permission to select a same-named item.
+    pub(super) fn bind_checked(
+        &mut self,
+        name: String,
+        ty: ResolvedTy,
+        mutable: bool,
+        span: Span,
+    ) -> HirBinding {
+        let key = self.mk_key(&span);
+        let source = self.resolutions.get(&key).copied();
+        let binding = self.bind(name.clone(), ty.clone(), mutable, span.clone());
+        self.authored_bindings.insert(binding.id);
+        match source {
+            Some(Resolution::Local(source)) => {
+                if let Some(scope) = self.checked_scopes.last_mut() {
+                    scope.insert(source, (binding.id, ty, span));
+                }
+            }
+            other => self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name,
+                    reason: format!("missing Local resolution at {key:?}; found {other:?}"),
+                },
+                span,
+                "source binding has no checker-owned local identity",
+            )),
+        }
+        binding
+    }
+
+    pub(super) fn lookup_checked(&self, source: TypeBindingId) -> Option<(BindingId, ResolvedTy)> {
+        self.checked_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&source).map(|(id, ty, _)| (*id, ty.clone())))
+    }
+
+    pub(super) fn bind_actor_state_field(&mut self, field: &HirField, index: usize) -> HirBinding {
+        let span = field.span.clone();
+        let key = self.mk_key(&span);
+        let source = self.resolutions.get(&key).copied();
+        let binding = self.bind(field.name.clone(), field.ty.clone(), true, span.clone());
+        self.authored_bindings.insert(binding.id);
+        let expected = self.current_actor_nominal.zip(u32::try_from(index).ok());
+        match (source, expected) {
+            (Some(Resolution::Field(owner, slot)), Some((expected_owner, expected_slot)))
+                if owner == expected_owner && slot == expected_slot =>
+            {
+                if let Some(scope) = self.checked_field_scopes.last_mut() {
+                    scope.insert((owner, slot), (binding.id, field.ty.clone(), span));
+                }
+            }
+            other => self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: field.name.clone(),
+                    reason: format!("actor field identity at {key:?} differs from {other:?}"),
+                },
+                span,
+                "actor state field has no matching checker-owned member identity",
+            )),
+        }
+        binding
+    }
+
+    pub(super) fn lookup_checked_field(
+        &self,
+        owner: hew_types::NominalId,
+        index: u32,
+    ) -> Option<(BindingId, ResolvedTy)> {
+        self.checked_field_scopes.iter().rev().find_map(|scope| {
+            scope
+                .get(&(owner, index))
+                .map(|(id, ty, _)| (*id, ty.clone()))
+        })
+    }
+
     /// Lower an AST function value parameter to its `HirBinding`, carrying the
     /// `consume` modifier (`param.is_consume`) onto the binding so the
     /// param-ownership classifier can pin its by-move disposition. Mirrors
@@ -297,9 +375,13 @@ impl LowerCtx {
 
     pub(super) fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.checked_scopes.push(HashMap::new());
+        self.checked_field_scopes.push(HashMap::new());
     }
 
     pub(super) fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.checked_scopes.pop();
+        self.checked_field_scopes.pop();
     }
 }

@@ -3,6 +3,71 @@
 use super::*;
 use hew_parser::ast::Ident;
 
+/// Identify declarations whose old receiver-and-method linker spelling is
+/// shared by another authored or materialised implementation body. This is a
+/// physical symbol collision check over the checker's already-minted rows;
+/// declaration selection still comes from exact occurrences and `DefId`.
+pub(super) fn impl_method_symbol_collisions(
+    defs: &hew_types::DefTable,
+) -> HashSet<hew_types::DefId> {
+    let mut groups: HashMap<(&str, &str, &str), Vec<hew_types::DefId>> = HashMap::new();
+    for id in defs.ids() {
+        if !matches!(
+            defs.kind(id),
+            hew_types::DeclarationKind::ImplMethod | hew_types::DeclarationKind::DefaultImplMethod
+        ) {
+            continue;
+        }
+        let path = defs.path(id);
+        let parts = path
+            .split_once("::<impl ")
+            .or_else(|| path.split_once("::<default impl "));
+        let Some((receiver, impl_and_method)) = parts else {
+            continue;
+        };
+        let Some((impl_name, method)) = impl_and_method.rsplit_once(">::") else {
+            continue;
+        };
+        let Some((_, declared_receiver)) = impl_name.split_once(" for ") else {
+            continue;
+        };
+        groups
+            .entry((receiver, declared_receiver, method))
+            .or_default()
+            .push(id);
+    }
+    groups
+        .into_values()
+        .filter(|ids| ids.len() > 1)
+        .flatten()
+        .collect()
+}
+
+impl LowerCtx {
+    /// Preserve existing symbols for unique methods. When two checker
+    /// declarations would share one symbol, add a reversible encoding of the
+    /// declaration path to the owner portion of each symbol.
+    pub(super) fn emitted_impl_method_symbol(
+        &self,
+        declaration: hew_types::DefId,
+        symbol_owner: &str,
+        method_name: &str,
+    ) -> String {
+        if !self.impl_method_symbol_collisions.contains(&declaration) {
+            return crate::node::HirImplBlock::method_symbol(symbol_owner, method_name);
+        }
+        use std::fmt::Write as _;
+        let mut encoded = String::with_capacity(self.defs.path(declaration).len() * 2);
+        for byte in self.defs.path(declaration).bytes() {
+            write!(&mut encoded, "{byte:02x}").expect("writing a symbol to String cannot fail");
+        }
+        crate::node::HirImplBlock::method_symbol(
+            &format!("{symbol_owner}$i${encoded}"),
+            method_name,
+        )
+    }
+}
+
 /// Whether two linker spellings are compatibility projections of one
 /// checker-owned impl declaration.
 ///
@@ -35,10 +100,10 @@ pub(super) fn impl_body_symbol_matches_declaration(
         || symbol_owner == receiver_leaf
         || symbol_owner
             .strip_prefix(receiver)
-            .is_some_and(|suffix| suffix.starts_with("$$"))
+            .is_some_and(|suffix| suffix.starts_with("$$") || suffix.starts_with("$i$"))
         || symbol_owner
             .strip_prefix(receiver_leaf)
-            .is_some_and(|suffix| suffix.starts_with("$$"))
+            .is_some_and(|suffix| suffix.starts_with("$$") || suffix.starts_with("$i$"))
 }
 
 pub(super) fn impl_body_symbols_alias_one_declaration(
@@ -67,7 +132,7 @@ pub(super) fn declaration_owned_impl_body_symbol<'a>(
             owner == receiver
                 || owner
                     .strip_prefix(receiver)
-                    .is_some_and(|suffix| suffix.starts_with("$$"))
+                    .is_some_and(|suffix| suffix.starts_with("$$") || suffix.starts_with("$i$"))
         })
     };
     if is_declaration_owned(right) && !is_declaration_owned(left) {
@@ -244,11 +309,24 @@ pub(super) fn plan_impl_block_symbols(
         if skip_methods.contains(method.name.name.as_str()) {
             continue;
         }
-        let symbol =
-            crate::node::HirImplBlock::method_symbol(&symbol_self_name, method.name.name.as_str());
-        let Some(declaration) = ctx.impl_method_declaration_ids.get(&symbol).copied() else {
+        let Some(declaration) =
+            ctx.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
+        else {
             continue;
         };
+        let symbol = ctx.emitted_impl_method_symbol(
+            declaration,
+            &symbol_self_name,
+            method.name.name.as_str(),
+        );
+        if ctx.impl_method_symbol_collisions.contains(&declaration) {
+            ctx.register_impl_method_fn_entry_at(
+                &symbol_self_name,
+                method,
+                &impl_type_params,
+                &symbol,
+            );
+        }
         planned.push((declaration, symbol));
     }
     // A trait default the impl does NOT override is materialised as its own
@@ -321,13 +399,21 @@ pub(super) fn materialized_default_body_plan(
         ) else {
             continue;
         };
-        out.push((
+        let symbol = ctx.emitted_impl_method_symbol(
             declaration,
-            crate::node::HirImplBlock::method_symbol(
+            symbol_self_name,
+            default_method.method.name.name.as_str(),
+        );
+        if ctx.impl_method_symbol_collisions.contains(&declaration) {
+            let method = trait_method_to_fn_decl(&default_method.method);
+            ctx.register_impl_method_fn_entry_at(
                 symbol_self_name,
-                default_method.method.name.name.as_str(),
-            ),
-        ));
+                &method,
+                &impl_type_param_names(impl_decl),
+                &symbol,
+            );
+        }
+        out.push((declaration, symbol));
     }
     out
 }
@@ -345,6 +431,7 @@ pub(super) fn plan_imported_impl_bodies(
     // Source-order bodies include root declarations and flattened file imports.
     // They may be called before their tail-spliced item is emitted.
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx
             .get(&item_idx)
             .copied()
@@ -390,6 +477,7 @@ pub(super) fn plan_imported_impl_bodies(
         let previous_module = ctx.current_module_name.replace(source_module.clone());
         let previous_module_idx = ctx.current_module_idx;
         for (item_idx, (item, _)) in module.items.iter().enumerate() {
+            ctx.current_item_ordinal = item_idx;
             ctx.current_module_idx = span_indices
                 .item_index(module_id, item_idx)
                 .unwrap_or_default();

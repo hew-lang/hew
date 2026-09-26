@@ -487,11 +487,18 @@ impl LowerCtx {
     ) {
         match &pattern.0 {
             Pattern::Identifier(name) => {
-                self.push_pattern_binding_stmt(name.to_string(), value_ty, value, stmts, span);
+                self.push_pattern_binding_stmt(
+                    name.to_string(),
+                    value_ty,
+                    value,
+                    stmts,
+                    span,
+                    true,
+                );
             }
             Pattern::Wildcard => {
                 let name = format!("_{}", stmts.len());
-                self.push_pattern_binding_stmt(name, value_ty, value, stmts, span);
+                self.push_pattern_binding_stmt(name, value_ty, value, stmts, span, false);
             }
             Pattern::Tuple(elements) => {
                 self.lower_tuple_pattern_value_into_stmts(elements, value, &value_ty, stmts, span);
@@ -520,7 +527,7 @@ impl LowerCtx {
                      refutable patterns remain reserved for match/if-let",
                 ));
                 let name = format!("__unsupported_{}", stmts.len());
-                self.push_pattern_binding_stmt(name, value_ty, value, stmts, span);
+                self.push_pattern_binding_stmt(name, value_ty, value, stmts, span, false);
             }
         }
     }
@@ -532,8 +539,13 @@ impl LowerCtx {
         value: HirExpr,
         stmts: &mut Vec<HirStmt>,
         span: Span,
+        checked: bool,
     ) -> BindingId {
-        let binding = self.bind(name, ty, false, span.clone());
+        let binding = if checked {
+            self.bind_checked(name, ty, false, span.clone())
+        } else {
+            self.bind(name, ty, false, span.clone())
+        };
         let binding_id = binding.id;
         stmts.push(HirStmt {
             node: self.ids.node(),
@@ -581,7 +593,12 @@ impl LowerCtx {
                 (format!("__unsupported_{}", self.ids.binding().0), false)
             }
         };
-        (Some(self.bind(name, ty, false, pattern.1.clone())), nested)
+        let binding = if matches!(pattern.0, Pattern::Identifier(_)) {
+            self.bind_checked(name, ty, false, pattern.1.clone())
+        } else {
+            self.bind(name, ty, false, pattern.1.clone())
+        };
+        (Some(binding), nested)
     }
 
     pub(super) fn lower_tuple_pattern_value_into_stmts(
@@ -680,7 +697,7 @@ impl LowerCtx {
                 "checker did not provide a canonical plan for this nested record pattern",
             ));
             let name = format!("__unsupported_{}", stmts.len());
-            self.push_pattern_binding_stmt(name, value_ty.clone(), value, stmts, span);
+            self.push_pattern_binding_stmt(name, value_ty.clone(), value, stmts, span, false);
             return;
         };
 
@@ -699,7 +716,14 @@ impl LowerCtx {
                         "nested record pattern plan contains an unresolved field type",
                     ));
                     let name = format!("__unsupported_{}", stmts.len());
-                    self.push_pattern_binding_stmt(name, value_ty.clone(), value, stmts, span);
+                    self.push_pattern_binding_stmt(
+                        name,
+                        value_ty.clone(),
+                        value,
+                        stmts,
+                        span,
+                        false,
+                    );
                     return;
                 }
             };
@@ -726,7 +750,14 @@ impl LowerCtx {
                             "nested record pattern plan cannot be materialised",
                         ));
                         let name = format!("__unsupported_{}", stmts.len());
-                        self.push_pattern_binding_stmt(name, value_ty.clone(), value, stmts, span);
+                        self.push_pattern_binding_stmt(
+                            name,
+                            value_ty.clone(),
+                            value,
+                            stmts,
+                            span,
+                            false,
+                        );
                         return;
                     };
                     source_pattern

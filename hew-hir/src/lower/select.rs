@@ -208,7 +208,7 @@ impl LowerCtx {
             let binding_id = if let Some(ref name) = binding_name {
                 self.select_arm_binding_ty(&kind, binding_span)
                     .map(|binding_ty| {
-                        self.bind(name.clone(), binding_ty, false, arm.binding.1.clone())
+                        self.bind_checked(name.clone(), binding_ty, false, arm.binding.1.clone())
                             .id
                     })
             } else {

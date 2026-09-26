@@ -103,9 +103,8 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
             .collect::<Vec<_>>()
     );
 
-    // The metadata-only HirItem::Impl must also be emitted, carrying the
-    // trait/self pair, the lowered `type Item = T` alias, and the list of
-    // emitted method symbols.
+    // The metadata-only HirItem::Impl carries the trait/self pair, the
+    // lowered `type Item = T` alias, and the emitted method item identity.
     let impl_block = output
         .module
         .items
@@ -121,11 +120,9 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
     assert_eq!(impl_block.trait_name.as_deref(), Some("Iterator"));
     assert_eq!(impl_block.self_type_name, "VecIter");
     assert_eq!(impl_block.type_params, vec!["T".to_string()]);
-    assert_eq!(
-        impl_block.method_symbols,
-        vec!["VecIter::next".to_string()],
-        "method_symbols must mirror the flattened HirItem::Function names"
-    );
+    let emitted = method_fn.expect("method body checked above");
+    assert_eq!(impl_block.method_item_ids, vec![emitted.id]);
+    assert_eq!(impl_block.method_ids, vec![Some(emitted.declaration)]);
     assert_eq!(
         impl_block.type_aliases.len(),
         1,

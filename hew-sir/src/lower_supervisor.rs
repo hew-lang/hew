@@ -327,49 +327,6 @@ impl InstanceService<'_> {
 }
 
 impl Builder<'_, '_> {
-    /// `await_restart sup.child`: the same role, produced only once the child
-    /// is Live again or permanently gone.
-    pub(super) fn lower_supervisor_await_restart(
-        &mut self,
-        expression: &HirExpr,
-        child: &HirExpr,
-    ) -> Result<ValueId, String> {
-        // The barrier blocks the calling thread. In `main` that thread is the
-        // program; inside an actor it is a scheduler worker the restart needs
-        // in order to finish, so the cooperative form has to suspend instead.
-        if self
-            .service
-            .actors
-            .iter()
-            .any(|actor| actor.bodies().any(|body| body == self.callable.id))
-        {
-            return Err("`await_restart` inside an actor needs its suspend contract".into());
-        }
-        // `await_restart sup.pool[i]` waits on that one member's slot; the
-        // accessor's own bounds check runs first, exactly as `sup.pool[i]` does.
-        if matches!(
-            self.service
-                .module
-                .pool_accessor_sites
-                .get(&child.site)
-                .map(|accessor| accessor.kind),
-            Some(hew_types::PoolAccessorKind::Index)
-        ) {
-            return self.lower_pool_accessor(child, hew_types::PoolAccessorKind::Index, true);
-        }
-        let HirExprKind::FieldAccess { object, .. } = &child.kind else {
-            return Err("`await_restart` operand is not a supervised child".into());
-        };
-        let slot = self
-            .service
-            .module
-            .supervisor_child_slots
-            .get(&child.site)
-            .ok_or("`await_restart` operand names no supervised child")?
-            .clone();
-        self.lower_supervisor_role(expression, object, &slot, true)
-    }
-
     /// `sup.child`: a declared child resolved through its supervisor on every
     /// use. `sup.pool` instead produces the pool's view.
     pub(super) fn lower_supervisor_child(
@@ -381,7 +338,7 @@ impl Builder<'_, '_> {
         if slot.kind == hew_types::ChildKind::Pool {
             return self.lower_supervisor_pool_view(expression, object, slot);
         }
-        self.lower_supervisor_role(expression, object, slot, false)
+        self.lower_supervisor_role(expression, object, slot)
     }
 
     fn lower_supervisor_role(
@@ -389,7 +346,6 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         object: &HirExpr,
         slot: &hew_types::ChildSlot,
-        await_restart: bool,
     ) -> Result<ValueId, String> {
         let supervisor = self.service.require_supervisor(&self.ty(&object.ty))?;
         let child = self.service.supervisors[supervisor.0 as usize]
@@ -401,18 +357,10 @@ impl Builder<'_, '_> {
         let owner_is_role = self
             .ty(&object.ty)
             .is_builtin(hew_types::BuiltinType::ChildRef);
-        let operation = if await_restart {
-            ActorOperation::SupervisorAwaitRestart {
-                supervisor,
-                child,
-                owner_is_role,
-            }
-        } else {
-            ActorOperation::SupervisorChild {
-                supervisor,
-                child,
-                owner_is_role,
-            }
+        let operation = ActorOperation::SupervisorChild {
+            supervisor,
+            child,
+            owner_is_role,
         };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
@@ -472,7 +420,6 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         kind: hew_types::PoolAccessorKind,
-        await_restart: bool,
     ) -> Result<ValueId, String> {
         let (receiver, index) = match &expression.kind {
             HirExprKind::Index { container, index } => (container.as_ref(), Some(index.as_ref())),
@@ -506,22 +453,10 @@ impl Builder<'_, '_> {
         )?;
         let mut bound = index.clone();
         bound.ty = ResolvedTy::I64;
-        let operation = match (kind, await_restart) {
-            (hew_types::PoolAccessorKind::Index, false) => {
-                hew_types::runtime_call::SupervisorPoolOp::Member
-            }
-            (hew_types::PoolAccessorKind::Index, true) => {
-                hew_types::runtime_call::SupervisorPoolOp::AwaitRestartMember
-            }
-            (hew_types::PoolAccessorKind::Get, false) => {
-                hew_types::runtime_call::SupervisorPoolOp::Get
-            }
-            (hew_types::PoolAccessorKind::Get, true) => {
-                return Err("`await_restart` waits on one member, not a `get`".into())
-            }
-            (hew_types::PoolAccessorKind::Len, _) => {
-                unreachable!("the member count returned above")
-            }
+        let operation = match kind {
+            hew_types::PoolAccessorKind::Index => hew_types::runtime_call::SupervisorPoolOp::Member,
+            hew_types::PoolAccessorKind::Get => hew_types::runtime_call::SupervisorPoolOp::Get,
+            hew_types::PoolAccessorKind::Len => unreachable!("the member count returned above"),
         };
         self.lower_runtime_operation_with(
             expression,
@@ -560,31 +495,5 @@ impl Builder<'_, '_> {
             return Err("supervisor declares more than one pool".into());
         }
         Ok(count)
-    }
-
-    /// `supervisor_stop(sup)` / `close(sup)`: stop every child and the supervisor.
-    pub(super) fn lower_supervisor_stop(
-        &mut self,
-        handle: &HirExpr,
-    ) -> Result<Option<ValueId>, String> {
-        let supervisor = self.service.require_supervisor(&self.ty(&handle.ty))?;
-        let operation = if self
-            .ty(&handle.ty)
-            .is_builtin(hew_types::BuiltinType::ChildRef)
-        {
-            ActorOperation::SupervisorRoleAwaitClosed {
-                supervisor,
-                closing: true,
-            }
-        } else {
-            ActorOperation::SupervisorStop(supervisor)
-        };
-        let signature = self.actor_signature(&operation)?;
-        let value =
-            lower_initial_value_transfer(self, handle, "supervisor handle", OwnedBindingUse::Copy)?;
-        if !self.is_open() {
-            return Ok(None);
-        }
-        self.emit_actor_call(operation, signature, vec![value])
     }
 }

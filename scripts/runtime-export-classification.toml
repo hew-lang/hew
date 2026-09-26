@@ -651,7 +651,6 @@ stable = [
   "hew_supervisor_is_running",
   "hew_supervisor_new",
   "hew_supervisor_nested_get",
-  "hew_supervisor_restart_await_blocking",
   "hew_supervisor_restart_await_detach",
   "hew_supervisor_restart_await_suspend",
   "hew_supervisor_role_ask",
@@ -1223,7 +1222,6 @@ non-declarable = [
   "hew_actor_call_poll",
   "hew_actor_call_resume",
   "hew_actor_call_take",
-  "hew_actor_close_native",
   "hew_actor_coro_set_fault",
   "hew_actor_coro_state_new",
   "hew_actor_dispatch_set_fault",
@@ -1562,7 +1560,6 @@ non-declarable = [
   # restart path installs the runtime's own system dispatch on each
   # incarnation. It is the whole lowering of a `supervisor` declaration; user
   # code has no way to name it or the child table it reads.
-  "hew_supervisor_native_await_restart",
   "hew_supervisor_native_child",
   "hew_supervisor_native_role_owner",
   "hew_supervisor_native_role_wait_new",

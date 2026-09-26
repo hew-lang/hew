@@ -1,17 +1,27 @@
 actor Worker {
-    receive fn fail() { panic("boom"); }
+    receive fn fail() {
+        panic("boom");
+    }
     #[on(crash)]
-    fn crashed(info: CrashInfo) -> CrashAction { CrashAction.Kill }
+    fn crashed(info: CrashInfo) -> CrashAction {
+        CrashAction.GiveUp
+    }
 }
+
 supervisor Tree {
     strategy: one_for_one,
     intensity: 3 within 60s,
     child worker: Worker,
 }
+
 fn main() {
     let tree = spawn Tree;
     let worker = tree.worker;
     let _ = worker.fail();
-    println(match worker.fail() { .Err(.Dead) => "killed", _ => "unexpected" });
-    close(tree);
+    println(match worker.fail() {
+        .Err(.Dead) => "killed",
+        _ => "unexpected",
+    });
+    stop(tree);
+    stopped(tree);
 }

@@ -1311,8 +1311,8 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
 
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 4);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
+    assert_eq!(entries.len(), 5);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
     assert_integer_value(find_field(entries, 1), 4242);
     assert_location_value(find_field(entries, 2), original.target);
     let reason = map_entries(find_field(entries, 3));
@@ -1321,6 +1321,7 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
     assert_integer_value(find_field(reason, 1), 1);
     assert_integer_value(find_field(reason, 2), 5);
     assert_integer_value(find_field(entries, 4), 1);
+    assert_integer_value(find_field(entries, 5), 2);
 }
 
 #[test]
@@ -1348,6 +1349,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
         (int(2u64), Value::Null),
         (int(3u64), down_reason_value(5)),
         (int(4u64), int(0i32)),
+        (int(5u64), int(2u8)),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&malformed_target)),
@@ -1359,6 +1361,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
         (int(2u64), location_value(location(52, 101, 193))),
         (int(3u64), int(5i32)),
         (int(4u64), int(0i32)),
+        (int(5u64), int(2u8)),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&untyped_reason)),
@@ -1373,6 +1376,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
             Value::Map(vec![(int(1u64), int(99u8)), (int(2u64), int(5i32))]),
         ),
         (int(4u64), int(0i32)),
+        (int(5u64), int(2u8)),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&unknown_reason_tag)),

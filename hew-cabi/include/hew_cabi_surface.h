@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1626u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1623u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1626] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -157,12 +157,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1626] = {
     {"hew_actor_close", "{\"native\": \"fn hew_actor_close( *mut HewActor)\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_close_native",
-     "{\"native\": \"fn hew_actor_close_native( "
-     "local_handles::HewLocalPidId)\", \"wasm32-wasip1\": \"fn "
-     "hew_actor_close_native( local_handles::HewLocalPidId)\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_cooperate",
      "{\"native\": \"fn hew_actor_cooperate() -> c_int\"}", "native",
      "non-declarable", "not-applicable", "not-applicable",
@@ -6635,11 +6629,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1626] = {
      "c_int\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_native_await_restart",
-     "{\"native\": \"fn hew_supervisor_native_await_restart( HewLocalPidId, "
-     "u32, c_int, )\"}",
-     "native", "non-declarable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_child",
      "{\"native\": \"fn hew_supervisor_native_child( HewLocalPidId, u32, *mut "
      "c_int, ) -> usize\"}",
@@ -6735,11 +6724,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1626] = {
      "{\"native\": \"fn hew_supervisor_remove_child( *mut HewSupervisor, "
      "c_int, ) -> c_int\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_restart_await_blocking",
-     "{\"native\": \"fn hew_supervisor_restart_await_blocking( *mut "
-     "HewSupervisor, u32)\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_restart_await_detach",
      "{\"native\": \"fn hew_supervisor_restart_await_detach( *mut "

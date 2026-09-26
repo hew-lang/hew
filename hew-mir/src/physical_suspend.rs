@@ -345,9 +345,6 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     operation:
                         hew_sir::ActorOperation::AwaitStopped(_)
                         | hew_sir::ActorOperation::AwaitRestarted(_)
-                        | hew_sir::ActorOperation::AwaitClosed(_)
-                        | hew_sir::ActorOperation::SupervisorAwaitClosed(_)
-                        | hew_sir::ActorOperation::SupervisorRoleAwaitClosed { .. }
                         | hew_sir::ActorOperation::StreamStart { .. }
                         | hew_sir::ActorOperation::CallStart(_),
                     ..
@@ -510,9 +507,6 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     operation:
                         hew_sir::ActorOperation::AwaitStopped(_)
                         | hew_sir::ActorOperation::AwaitRestarted(_)
-                        | hew_sir::ActorOperation::AwaitClosed(_)
-                        | hew_sir::ActorOperation::SupervisorAwaitClosed(_)
-                        | hew_sir::ActorOperation::SupervisorRoleAwaitClosed { .. }
                         | hew_sir::ActorOperation::StreamStart { .. }
                         | hew_sir::ActorOperation::CallStart(_),
                     ..

@@ -141,7 +141,7 @@ fn parse_supervisor_construction_time_config_params() {
 }
 
 /// Pool arity is the per-child `count:` clause, parsed beside `restart:` and
-/// `shutdown:` and kept out of the parenthesised init-arg list.
+/// `stop:` and kept out of the parenthesised init-arg list.
 #[test]
 fn parse_pool_count_clause_lands_beside_the_init_args() {
     let source = "supervisor Farm {\n\
@@ -164,6 +164,45 @@ fn parse_pool_count_clause_lands_beside_the_init_args() {
     );
     assert_eq!(child.args[0].0, Ident::new("value"));
     assert_eq!(child.restart, Some(RestartPolicy::Transient));
+}
+
+#[test]
+fn supervisor_stop_clause_carries_a_duration_expression() {
+    let result = parse(
+        "actor Worker { receive fn work() {} }\n\
+         supervisor Team { child worker: Worker() stop: 50ms, }",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Supervisor(supervisor) = &result.program.items[1].0 else {
+        panic!("expected supervisor");
+    };
+    assert!(matches!(
+        supervisor.children[0].stop,
+        Some((Expr::Literal(Literal::Duration(50_000_000)), _))
+    ));
+}
+
+#[test]
+fn retired_supervisor_shutdown_clause_has_a_migration_diagnostic() {
+    for old in [
+        "shutdown: 50ms",
+        "shutdown: brutal_kill",
+        "shutdown: infinity",
+    ] {
+        let source = format!(
+            "actor Worker {{ receive fn work() {{}} }}\n\
+             supervisor Team {{ child worker: Worker() {old}, }}"
+        );
+        let result = parse(&source);
+        assert!(
+            result.errors.iter().any(|error| {
+                error.kind == ParseDiagnosticKind::SupervisorStopClauseRetired
+                    && error.message.contains("E_SUPERVISOR_STOP_CLAUSE")
+            }),
+            "{old}: {:?}",
+            result.errors
+        );
+    }
 }
 
 /// The clause namespace and the field namespace are separate, so an actor with
@@ -1727,6 +1766,16 @@ fn parse_actor_lifecycle_hook_and_receive_attributes() {
     } else {
         panic!("expected actor");
     }
+}
+
+#[test]
+fn wire_attribute_is_carried_on_receive_handler() {
+    let parsed = parse("actor Store { #[wire] receive fn fetch(key: string) -> string { key } }");
+    assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+    let Item::Actor(actor) = &parsed.program.items[0].0 else {
+        panic!("expected actor");
+    };
+    assert_eq!(actor.receive_fns[0].attributes[0].name, "wire");
 }
 
 #[test]

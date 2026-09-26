@@ -224,6 +224,10 @@ enum Participant {
     Task(Arc<crate::task_scope::checked::TaskExecution>),
     /// A parked root or hosting boundary whose readiness latch is set.
     Root(Arc<Readiness>),
+    /// An admitted supervisor teardown. Teardown may step the driver while
+    /// children finish, but its source-level requester has already returned.
+    #[cfg(not(target_arch = "wasm32"))]
+    SupervisorStop(crate::supervisor::QueuedSupervisorStop),
 }
 
 // SAFETY: the ready list is the only holder of the actor queue reference while
@@ -296,6 +300,12 @@ pub(crate) fn publish_root(readiness: Arc<Readiness>) {
     publish(Participant::Root(readiness));
 }
 
+/// Enqueue a supervisor teardown after the source-level stop request returns.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn publish_supervisor_stop(stop: crate::supervisor::QueuedSupervisorStop) {
+    publish(Participant::SupervisorStop(stop));
+}
+
 /// Whether any participant is waiting to run.
 pub(crate) fn has_queued_work() -> bool {
     !READY.lock_or_recover().entries.is_empty()
@@ -342,6 +352,8 @@ fn run_participant(participant: Participant) {
         #[cfg(not(target_arch = "wasm32"))]
         Participant::Task(task) => task.poll(),
         Participant::Root(readiness) => readiness.picked(),
+        #[cfg(not(target_arch = "wasm32"))]
+        Participant::SupervisorStop(stop) => stop.run(),
     }
 }
 

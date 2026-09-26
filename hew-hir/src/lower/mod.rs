@@ -14,9 +14,8 @@ use hew_parser::ast::{
     condition_exprs, ActorDecl, ArrayElement, AttributeArg, BinaryOp, Block, CallArg,
     CompoundAssignOp, ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal,
     MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy,
-    SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, UnaryOp,
+    SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
+    TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::check::scope::Resolution;
@@ -44,9 +43,9 @@ use crate::node::{
     HirGenCapture, HirGenCaptureSource, HirItem, HirLambdaCapture, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
     HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind,
+    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker};
@@ -1028,6 +1027,7 @@ struct LowerCtx {
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     actor_delivery_calls: HashMap<SpanKey, hew_types::actor_delivery::ActorDeliveryCall>,
+    actor_coalesce_keys: HashMap<hew_types::DefId, Vec<(hew_types::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.

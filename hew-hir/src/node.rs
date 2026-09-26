@@ -452,6 +452,9 @@ pub struct HirActorDecl {
     /// periodic scheduling (validated by the checker; recorded here as a
     /// structural flag plus the duration in nanoseconds).
     pub receive_handlers: Vec<HirActorReceiveFn>,
+    /// Exact receive declarations and payload slots selected as mailbox
+    /// coalescing keys by the checker.
+    pub coalesce_keys: Vec<(DefId, u32)>,
     /// Plain methods on the actor (not lifecycle hooks). MIR emits one
     /// `{Actor}__fn__{name}` callable per entry, entered from the actor's own
     /// handlers, hooks, `init`, and sibling methods; the body reads and writes
@@ -621,11 +624,11 @@ pub enum HirLifecycleHookKind {
     /// `#[on(crash)]` — runs when the actor body traps. Takes the stdlib
     /// crash-info payload parameter and returns the stdlib crash action enum.
     Crash,
-    /// `#[on(exit)]` — runs when an actor THIS actor is linked to
+    /// `#[on(link)]` — runs when an actor THIS actor is linked to
     /// crashes/exits. Takes the stdlib `CrashNotification { actor_id, kind }`
     /// payload and returns `()`. Fired on the linked actor's own dispatch via
     /// the `HewSysMsg::Exit` delivery (M-7-R, Q210/A211).
-    Exit,
+    Link,
     /// `#[on(down)]` — receives a typed monitor terminal notification.
     Down,
 }
@@ -786,9 +789,9 @@ pub struct HirSupervisorChild {
     /// into the pool slot. `count` is a reserved arg name on pool declarations,
     /// not a per-member init field, so it is removed from `init_args`.
     pub pool_count: Option<HirExpr>,
-    /// Per-child graceful-stop directive from the `shutdown:` clause.
+    /// Per-child graceful-stop deadline from the `stop:` clause.
     /// `None` means the supervisor default applies.
-    pub shutdown: Option<HirShutdownDirective>,
+    pub stop: Option<HirExpr>,
     /// Real, verifier-registered site for this child declaration, minted from
     /// the same monotonic allocator as every other HIR site
     /// (`self.ids.site()`). MIR diagnostics that have no specific
@@ -816,19 +819,6 @@ pub enum HirRestartPolicy {
     Permanent,
     Transient,
     Temporary,
-}
-
-/// Per-child shutdown directive lowered from the `shutdown:` clause.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HirShutdownDirective {
-    /// Graceful-stop deadline as a raw duration source string (e.g. `"30s"`);
-    /// codegen interprets the unit.
-    Timeout(String),
-    /// Skip the deadline; kill immediately.
-    BrutalKill,
-    /// Wait indefinitely. ACCEPTED-ONLY in v0.5 — there is no per-child
-    /// deadline wheel in the runtime yet, so codegen does not enforce it.
-    Infinity,
 }
 
 /// Semantic declaration kind, including enums with no inhabited variants.

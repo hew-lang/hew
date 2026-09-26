@@ -358,6 +358,53 @@ fn fmt_migrate_rewrites_declared_machine_event_aliases() {
 }
 
 #[test]
+fn fmt_migrate_selects_actor_lifecycle_without_touching_resource_close() {
+    let dir = support::tempdir();
+    let path = dir.path().join("actor-lifecycle.hew");
+    let source = r#"
+        #[resource] type Gate { value: i64, }
+        impl Gate { fn close(consume self) {} }
+        actor Worker { receive fn ping() {} }
+        supervisor Team { child worker: Worker, }
+        fn main() {
+            let team = spawn Team;
+            let _ = await_restart team.worker;
+            close(team);
+            let gate = Gate { value: 1 };
+            gate.close();
+        }
+    "#;
+    std::fs::write(&path, source).unwrap();
+
+    let migrate = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        migrate.status.success(),
+        "migration failed: {}",
+        String::from_utf8_lossy(&migrate.stderr)
+    );
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains("restarted("), "{migrated}");
+    assert!(migrated.contains("stop("), "{migrated}");
+    assert!(migrated.contains("stopped("), "{migrated}");
+    assert!(migrated.contains("gate.close();"), "{migrated}");
+    assert!(!migrated.contains("await_restart"), "{migrated}");
+    let second = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--check"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "migration changed on a second pass: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+}
+
+#[test]
 fn fmt_migrate_root_discovers_nested_hew_sources() {
     let dir = support::tempdir();
     let nested = dir.path().join("nested");

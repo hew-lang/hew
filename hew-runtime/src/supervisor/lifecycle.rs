@@ -344,6 +344,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         }),
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
+        stop_ns: 5_000_000_000,
         mailbox_capacity: sp.mailbox_capacity,
         overflow: sp.overflow,
         coalesce_key_fn: sp.coalesce_key_fn,
@@ -495,6 +496,36 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
     crash_code: c_int,
     fault_record: u64,
 ) -> bool {
+    let reason = crate::internal::types::ActorEndReason::from_terminal(exit_state, false);
+    // SAFETY: forwards the caller's live supervisor and exact child event.
+    unsafe {
+        notify_child_actor_end_event(
+            sup,
+            child_index,
+            child_id,
+            exit_state,
+            reason,
+            crash_code,
+            fault_record,
+        )
+    }
+}
+
+/// Publish the checker-independent semantic end reason selected at the actor
+/// terminal edge, including forceful termination after a stop request.
+///
+/// # Safety
+/// `sup` must be a live started supervisor and the child identity must name
+/// the incarnation whose terminal result is being published.
+pub(crate) unsafe fn notify_child_actor_end_event(
+    sup: *mut HewSupervisor,
+    child_index: u32,
+    child_id: u64,
+    exit_state: c_int,
+    end_reason: crate::internal::types::ActorEndReason,
+    crash_code: c_int,
+    fault_record: u64,
+) -> bool {
     cabi_guard!(sup.is_null(), false);
     // SAFETY: caller keeps `sup` live through this notification.
     let self_actor = unsafe { (*sup).self_actor };
@@ -506,6 +537,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
         child_index,
         child_id,
         exit_state,
+        end_reason,
         crash_code,
         fault_record,
     };
@@ -636,6 +668,33 @@ pub(crate) unsafe fn finish_claimed_supervisor(
     true
 }
 
+/// Ownership transferred from a nonblocking supervisor request to the
+/// deterministic driver's ready list. The teardown lease keeps runtime
+/// cleanup from reclaiming the allocation before this entry runs.
+pub(crate) struct QueuedSupervisorStop {
+    supervisor: *mut HewSupervisor,
+    root_unregistered: bool,
+    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+}
+
+// SAFETY: the teardown lease protects the supervisor allocation across the
+// ready-list handoff, and exactly one driver participant consumes this entry.
+unsafe impl Send for QueuedSupervisorStop {}
+
+impl QueuedSupervisorStop {
+    pub(crate) fn run(self) {
+        // SAFETY: this entry exclusively owns the already-claimed teardown.
+        unsafe {
+            finish_claimed_supervisor(
+                self.supervisor,
+                self.root_unregistered,
+                self.teardown,
+                false,
+            );
+        }
+    }
+}
+
 pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
     sup: *mut HewSupervisor,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
@@ -735,6 +794,25 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
     stop_local_supervisor(token, false)
 }
 
+/// Request a graceful supervisor stop without waiting for whole-tree release.
+#[no_mangle]
+pub extern "C" fn hew_supervisor_stop_native(token: crate::lifetime::local_handles::HewLocalPidId) {
+    let _ = stop_local_supervisor(token, true);
+}
+
+/// Escalate a supervisor stop to forceful teardown without waiting.
+#[no_mangle]
+pub extern "C" fn hew_supervisor_terminate_native(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) {
+    if let Some(control) =
+        crate::lifetime::local_handles::pin_current_supervisor(token).map(|pin| pin.control())
+    {
+        control.request_terminate();
+    }
+    let _ = stop_local_supervisor(token, true);
+}
+
 pub(crate) fn stop_local_supervisor(
     token: crate::lifetime::local_handles::HewLocalPidId,
     defer: bool,
@@ -785,6 +863,14 @@ pub(crate) fn stop_local_supervisor(
     // runtime cleanup may proceed as soon as that lease is relinquished and
     // must observe the control registry fully drained.
     drop(control);
+    if defer && crate::driver::active() {
+        crate::driver::publish_supervisor_stop(QueuedSupervisorStop {
+            supervisor: sup,
+            root_unregistered: top_level,
+            teardown,
+        });
+        return 0;
+    }
     // SAFETY: this token operation claimed teardown while pinned and already
     // removed the supervisor from the runtime cleanup root set.
     c_int::from(!unsafe { finish_claimed_supervisor(sup, top_level, teardown, defer) }) * 2
@@ -798,6 +884,92 @@ pub(crate) fn stop_local_supervisor(
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    static CHILD_STOP_ORDER: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+    unsafe extern "C-unwind" fn record_child_stop(state: *mut c_void) {
+        // SAFETY: this test installs the callback only on children whose
+        // initialized state is one copied u64 declaration label.
+        let label = unsafe { *state.cast::<u64>() };
+        CHILD_STOP_ORDER.lock_or_recover().push(label);
+    }
+
+    unsafe extern "C" fn unused_nested_restart() -> *mut HewSupervisor {
+        ptr::null_mut()
+    }
+
+    #[test]
+    fn mixed_child_kinds_stop_in_reverse_declaration_order() {
+        let _guard = crate::runtime_test_guard();
+        CHILD_STOP_ORDER.lock_or_recover().clear();
+
+        let spec = |label: &mut u64| HewChildSpec {
+            name: ptr::null(),
+            init_state: std::ptr::from_mut(label).cast(),
+            init_state_size: std::mem::size_of::<u64>(),
+            dispatch: Some(noop_child_dispatch),
+            sys_dispatch: None,
+            restart_policy: RESTART_TEMPORARY,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
+            lifecycle_fn: None,
+            init_fn: None,
+            config: ptr::null_mut(),
+            config_size: 0,
+        };
+        // SAFETY: each declaration copies its label before the stack value
+        // changes, and every returned actor/supervisor stays owned by its tree.
+        unsafe {
+            let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            let nested = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!parent.is_null() && !nested.is_null());
+            let mut first = 1_u64;
+            let mut middle = 2_u64;
+            let mut last = 3_u64;
+            let first_spec = spec(&mut first);
+            let middle_spec = spec(&mut middle);
+            let last_spec = spec(&mut last);
+            assert_eq!(
+                hew_supervisor_add_child_spec(parent, &raw const first_spec),
+                0
+            );
+            assert_eq!(
+                hew_supervisor_add_child_spec(nested, &raw const middle_spec),
+                0
+            );
+            assert_eq!(hew_supervisor_start(nested), 0);
+            assert_eq!(
+                hew_supervisor_add_child_supervisor_with_init(
+                    parent,
+                    nested,
+                    unused_nested_restart
+                ),
+                0
+            );
+            assert_eq!(
+                hew_supervisor_add_child_spec(parent, &raw const last_spec),
+                0
+            );
+            assert_eq!(hew_supervisor_start(parent), 0);
+
+            let parent_roster = (*parent).roster.lock_or_recover();
+            let first_child = parent_roster.children[0];
+            let last_child = parent_roster.children[1];
+            drop(parent_roster);
+            let middle_child = (*nested).roster.lock_or_recover().children[0];
+            actor::hew_actor_set_terminate(first_child, record_child_stop);
+            actor::hew_actor_set_terminate(middle_child, record_child_stop);
+            actor::hew_actor_set_terminate(last_child, record_child_stop);
+            hew_supervisor_stop(parent);
+        }
+        assert_eq!(*CHILD_STOP_ORDER.lock_or_recover(), [3, 2, 1]);
+    }
 
     /// Test-only shorthand that still obtains the typed roster guard. Tests
     /// own each supervisor for the complete guard lifetime.
@@ -4241,6 +4413,10 @@ mod tests {
                 child_index: u32::try_from(child_index).expect("test index fits u32"),
                 child_id: (*child).id,
                 exit_state: terminal_state as c_int,
+                end_reason: crate::internal::types::ActorEndReason::from_terminal(
+                    terminal_state as c_int,
+                    false,
+                ),
                 crash_code: 0,
                 fault_record: 0,
             };

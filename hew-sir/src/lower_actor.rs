@@ -116,22 +116,14 @@ fn actor_coalesce(
         }
     };
     let mut keys = Vec::new();
-    for handler in handlers {
-        let declared = source
-            .receive_handlers
+    for &(declaration, param) in &source.coalesce_keys {
+        let handler = handlers
             .iter()
-            .find(|declared| declared.name == handler.name)
-            .ok_or("a registered handler lost its declaration")?;
-        let Some(param) = declared
-            .params
-            .iter()
-            .position(|param| param.name == key_field.name.as_str())
-        else {
-            continue;
-        };
+            .find(|handler| handler.declaration == declaration)
+            .ok_or("checked coalesce member has no registered handler")?;
         let ty = handler
             .params
-            .get(param)
+            .get(param as usize)
             .ok_or("coalesce key parameter is absent from the message payload")?;
         let kind = coalesce_key_kind(ty).ok_or_else(|| {
             format!(
@@ -141,7 +133,7 @@ fn actor_coalesce(
         })?;
         keys.push(crate::SemCoalesceKey {
             message: handler.message_id,
-            param: u32::try_from(param).map_err(|_| "coalesce key index exceeds u32")?,
+            param,
             kind,
         });
     }
@@ -278,7 +270,7 @@ impl InstanceService<'_> {
                     )],
                     ResolvedTy::named_builtin(hew_types::BuiltinType::CrashAction, Vec::new()),
                 ),
-                hew_hir::HirLifecycleHookKind::Exit => (
+                hew_hir::HirLifecycleHookKind::Link => (
                     vec![ResolvedTy::named_builtin(
                         hew_types::BuiltinType::CrashNotification,
                         Vec::new(),
@@ -333,7 +325,7 @@ impl InstanceService<'_> {
                 hew_hir::HirLifecycleHookKind::Crash => {
                     self.actors[id.0 as usize].crash = Some(body);
                 }
-                hew_hir::HirLifecycleHookKind::Exit => self.actors[id.0 as usize].exit = Some(body),
+                hew_hir::HirLifecycleHookKind::Link => self.actors[id.0 as usize].exit = Some(body),
                 hew_hir::HirLifecycleHookKind::Down => self.actors[id.0 as usize].down = Some(body),
             }
         }
@@ -923,37 +915,47 @@ impl Builder<'_, '_> {
                 operation,
             } if matches!(
                 operation,
-                hew_types::actor_delivery::ActorDeliveryCall::Close
-                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitClosed
+                hew_types::actor_delivery::ActorDeliveryCall::Stop
+                    | hew_types::actor_delivery::ActorDeliveryCall::Terminate
+                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitStopped
+                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted
             ) =>
             {
                 if !args.is_empty() {
                     return Err("actor lifecycle boundary has unexpected arguments".into());
                 }
                 let target_ty = self.ty(&receiver.ty);
-                let closing = matches!(
-                    operation,
-                    hew_types::actor_delivery::ActorDeliveryCall::Close
-                );
-                if !closing
-                    && super::supervisor::declaration(self.service.module, &target_ty).is_some()
-                {
-                    let supervisor = self.service.require_supervisor(&target_ty)?;
-                    let operation = if target_ty.is_builtin(hew_types::BuiltinType::ChildRef) {
-                        crate::ActorOperation::SupervisorRoleAwaitClosed {
-                            supervisor,
-                            closing: false,
+                let role = target_ty.is_builtin(hew_types::BuiltinType::ChildRef);
+                let target =
+                    if super::supervisor::declaration(self.service.module, &target_ty).is_some() {
+                        let supervisor = self.service.require_supervisor(&target_ty)?;
+                        if role {
+                            crate::LifecycleTarget::SupervisorRole(supervisor)
+                        } else {
+                            crate::LifecycleTarget::Supervisor(supervisor)
                         }
                     } else {
-                        crate::ActorOperation::SupervisorAwaitClosed(supervisor)
+                        let actor = self.service.require_actor(&target_ty)?;
+                        if role {
+                            crate::LifecycleTarget::ActorRole(actor)
+                        } else {
+                            crate::LifecycleTarget::Actor(actor)
+                        }
                     };
-                    return Ok((operation, vec![(**receiver).clone()], vec![0]));
-                }
-                let actor = self.service.require_actor(&target_ty)?;
-                let boundary = if closing {
-                    crate::ActorOperation::Close(actor)
-                } else {
-                    crate::ActorOperation::AwaitClosed(actor)
+                let boundary = match operation {
+                    hew_types::actor_delivery::ActorDeliveryCall::Stop => {
+                        crate::ActorOperation::Stop(target)
+                    }
+                    hew_types::actor_delivery::ActorDeliveryCall::Terminate => {
+                        crate::ActorOperation::Terminate(target)
+                    }
+                    hew_types::actor_delivery::ActorDeliveryCall::AwaitStopped => {
+                        crate::ActorOperation::AwaitStopped(target)
+                    }
+                    hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted if role => {
+                        crate::ActorOperation::AwaitRestarted(target)
+                    }
+                    _ => return Err("restart wait requires a supervised role".into()),
                 };
                 Ok((boundary, vec![(**receiver).clone()], vec![0]))
             }
@@ -1627,14 +1629,16 @@ impl Builder<'_, '_> {
                 };
                 self.make_delivery_record(expression, vec![target, message.id, payload.id])
             }
-            ActorDeliveryCall::Stop => {
-                Err("a stop request reaches SIR only as its close request".into())
-            }
-            ActorDeliveryCall::Submit { .. }
-            | ActorDeliveryCall::Close
-            | ActorDeliveryCall::AwaitClosed => self
+            ActorDeliveryCall::Submit { .. } => self
                 .lower_actor_boundary(expression)?
                 .ok_or_else(|| "submission has no result".into()),
+            ActorDeliveryCall::Stop
+            | ActorDeliveryCall::Terminate
+            | ActorDeliveryCall::AwaitStopped
+            | ActorDeliveryCall::AwaitRestarted => {
+                self.lower_actor_boundary(expression)?;
+                self.emit(expression, SemOpKind::ConstUnit)
+            }
         }
     }
 

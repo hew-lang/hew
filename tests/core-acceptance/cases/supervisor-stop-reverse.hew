@@ -1,0 +1,18 @@
+actor Worker {
+    let name: string,
+    #[on(stop)]
+    fn done() { println(name); }
+}
+
+supervisor Team(grace: duration) {
+    child first: Worker(name: "first") stop: 100ms,
+    child second: Worker(name: "second") stop: grace,
+}
+
+fn main() {
+    let team = spawn Team(grace: 100ms);
+    stop(team);
+    println("after stop");
+    stopped(team);
+    println("after stopped");
+}

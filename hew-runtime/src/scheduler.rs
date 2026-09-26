@@ -933,6 +933,16 @@ pub(crate) fn shutdown_requested() -> bool {
     get_scheduler().is_some_and(|sched| sched.shutdown.load(Ordering::Acquire))
 }
 
+/// Whether a newly queued actor can make progress before runtime cleanup.
+/// Worker-less test runtimes and a scheduler already shutting down need their
+/// existing synchronous terminal path during supervisor reclamation.
+pub(crate) fn actor_progress_available() -> bool {
+    crate::driver::active()
+        || get_scheduler().is_some_and(|sched| {
+            !sched.stealers.is_empty() && !sched.shutdown.load(Ordering::Acquire)
+        })
+}
+
 /// Clean up all remaining runtime resources after shutdown.
 ///
 /// Normally called after [`hew_sched_shutdown`]. It first retries any worker

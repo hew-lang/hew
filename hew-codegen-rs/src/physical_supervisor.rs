@@ -51,7 +51,7 @@ fn role_kind(role: &SemSupervisedRole) -> u64 {
     kind as u64
 }
 
-/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter and name.
+/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter, name and deadline.
 fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let ptr = ctx.ptr_type(AddressSpace::default());
     ctx.struct_type(
@@ -60,6 +60,7 @@ fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
             ctx.i32_type().into(),
             ptr.into(),
             ptr.into(),
+            ctx.i64_type().into(),
         ],
         false,
     )
@@ -142,6 +143,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                             .into(),
                         spawn.as_global_value().as_pointer_value().into(),
                         name.into(),
+                        self.ctx
+                            .i64_type()
+                            .const_int(
+                                match child.stop_deadline {
+                                    hew_mir::physical::SemStopDeadline::Literal(ns) => ns as u64,
+                                    hew_mir::physical::SemStopDeadline::Config(_) => 0,
+                                },
+                                true,
+                            )
+                            .into(),
                     ]),
                 );
             }
@@ -400,13 +411,72 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .map_or(ptr.const_null(), |function| {
                 function.as_global_value().as_pointer_value()
             });
-        let children = self
+        let children_table = self
             .llvm
             .get_global(&symbol(supervisor, "children"))
             .ok_or_else(|| {
                 CodegenError::FailClosed("supervisor lacks its declared child table".into())
             })?
             .as_pointer_value();
+        let children = if supervisor.children.iter().any(|child| {
+            matches!(
+                child.stop_deadline,
+                hew_mir::physical::SemStopDeadline::Config(_)
+            )
+        }) {
+            let entry_ty = native_child_spec_type(self.ctx);
+            let array_ty = entry_ty.array_type(supervisor.registered_slots());
+            let local = self
+                .builder
+                .build_alloca(array_ty, "supervisor.children")
+                .llvm_ctx("allocate configured child deadlines")?;
+            let defaults = self
+                .builder
+                .build_load(array_ty, children_table, "supervisor.children.defaults")
+                .llvm_ctx("read child descriptor defaults")?;
+            self.builder
+                .build_store(local, defaults)
+                .llvm_ctx("copy child descriptor defaults")?;
+            let mut slot = 0u32;
+            for child in &supervisor.children {
+                if let hew_mir::physical::SemStopDeadline::Config(index) = child.stop_deadline {
+                    let source = sources.get(index).ok_or_else(|| {
+                        CodegenError::FailClosed("stop deadline lost its config parameter".into())
+                    })?;
+                    let deadline = self.load(*source, "supervisor.stop.deadline")?;
+                    for offset in 0..child.slots() {
+                        // SAFETY: the slot is derived from the verified child table.
+                        let entry = unsafe {
+                            self.builder.build_in_bounds_gep(
+                                array_ty,
+                                local,
+                                &[
+                                    self.ctx.i32_type().const_zero(),
+                                    self.ctx
+                                        .i32_type()
+                                        .const_int(u64::from(slot + offset), false),
+                                ],
+                                "supervisor.child.descriptor",
+                            )
+                        }
+                        .llvm_ctx("address the configured child")?;
+                        let field = self
+                            .builder
+                            .build_struct_gep(entry_ty, entry, 4, "supervisor.child.stop_ns")
+                            .llvm_ctx("address the child stop deadline")?;
+                        self.builder
+                            .build_store(field, deadline)
+                            .llvm_ctx("set the child stop deadline")?;
+                    }
+                }
+                slot = slot.checked_add(child.slots()).ok_or_else(|| {
+                    CodegenError::FailClosed("child descriptor slot count overflowed".into())
+                })?;
+            }
+            local
+        } else {
+            children_table
+        };
         let spawn = get_or_declare_external(
             self.llvm,
             "hew_supervisor_native_spawn",
@@ -811,7 +881,7 @@ mod abi_tests {
     use hew_runtime::supervisor::HewNativeChildSpec;
     use std::mem::{align_of, offset_of, size_of};
 
-    fn fields() -> [(usize, usize); 4] {
+    fn fields() -> [(usize, usize); 5] {
         [
             (
                 offset_of!(HewNativeChildSpec, restart_policy),
@@ -828,6 +898,10 @@ mod abi_tests {
             (
                 offset_of!(HewNativeChildSpec, name),
                 field_size(|spec: &HewNativeChildSpec| &spec.name),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, stop_ns),
+                field_size(|spec: &HewNativeChildSpec| &spec.stop_ns),
             ),
         ]
     }
@@ -855,6 +929,7 @@ mod abi_tests {
             &[
                 ctx.i32_type().into(),
                 ptr.into(),
+                ctx.i64_type().into(),
                 ctx.i32_type().into(),
                 ptr.into(),
             ],

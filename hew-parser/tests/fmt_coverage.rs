@@ -1082,50 +1082,17 @@ fn main() {
 }
 
 #[test]
-fn fmt_await_restart_keyword_roundtrips() {
-    // `await_restart <child>` is a dedicated prefix keyword and formats with a
-    // single trailing space, exactly like `await`. Idempotent + exact.
-    exact_roundtrip("fn main() {\n    let w = await_restart sup.worker;\n}\n");
+fn fmt_restarted_call_roundtrips() {
+    exact_roundtrip("fn main() {\n    restarted(sup.worker);\n}\n");
 }
 
 #[test]
-fn fmt_await_restart_parses_as_distinct_node() {
-    // The keyword lowers to `Expr::AwaitRestart`, NOT `Expr::Await` — they are
-    // separate prefix operators. Distinguishing them is the whole point of the
-    // dedicated keyword.
-    let r =
-        parse("fn main() {\n    let w = await_restart sup.worker;\n    let v = await task;\n}\n");
-    assert!(r.errors.is_empty(), "parse failed: {:?}", r.errors);
-    let body = match &r.program.items[0].0 {
-        Item::Function(f) => &f.body,
-        other => panic!("expected function, got {other:?}"),
-    };
-    let restart_is_distinct = body.stmts.iter().any(|s| {
-        matches!(
-            &s.0,
-            Stmt::Let {
-                value: Some((Expr::AwaitRestart(_), _)),
-                ..
-            }
-        )
-    });
-    let plain_await_unchanged = body.stmts.iter().any(|s| {
-        matches!(
-            &s.0,
-            Stmt::Let {
-                value: Some((Expr::Await(_), _)),
-                ..
-            }
-        )
-    });
-    assert!(
-        restart_is_distinct,
-        "`await_restart sup.worker` must parse as Expr::AwaitRestart"
-    );
-    assert!(
-        plain_await_unchanged,
-        "`await task` must still parse as Expr::Await (keyword adds, does not replace)"
-    );
+fn await_restart_is_a_targeted_migration_error() {
+    let parsed = parse("fn main() { let w = await_restart sup.worker; }");
+    assert!(parsed.errors.iter().any(|error| {
+        error.kind == hew_parser::ParseDiagnosticKind::AwaitRestartRetired
+            && error.message.contains("E_AWAIT_RESTART_RETIRED")
+    }));
 }
 
 // -----------------------------------------------------------------------
@@ -2121,9 +2088,9 @@ fn fmt_supervisor_omitted_strategy_stays_omitted() {
 #[test]
 fn fmt_supervisor_pool_and_clauses_roundtrip() {
     // Exercises every previously-lossy field: `pool` vs `child`, `wired_to:`,
-    // `restart:`, and `shutdown:` — all must round-trip exactly.
+    // `restart:` and `stop:` round-trip beside `wired_to:`.
     exact_roundtrip(
-        "supervisor ServiceStack {\n    strategy: rest_for_one,\n    intensity: 5 within 60s,\n\n    child db: Database(connections: 4) restart: permanent shutdown: 10s,\n    child api: ApiHandler(port: 8080) restart: transient shutdown: brutal_kill wired_to: { backend: db },\n}\n",
+        "supervisor ServiceStack {\n    strategy: rest_for_one,\n    intensity: 5 within 60s,\n\n    child db: Database(connections: 4) restart: permanent stop: 10s,\n    child api: ApiHandler(port: 8080) restart: transient stop: 0s wired_to: { backend: db },\n}\n",
     );
 }
 

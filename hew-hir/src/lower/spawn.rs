@@ -239,6 +239,7 @@ impl LowerCtx {
             span: span.clone(),
         };
         self.pending_lambda_actors.push(HirActorDecl {
+            coalesce_keys: Vec::new(),
             id: self.ids.item(),
             node: self.ids.node(),
             declaration: identity.actor,

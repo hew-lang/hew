@@ -3024,6 +3024,7 @@ impl Checker {
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             actor_delivery_calls: std::mem::take(&mut self.actor_delivery_calls),
+            actor_coalesce_keys: std::mem::take(&mut self.actor_coalesce_keys),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),

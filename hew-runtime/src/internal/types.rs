@@ -275,6 +275,29 @@ pub enum HewActorState {
     Crashing = 8,
 }
 
+/// Semantic terminal cause, independent of the scheduler's physical state.
+/// These discriminants follow `DownReason` declaration order for local ends;
+/// remote observation reasons follow them in the source enum.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActorEndReason {
+    Stopped = 0,
+    Terminated = 1,
+    Crashed = 2,
+}
+
+impl ActorEndReason {
+    pub(crate) fn from_terminal(state: i32, terminated: bool) -> Self {
+        if state == HewActorState::Crashed as i32 {
+            Self::Crashed
+        } else if terminated {
+            Self::Terminated
+        } else {
+            Self::Stopped
+        }
+    }
+}
+
 /// Per-continuation lifecycle tag the slice-4 executor CAS-transitions to
 /// serialize resume and destroy against a single parked `HewCont` handle.
 ///

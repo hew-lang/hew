@@ -18,7 +18,7 @@ actor VecSetCrasher {
         if info.code == 205 {
             CrashAction.Restart
         } else {
-            CrashAction.Kill
+            CrashAction.GiveUp
         }
     }
 }

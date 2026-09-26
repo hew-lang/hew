@@ -521,6 +521,9 @@ pub struct TypeCheckOutput {
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
+    /// Coalescing members and their key parameter slots, selected by exact
+    /// checker declaration identity.
+    pub actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by the method call span.
     ///
     /// Populated for every accepted `.step()` / `.state_name()` call on a
@@ -1721,6 +1724,7 @@ impl Default for TypeCheckOutput {
             pool_accessor_sites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_delivery_calls: HashMap::new(),
+            actor_coalesce_keys: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
             result_return_coercions: HashMap::new(),
@@ -3311,6 +3315,7 @@ pub struct Checker {
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub(super) actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
+    pub(super) actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
     /// Mailbox overflow policy keyed by the actor's canonical declaration
     /// identity. Absence means an unbounded mailbox. A bounded declaration
     /// with no explicit policy is recorded as `Block`.
@@ -4444,6 +4449,7 @@ impl Checker {
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_delivery_calls: HashMap::new(),
+            actor_coalesce_keys: HashMap::new(),
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             tail_ok_coercions: HashSet::new(),

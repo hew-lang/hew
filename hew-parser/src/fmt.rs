@@ -13,10 +13,10 @@ use crate::ast::{
     FieldDecl, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam,
     Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm,
     NamingCase, NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
-    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Span,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
-    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
+    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -114,6 +114,15 @@ pub struct VariantMigration {
     pub replacement: String,
 }
 
+/// A checker-selected source replacement whose range is the complete syntax
+/// node. The checker decides that it is an actor operation before passing it
+/// here; the formatter only applies the byte edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMigration {
+    pub span: Range<usize>,
+    pub replacement: String,
+}
+
 /// A source location the legacy-syntax migrator deliberately declined to edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationRefusal {
@@ -153,6 +162,18 @@ pub fn migrate_legacy_syntax(
     source: &str,
     variants: &[VariantMigration],
 ) -> Result<String, MigrationError> {
+    migrate_legacy_syntax_with_selected(source, variants, &[])
+}
+
+/// Apply legacy syntax edits together with checker-selected actor edits.
+///
+/// # Errors
+/// Refuses invalid spans or overlapping edits.
+pub fn migrate_legacy_syntax_with_selected(
+    source: &str,
+    variants: &[VariantMigration],
+    selected: &[SelectedMigration],
+) -> Result<String, MigrationError> {
     let tokens = hew_lexer::lex(source);
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
 
@@ -185,6 +206,17 @@ pub fn migrate_legacy_syntax(
             continue;
         }
         edits.push((variant.span.clone(), variant.replacement.clone()));
+    }
+
+    for edit in selected {
+        if source.get(edit.span.clone()).is_none() {
+            refusals.push(MigrationRefusal {
+                span: edit.span.clone(),
+                reason: "checker-selected edit has no valid source span".to_string(),
+            });
+        } else {
+            edits.push((edit.span.clone(), edit.replacement.clone()));
+        }
     }
 
     edits.sort_by_key(|(span, _)| (span.start, span.end));
@@ -2853,12 +2885,12 @@ impl<'a> Formatter<'a> {
                 RestartPolicy::Temporary => self.write("temporary"),
             }
         }
-        if let Some(shutdown) = &spec.shutdown {
-            self.write(" shutdown: ");
-            match shutdown {
-                ShutdownDirective::Timeout(d) => self.write(d),
-                ShutdownDirective::BrutalKill => self.write("brutal_kill"),
-                ShutdownDirective::Infinity => self.write("infinity"),
+        if let Some(stop) = &spec.stop {
+            self.write(" stop: ");
+            if matches!(&stop.0, Expr::Literal(Literal::Duration(0))) {
+                self.write("0s");
+            } else {
+                self.format_expr(stop);
             }
         }
         // `wired_to:` was silently dropped by the old formatter — preserve it.

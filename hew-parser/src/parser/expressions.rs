@@ -298,6 +298,18 @@ impl Parser<'_> {
             let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
             let end = operand.1.end;
             (Expr::Clone(Box::new(operand)), start..end)
+        } else if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "await_restart") {
+            let keyword_span = self.peek_span();
+            self.advance()?;
+            let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
+            let end = operand.1.end;
+            self.error_at_with_kind_and_hint(
+                "E_AWAIT_RESTART_RETIRED: `await_restart` is retired".to_string(),
+                keyword_span,
+                "write `restarted(role)`; it waits for a live incarnation",
+                ParseDiagnosticKind::AwaitRestartRetired,
+            );
+            (Expr::AwaitRestart(Box::new(operand)), start..end)
         } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
@@ -342,11 +354,6 @@ impl Parser<'_> {
                     let operand = self.parse_expr_bp(rbp)?;
                     let end = operand.1.end;
                     (Expr::Await(Box::new(operand)), start..end)
-                }
-                Token::AwaitRestart => {
-                    let operand = self.parse_expr_bp(rbp)?;
-                    let end = operand.1.end;
-                    (Expr::AwaitRestart(Box::new(operand)), start..end)
                 }
                 Token::Star => {
                     // Raw pointer dereference (`*expr`).  v0.5 parses but

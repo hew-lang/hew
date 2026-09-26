@@ -637,6 +637,48 @@ pub struct RuntimeVariantShapeRefs {
     pub error_len_none: u32,
 }
 
+fn runtime_error_len_shape<'a>(
+    error_len: &SemAggregateField,
+    error_ty: &ResolvedTy,
+    variant_shapes: &'a [SemVariantShape],
+) -> Result<&'a SemVariantShape, String> {
+    let ResolvedTy::Named {
+        args,
+        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
+        ..
+    } = &error_len.ty
+    else {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    };
+    if error_len.name != "error_len" || args.as_slice() != [ResolvedTy::I64] {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    }
+    let shape = variant_shapes
+        .iter()
+        .find(|shape| shape.enum_ty == error_len.ty)
+        .ok_or_else(|| "runtime variant error_len has no demanded Option descriptor".to_string())?;
+    let [some, none] = shape.variants.as_slice() else {
+        return Err(
+            "runtime variant error_len Option must have Some and None variants".to_string(),
+        );
+    };
+    if some.name != "Some"
+        || some.fields.len() != 1
+        || some.fields[0].ty != ResolvedTy::I64
+        || none.name != "None"
+        || !none.fields.is_empty()
+    {
+        return Err("runtime variant error_len has a malformed Option descriptor".to_string());
+    }
+    Ok(shape)
+}
+
 /// Validate the demanded descriptors used by a runtime-produced enum value.
 ///
 /// The runtime family constrains the exact language types. Descriptor tables
@@ -717,40 +759,7 @@ pub fn runtime_variant_shape_refs(
             error_ty.user_facing()
         ));
     }
-    let ResolvedTy::Named {
-        args,
-        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
-        ..
-    } = &error_len.ty
-    else {
-        return Err(format!(
-            "runtime variant error `{}` error_len field must be Option<i64>",
-            error_ty.user_facing()
-        ));
-    };
-    if error_len.name != "error_len" || args.as_slice() != [ResolvedTy::I64] {
-        return Err(format!(
-            "runtime variant error `{}` error_len field must be Option<i64>",
-            error_ty.user_facing()
-        ));
-    }
-    let error_len_shape = variant_shapes
-        .iter()
-        .find(|shape| shape.enum_ty == error_len.ty)
-        .ok_or_else(|| "runtime variant error_len has no demanded Option descriptor".to_string())?;
-    let [some, none] = error_len_shape.variants.as_slice() else {
-        return Err(
-            "runtime variant error_len Option must have Some and None variants".to_string(),
-        );
-    };
-    if some.name != "Some"
-        || some.fields.len() != 1
-        || some.fields[0].ty != ResolvedTy::I64
-        || none.name != "None"
-        || !none.fields.is_empty()
-    {
-        return Err("runtime variant error_len has a malformed Option descriptor".to_string());
-    }
+    let error_len_shape = runtime_error_len_shape(error_len, error_ty, variant_shapes)?;
 
     Ok(RuntimeVariantShapeRefs {
         result: result.id,

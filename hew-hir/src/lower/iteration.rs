@@ -350,16 +350,18 @@ impl LowerCtx {
         let recv_hir = self.lower_expr(receiver, IntentKind::Consume);
         let init_stmt = HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::Let(temp_binding, Some(recv_hir)),
+            kind: HirStmtKind::Let(temp_binding.clone(), Some(recv_hir)),
             span: span.clone(),
         };
-        let tail = self.make_hashmap_iter_init(
-            (Expr::Ident(Ident::new(&temp_name)), span.clone()),
-            key_ty,
-            val_ty,
-            iter_ty.clone(),
-            &span,
-        );
+        let tail = self.with_synthetic_binding_use(&span, &temp_binding, |ctx| {
+            ctx.make_hashmap_iter_init(
+                (Expr::Ident(Ident::new(&temp_name)), span.clone()),
+                key_ty,
+                val_ty,
+                iter_ty.clone(),
+                &span,
+            )
+        });
         self.pop_scope();
         (
             HirExprKind::Block(HirBlock {
@@ -479,23 +481,23 @@ impl LowerCtx {
     /// [`Self::for_in_iterable_is_place`]); place sources re-lower their
     /// projection receivers directly. The temp owns the collection and its
     /// scope-exit drop frees it exactly once; the projections borrow the temp
-    /// (Read), so the temp stays the sole owner. Returns the temp's name (for
-    /// building `Expr::Ident` receivers) and the `Let` statement to prepend
+    /// (Read), so the temp stays the sole owner. Returns the exact temp binding
+    /// and the `Let` statement to prepend
     /// to the for-in's outer block.
     pub(super) fn bind_for_in_source(
         &mut self,
         lowered_iterable: HirExpr,
         source_ty: ResolvedTy,
         span: &Span,
-    ) -> (String, HirStmt) {
+    ) -> (HirBinding, HirStmt) {
         let src_name = format!("__hew_for_src_{}", self.ids.binding().0);
         let src_binding = self.bind(src_name.clone(), source_ty, false, span.clone());
         let src_stmt = HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::Let(src_binding, Some(lowered_iterable)),
+            kind: HirStmtKind::Let(src_binding.clone(), Some(lowered_iterable)),
             span: span.clone(),
         };
-        (src_name, src_stmt)
+        (src_binding, src_stmt)
     }
 
     /// Build the for-in shape for `for (k, v) in m` over a `HashMap<K, V>`.
@@ -1372,11 +1374,16 @@ impl LowerCtx {
                     self.lower_hashmap_for_in_init(iterable, iterable, key_ty, val_ty)
                 } else {
                     let source_ty = lowered_iterable.ty.clone();
-                    let (src_name, src_stmt) =
+                    let (src_binding, src_stmt) =
                         self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
                     source_prelude.push(src_stmt);
-                    let receiver = (Expr::Ident(Ident::new(&src_name)), iterable.1.clone());
-                    self.lower_hashmap_for_in_init(iterable, &receiver, key_ty, val_ty)
+                    let receiver = (
+                        Expr::Ident(Ident::new(&src_binding.name)),
+                        iterable.1.clone(),
+                    );
+                    self.with_synthetic_binding_use(&iterable.1, &src_binding, |ctx| {
+                        ctx.lower_hashmap_for_in_init(iterable, &receiver, key_ty, val_ty)
+                    })
                 }
             }
             ResolvedTy::Named {
@@ -1405,15 +1412,22 @@ impl LowerCtx {
                 // projection reads its HashSet type rather than the call's Vec
                 // result type.
                 let to_vec_span = iterable.1.start..iterable.1.start;
-                let to_vec_receiver = if Self::for_in_iterable_is_place(&iterable.0) {
-                    iterable.clone()
-                } else {
-                    let source_ty = lowered_iterable.ty.clone();
-                    let (src_name, src_stmt) =
-                        self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
-                    source_prelude.push(src_stmt);
-                    (Expr::Ident(Ident::new(&src_name)), iterable.1.clone())
-                };
+                let (to_vec_receiver, synthetic_source) =
+                    if Self::for_in_iterable_is_place(&iterable.0) {
+                        (iterable.clone(), None)
+                    } else {
+                        let source_ty = lowered_iterable.ty.clone();
+                        let (src_binding, src_stmt) =
+                            self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
+                        source_prelude.push(src_stmt);
+                        (
+                            (
+                                Expr::Ident(Ident::new(&src_binding.name)),
+                                iterable.1.clone(),
+                            ),
+                            Some(src_binding),
+                        )
+                    };
                 let to_vec_call = (
                     Expr::MethodCall {
                         receiver: Box::new(to_vec_receiver),
@@ -1422,7 +1436,13 @@ impl LowerCtx {
                     },
                     to_vec_span,
                 );
-                let vec_hir = self.lower_expr(&to_vec_call, IntentKind::Consume);
+                let vec_hir = if let Some(binding) = synthetic_source {
+                    self.with_synthetic_binding_use(&iterable.1, &binding, |ctx| {
+                        ctx.lower_expr(&to_vec_call, IntentKind::Consume)
+                    })
+                } else {
+                    self.lower_expr(&to_vec_call, IntentKind::Consume)
+                };
                 let iter_init =
                     self.make_vec_iter_init(vec_hir, elem_ty.clone(), iterable.1.clone());
                 (

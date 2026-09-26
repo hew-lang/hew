@@ -458,8 +458,16 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
-        if self.lookup(name).is_none() && !self.fn_registry.contains_key(name) {
+    pub(super) fn missing_stdlib_module_import(
+        &self,
+        name: &str,
+        span: &Span,
+    ) -> Option<&'static str> {
+        let is_local = matches!(
+            self.resolutions.get(&self.mk_key(span)),
+            Some(Resolution::Local(_) | Resolution::Field(_, _))
+        );
+        if !is_local && !self.fn_registry.contains_key(name) {
             stdlib_catalog::missing_import_module(name)
         } else {
             None

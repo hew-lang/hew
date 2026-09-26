@@ -529,7 +529,7 @@ impl LowerCtx {
             );
         }
         if self.ordinary_call_target(span).is_none()
-            && self.diagnose_poisoned_direct_call_type_args(&function.0, span)
+            && self.diagnose_poisoned_direct_call_type_args(function, span)
         {
             return (
                 HirExprKind::Unsupported(
@@ -590,7 +590,7 @@ impl LowerCtx {
         // `fn_registry` callees (builtins, runtime symbols, local bindings),
         // and callsites the checker did not record. Fail-closed on poisoned
         // entries and on registry-cap exhaustion.
-        self.record_monomorphisation(&function.0, span, site);
+        self.record_monomorphisation(function, span, site);
         // Checker authority takes precedence: consult expr_types at the full
         // call-expression span. The checker records the call result type here
         // for checker-registered builtins that have no AST `fn` item and

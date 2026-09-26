@@ -98,11 +98,11 @@ impl LowerCtx {
 
     pub(super) fn record_monomorphisation(
         &mut self,
-        callee_expr: &hew_parser::ast::Expr,
+        callee_expr: &Spanned<Expr>,
         call_span: &std::ops::Range<usize>,
         call_site: SiteId,
     ) {
-        let Expr::Ident(name) = callee_expr else {
+        let Expr::Ident(name) = &callee_expr.0 else {
             // Only direct-name callees are candidates here. A `module.fn(...)`
             // direct call parses as `Expr::MethodCall`, not `Expr::Call`, so it
             // never reaches `lower_regular_call`/this site; its
@@ -113,7 +113,11 @@ impl LowerCtx {
             // complex callee expressions are out of scope.
             return;
         };
-        let registry_name = if self.lookup(name.name.as_str()).is_none() {
+        let local = matches!(
+            self.resolutions.get(&self.mk_key(&callee_expr.1)),
+            Some(Resolution::Local(_) | Resolution::Field(_, _))
+        );
+        let registry_name = if !local {
             self.resolved_bare_function_symbol(name.name.as_str())
                 .unwrap_or_else(|| name.to_string())
         } else {
@@ -132,13 +136,17 @@ impl LowerCtx {
     /// absent. Valid entries continue through the ordinary strict target gate.
     pub(super) fn diagnose_poisoned_direct_call_type_args(
         &mut self,
-        callee_expr: &hew_parser::ast::Expr,
+        callee_expr: &Spanned<Expr>,
         call_span: &std::ops::Range<usize>,
     ) -> bool {
-        let Expr::Ident(name) = callee_expr else {
+        let Expr::Ident(name) = &callee_expr.0 else {
             return false;
         };
-        let registry_name = if self.lookup(name.name.as_str()).is_none() {
+        let local = matches!(
+            self.resolutions.get(&self.mk_key(&callee_expr.1)),
+            Some(Resolution::Local(_) | Resolution::Field(_, _))
+        );
+        let registry_name = if !local {
             self.resolved_bare_function_symbol(name.name.as_str())
                 .unwrap_or_else(|| name.to_string())
         } else {

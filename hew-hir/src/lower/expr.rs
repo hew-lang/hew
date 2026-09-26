@@ -459,7 +459,11 @@ impl LowerCtx {
                 )
             }
             Expr::Ident(name)
-                if name.name.as_str() == "self" && self.lookup(name.name.as_str()).is_none() =>
+                if name.name.as_str() == "self"
+                    && !matches!(
+                        self.resolutions.get(&self.mk_key(&span)),
+                        Some(Resolution::Local(_))
+                    ) =>
             {
                 // Bare `self` inside an actor `receive fn` — the actor's own
                 // handle, whose type is the actor. The checker records it in
@@ -1442,10 +1446,12 @@ impl LowerCtx {
                         .segments
                         .last()
                         .is_some_and(|(name, _)| name.name == hew_parser::ast::sym::EVENT)
-                        && path
-                            .segments
-                            .first()
-                            .is_some_and(|(name, _)| self.lookup(name.name.as_str()).is_none())
+                        && path.segments.first().is_some_and(|(_, segment_span)| {
+                            !matches!(
+                                self.resolutions.get(&self.mk_key(segment_span)),
+                                Some(Resolution::Local(_) | Resolution::Field(_, _))
+                            )
+                        })
                     {
                         let checker_ty = self.checker_expr_ty_if_present(&span);
                         if let Some(ResolvedTy::Named { head, .. }) = checker_ty.as_ref() {
@@ -1566,8 +1572,10 @@ impl LowerCtx {
                         field.0.name.as_str(),
                     );
                     let symbol = crate::mangle_dotted_name(&key);
-                    if self.lookup(module_name.name.as_str()).is_none()
-                        && self.fn_registry.contains_key(&symbol)
+                    if matches!(
+                        self.resolutions.get(&self.mk_key(&object.1)),
+                        Some(Resolution::Module(_))
+                    ) && self.fn_registry.contains_key(&symbol)
                         && matches!(
                             self.checker_expr_ty_if_present(&span),
                             Some(ResolvedTy::Function { .. })
@@ -1586,7 +1594,7 @@ impl LowerCtx {
                 }
 
                 let missing_import = if let Expr::Ident(module_name) = &object.0 {
-                    self.missing_stdlib_module_import(module_name.name.as_str())
+                    self.missing_stdlib_module_import(module_name.name.as_str(), &object.1)
                         .map(|module| (module_name, module))
                 } else {
                     None

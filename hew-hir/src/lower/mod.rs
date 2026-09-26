@@ -250,7 +250,6 @@ impl TargetArch {
 }
 
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
-type ScopeMap = HashMap<String, ScopeBinding>;
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 const SYNTHETIC_OPTION_ITEM: ItemId = ItemId(u32::MAX - 1);
@@ -913,16 +912,16 @@ type TraitMethodBindingKey = (Option<String>, u32, String, String);
 #[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
-    scopes: Vec<ScopeMap>,
+    /// Binding metadata for capture analysis; keyed by the HIR binding id.
+    binding_scopes: Vec<HashMap<BindingId, OuterClosureBinding>>,
     /// Checker-owned source binding identities in the current lexical scopes.
     checked_scopes: Vec<HashMap<TypeBindingId, ScopeBinding>>,
+    /// Scoped compiler-generated receiver references with no source row.
+    synthetic_binding_uses: HashMap<SpanKey, (BindingId, ResolvedTy)>,
     /// Stable actor field identities mapped to this handler's physical state seats.
     checked_field_scopes: Vec<HashMap<(hew_types::NominalId, u32), ScopeBinding>>,
     /// Exact source-site resolutions; synthetic expressions have no row.
     resolutions: HashMap<SpanKey, Resolution>,
-    /// Distinguishes authored bindings from compiler-generated name bindings
-    /// while the synthetic lowering paths still share `scopes`.
-    authored_bindings: HashSet<BindingId>,
     current_actor_nominal: Option<hew_types::NominalId>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,

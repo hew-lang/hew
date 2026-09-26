@@ -66,17 +66,10 @@ impl LowerCtx {
     }
 
     pub(super) fn visible_outer_bindings(&self) -> HashMap<BindingId, OuterClosureBinding> {
-        let mut visible_by_name: HashMap<String, ScopeBinding> = HashMap::new();
-        for scope in self.scopes.iter().rev() {
-            for (name, (id, ty, span)) in scope {
-                visible_by_name
-                    .entry(name.clone())
-                    .or_insert_with(|| (*id, ty.clone(), span.clone()));
-            }
-        }
-        visible_by_name
-            .into_iter()
-            .map(|(name, (id, ty, span))| (id, (name, ty, span)))
+        self.binding_scopes
+            .iter()
+            .flat_map(|scope| scope.iter())
+            .map(|(id, (name, ty, span))| (*id, (name.clone(), ty.clone(), span.clone())))
             .collect()
     }
 

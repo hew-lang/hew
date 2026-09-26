@@ -20,8 +20,8 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
     ) -> HirBinding {
         let id = self.ids.binding();
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.clone(), (id, ty.clone(), span.clone()));
+        if let Some(scope) = self.binding_scopes.last_mut() {
+            scope.insert(id, (name.clone(), ty.clone(), span.clone()));
         }
         HirBinding {
             id,
@@ -46,7 +46,6 @@ impl LowerCtx {
         let key = self.mk_key(&span);
         let source = self.resolutions.get(&key).copied();
         let binding = self.bind(name.clone(), ty.clone(), mutable, span.clone());
-        self.authored_bindings.insert(binding.id);
         match source {
             Some(Resolution::Local(source)) => {
                 if let Some(scope) = self.checked_scopes.last_mut() {
@@ -77,7 +76,6 @@ impl LowerCtx {
         let key = self.mk_key(&span);
         let source = self.resolutions.get(&key).copied();
         let binding = self.bind(field.name.clone(), field.ty.clone(), true, span.clone());
-        self.authored_bindings.insert(binding.id);
         let expected = self.current_actor_nominal.zip(u32::try_from(index).ok());
         match (source, expected) {
             (Some(Resolution::Field(owner, slot)), Some((expected_owner, expected_slot)))
@@ -157,9 +155,8 @@ impl LowerCtx {
     ) {
         let key = self.mk_key(&span);
         let source = self.resolutions.get(&key).copied();
-        self.authored_bindings.insert(id);
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.clone(), (id, ty.clone(), span.clone()));
+        if let Some(scope) = self.binding_scopes.last_mut() {
+            scope.insert(id, (name.clone(), ty.clone(), span.clone()));
         }
         match source {
             Some(Resolution::Local(source)) => {
@@ -178,11 +175,25 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn lookup(&self, name: &str) -> Option<(BindingId, ResolvedTy)> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
+    /// Give a generated identifier an exact binding during one AST rewrite.
+    /// Source identifiers never read this overlay; they join checker rows.
+    pub(super) fn with_synthetic_binding_use<R>(
+        &mut self,
+        span: &Span,
+        binding: &HirBinding,
+        lower: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let key = self.mk_key(span);
+        let prior = self
+            .synthetic_binding_uses
+            .insert(key.clone(), (binding.id, binding.ty.clone()));
+        let result = lower(self);
+        if let Some(prior) = prior {
+            self.synthetic_binding_uses.insert(key, prior);
+        } else {
+            self.synthetic_binding_uses.remove(&key);
+        }
+        result
     }
 
     /// Look up a tagged-union constructor using canonical owner identity.
@@ -392,13 +403,13 @@ impl LowerCtx {
     }
 
     pub(super) fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.binding_scopes.push(HashMap::new());
         self.checked_scopes.push(HashMap::new());
         self.checked_field_scopes.push(HashMap::new());
     }
 
     pub(super) fn pop_scope(&mut self) {
-        self.scopes.pop();
+        self.binding_scopes.pop();
         self.checked_scopes.pop();
         self.checked_field_scopes.pop();
     }

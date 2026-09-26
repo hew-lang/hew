@@ -151,6 +151,15 @@ impl LowerCtx {
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         let key = self.mk_key(&span);
+        if let Some((id, ty)) = self.synthetic_binding_uses.get(&key).cloned() {
+            return (
+                HirExprKind::BindingRef {
+                    name: name.to_string(),
+                    resolved: ResolvedRef::Binding(id),
+                },
+                ty,
+            );
+        }
         if let Some(Resolution::Def(declaration)) = self.resolutions.get(&key).copied() {
             if self.defs.kind(declaration) == hew_types::DeclarationKind::Const {
                 if let Some(entry) = self.const_registry.get(self.defs.path(declaration)) {
@@ -222,6 +231,29 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
+        // A missing checker row must not let an authored local silently turn
+        // into a same-named function or constructor. Binding names serve only
+        // as a negative boundary check here; they never select an identity.
+        if self.resolutions.get(&key).is_none()
+            && self
+                .binding_scopes
+                .iter()
+                .rev()
+                .any(|scope| scope.values().any(|(bound_name, _, _)| bound_name == name))
+        {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: format!("authored local use lacks Resolution::Local at {key:?}"),
+                },
+                span,
+                "authored local use has no checker-owned binding identity",
+            ));
+            return (
+                HirExprKind::Unsupported("unresolved authored local".into()),
+                ResolvedTy::Unit,
+            );
+        }
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             if self
                 .expr_types
@@ -231,53 +263,6 @@ impl LowerCtx {
                 let ty = ResolvedTy::from_ty(&reader.ty()).expect("reader type resolves");
                 return (HirExprKind::ContextReader { reader }, ty);
             }
-        }
-        let key = self.mk_key(&span);
-        if let Some(Resolution::Local(source)) = self.resolutions.get(&key).copied() {
-            if let Some((id, ty)) = self.lookup_checked(source) {
-                return (
-                    HirExprKind::BindingRef {
-                        name: name.to_string(),
-                        resolved: ResolvedRef::Binding(id),
-                    },
-                    ty,
-                );
-            }
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: name.to_string(),
-                    reason: format!("Local resolution at {key:?} has no HIR binding"),
-                },
-                span,
-                "checker-selected local has no lowered source binding",
-            ));
-            return (
-                HirExprKind::Unsupported("unbound checked local".into()),
-                ResolvedTy::Unit,
-            );
-        }
-        if let Some((id, ty)) = self.lookup(name) {
-            if self.authored_bindings.contains(&id) {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: name.to_string(),
-                        reason: format!("authored local use lacks Resolution::Local at {key:?}"),
-                    },
-                    span,
-                    "source local use has no checker-owned identity",
-                ));
-                return (
-                    HirExprKind::Unsupported("unresolved source local".into()),
-                    ResolvedTy::Unit,
-                );
-            }
-            return (
-                HirExprKind::BindingRef {
-                    name: name.to_string(),
-                    resolved: ResolvedRef::Binding(id),
-                },
-                ty,
-            );
         }
         // Module-scope tagged-union unit constructor: machine states
         // (`TrafficLight::Red`, bare `Red`), machine events
@@ -462,7 +447,7 @@ impl LowerCtx {
         if self.fn_registry.contains_key(name) {
             self.lower_function_value(name, &span, site)
         } else {
-            if let Some(module) = self.missing_stdlib_module_import(name) {
+            if let Some(module) = self.missing_stdlib_module_import(name, &span) {
                 let source_module = module.replace("::", ".");
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ImportMissing {

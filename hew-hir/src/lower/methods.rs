@@ -1523,7 +1523,7 @@ impl LowerCtx {
             None => {
                 if let Expr::Ident(module_name) = &receiver.0 {
                     if let Some(module) =
-                        self.missing_stdlib_module_import(module_name.name.as_str())
+                        self.missing_stdlib_module_import(module_name.name.as_str(), &receiver.1)
                     {
                         let name = format!("{module_name}.{method}");
                         let source_module = module.replace("::", ".");

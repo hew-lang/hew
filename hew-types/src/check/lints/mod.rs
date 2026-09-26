@@ -86,7 +86,7 @@ pub enum LintId {
     DeadCode,
     /// A discarded machine step report. A statement-position discard loses
     /// the step's typed outputs and disposition; read it or bind `let _ = …`.
-    /// Send and ask outcomes are `E_SEND_RESULT_DROPPED`, not a lint tier.
+    /// Result outcomes are `E_RESULT_DROPPED`, not a lint tier.
     MustUse,
     /// A receive handler contains a `sleep`/`sleep_until` loop whose only obvious
     /// exit is a sibling actor message, but the mailbox is not observed until

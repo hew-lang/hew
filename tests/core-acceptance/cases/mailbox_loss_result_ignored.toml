@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SEND_RESULT_DROPPED"
+code = "E_RESULT_DROPPED"
 line = 9
 column = 5
-message = "E_SEND_RESULT_DROPPED"
+message = "E_RESULT_DROPPED"

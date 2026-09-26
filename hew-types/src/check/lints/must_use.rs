@@ -4,9 +4,8 @@
 //! and a disposition; dropping it on the floor loses both. A program should
 //! read it or discard it explicitly (`let _ = …`).
 //!
-//! Send and ask outcomes are not a lint tier: discarding one is
-//! `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
-//! (HEW-SPEC-2026 §2.1.1, §5.6).
+//! Result outcomes are not a lint tier: discarding one is
+//! `E_RESULT_DROPPED`, a compile error raised by the statement checker.
 //!
 //! ## Precision over recall
 //!

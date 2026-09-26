@@ -1500,7 +1500,7 @@ fn main() {
 
 `spawn Greeter(...)` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
 
-`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_SEND_RESULT_DROPPED`.
+`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_RESULT_DROPPED`.
 
 ### Calling a handler that returns nothing
 
@@ -1517,7 +1517,7 @@ fn main() {
 }
 ```
 
-A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), ActorError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored failure loses work silently.
+A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), ActorError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_RESULT_DROPPED`, because an ignored failure loses work silently.
 
 ### Submitting without waiting
 
@@ -3967,7 +3967,7 @@ fn main() {
 
 `sink.send(x)` waits for capacity and returns `Result<(), SendError>`:
 `Err(SendError.Closed)` once the reader is gone. Discarding that result is
-a compile error (`E_SEND_RESULT_DROPPED`); handle it, or write `let _ =`.
+a compile error (`E_RESULT_DROPPED`); handle it, or write `let _ =`.
 `try_send` never waits and adds `Err(SendError.Full)`. `stream.recv()`
 yields `Option<T>` and `None` is end of data only; `for item in input`
 drains to the end. A zero-length `bytes` or empty `string` is an item.

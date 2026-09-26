@@ -810,10 +810,9 @@ pub enum TypeErrorKind {
     /// §4.12). The compiler synthesizes the handle wrapper itself; naming it
     /// in the annotation says the body yields handles, not `Y` values.
     GenReturnSpelling,
-    /// A statement-position send or ask whose typed delivery outcome is
-    /// discarded (HEW-SPEC-2026 §2.1.1, §5.6). Losing a delivery failure by
-    /// accident is not available; the discard has to be written down.
-    SendResultDropped,
+    /// A statement-position `Result` whose error is discarded implicitly.
+    /// Deliberate discard is written as `let _ = ...`.
+    ResultDropped,
     /// A block-like form used as a statement that produces a value other than
     /// `()`. The statement ends at its `}` and the value would be dropped
     /// silently; parenthesize it to use the value, or discard it with
@@ -1531,7 +1530,7 @@ impl TypeErrorKind {
             Self::BoundaryResourceMustConsume => "E_BOUNDARY_RESOURCE_MUST_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
-            Self::SendResultDropped => "E_SEND_RESULT_DROPPED",
+            Self::ResultDropped => "E_RESULT_DROPPED",
             Self::BlockStatementValue => "E_BLOCK_STATEMENT_VALUE",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",

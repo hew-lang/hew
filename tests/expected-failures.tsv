@@ -25,7 +25,7 @@ corpus	*	repros/ladder/bytes_clone.hew	compile	#3602	tracked corpus refusal; see
 corpus	*	repros/ladder/cap_move.hew	compile	#3603	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/closure_mut_share.hew	compile	#3604	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/cond_init.hew	diagnostic:E_SIR_UNSUPPORTED	#3605	tracked corpus refusal; see linked issue
-corpus	*	repros/ladder/lambda_send_twice.hew	diagnostic:E_SEND_RESULT_DROPPED	#3606	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/lambda_send_twice.hew	diagnostic:E_RESULT_DROPPED	#3606	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/let_field_mut.hew	compile	#3607	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/res_param_consume.hew	compile	#3608	tracked corpus refusal; see linked issue
 corpus	*	repros/ladder/resource_early_close.hew	compile	#3609	tracked corpus refusal; see linked issue
@@ -42,7 +42,6 @@ hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_push_cow_leaves_slic
 hew-suite	*	tests/hew/bytes_mutation_proving_test.hew::test_set_cow_leaves_slice_intact	compile	#3582	tracked failure; see linked issue
 hew-suite	*	tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response_body_round_trips	runtime	#3583	tracked failure; see linked issue
 hew-suite	*	tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path	runtime	#3584	tracked failure; see linked issue
-hew-suite	*	tests/hew/net_scalar_failclosed_test.hew::test_http_client_set_timeout_panics_at_legacy_boundary	runtime	#3585	tracked failure; see linked issue
 hew-suite	*	tests/hew/owned_nested_aggregate_clone_drop_test.hew::test_vec_clone_drops_nested_bytes_leaf_cleanly	runtime	#3586	tracked failure; see linked issue
 nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1a_inherent_wins_dot_call	failure	#3566	B1: the checker selects the declaration, but HIR emits one body per Type::method symbol
 nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1b_trait_methods_of_one_name_resolve_by_owner	failure	#3567	B1: the checker selects each trait method by declaration, but HIR shares one Type::method body

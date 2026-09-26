@@ -104,7 +104,7 @@ fn actor_delivery_rejects_reuse_and_incompatible_destination() {
     }
 }
 
-/// A statement-position send or ask drops its typed delivery outcome, which is
+/// A statement-position send or ask drops its typed Result, which is
 /// how a delivery failure gets lost by accident (HEW-SPEC-2026 §2.1.1, §5.6).
 /// Every way of using the outcome keeps the program legal; only the bare
 /// statement is refused.
@@ -129,10 +129,10 @@ fn statement_position_delivery_outcomes_are_refused() {
         let hit = output
             .errors
             .iter()
-            .find(|e| e.kind == crate::error::TypeErrorKind::SendResultDropped)
-            .unwrap_or_else(|| panic!("{body} must be E_SEND_RESULT_DROPPED: {:?}", output.errors));
+            .find(|e| e.kind == crate::error::TypeErrorKind::ResultDropped)
+            .unwrap_or_else(|| panic!("{body} must be E_RESULT_DROPPED: {:?}", output.errors));
         assert!(
-            hit.message.contains("E_SEND_RESULT_DROPPED") && hit.message.contains(error),
+            hit.message.contains("E_RESULT_DROPPED") && hit.message.contains(error),
             "{body}: {}",
             hit.message
         );
@@ -167,7 +167,7 @@ fn handled_delivery_outcomes_are_accepted() {
             !output
                 .errors
                 .iter()
-                .any(|e| e.kind == crate::error::TypeErrorKind::SendResultDropped),
+                .any(|e| e.kind == crate::error::TypeErrorKind::ResultDropped),
             "{body} uses its outcome and must be accepted: {:?}",
             output.errors
         );
@@ -192,7 +192,7 @@ fn used_delivery_outcomes_outside_statement_position_are_accepted() {
             !output
                 .errors
                 .iter()
-                .any(|e| e.kind == crate::error::TypeErrorKind::SendResultDropped),
+                .any(|e| e.kind == crate::error::TypeErrorKind::ResultDropped),
             "{signature_and_body}: {:?}",
             output.errors
         );

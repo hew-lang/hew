@@ -183,9 +183,9 @@ and later matching the failure, without relying on the original call site.
 
 The outcome composes like any other `Result`: propagate with `?`, recover
 with `handle` or `match`, or discard deliberately with `let _ = pid.m();`.
-An accidentally discarded actor-call or submission Result is
-`E_SEND_RESULT_DROPPED`. Neither an unbounded mailbox nor a unit-returning
-handler removes the obligation to handle the outcome.
+An accidentally discarded `Result` from any call is `E_RESULT_DROPPED`.
+Neither an unbounded mailbox nor a unit-returning handler removes the
+obligation to handle the outcome.
 
 **Mailbox policy at the sender.** `mailbox(worker)` yields an immutable typed
 one-way view of the same actor and mailbox; a receive call through that view
@@ -549,6 +549,11 @@ requires the actor's terminal cleanup to complete at a particular point; use
 
 - Functions do not throw exceptions for control flow.
 - Recoverable failure is modeled as `Result<T, E>`.
+- A bare expression statement whose value is `Result<T, E>` is
+  `E_RESULT_DROPPED`. Use `?`, `match` or `handle` to deal with the error, or
+  `let _ = call();` to record a deliberate discard. This applies to every
+  Result, including actor delivery and standard-library calls. A Result used
+  as a block tail or passed to another expression is not discarded.
 - Unrecoverable failure is modeled as **trap** (panic). A trap:
   - terminates the current actor
   - is observed by its supervisor
@@ -5258,7 +5263,7 @@ annotation. `open` reads a file as chunks of bytes. `forward` drains
 
 `send` and `recv` are ordinary suspending calls (§4.0); they carry no
 `await`. A `send` result is a delivery outcome: a discarded one is
-`E_SEND_RESULT_DROPPED`, the same rule as a discarded actor delivery.
+`E_RESULT_DROPPED`, the same rule as every discarded `Result`.
 
 ```hew
 import std.stream;

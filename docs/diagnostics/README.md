@@ -55,7 +55,7 @@ them.
 | `E_FOR_AWAIT`                                  | `for await` (HEW-SPEC-2026 §4.12). `for` waits for each item on its own, so the fix-it deletes `await`.                                                                                                                                                                                |
 | `E_RESERVED_HANDLER_NAME`                      | A `receive fn stop()`. `stop` is the actor handle's own lifecycle method (HEW-SPEC-2026 §2.1); rename the handler, or call `self.stop()`.                                                                                                                                              |
 | `E_BOUNDARY_RESOURCE_MUST_CONSUME`             | A `#[resource]`/`#[linear]` value parameter of an `extern` fn or a bodyless trait method without `consume`. No body shows whether the other side takes the value.                                                                                                                      |
-| `E_SEND_RESULT_DROPPED`                        | A statement-position actor call or mailbox submission whose typed outcome is discarded (§2.1.1, §5.6). The fix-it writes `let _ = pid.m();` when the outcome is genuinely not wanted.                                                                                                  |
+| `E_RESULT_DROPPED`                             | A statement-position `Result` whose error is discarded (§2.1.1, §5.6). Handle it with `?`, `match` or `handle`, or write `let _ = call();` when the outcome is deliberately ignored.                                                                                                   |
 | `E_ELEMENT_NO_COPY`                            | An operation that copies a collection element out — an array repeat, a `Vec` range slice, or a `HashMap` value projection — on an element whose value class has no copy operation. The message names the class; move the element out instead, or read it through a borrowing accessor. |
 | `E_MACHINE_SELF`                               | `self` inside a machine body. A machine is not an actor: the source state's fields are `state`, the incoming payload is `event` (HEW-SPEC-2026 §3.11.3).                                                                                                                               |
 | `E_MACHINE_REDUNDANT_TARGET`                   | A transition body that is nothing but the target the head already named (`=> Filled { Filled { … } }`, `=> Empty { .Empty }`). Write the field list with the target elided, or no body at all for a unit state.                                                                        |
@@ -64,7 +64,7 @@ The remaining v0.6.0 surface codes are named by the decision that introduces
 them, and their rule lives in the spec section that decision writes — not
 here. Each row is added by the lane that lands the refusal:
 `E_IS_VALUE_TYPE`, `E_OPAQUE_MESSAGE_PAYLOAD`, `E_UNKNOWN_ATTRIBUTE`,
-`E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_SEND_RESULT_DROPPED`,
+`E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_RESULT_DROPPED`,
 `E_GEN_RETURN_SPELLING`, `E_NO_ASYNC_FN`, `E_NO_ASYNC_GEN`.
 
 ## Refusals with no code yet

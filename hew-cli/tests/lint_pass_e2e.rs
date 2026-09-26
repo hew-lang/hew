@@ -566,14 +566,14 @@ fn comment_invisible_warns_by_default_and_deny_promotes() {
 // result (`must_use_warning_renders_by_default`, `must_use_allow_flag_suppresses`,
 // `must_use_deny_flag_promotes_to_error`, `must_use_inline_directive_suppresses`)
 // was deleted with the old `Connection.write` surface: a discarded
-// `Result<(), SendError>` is now a hard check error, `E_SEND_RESULT_DROPPED`
-// ("discarded delivery outcome"), not a suppressible lint — the same
+// `Result<(), SendError>` is now a hard check error, `E_RESULT_DROPPED`,
+// not a suppressible lint — the same
 // diagnostic family the `discarded_call_result_is_refused_by_default` test
 // below already pins for a discarded `ActorError`.
 
 // ── checker-stage lint: must_use on a discarded `actor.msg()` result ───
 
-/// A program whose only diagnostic is `E_SEND_RESULT_DROPPED`: `d.process(5)`
+/// A program whose only diagnostic is `E_RESULT_DROPPED`: `d.process(5)`
 /// is discarded in statement position, dropping the `Result<i64, ActorError>`
 /// the completion call returns — a silently lost timeout / full-mailbox /
 /// stopped-actor signal. This is a compile error, not a lint.
@@ -595,7 +595,7 @@ const ASK_MUST_USE_HANDLED: &str = "actor Doubler {\n\
      let _ = d.process(5);\n\
      }\n";
 
-const ASK_MUST_USE_MESSAGE: &str = "E_SEND_RESULT_DROPPED";
+const ASK_MUST_USE_MESSAGE: &str = "E_RESULT_DROPPED";
 
 #[test]
 fn discarded_call_result_is_refused_by_default() {

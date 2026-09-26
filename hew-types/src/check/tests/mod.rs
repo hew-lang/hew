@@ -47,6 +47,7 @@ mod pattern_conditions;
 mod patterns;
 mod race;
 mod records;
+mod result_drop;
 mod supervisor;
 mod suspension_effects;
 mod traits;

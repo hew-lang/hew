@@ -977,6 +977,68 @@ impl Checker {
         } else {
             let segments = name.split('.').collect::<Vec<_>>();
             match segments.as_slice() {
+                [surface_machine, "Event", variant]
+                    if self.env.lookup_ref(surface_machine).is_none() =>
+                {
+                    self.source_nominal_declaration(surface_machine)
+                        .and_then(|machine| self.defs.lookup_path(&machine))
+                        .and_then(|machine| {
+                            self.defs.member_of_kind(
+                                machine,
+                                hew_parser::ast::sym::EVENT,
+                                crate::DeclarationKind::MachineEventType,
+                            )
+                        })
+                        .and_then(|event| {
+                            let path = self.defs.path(event);
+                            self.lookup_type_def(path)
+                                .filter(|type_def| {
+                                    matches!(
+                                        type_def.variants.get(*variant),
+                                        Some(VariantDef::Struct(_))
+                                    )
+                                })
+                                .map(|_| format!("{path}::{variant}"))
+                        })
+                }
+                [module_short, surface_machine, "Event", variant]
+                    if self.env.lookup_ref(module_short).is_none()
+                        && self
+                            .resolve_module_type(module_short, surface_machine)
+                            .is_some() =>
+                {
+                    let machine = format!(
+                        "{}.{surface_machine}",
+                        self.canonical_module_import_owner(module_short)
+                    );
+                    self.defs
+                        .lookup_path(&machine)
+                        .and_then(|machine| {
+                            self.defs.member_of_kind(
+                                machine,
+                                hew_parser::ast::sym::EVENT,
+                                crate::DeclarationKind::MachineEventType,
+                            )
+                        })
+                        .and_then(|event| {
+                            let path = self.defs.path(event);
+                            self.lookup_type_def(path)
+                                .filter(|type_def| {
+                                    matches!(
+                                        type_def.variants.get(*variant),
+                                        Some(VariantDef::Struct(_))
+                                    )
+                                })
+                                .map(|_| format!("{path}::{variant}"))
+                        })
+                        .inspect(|_| {
+                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                (*module_short).to_string(),
+                            ));
+                        })
+                }
                 [surface_type, variant] if self.env.lookup_ref(surface_type).is_none() => self
                     .source_nominal_declaration(surface_type)
                     .and_then(|canonical_type| {
@@ -1078,7 +1140,7 @@ impl Checker {
         // actionable signal.  Success cases (both type and variant exist) fall
         // through to the existing struct/enum-variant init logic.
         let mut resolved_module_variant_name = None;
-        if let Some(dot) = name.find('.') {
+        if let Some(dot) = name.find('.').filter(|_| dotted_struct_variant.is_none()) {
             let module_short = &name[..dot];
             if self.module_binding_in_current_file(module_short) {
                 let after_dot = &name[dot + 1..];

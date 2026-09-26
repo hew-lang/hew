@@ -542,120 +542,73 @@ fn duplicate_definition_same_machine() {
     );
 }
 
-// ── 6g. DuplicateDefinition — machine companion event collides with type ──
+// ── 6g. A machine event member has its own namespace ──────────────────
 
 #[test]
-fn duplicate_definition_machine_companion_event_same_type() {
+fn machine_event_member_and_flat_type_have_distinct_identities() {
     let output = typecheck(
         r"
         machine Light {
-            events {
-                Toggle,
-            }
-
+            events { Toggle, }
             state Off,
             state On,
             on Toggle: Off => On,
             on Toggle: On => Off,
         }
         type LightEvent { code: i64, }
-        fn main() {}
-    ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn duplicate_definition_machine_companion_event_type_before_machine() {
-    let output = typecheck(
-        r"
-        type LightEvent { code: i64, }
-        machine Light {
-            events {
-                Toggle,
-            }
-
-            state Off,
-            state On,
-            on Toggle: Off => On,
-            on Toggle: On => Off,
+        fn main() {
+            let event: Light.Event = Light.Event.Toggle;
+            let record: LightEvent = LightEvent { code: 1 };
+            let _ = event;
+            let _ = record;
         }
-        fn main() {}
     ",
     );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
-    );
-}
-
-// ── 6h. DuplicateDefinition — machine companion event collides with trait ──
-
-#[test]
-fn duplicate_definition_machine_companion_event_same_trait() {
-    let output = typecheck(
-        r"
-        machine Light {
-            events {
-                Toggle,
-            }
-
-            state Off,
-            state On,
-            on Toggle: Off => On,
-            on Toggle: On => Off,
-        }
-        trait LightEvent { fn render(val: Self) -> i64; }
-        fn main() {}
-    ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert_ne!(
+        output.defs.lookup_path("Light.Event"),
+        output.defs.lookup_path("LightEvent")
     );
 }
 
 #[test]
-fn duplicate_definition_machine_companion_event_trait_before_machine() {
+fn machine_event_member_and_flat_trait_have_distinct_identities() {
     let output = typecheck(
         r"
         trait LightEvent { fn render(val: Self) -> i64; }
         machine Light {
-            events {
-                Toggle,
-            }
-
+            events { Toggle, }
             state Off,
             state On,
             on Toggle: Off => On,
             on Toggle: On => Off,
         }
+        fn main() { let event: Light.Event = Light.Event.Toggle; let _ = event; }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert_ne!(
+        output.defs.lookup_path("Light.Event"),
+        output.defs.lookup_path("LightEvent")
+    );
+}
+
+#[test]
+fn machine_state_cannot_shadow_event_member() {
+    let output = typecheck(
+        r"
+        machine Light {
+            events { Toggle, }
+            state Event,
+            on Toggle: Event => Event,
+        }
         fn main() {}
     ",
     );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
-    );
+    assert!(output.errors.iter().any(|error| {
+        error.kind == TypeErrorKind::DuplicateDefinition
+            && error.message.contains("conflicts with the event type")
+    }));
 }
 
 // ── 6i. DuplicateDefinition — define same wire type twice ────────────

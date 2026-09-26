@@ -291,10 +291,10 @@ fn companion_event_enum_generated() {
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     assert!(
-        output.type_def_at_path("LightEvent").is_some(),
+        output.type_def_at_path("Light.Event").is_some(),
         "companion event type not generated"
     );
-    let event_td = output.type_def_at_path("LightEvent").unwrap();
+    let event_td = output.type_def_at_path("Light.Event").unwrap();
     assert!(event_td.variants.contains_key("Toggle"));
 }
 
@@ -777,7 +777,7 @@ fn machine_step_dispatch() {
 
         fn main() {
             var light: Light = Light.Off;
-            let _report = light.step(LightEvent.Toggle);
+            let _report = light.step(Light.Event.Toggle);
             let name: string = light.state_name();
             let _ = name;
         }
@@ -808,7 +808,7 @@ fn machine_step_suppresses_unused_mut_warning() {
 
         fn main() {
             var light: Light = Light.Off;
-            light.step(LightEvent.Toggle);
+            light.step(Light.Event.Toggle);
         }
         ",
     );
@@ -845,7 +845,7 @@ fn machine_step_on_let_receiver_is_rejected() {
 
         fn main() {
             let light: Light = Light.Off;
-            light.step(LightEvent.Toggle);
+            light.step(Light.Event.Toggle);
         }
         ",
     );
@@ -926,7 +926,7 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
 
         fn main() {
             var lifecycle: Lifecycle<i64> = Lifecycle.Loaded { value: 1 };
-            lifecycle.step(LifecycleEvent.Load { value: 2 });
+            lifecycle.step(Lifecycle.Event.Load { value: 2 });
             let value: i64 = match lifecycle {
                 Lifecycle.Empty => 0,
                 Lifecycle.Loaded { value } => value,
@@ -951,7 +951,7 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         other => panic!("expected Loaded to be a struct variant, got: {other:?}"),
     }
 
-    let event_td = output.type_def_at_path("LifecycleEvent").unwrap();
+    let event_td = output.type_def_at_path("Lifecycle.Event").unwrap();
     assert_eq!(event_td.type_params, vec!["T".to_string()]);
     match &event_td.variants["Load"] {
         hew_types::VariantDef::Struct(fields) => {
@@ -964,7 +964,7 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         machine_td.methods["step"].params,
         vec![Ty::named_in(
             &output.defs,
-            "LifecycleEvent",
+            "Lifecycle.Event",
             vec![Ty::param("T")]
         )]
     );
@@ -1013,9 +1013,9 @@ fn machine_event_matches_outside_a_transition() {
         }
 
         fn main() {
-            let event: LightEvent = LightEvent.Toggle;
+            let event: Light.Event = Light.Event.Toggle;
             let _: i64 = match event {
-                LightEvent.Toggle => 1,
+                Light.Event.Toggle => 1,
             };
         }
         ",
@@ -1118,7 +1118,7 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // Companion event enum must also be registered
     assert!(
-        output.type_def_at_path("lights.TrafficEvent").is_some(),
+        output.type_def_at_path("lights.Traffic.Event").is_some(),
         "imported event registration must preserve its exact source owner"
     );
     assert_eq!(
@@ -1128,7 +1128,7 @@ fn imported_machine_unit_state_constructor_resolves() {
     );
     assert_eq!(
         output.type_def_at_path("lights.Traffic").unwrap().methods["step"].params,
-        vec![Ty::named_in(&output.defs, "lights.TrafficEvent", vec![])],
+        vec![Ty::named_in(&output.defs, "lights.Traffic.Event", vec![])],
         "an imported step method must accept the exact companion event identity"
     );
 }
@@ -1306,7 +1306,7 @@ fn imported_generic_machine_type_params_survive_registration() {
         "generic type param T must survive into TypeDef when registered via module graph"
     );
     let event_td = output
-        .type_def_at_path("workers.WorkerEvent")
+        .type_def_at_path("workers.Worker.Event")
         .expect("companion event enum 'WorkerEvent' must be registered");
     assert_eq!(
         event_td.type_params,

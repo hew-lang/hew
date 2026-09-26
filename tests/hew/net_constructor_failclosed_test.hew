@@ -37,6 +37,7 @@ fn closed_loopback_port() -> i64 {
 }
 
 #[test]
+#[real_time]
 fn test_http_listen_on_an_ephemeral_port_succeeds() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
@@ -51,6 +52,7 @@ fn test_http_listen_on_an_ephemeral_port_succeeds() {
 
 /// A bind failure used to return a null-backed `Server` that looked live.
 #[test]
+#[real_time]
 fn test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
     match websocket.listen("127.0.0.1:0") {
         .Ok(held) => {
@@ -76,6 +78,7 @@ fn test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
 }
 
 #[test]
+#[real_time]
 fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
     match http.listen("not an address") {
         .Ok(server) => {
@@ -97,6 +100,7 @@ fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
 /// The detail slot is per-actor and is cleared by a successful construction,
 /// so a later failure cannot be read as a stale success and vice versa.
 #[test]
+#[real_time]
 fn test_http_listen_clears_the_detail_slot_on_success() {
     // An occupied port carries a real errno, so the `Err` branch classifies it
     // without reading the detail. That leaves the detail for this test to
@@ -132,6 +136,7 @@ fn test_http_listen_clears_the_detail_slot_on_success() {
 }
 
 #[test]
+#[real_time]
 fn test_websocket_listen_on_an_ephemeral_port_succeeds() {
     match websocket.listen("127.0.0.1:0") {
         .Ok(server) => {
@@ -146,6 +151,7 @@ fn test_websocket_listen_on_an_ephemeral_port_succeeds() {
 }
 
 #[test]
+#[real_time]
 fn test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
     match websocket.listen("127.0.0.1:0") {
         .Ok(held) => {
@@ -171,6 +177,7 @@ fn test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server(
 }
 
 #[test]
+#[real_time]
 fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
     match websocket.listen("not an address") {
         .Ok(server) => {
@@ -192,6 +199,7 @@ fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
 /// A refused connection used to be reported by a null handle plus a message on
 /// stderr, so the caller saw a `Conn` it could not tell from a live one.
 #[test]
+#[real_time]
 fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
     let port = closed_loopback_port();
     let target = f"ws://127.0.0.1:{port}/";
@@ -212,6 +220,7 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
 }
 
 #[test]
+#[real_time]
 fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
     match websocket.connect("not a url") {
         .Ok(conn) => {
@@ -231,6 +240,7 @@ fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
 }
 
 #[test]
+#[real_time]
 fn test_websocket_listen_clears_the_detail_slot_on_success() {
     let port = closed_loopback_port();
     let target = f"ws://127.0.0.1:{port}/";

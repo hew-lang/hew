@@ -53,6 +53,7 @@ actor Client {
 /// to respond or corrupt the body — a `> 0` smoke check would not catch that,
 /// so the assertions pin the exact status and the exact echoed body.
 #[test]
+#[real_time]
 fn test_server_client_roundtrip_returns_200_and_echoes_path() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {

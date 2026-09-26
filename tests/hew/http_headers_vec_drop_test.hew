@@ -16,6 +16,7 @@ import std.net.http.http_client;
 /// P0 regression: binding resp.headers() to a local and letting it go out of
 /// scope (without a for-in consume) must not abort.
 #[test]
+#[real_time]
 fn test_headers_drop_without_consume_does_not_abort() {
     http_client.set_timeout(100);
     // A failed request (nothing listening on 19999) returns an empty headers vec.
@@ -32,6 +33,7 @@ fn test_headers_drop_without_consume_does_not_abort() {
 /// Complementary: bind headers and read its length, then let it drop.
 /// If the drop aborts (pre-fix), this test never reaches assert_true.
 #[test]
+#[real_time]
 fn test_headers_len_bind_does_not_abort() {
     http_client.set_timeout(100);
     let resp = http_client.get("http://127.0.0.1:19999");

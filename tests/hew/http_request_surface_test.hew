@@ -3,6 +3,7 @@
 import std.net.http.http_client;
 
 #[test]
+#[real_time]
 fn test_request_surface_is_importable_from_http_client() {
     let headers: Vec<(string, string)> = Vec.new();
     http_client.set_timeout(250);
@@ -12,6 +13,7 @@ fn test_request_surface_is_importable_from_http_client() {
 }
 
 #[test]
+#[real_time]
 fn test_request_string_surface_is_importable_from_http_client() {
     let headers: Vec<(string, string)> = Vec.new();
     http_client.set_timeout(250);
@@ -25,6 +27,7 @@ fn test_request_string_surface_is_importable_from_http_client() {
 }
 
 #[test]
+#[real_time]
 fn test_request_with_header_pairs() {
     var headers: Vec<(string, string)> = Vec.new();
     headers.push(("Accept", "application/json"));

@@ -39,6 +39,7 @@ actor Client {
 
 /// A 404 response still round-trips its exact body bytes.
 #[test]
+#[real_time]
 fn test_non_2xx_response_body_round_trips() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {

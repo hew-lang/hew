@@ -136,6 +136,12 @@ pub(crate) fn active() -> bool {
     config().is_some()
 }
 
+/// Initialize the clock mode before a program's first time read, which may
+/// precede its first scheduler step.
+pub fn initialize_clock() {
+    let _configured = config();
+}
+
 fn active_config() -> &'static Config {
     config().expect("driver entry outside a driver run")
 }

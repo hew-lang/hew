@@ -58,6 +58,7 @@ fn clone_datetime_last_error() -> Option<String> {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
+    hew_runtime::driver::initialize_clock();
     if hew_runtime::deterministic::hew_simtime_is_enabled() != 0 {
         return VIRTUAL_EPOCH_MS.saturating_add(hew_runtime::deterministic::hew_simtime_now_ms());
     }
@@ -234,6 +235,7 @@ pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i64 {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
+    hew_runtime::driver::initialize_clock();
     if hew_runtime::deterministic::hew_simtime_is_enabled() != 0 {
         return hew_runtime::deterministic::hew_simtime_now_ms().saturating_mul(1_000_000);
     }

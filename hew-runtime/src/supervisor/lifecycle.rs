@@ -1590,9 +1590,8 @@ mod tests {
 
             started.wait();
             actor::hew_actor_trap(child, 1);
-            hew_supervisor_restart_await_blocking(sup, 0);
             assert!(
-                *(*sup).restart_epoch.0.lock_or_recover() >= 1,
+                test_wait_for_restart(sup, 1, 5_000) >= 1,
                 "a supervisor restart must complete while live metrics reset runs"
             );
             resetter.join().expect("metrics resetter must not panic");
@@ -3816,91 +3815,6 @@ mod tests {
         }
     }
 
-    /// The contextless barrier resolves on fault-record settlement, not on a
-    /// clock.
-    ///
-    /// Two answers from one rule. A healthy role with nothing pending returns
-    /// AT ONCE — no grace window to sit out. A role with an open record BLOCKS,
-    /// however long the ruling takes, which is what the deleted grace window got
-    /// wrong under load. The ruling releases it.
-    #[test]
-    fn restart_await_blocking_resolves_on_fault_settlement() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, _child, _self_actor) = make_supervisor_with_child();
-
-            // A live role with no fault pending under it returns at once: with
-            // nothing to wait for, a barrier that blocked would never return.
-            hew_supervisor_restart_await_blocking(sup, 0);
-
-            // Open and attribute a record exactly as a supervised crash does,
-            // without running one: the barrier's input is the record, so this
-            // isolates it from restart timing.
-            let record = crate::exit_status::open_supervised_fault();
-            crate::exit_status::attribute_supervised_fault(record, child_role_chain(sup, 0));
-
-            let sup_addr = sup as usize;
-            let awaiting = std::thread::spawn(move || {
-                // SAFETY: the test keeps `sup` alive until this thread joins.
-                let sup = sup_addr as *mut HewSupervisor;
-                // SAFETY: the supervisor outlives the wait.
-                unsafe { hew_supervisor_restart_await_blocking(sup, 0) };
-            });
-
-            // The role still reads Live, so only the open record can be holding
-            // the barrier. WHY a window: nothing reports that the waiter has
-            // parked, so this leg can pass vacuously on a slow host. WHAT the
-            // real fix is: a parked-waiter count on the restart barrier.
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            assert!(
-                !awaiting.is_finished(),
-                "an open record under a live role must hold the barrier"
-            );
-
-            crate::exit_status::settle_supervised_fault(record, FaultRuling::Handled);
-
-            // The ruling must release the barrier.
-            wait_until(|| awaiting.is_finished());
-            awaiting.join().expect("awaiting thread panicked");
-
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// The barrier holds until the child is back, not until a timer expires.
-    ///
-    /// A real crash opens the record before the terminal wake, so by the time
-    /// `hew_actor_trap` returns the fault is pending under the role; the
-    /// supervisor rules on its own dispatch. The barrier therefore observes the
-    /// replacement incarnation, however long the ruling takes to land.
-    #[test]
-    fn restart_await_blocking_returns_with_the_restarted_incarnation() {
-        let _rt = crate::runtime_test_guard();
-        let _scheduler = RealSchedulerGuard::new();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            locked_roster!(sup).child_specs[0].restart_policy = RESTART_PERMANENT;
-
-            actor::hew_actor_trap(child, 1);
-            hew_supervisor_restart_await_blocking(sup, 0);
-
-            assert!(
-                *(*sup).restart_epoch.0.lock_or_recover() >= 1,
-                "the barrier must hold until the restart cycle completes, not \
-                 return on the pre-crash live window"
-            );
-            assert_eq!(
-                hew_supervisor_child_get(sup, 0).tag,
-                0,
-                "the role must hold a live incarnation when the barrier returns"
-            );
-
-            hew_supervisor_stop(sup);
-        }
-    }
-
     /// A `temporary` child that crashes is never restarted: the decline spends
     /// the spec, so the empty slot classifies `Dead(BudgetExhausted)` instead of
     /// sitting on `Transient(Restarting)` for good.
@@ -4099,25 +4013,6 @@ mod tests {
             // Restore so teardown can reach the actor.
             (*sup).cancelled.store(false, Ordering::Release);
             store_child_slot(&raw mut *sup, 0, child);
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// The contextless blocking helper returns immediately for a permanently
-    /// Dead child (shut-down supervisor) — R4 fail-closed, no hang.
-    #[test]
-    fn restart_await_blocking_dead_child_returns_immediately() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, _child, _self_actor) = make_supervisor_with_child();
-            (*sup).running.store(0, Ordering::Release);
-
-            // A permanently-Dead child returns immediately: nothing will ever
-            // change it, so a barrier that blocked would never return.
-            hew_supervisor_restart_await_blocking(sup, 0);
-
-            (*sup).running.store(1, Ordering::Release);
             hew_supervisor_stop(sup);
         }
     }

@@ -871,7 +871,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
         } else {
             // Stop owns timer cancellation and typed state cleanup, including
             // timers already armed before a later allocation failed.
-            crate::actor_native::hew_actor_close_native(token);
+            crate::actor_native::hew_actor_stop_native(token);
             // SAFETY: the caller supplies an empty writable fault slot.
             unsafe {
                 *fault =

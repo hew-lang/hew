@@ -106,8 +106,6 @@ const TERMS = new Set([
 const ACTOR_OPS = new Set([
   "spawn",
   "self_handle",
-  "close",
-  "await_closed",
   "stop",
   "terminate",
   "await_stopped",
@@ -118,11 +116,7 @@ const ACTOR_OPS = new Set([
   "stream_start",
   "supervisor_spawn",
   "supervisor_child",
-  "supervisor_await_restart",
   "supervisor_pool_view",
-  "supervisor_stop",
-  "supervisor_await_closed",
-  "supervisor_role_await_closed",
 ]);
 
 function capabilityMessage(capability: string, native: boolean): string {

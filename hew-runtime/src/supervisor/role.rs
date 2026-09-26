@@ -659,8 +659,7 @@ pub unsafe extern "C" fn hew_supervisor_get_child_circuit_state(
 /// The caller MUST `coro.suspend` on SUSPEND and bind (re-fetch) on READY /
 /// resume.
 ///
-/// This is the COOPERATIVE analogue of [`hew_supervisor_restart_await_blocking`];
-/// it never thread-blocks the single scheduler. `key` is the static-child slot
+/// The observer parks a coroutine without blocking the scheduler. `key` is the static-child slot
 /// index.
 ///
 /// # Safety
@@ -689,7 +688,7 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
     // re-reading it inside the registration critical section detects a restart
     // that completed in the gap between the pre-park check and the push — the
     // lost-wakeup guard (mirrors the `baseline` discipline in
-    // `hew_supervisor_restart_await_blocking`).
+    // a pending fault record.
     // SAFETY: the caller keeps `sup` live through this inline-field read.
     let baseline = *unsafe { &(*sup).restart_epoch }.0.lock_or_recover();
 
@@ -825,22 +824,6 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_detach(
 /// `mailbox(...)` submission that has not been processed when the barrier is
 /// entered has no record yet, so there is nothing to wait on.
 ///
-/// This is safe to thread-block ONLY off the cooperative scheduler: `main` runs
-/// on its own thread while the supervisor fires restarts on scheduler worker
-/// threads, so there is no self-deadlock (unlike an actor handler, which MUST
-/// use the suspending observer). Codegen routes a `Default`-callconv
-/// `await_restart` here exactly as it routes a contextless `await` to a blocking
-/// ask.
-///
-/// # Safety
-///
-/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32) {
-    // SAFETY: forward the caller's live supervisor contract.
-    unsafe { supervisor_restart_await_blocking(sup, key, false) };
-}
-
 /// Whether the role's slot holds an incarnation that is still running.
 ///
 /// ONE roster acquisition answers both halves, because they race each other.
@@ -903,47 +886,6 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
         // SAFETY: the roster guard owns this child pointer.
         let state = unsafe { &*child }.actor_state.load(Ordering::Acquire);
         state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32
-    }
-}
-
-pub(crate) unsafe fn supervisor_restart_await_blocking(
-    sup: *mut HewSupervisor,
-    key: u32,
-    nested: bool,
-) {
-    if sup.is_null() {
-        return;
-    }
-    // SAFETY: the caller keeps the allocation live for the whole wait.
-    let owner = unsafe { (*sup).local_pid_id };
-    let role = RoleKey {
-        owner,
-        slot: key,
-        nested,
-    };
-
-    loop {
-        // Snapshot the supervision generation BEFORE reading the slot. A
-        // transition published in the gap between that read and the wait then
-        // reads as a change rather than a wake nobody was there to receive.
-        let seen = crate::exit_status::supervision_generation();
-        let current = if nested {
-            // SAFETY: the caller retains the supervisor while waiting.
-            unsafe { hew_supervisor_nested_get(sup, key) }
-        } else {
-            // SAFETY: the caller retains the supervisor while waiting.
-            unsafe { hew_supervisor_child_get(sup, key) }
-        };
-        // Dead (2): permanent — never restarts. Fail closed: return now.
-        if current.tag == 2 {
-            return;
-        }
-        let live = role_holds_running_incarnation(sup, key, nested);
-        if crate::exit_status::role_barrier_outcome(role, live, seen)
-            == crate::exit_status::RoleBarrier::Settled
-        {
-            return;
-        }
     }
 }
 
@@ -1059,8 +1001,7 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_free(wait: *mut HewN
 ///
 /// Test-support only — reads the same `restart_epoch` counter/Condvar the
 /// contextless blocking `await_restart` path
-/// ([`hew_supervisor_restart_await_blocking`]) synchronizes on, so it is not a
-/// second authority for restart completion. Not part of the C ABI: no
+/// uses for restart completion. It is not part of the C ABI: no
 /// `#[no_mangle]`, no entry in `scripts/cabi-surface.json` or
 /// `scripts/runtime-export-classification.toml`. Callers are Rust test code in
 /// this workspace (`hew-runtime/tests/*.rs`, this module's own unit tests),

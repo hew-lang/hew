@@ -899,7 +899,6 @@ impl RuntimeCallFamily {
             | F::LocalPidSupervisorPoolChildRefGet
             | F::SupervisorPoolLen
             | F::SupervisorStop
-            | F::SupervisorRestartAwaitBlocking
             | F::TcpAttachLocal
             | F::TlsAttachLocal
             | F::WebSocketAttachLocal

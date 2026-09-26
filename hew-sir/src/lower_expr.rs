@@ -64,7 +64,7 @@ impl Builder<'_, '_> {
             .get(&expr.site)
             .map(|accessor| accessor.kind)
         {
-            return self.lower_pool_accessor(expr, kind, false);
+            return self.lower_pool_accessor(expr, kind);
         }
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
@@ -191,7 +191,9 @@ impl Builder<'_, '_> {
             HirExprKind::MachineVariantCtor {
                 state_idx, payload, ..
             } => self.lower_variant_make(expr, *state_idx, payload.as_deref()),
-            HirExprKind::AwaitRestart { child } => self.lower_supervisor_await_restart(expr, child),
+            HirExprKind::AwaitRestart { .. } => {
+                Err("`await_restart` was replaced by `restarted(role)`".into())
+            }
             HirExprKind::FieldAccess { object, field } => {
                 if let Some(slot) = self.service.module.supervisor_child_slots.get(&expr.site) {
                     return self.lower_supervisor_child(expr, object, slot);

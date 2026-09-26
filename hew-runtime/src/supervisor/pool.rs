@@ -657,28 +657,6 @@ pub unsafe extern "C" fn hew_supervisor_native_child(
     }
 }
 
-/// Block the calling thread until one declared child is Live again or is
-/// permanently gone. The contextless restart barrier for `main`.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_native_await_restart(
-    token: crate::lifetime::local_handles::HewLocalPidId,
-    slot: u32,
-    role_kind: c_int,
-) {
-    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
-        return;
-    };
-    // SAFETY: the pin keeps the allocation live for the blocking wait.
-    unsafe {
-        supervisor_restart_await_blocking(
-            pin.supervisor(),
-            slot,
-            role_kind == ROLE_KIND_SUPERVISOR,
-        );
-    }
-}
-
 /// Retain a stable nested owner path for another declared child projection.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]

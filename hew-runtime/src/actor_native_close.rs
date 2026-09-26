@@ -249,13 +249,6 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
     }
 }
 
-/// Legacy native close entry retained only until compiler lifecycle emission
-/// switches to `hew_actor_stop_native`.
-#[no_mangle]
-pub extern "C" fn hew_actor_close_native(token: local_handles::HewLocalPidId) {
-    hew_actor_stop_native(token);
-}
-
 #[derive(Debug)]
 pub struct HewNativeActorWait {
     completion: Option<Arc<NativeActorCompletion>>,

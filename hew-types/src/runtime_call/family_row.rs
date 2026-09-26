@@ -73,9 +73,7 @@ impl RuntimeCallFamily {
                 // trapping and awaiting forms hand back the member itself.
                 physical: match op {
                     SupervisorPoolOp::Get => RuntimePhysicalForm::VariantResult,
-                    SupervisorPoolOp::Member | SupervisorPoolOp::AwaitRestartMember => {
-                        RuntimePhysicalForm::Direct
-                    }
+                    SupervisorPoolOp::Member => RuntimePhysicalForm::Direct,
                 },
                 c_return: RuntimeCReturn::Storage,
             },
@@ -6608,14 +6606,6 @@ impl RuntimeCallFamily {
             },
             Self::SupervisorStop => RuntimeOpRow {
                 symbol: "hew_supervisor_stop",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::SupervisorRestartAwaitBlocking => RuntimeOpRow {
-                symbol: "hew_supervisor_restart_await_blocking",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,

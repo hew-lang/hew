@@ -1560,19 +1560,7 @@ class ExecutorV1 {
       );
       return;
     }
-    const role = this.roles.get((value as { id: string }).id)!;
-    if (operation === "AwaitRestartMember" && this.rolePending(role)) {
-      this.running = false;
-      const settled = () => {
-        if (this.rolePending(role)) {
-          role.waiting.push(settled);
-          return;
-        }
-        this.completeShim(act, term, value);
-        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-      };
-      role.waiting.push(settled);
-    } else this.completeShim(act, term, value);
+    this.completeShim(act, term, value);
   }
 
   private structuralFormat(
@@ -2759,7 +2747,6 @@ class ExecutorV1 {
         return;
       }
       case "supervisor_pool_view":
-      case "supervisor_await_restart":
       case "supervisor_child": {
         const owner = this.supervisorFor(args[0]!);
         const spec = owner.layout.children[operation.child];
@@ -2787,23 +2774,7 @@ class ExecutorV1 {
           });
           return;
         }
-        const value = makeRole(offset);
-        const role = this.roles.get((value as { id: string }).id)!;
-        if (
-          operation.op === "supervisor_await_restart" &&
-          this.rolePending(role)
-        ) {
-          this.running = false;
-          const settled = () => {
-            if (this.rolePending(role)) {
-              role.waiting.push(settled);
-              return;
-            }
-            this.completeShim(act, term, value);
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-          };
-          role.waiting.push(settled);
-        } else this.completeShim(act, term, value);
+        this.completeShim(act, term, makeRole(offset));
         return;
       }
       case "await_restarted": {
@@ -2878,30 +2849,6 @@ class ExecutorV1 {
           throw new Error("stopped requires an actor or supervisor handle");
         return;
       }
-      case "supervisor_stop": {
-        const owner = this.supervisorFor(args[0]!);
-        this.stopSupervisor(owner);
-        this.completeShim(act, term, args[0]!);
-        return;
-      }
-      case "supervisor_role_await_closed":
-      case "supervisor_await_closed": {
-        const owner = this.supervisorFor(args[0]!);
-        if (
-          operation.op === "supervisor_role_await_closed" &&
-          operation.closing
-        )
-          this.stopSupervisor(owner);
-        if (owner.completed) this.completeShim(act, term, UNIT);
-        else {
-          this.running = false;
-          owner.closed.push(() => {
-            this.completeShim(act, term, UNIT);
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-          });
-        }
-        return;
-      }
       case "self_handle":
         if (!act.context.actor)
           throw new Error("self handle outside an actor turn");
@@ -2910,32 +2857,6 @@ class ExecutorV1 {
           id: act.context.actor.id,
         });
         return;
-      case "close": {
-        const actor = this.actorFor(args[0]!);
-        this.requestActorStop(actor);
-        this.completeShim(act, term, args[0]!);
-        return;
-      }
-      case "await_closed": {
-        const actor = this.actorFor(args[0]!);
-        const complete = () => {
-          const fault = actor.crashing ?? actor.closingFault;
-          if (actor.closeFaultDebt !== undefined)
-            this.faultDebts.delete(actor.closeFaultDebt);
-          if (fault) this.raiseFault(act, fault, term.unwind);
-          else this.completeShim(act, term, UNIT);
-        };
-        if (actor.completed) {
-          complete();
-          return;
-        }
-        this.running = false;
-        actor.closed.push(() => {
-          complete();
-          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-        });
-        return;
-      }
       default:
         throw new Error(`actor operation ${operation.op} has no executor`);
     }

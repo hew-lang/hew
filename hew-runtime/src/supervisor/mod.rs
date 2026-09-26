@@ -2287,7 +2287,7 @@ fn schedule_delayed_restart(
 /// 1. The `restart_epoch` counter/Condvar — the bump + `notify_all`, read by
 ///    `hew_supervisor_get_child_wait` and by test-support code.
 /// 2. The supervision generation, which is what the contextless blocking
-///    `await_restart` (`hew_supervisor_restart_await_blocking`) waits on. The
+///    cooperative restart observers wait on. The
 ///    restart changed a slot without touching a fault record, so a barrier
 ///    parked on that slot has to be told.
 /// 3. The COOPERATIVE `await_restart` observers — every parked continuation in
@@ -2312,7 +2312,6 @@ fn notify_restart(sup: *mut HewSupervisor) {
         *count += 1;
         cv.notify_all();
     }
-    crate::exit_status::note_supervision_change();
     wake_restart_await_waiters(sup);
     // SAFETY: callers keep the supervisor live through the notification.
     unsafe { &(*sup).native_restart_wakers }.notify();
@@ -2339,7 +2338,6 @@ fn wake_restart_waiters(sup: *mut HewSupervisor) {
         let _epoch = lock.lock_or_recover();
         cv.notify_all();
     }
-    crate::exit_status::note_supervision_change();
     wake_restart_await_waiters(sup);
     // SAFETY: callers keep the supervisor live through the notification.
     unsafe { &(*sup).native_restart_wakers }.notify();

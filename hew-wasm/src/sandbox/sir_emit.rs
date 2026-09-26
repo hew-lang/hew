@@ -1896,8 +1896,6 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         }
         Op::Spawn(actor) => serde_json::json!({ "op": "spawn", "actor": actor.0 }),
         Op::SelfHandle(actor) => serde_json::json!({ "op": "self_handle", "actor": actor.0 }),
-        Op::Close(actor) => serde_json::json!({ "op": "close", "actor": actor.0 }),
-        Op::AwaitClosed(actor) => serde_json::json!({ "op": "await_closed", "actor": actor.0 }),
         Op::CallStart(p) => serde_json::json!({ "op": "call_start", "protocol": protocol(p) }),
         Op::CallTake(p) => serde_json::json!({ "op": "call_take", "protocol": protocol(p) }),
         Op::Submit { actor, policy, .. } => serde_json::json!({
@@ -1929,36 +1927,12 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         Op::SupervisorSpawn(supervisor) => {
             serde_json::json!({ "op": "supervisor_spawn", "supervisor": supervisor.0 })
         }
-        Op::SupervisorStop(supervisor) => {
-            serde_json::json!({ "op": "supervisor_stop", "supervisor": supervisor.0 })
-        }
-        Op::SupervisorAwaitClosed(supervisor) => {
-            serde_json::json!({ "op": "supervisor_await_closed", "supervisor": supervisor.0 })
-        }
         Op::SupervisorChild {
             supervisor,
             child,
             owner_is_role,
         } => serde_json::json!({
             "op": "supervisor_child",
-            "supervisor": supervisor.0,
-            "child": child,
-            "owner_is_role": owner_is_role,
-        }),
-        Op::SupervisorRoleAwaitClosed {
-            supervisor,
-            closing,
-        } => serde_json::json!({
-            "op": "supervisor_role_await_closed",
-            "supervisor": supervisor.0,
-            "closing": closing,
-        }),
-        Op::SupervisorAwaitRestart {
-            supervisor,
-            child,
-            owner_is_role,
-        } => serde_json::json!({
-            "op": "supervisor_await_restart",
             "supervisor": supervisor.0,
             "child": child,
             "owner_is_role": owner_is_role,

@@ -324,17 +324,6 @@ impl Checker {
         };
         self.scopes
             .record_resolution(site, span, super::scope::Resolution::Local(binding.id));
-        // Plain identifier patterns can include the whitespace before `:`
-        // or `=` in their parser span. Keep the compiler key and publish the
-        // source token as a second location for editor consumers.
-        let exact_end = span.start.saturating_add(name.name.as_str().len());
-        if exact_end < span.end {
-            self.scopes.record_resolution(
-                site,
-                &(span.start..exact_end),
-                super::scope::Resolution::Local(binding.id),
-            );
-        }
     }
 
     /// Record the item prefix of a written value path. `Scope` stops at the

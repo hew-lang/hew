@@ -55,16 +55,29 @@ fn indirect_calls_publish_closure_candidates_and_opaque_origins() {
             may_be_unknown: false,
         })
     );
-    for call in ["f()", "bag.callback()"] {
-        assert_eq!(
-            output.indirect_call_candidates.get(&call_key(call)),
-            Some(&IndirectCallCandidates {
-                known: vec![],
-                may_be_unknown: true,
-            }),
-            "{call}"
-        );
-    }
+    let formal_start = source.find("f: fn").unwrap();
+    let Some(crate::check::scope::Resolution::Local(formal)) = output
+        .resolutions
+        .get(&SpanKey::in_module(&(formal_start..formal_start + 1), 0))
+    else {
+        panic!("function formal must have exact identity");
+    };
+    assert_eq!(
+        output.indirect_call_candidates.get(&call_key("f()")),
+        Some(&IndirectCallCandidates {
+            known: vec![CallableCandidate::Formal(*formal)],
+            may_be_unknown: false,
+        })
+    );
+    assert_eq!(
+        output
+            .indirect_call_candidates
+            .get(&call_key("bag.callback()")),
+        Some(&IndirectCallCandidates {
+            known: vec![],
+            may_be_unknown: true,
+        })
+    );
 }
 
 #[test]
@@ -125,6 +138,12 @@ fn indirect_branch_keeps_known_closure_and_opaque_parameter() {
         .find(|key| key.start == literal_start)
         .expect("checker-published closure")
         .clone();
+    let formal_start = source.find("opaque:").unwrap();
+    let Some(crate::check::scope::Resolution::Local(formal)) = output.resolutions.get(
+        &SpanKey::in_module(&(formal_start..formal_start + "opaque".len()), 0),
+    ) else {
+        panic!("opaque parameter must have exact identity");
+    };
     let call_start = source.find("selected()").unwrap();
     let call = output
         .direct_call_targets
@@ -141,9 +160,146 @@ fn indirect_branch_keeps_known_closure_and_opaque_parameter() {
     assert_eq!(
         output.indirect_call_candidates.get(call),
         Some(&IndirectCallCandidates {
-            known: vec![CallableCandidate::Closure(closure)],
-            may_be_unknown: true,
+            known: vec![
+                CallableCandidate::Closure(closure),
+                CallableCandidate::Formal(*formal)
+            ],
+            may_be_unknown: false,
         })
+    );
+}
+
+#[test]
+fn callable_actuals_follow_exact_formals_through_helpers() {
+    let source = "fn invoke(consume f: fn() -> i64) -> i64 { f() } \
+        fn forward(consume f: fn() -> i64) -> i64 { invoke(f) } \
+        fn main() { let callback = || 1; println(forward(callback)); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let formal = |marker: &str| {
+        let start = source.find(marker).unwrap() + marker.len() - 1;
+        let Some(crate::check::scope::Resolution::Local(id)) = output
+            .resolutions
+            .get(&SpanKey::in_module(&(start..start + 1), 0))
+        else {
+            panic!("{marker} has no formal identity");
+        };
+        *id
+    };
+    let invoke_formal = formal("fn invoke(consume f");
+    let forward_formal = formal("fn forward(consume f");
+    let closure_start = source.find("|| 1").unwrap();
+    let closure = output
+        .closure_escape_facts
+        .keys()
+        .find(|key| key.start == closure_start)
+        .expect("checker-published closure")
+        .clone();
+    let flow = |text: &str| {
+        let start = source.rfind(text).unwrap();
+        output
+            .callable_argument_flows
+            .iter()
+            .find(|(key, _)| key.start == start)
+            .map(|(_, flow)| flow.as_slice())
+            .expect("checked argument flow")
+    };
+    assert_eq!(
+        flow("forward(callback)"),
+        &[CallableArgumentFlow {
+            callee: output.defs.lookup_path("forward").unwrap(),
+            formal: forward_formal,
+            candidates: IndirectCallCandidates {
+                known: vec![CallableCandidate::Closure(closure)],
+                may_be_unknown: false,
+            },
+        }]
+    );
+    assert_eq!(
+        flow("invoke(f)"),
+        &[CallableArgumentFlow {
+            callee: output.defs.lookup_path("invoke").unwrap(),
+            formal: invoke_formal,
+            candidates: IndirectCallCandidates {
+                known: vec![CallableCandidate::Formal(forward_formal)],
+                may_be_unknown: false,
+            },
+        }]
+    );
+}
+
+#[test]
+fn imported_method_callback_flows_to_its_exact_formal() {
+    let module_source = "pub type Runner { value: i64 } \
+        impl Runner { fn apply(self, f: fn() -> i64) -> i64 { f() } }";
+    let source = "import m; fn main() { \
+        let runner = m.Runner { value: 0 }; \
+        println(runner.apply(|| 1)); \
+    }";
+    let module = hew_parser::parse(module_source);
+    assert!(module.errors.is_empty(), "{:#?}", module.errors);
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Import(import), _) = &mut parsed.program.items[0] else {
+        panic!("expected module import");
+    };
+    import.resolved_items = Some(module.program.items.clone().into());
+    let root = ModulePath::root();
+    let m = ModulePath::new(["m"]);
+    let mut graph = ModuleGraph::new(root.clone());
+    for (id, items) in [
+        (m.clone(), module.program.items),
+        (root.clone(), parsed.program.items.clone()),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![m, root];
+    parsed.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let call_start = source.find("runner.apply").unwrap();
+    let flow = output
+        .callable_argument_flows
+        .iter()
+        .find(|(key, _)| key.module_idx == 0 && key.start == call_start)
+        .map(|(_, flow)| flow)
+        .expect("imported method argument flow");
+    let callback = flow.last().expect("callback formal flow");
+    assert_eq!(
+        output.defs.kind(callback.callee),
+        crate::DeclarationKind::ImplMethod
+    );
+    assert!(output.defs.path(callback.callee).starts_with("m.Runner::"));
+    let closure_start = source.find("|| 1").unwrap();
+    let closure = output
+        .closure_escape_facts
+        .keys()
+        .find(|key| key.start == closure_start)
+        .unwrap();
+    assert_eq!(
+        callback.candidates,
+        IndirectCallCandidates {
+            known: vec![CallableCandidate::Closure(closure.clone())],
+            may_be_unknown: false,
+        }
+    );
+    let indirect = output
+        .indirect_call_candidates
+        .iter()
+        .find(|(key, _)| key.module_idx != 0 && key.start == module_source.rfind("f()").unwrap())
+        .map(|(_, candidates)| candidates)
+        .expect("imported callback invocation");
+    assert_eq!(
+        indirect.known,
+        vec![CallableCandidate::Formal(callback.formal)]
     );
 }
 

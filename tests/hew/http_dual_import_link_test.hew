@@ -21,6 +21,7 @@ import std.net.http.http_client;
 /// CI-safe pattern, cf. `net_try_api_test.hew` `net.listen(":0")`), so no
 /// fixed port is held across the test run.
 #[test]
+#[real_time]
 fn test_server_impl_linked_in_dual_import_unit() {
     match http.listen(":0") {
         .Ok(server) => {
@@ -41,6 +42,7 @@ fn test_server_impl_linked_in_dual_import_unit() {
 /// accessors named in the pre-fix verify failure is invoked, so a regression
 /// re-introducing the bodiless declaration would fail to link this test.
 #[test]
+#[real_time]
 fn test_response_accessors_linked_in_dual_import_unit() {
     http_client.set_timeout(100);
     let resp = http_client.get("http://127.0.0.1:1");

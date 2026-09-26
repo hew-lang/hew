@@ -207,8 +207,10 @@ impl Builder {
         ty: Option<Spanned<TypeExpr>>,
         value: Spanned<Expr>,
     ) -> Spanned<Stmt> {
+        let name_span = self.span();
         self.stmt(Stmt::Var {
             name: Ident::new(&name.to_string()),
+            name_span,
             ty,
             value: Some(value),
         })
@@ -1345,7 +1347,9 @@ impl Builder {
                         *other = self.rewrite_block(other, machine, state, event)?;
                     }
                 }
-                Stmt::Var { name, ty, value } => {
+                Stmt::Var {
+                    name, ty, value, ..
+                } => {
                     self.refuse_const_shadow_name(*name, machine)?;
                     if let Some(ty) = ty {
                         self.refresh_type(ty);

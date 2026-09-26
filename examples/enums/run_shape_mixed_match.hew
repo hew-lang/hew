@@ -10,7 +10,7 @@
 enum Shape {
     Point;
     Line(i64);
-    Box { w: i64; h: i64;  }
+    Box { w: i64; h: i64; }
 }
 
 fn measure(s: Shape) -> i64 {

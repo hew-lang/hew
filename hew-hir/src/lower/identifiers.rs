@@ -256,7 +256,7 @@ impl LowerCtx {
         // A missing checker row must not let an authored local silently turn
         // into a same-named function or constructor. Binding names serve only
         // as a negative boundary check here; they never select an identity.
-        if self.resolutions.get(&key).is_none()
+        if !self.resolutions.contains_key(&key)
             && self
                 .binding_scopes
                 .iter()

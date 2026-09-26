@@ -81,7 +81,7 @@ fn actor_delivery_rejects_reuse_and_incompatible_destination() {
         ("let _ = m.retry(); let _ = m.retry();", "moved"),
         ("let other = spawn Other(); let _ = m.to(other);", "type"),
         ("let x = m.payload;", "sealed"),
-        ("m.retry();", "e_send_result_dropped"),
+        ("m.retry();", "e_result_dropped"),
     ] {
         let source = format!(
             "actor Worker {{ receive fn process(value: i64) {{}} }} \

@@ -19,6 +19,8 @@ use hew_parser::ast::{
     TypeDeclKind, TypeExpr, UnaryOp,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
+use hew_types::check::scope::Resolution;
+use hew_types::env::TypeBindingId;
 use hew_types::BuiltinType;
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,

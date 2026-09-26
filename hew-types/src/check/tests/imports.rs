@@ -2344,6 +2344,7 @@ fn user_module_fn_sig_has_correct_types() {
         vec![
             Param {
                 name: Ident::new("a"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(
@@ -2359,6 +2360,7 @@ fn user_module_fn_sig_has_correct_types() {
             },
             Param {
                 name: Ident::new("b"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(

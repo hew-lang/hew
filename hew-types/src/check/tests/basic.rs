@@ -1844,6 +1844,7 @@ fn typecheck_actor_receive_fn_registered() {
         name: Ident::new("greet"),
         params: vec![Param {
             name: Ident::new("name"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(

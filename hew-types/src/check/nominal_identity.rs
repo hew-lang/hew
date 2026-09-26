@@ -363,6 +363,22 @@ impl Checker {
             let _ =
                 self.scopes
                     .resolve_prefix(&self.env, site, super::scope::Namespace::Value, &path);
+            // An identifier expression's span can include the whitespace up
+            // to the next token. Retain that expression key for compiler
+            // consumers and publish the written token for editor consumers.
+            if let Some((name, written)) = path.first() {
+                let exact_end = written.start.saturating_add(name.name.as_str().len());
+                if exact_end < written.end {
+                    let key = super::types::SpanKey::in_module(written, self.current_module_idx);
+                    if let Some(resolution) = self.scopes.resolutions().get(&key).copied() {
+                        self.scopes.record_resolution(
+                            site,
+                            &(written.start..exact_end),
+                            resolution,
+                        );
+                    }
+                }
+            }
         }
     }
 

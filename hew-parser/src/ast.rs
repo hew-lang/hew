@@ -1084,6 +1084,9 @@ pub struct ElseBlock {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
     pub name: Ident,
+    /// Source span of the parameter name, including an implicit `self`.
+    #[serde(skip)]
+    pub name_span: Span,
     pub ty: Spanned<TypeExpr>,
     pub is_mutable: bool,
     /// `true` when this value parameter was declared with the `consume`

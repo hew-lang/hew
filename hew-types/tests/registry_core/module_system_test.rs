@@ -609,6 +609,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         type_params: None,
         params: vec![Param {
             name: Ident::new("v"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(
@@ -923,6 +924,7 @@ fn colliding_unqualified_imports_are_typed_error() {
         type_params: None,
         params: vec![Param {
             name: Ident::new("v"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Value"), 0..0),
@@ -1000,6 +1002,7 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
         type_params: None,
         params: vec![Param {
             name: Ident::new("v"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Value"), 0..0),
@@ -1166,6 +1169,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
             .iter()
             .map(|(pname, ptype)| Param {
                 name: Ident::new(pname),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(

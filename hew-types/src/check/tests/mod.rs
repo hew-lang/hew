@@ -301,6 +301,7 @@ pub(super) fn make_checker_with_trait(
                 type_params,
                 params: vec![Param {
                     name: Ident::new("val"),
+                    name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
                             path: hew_parser::ast::Path::single(

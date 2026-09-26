@@ -21,6 +21,56 @@ fn source_resolutions_join_local_definition_and_use() {
 }
 
 #[test]
+fn source_resolutions_join_function_and_closure_parameters_to_uses() {
+    let source = "fn identity(value: i64) -> i64 { value } \
+        fn main() { let f = |n: i64| -> i64 { n + 1 }; println(f(identity(2))); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    for (name, definition, use_site) in [
+        (
+            "value",
+            source.find("value:").unwrap(),
+            source.find("value }").unwrap(),
+        ),
+        (
+            "n",
+            source.find("n: i64").unwrap(),
+            source.find("n +").unwrap(),
+        ),
+    ] {
+        let at = |start| SpanKey::in_module(&(start..start + name.len()), 0);
+        let declared = output.resolutions.get(&at(definition));
+        assert!(matches!(
+            declared,
+            Some(crate::check::scope::Resolution::Local(_))
+        ));
+        assert_eq!(
+            output.resolutions.get(&at(use_site)),
+            declared,
+            "{name}: {:?}",
+            output.resolutions
+        );
+    }
+}
+
+#[test]
+fn source_resolutions_join_implicit_self_to_its_use() {
+    let source = "type Box { value: i64 } \
+        impl Box { fn get(self) -> i64 { self.value } }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let definition = source.find("self)").unwrap();
+    let use_site = source.find("self.value").unwrap();
+    let at = |start| SpanKey::in_module(&(start..start + "self".len()), 0);
+    let declared = output.resolutions.get(&at(definition));
+    assert!(matches!(
+        declared,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert_eq!(output.resolutions.get(&at(use_site)), declared);
+}
+
+#[test]
 fn source_resolutions_distinguish_same_named_fields_by_owner() {
     let source = "type A { x: i64 } type B { x: i64 } fn main() { \
         let a = A { x: 1 }; let b = B { x: 2 }; \

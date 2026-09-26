@@ -981,6 +981,7 @@ impl Checker {
             self.check_shadowing(name.name.as_str(), binding_span);
             self.env
                 .define_with_span(name.to_string(), error_ty, false, binding_span.clone());
+            self.record_local_resolution(*name, binding_span);
         }
         let body_ty = if payload == Ty::Never {
             self.synthesize(&body.0, &body.1)

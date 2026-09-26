@@ -48,7 +48,7 @@ impl Parser<'_> {
                 break;
             }
 
-            let field_name = self.expect_ident()?;
+            let (field_name, name_span) = self.expect_ident_spanned()?;
             let pattern = if self.eat(&Token::Colon) {
                 Some(self.parse_pattern()?)
             } else {
@@ -56,6 +56,7 @@ impl Parser<'_> {
             };
             fields.push(PatternField {
                 name: field_name,
+                name_span,
                 pattern,
             });
 

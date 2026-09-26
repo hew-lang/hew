@@ -324,6 +324,17 @@ impl Checker {
         };
         self.scopes
             .record_resolution(site, span, super::scope::Resolution::Local(binding.id));
+        // Plain identifier patterns can include the whitespace before `:`
+        // or `=` in their parser span. Keep the compiler key and publish the
+        // source token as a second location for editor consumers.
+        let exact_end = span.start.saturating_add(name.name.as_str().len());
+        if exact_end < span.end {
+            self.scopes.record_resolution(
+                site,
+                &(span.start..exact_end),
+                super::scope::Resolution::Local(binding.id),
+            );
+        }
     }
 
     /// Record the item prefix of a written value path. `Scope` stops at the
@@ -363,6 +374,20 @@ impl Checker {
             let _ =
                 self.scopes
                     .resolve_prefix(&self.env, site, super::scope::Namespace::Value, &path);
+            if let Some((_, written)) = path.first() {
+                let key = super::types::SpanKey::in_module(written, self.current_module_idx);
+                if let Some(super::scope::Resolution::Local(binding)) =
+                    self.scopes.resolutions().get(&key)
+                {
+                    if let Some((owner, index)) = self.actor_field_binding_ids.get(binding) {
+                        self.scopes.record_resolution(
+                            site,
+                            written,
+                            super::scope::Resolution::Field(*owner, *index),
+                        );
+                    }
+                }
+            }
             // An identifier expression's span can include the whitespace up
             // to the next token. Retain that expression key for compiler
             // consumers and publish the written token for editor consumers.

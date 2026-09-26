@@ -244,12 +244,16 @@ impl Builder {
     ) -> Spanned<Pattern> {
         let fields: Vec<_> = fields
             .iter()
-            .map(|(name, _)| PatternField {
-                name: *name,
-                pattern: Some((
-                    Pattern::Identifier(Ident::new(&format!("{prefix}{name}"))),
-                    self.span(),
-                )),
+            .map(|(name, _)| {
+                let name_span = self.span();
+                PatternField {
+                    name: *name,
+                    name_span,
+                    pattern: Some((
+                        Pattern::Identifier(Ident::new(&format!("{prefix}{name}"))),
+                        self.span(),
+                    )),
+                }
             })
             .collect();
         (

@@ -148,9 +148,9 @@ impl std::fmt::Display for MigrationError {
 
 impl std::error::Error for MigrationError {}
 
-/// Reprint a source file after recovering only retired punctuation forms.
-/// Other parse errors refuse the entire file, so migration cannot conceal a
-/// missing declaration or malformed expression.
+/// Reprint a source file after recovering punctuation and other mechanically
+/// migratable spellings. Other parse errors refuse the entire file, so the
+/// first migration phase cannot conceal malformed source.
 ///
 /// # Errors
 ///
@@ -212,7 +212,7 @@ pub fn migrate_punctuation(source: &str) -> Result<String, MigrationError> {
         return Err(MigrationError {
             refusals: vec![MigrationRefusal {
                 span: 0..0,
-                reason: "punctuation migration changed the program".to_string(),
+                reason: "source migration changed the program".to_string(),
             }],
         });
     }

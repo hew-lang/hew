@@ -713,11 +713,24 @@ pub(super) fn check(
                         }
                     }
                 } else if let Some(next) = target_declaration(&call.target) {
+                    let substitutions = match &caller {
+                        CallableNode::Declaration(id) => output.fn_sigs.get(id).map(|sig| {
+                            sig.type_params
+                                .iter()
+                                .cloned()
+                                .zip(type_args.iter().cloned())
+                                .collect()
+                        }),
+                        CallableNode::Closure(_) => None,
+                    }
+                    .unwrap_or_default();
                     let next_args = output
                         .call_type_args
                         .get(&call.span)
-                        .cloned()
-                        .unwrap_or_default();
+                        .into_iter()
+                        .flatten()
+                        .map(|ty| ty.substitute_named_params_parallel(&substitutions))
+                        .collect();
                     let next_env = callee_env(output, &call.span, next, &caller_env, 0);
                     queue.push_back((
                         CallableNode::Declaration(next),
@@ -1072,6 +1085,16 @@ mod tests {
     fn imported_iterator_combinators_preserve_callback_origin() {
         let source = "import std.iter;\nfn main() { var v: Vec<string> = Vec.new(); v.push(\"a\"); let result = iter.collect(iter.map(v.into_iter(), |s: string| s + \"!\")); assert(result.len() == 1); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn imported_numeric_folds_preserve_concrete_iterator_arguments() {
+        check_source(
+            "import std.iter; fn main() { let values = [1.0, 2.0].into_iter(); \
+             println(iter.sum_f64(values)); }",
+            DeterministicAdmission::ProcessEntry,
+        )
+        .expect("a numeric fold must select the concrete iterator implementation");
     }
 
     #[test]

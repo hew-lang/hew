@@ -4,6 +4,63 @@ use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
 #[test]
+fn imported_private_helpers_follow_resolved_uses_and_ignore_shadowed_names() {
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
+
+    let imported = hew_parser::parse(
+        "fn hidden() -> i64 { 99 } fn leaf() -> i64 { 7 } \
+         fn helper() -> i64 { let f = leaf; f() } \
+         pub fn run() -> i64 { let hidden = || 2; hidden() + helper() }",
+    );
+    let mut root = hew_parser::parse("import helpers; fn main() { println(helpers.run()); }");
+    assert!(imported.errors.is_empty(), "{:?}", imported.errors);
+    assert!(root.errors.is_empty(), "{:?}", root.errors);
+    let Item::Import(import) = &mut root.program.items[0].0 else {
+        panic!("import");
+    };
+    import.resolved_items = Some(imported.program.items.clone().into());
+    let root_id = ModulePath::root();
+    let imported_id = ModulePath::new(["helpers"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    for (id, items) in [
+        (imported_id.clone(), imported.program.items),
+        (root_id.clone(), root.program.items.clone()),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![imported_id, root_id];
+    root.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&root.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let lowered = lower_program(&root.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let declarations: Vec<_> = lowered
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(function) => Some(function.declaration),
+            _ => None,
+        })
+        .collect();
+    for name in ["helpers.helper", "helpers.leaf"] {
+        assert!(
+            declarations.contains(&output.defs.lookup_path(name).unwrap()),
+            "{name}"
+        );
+    }
+    assert!(!declarations.contains(&output.defs.lookup_path("helpers.hidden").unwrap()));
+}
+
+#[test]
 fn missing_checked_closure_local_fails_closed_at_its_source_site() {
     let source = "fn helper(x: i64) -> i64 { 10 } \
         fn main() { let helper = |x: i64| -> i64 { x + 1 }; println(helper(1)); }";

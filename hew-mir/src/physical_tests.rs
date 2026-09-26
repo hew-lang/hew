@@ -462,19 +462,43 @@ fn lower_source(source: &str) -> SemModule {
 #[test]
 fn physical_dyn_call_requires_the_exact_trait_method_at_its_slot() {
     let semantic = lower_source(
-        r#"
-        trait A { fn tag(self) -> string; }
-        trait B { fn tag(self) -> string; }
-        type T { v: i64 }
-        impl A for T { fn tag(self) -> string { "A" } }
-        impl B for T { fn tag(self) -> string { "B" } }
-        fn via_a(x: dyn A) -> string { x.tag() }
-        fn via_b(x: dyn B) -> string { x.tag() }
-        fn main() {
-            println(via_a(T { v: 1 }));
-            println(via_b(T { v: 2 }));
-        }
-        "#,
+        r#"trait A {
+    fn tag(self) -> string;
+}
+
+trait B {
+    fn tag(self) -> string;
+}
+
+type T {
+    v: i64;
+}
+
+impl A for T {
+    fn tag(self) -> string {
+        "A"
+    }
+}
+
+impl B for T {
+    fn tag(self) -> string {
+        "B"
+    }
+}
+
+fn via_a(x: dyn A) -> string {
+    x.tag()
+}
+
+fn via_b(x: dyn B) -> string {
+    x.tag()
+}
+
+fn main() {
+    println(via_a(T { v: 1 }));
+    println(via_b(T { v: 2 }));
+}
+"#,
     );
     let mut target = target_for_inventory(&semantic);
     let pointer = PhysicalLayout {
@@ -793,16 +817,19 @@ fn module_with_checked_add() -> SemModule {
 #[test]
 fn wire_schema_cannot_read_another_physical_field() {
     let semantic = lower_source(
-        r#"
-            #[wire]
-            type WireRecordProbe { label: string @7, code: u8 @2 }
-            fn main() {
-                let message = WireRecordProbe { label: "owned", code: 7 };
-                let encoded = message.encode();
-                let decoded = WireRecordProbe.decode(encoded);
-                println(decoded.label);
-            }
-        "#,
+        r#"#[wire]
+type WireRecordProbe {
+    label: string @7;
+    code: u8 @2;
+}
+
+fn main() {
+    let message = WireRecordProbe { label: "owned", code: 7 };
+    let encoded = message.encode();
+    let decoded = WireRecordProbe.decode(encoded);
+    println(decoded.label);
+}
+"#,
     );
     let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
         .unwrap()
@@ -897,18 +924,20 @@ fn lowers_scalar_tuple_construction_and_projection_to_explicit_ops() {
 #[test]
 fn lowers_owned_aggregate_operations_with_exact_recursive_glue() {
     let module = lower_source(
-        r#"
-            type Packet { label: string, payload: bytes }
+        r#"type Packet {
+    label: string;
+    payload: bytes;
+}
 
-            fn main() {
-                let pair = ("tuple", b"T");
-                let pair_copy = pair;
-                let tuple_label = pair_copy.0;
-                let packet = Packet { payload: b"P", label: "record" };
-                let packet_copy = packet;
-                let record_label = packet_copy.label;
-            }
-            "#,
+fn main() {
+    let pair = ("tuple", b"T");
+    let pair_copy = pair;
+    let tuple_label = pair_copy.0;
+    let packet = Packet { payload: b"P", label: "record" };
+    let packet_copy = packet;
+    let record_label = packet_copy.label;
+}
+"#,
     );
     let verified = lower_physical_module(&module, target_for_inventory(&module))
         .expect("owned aggregate physical lowering");
@@ -1009,18 +1038,31 @@ fn borrowed_aggregate_fields_retain_exact_sir_parent_dependencies() {
 #[test]
 fn projected_guard_loans_protect_fields_and_ancestors_but_not_siblings() {
     let module = lower_source(
-        r"
-            #[resource] type Ticket { id: i64 }
-            impl Ticket { fn close(consume self) {} }
-            type Pair { first: Ticket, second: Ticket }
-            fn main() {
-                var pair = Pair { first: Ticket { id: 1 }, second: Ticket { id: 2 } };
-                match pair {
-                    Pair { first: ticket, .. } if { pair.second = Ticket { id: 3 }; true } => ticket.close(),
-                    _ => {},
-                }
-            }
-            ",
+        r"#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {}
+}
+
+type Pair {
+    first: Ticket;
+    second: Ticket;
+}
+
+fn main() {
+    var pair = Pair { first: Ticket { id: 1 }, second: Ticket { id: 2 } };
+    match pair {
+        Pair { first: ticket, .. } if {
+            pair.second = Ticket { id: 3 };
+            true
+        } => ticket.close(),
+        _ => {}
+    }
+}
+",
     );
     let physical = lower_physical_module(&module, target_for_inventory(&module))
         .expect("disjoint projected guard mutation");
@@ -1158,23 +1200,29 @@ fn physical_fault_cleanup_must_end_its_field_loans() {
 
 fn borrowed_variant_fixture() -> PhysicalModule {
     let semantic = lower_source(
-        r#"
-            enum Choice { Values(Vec<string>, i64), Empty }
+        r#"enum Choice {
+    Values(Vec<string>, i64);
+    Empty;
+}
 
-            fn drive(consume choice: Option<Choice>) -> string {
-                match choice {
-                    .Some(.Values(_, 0)) => "zero",
-                    .Some(.Values(values, weight)) => { let _kept = values; "kept" }
-                    .Some(.Empty) => "empty",
-                    .None => "none",
-                }
-            }
+fn drive(consume choice: Option<Choice>) -> string {
+    match choice {
+        .Some(.Values(_, 0)) => "zero",
+        .Some(.Values(values, weight)) => {
+            let _kept = values;
+            "kept"
+        }
+        .Some(.Empty) => "empty",
+        .None => "none",
+    }
+}
 
-            fn keep_text(value: string) {}
-            fn main() {
-                keep_text(drive(.Some(Choice.Values(["word"], 7))));
-            }
-            "#,
+fn keep_text(value: string) {}
+
+fn main() {
+    keep_text(drive(.Some(Choice.Values(["word"], 7))));
+}
+"#,
     );
     lower_physical_module(&semantic, target_for_inventory(&semantic))
         .expect("probed variant payloads lower through physical storage")
@@ -1243,17 +1291,22 @@ fn physical_variant_loans_refuse_forged_dependencies_and_fields() {
 #[test]
 fn verifier_rejects_variant_payload_carriers_that_cannot_hold_every_case() {
     let module = lower_source(
-        r#"
-            enum Payload { Wide(i64, string), Empty }
+        r#"enum Payload {
+    Wide(i64, string);
+    Empty;
+}
 
-            fn main() -> i64 {
-                let payload = Payload.Wide(7, "wide");
-                match payload {
-                    .Wide(number, text) => { let copy = text; number },
-                    .Empty => 0,
-                }
-            }
-            "#,
+fn main() -> i64 {
+    let payload = Payload.Wide(7, "wide");
+    match payload {
+        .Wide(number, text) => {
+            let copy = text;
+            number
+        }
+        .Empty => 0,
+    }
+}
+"#,
     );
     let enum_ty = module.variant_shapes[0].enum_ty.clone();
     let wide = PhysicalLayout {
@@ -1325,13 +1378,16 @@ fn verifier_rejects_variant_payload_carriers_that_cannot_hold_every_case() {
 #[test]
 fn verifier_refuses_malformed_aggregate_copy_and_consumption() {
     let module = lower_source(
-        r#"
-            type Packet { first: string, second: string }
-            fn main() {
-                let packet = Packet { first: "one", second: "two" };
-                let label = packet.first;
-            }
-            "#,
+        r#"type Packet {
+    first: string;
+    second: string;
+}
+
+fn main() {
+    let packet = Packet { first: "one", second: "two" };
+    let label = packet.first;
+}
+"#,
     );
     let mut physical = lower_physical_module(&module, target_for_inventory(&module))
         .expect("valid aggregate physical lowering")
@@ -1672,19 +1728,24 @@ fn verifier_rejects_call_result_read_on_the_unwind_edge() {
 #[test]
 fn displaced_release_cannot_bypass_its_fault_dispatch() {
     let semantic = lower_source(
-        r#"
-            #[resource]
-            type Connection { id: i64 }
-            impl Connection {
-                fn close(consume self) { panic("close failed"); }
-            }
-            fn main() {
-                var values: Vec<Connection> = [];
-                values.push(Connection { id: 1 });
-                values.set(0, Connection { id: 2 });
-                println("unreached");
-            }
-            "#,
+        r#"#[resource]
+type Connection {
+    id: i64;
+}
+
+impl Connection {
+    fn close(consume self) {
+        panic("close failed");
+    }
+}
+
+fn main() {
+    var values: Vec<Connection> = [];
+    values.push(Connection { id: 1 });
+    values.set(0, Connection { id: 2 });
+    println("unreached");
+}
+"#,
     );
     let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
         .expect("displaced release lowers with fault cleanup")
@@ -2313,16 +2374,26 @@ fn collection_callback_cleanup_releases_storage_and_owns_its_fault() {
 #[test]
 fn selected_key_methods_keep_checked_physical_recipes_and_callable_bodies() {
     let semantic = lower_source(
-        r#"
-            type Key { id: i64 }
-            impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
-            type Outer { key: Key }
-            fn main() -> i64 {
-                var values: HashMap<Outer, string> = HashMap.new();
-                values.insert(Outer { key: Key { id: 7 } }, "kept");
-                values.len()
-            }
-        "#,
+        r#"type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+type Outer {
+    key: Key;
+}
+
+fn main() -> i64 {
+    var values: HashMap<Outer, string> = HashMap.new();
+    values.insert(Outer { key: Key { id: 7 } }, "kept");
+    values.len()
+}
+"#,
     );
     let target = target_for_inventory(&semantic);
     let physical = lower_physical_module(&semantic, target)
@@ -2492,12 +2563,12 @@ fn vector_values_use_shared_copy_drop_recipes_for_every_element_shape() {
         ("", "i64", "7"),
         ("", "string", "\"payload\""),
         (
-            "type Leaf { label: string, }",
+            "type Leaf {\n    label: string;\n}\n",
             "Leaf",
             "Leaf { label: \"payload\" }",
         ),
         (
-            "enum Choice { Text(string), Empty, }",
+            "enum Choice {\n    Text(string);\n    Empty;\n}\n",
             "Choice",
             "Choice.Text(\"payload\")",
         ),
@@ -2588,15 +2659,21 @@ fn vector_values_use_shared_copy_drop_recipes_for_every_element_shape() {
 #[test]
 fn vector_inventory_demands_recursive_element_shapes_without_payload_construction() {
     let module = lower_source(
-        r"
-            type Leaf { text: string, }
-            enum Tree { Value(Leaf), Children(Vec<Tree>), }
-            fn main() -> i64 {
-                let trees: Vec<Tree> = Vec.new();
-                let snapshot = trees;
-                return snapshot.len();
-            }
-        ",
+        r"type Leaf {
+    text: string;
+}
+
+enum Tree {
+    Value(Leaf);
+    Children(Vec<Tree>);
+}
+
+fn main() -> i64 {
+    let trees: Vec<Tree> = Vec.new();
+    let snapshot = trees;
+    return snapshot.len();
+}
+",
     );
     let inventory = physical_type_inventory(&module);
     assert!(inventory

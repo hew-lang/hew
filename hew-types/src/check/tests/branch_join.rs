@@ -19,13 +19,16 @@ use super::*;
 
 /// A `#[resource]` with both a discharging `close` and a plain consuming
 /// method, so tests can separate the release path from the move path.
-const SOCKET: &str = r"
-#[resource]
-type Socket { fd: i64 }
+const SOCKET: &str = r"#[resource]
+type Socket {
+    fd: i64;
+}
 
 impl Socket {
     fn close(consume self) {}
-    fn detach(consume self) -> i64 { self.fd }
+    fn detach(consume self) -> i64 {
+        self.fd
+    }
 }
 ";
 
@@ -72,15 +75,18 @@ fn assert_rejects(label: &str, body: &str) {
 fn close_in_every_match_arm_is_accepted() {
     assert_accepts(
         "match arms",
-        r"
-        fn probe(r: Result<i64, string>) {
-            let held = Socket { fd: 1 };
-            match r {
-                .Ok(_) => { held.close(); },
-                .Err(_) => { held.close(); },
-            }
+        r"fn probe(r: Result<i64, string>) {
+    let held = Socket { fd: 1 };
+    match r {
+        .Ok(_) => {
+            held.close();
         }
-        ",
+        .Err(_) => {
+            held.close();
+        }
+    }
+}
+",
     );
 }
 
@@ -88,15 +94,18 @@ fn close_in_every_match_arm_is_accepted() {
 fn move_in_every_match_arm_is_accepted() {
     assert_accepts(
         "match arms, plain consuming method",
-        r"
-        fn probe(r: Result<i64, string>) {
-            let held = Socket { fd: 1 };
-            match r {
-                .Ok(_) => { let _ = held.detach(); },
-                .Err(_) => { let _ = held.detach(); },
-            }
+        r"fn probe(r: Result<i64, string>) {
+    let held = Socket { fd: 1 };
+    match r {
+        .Ok(_) => {
+            let _ = held.detach();
         }
-        ",
+        .Err(_) => {
+            let _ = held.detach();
+        }
+    }
+}
+",
     );
 }
 
@@ -169,15 +178,18 @@ fn consume_on_a_returning_path_does_not_leak_into_the_fall_through() {
 fn consume_in_a_diverging_match_arm_does_not_leak_into_the_other_arms() {
     assert_accepts(
         "diverging match arm ordered first",
-        r"
-        fn probe(r: Result<i64, string>) -> i64 {
-            let held = Socket { fd: 1 };
-            match r {
-                .Ok(_) => { return held.detach(); },
-                .Err(_) => { held.detach() },
-            }
+        r"fn probe(r: Result<i64, string>) -> i64 {
+    let held = Socket { fd: 1 };
+    match r {
+        .Ok(_) => {
+            return held.detach();
         }
-        ",
+        .Err(_) => {
+            held.detach()
+        }
+    }
+}
+",
     );
 }
 
@@ -201,16 +213,22 @@ fn a_consume_in_one_arm_still_allows_a_consume_in_a_later_sibling_arm() {
     // arm starts from the branch-entry state, so none of them see each other.
     assert_accepts(
         "mixed arms",
-        r"
-        fn probe(n: i64) -> i64 {
-            let held = Socket { fd: 1 };
-            match n {
-                0 => { held.detach() },
-                1 => { held.close(); 0 },
-                _ => { return held.detach(); },
-            }
+        r"fn probe(n: i64) -> i64 {
+    let held = Socket { fd: 1 };
+    match n {
+        0 => {
+            held.detach()
         }
-        ",
+        1 => {
+            held.close();
+            0
+        }
+        _ => {
+            return held.detach();
+        }
+    }
+}
+",
     );
 }
 
@@ -221,16 +239,19 @@ fn use_after_a_join_where_every_arm_consumed_is_rejected() {
     // Union teeth. Accepting the arms must not make the binding live again.
     assert_rejects(
         "use after fully-consuming join",
-        r"
-        fn probe(r: Result<i64, string>) -> i64 {
-            let held = Socket { fd: 1 };
-            match r {
-                .Ok(_) => { held.close(); },
-                .Err(_) => { held.close(); },
-            }
-            held.detach()
+        r"fn probe(r: Result<i64, string>) -> i64 {
+    let held = Socket { fd: 1 };
+    match r {
+        .Ok(_) => {
+            held.close();
         }
-        ",
+        .Err(_) => {
+            held.close();
+        }
+    }
+    held.detach()
+}
+",
     );
 }
 
@@ -409,16 +430,21 @@ fn a_guard_consume_still_rejects_a_consume_in_a_later_arm() {
     // fall-through state rather than restarting from the branch entry.
     assert_rejects(
         "guard consume then sibling arm consume",
-        r"
-        fn probe(r: Result<i64, string>) -> i64 {
-            let held = Socket { fd: 1 };
-            match r {
-                .Ok(_) if held.detach() > 0 => { 10 },
-                .Err(_) => { held.detach() },
-                .Ok(_) => { 20 },
-            }
+        r"fn probe(r: Result<i64, string>) -> i64 {
+    let held = Socket { fd: 1 };
+    match r {
+        .Ok(_) if held.detach() > 0 => {
+            10
         }
-        ",
+        .Err(_) => {
+            held.detach()
+        }
+        .Ok(_) => {
+            20
+        }
+    }
+}
+",
     );
 }
 

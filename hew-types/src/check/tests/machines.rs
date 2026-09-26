@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn machine_event_type_is_an_owned_member() {
-    let source = "machine Tank { events { Tick, } state Idle, on Tick: Idle => Idle, } \
-        fn feed(event: Tank.Event) -> i64 { 1 }";
+    let source = "machine Tank {\n    events {\n        Tick;\n    }\n    state Idle;\n    on Tick: Idle => Idle;\n}\n\nfn feed(event: Tank.Event) -> i64 {\n    1\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -44,8 +43,7 @@ fn machine_event_type_is_an_owned_member() {
 
 #[test]
 fn generated_machine_parameters_keep_distinct_binding_spans() {
-    let source = "machine First { events { Go, } state Idle, on Go: Idle => Idle, } \
-        machine Second { events { Go, } state Idle, on Go: Idle => Idle, }";
+    let source = "machine First {\n    events {\n        Go;\n    }\n    state Idle;\n    on Go: Idle => Idle;\n}\n\nmachine Second {\n    events {\n        Go;\n    }\n    state Idle;\n    on Go: Idle => Idle;\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -100,9 +98,7 @@ fn generated_machine_parameters_keep_distinct_binding_spans() {
 
 #[test]
 fn flat_machine_event_spelling_has_an_owned_path_fix_it() {
-    let source = "machine Tank { events { Tick, } state Idle, on Tick: Idle => Idle, } \
-        fn feed(event: TankEvent) -> i64 { 1 } \
-        fn main() { let _ = TankEvent.Tick; }";
+    let source = "machine Tank {\n    events {\n        Tick;\n    }\n    state Idle;\n    on Tick: Idle => Idle;\n}\n\nfn feed(event: TankEvent) -> i64 {\n    1\n}\n\nfn main() {\n    let _ = TankEvent.Tick;\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -178,9 +174,9 @@ fn machine_rejects_direct_and_transitive_effects() {
 #[test]
 fn machine_requires_guard_fallback_and_target_payload() {
     for source in [
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened when true, on Open: Opened => Opened, } fn main() {}",
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened { .Closed } default { state } } fn main() {}",
-        "machine Gate { events { Open, } state Closed, state Opened { label: string }, on Open: Closed => Opened { label: 3 } default { state } } fn main() {}",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened when true;\n    on Open: Opened => Opened;\n}\n\nfn main() {}\n",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened {\n        .Closed\n    }\n    default { state }\n}\n\nfn main() {}\n",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened { label: string; }\n    on Open: Closed => Opened { label: 3 }\n    default { state }\n}\n\nfn main() {}\n",
     ] {
         let parsed = hew_parser::parse(source);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -191,7 +187,7 @@ fn machine_requires_guard_fallback_and_target_payload() {
 
 #[test]
 fn machine_step_report_uses_normal_must_use_diagnostic() {
-    let source = "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened, default { state } } fn main() { var gate: Gate = .Closed; gate.step(.Open); }";
+    let source = "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened;\n    default { state }\n}\n\nfn main() {\n    var gate: Gate = .Closed;\n    gate.step(.Open);\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -208,7 +204,7 @@ fn machine_step_report_uses_normal_must_use_diagnostic() {
 
 #[test]
 fn ordinary_machine_preserves_original_declaration_occurrence() {
-    let parsed = hew_parser::parse("machine Gate { events { Open, } state Closed, state Opened, default { state } } pub fn after() -> i64 { 7 } fn main() {}");
+    let parsed = hew_parser::parse("machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    default { state }\n}\n\npub fn after() -> i64 {\n    7\n}\n\nfn main() {}\n");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let machine_span = parsed.program.items[0].1.clone();
     let function_span = parsed.program.items[1].1.clone();
@@ -255,7 +251,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     }
 
     let machine = hew_parser::parse(
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened, default { state } }",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened;\n    default { state }\n}\n",
     );
     assert!(machine.errors.is_empty(), "{:?}", machine.errors);
 

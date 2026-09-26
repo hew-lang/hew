@@ -2,9 +2,9 @@
 import std.stream;
 
 actor MailboxWorker {
-    var processed: i64,
+    var processed: i64;
 
-    mailbox 4 overflow drop_new,
+    mailbox 4 overflow drop_new;
     // Holds the actor until its gate opens, so the flood behind it must
     // overflow the bounded mailbox.
     receive fn hold(gate: stream.Stream<i64>) {

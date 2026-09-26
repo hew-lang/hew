@@ -74,8 +74,7 @@ fn private_type_cross_module_emits_visibility_error() {
     let output = check_with_module(
         "shapes",
         // module: private record type
-        "type Point { x: i64, y: i64 }\n\
-         pub fn origin() -> i64 { 0 }\n",
+        "type Point {\n    x: i64;\n    y: i64;\n}\n\npub fn origin() -> i64 {\n    0\n}\n",
         // main: cross-module type reference via qualified name
         "import shapes;\nfn locate(p: shapes.Point) -> i64 { 0 }\nfn main() {}\n",
     );
@@ -178,7 +177,7 @@ fn private_fn_same_module_accepted() {
 fn pub_type_cross_module_accepted() {
     let output = check_with_module(
         "shapes",
-        "pub type Point { x: i64, y: i64 }\n",
+        "pub type Point {\n    x: i64;\n    y: i64;\n}\n",
         "import shapes;\nfn locate(p: shapes.Point) -> i64 { 0 }\nfn main() {}\n",
     );
 
@@ -276,8 +275,7 @@ fn package_type_same_package_accepted() {
     let dir = support::tempdir();
     fs::write(
         dir.path().join("mod_a.hew"),
-        "package type Hidden { value: i64 }\n\
-         pub fn make_hidden(v: i64) -> Hidden { Hidden { value: v } }\n",
+        "package type Hidden {\n    value: i64;\n}\n\npub fn make_hidden(v: i64) -> Hidden {\n    Hidden { value: v }\n}\n",
     )
     .expect("write mod_a");
     fs::write(
@@ -312,8 +310,7 @@ fn package_type_cross_package_rejected() {
     fs::create_dir(&subpkg).expect("create subpkg dir");
     fs::write(
         subpkg.join("shapes.hew"),
-        "package type Point { x: i64, y: i64 }\n\
-         pub fn origin() -> i64 { 0 }\n",
+        "package type Point {\n    x: i64;\n    y: i64;\n}\n\npub fn origin() -> i64 {\n    0\n}\n",
     )
     .expect("write shapes");
     fs::write(

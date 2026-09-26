@@ -14,11 +14,9 @@ fn main() {
     let solo = instant.now();
     sleep_until(solo + 50ms);
     println(solo.elapsed().millis() >= 50);
-
     let past = instant.now() - 1s;
     sleep_until(past);
     println("past deadline returned");
-
     let a = spawn Sleeper();
     let b = spawn Sleeper();
     let start = instant.now();
@@ -35,7 +33,15 @@ fn main() {
     let elapsed = start.elapsed().millis();
     println(elapsed >= 300);
     println(elapsed < 500);
-    close(a);
-    close(b);
+    {
+        let __hew_migrated_actor_1175 = a;
+        stop(__hew_migrated_actor_1175);
+        stopped(__hew_migrated_actor_1175);
+    };
+    {
+        let __hew_migrated_actor_1189 = b;
+        stop(__hew_migrated_actor_1189);
+        stopped(__hew_migrated_actor_1189);
+    };
     println("closed");
 }

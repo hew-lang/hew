@@ -33,14 +33,15 @@ extern "C" {
 #[test]
 fn borrowing_close_on_resource_type_is_rejected() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(self) {}
-        }
-        ",
+impl Socket {
+    fn close(self) {}
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| error
@@ -75,13 +76,14 @@ fn borrowing_close_on_opaque_type_is_rejected() {
 #[test]
 fn borrowing_close_on_unmarked_type_stays_legal() {
     let output = check_source(
-        r"
-        type Widget { fd: i64 }
+        r"type Widget {
+    fd: i64;
+}
 
-        impl Widget {
-            fn close(self) {}
-        }
-        ",
+impl Widget {
+    fn close(self) {}
+}
+",
     );
     assert!(
         !output.errors.iter().any(|error| error
@@ -95,20 +97,23 @@ fn borrowing_close_on_unmarked_type_stays_legal() {
 #[test]
 fn resource_close_discharges_and_moves_the_receiver() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(consume self) {}
-            fn status(self) -> i64 { self.fd }
-        }
+impl Socket {
+    fn close(consume self) {}
+    fn status(self) -> i64 {
+        self.fd
+    }
+}
 
-        fn probe(consume socket: Socket) -> i64 {
-            socket.close();
-            socket.status()
-        }
-        ",
+fn probe(consume socket: Socket) -> i64 {
+    socket.close();
+    socket.status()
+}
+",
     );
     assert!(
         output
@@ -124,21 +129,26 @@ fn resource_close_discharges_and_moves_the_receiver() {
 #[test]
 fn non_close_consuming_method_moves_the_receiver() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(consume self) {}
-            fn detach(consume self) -> i64 { self.fd }
-            fn status(self) -> i64 { self.fd }
-        }
+impl Socket {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
+        self.fd
+    }
+    fn status(self) -> i64 {
+        self.fd
+    }
+}
 
-        fn probe(consume socket: Socket) -> i64 {
-            let _ = socket.detach();
-            socket.status()
-        }
-        ",
+fn probe(consume socket: Socket) -> i64 {
+    let _ = socket.detach();
+    socket.status()
+}
+",
     );
     assert!(
         output
@@ -158,19 +168,20 @@ fn non_close_consuming_method_moves_the_receiver() {
 #[test]
 fn resource_close_discharge_rejects_a_second_close() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(consume self) {}
-        }
+impl Socket {
+    fn close(consume self) {}
+}
 
-        fn bad(consume socket: Socket) {
-            socket.close();
-            socket.close();
-        }
-        ",
+fn bad(consume socket: Socket) {
+    socket.close();
+    socket.close();
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -1367,7 +1378,7 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
 fn machine_state_resource_payload_rejects() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
-        "type Tok { id: i64 }\n",
+        "type Tok {\n    id: i64;\n}\n",
         "impl Tok { fn close(consume self) { } }\n",
         "machine Gate {\n",
         "    events { Open, Shut, }\n",
@@ -1394,9 +1405,9 @@ fn machine_state_resource_payload_rejects_transitively() {
     // resource is the same leak.
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
-        "type Tok { id: i64 }\n",
+        "type Tok {\n    id: i64;\n}\n",
         "impl Tok { fn close(consume self) { } }\n",
-        "type Wrap { t: Tok }\n",
+        "type Wrap {\n    t: Tok;\n}\n",
         "machine Gate {\n",
         "    events { Open, }\n",
         "    state Closed,\n",
@@ -1440,9 +1451,9 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
     // walk applies only to builtin/unregistered generics).
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
-        "type Tok { id: i64 }\n",
+        "type Tok {\n    id: i64;\n}\n",
         "impl Tok { fn close(consume self) { } }\n",
-        "type Phantom<T> { id: i64 }\n",
+        "type Phantom<T> {\n    id: i64;\n}\n",
         "machine Gate {\n",
         "    events { Open, }\n",
         "    state Closed,\n",
@@ -1468,17 +1479,26 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
 /// without `close`.
 #[test]
 fn resource_handle_field_is_affine_outside_close() {
-    let prelude = r#"
-        #[opaque]
-        type Dq {}
-        extern "C" {
-            fn hew_deque_len(dq: Dq) -> i64;
-            fn hew_deque_free(consume dq: Dq);
-        }
-        type Pair { a: Dq }
-        #[resource]
-        type Value { handle: Dq, inner: Pair, spare: Option<Dq> }
-    "#;
+    let prelude = r#"#[opaque]
+type Dq {
+}
+
+extern "C" {
+    fn hew_deque_len(dq: Dq) -> i64;
+    fn hew_deque_free(consume dq: Dq);
+}
+
+type Pair {
+    a: Dq;
+}
+
+#[resource]
+type Value {
+    handle: Dq;
+    inner: Pair;
+    spare: Option<Dq>;
+}
+"#;
     let close = "fn close(consume self) {
         unsafe { hew_deque_free(self.handle) };
         unsafe { hew_deque_free(self.inner.a) };

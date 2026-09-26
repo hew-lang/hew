@@ -1,19 +1,5 @@
-//! Identity-authority batch (plans/identity-authority-final.md section 6):
-//! acceptance oracles for the wrong-result families the audit confirmed on
-//! `origin/integration/v060-rc4` (8a786c595). This is L0 scaffolding: every
-//! test here is a known failure until the carriers land (P1-B5) and fixes
-//! the family it names; the ratchet row in
-//! `scripts/nextest-expected-failures.tsv` carries the same reason. A lane
-//! that fixes a family deletes both the ratchet row and this file's
-//! now-passing assertion's `#[ignore]`/expected-failure status in the same
-//! change — never widens the expectation to match wrong output.
-//!
-//! `accept/` fixtures currently run and print the audit's WRONG (run)
-//! output; the `.expected` file holds the TARGET output from section 6, so
-//! the assertion here fails until the family is fixed. `reject/` fixtures
-//! currently either wrongly accept the program (unsound) or refuse it with
-//! the wrong diagnostic; each test names the target diagnostic and asserts
-//! against it.
+//! Source acceptance for declaration identity, lexical lookup and trait selection.
+//! Remaining known failures are recorded in tests/expected-failures.tsv.
 
 mod support;
 
@@ -186,29 +172,12 @@ fn identity_w2b_ord_predicate_bound_not_implied_by_spelling() {
     assert_eq!(stdout, "5\n");
 }
 
-/// W11 (compiler-minted spelling as a string): a machine's companion event
-/// type collision must be reported as an ordinary duplicate-declaration
-/// diagnostic that names the owning machine. Known failure: the diagnostic
-/// exists (the refusal itself is already correct, FC per section 1.5) but
-/// its note points at the `type SlotEvent` declaration, not at
-/// `machine Slot`, because the companion is a string in `known_types`
-/// rather than a `DefId`-backed declaration.
+/// A machine's member event type does not capture a similarly named user type.
 #[test]
-fn identity_w9a_machine_event_collision_names_the_machine() {
-    let (ok, combined) = check_reject_fixture("identity_w9a");
-    assert!(
-        !ok,
-        "SlotEvent collision must still be refused; got success:\n{combined}"
-    );
-    assert!(
-        combined.contains("SlotEvent") && combined.contains("defined multiple times"),
-        "expected the duplicate-declaration diagnostic; got:\n{combined}"
-    );
-    assert!(
-        combined.contains("machine Slot") && combined.contains("declares its event type"),
-        "target note: \"machine Slot declares its event type SlotEvent here\"; \
-         got:\n{combined}"
-    );
+fn identity_w9a_machine_event_and_user_type_coexist() {
+    let (ok, stdout) = run_accept_fixture("identity_w9a");
+    assert!(ok, "Slot.Event and SlotEvent must coexist");
+    assert_eq!(stdout, "4\nFilling\n");
 }
 
 /// W1 (R1): two traits' `tag` methods on a struct and on a primitive, plus

@@ -1,10 +1,22 @@
-type Inner { label: string, values: Vec<i64> }
-type Envelope { payload: Inner }
-actor ProbeSink { 
-    var seen: i64,
-    receive fn take(message: Envelope) { seen = seen + 1; }
-    receive fn count() -> i64 { seen }
+type Inner {
+    label: string;
+    values: Vec<i64>;
 }
+
+type Envelope {
+    payload: Inner;
+}
+
+actor ProbeSink {
+    var seen: i64;
+    receive fn take(message: Envelope) {
+        seen = seen + 1;
+    }
+    receive fn count() -> i64 {
+        seen
+    }
+}
+
 fn main() -> i64 {
     let sink = spawn ProbeSink(seen: 0);
     var i: i64 = 0;
@@ -13,5 +25,12 @@ fn main() -> i64 {
         let _ = sink.take(message);
         i = i + 1;
     }
-    match sink.count() { .Ok(n) => if n == 50 { 0 } else { 73 }, .Err(_) => 74 }
+    match sink.count() {
+        .Ok(n) => if n == 50 {
+            0
+        } else {
+            73
+        }
+        .Err(_) => 74,
+    }
 }

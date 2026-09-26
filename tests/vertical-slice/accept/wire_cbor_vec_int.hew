@@ -3,7 +3,7 @@
 // 42, so a dropped or reordered element changes the exit code.
 #[wire]
 type ListHolder {
-    items: Vec<i64> @1,
+    items: Vec<i64> @1;
 }
 
 fn main() -> i64 {
@@ -13,6 +13,8 @@ fn main() -> i64 {
     xs.push(12);
     let h = ListHolder { items: xs };
     let back = ListHolder.decode(h.encode());
-    if back.items.len() != 3 { return 1; }
+    if back.items.len() != 3 {
+        return 1;
+    }
     back.items[0] + back.items[1] + back.items[2]
 }

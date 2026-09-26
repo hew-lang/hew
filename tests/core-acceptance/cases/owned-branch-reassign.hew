@@ -8,7 +8,6 @@ fn main() -> i64 {
     if label != "HOT" {
         return 1;
     }
-
     let keep_label = false;
     if keep_label {
         label = "wrong".to_upper();

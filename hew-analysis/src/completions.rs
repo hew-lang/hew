@@ -1369,10 +1369,7 @@ mod tests {
     /// the file-local actor keeps its bare label.
     #[test]
     fn spawn_completions_disambiguate_same_named_module_actors() {
-        let actor_src = "pub actor Account {\n\
-                         \x20   var n: i64 = 0,\n\
-                         \x20   receive fn who() -> i64 { 1 }\n\
-                         }\n";
+        let actor_src = "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n";
         // Checked program (parsable shape) supplies the imported actors.
         let output = type_check_with_modules(
             "actor Local {}\nfn main() { }\n",
@@ -1444,16 +1441,28 @@ mod tests {
     #[test]
     fn completions_surface_impl_block_methods_with_return_type() {
         let source = "\
-type Caps { count: i64, }
-type Matcher { id: i64, }
+type Caps {
+    count: i64;
+}
+
+type Matcher {
+    id: i64;
+}
+
 trait MatcherMethods {
     fn captures(self, input: string) -> Caps;
     fn find_all(self, input: string) -> Vec<string>;
 }
+
 impl MatcherMethods for Matcher {
-    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
-    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec.new() }
+    fn captures(m: Matcher, input: string) -> Caps {
+        Caps { count: 0 }
+    }
+    fn find_all(m: Matcher, input: string) -> Vec<string> {
+        Vec.new()
+    }
 }
+
 fn probe(mat: Matcher, s: string) {
     let c = mat.captures(s);
 }
@@ -1568,13 +1577,14 @@ fn probe(mat: Matcher, s: string) {
     #[test]
     fn struct_init_completions_offer_field_names() {
         let source = r"type Point {
-    x: i32,
-    y: i32,
+    x: i32;
+    y: i32;
 }
 
 fn example() {
-    let point = Point { /*cursor*/ };
-}";
+    let point = Point { /*cursor*/  };
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1587,12 +1597,13 @@ fn example() {
     #[test]
     fn struct_init_completions_include_field_type_detail() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 fn example() {
-    let point = Point { /*cursor*/ };
-}";
+    let point = Point { /*cursor*/  };
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));
 
@@ -1632,13 +1643,14 @@ fn example() {
     #[test]
     fn struct_init_completions_do_not_fire_for_enum_types() {
         let source = r"enum Color {
-    Red,
-    Blue,
+    Red;
+    Blue;
 }
 
 fn example() {
-    let color = Color { /*cursor*/ };
-}";
+    let color = Color { /*cursor*/  };
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1652,14 +1664,15 @@ fn example() {
     #[test]
     fn enum_variant_completions_offer_all_variants() {
         let source = r"enum Color {
-    Blue,
-    Point { x: i32, y: i32 },
-    Rgb(u8, u8, u8),
+    Blue;
+    Point { x: i32; y: i32;  }
+    Rgb(u8, u8, u8);
 }
 
 fn example() {
-    let color = Color./*cursor*/Blue;
-}";
+    let color = Color. /*cursor*/ Blue;
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1675,12 +1688,13 @@ fn example() {
     #[test]
     fn enum_variant_completions_do_not_fire_for_struct_type() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 fn example() {
-    let point = Point./*cursor*/new();
-}";
+    let point = Point. /*cursor*/ new();
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1710,14 +1724,15 @@ fn example() {
     #[test]
     fn enum_variant_completions_include_payload_detail() {
         let source = r"enum Color {
-    Blue,
-    Point { x: i32, y: i32 },
-    Rgb(u8, u8, u8),
+    Blue;
+    Point { x: i32; y: i32;  }
+    Rgb(u8, u8, u8);
 }
 
 fn example() {
-    let color = Color./*cursor*/Blue;
-}";
+    let color = Color. /*cursor*/ Blue;
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));
 
@@ -1922,13 +1937,17 @@ impl Box {
         // This test uses an empty module registry (no stdlib), so `tell` won't
         // appear here; it is covered by the stdlib-loaded hew-lsp integration test.
         let source = r"actor Counter {
-    count: i64,
-    receive fn increment(n: i64) { count = count + n; }
+    let count: i64;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
 }
+
 fn main() {
     let c = spawn Counter(count: 0);
-    c./*cursor*/increment(1);
-}";
+    c. /*cursor*/ increment(1);
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
@@ -1944,19 +1963,23 @@ fn main() {
 
     #[test]
     fn rejected_completion_offers_recovery_without_exposing_payload_fields() {
-        let source = r#"
-            actor Worker { receive fn echo(value: string) -> string { value } }
-            fn main() {
-                let worker = policy(spawn Worker(), on_full: .Reject);
-                let result = worker.echo("hello");
-                match result {
-                    .Err(ActorError.Rejected(failure)) => {
-                        let _ = failure.message./*cursor*/retry();
-                    },
-                    _ => {},
-                }
-            }
-        "#;
+        let source = r#"actor Worker {
+    receive fn echo(value: string) -> string {
+        value
+    }
+}
+
+fn main() {
+    let worker = policy(spawn Worker(), on_full: .Reject);
+    let result = worker.echo("hello");
+    match result {
+        .Err(ActorError.Rejected(failure)) => {
+            let _ = failure.message. /*cursor*/ retry();
+        }
+        _ => {}
+    }
+}
+"#;
         let tc = type_check(&source.replace(CURSOR, ""));
         assert!(tc.errors.is_empty(), "{:?}", tc.errors);
         let items = items_at_cursor(source, Some(&tc));

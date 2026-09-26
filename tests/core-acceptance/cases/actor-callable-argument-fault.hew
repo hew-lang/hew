@@ -3,10 +3,18 @@ actor Worker {
         println(op(value));
     }
 }
-fn fail() -> i64 { panic("later actor argument"); }
+
+fn fail() -> i64 {
+    panic("later actor argument");
+}
+
 fn main() {
     let worker = spawn Worker;
     let captured = ["captured".to_upper(), "owner".to_upper()];
     worker.apply(move |value| captured.len() + value, fail()).expect("unreachable");
-    close(worker);
+    {
+        let __hew_migrated_actor_360 = worker;
+        stop(__hew_migrated_actor_360);
+        stopped(__hew_migrated_actor_360);
+    };
 }

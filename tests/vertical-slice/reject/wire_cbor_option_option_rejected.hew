@@ -4,7 +4,7 @@
 // at check time rather than silently collapsing them.
 #[wire]
 type Nested {
-    x: Option<Option<i64>> @1,
+    x: Option<Option<i64>> @1;
 }
 
 fn main() -> i64 {
@@ -14,7 +14,7 @@ fn main() -> i64 {
         .Some(inner) => match inner {
             .Some(v) => v,
             .None => 2,
-        },
+        }
         .None => 3,
     }
 }

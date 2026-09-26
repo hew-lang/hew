@@ -10,7 +10,9 @@
 fn main() -> i64 {
     var x = 5;
     let r = {
-        defer { x = 99; };
+        defer {
+            x = 99;
+        }
         x
     };
     r

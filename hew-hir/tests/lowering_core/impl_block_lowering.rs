@@ -60,19 +60,18 @@ fn assert_no_top_level_item_unsupported(output: &hew_hir::LowerOutput) {
 #[test]
 fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
     let output = lower(
-        r"
-        pub type VecIter<T> {
-            idx: i64,
-        }
+        r"pub type VecIter<T> {
+    idx: i64;
+}
 
-        impl<T> Iterator for VecIter<T> {
-            type Item = T;
+impl<T> Iterator for VecIter<T> {
+    type Item = T;
 
-            fn next(it: VecIter<T>) -> Option<T> {
-                .None
-            }
-        }
-        ",
+    fn next(it: VecIter<T>) -> Option<T> {
+        .None
+    }
+}
+",
     );
 
     assert_no_top_level_item_unsupported(&output);
@@ -134,17 +133,16 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
 #[test]
 fn inherent_impl_on_user_nominal_lowers_methods() {
     let output = lower(
-        r"
-        pub type Counter {
-            n: i64,
-        }
+        r"pub type Counter {
+    n: i64;
+}
 
-        impl Counter {
-            fn get(c: Counter) -> i64 {
-                c.n
-            }
-        }
-        ",
+impl Counter {
+    fn get(c: Counter) -> i64 {
+        c.n
+    }
+}
+",
     );
 
     assert_no_top_level_item_unsupported(&output);
@@ -185,19 +183,18 @@ fn index_impl_still_lowers_unchanged() {
     // that other fixtures (vec_index_lowering, index_trait_lowering) rely on
     // implicitly for the rewrite-table consumer.
     let output = lower(
-        r"
-        type Grid {
-            bias: i32,
-        }
+        r"type Grid {
+    bias: i32;
+}
 
-        impl Index for Grid {
-            type Output = i32;
+impl Index for Grid {
+    type Output = i32;
 
-            fn at(g: Grid, key: i32) -> i32 {
-                g.bias + key
-            }
-        }
-        ",
+    fn at(g: Grid, key: i32) -> i32 {
+        g.bias + key
+    }
+}
+",
     );
 
     assert_no_top_level_item_unsupported(&output);
@@ -217,21 +214,20 @@ fn impl_block_with_single_bound_where_clause_lowers() {
     // at the use site); HIR lowering simply admits the impl and threads its
     // methods through the regular flatten-to-`HirItem::Function` path.
     let output = lower(
-        r"
-        pub trait Eq {
-            fn eq(a: Self, b: Self) -> bool;
-        }
+        r"pub trait Eq {
+    fn eq(a: Self, b: Self) -> bool;
+}
 
-        pub type Wrap<T> {
-            inner: T,
-        }
+pub type Wrap<T> {
+    inner: T;
+}
 
-        impl<T> Wrap<T> where T: Eq {
-            fn first(w: Wrap<T>) -> Wrap<T> {
-                w
-            }
-        }
-        ",
+impl<T> Wrap<T> where T: Eq {
+    fn first(w: Wrap<T>) -> Wrap<T> {
+        w
+    }
+}
+",
     );
 
     assert_no_top_level_item_unsupported(&output);
@@ -266,25 +262,24 @@ fn impl_block_with_multi_bound_where_clause_lowers() {
     // Both the single-bound and multi-bound forms must lower cleanly and emit
     // the impl's method as a top-level `HirItem::Function`.
     let output = lower(
-        r"
-        pub trait Eq {
-            fn eq(a: Self, b: Self) -> bool;
-        }
+        r"pub trait Eq {
+    fn eq(a: Self, b: Self) -> bool;
+}
 
-        pub trait Ord {
-            fn cmp(a: Self, b: Self) -> i64;
-        }
+pub trait Ord {
+    fn cmp(a: Self, b: Self) -> i64;
+}
 
-        pub type Wrap<T> {
-            inner: T,
-        }
+pub type Wrap<T> {
+    inner: T;
+}
 
-        impl<T> Wrap<T> where T: Eq + Ord {
-            fn first(w: Wrap<T>) -> Wrap<T> {
-                w
-            }
-        }
-        ",
+impl<T> Wrap<T> where T: Eq + Ord {
+    fn first(w: Wrap<T>) -> Wrap<T> {
+        w
+    }
+}
+",
     );
 
     assert_no_top_level_item_unsupported(&output);
@@ -318,21 +313,20 @@ fn impl_block_with_where_clause_on_non_type_param_emits_fail_closed_shape_diagno
     // `where Wrap<T>: Eq`) are outside V0b's sufficient surface — γ1 only
     // admits predicates on the impl's own type parameters.
     let output = lower(
-        r"
-        pub trait Eq {
-            fn eq(a: Self, b: Self) -> bool;
-        }
+        r"pub trait Eq {
+    fn eq(a: Self, b: Self) -> bool;
+}
 
-        pub type Wrap<T> {
-            inner: T,
-        }
+pub type Wrap<T> {
+    inner: T;
+}
 
-        impl<T> Wrap<T> where Wrap<T>: Eq {
-            fn first(w: Wrap<T>) -> Wrap<T> {
-                w
-            }
-        }
-        ",
+impl<T> Wrap<T> where Wrap<T>: Eq {
+    fn first(w: Wrap<T>) -> Wrap<T> {
+        w
+    }
+}
+",
     );
 
     let shape_diag = output.diagnostics.iter().find_map(|d| {

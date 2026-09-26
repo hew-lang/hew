@@ -4,6 +4,6 @@
 fn main() {
     let base = 10;
     let add_base = |n: i64| base + n;
-    println(add_base(5));  // 15
-    println(add_base(0));  // 10
+    println(add_base(5)); // 15
+    println(add_base(0)); // 10
 }

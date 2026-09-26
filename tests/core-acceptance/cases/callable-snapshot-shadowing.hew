@@ -7,7 +7,7 @@ fn main() -> i64 {
         let shadow: fn[clone]() -> string = || label;
         println(shadow());
         println(snapshot());
-    }
+    };
     println(label);
     println(snapshot());
     let count = 90;

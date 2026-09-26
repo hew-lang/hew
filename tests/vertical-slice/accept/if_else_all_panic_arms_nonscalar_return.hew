@@ -11,8 +11,8 @@
 //! abort at compile time.
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 fn pick(tag: i64) -> Point {

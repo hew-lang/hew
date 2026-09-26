@@ -1,9 +1,19 @@
 #[wire]
-type Inner { name: string @1, }
+type Inner {
+    name: string @1;
+}
+
 #[wire]
-enum PayloadGood { Empty, Full(string, Vec<string>, Inner), }
+enum PayloadGood {
+    Empty;
+    Full(string, Vec<string>, Inner);
+}
+
 #[wire]
-enum PayloadBad { Empty, Full(string, i64, Inner), }
+enum PayloadBad {
+    Empty;
+    Full(string, i64, Inner);
+}
 
 fn main() -> i64 {
     var tags: Vec<string> = Vec.new();
@@ -12,5 +22,8 @@ fn main() -> i64 {
     let p = PayloadGood.Full("owned-field-a-value", tags, Inner { name: "inner-owned-name" });
     let raw = p.encode();
     let bad = PayloadBad.decode(raw);
-    match bad { PayloadBad.Empty => 0, PayloadBad.Full(_, n, _) => n, }
+    match bad {
+        PayloadBad.Empty => 0,
+        PayloadBad.Full(_, n, _) => n,
+    }
 }

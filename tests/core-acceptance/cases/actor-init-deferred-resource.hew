@@ -1,8 +1,8 @@
 import std.stream;
 
 actor Loader {
-    var label: string,
-    var input: Stream<string>,
+    var label: string;
+    var input: Stream<string>;
     init(path: string) {
         label = path.to_upper();
         input = match stream.open(path) {
@@ -10,12 +10,18 @@ actor Loader {
             .Err(_) => panic("fixture open failed"),
         };
     }
-    receive fn describe() -> string { label }
+    receive fn describe() -> string {
+        label
+    }
 }
 
 fn main() {
     let loader = spawn Loader(path: "resource-read.bin");
     println(loader.describe().expect("describe"));
-    close(loader);
+    {
+        let __hew_migrated_actor_488 = loader;
+        stop(__hew_migrated_actor_488);
+        stopped(__hew_migrated_actor_488);
+    };
     println("released");
 }

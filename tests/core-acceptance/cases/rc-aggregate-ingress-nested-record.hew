@@ -1,6 +1,15 @@
-type Node { id: i64, }
-type Inner { r: Rc<Node>, }
-type Outer { i: Inner, tag: string, }
+type Node {
+    id: i64;
+}
+
+type Inner {
+    r: Rc<Node>;
+}
+
+type Outer {
+    i: Inner;
+    tag: string;
+}
 
 fn frame(seed: i64) -> i64 {
     let shared: Rc<Node> = Rc.new(Node { id: seed });
@@ -11,7 +20,7 @@ fn frame(seed: i64) -> i64 {
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for seed in 0..50 {
+    for seed in 0 .. 50 {
         total = total + frame(seed);
         println("frame");
     }

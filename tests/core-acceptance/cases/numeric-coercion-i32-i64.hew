@@ -14,17 +14,14 @@ fn main() -> i32 {
     var passed = 0;
     passed = passed + get_code();
     println(f"accumulated {passed}");
-
     var wide: i64 = 100;
     wide = wide + get_code();
     println(f"wide {wide}");
     println(f"call {total_i64(8)}");
-
     let narrow: i32 = 2;
     let literal = 3;
     let product: i32 = literal * narrow;
     println(f"product {product}");
-
     var index = 0;
     let sizes: Vec<i64> = [10, 20, 30];
     var sum: i64 = 0;

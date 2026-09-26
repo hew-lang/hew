@@ -9,13 +9,13 @@ fn serve_forever(server: Server) {
         match path {
             "/" => {
                 req.respond_text(200, "Hello from Hew!").expect("respond_text succeeds");
-            },
+            }
             "/health" => {
                 req.respond_text(200, "OK").expect("respond_text succeeds");
-            },
+            }
             _ => {
                 req.respond_text(404, "Not Found").expect("respond_text succeeds");
-            },
+            }
         }
     }
 }
@@ -25,11 +25,11 @@ fn main() {
     match http.listen("0.0.0.0:18080") {
         .Ok(server) => {
             serve_forever(server);
-        },
+        }
         .Err(err) => {
             let reason = to_string(err);
             let detail = http.listen_error();
             println(f"cannot listen on 0.0.0.0:18080: {reason} - {detail}");
-        },
+        }
     }
 }

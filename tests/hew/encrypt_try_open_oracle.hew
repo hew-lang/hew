@@ -51,10 +51,10 @@ fn main() {
             match err {
                 CryptoError.AuthFailed => {
                     survived = true;
-                },
+                }
                 _ => panic(f"expected AuthFailed, got {err}"),
             }
-        },
+        }
     }
     assert(survived);
     assert(40 + 2 == 42);

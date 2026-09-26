@@ -17,7 +17,6 @@ fn main() {
     let x: f64 = 43.6;
     let bits = x.to_bits();
     assert(math.from_bits(bits) == x);
-
     let neg_x: f64 = -43.6;
     let neg_bits = neg_x.to_bits();
     assert(math.from_bits(neg_bits) == neg_x);
@@ -35,7 +34,6 @@ fn main() {
     assert(!nan.is_finite());
     assert(!nan.is_infinite());
     assert(!x.is_nan());
-
     let pos_inf = make_pos_inf();
     let neg_inf = make_neg_inf();
     assert(pos_inf.is_infinite());
@@ -72,6 +70,5 @@ fn main() {
     assert(huge as u32 == 4294967295);
     assert(neg_huge as u32 == 0);
     assert(nan as u32 == 0);
-
     println("float methods classify NaN, infinity, sign and bit patterns correctly");
 }

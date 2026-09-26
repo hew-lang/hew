@@ -1,9 +1,10 @@
 // The aliased re-exported supertrait edge resolves to its original Base impl.
 import hew.reexsubalias.{SubA};
+
 import hew.reexbase.{Base};
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl Base for W {

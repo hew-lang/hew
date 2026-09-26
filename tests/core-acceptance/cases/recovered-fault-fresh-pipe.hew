@@ -2,7 +2,9 @@ import std.stream;
 
 actor Worker {
     receive fn make_pipe() -> Stream<i64> {
-        scope { panic("handled before pipe"); } handle failure {
+        scope {
+            panic("handled before pipe");
+        } handle failure {
             match failure {
                 .Fault { message } => println("recovered"),
                 .Deadline { message } => panic("unexpected deadline"),
@@ -23,5 +25,9 @@ fn main() {
         .None => println("clean end"),
         .Some(_) => panic("unexpected second value"),
     }
-    close(worker);
+    {
+        let __hew_migrated_actor_810 = worker;
+        stop(__hew_migrated_actor_810);
+        stopped(__hew_migrated_actor_810);
+    };
 }

@@ -13,12 +13,12 @@ fn sum_evens(v: Vec<i64>) -> i64 {
     while i < v.len() {
         let n = match v.get(i) {
             .Some(x) => x,
-            .None => break,
+            .None => break
         };
         i = i + 1;
         match n % 2 {
             0 => {}
-            _ => continue,
+            _ => continue
         }
         total = total + n;
     }

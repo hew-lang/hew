@@ -1123,6 +1123,7 @@ struct LowerCtx {
     /// every fail-open / boundary-violation site. Zero behaviour change in
     /// Phase 1; Phase 2 promotes this to the primary read path.
     resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a
     /// value expression to lower through lexical bindings.
@@ -1558,8 +1559,7 @@ struct LowerCtx {
     /// `"subpkg.helper"`): `None` for root items, `Some(path.join("."))` for
     /// imported package/file modules.  Mirrors the checker's
     /// `Checker::current_module` EXACTLY (same `mod_id.path.join(".")`
-    /// derivation) so the per-module alias map key in `resolve_named_type_ref`
-    /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
+    /// derivation) so per-module alias lookups agree with the checker's inserts for depth-≥2
     /// importers; the short last segment would diverge and miss.
     current_module_name: Option<String>,
     /// Exact checker-minted source module selected by the parser's per-file
@@ -1569,15 +1569,12 @@ struct LowerCtx {
     declaration_module_by_file_index: HashMap<u32, hew_types::ModuleId>,
     /// Immutable checker declaration authority. This view cannot mint.
     defs: std::sync::Arc<hew_types::DefTable>,
-    type_aliases: HashMap<hew_types::DefId, hew_types::TypeAliasDef>,
     /// Checker-authoritative import resolution table: maps `(importer_module,
     /// source spelling)` → canonical qualified source identity for named/glob
     /// imports and canonical lifecycle whole-module aliases.
     ///
     /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
     /// at `LowerCtx::new` time and consulted in:
-    /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)` or
-    ///   `fn f(x: lifecycle.CrashNotification)`).
     /// - `lookup_variant_ctor`: `Tag::Variant` enum-constructor paths.
     ///
     /// Per-module keying prevents a same-named alias from a different imported

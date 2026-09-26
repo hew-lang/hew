@@ -1,24 +1,35 @@
 actor Worker<T> {
-    var value: Option<T> = .None,
-    init(seed: T) { value = .Some(seed); }
+    var value: Option<T> = .None;
+    init(seed: T) {
+        value = .Some(seed);
+    }
     #[on(stop)]
-    fn stopping() { println("child stopped"); }
-    receive fn get() -> T { let snapshot = value; snapshot.expect("worker initialized") }
+    fn stopping() {
+        println("child stopped");
+    }
+    receive fn get() -> T {
+        let snapshot = value;
+        snapshot.expect("worker initialized")
+    }
 }
 
 supervisor Group<T>(seed: T) {
-    child worker: Worker<T>(seed: seed),
+    child worker: Worker<T>(seed: seed);
 }
 
 actor Progress {
-    var stage: i64 = 0,
-    receive fn set(next: i64) { stage = next; }
-    receive fn get() -> i64 { stage }
+    var stage: i64 = 0;
+    receive fn set(next: i64) {
+        stage = next;
+    }
+    receive fn get() -> i64 {
+        stage
+    }
 }
 
 fn observe(group: Group<string>, progress: Progress) {
     progress.set(1).expect("observer started");
-    closed(group);
+    stopped(group);
     progress.set(2).expect("observer finished");
 }
 
@@ -30,12 +41,20 @@ fn main() {
     assert(progress.get().expect("pending observer") == 1);
     assert(group.worker.get().expect("live child") == "OWNED");
     println("tree remains live");
-    let closing = fork close(group);
-    closed(group);
+    let closing = fork {
+        let __hew_migrated_actor_1086 = group;
+        stop(__hew_migrated_actor_1086);
+        stopped(__hew_migrated_actor_1086);
+    };
+    stopped(group);
     await closing;
     await observer;
     assert(progress.get().expect("completed observer") == 2);
-    closed(group);
-    close(progress);
+    stopped(group);
+    {
+        let __hew_migrated_actor_1243 = progress;
+        stop(__hew_migrated_actor_1243);
+        stopped(__hew_migrated_actor_1243);
+    };
     println("tree observed closed");
 }

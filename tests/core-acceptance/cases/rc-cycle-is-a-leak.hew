@@ -5,7 +5,9 @@
 // to spell a back edge that does not own.
 
 #[resource]
-type Tag { id: i64 }
+type Tag {
+    id: i64;
+}
 
 impl Tag {
     fn close(consume self) {
@@ -13,7 +15,10 @@ impl Tag {
     }
 }
 
-type Node { tag: Tag, peer: Option<Rc<Node>> }
+type Node {
+    tag: Tag;
+    peer: Option<Rc<Node>>;
+}
 
 fn cyclic() {
     let first = Rc.new(Node { tag: Tag { id: 1 }, peer: .None });
@@ -27,7 +32,10 @@ fn cyclic() {
 }
 
 // The same shape with a weak back edge releases both payloads at scope exit.
-type Watched { tag: Tag, peer: Option<Weak<Watched>> }
+type Watched {
+    tag: Tag;
+    peer: Option<Weak<Watched>>;
+}
 
 fn acyclic() {
     let first = Rc.new(Watched { tag: Tag { id: 11 }, peer: .None });

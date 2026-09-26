@@ -19,26 +19,26 @@ use support::{run_hew_in, strip_ansi, tempdir};
 
 const POSITIVE: &str = r"machine TcpState {
     events {
-        Syn,
-        Ack,
-        Reset,
+        Syn;
+        Ack;
+        Reset;
     }
 
-    state Closed,
-    state SynReceived,
-    state Established,
+    state Closed;
+    state SynReceived;
+    state Established;
 
-    on Syn: Closed => SynReceived,
-    on Ack: Closed => Closed reenter,
-    on Syn: SynReceived => SynReceived reenter,
-    on Ack: SynReceived => Established,
-    on Syn: Established => Established reenter,
-    on Ack: Established => Established reenter,
-    on Reset: _ => Closed,
+    on Syn: Closed => SynReceived;
+    on Ack: Closed => Closed reenter;
+    on Syn: SynReceived => SynReceived reenter;
+    on Ack: SynReceived => Established;
+    on Syn: Established => Established reenter;
+    on Ack: Established => Established reenter;
+    on Reset: _ => Closed;
 }
 
 actor ConnectionManager {
-    var tcp: TcpState = TcpState.Closed,
+    var tcp: TcpState = TcpState.Closed;
 
     receive fn handle(event: TcpStateEvent) {
         tcp.step(event);
@@ -55,15 +55,15 @@ fn main() {
 
 const NEGATIVE: &str = r#"machine Sensor {
     events {
-        Reading { value: Rc<i64>, }
-        ,Reset,
+        Reading { value: Rc<i64>; }
+        Reset;
     }
 
-    state Idle,
-    state Active,
+    state Idle;
+    state Active;
 
-    on Reading: _ => Active,
-    on Reset: _ => Idle,
+    on Reading: _ => Active;
+    on Reset: _ => Idle;
 }
 
 actor Collector {

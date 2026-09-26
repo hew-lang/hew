@@ -1,4 +1,7 @@
-type Point { x: i64, y: i64 }
+type Point {
+    x: i64;
+    y: i64;
+}
 
 fn build(n: i64) -> i64 {
     let pts = [Point { x: n, y: n }; 3];
@@ -7,9 +10,11 @@ fn build(n: i64) -> i64 {
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for i in 0..64 {
+    for i in 0 .. 64 {
         total = total + build(i);
     }
-    if total != 192 { return 73; }
+    if total != 192 {
+        return 73;
+    }
     0
 }

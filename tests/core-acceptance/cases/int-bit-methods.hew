@@ -150,6 +150,5 @@ fn main() {
     assert(maxusize.count_ones() == 64);
     assert(maxusize.rotate_left(8) == 18446744073709551615);
     assert(maxusize.rotate_right(8) == 18446744073709551615);
-
     println("integer bit methods hold at every integer width's boundaries");
 }

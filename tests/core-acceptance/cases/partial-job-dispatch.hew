@@ -1,7 +1,7 @@
 type Job {
-    run: fn[once]() -> string,
-    label: string,
-    payload: bytes,
+    run: fn[once]() -> string;
+    label: string;
+    payload: bytes;
 }
 
 fn make_job(label: string) -> Job {
@@ -10,8 +10,8 @@ fn make_job(label: string) -> Job {
 }
 
 type Bundle {
-    first: Job,
-    second: (Job, string),
+    first: Job;
+    second: (Job, string);
 }
 
 fn main() -> i64 {

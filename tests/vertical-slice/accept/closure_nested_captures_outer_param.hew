@@ -7,7 +7,9 @@
 // declared bindings (only named-fn and actor-method parameters were), so the
 // inner capture of `x` resolved to a binding the verifier believed undeclared.
 fn main() {
-    let outer = |x: i64| -> fn(i64) -> i64 { |y: i64| x + y };
+    let outer = |x: i64| -> fn(i64) -> i64 {
+        |y: i64| x + y
+    };
     let add5 = outer(5);
     println(add5(10)); // 15
 }

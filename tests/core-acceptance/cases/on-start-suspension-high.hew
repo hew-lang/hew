@@ -1,10 +1,13 @@
-actor Slow { 
-    var value: i64 = 0, 
-    #[on(start)] fn started() {
-        sleep(5ms); 
-        value = 1; 
-  }
-    receive fn get() -> i64 { value }
+actor Slow {
+    var value: i64 = 0;
+    #[on(start)]
+    fn started() {
+        sleep(5ms);
+        value = 1;
+    }
+    receive fn get() -> i64 {
+        value
+    }
 }
 
 fn main() {

@@ -13,15 +13,15 @@ fn pick(first: bool, second: bool) {
         .Ok(sink) if first => {
             sink.send("first").expect("send");
             sink.close();
-        },
+        }
         .Ok(sink) if second => {
             sink.send("second").expect("send");
             sink.close();
-        },
+        }
         .Ok(sink) => {
             sink.send("third").expect("send");
             sink.close();
-        },
+        }
         .Err(e) => println(f"pipe failed: {e}"),
     }
     println(input.collect());

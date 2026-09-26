@@ -11,13 +11,29 @@
 
 fn main() -> i64 {
     let s: string = "Aé€😀";
-    print(if (s[0] as i64) == ('A' as i64) { 1 } else { 0 });
+    print(if (s[0] as i64) == ('A' as i64) {
+        1
+    } else {
+        0
+    });
     println("");
-    print(if (s[1] as i64) == ('é' as i64) { 1 } else { 0 });
+    print(if (s[1] as i64) == ('é' as i64) {
+        1
+    } else {
+        0
+    });
     println("");
-    print(if (s[2] as i64) == ('€' as i64) { 1 } else { 0 });
+    print(if (s[2] as i64) == ('€' as i64) {
+        1
+    } else {
+        0
+    });
     println("");
-    print(if (s[3] as i64) == ('😀' as i64) { 1 } else { 0 });
+    print(if (s[3] as i64) == ('😀' as i64) {
+        1
+    } else {
+        0
+    });
     println("");
     print((s[2] as u32) as i64);
     println("");

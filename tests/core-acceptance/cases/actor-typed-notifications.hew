@@ -9,10 +9,10 @@ actor Target {
 }
 
 actor Watcher {
-    var exits: i64 = 0,
-    var downs: i64 = 0,
-    var expected_monitor: u64 = 0,
-    var exit_actor: u64 = 0,
+    var exits: i64 = 0;
+    var downs: i64 = 0;
+    var expected_monitor: u64 = 0;
+    var exit_actor: u64 = 0;
 
     receive fn watch(target: Target) -> link_monitor.MonitorRef {
         link(target).expect("link target");

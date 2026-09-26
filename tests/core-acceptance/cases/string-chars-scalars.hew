@@ -5,7 +5,7 @@ fn scalars(text: string) -> i64 {
     for c in text.chars() {
         total = total + (c as i64);
     }
-    return total
+    return total;
 }
 
 fn main() {
@@ -26,7 +26,6 @@ fn main() {
     assert(nul.len() == 3);
     assert(nul[1] == '\0');
     assert(nul[2] == 'b');
-
     assert("".chars().len() == 0);
 
     // The source string is untouched and the result is the caller's.
@@ -34,7 +33,6 @@ fn main() {
     let held = source.chars();
     assert(held.len() == 4);
     assert(source == "HOLD");
-
     assert(scalars("abc") == 294);
     println("chars passed");
 }

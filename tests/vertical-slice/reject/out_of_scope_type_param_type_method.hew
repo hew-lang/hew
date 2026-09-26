@@ -15,7 +15,7 @@
 fn id<T>(x: T) -> T { x }
 
 type Holder {
-    v: i64,
+    v: i64;
     fn bad(h: Holder, x: T) -> i64 { 0 }
 }
 

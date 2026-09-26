@@ -1,4 +1,5 @@
 import ambiguity.actor_left.{ClashActor};
+
 import ambiguity.actor_right.{ClashActor};
 
 fn main() {

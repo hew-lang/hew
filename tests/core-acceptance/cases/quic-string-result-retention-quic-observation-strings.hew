@@ -1,16 +1,17 @@
 import std.net;
+
 import std.net.quic;
 
 fn require_ok(result: Result<(), net.NetError>) {
     match result {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("QUIC retention operation failed"),
     }
 }
 
 actor Client {
-    let address: string,
-    var complete: i64,
+    let address: string;
+    var complete: i64;
 
     receive fn run(unused: i64) {
         let endpoint = quic.new_client();
@@ -45,19 +46,16 @@ fn drive_client(client: Client) -> i64 {
 
 fn main() {
     let endpoint = quic.new_server("127.0.0.1:0");
-
     // A failed connect deterministically populates endpoint.last_error without
     // consuming the live server endpoint.
     let _failed_connection = endpoint.connect("not-an-address", "localhost");
-    for _ in 0..50 {
+    for _ in 0 .. 50 {
         let observation = endpoint.observe();
-        if !observation.local_addr.contains(":")
-            || !observation.last_error.contains("parse failure") {
+        if !observation.local_addr.contains(":") || !observation.last_error.contains("parse failure") {
             panic("QUIC endpoint observation lost state");
         }
         println(101);
     }
-
     let address = endpoint.observe().local_addr;
     let client = spawn Client(address: address, complete: 0);
     // The client's turn drives the whole peer side and blocks on this side's
@@ -65,7 +63,6 @@ fn main() {
     // inline would leave nobody to accept the connection it is waiting on.
     scope {
         let _driver = fork drive_client(client);
-
         let connection = endpoint.accept();
         let endpoint_after_accept = endpoint.observe();
         if endpoint_after_accept.last_error.len() != 0 {
@@ -81,25 +78,22 @@ fn main() {
         if client_probe != "client-probe" {
             panic("QUIC retention client probe mismatch");
         }
-
         match stream.stop(-7) {
             .Ok(_) => panic("invalid QUIC application code unexpectedly succeeded"),
-            .Err(_) => {},
+            .Err(_) => {}
         }
         let errored = connection.on_event();
         if errored.kind() != -1 {
             panic("QUIC stream-error event missing");
         }
         errored.close();
-        for _ in 0..50 {
+        for _ in 0 .. 50 {
             let observation = stream.observe();
-            if observation.last_error
-                != "invalid QUIC application error code -7: expected 0..=2^62-1" {
+            if observation.last_error != "invalid QUIC application error code -7: expected 0..=2^62-1" {
                 panic("QUIC stream observation lost error state");
             }
             println(202);
         }
-
         require_ok(stream.send_string("retention-probe"));
         let stream_after_send = stream.observe();
         if stream_after_send.last_error.len() != 0 {
@@ -119,27 +113,23 @@ fn main() {
         if !((kind1 == 3 || kind2 == 3) && (kind1 == 1 || kind2 == 1)) {
             panic("QUIC close/disconnect events missing");
         }
-
         let _failed_stream = connection.open_stream();
-        for _ in 0..50 {
+        for _ in 0 .. 50 {
             let observation = connection.observe();
-            if !observation.local_addr.contains(":")
-                || !observation.peer_addr.contains(":")
-                || observation.last_error.len() == 0 {
+            if !observation.local_addr.contains(":") || !observation.peer_addr.contains(":") || observation.last_error.len() == 0 {
                 panic("QUIC connection observation lost state");
             }
             println(303);
         }
-
         require_ok(connection.disconnect());
         endpoint.close();
-    }
+    };
     match client.finished() {
         .Ok(done) => {
             if done != 1 {
                 panic("QUIC retention client stopped early");
             }
-        },
+        }
         .Err(_) => panic("QUIC retention client failed"),
     }
 }

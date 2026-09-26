@@ -15,7 +15,7 @@ actor Driver {
         scope {
             let t = fork ping();
             await t;
-        }
+        };
         println("scope done");
         7
     }

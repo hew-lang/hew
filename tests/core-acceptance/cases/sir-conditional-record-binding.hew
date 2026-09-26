@@ -1,6 +1,6 @@
 type Pull {
-    head_sha: string,
-    base_sha: string,
+    head_sha: string;
+    base_sha: string;
 }
 
 // A record cloned out of a Vec index and bound inside an `if` whose body may
@@ -65,7 +65,6 @@ fn main() {
     var many: Vec<Pull> = Vec.new();
     many.push(Pull { head_sha: "x", base_sha: "y" });
     many.push(Pull { head_sha: "h", base_sha: "b" });
-
     report(publish(one, "h"));
     report(publish(one, "other"));
     report(publish(many, "h"));

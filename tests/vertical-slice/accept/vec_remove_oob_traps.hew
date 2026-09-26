@@ -7,4 +7,3 @@ fn main() -> i64 {
     xs.remove(99);
     0
 }
-

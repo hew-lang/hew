@@ -1,18 +1,18 @@
 type Leaf {
-    text: string,
+    text: string;
 }
 
 enum Payload {
-    Empty,
-    Hold(Leaf),
+    Empty;
+    Hold(Leaf);
 }
 
 type Wrap {
-    payload: Payload,
+    payload: Payload;
 }
 
 actor Keeper {
-    var cur: Wrap,
+    var cur: Wrap;
 
     receive fn rewrite() {
         cur = Wrap { payload: cur.payload };
@@ -27,9 +27,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let keeper = spawn Keeper(cur: Wrap {
-        payload: Payload.Hold(Leaf { text: "enum-alias".to_upper() }),
-    });
+    let keeper = spawn Keeper(cur: Wrap { payload: Payload.Hold(Leaf { text: "enum-alias".to_upper() }) });
     var i: i64 = 0;
     while i < 50 {
         let _ = keeper.rewrite();

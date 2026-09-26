@@ -2,7 +2,7 @@ type Finished = ();
 
 #[resource]
 type Ticket {
-    label: string,
+    label: string;
 }
 
 impl Ticket {

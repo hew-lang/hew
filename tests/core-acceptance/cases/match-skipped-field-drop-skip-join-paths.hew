@@ -1,19 +1,15 @@
 type Inner {
-    value: string,
+    value: string;
 }
 
 type Duo {
-    n: i64,
-    inner: Inner,
-    s: string,
+    n: i64;
+    inner: Inner;
+    s: string;
 }
 
 fn make(n: i64) -> Duo {
-    Duo {
-        n: n,
-        inner: Inner { value: "join-inner-heap-payload".to_upper() },
-        s: "join-s-heap-payload".to_upper(),
-    }
+    Duo { n: n, inner: Inner { value: "join-inner-heap-payload".to_upper() }, s: "join-s-heap-payload".to_upper() }
 }
 
 fn run_cycle(k: i64) -> i64 {
@@ -38,5 +34,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

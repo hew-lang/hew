@@ -1,6 +1,9 @@
 // E: a string var grown in a loop and returned from inside it.
 import std.string;
-fn is_marked(p: string) -> bool { p.len() > 12 }
+
+fn is_marked(p: string) -> bool {
+    p.len() > 12
+}
 
 pub fn first_marked(root: string, rel_path: string) -> string {
     if is_marked(root) {
@@ -19,4 +22,6 @@ pub fn first_marked(root: string, rel_path: string) -> string {
     return "";
 }
 
-pub fn main() { println(first_marked("/a", "b/c/d")); }
+pub fn main() {
+    println(first_marked("/a", "b/c/d"));
+}

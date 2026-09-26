@@ -1,10 +1,10 @@
 type Inner {
-    v: i64,
+    v: i64;
 }
 
 type Outer {
-    inner: Inner,
-    c: string,
+    inner: Inner;
+    c: string;
 }
 
 fn take(o: Outer) -> string {

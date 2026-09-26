@@ -2,7 +2,7 @@
 import hew.supertraits.{Base, Mid, Deep};
 
 type DW {
-    id: i64,
+    id: i64;
 }
 
 impl Base for DW {

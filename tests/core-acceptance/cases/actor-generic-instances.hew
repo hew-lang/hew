@@ -1,44 +1,72 @@
-fn empty<T>() -> Option<T> { .None }
+fn empty<T>() -> Option<T> {
+    .None
+}
 
 actor Latest<T> {
-    var value: Option<T> = empty(),
-    var changes: i64 = 0,
+    var value: Option<T> = empty();
+    var changes: i64 = 0;
 
-    init(seed: T) { value = .Some(seed); }
+    init(seed: T) {
+        value = .Some(seed);
+    }
 
     #[on(start)]
-    fn started() { changes = 100; }
+    fn started() {
+        changes = 100;
+    }
 
     #[on(stop)]
-    fn stopped() { value = .None; }
+    fn stopped() {
+        value = .None;
+    }
 
     fn remember(next: T) {
         value = .Some(next);
         changes = changes + 1;
     }
 
-    receive fn put(next: T) { remember(next); }
-    receive fn get() -> Option<T> { value }
-    receive fn count() -> i64 { changes }
-    receive fn identity() -> Latest<T> { self }
+    receive fn put(next: T) {
+        remember(next);
+    }
+    receive fn get() -> Option<T> {
+        value
+    }
+    receive fn count() -> i64 {
+        changes
+    }
+    receive fn identity() -> Latest<T> {
+        self
+    }
     receive gen fn repeat(count: i64) -> T {
         let snapshot = value;
         let item = snapshot.expect("set before repeat");
-        for index in 0..count { yield item; }
+        for index in 0 .. count {
+            yield item;
+        }
     }
 }
 
-type Packet { label: string, data: bytes, history: Vec<string> }
-
-impl Display for Packet {
-    fn fmt(packet: Packet) -> string { packet.label }
+type Packet {
+    label: string;
+    data: bytes;
+    history: Vec<string>;
 }
 
-fn render<T: Display>(item: T) -> string { f"<{item}>" }
+impl Display for Packet {
+    fn fmt(packet: Packet) -> string {
+        packet.label
+    }
+}
+
+fn render<T: Display>(item: T) -> string {
+    f"<{item}>"
+}
 
 actor Printer<T: Display> {
-    let item: T,
-    receive fn show() -> string { f"<{item}>" }
+    let item: T;
+    receive fn show() -> string {
+        f"<{item}>"
+    }
 }
 
 fn main() {
@@ -54,10 +82,7 @@ fn main() {
     assert(names.get().expect("get name").expect("set") == "OWNED\0NAME");
     assert(numbers.count().expect("number changes") == 102);
     assert(names.count().expect("name changes") == 101);
-
-    let records = spawn Latest(seed: Packet {
-        label: "packet".to_upper(), data: "data\0bytes".to_bytes(), history: ["history".to_upper()],
-    });
+    let records = spawn Latest(seed: Packet { label: "packet".to_upper(), data: "data\0bytes".to_bytes(), history: ["history".to_upper()] });
     var seen = 0;
     for packet in records.repeat(3) {
         assert(packet.label == "PACKET");
@@ -70,17 +95,39 @@ fn main() {
     let text_printer = spawn Printer(item: "rendered".to_upper());
     assert(numeric_printer.show().expect("numeric display") == "<42>");
     assert(text_printer.show().expect("text display") == "<RENDERED>");
-    let record_printer = spawn Printer(item: Packet {
-        label: "record".to_upper(), data: "payload".to_bytes(), history: [],
-    });
+    let record_printer = spawn Printer(item: Packet { label: "record".to_upper(), data: "payload".to_bytes(), history: [] });
     assert(record_printer.show().expect("record display") == "<RECORD>");
     assert(render(7 as i8) == "<7>");
     assert(render(true) == "<true>");
-    close(record_printer);
-    close(numeric_printer);
-    close(text_printer);
-    close(records);
-    close(names);
-    close(numbers);
+    {
+        let __hew_migrated_actor_2792 = record_printer;
+        stop(__hew_migrated_actor_2792);
+        stopped(__hew_migrated_actor_2792);
+    };
+    {
+        let __hew_migrated_actor_2819 = numeric_printer;
+        stop(__hew_migrated_actor_2819);
+        stopped(__hew_migrated_actor_2819);
+    };
+    {
+        let __hew_migrated_actor_2847 = text_printer;
+        stop(__hew_migrated_actor_2847);
+        stopped(__hew_migrated_actor_2847);
+    };
+    {
+        let __hew_migrated_actor_2872 = records;
+        stop(__hew_migrated_actor_2872);
+        stopped(__hew_migrated_actor_2872);
+    };
+    {
+        let __hew_migrated_actor_2892 = names;
+        stop(__hew_migrated_actor_2892);
+        stopped(__hew_migrated_actor_2892);
+    };
+    {
+        let __hew_migrated_actor_2910 = numbers;
+        stop(__hew_migrated_actor_2910);
+        stopped(__hew_migrated_actor_2910);
+    };
     println("distinct generic actors and owned replies");
 }

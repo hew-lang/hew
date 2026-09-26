@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn symbols_enum_with_variants() {
-        let source = "enum Colour {\n    Red,\n    Green,\n    Blue,\n}";
+        let source = "enum Colour {\n    Red;\n    Green;\n    Blue;\n}\n";
         let pr = parse(source);
         let symbols = build_document_symbols(source, &pr);
         assert_eq!(symbols.len(), 1);
@@ -444,19 +444,22 @@ mod tests {
     #[test]
     fn symbols_include_fields_states_and_events() {
         let source = r"type Point {
-    x: i32,
-    y: i32,
-    fn distance() -> i32 { 0 }
+    x: i32;
+    y: i32;
+    fn distance() -> i32 {
+        0
+    }
 }
 
 machine Traffic {
     events {
-        Start,
+        Start;
     }
 
-    state Idle,
-    on Start: Idle => Idle,
-}";
+    state Idle;
+    on Start: Idle => Idle;
+}
+";
         let pr = parse(source);
         let symbols = build_document_symbols(source, &pr);
 

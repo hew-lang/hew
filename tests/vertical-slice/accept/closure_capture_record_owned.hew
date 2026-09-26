@@ -6,7 +6,7 @@
 // callable across calls; the captured Vec is released exactly once at the
 // pair's drop (the `closure-capture-owned-*` safety cases pin it).
 type Holder {
-    counts: Vec<i64>,
+    counts: Vec<i64>;
 }
 
 fn make() -> fn() -> i64 {

@@ -1,15 +1,24 @@
-type Wrap { name: string }
+type Wrap {
+    name: string;
+}
+
 actor Fan {
-    var seen: i64,
-    var held: Wrap,
-    var last: string,
+    var seen: i64;
+    var held: Wrap;
+    var last: string;
     receive fn route(label: string, mode: i64) {
-        if mode == 0 { held = Wrap { name: label }; }
-        else { last = label; }
+        if mode == 0 {
+            held = Wrap { name: label };
+        } else {
+            last = label;
+        }
         seen = seen + 1;
     }
-    receive fn total() -> i64 { seen + held.name.len() + last.len() }
+    receive fn total() -> i64 {
+        seen + held.name.len() + last.len()
+    }
 }
+
 fn main() -> i64 {
     let fan = spawn Fan(seen: 0, held: Wrap { name: "held" }, last: "last");
     var i: i64 = 0;
@@ -17,5 +26,12 @@ fn main() -> i64 {
         let _ = fan.route("payload".to_upper(), i % 2);
         i = i + 1;
     }
-    match fan.total() { .Ok(n) => if n > 40 { 0 } else { 83 }, .Err(_) => 84 }
+    match fan.total() {
+        .Ok(n) => if n > 40 {
+            0
+        } else {
+            83
+        }
+        .Err(_) => 84,
+    }
 }

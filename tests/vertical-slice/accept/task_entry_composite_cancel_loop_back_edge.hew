@@ -6,8 +6,8 @@
 // locks in that the fix generalizes beyond the FunctionEntry-only instance
 // the primary probe exercises.
 type Sum {
-    total: i64,
-    count: i64
+    total: i64;
+    count: i64;
 }
 
 fn compute() -> Sum {

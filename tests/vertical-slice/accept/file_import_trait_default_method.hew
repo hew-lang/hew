@@ -9,7 +9,7 @@
 import "file_import_trait_default_method_lib.hew";
 
 type RootThing {
-    label: string,
+    label: string;
 }
 
 impl Greet for RootThing {

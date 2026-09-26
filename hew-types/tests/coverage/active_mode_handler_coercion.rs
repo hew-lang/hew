@@ -24,26 +24,25 @@ fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
 #[test]
 fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
     let output = typecheck(
-        r"
-        trait Handler {
-            fn on_data(data: bytes);
-            fn on_close();
-        }
+        r"trait Handler {
+    fn on_data(data: bytes);
+    fn on_close();
+}
 
-        actor Echo {
-            let n: i32,
-            init() {}
-            receive fn on_data(data: bytes) {}
-            receive fn on_close() {}
-        }
+actor Echo {
+    let n: i32;
+    init() {}
+    receive fn on_data(data: bytes) {}
+    receive fn on_close() {}
+}
 
-        fn use_handler(h: Handler) {}
+fn use_handler(h: Handler) {}
 
-        fn main() {
-            let echo = spawn Echo(n: 0);
-            use_handler(echo);
-        }
-        ",
+fn main() {
+    let echo = spawn Echo(n: 0);
+    use_handler(echo);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -60,29 +59,28 @@ fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
 #[test]
 fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
     let output = typecheck(
-        r"
-        trait Handler {
-            fn on_data(data: bytes);
-            fn on_close();
-        }
+        r"trait Handler {
+    fn on_data(data: bytes);
+    fn on_close();
+}
 
-        actor Bare {
-            let n: i32,
-            init() {}
-        }
+actor Bare {
+    let n: i32;
+    init() {}
+}
 
-        impl Handler for Bare {
-            fn on_data(data: bytes) {}
-            fn on_close() {}
-        }
+impl Handler for Bare {
+    fn on_data(data: bytes) {}
+    fn on_close() {}
+}
 
-        fn use_handler(h: Handler) {}
+fn use_handler(h: Handler) {}
 
-        fn main() {
-            let bare = spawn Bare(n: 0);
-            use_handler(bare);
-        }
-        ",
+fn main() {
+    let bare = spawn Bare(n: 0);
+    use_handler(bare);
+}
+",
     );
     assert!(
         !output.errors.is_empty(),

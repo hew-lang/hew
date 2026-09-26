@@ -1,20 +1,20 @@
 enum Carrier {
-    Text(string),
-    Sequence(Vec<Carrier>),
-    Fields(Vec<Entry>),
+    Text(string);
+    Sequence(Vec<Carrier>);
+    Fields(Vec<Entry>);
 }
 
 type Entry {
-    key: string,
-    value: Carrier,
+    key: string;
+    value: Carrier;
 }
 
 type Retained {
-    original: Carrier,
-    unchanged_copy: Carrier,
-    replacement: Carrier,
-    child: Carrier,
-    key: string,
+    original: Carrier;
+    unchanged_copy: Carrier;
+    replacement: Carrier;
+    child: Carrier;
+    key: string;
 }
 
 fn make_tree() -> Carrier {
@@ -67,12 +67,12 @@ fn replace_first(value: Carrier) -> Carrier {
                     replacement_children.set(0, Carrier.Text("replacement"));
                     replacement_children.push(Carrier.Text("extra"));
                     Carrier.Sequence(replacement_children)
-                },
+                }
                 _ => Carrier.Text("wrong variant"),
             };
             replacement_entries.set(0, Entry { key: entry.key, value: replacement });
             Carrier.Fields(replacement_entries)
-        },
+        }
         _ => Carrier.Text("wrong variant"),
     }
 }

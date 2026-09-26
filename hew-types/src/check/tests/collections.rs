@@ -215,14 +215,16 @@ fn literal_coercion_array_literal_element_mismatch() {
 #[test]
 fn vec_copy_record_new_constructor_typechecks() {
     let output = check_source(
-        r"
-        type Point { x: i64, y: i64 }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn main() {
-            let points: Vec<Point> = Vec.new();
-            let _ = points.len();
-        }
-        ",
+fn main() {
+    let points: Vec<Point> = Vec.new();
+    let _ = points.len();
+}
+",
     );
 
     assert!(
@@ -253,13 +255,14 @@ fn vec_tuple_string_new_constructor_preserves_existing_typecheck_behavior() {
 #[test]
 fn hashmap_new_turbofish_typechecks() {
     let output = check_source(
-        r"
-        type Key { id: i64 }
+        r"type Key {
+    id: i64;
+}
 
-        fn main() {
-            let _m = HashMap<Key, i64>.new();
-        }
-        ",
+fn main() {
+    let _m = HashMap<Key, i64>.new();
+}
+",
     );
 
     assert!(
@@ -402,26 +405,38 @@ fn hashset_clear_no_args_typechecks() {
 
 #[test]
 fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() {
-    let source = r"
-        type SetBox { s: HashSet<i64>, }
-        type Outer { inner: SetBox, }
+    let source = r"type SetBox {
+    s: HashSet<i64>;
+}
 
-        fn direct(s: HashSet<i64>) {
-            for x in s { let _ = x; }
-        }
+type Outer {
+    inner: SetBox;
+}
 
-        fn field(b: SetBox) {
-            for x in b.s { let _ = x; }
-        }
+fn direct(s: HashSet<i64>) {
+    for x in s {
+        let _ = x;
+    }
+}
 
-        fn nested(o: Outer) {
-            for x in o.inner.s { let _ = x; }
-        }
+fn field(b: SetBox) {
+    for x in b.s {
+        let _ = x;
+    }
+}
 
-        fn tuple_field(pair: (HashSet<i64>, i64)) {
-            for x in pair.0 { let _ = x; }
-        }
-    ";
+fn nested(o: Outer) {
+    for x in o.inner.s {
+        let _ = x;
+    }
+}
+
+fn tuple_field(pair: (HashSet<i64>, i64)) {
+    for x in pair.0 {
+        let _ = x;
+    }
+}
+";
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -539,14 +554,15 @@ fn vec_owned_record_new_admitted_via_owned_abi() {
     // failing closed. The construction no longer emits the layout-managed
     // Copy-gate diagnostic.
     let output = check_source(
-        r"
-        type Person { name: string }
+        r"type Person {
+    name: string;
+}
 
-        fn main() {
-            let people: Vec<Person> = Vec.new();
-            let _ = people.len();
-        }
-        ",
+fn main() {
+    let people: Vec<Person> = Vec.new();
+    let _ = people.len();
+}
+",
     );
 
     assert!(
@@ -562,15 +578,17 @@ fn vec_owned_record_new_admitted_via_owned_abi() {
 #[test]
 fn vec_record_clear_has_semantic_contract() {
     let output = check_source(
-        r"
-        type Point { x: i64, y: i64 }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn main() {
-            var points: Vec<Point> = [];
-            points.push(Point { x: 1, y: 2 });
-            points.clear();
-        }
-        ",
+fn main() {
+    var points: Vec<Point> = [];
+    points.push(Point { x: 1, y: 2 });
+    points.clear();
+}
+",
     );
 
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
@@ -727,33 +745,39 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
 #[test]
 fn explicit_record_clone_rejects_resource_and_linear_in_both_syntaxes() {
     let output = check_source(
-        r"
-        #[resource]
-        type ResourceToken { id: i64 }
-        impl ResourceToken {
-            fn close(consume self) {}
-        }
+        r"#[resource]
+type ResourceToken {
+    id: i64;
+}
 
-        #[linear]
-        type LinearTicket { id: i64 }
-        impl LinearTicket {
-            fn redeem(consume self) -> i64 { self.id }
-        }
+impl ResourceToken {
+    fn close(consume self) {}
+}
 
-        fn main() {
-            let r1 = ResourceToken { id: 1 };
-            let _r1_copy = r1.clone();
-            let r2 = ResourceToken { id: 2 };
-            let _r2_copy = clone r2;
+#[linear]
+type LinearTicket {
+    id: i64;
+}
 
-            let l1 = LinearTicket { id: 3 };
-            let _l1_copy = l1.clone();
-            let _ = l1.redeem();
-            let l2 = LinearTicket { id: 4 };
-            let _l2_copy = clone l2;
-            let _ = l2.redeem();
-        }
-        ",
+impl LinearTicket {
+    fn redeem(consume self) -> i64 {
+        self.id
+    }
+}
+
+fn main() {
+    let r1 = ResourceToken { id: 1 };
+    let _r1_copy = r1.clone();
+    let r2 = ResourceToken { id: 2 };
+    let _r2_copy = clone r2;
+    let l1 = LinearTicket { id: 3 };
+    let _l1_copy = l1.clone();
+    let _ = l1.redeem();
+    let l2 = LinearTicket { id: 4 };
+    let _l2_copy = clone l2;
+    let _ = l2.redeem();
+}
+",
     );
 
     let affine_clone_errors: Vec<_> = output
@@ -785,31 +809,37 @@ fn explicit_record_clone_rejects_resource_and_linear_in_both_syntaxes() {
 #[test]
 fn generic_record_clone_rejects_substituted_affine_fields() {
     let output = check_source(
-        r"
-        #[resource]
-        type ResourceToken { id: i64 }
-        impl ResourceToken {
-            fn close(consume self) {}
-        }
+        r"#[resource]
+type ResourceToken {
+    id: i64;
+}
 
-        #[linear]
-        type LinearTicket { id: i64 }
-        impl LinearTicket {
-            fn redeem(consume self) -> i64 { self.id }
-        }
+impl ResourceToken {
+    fn close(consume self) {}
+}
 
-        type Wrapper<T> { value: T }
+#[linear]
+type LinearTicket {
+    id: i64;
+}
 
-        fn main() {
-            let resource: Wrapper<ResourceToken> =
-                Wrapper { value: ResourceToken { id: 1 } };
-            let _resource_copy = resource.clone();
+impl LinearTicket {
+    fn redeem(consume self) -> i64 {
+        self.id
+    }
+}
 
-            let linear: Wrapper<LinearTicket> =
-                Wrapper { value: LinearTicket { id: 2 } };
-            let _linear_copy = clone linear;
-        }
-        ",
+type Wrapper<T> {
+    value: T;
+}
+
+fn main() {
+    let resource: Wrapper<ResourceToken> = Wrapper { value: ResourceToken { id: 1 } };
+    let _resource_copy = resource.clone();
+    let linear: Wrapper<LinearTicket> = Wrapper { value: LinearTicket { id: 2 } };
+    let _linear_copy = clone linear;
+}
+",
     );
 
     let affine_clone_errors: Vec<_> = output
@@ -840,65 +870,64 @@ fn generic_record_clone_rejects_substituted_affine_fields() {
 #[test]
 fn builtin_container_clone_rejects_affine_payloads() {
     let output = check_source(
-        r#"
-        #[resource]
-        type ResourceToken { id: i64 }
-        impl ResourceToken {
-            fn close(consume self) {}
+        r#"#[resource]
+type ResourceToken {
+    id: i64;
+}
+
+impl ResourceToken {
+    fn close(consume self) {}
+}
+
+#[linear]
+type LinearTicket {
+    id: i64;
+}
+
+impl LinearTicket {
+    fn redeem(consume self) -> i64 {
+        self.id
+    }
+}
+
+fn main() {
+    var resources: Vec<ResourceToken> = Vec.new();
+    resources.push(ResourceToken { id: 1 });
+    let _resources_copy = resources.clone();
+    var tickets: HashMap<string, LinearTicket> = HashMap.new();
+    tickets.insert("one", LinearTicket { id: 2 });
+    let _tickets_copy = clone tickets;
+    let optional: Option<ResourceToken> = .Some(ResourceToken { id: 3 });
+    let _optional_copy = optional.clone();
+    let (sender, _receiver): (channel.Sender<ResourceToken>, channel.Receiver<ResourceToken>) = channel.new(8);
+    let _sender_copy = sender.clone();
+    // Checker visitation order differs from runtime order here. The
+    // clone arm is checked while `late_values` is still Vec<Var>, but
+    // the first runtime iteration populates it through the else arm
+    // before the second iteration clones it.
+    var late_values = Vec.new();
+    var i = 0;
+    while i < 2 {
+        if i == 1 {
+            let _late_copy = late_values.clone();
+        } else {
+            late_values.push(ResourceToken { id: 4 });
         }
-
-        #[linear]
-        type LinearTicket { id: i64 }
-        impl LinearTicket {
-            fn redeem(consume self) -> i64 { self.id }
+        i = i + 1;
+    }
+    var late_tickets = HashMap.new();
+    let _ = late_tickets.contains_key("seed");
+    i = 0;
+    while i < 2 {
+        if i == 1 {
+            let _late_map_copy = late_tickets.clone();
+        } else {
+            late_tickets.insert("two", LinearTicket { id: 5 });
         }
-
-        fn main() {
-            var resources: Vec<ResourceToken> = Vec.new();
-            resources.push(ResourceToken { id: 1 });
-            let _resources_copy = resources.clone();
-
-            var tickets: HashMap<string, LinearTicket> = HashMap.new();
-            tickets.insert("one", LinearTicket { id: 2 });
-            let _tickets_copy = clone tickets;
-
-            let optional: Option<ResourceToken> = .Some(ResourceToken { id: 3 });
-            let _optional_copy = optional.clone();
-
-            let (sender, _receiver): (
-                channel.Sender<ResourceToken>,
-                channel.Receiver<ResourceToken>,
-            ) = channel.new(8);
-            let _sender_copy = sender.clone();
-
-            // Checker visitation order differs from runtime order here. The
-            // clone arm is checked while `late_values` is still Vec<Var>, but
-            // the first runtime iteration populates it through the else arm
-            // before the second iteration clones it.
-            var late_values = Vec.new();
-            var i = 0;
-            while i < 2 {
-                if i == 1 {
-                    let _late_copy = late_values.clone();
-                } else {
-                    late_values.push(ResourceToken { id: 4 });
-                }
-                i = i + 1;
-            }
-
-            var late_tickets = HashMap.new();
-            let _ = late_tickets.contains_key("seed");
-            i = 0;
-            while i < 2 {
-                if i == 1 {
-                    let _late_map_copy = late_tickets.clone();
-                } else {
-                    late_tickets.insert("two", LinearTicket { id: 5 });
-                }
-                i = i + 1;
-            }
-        }
-        "#,
+        i = i + 1;
+    }
+}
+"#,
     );
 
     let affine_clone_errors: Vec<_> = output
@@ -1355,15 +1384,16 @@ fn vec_contains_float_record_now_typechecks() {
     // A record with an `f32` field is equality-eligible (floats compare on
     // their bit pattern) and Copy, so `Vec::contains` is admitted.
     let output = check_source(
-        r"
-        type Measurement { value: f32 }
+        r"type Measurement {
+    value: f32;
+}
 
-        fn main() {
-            let values: Vec<Measurement> = Vec.new();
-            let needle = Measurement { value: 1.0 };
-            let _ = values.contains(needle);
-        }
-        ",
+fn main() {
+    let values: Vec<Measurement> = Vec.new();
+    let needle = Measurement { value: 1.0 };
+    let _ = values.contains(needle);
+}
+",
     );
 
     assert!(
@@ -1376,13 +1406,14 @@ fn vec_contains_float_record_now_typechecks() {
 #[test]
 fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() {
     let output = check_source(
-        r"
-        type Packet { data: bytes }
+        r"type Packet {
+    data: bytes;
+}
 
-        fn has_packet(values: Vec<Packet>, needle: Packet) -> bool {
-            values.contains(needle)
-        }
-        ",
+fn has_packet(values: Vec<Packet>, needle: Packet) -> bool {
+    values.contains(needle)
+}
+",
     );
 
     assert!(
@@ -1399,15 +1430,16 @@ fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() 
 #[test]
 fn vec_owned_record_push_has_semantic_contract() {
     let output = check_source(
-        r#"
-        type Person { name: string }
+        r#"type Person {
+    name: string;
+}
 
-        fn main() {
-            var people: Vec<Person> = [];
-            let p = Person { name: "ada" };
-            people.push(p);
-        }
-        "#,
+fn main() {
+    var people: Vec<Person> = [];
+    let p = Person { name: "ada" };
+    people.push(p);
+}
+"#,
     );
 
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
@@ -1424,30 +1456,39 @@ fn vec_owned_record_push_has_semantic_contract() {
 #[test]
 fn vec_generic_record_methods_keep_semantic_identity() {
     let output = check_source(
-        r"
-        type Wrap<T> { v: T }
-        type Pair<A, B> { a: A, b: B }
-        type Point { x: i64, y: i64 }
-        type Holder<T> { value: T }
+        r"type Wrap<T> {
+    v: T;
+}
 
-        fn main() {
-            var wraps: Vec<Wrap<i64>> = [];
-            wraps.push(Wrap { v: 1 });
-            wraps.set(0, Wrap { v: 2 });
-            let _wg = wraps.get(0);
-            let _wi = wraps[0];
-            let _wp = wraps.pop();
+type Pair<A, B> {
+    a: A;
+    b: B;
+}
 
-            var pairs: Vec<Pair<i64, i64>> = [];
-            pairs.push(Pair { a: 3, b: 4 });
+type Point {
+    x: i64;
+    y: i64;
+}
 
-            var holders: Vec<Holder<Point>> = [];
-            holders.push(Holder { value: Point { x: 5, y: 6 } });
+type Holder<T> {
+    value: T;
+}
 
-            var nested: Vec<Wrap<Wrap<i64>>> = [];
-            nested.push(Wrap { v: Wrap { v: 7 } });
-        }
-        ",
+fn main() {
+    var wraps: Vec<Wrap<i64>> = [];
+    wraps.push(Wrap { v: 1 });
+    wraps.set(0, Wrap { v: 2 });
+    let _wg = wraps.get(0);
+    let _wi = wraps[0];
+    let _wp = wraps.pop();
+    var pairs: Vec<Pair<i64, i64>> = [];
+    pairs.push(Pair { a: 3, b: 4 });
+    var holders: Vec<Holder<Point>> = [];
+    holders.push(Holder { value: Point { x: 5, y: 6 } });
+    var nested: Vec<Wrap<Wrap<i64>>> = [];
+    nested.push(Wrap { v: Wrap { v: 7 } });
+}
+",
     );
 
     assert!(
@@ -1504,18 +1545,17 @@ fn vec_actor_handle_push_keeps_semantic_identity() {
 #[test]
 fn vec_self_recursive_enum_push_has_semantic_contract() {
     let output = check_source(
-        r"
-        enum RedisReply {
-            Nil,
-            Int(i64),
-            Array(Vec<RedisReply>),
-        }
+        r"enum RedisReply {
+    Nil;
+    Int(i64);
+    Array(Vec<RedisReply>);
+}
 
-        fn main() {
-            var v: Vec<RedisReply> = [];
-            v.push(RedisReply.Int(7));
-        }
-        ",
+fn main() {
+    var v: Vec<RedisReply> = [];
+    v.push(RedisReply.Int(7));
+}
+",
     );
 
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
@@ -1532,15 +1572,16 @@ fn vec_self_recursive_enum_push_has_semantic_contract() {
 #[test]
 fn vec_record_collection_field_push_has_semantic_contract() {
     let output = check_source(
-        r"
-        type Boxed { payload: Vec<i64> }
+        r"type Boxed {
+    payload: Vec<i64>;
+}
 
-        fn main() {
-            var xs: Vec<Boxed> = [];
-            let src = Boxed { payload: [10, 20] };
-            xs.push(src);
-        }
-        ",
+fn main() {
+    var xs: Vec<Boxed> = [];
+    let src = Boxed { payload: [10, 20] };
+    xs.push(src);
+}
+",
     );
 
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
@@ -1561,25 +1602,24 @@ fn vec_iter_admits_recursive_enum_through_its_vec_field() {
     // Vec buffer and its element clone/drop descriptor; this exercises both
     // Vec construction and the iterator's clone-totality gate.
     let output = check_source(
-        r"
-        enum RedisReply {
-            Nil,
-            Int(i64),
-            Array(Vec<RedisReply>),
-        }
+        r"enum RedisReply {
+    Nil;
+    Int(i64);
+    Array(Vec<RedisReply>);
+}
 
-        fn main() {
-            var replies: Vec<RedisReply> = [];
-            replies.push(RedisReply.Int(7));
-            for reply in replies {
-                match reply {
-                    RedisReply.Nil => {},
-                    RedisReply.Int(_) => {},
-                    RedisReply.Array(_) => {},
-                }
-            }
+fn main() {
+    var replies: Vec<RedisReply> = [];
+    replies.push(RedisReply.Int(7));
+    for reply in replies {
+        match reply {
+            RedisReply.Nil => {}
+            RedisReply.Int(_) => {}
+            RedisReply.Array(_) => {}
         }
-        ",
+    }
+}
+",
     );
 
     assert!(
@@ -1592,27 +1632,34 @@ fn vec_iter_admits_recursive_enum_through_its_vec_field() {
 #[test]
 fn recursive_collection_admission_through_entry_record() {
     let output = check_source(
-        r#"
-        enum Carrier { Text(string), Sequence(Vec<Carrier>), Fields(Vec<Entry>), }
-        type Entry { key: string, value: Carrier, }
+        r#"enum Carrier {
+    Text(string);
+    Sequence(Vec<Carrier>);
+    Fields(Vec<Entry>);
+}
 
-        fn main() {
-            var children: Vec<Carrier> = Vec.new();
-            children.push(Carrier.Text("retained"));
-            var entries: Vec<Entry> = Vec.new();
-            entries.push(Entry { key: "child", value: Carrier.Sequence(children) });
-            var roots: Vec<Carrier> = Vec.new();
-            roots.push(Carrier.Fields(entries));
-            let copied = roots.clone();
-            for value in copied {
-                match value {
-                    Carrier.Text(_) => {},
-                    Carrier.Sequence(_) => {},
-                    Carrier.Fields(_) => {},
-                }
-            }
+type Entry {
+    key: string;
+    value: Carrier;
+}
+
+fn main() {
+    var children: Vec<Carrier> = Vec.new();
+    children.push(Carrier.Text("retained"));
+    var entries: Vec<Entry> = Vec.new();
+    entries.push(Entry { key: "child", value: Carrier.Sequence(children) });
+    var roots: Vec<Carrier> = Vec.new();
+    roots.push(Carrier.Fields(entries));
+    let copied = roots.clone();
+    for value in copied {
+        match value {
+            Carrier.Text(_) => {}
+            Carrier.Sequence(_) => {}
+            Carrier.Fields(_) => {}
         }
-        "#,
+    }
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -1620,19 +1667,27 @@ fn recursive_collection_admission_through_entry_record() {
 #[test]
 fn recursive_collection_admission_through_generic_entry_record() {
     let output = check_source(
-        r#"
-        enum Carrier<T> { Leaf(T), Fields(Vec<Entry<T>>), }
-        type Entry<T> { key: string, value: Carrier<T>, }
+        r#"enum Carrier<T> {
+    Leaf(T);
+    Fields(Vec<Entry<T>>);
+}
 
-        fn main() {
-            var entries: Vec<Entry<string>> = Vec.new();
-            entries.push(Entry { key: "child", value: Carrier.Leaf("retained") });
-            var roots: Vec<Carrier<string>> = Vec.new();
-            roots.push(Carrier.Fields(entries));
-            let copied = roots.clone();
-            for _ in copied { let seen: i64 = 0; }
-        }
-        "#,
+type Entry<T> {
+    key: string;
+    value: Carrier<T>;
+}
+
+fn main() {
+    var entries: Vec<Entry<string>> = Vec.new();
+    entries.push(Entry { key: "child", value: Carrier.Leaf("retained") });
+    var roots: Vec<Carrier<string>> = Vec.new();
+    roots.push(Carrier.Fields(entries));
+    let copied = roots.clone();
+    for _ in copied {
+        let seen: i64 = 0;
+    }
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -1645,11 +1700,11 @@ fn recursive_collection_admission_through_generic_entry_record() {
 #[test]
 fn recursive_collection_admission_rejects_inline_cycles_after_outer_vec() {
     for declarations in [
-        "type Root { children: Vec<Bad> } type Bad { next: Bad }",
-        "type Root { children: Vec<Bad> } type Bad { next: Peer } type Peer { next: Bad }",
-        "type Root { children: Vec<Bad<string>> } type Bad<T> { next: Inline<Bad<T>> } type Inline<T> { value: T }",
-        "type Root { children: Vec<Bad<string>> } type Bad<T> { next: Inline<Bad<Vec<T>>> } type Inline<T> { value: T }",
-        "type Root { children: Vec<Bad<string>> } type Bad<T> { valid: Vec<Bad<T>>, invalid: Inline<Bad<T>> } type Inline<T> { value: T }",
+        "type Root {\n    children: Vec<Bad>;\n}\n\ntype Bad {\n    next: Bad;\n}\n",
+        "type Root {\n    children: Vec<Bad>;\n}\n\ntype Bad {\n    next: Peer;\n}\n\ntype Peer {\n    next: Bad;\n}\n",
+        "type Root {\n    children: Vec<Bad<string>>;\n}\n\ntype Bad<T> {\n    next: Inline<Bad<T>>;\n}\n\ntype Inline<T> {\n    value: T;\n}\n",
+        "type Root {\n    children: Vec<Bad<string>>;\n}\n\ntype Bad<T> {\n    next: Inline<Bad<Vec<T>>>;\n}\n\ntype Inline<T> {\n    value: T;\n}\n",
+        "type Root {\n    children: Vec<Bad<string>>;\n}\n\ntype Bad<T> {\n    valid: Vec<Bad<T>>;\n    invalid: Inline<Bad<T>>;\n}\n\ntype Inline<T> {\n    value: T;\n}\n",
     ] {
         let parsed = hew_parser::parse(declarations);
         assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
@@ -1666,18 +1721,27 @@ fn recursive_collection_admission_rejects_inline_cycles_after_outer_vec() {
 #[test]
 fn recursive_collection_admission_preserves_finite_nested_generic_copy_layout() {
     let output = check_source(
-        r"
-        type Wrap<T> { value: T }
-        type Outer<T> { child: Wrap<T> }
-        fn main() {
-            var direct: Vec<Wrap<Wrap<i64>>> = Vec.new();
-            direct.push(Wrap { value: Wrap { value: 1 } });
-            var mixed: Vec<Outer<Outer<i64>>> = Vec.new();
-            mixed.push(Outer { child: Wrap { value: Outer { child: Wrap { value: 2 } } } });
-            for _ in direct { let seen: i64 = 0; }
-            for _ in mixed { let seen: i64 = 0; }
-        }
-        ",
+        r"type Wrap<T> {
+    value: T;
+}
+
+type Outer<T> {
+    child: Wrap<T>;
+}
+
+fn main() {
+    var direct: Vec<Wrap<Wrap<i64>>> = Vec.new();
+    direct.push(Wrap { value: Wrap { value: 1 } });
+    var mixed: Vec<Outer<Outer<i64>>> = Vec.new();
+    mixed.push(Outer { child: Wrap { value: Outer { child: Wrap { value: 2 } } } });
+    for _ in direct {
+        let seen: i64 = 0;
+    }
+    for _ in mixed {
+        let seen: i64 = 0;
+    }
+}
+",
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -1691,17 +1755,32 @@ fn recursive_collection_admission_borrows_a_nested_resource_element() {
     // recursive nesting must still refuse resource cloning) died: cloning
     // is no longer what direct iteration does at all.
     let output = check_source(
-        r"
-        #[resource]
-        type Token { id: i64 }
-        impl Token { fn close(consume self) {} }
-        enum Carrier<T> { Leaf(T), Fields(Vec<Entry<T>>), }
-        type Entry<T> { value: Carrier<T>, }
-        fn scan(values: Vec<Carrier<Token>>) {
-            for _ in values { let seen: i64 = 0; }
-        }
-        fn main() {}
-        ",
+        r"#[resource]
+type Token {
+    id: i64;
+}
+
+impl Token {
+    fn close(consume self) {}
+}
+
+enum Carrier<T> {
+    Leaf(T);
+    Fields(Vec<Entry<T>>);
+}
+
+type Entry<T> {
+    value: Carrier<T>;
+}
+
+fn scan(values: Vec<Carrier<Token>>) {
+    for _ in values {
+        let seen: i64 = 0;
+    }
+}
+
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1716,17 +1795,21 @@ fn vec_iter_admits_generic_mutual_vec_and_hashmap_value_recursion() {
     // one heap buffer, then `B -> HashMap<i64, A>` closes through the map's
     // VALUE buffer. Neither type is recursively embedded inline.
     let output = check_source(
-        r"
-        type A<T> { children: Vec<B<T>> }
-        type B<T> { parents: HashMap<i64, A<T>> }
+        r"type A<T> {
+    children: Vec<B<T>>;
+}
 
-        fn main() {
-            var roots: Vec<A<i64>> = [];
-            for _ in roots {
-                let seen: i64 = 0;
-            }
-        }
-        ",
+type B<T> {
+    parents: HashMap<i64, A<T>>;
+}
+
+fn main() {
+    var roots: Vec<A<i64>> = [];
+    for _ in roots {
+        let seen: i64 = 0;
+    }
+}
+",
     );
 
     assert!(
@@ -1791,16 +1874,17 @@ fn vec_iter_rejects_direct_inline_recursive_declaration() {
     // value layout. This must stay a diagnostic rather than recursing through
     // clone/drop classification until the checker overflows its stack.
     let output = check_source(
-        r"
-        type Direct { next: Direct }
+        r"type Direct {
+    next: Direct;
+}
 
-        fn main() {
-            var nodes: Vec<Direct> = [];
-            for _ in nodes {
-                let seen: i64 = 0;
-            }
-        }
-        ",
+fn main() {
+    var nodes: Vec<Direct> = [];
+    for _ in nodes {
+        let seen: i64 = 0;
+    }
+}
+",
     );
 
     assert!(
@@ -1819,17 +1903,21 @@ fn vec_iter_rejects_mutual_inline_recursive_declarations() {
     // crosses a container value slot, so the declaration pair is infinitely
     // sized and must fail closed without a recursive checker walk.
     let output = check_source(
-        r"
-        type A { nested: B }
-        type B { outer: A }
+        r"type A {
+    nested: B;
+}
 
-        fn main() {
-            var roots: Vec<A> = [];
-            for _ in roots {
-                let seen: i64 = 0;
-            }
-        }
-        ",
+type B {
+    outer: A;
+}
+
+fn main() {
+    var roots: Vec<A> = [];
+    for _ in roots {
+        let seen: i64 = 0;
+    }
+}
+",
     );
 
     assert!(
@@ -1847,14 +1935,15 @@ fn vec_record_hashmap_field_push_admitted() {
     // A record whose field is a `HashMap` is admitted — the map arg types
     // (`string`/`string`) are clonable, so the collection field is clonable.
     let output = check_source(
-        r"
-        type M { rows: HashMap<string, string> }
+        r"type M {
+    rows: HashMap<string, string>;
+}
 
-        fn main() {
-            var xs: Vec<M> = [];
-            xs.push(M { rows: HashMap.new() });
-        }
-        ",
+fn main() {
+    var xs: Vec<M> = [];
+    xs.push(M { rows: HashMap.new() });
+}
+",
     );
 
     assert!(
@@ -1944,14 +2033,15 @@ fn array_repeat_collection_bearing_record_is_admitted() {
     // once. A collection-free record `[Point; N]` and an Rc-bearing record
     // repeat through the same semantic clone path.
     let bag = check_source(
-        r"
-        type Bag { items: Vec<i64> }
+        r"type Bag {
+    items: Vec<i64>;
+}
 
-        fn main() {
-            let b = Bag { items: [1, 2, 3] };
-            let bs = [b; 3];
-        }
-        ",
+fn main() {
+    let b = Bag { items: [1, 2, 3] };
+    let bs = [b; 3];
+}
+",
     );
     assert!(
         !bag.errors.iter().any(|error| {
@@ -1964,14 +2054,16 @@ fn array_repeat_collection_bearing_record_is_admitted() {
     );
 
     let point = check_source(
-        r"
-        type Point { x: i64, y: i64 }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn main() {
-            let p = Point { x: 1, y: 2 };
-            let ps = [p; 3];
-        }
-        ",
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    let ps = [p; 3];
+}
+",
     );
     assert!(
         !point.errors.iter().any(|error| {
@@ -1984,14 +2076,15 @@ fn array_repeat_collection_bearing_record_is_admitted() {
     );
 
     let shared = check_source(
-        r"
-        type Shared { handle: Rc<i64> }
+        r"type Shared {
+    handle: Rc<i64>;
+}
 
-        fn main() {
-            let s = Shared { handle: Rc.new(7) };
-            let ss = [s; 3];
-        }
-        ",
+fn main() {
+    let s = Shared { handle: Rc.new(7) };
+    let ss = [s; 3];
+}
+",
     );
     assert!(
         !shared.errors.iter().any(|error| {
@@ -2007,15 +2100,16 @@ fn array_repeat_collection_bearing_record_is_admitted() {
 #[test]
 fn vec_record_function_collection_field_defers_executable_admission() {
     let output = check_source(
-        r"
-        type Holder { cbs: Vec<fn() -> i64> }
+        r"type Holder {
+    cbs: Vec<fn() -> i64>;
+}
 
-        fn main() {
-            var xs: Vec<Holder> = [];
-            let h = Holder { cbs: [] };
-            xs.push(h);
-        }
-        ",
+fn main() {
+    var xs: Vec<Holder> = [];
+    let h = Holder { cbs: [] };
+    xs.push(h);
+}
+",
     );
 
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
@@ -2099,16 +2193,17 @@ fn vec_iter_clone_totality_defers_genuine_function_type_parameter() {
 #[test]
 fn user_vec_iter_name_does_not_bypass_into_iterator() {
     let output = check_source(
-        r"
-        type VecIter<T> { value: T, }
+        r"type VecIter<T> {
+    value: T;
+}
 
-        fn main() {
-            let iter = VecIter { value: 1 };
-            for value in iter {
-                let _ = value;
-            }
-        }
-        ",
+fn main() {
+    let iter = VecIter { value: 1 };
+    for value in iter {
+        let _ = value;
+    }
+}
+",
     );
 
     assert!(
@@ -2189,24 +2284,24 @@ fn vec_iter_borrows_direct_function_element() {
 #[test]
 fn vec_iter_takes_an_opaque_resource_element() {
     let output = check_source(
-        r"
-        #[resource]
-        #[opaque]
-        type Handle {}
+        r"#[resource]
+#[opaque]
+type Handle {
+}
 
-        impl Handle {
-            fn close(consume self) {}
-        }
+impl Handle {
+    fn close(consume self) {}
+}
 
-        fn scan(handles: Vec<Handle>) {
-            var it = handles.into_iter();
-            let taken = it.next();
-            match taken {
-                Option.Some(handle) => handle.close(),
-                Option.None => {},
-            }
-        }
-        ",
+fn scan(handles: Vec<Handle>) {
+    var it = handles.into_iter();
+    let taken = it.next();
+    match taken {
+        Option.Some(handle) => handle.close(),
+        Option.None => {}
+    }
+}
+",
     );
 
     assert!(
@@ -2221,25 +2316,28 @@ fn vec_iter_takes_an_opaque_resource_element() {
 #[test]
 fn vec_iter_drains_marked_resource_direct_and_wrapped() {
     let output = check_source(
-        r"
-        #[resource]
-        type Tok { id: i64 }
+        r"#[resource]
+type Tok {
+    id: i64;
+}
 
-        impl Tok {
-            fn close(consume self) {}
-        }
+impl Tok {
+    fn close(consume self) {}
+}
 
-        type Wrap { token: Tok }
+type Wrap {
+    token: Tok;
+}
 
-        fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
-            for token in xs.into_iter() {
-                token.close();
-            }
-            for item in wrapped.into_iter() {
-                item.token.close();
-            }
-        }
-        ",
+fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
+    for token in xs.into_iter() {
+        token.close();
+    }
+    for item in wrapped.into_iter() {
+        item.token.close();
+    }
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2256,10 +2354,16 @@ fn vec_iter_drains_marked_resource_direct_and_wrapped() {
 #[test]
 fn vec_clone_growing_recursive_generic_terminates_and_names_the_refusal() {
     let output = check_source(
-        r"
-        enum Grow<T> { Node(Vec<Grow<Vec<T>>>), Leaf(T), }
-        fn main() { let xs: Vec<Grow<i64>> = []; let _ys = xs.clone(); }
-    ",
+        r"enum Grow<T> {
+    Node(Vec<Grow<Vec<T>>>);
+    Leaf(T);
+}
+
+fn main() {
+    let xs: Vec<Grow<i64>> = [];
+    let _ys = xs.clone();
+}
+",
     );
     let refusals: Vec<_> = output
         .errors
@@ -2438,21 +2542,28 @@ fn dyn_trait_function_parameter_still_admitted() {
     // supported, monomorphised-per-call-site shape and must not be caught by
     // the `Vec`-scoped trait-object reject.
     let output = check_source(
-        r#"
-        trait Speaker {
-            fn say(self) -> string;
-        }
-        type Cat { name: string }
-        impl Speaker for Cat {
-            fn say(c: Cat) -> string { c.name }
-        }
-        fn announce(s: dyn Speaker) {
-            let _ = s.say();
-        }
-        fn main() {
-            announce(Cat { name: "Tom" });
-        }
-        "#,
+        r#"trait Speaker {
+    fn say(self) -> string;
+}
+
+type Cat {
+    name: string;
+}
+
+impl Speaker for Cat {
+    fn say(c: Cat) -> string {
+        c.name
+    }
+}
+
+fn announce(s: dyn Speaker) {
+    let _ = s.say();
+}
+
+fn main() {
+    announce(Cat { name: "Tom" });
+}
+"#,
     );
 
     assert!(
@@ -2609,22 +2720,26 @@ fn user_method_on_builtin_result_wrapper_is_rejected() {
     // then rejects the LLVM module. The checker must reject this with an
     // `UndefinedMethod` diagnostic naming the builtin `Result<...>` receiver.
     let output = check_source(
-        r#"
-        type Result { handle: i64, }
-        impl Result {
-            fn free(self) {}
-        }
-        actor Db {
-            receive fn query(sql: string) -> Result {
-                Result { handle: 0 }
-            }
-        }
-        fn main() {
-            let db = spawn Db;
-            let r = db.query("SELECT 1");
-            r.free();
-        }
-        "#,
+        r#"type Result {
+    handle: i64;
+}
+
+impl Result {
+    fn free(self) {}
+}
+
+actor Db {
+    receive fn query(sql: string) -> Result {
+        Result { handle: 0 }
+    }
+}
+
+fn main() {
+    let db = spawn Db;
+    let r = db.query("SELECT 1");
+    r.free();
+}
+"#,
     );
 
     assert!(
@@ -2667,21 +2782,29 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
     // for builtin `Result`/`Option` receivers selects the builtin method for
     // ALL method names.
     let output = check_source_allowing_prelude_redeclaration(
-        r#"
-        type Result { handle: i64, }
-        impl Result {
-            fn is_ok(self) -> i64 { self.handle }
-        }
-        actor Doubler {
-            receive fn process(n: i64) -> i64 { n * 2 }
-        }
-        fn main() {
-            let d = spawn Doubler;
-            let r = d.process(5);
-            let ok: bool = r.is_ok();
-            let v = r.expect("the value is present");
-        }
-        "#,
+        r#"type Result {
+    handle: i64;
+}
+
+impl Result {
+    fn is_ok(self) -> i64 {
+        self.handle
+    }
+}
+
+actor Doubler {
+    receive fn process(n: i64) -> i64 {
+        n * 2
+    }
+}
+
+fn main() {
+    let d = spawn Doubler;
+    let r = d.process(5);
+    let ok: bool = r.is_ok();
+    let v = r.expect("the value is present");
+}
+"#,
     );
 
     assert!(
@@ -2803,22 +2926,33 @@ fn unwrap_is_refused_and_points_at_expect() {
 #[test]
 fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
     let output = check_source_allowing_prelude_redeclaration(
-        r"
-        type Option { value: i64, }
-        impl Option {
-            fn is_some(self) -> i64 { self.value }
-        }
-        type Result { value: i64, }
-        impl Result {
-            fn is_ok(self) -> i64 { self.value }
-        }
-        fn main() {
-            let option = Option { value: 1 };
-            let result = Result { value: 2 };
-            let a: i64 = option.is_some();
-            let b: i64 = result.is_ok();
-        }
-        ",
+        r"type Option {
+    value: i64;
+}
+
+impl Option {
+    fn is_some(self) -> i64 {
+        self.value
+    }
+}
+
+type Result {
+    value: i64;
+}
+
+impl Result {
+    fn is_ok(self) -> i64 {
+        self.value
+    }
+}
+
+fn main() {
+    let option = Option { value: 1 };
+    let result = Result { value: 2 };
+    let a: i64 = option.is_some();
+    let b: i64 = result.is_ok();
+}
+",
     );
 
     assert!(
@@ -2842,22 +2976,24 @@ fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
 #[test]
 fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
     let output = check_source_allowing_prelude_redeclaration(
-        r"
-        enum Option<T> { Some(T), None }
+        r"enum Option<T> {
+    Some(T);
+    None;
+}
 
-        fn main() -> i64 {
-            let inferred = Option.Some(6);
-            let inner: Option<i64> = Option.Some(5);
-            let outer: Option<Option<i64>> = Option.Some(inner);
-            match outer {
-                Option.Some(v) => match v {
-                    Option.Some(n) => n,
-                    Option.None => 0,
-                },
-                Option.None => -1,
-            }
+fn main() -> i64 {
+    let inferred = Option.Some(6);
+    let inner: Option<i64> = Option.Some(5);
+    let outer: Option<Option<i64>> = Option.Some(inner);
+    match outer {
+        Option.Some(v) => match v {
+            Option.Some(n) => n,
+            Option.None => 0,
         }
-        ",
+        Option.None => -1,
+    }
+}
+",
     );
 
     assert!(
@@ -2889,19 +3025,18 @@ fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
 #[test]
 fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
     let output = check_source(
-        r"
-        fn main() -> i64 {
-            let inner: Option<i64> = .Some(5);
-            let outer: Option<Option<i64>> = .Some(inner);
-            match outer {
-                .Some(v) => match v {
-                    .Some(n) => n,
-                    .None => 0,
-                },
-                .None => -1,
-            }
+        r"fn main() -> i64 {
+    let inner: Option<i64> = .Some(5);
+    let outer: Option<Option<i64>> = .Some(inner);
+    match outer {
+        .Some(v) => match v {
+            .Some(n) => n,
+            .None => 0,
         }
-        ",
+        .None => -1,
+    }
+}
+",
     );
 
     assert!(
@@ -2981,20 +3116,19 @@ fn constructor_pattern_against_non_enum_still_errors() {
 #[test]
 fn supervisor_wired_to_rejects_remote_pid_by_role() {
     let output = check_source(
-        r"
-        actor Db {
-            receive fn query() {}
-        }
+        r"actor Db {
+    receive fn query() {}
+}
 
-        actor Api {
-            init(db: RemotePid<Db>) {}
-        }
+actor Api {
+    init(db: RemotePid<Db>) {}
+}
 
-        supervisor App {
-            child db: Db,
-            child api: Api wired_to: { db },
-        }
-        ",
+supervisor App {
+    child db: Db;
+    child api: Api wired_to: { db: db };
+}
+",
     );
 
     assert!(
@@ -3016,24 +3150,23 @@ fn supervisor_wired_to_rejects_remote_pid_by_role() {
 #[test]
 fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
     let output = check_source_allowing_prelude_redeclaration(
-        r"
-        machine MachineState {
-            events {
-                Tick,
-            }
+        r"machine MachineState {
+    events {
+        Tick;
+    }
 
-            state Idle,
-            state Running,
+    state Idle;
+    state Running;
 
-            on Tick: Idle => .Running,
-            on Tick: Running => .Idle,
-        }
+    on Tick: Idle => .Running;
+    on Tick: Running => .Idle;
+}
 
-        fn main() {
-            var m = MachineState.Idle;
-            m.step(.Tick);
-        }
-        ",
+fn main() {
+    var m = MachineState.Idle;
+    m.step(.Tick);
+}
+",
     );
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
@@ -3262,16 +3395,16 @@ fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
 #[test]
 fn non_root_private_rc_record_is_admitted_during_body_checking() {
     let parsed = hew_parser::parse(
-        r"
-        type Holder {
-            value: Rc<i64>
-        }
+        r"type Holder {
+    value: Rc<i64>;
+}
 
-        fn helper() {
-            var v = Vec.new();
-            let h = Holder { value: Rc.new(1) };
-            v.push(h);
-        }",
+fn helper() {
+    var v = Vec.new();
+    let h = Holder { value: Rc.new(1) };
+    v.push(h);
+}
+",
     );
     assert!(
         parsed.errors.is_empty(),
@@ -3323,12 +3456,12 @@ fn imported_module_record_seeds_send_marker_for_actor_ask_reply() {
     // the over-rejection: a plainly-Send `i64`-field record was rejected
     // because the importer's registry had no entry under the bare name.
     let parsed = hew_parser::parse(
-        r"
-        pub type Result {
-            handle: i64
-        }
+        r"pub type Result {
+    handle: i64;
+}
 
-        fn helper() {}",
+fn helper() {}
+",
     );
     assert!(
         parsed.errors.is_empty(),
@@ -3384,10 +3517,10 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
     // qualified identities correctly: non-Send for the `Rc` module, Send for the
     // `i64` module — the load-bearing negative case the bare key cannot express.
     let bad = hew_parser::parse(
-        r"
-        pub type Reply {
-            field: Rc<i64>
-        }",
+        r"pub type Reply {
+    field: Rc<i64>;
+}
+",
     );
     assert!(
         bad.errors.is_empty(),
@@ -3395,10 +3528,10 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
         bad.errors
     );
     let good = hew_parser::parse(
-        r"
-        pub type Reply {
-            handle: i64
-        }",
+        r"pub type Reply {
+    handle: i64;
+}
+",
     );
     assert!(
         good.errors.is_empty(),
@@ -3457,13 +3590,13 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
 #[test]
 fn actor_handle_layout_does_not_recurse_into_actor_rc_state() {
     let parsed = hew_parser::parse(
-        r"
-        actor Worker {
-            let value: Rc<i64>,
-            receive fn ping() {}
-        }
+        r"actor Worker {
+    let value: Rc<i64>;
+    receive fn ping() {}
+}
 
-        fn main() {}",
+fn main() {}
+",
     );
     assert!(
         parsed.errors.is_empty(),
@@ -3513,14 +3646,15 @@ fn actor_handle_layout_does_not_recurse_into_actor_rc_state() {
 #[test]
 fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
     let output = check_source(
-        r"
-        type Bag<T> { items: Vec<T>, }
+        r"type Bag<T> {
+    items: Vec<T>;
+}
 
-        fn main() {
-            var b = Bag { items: Vec.new() };
-            b.items.push(7);
-        }
-        ",
+fn main() {
+    var b = Bag { items: Vec.new() };
+    b.items.push(7);
+}
+",
     );
 
     assert!(
@@ -3546,15 +3680,19 @@ fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
 #[test]
 fn nested_generic_record_vec_new_publishes_its_runtime_target() {
     let output = check_source(
-        r"
-        type Inner<T> { xs: Vec<T>, }
-        type Outer<T> { inner: Inner<T>, }
+        r"type Inner<T> {
+    xs: Vec<T>;
+}
 
-        fn main() {
-            var o = Outer { inner: Inner { xs: Vec.new() } };
-            o.inner.xs.push(3);
-        }
-        ",
+type Outer<T> {
+    inner: Inner<T>;
+}
+
+fn main() {
+    var o = Outer { inner: Inner { xs: Vec.new() } };
+    o.inner.xs.push(3);
+}
+",
     );
 
     assert!(
@@ -3619,14 +3757,16 @@ fn annotated_map_and_set_constructors_publish_their_runtime_targets() {
 #[test]
 fn record_field_map_and_set_constructors_publish_their_runtime_targets() {
     let output = check_source(
-        r#"
-        type Registry { labels: HashMap<string, string>, members: HashSet<string>, }
+        r#"type Registry {
+    labels: HashMap<string, string>;
+    members: HashSet<string>;
+}
 
-        fn main() {
-            var r = Registry { labels: HashMap.new(), members: HashSet.new() };
-            r.members.insert("one");
-        }
-        "#,
+fn main() {
+    var r = Registry { labels: HashMap.new(), members: HashSet.new() };
+    r.members.insert("one");
+}
+"#,
     );
 
     assert!(
@@ -3689,12 +3829,14 @@ fn map_constructor_against_a_non_map_expectation_is_rejected() {
 #[test]
 fn generic_actor_hashmap_field_key_bounds_survive_deferred_admission() {
     let output = check_source(
-        r"
-        actor Cache<K: Hash + Eq, V: Clone> {
-            var entries: HashMap<K, V>,
-        }
-        fn main() -> i64 { 0 }
-        ",
+        r"actor Cache<K: Hash + Eq, V: Clone> {
+    var entries: HashMap<K, V>;
+}
+
+fn main() -> i64 {
+    0
+}
+",
     );
 
     assert!(
@@ -3710,12 +3852,14 @@ fn generic_actor_hashmap_field_key_bounds_survive_deferred_admission() {
 #[test]
 fn generic_actor_hashmap_field_key_without_hash_bound_is_still_rejected() {
     let output = check_source(
-        r"
-        actor Cache<K: Eq, V: Clone> {
-            var entries: HashMap<K, V>,
-        }
-        fn main() -> i64 { 0 }
-        ",
+        r"actor Cache<K: Eq, V: Clone> {
+    var entries: HashMap<K, V>;
+}
+
+fn main() -> i64 {
+    0
+}
+",
     );
 
     assert!(

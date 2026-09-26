@@ -2,7 +2,7 @@ import std.failure;
 
 #[resource]
 type Socket {
-    label: string,
+    label: string;
 }
 
 impl Socket {
@@ -14,8 +14,8 @@ impl Socket {
 }
 
 actor Vault {
-    var sock: Socket,
-    var log: Socket,
+    var sock: Socket;
+    var log: Socket;
 
     receive fn swap() -> string {
         let label = sock.detach();

@@ -1,3 +1,5 @@
 import "c.hew";
 
-pub fn from_b() -> string { from_c() }
+pub fn from_b() -> string {
+    from_c()
+}

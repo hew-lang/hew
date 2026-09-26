@@ -1,5 +1,5 @@
 type Countdown {
-    n: i64,
+    n: i64;
 }
 
 impl Iterator for Countdown {
@@ -18,10 +18,8 @@ impl Iterator for Countdown {
 
 fn main() -> i64 {
     var sum: i64 = 0;
-
     for value in Countdown { n: 3 } {
         sum = sum + value;
     }
-
     return sum;
 }

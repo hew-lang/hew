@@ -8,7 +8,7 @@
 import std.stream;
 
 actor StateProducer {
-    out: stream.Sink<i64>,
+    let out: stream.Sink<i64>;
 
     receive fn emit(n: i64) {
         self.out.send(n).expect("send");

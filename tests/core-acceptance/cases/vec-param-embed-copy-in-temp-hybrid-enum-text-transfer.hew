@@ -1,13 +1,14 @@
 #[opaque]
-type Handle {}
+type Handle {
+}
 
 extern "C" {
     fn hew_handle_create() -> Handle;
 }
 
 enum Mixed {
-    Text(string),
-    Opaque(Handle),
+    Text(string);
+    Opaque(Handle);
 }
 
 fn inspect(x: Mixed) -> i64 {
@@ -18,8 +19,10 @@ fn inspect(x: Mixed) -> i64 {
 }
 
 fn main() -> i64 {
-    for i in 0..50 {
-        if inspect(Mixed.Text(f"payload-{i}".to_upper())) < 9 { return 61; }
+    for i in 0 .. 50 {
+        if inspect(Mixed.Text(f"payload-{i}".to_upper())) < 9 {
+            return 61;
+        }
     }
     0
 }

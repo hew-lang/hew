@@ -17,36 +17,36 @@ import std.os;
 // records, declaration order on enum variants.
 #[wire]
 type KvPut {
-    key: string @1,
-    val: string @2,
+    key: string @1;
+    val: string @2;
 }
 
 #[wire]
 enum KvReq {
-    Put(KvPut),
-    GetKey(string),
+    Put(KvPut);
+    GetKey(string);
 }
 
 #[wire]
 enum KvResp {
-    Ack,
-    Value(string),
+    Ack;
+    Value(string);
 }
 
 actor KeyValue {
-    var store: HashMap<string, string>,
+    var store: HashMap<string, string>;
     receive fn handle(req: KvReq) -> KvResp {
         match req {
             KvReq.Put(kv) => {
                 store.insert(kv.key, kv.val);
                 KvResp.Ack
-            },
+            }
             KvReq.GetKey(k) => {
                 match store.get(k) {
                     .Some(v) => KvResp.Value(v),
                     .None => KvResp.Value(""),
                 }
-            },
+            }
         }
     }
     receive fn count() -> i64 {
@@ -71,7 +71,7 @@ fn main() {
     println(f"[kv-server] starting on {addr}");
     let config = NodeConfig { bind: addr, transport: "tcp", key: "kv-server.key", trust: "pinned", peers: [], seeds: [] };
     match Node.start(config) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("node start failed"),
     }
     println("[kv-server] node started");

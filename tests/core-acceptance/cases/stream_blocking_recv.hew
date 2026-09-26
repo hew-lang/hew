@@ -21,7 +21,7 @@ fn main() {
                 return;
             };
             println(text);
-        },
+        }
         .None => println("eof"),
     }
     match input.try_recv() {
@@ -31,7 +31,7 @@ fn main() {
                 return;
             };
             println(text);
-        },
+        }
         .None => println("empty"),
     }
     input.close();

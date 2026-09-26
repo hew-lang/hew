@@ -32,7 +32,7 @@ fn run_multiplier(factor: i64, value: i64) {
         println(f"{factor} * {x} = {x * factor}");
     };
     match worker.send(value) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("multiplier actor rejected its input"),
     }
     worker.close();
@@ -45,7 +45,7 @@ fn run_string_processor(tag: string, value: i64) {
         println(f"[{tag}] {x}");
     };
     match worker.send(value) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("string processor actor rejected its input"),
     }
     worker.close();
@@ -64,11 +64,11 @@ fn run_conditional_processor(check_even: bool, first: i64, second: i64) {
         // else: don't print anything
     };
     match worker.send(first) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("conditional actor rejected its first input"),
     }
     match worker.send(second) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("conditional actor rejected its second input"),
     }
     worker.close();
@@ -84,7 +84,7 @@ fn run_factory_maker(base: i64, offset: i64) {
         // but that would require more complex type system support
     };
     match worker.send(offset) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("factory actor rejected its input"),
     }
     worker.close();

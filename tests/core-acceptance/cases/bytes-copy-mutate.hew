@@ -3,7 +3,6 @@ fn main() -> i64 {
     let original = "A".to_bytes();
     var copy = original;
     copy.push(66);
-
     if original.len() != 1 || original[0] != 65 {
         return 1;
     }

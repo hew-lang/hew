@@ -6,15 +6,7 @@ pub(super) use super::*;
 
 #[test]
 fn indirect_calls_publish_closure_candidates_and_opaque_origins() {
-    let source = "fn invoke(f: fn() -> i64) -> i64 { f() } \
-        type Bag { callback: fn() -> i64 } \
-        fn main() { \
-            let local = || 1; \
-            let selected = if true { || 2 } else { || 3 }; \
-            let bag = Bag { callback: || 4 }; \
-            println(local()); println(selected()); println(bag.callback()); \
-            println(invoke(|| 5)); \
-        }";
+    let source = "fn invoke(f: fn() -> i64) -> i64 {\n    f()\n}\n\ntype Bag {\n    callback: fn() -> i64;\n}\n\nfn main() {\n    let local = || 1;\n    let selected = if true {\n        || 2\n    } else {\n        || 3\n    };\n    let bag = Bag { callback: || 4 };\n    println(local());\n    println(selected());\n    println(bag.callback());\n    println(invoke(|| 5));\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let closure = |text: &str| {
@@ -230,8 +222,7 @@ fn callable_actuals_follow_exact_formals_through_helpers() {
 
 #[test]
 fn imported_method_callback_flows_to_its_exact_formal() {
-    let module_source = "pub type Runner { value: i64 } \
-        impl Runner { fn apply(self, f: fn() -> i64) -> i64 { f() } }";
+    let module_source = "pub type Runner {\n    value: i64;\n}\n\nimpl Runner {\n    fn apply(self, f: fn() -> i64) -> i64 {\n        f()\n    }\n}\n";
     let source = "import m; fn main() { \
         let runner = m.Runner { value: 0 }; \
         println(runner.apply(|| 1)); \
@@ -305,8 +296,7 @@ fn imported_method_callback_flows_to_its_exact_formal() {
 
 #[test]
 fn imported_generic_aggregate_publishes_selected_callback_field() {
-    let module_source = "pub type Map<A, B> { f: fn(A) -> B } \
-        pub fn map<A, B>(consume f: fn(A) -> B) -> Map<A, B> { Map { f: f } }";
+    let module_source = "pub type Map<A, B> {\n    f: fn(A) -> B;\n}\n\npub fn map<A, B>(consume f: fn(A) -> B) -> Map<A, B> {\n    Map { f: f }\n}\n";
     let source = "import m; fn main() { let mapped = m.map(|x: i64| x + 1); }";
     let module = hew_parser::parse(module_source);
     assert!(module.errors.is_empty(), "{:#?}", module.errors);
@@ -380,10 +370,7 @@ fn imported_generic_aggregate_publishes_selected_callback_field() {
 
 #[test]
 fn imported_generic_trait_call_publishes_receiver_actual_for_concrete_impl() {
-    let module_source = "pub trait Runner { fn run(self) -> i64; } \
-        pub type Map { f: fn() -> i64 } \
-        impl Runner for Map { fn run(self) -> i64 { (self.f)() } } \
-        pub fn collect<I: Runner>(it: I) -> i64 { it.run() }";
+    let module_source = "pub trait Runner {\n    fn run(self) -> i64;\n}\n\npub type Map {\n    f: fn() -> i64;\n}\n\nimpl Runner for Map {\n    fn run(self) -> i64 {\n        (self.f)()\n    }\n}\n\npub fn collect<I: Runner>(it: I) -> i64 {\n    it.run()\n}\n";
     let source = "import m; fn main() { println(m.collect(m.Map { f: || 7 })); }";
     let module = hew_parser::parse(module_source);
     assert!(module.errors.is_empty(), "{:#?}", module.errors);
@@ -441,11 +428,7 @@ fn imported_generic_trait_call_publishes_receiver_actual_for_concrete_impl() {
 
 #[test]
 fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
-    let source = "type Map { f: fn(i64) -> i64 } \
-        impl Map { fn next(self, value: i64) -> i64 { (self.f)(value) } } \
-        fn map(consume f: fn(i64) -> i64) -> Map { Map { f: f } } \
-        fn collect(consume it: Map) -> i64 { it.next(1) } \
-        fn main() { println(collect(map(|x: i64| x + 1))); }";
+    let source = "type Map {\n    f: fn(i64) -> i64;\n}\n\nimpl Map {\n    fn next(self, value: i64) -> i64 {\n        (self.f)(value)\n    }\n}\n\nfn map(consume f: fn(i64) -> i64) -> Map {\n    Map { f: f }\n}\n\nfn collect(consume it: Map) -> i64 {\n    it.next(1)\n}\n\nfn main() {\n    println(collect(map(|x: i64| x + 1)));\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let map_decl = output.defs.lookup_path("map").expect("map declaration");
@@ -571,9 +554,7 @@ fn reassigned_function_value_keeps_every_possible_closure() {
 
 #[test]
 fn authored_static_method_wins_over_runtime_name() {
-    let source = "type Node { v: i64 } \
-        impl Node { fn shutdown() { println(\"user shutdown\"); } } \
-        fn main() { Node.shutdown(); }";
+    let source = "type Node {\n    v: i64;\n}\n\nimpl Node {\n    fn shutdown() {\n        println(\"user shutdown\");\n    }\n}\n\nfn main() {\n    Node.shutdown();\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let declaration = *output
@@ -633,7 +614,7 @@ fn explicit_generic_function_value_keeps_its_bare_declaration() {
 
 #[test]
 fn actor_self_projection_publishes_the_state_member() {
-    let source = "actor Counter { let value: i64, receive fn get() -> i64 { self.value } }";
+    let source = "actor Counter {\n    let value: i64;\n    receive fn get() -> i64 {\n        self.value\n    }\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let owner = output
@@ -659,8 +640,7 @@ fn actor_self_projection_publishes_the_state_member() {
 
 #[test]
 fn actor_self_assignment_publishes_the_state_member() {
-    let source = "actor Counter { var value: i64 = 0, \
-        receive fn set(next: i64) { self.value = next; } }";
+    let source = "actor Counter {\n    var value: i64 = 0;\n    receive fn set(next: i64) {\n        self.value = next;\n    }\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let owner = output
@@ -938,7 +918,7 @@ fn source_resolutions_join_numeric_local_uses_in_short_circuit_comparisons() {
 
 #[test]
 fn source_resolutions_publish_return_annotation_nominal() {
-    let source = "type Point { x: i64 } fn origin() -> Point { Point { x: 1 } }";
+    let source = "type Point {\n    x: i64;\n}\n\nfn origin() -> Point {\n    Point { x: 1 }\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let name = source.find("-> Point").unwrap() + "-> ".len();
@@ -969,10 +949,7 @@ fn source_resolutions_join_recovery_binding_and_use() {
 
 #[test]
 fn source_resolutions_distinguish_shorthand_pattern_binders() {
-    let source = "enum Config { Named { key: string, value: string }, Anonymous, } \
-        fn probe(config: Config) -> string { \
-        let Config.Named { key, value } = config else { return \"anonymous\"; }; \
-        let _ = key; value }";
+    let source = "enum Config {\n    Named { key: string; value: string;  }\n    Anonymous;\n}\n\nfn probe(config: Config) -> string {\n    let Config.Named { key, value } = config else {\n        return \"anonymous\";\n    };\n    let _ = key;\n    value\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let pattern = source.find("{ key, value }").unwrap();
@@ -1098,8 +1075,7 @@ fn source_resolutions_join_function_and_closure_parameters_to_uses() {
 
 #[test]
 fn source_resolutions_join_implicit_self_to_its_use() {
-    let source = "type Box { value: i64 } \
-        impl Box { fn get(self) -> i64 { self.value } }";
+    let source = "type Box {\n    value: i64;\n}\n\nimpl Box {\n    fn get(self) -> i64 {\n        self.value\n    }\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let definition = source.find("self)").unwrap();
@@ -1115,9 +1091,7 @@ fn source_resolutions_join_implicit_self_to_its_use() {
 
 #[test]
 fn source_resolutions_distinguish_same_named_fields_by_owner() {
-    let source = "type A { x: i64 } type B { x: i64 } fn main() { \
-        let a = A { x: 1 }; let b = B { x: 2 }; \
-        println(a.x); println(b.x); }";
+    let source = "type A {\n    x: i64;\n}\n\ntype B {\n    x: i64;\n}\n\nfn main() {\n    let a = A { x: 1 };\n    let b = B { x: 2 };\n    println(a.x);\n    println(b.x);\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let a = source.find("a.x").expect("A field") + 2;
@@ -1143,7 +1117,7 @@ fn source_resolutions_distinguish_same_named_fields_by_owner() {
 #[test]
 fn source_resolutions_publish_qualified_record_constructor_segments() {
     let source = "import ma; fn main() { let shape = ma.Shape { x: 1 }; println(shape.x); }";
-    let module = hew_parser::parse("pub type Shape { x: i64 }");
+    let module = hew_parser::parse("pub type Shape {\n    x: i64;\n}\n");
     assert!(module.errors.is_empty(), "{:#?}", module.errors);
     let mut parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
@@ -1191,9 +1165,7 @@ fn source_resolutions_publish_qualified_record_constructor_segments() {
 
 #[test]
 fn source_resolutions_join_actor_field_uses_across_handlers() {
-    let source = "actor Counter { let count: i64, \
-        receive fn get() -> i64 { count } \
-        receive fn next() -> i64 { count + 1 } }";
+    let source = "actor Counter {\n    let count: i64;\n    receive fn get() -> i64 {\n        count\n    }\n    receive fn next() -> i64 {\n        count + 1\n    }\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
     let (Item::Actor(actor), _) = &parsed.program.items[0] else {
@@ -1223,10 +1195,7 @@ fn source_resolutions_join_actor_field_uses_across_handlers() {
 
 #[test]
 fn source_resolutions_publish_selected_function_and_method() {
-    let source = "type A { x: i64 } \
-        impl A { fn get(self) -> i64 { self.x } } \
-        fn helper() -> i64 { 1 } \
-        fn main() { let a = A { x: 2 }; println(helper()); println(a.get()); }";
+    let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\nfn helper() -> i64 {\n    1\n}\n\nfn main() {\n    let a = A { x: 2 };\n    println(helper());\n    println(a.get());\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let helper = source.rfind("helper()").expect("helper call");
@@ -1254,12 +1223,7 @@ fn source_resolutions_publish_selected_function_and_method() {
 
 #[test]
 fn source_resolutions_publish_trait_bound_method_declaration() {
-    let source = "trait Describable { fn describe(value: Self) -> string; } \
-        type Label { text: string } \
-        impl Describable for Label { \
-            fn describe(label: Label) -> string { label.text } \
-        } \
-        fn probe<T: Describable>(item: T) -> string { item.describe() }";
+    let source = "trait Describable {\n    fn describe(value: Self) -> string;\n}\n\ntype Label {\n    text: string;\n}\n\nimpl Describable for Label {\n    fn describe(label: Label) -> string {\n        label.text\n    }\n}\n\nfn probe<T: Describable>(item: T) -> string {\n    item.describe()\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let method = source.find("item.describe()").unwrap() + "item.".len();
@@ -1733,9 +1697,46 @@ fn empty_select_and_match_preserve_source_diagnostics() {
 
 #[test]
 fn expected_variant_type_reaches_nested_binding_blocks() {
-    let parsed = hew_parser::parse("enum Value { Text { text: string } } fn main() { let value: Value = { { .Text { text: \"retained\" } } }; match value { .Text { text } => println(text), } }");
+    let parsed = hew_parser::parse("enum Value {\n    Text { text: string;  }\n}\n\nfn main() {\n    let value: Value = {\n        {\n            .Text { text: \"retained\" }\n        }\n    };\n    match value {\n        .Text { text } => println(text),\n    }\n}\n");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn source_type_parameters_publish_distinct_declaration_owned_ids() {
+    let source = "type T { value: i64 } fn first<T>(consume value: T) -> T { value } fn second<T>(consume value: T) -> T { value }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let mut parameters = Vec::new();
+    for (item, _) in &parsed.program.items {
+        let Item::Function(function) = item else {
+            continue;
+        };
+        let hew_parser::ast::TypeExpr::Named { path, .. } = &function.params[0].ty.0 else {
+            panic!("parameter annotation");
+        };
+        let key = SpanKey::in_module(&path.segments[0].1, 0);
+        let Some(crate::check::scope::Resolution::Param(parameter)) = output.resolutions.get(&key)
+        else {
+            panic!(
+                "generic annotation did not select its binder: {:?}",
+                output.resolutions.get(&key)
+            );
+        };
+        assert_eq!(
+            parameter.owner,
+            output
+                .defs
+                .lookup_path(function.name.name.as_str())
+                .unwrap()
+        );
+        assert_eq!(parameter.index, 0);
+        parameters.push(*parameter);
+    }
+    assert_eq!(parameters.len(), 2);
+    assert_ne!(parameters[0], parameters[1]);
 }

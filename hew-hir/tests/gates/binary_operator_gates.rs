@@ -281,23 +281,21 @@ fn binop_in_machine_transition_body_rejected() {
     // Use Gate 1 (Range in value position) — the only remaining unconditional
     // gate — as the cleanest probe that the walker visits transition bodies.
     let output = typecheck_and_lower(
-        r"
-        machine M {
-            events {
-                Go,
-            }
+        r"machine M {
+    events {
+        Go;
+    }
 
-            state A { n: i32, },
-            state B { n: i32, },
+    state A { n: i32; }
+    state B { n: i32; }
 
-
-            on Go: A => B {
-                let _ = 1..10;
-                B { n: 0 }
-            }
-            on Go: B => A { n: 0 }
-        }
-        ",
+    on Go: A => B {
+        let _ = 1 .. 10;
+        B { n: 0 }
+    }
+    on Go: B => A { n: 0 }
+}
+",
     );
     assert!(
         has_diag(&output, |k| matches!(
@@ -318,26 +316,24 @@ fn binop_in_machine_state_entry_rejected() {
     // operand-type info, which is the cleanest probe that the walker visits
     // entry blocks at all.
     let output = typecheck_and_lower(
-        r"
-        machine M {
-            events {
-                Go,
-            }
+        r"machine M {
+    events {
+        Go;
+    }
 
-            state A {
-                n: i32,
-                entry {
-                    let _ = 1..10;
-                    A { n: 0 }
-                }
-            },
-            state B { n: i32, },
-
-
-            on Go: A => B { n: 0 }
-            on Go: B => A { n: 0 }
+    state A {
+        n: i32;
+        entry {
+            let _ = 1 .. 10;
+            A { n: 0 }
         }
-        ",
+    }
+    state B { n: i32; }
+
+    on Go: A => B { n: 0 }
+    on Go: B => A { n: 0 }
+}
+",
     );
     assert!(
         has_diag(&output, |k| matches!(
@@ -354,26 +350,24 @@ fn binop_in_machine_state_entry_rejected() {
 fn binop_in_machine_state_exit_rejected() {
     // Same probe shape as entry, using `..=` to differentiate.
     let output = typecheck_and_lower(
-        r"
-        machine M {
-            events {
-                Go,
-            }
+        r"machine M {
+    events {
+        Go;
+    }
 
-            state A {
-                n: i32,
-                exit {
-                    let _ = 1..=10;
-                    A { n: 0 }
-                }
-            },
-            state B { n: i32, },
-
-
-            on Go: A => B { n: 0 }
-            on Go: B => A { n: 0 }
+    state A {
+        n: i32;
+        exit {
+            let _ = 1 ..= 10;
+            A { n: 0 }
         }
-        ",
+    }
+    state B { n: i32; }
+
+    on Go: A => B { n: 0 }
+    on Go: B => A { n: 0 }
+}
+",
     );
     assert!(
         has_diag(&output, |k| matches!(
@@ -392,23 +386,23 @@ fn binop_in_machine_transition_guard_rejected() {
     // the body. A gated binop here must be caught. Use Gate 1 (Range in value
     // position) as the probe — the isize/usize div/shift gates were lifted.
     let output = typecheck_and_lower(
-        r"
-        fn in_range(r: Range<i64>) -> bool { true }
+        r"fn in_range(r: Range<i64>) -> bool {
+    true
+}
 
-        machine M {
-            events {
-                Go,
-            }
+machine M {
+    events {
+        Go;
+    }
 
-            state A { n: i32, },
-            state B { n: i32, },
+    state A { n: i32; }
+    state B { n: i32; }
 
-
-            on Go: A => B when in_range(0..2) { n: 0 }
-            on Go: A => B { n: 0 }
-            on Go: B => A { n: 0 }
-        }
-        ",
+    on Go: A => B when in_range(0 .. 2) { n: 0 }
+    on Go: A => B { n: 0 }
+    on Go: B => A { n: 0 }
+}
+",
     );
     assert!(
         has_diag(&output, |k| matches!(

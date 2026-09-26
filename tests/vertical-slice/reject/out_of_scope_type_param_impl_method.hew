@@ -14,7 +14,7 @@
 // Expected: rejected with `unknown type `T`` at `bad`'s parameter annotation.
 fn id<T>(x: T) -> T { x }
 
-type Holder { v: i64 }
+type Holder { v: i64; }
 
 impl Holder {
     fn bad(self, x: T) -> i64 { 0 }

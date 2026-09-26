@@ -4,13 +4,13 @@
 import std.encoding.wire;
 
 type Plain {
-    a: i64,
-    b: string,
+    a: i64;
+    b: string;
 }
 
 #[resource]
 type Handle {
-    fd: i64,
+    fd: i64;
 }
 
 impl Handle {

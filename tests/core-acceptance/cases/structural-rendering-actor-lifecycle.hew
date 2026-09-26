@@ -7,9 +7,9 @@ actor Source {
 }
 
 type Reading {
-    source: Source,
-    label: string,
-    mode: i64,
+    source: Source;
+    label: string;
+    mode: i64;
 }
 
 impl Display for Reading {
@@ -24,8 +24,8 @@ impl Display for Reading {
 }
 
 type Waiting {
-    source: Source,
-    entered: stream.Sink<i64>,
+    source: Source;
+    entered: stream.Sink<i64>;
 }
 
 impl Display for Waiting {
@@ -70,7 +70,15 @@ fn main() {
     mailbox(waiting).waiting(source, entered).expect("submit waiting formatter");
     signal.recv().expect("formatter started");
     signal.close();
-    close(waiting);
+    {
+        let __hew_migrated_actor_1929 = waiting;
+        terminate(__hew_migrated_actor_1929);
+        stopped(__hew_migrated_actor_1929);
+    };
     println("cancelled formatter closed");
-    close(source);
+    {
+        let __hew_migrated_actor_1992 = source;
+        stop(__hew_migrated_actor_1992);
+        stopped(__hew_migrated_actor_1992);
+    };
 }

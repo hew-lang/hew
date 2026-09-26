@@ -15,7 +15,7 @@
 import std.stream;
 
 actor Deadliner {
-    var fired: i64 = 0,
+    var fired: i64 = 0;
 
     // The scoped child never finishes on its own, so the deadline wins and the
     // body runs (fired = 7). The scoped child is a

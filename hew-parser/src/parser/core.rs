@@ -181,29 +181,87 @@ impl<'src> Parser<'src> {
         false
     }
 
-    /// Data members require commas, with an optional trailing comma before `}`.
-    /// Recover at a wrong delimiter without admitting a second source dialect.
-    pub(crate) fn expect_structural_separator(&mut self) {
-        if self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBrace) {
+    /// Finish a bodyless declaration member. Recover so punctuation migration
+    /// can print the same AST in the current spelling.
+    pub(crate) fn expect_member_terminator(&mut self, what: &str) {
+        if self.eat(&Token::Semicolon) {
+            if self.peek() == Some(&Token::Semicolon) {
+                let span = self.peek_span();
+                self.error_at_with_kind_and_hint(
+                    "unnecessary second semicolon".to_string(),
+                    span,
+                    "remove this separator",
+                    ParseDiagnosticKind::SeparatorAfterBody,
+                );
+                self.advance();
+            }
             return;
         }
-        let mut span = self.peek_span();
-        let semicolon = self.peek() == Some(&Token::Semicolon);
-        if !semicolon {
-            let end = self.tokens[self.pos.saturating_sub(1)].1.end;
-            span = end..end;
-        }
-        self.error_at_with_hint(
-            "expected `,` between structural members".to_string(),
+        let comma = self.peek() == Some(&Token::Comma);
+        let end = self.last_token_end;
+        let span = if comma { self.peek_span() } else { end..end };
+        let article = if matches!(what, "event" | "emission") {
+            "an"
+        } else {
+            "a"
+        };
+        self.error_at_with_kind_and_hint(
+            format!("{article} {what} declaration member ends with `;`"),
             span,
-            if semicolon {
-                "replace `;` with `,`"
+            if comma {
+                "replace `,` with `;`; run `hew fmt --migrate` to update punctuation"
             } else {
-                "insert `,` after the member"
+                "insert `;` after the member; run `hew fmt --migrate` to update punctuation"
             },
+            ParseDiagnosticKind::MemberTerminator,
         );
-        if semicolon {
+        if comma {
             self.advance();
+        }
+    }
+
+    /// A closing brace already ends a bodied member or arm.
+    pub(crate) fn refuse_mark_after_body(&mut self) {
+        if matches!(self.peek(), Some(Token::Comma | Token::Semicolon)) {
+            let span = self.peek_span();
+            let mark = if self.peek() == Some(&Token::Comma) {
+                ","
+            } else {
+                ";"
+            };
+            self.error_at_with_kind_and_hint(
+                format!("`}}` ends this member; remove the `{mark}`"),
+                span,
+                "remove this separator; run `hew fmt --migrate` to update punctuation",
+                ParseDiagnosticKind::SeparatorAfterBody,
+            );
+            self.advance();
+        }
+    }
+
+    pub(crate) fn expect_arm_separator(&mut self, body_is_block: bool) {
+        if body_is_block {
+            self.refuse_mark_after_body();
+        } else if self.peek() == Some(&Token::RightBrace) || self.eat(&Token::Comma) {
+            // A final comma is optional in a list.
+        } else {
+            let semicolon = self.peek() == Some(&Token::Semicolon);
+            let span = if semicolon {
+                self.peek_span()
+            } else {
+                let end = self.last_token_end;
+                end..end
+            };
+            self.error_at_with_kind_and_hint(
+                "list elements are separated by `,`; `;` ends a declaration or statement"
+                    .to_string(),
+                span,
+                "insert `,` between arms",
+                ParseDiagnosticKind::ListSeparator,
+            );
+            if semicolon {
+                self.advance();
+            }
         }
     }
 

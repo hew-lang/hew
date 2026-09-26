@@ -1,7 +1,11 @@
-type Holder { items: Vec<string> }
+type Holder {
+    items: Vec<string>;
+}
+
 fn make() -> (Holder, Vec<string>) {
     (Holder { items: ["pair-item"] }, ["sibling-item"])
 }
+
 fn main() {
     var v: Vec<Holder> = [];
     v.push(Holder { items: ["seed-item"] });

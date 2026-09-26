@@ -1,21 +1,20 @@
 type Leaf {
-    s: string,
-    t: string,
+    s: string;
+    t: string;
 }
-type Mid { leaf: Leaf, x: string }
-type Outer { mid: Mid, c: string }
+
+type Mid {
+    leaf: Leaf;
+    x: string;
+}
+
+type Outer {
+    mid: Mid;
+    c: string;
+}
 
 fn make_outer(k: i64) -> Outer {
-    Outer {
-        mid: Mid {
-            leaf: Leaf {
-                s: "tuple-s-heap-payload".to_upper(),
-                t: "tuple-t-heap-payload".to_upper(),
-            },
-            x: "tuple-x-heap-payload".to_upper(),
-        },
-        c: "tuple-c-heap-payload".to_upper(),
-    }
+    Outer { mid: Mid { leaf: Leaf { s: "tuple-s-heap-payload".to_upper(), t: "tuple-t-heap-payload".to_upper() }, x: "tuple-x-heap-payload".to_upper() }, c: "tuple-c-heap-payload".to_upper() }
 }
 
 fn deep(k: i64) -> (Leaf, i64) {
@@ -37,5 +36,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

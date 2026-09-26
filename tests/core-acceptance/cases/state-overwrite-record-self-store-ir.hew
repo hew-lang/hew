@@ -1,10 +1,10 @@
 type Profile {
-    name: string,
-    hits: i64,
+    name: string;
+    hits: i64;
 }
 
 actor Keeper {
-    var prof: Profile,
+    var prof: Profile;
 
     receive fn refresh() {
         prof = prof;

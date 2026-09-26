@@ -3,6 +3,7 @@
 // peer's public one; the root and `probe.mid` both reach it by the directory
 // spelling, and every call still has an executable target.
 import probe.lib;
+
 import probe.mid;
 
 fn main() {

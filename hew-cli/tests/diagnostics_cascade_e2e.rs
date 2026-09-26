@@ -123,10 +123,7 @@ const INDEX_CASCADE: &str = "fn main() {\n    let _z = undefined_var[0];\n}\n";
 //
 // Teeth proof: if the `Ty::Error` guard in enum-equality dispatch is removed,
 // this test goes RED.
-const ENUM_EQ_CASCADE: &str = "enum Colour { Red, Green, }\n\
-     fn main() {\n\
-     \x20\x20\x20\x20let _r = undefined_var == Colour.Red;\n\
-     }\n";
+const ENUM_EQ_CASCADE: &str = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let _r = undefined_var == Colour.Red;\n}\n";
 
 // (d) Destructure cascade.
 //
@@ -137,11 +134,7 @@ const ENUM_EQ_CASCADE: &str = "enum Colour { Red, Green, }\n\
 //
 // Teeth proof: if the `Ty::Error` early-out in record-pattern binding is
 // removed, this test goes RED (count becomes 3).
-const DESTRUCTURE_CASCADE: &str = "type Point { x: i64, y: i64, }\n\
-     fn main() {\n\
-     \x20\x20\x20\x20let Point { x, y } = undefined_var;\n\
-     \x20\x20\x20\x20println(x + y);\n\
-     }\n";
+const DESTRUCTURE_CASCADE: &str = "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let Point { x, y } = undefined_var;\n    println(x + y);\n}\n";
 
 // (e) Two independent roots → 2 errors (c19 shape).
 //
@@ -149,12 +142,7 @@ const DESTRUCTURE_CASCADE: &str = "type Point { x: i64, y: i64, }\n\
 // errors. This fixture asserts the cascade count does NOT collapse both to 1
 // (i.e. that suppression only swallows downstream phantoms, not genuine
 // independent diagnostics).
-const TWO_INDEPENDENT_ROOTS: &str = "type Point { x: i64, y: i64, }\n\
-     fn main() {\n\
-     \x20\x20\x20\x20let Point { x, y } = undefined_a;\n\
-     \x20\x20\x20\x20let Point { x: x2, y: y2 } = undefined_b;\n\
-     \x20\x20\x20\x20println(x + y + x2 + y2);\n\
-     }\n";
+const TWO_INDEPENDENT_ROOTS: &str = "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let Point { x, y } = undefined_a;\n    let Point { x: x2, y: y2 } = undefined_b;\n    println(x + y + x2 + y2);\n}\n";
 
 // (f) Genuine two-type mismatch → 2 errors (c20 shape).
 //

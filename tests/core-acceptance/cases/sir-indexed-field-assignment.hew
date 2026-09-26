@@ -1,8 +1,10 @@
-type Label { text: string }
+type Label {
+    text: string;
+}
 
 type Row {
-    state: string,
-    inner: Label,
+    state: string;
+    inner: Label;
 }
 
 fn rows() -> Vec<Row> {
@@ -13,7 +15,7 @@ fn rows() -> Vec<Row> {
 }
 
 actor Ledger {
-    var rows: Vec<Row>,
+    var rows: Vec<Row>;
 
     receive fn close(at: i64, state: string) -> string {
         rows[at].state = state;

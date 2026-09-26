@@ -5,7 +5,7 @@
 // it closes nothing afterwards.
 #[resource]
 type Tag {
-    id: i64,
+    id: i64;
 }
 
 impl Tag {
@@ -15,18 +15,18 @@ impl Tag {
 }
 
 enum Inner {
-    Full(Tag),
-    Hollow,
+    Full(Tag);
+    Hollow;
 }
 
 enum Outer {
-    Wrap(Inner),
-    Bare,
+    Wrap(Inner);
+    Bare;
 }
 
 enum Pair {
-    Both(Tag, Tag),
-    Neither,
+    Both(Tag, Tag);
+    Neither;
 }
 
 fn mk() -> Outer {
@@ -39,9 +39,9 @@ fn nested_from_ephemeral() {
         Outer.Wrap(Inner.Full(v)) => {
             let w = v;
             println(f"nested-ephemeral {w.id}");
-        },
-        Outer.Wrap(Inner.Hollow) => {},
-        Outer.Bare => {},
+        }
+        Outer.Wrap(Inner.Hollow) => {}
+        Outer.Bare => {}
     }
     println("after nested-ephemeral");
 }
@@ -54,9 +54,9 @@ fn nested_from_binding() {
         Outer.Wrap(Inner.Full(v)) => {
             let w = v;
             println(f"nested-binding {w.id}");
-        },
-        Outer.Wrap(Inner.Hollow) => {},
-        Outer.Bare => {},
+        }
+        Outer.Wrap(Inner.Hollow) => {}
+        Outer.Bare => {}
     }
     println("after nested-binding");
 }
@@ -70,8 +70,8 @@ fn two_independent_fields() {
             let wx = x;
             let wy = y;
             println(f"two-field {wx.id} {wy.id}");
-        },
-        Pair.Neither => {},
+        }
+        Pair.Neither => {}
     }
     println("after two-field");
 }

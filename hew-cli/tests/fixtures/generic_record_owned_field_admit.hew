@@ -12,7 +12,7 @@
 // clone-UNSUPPORTED leaf (opaque/IO handle) still fails closed at the value-
 // class admit gate — pinned by the `hew-mir` admission unit tests.
 type Box<T> {
-    value: T
+    value: T;
 }
 
 fn make<T>(x: T) -> Box<T> {

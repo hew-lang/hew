@@ -30,7 +30,7 @@ fn owned_pairs() {
 // arguments.
 fn scalar_pairs() {
     var m: HashMap<i64, i64> = HashMap.new();
-    for i in 0..64 {
+    for i in 0 .. 64 {
         m.insert(i, i * 2);
     }
     var keys = 0;
@@ -82,8 +82,10 @@ fn pipeline_cursor() {
             .Some(pair) => {
                 total = total + pair.1 + pair.0.len();
                 seen = seen + 1;
-            },
-            .None => { break; },
+            }
+            .None => {
+                break;
+            }
         }
     }
     println(f"cursor total={total} seen={seen} len={m.len()}");

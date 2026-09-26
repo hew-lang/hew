@@ -24,9 +24,9 @@ import std.net.http;
 /// thread serves the single request. `status`/`body` are read back via asks
 /// that the mailbox necessarily processes AFTER `fetch` completes.
 actor Client {
-    let url: string,
-    var status: i64,
-    var body: string,
+    let url: string;
+    var status: i64;
+    var body: string;
 
     receive fn fetch(unused: i64) {
         assert(http_client.set_timeout(3000).is_ok());
@@ -72,9 +72,9 @@ fn test_server_client_roundtrip_returns_200_and_echoes_path() {
                 .Ok(body) => assert(body == "pong:/ping"),
                 .Err(_e) => assert(false),
             }
-        },
+        }
         .Err(_err) => {
             assert(false);
-        },
+        }
     }
 }

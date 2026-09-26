@@ -1,19 +1,32 @@
 #[resource]
-type Ticket { name: string }
-impl Ticket {
-    fn close(consume self) { println(f"close {self.name}"); }
+type Ticket {
+    name: string;
 }
-type Booking { ticket: Ticket, label: string }
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.name}");
+    }
+}
+
+type Booking {
+    ticket: Ticket;
+    label: string;
+}
+
 fn booking(name: string) -> Booking {
     Booking { ticket: Ticket { name: name.to_upper() }, label: name.to_upper() }
 }
+
 fn main() {
     let first = booking("let");
     let Booking { ticket: t, label: _ } = first;
     t.close();
     println(first.label);
     let second = booking("match");
-    let matched = match second { Booking { ticket: selected, .. } => selected };
+    let matched = match second {
+        Booking { ticket: selected, .. } => selected,
+    };
     matched.close();
     println(second.label);
     let pair = (Ticket { name: "tuple".to_upper() }, "sibling".to_upper());
@@ -28,7 +41,11 @@ fn main() {
     println(temporary_label);
     let guarded = booking("guarded");
     match guarded {
-        Booking { ticket: declined, .. } if false => { declined.close(); }
-        Booking { ticket: _, .. } => { println(guarded.ticket.name); }
+        Booking { ticket: declined, .. } if false => {
+            declined.close();
+        }
+        Booking { ticket: _, .. } => {
+            println(guarded.ticket.name);
+        }
     }
 }

@@ -1,6 +1,6 @@
 type Tagged {
-    tag: i64,
-    name: string,
+    tag: i64;
+    name: string;
 }
 
 fn main() -> i64 {

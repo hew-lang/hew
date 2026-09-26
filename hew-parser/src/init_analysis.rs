@@ -180,9 +180,7 @@ mod tests {
     #[test]
     fn collects_bare_and_self_targets_through_nested_blocks() {
         let body = init_body(
-            "actor A { var a: i64, var b: i64, var c: i64, var d: i64, init(x: i64) { \
-             a = x; if x > 0 { self.b = 1; } else { match x { _ => { c = 2; } } } \
-             let f = || { d = 3; }; } }",
+            "actor A {\n    var a: i64;\n    var b: i64;\n    var c: i64;\n    var d: i64;\n    init(x: i64) {\n        a = x;\n        if x > 0 {\n            self.b = 1;\n        } else {\n            match x {\n                _ => {\n                    c = 2;\n                }\n            }\n        }\n        let f = || {\n            d = 3;\n        };\n    }\n}\n",
         );
         let names = assigned_bare_names(&body);
         assert_eq!(

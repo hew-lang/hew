@@ -1,7 +1,10 @@
 actor Replier {
-    let tag: string,
-    receive fn fetch() -> string { tag.to_upper() }
+    let tag: string;
+    receive fn fetch() -> string {
+        tag.to_upper()
+    }
 }
+
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 400 {

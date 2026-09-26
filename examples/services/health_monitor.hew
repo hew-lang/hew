@@ -15,9 +15,9 @@
 
 // Service actor — responds to health checks. Can be made unhealthy.
 actor Service {
-    let name: string,
-    var healthy: i64, // 1 = healthy, 0 = unhealthy
-    var requests: i64,
+    let name: string;
+    var healthy: i64; // 1 = healthy, 0 = unhealthy
+    var requests: i64;
     receive fn health_check() -> i64 {
         if healthy == 0 {
             0
@@ -39,10 +39,10 @@ actor Service {
 
 // Health monitor — checks registered services and reports status.
 actor HealthMonitor {
-    var svc_names: Vec<string>,
-    var svc_refs: Vec<Service>,
-    var svc_status: Vec<i64>, // 1=healthy, 0=unhealthy per service
-    var check_count: i64,
+    var svc_names: Vec<string>;
+    var svc_refs: Vec<Service>;
+    var svc_status: Vec<i64>; // 1=healthy, 0=unhealthy per service
+    var check_count: i64;
     receive fn register(name: string, svc: Service) {
         svc_names.push(name);
         svc_refs.push(svc);
@@ -65,7 +65,7 @@ actor HealthMonitor {
                 r from svc.health_check() => match r {
                     .Ok(value) => value,
                     .Err(_) => -1,
-                },
+                }
                 after 500ms => -1,
             };
             let svc_name = match svc_names.get(i) {
@@ -131,22 +131,22 @@ fn main() {
     let _ = monitor.check_all();
     sleep(30ms);
     match monitor.report() {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("[monitor] initial report ask failed"),
     }
     // ── Normal traffic ──
     println("");
     println("--- Normal traffic ---");
     match auth.handle(1) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("[health] auth request 1 ask failed"),
     }
     match api.handle(2) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("[health] api request 2 ask failed"),
     }
     match cache.handle(3) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("[health] cache request 3 ask failed"),
     }
     // ── Make cache unhealthy ──
@@ -157,18 +157,18 @@ fn main() {
     let _ = monitor.check_all();
     sleep(600ms);
     match monitor.report() {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("[monitor] degraded report ask failed"),
     }
     // ── Remaining services still serve traffic ──
     println("");
     println("--- Healthy services still operational ---");
     match auth.handle(4) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("[health] auth request 4 ask failed"),
     }
     match api.handle(5) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("[health] api request 5 ask failed"),
     }
     println("");

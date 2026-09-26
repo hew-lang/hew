@@ -8,7 +8,7 @@
 //! advance the counter past its first tick.
 
 actor Counter {
-    var n: i64 = 0,
+    var n: i64 = 0;
 
     // Each delivery increments and self-sends until the bound is reached.
     // The self-send is `self.go()` — `self` as a method receiver.
@@ -24,7 +24,7 @@ actor Counter {
 }
 
 actor Pump {
-    var n: i64 = 0,
+    var n: i64 = 0;
     receive fn go() {
         if n < 7 {
             n = n + 1;

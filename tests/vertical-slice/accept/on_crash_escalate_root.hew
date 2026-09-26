@@ -40,10 +40,10 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child w: Worker,
+    child w: Worker;
 }
 
 fn main() {
@@ -55,7 +55,11 @@ fn main() {
     let _ = w.boom();
     // Wait for the ruling on that crash to settle. A pre-fix binary aborts
     // the whole process while it runs.
-    let _ = await_restart sup.w;
+    let _ = {
+        let __hew_migrated_role_2127 = sup.w;
+        restarted(__hew_migrated_role_2127);
+        __hew_migrated_role_2127
+    };
     let probed = match probe.ping() {
         .Ok(v) => v,
         .Err(_) => 1,

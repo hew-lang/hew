@@ -1,6 +1,6 @@
 type Holder {
-    items: Vec<string>,
-    tag: string,
+    items: Vec<string>;
+    tag: string;
 }
 
 fn step(h: Holder, i: i64) -> Holder {
@@ -15,7 +15,7 @@ fn main() {
     var owner = Holder { items: Vec.new(), tag: "seed" };
     owner.items.push("first");
     owner.items.push("second");
-    for i in 0..3 {
+    for i in 0 .. 3 {
         owner = step(owner, i);
     }
     println(f"{owner.tag}|{owner.items.len()}");

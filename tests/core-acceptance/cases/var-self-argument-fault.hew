@@ -1,5 +1,11 @@
-type Text { value: string }
-trait Replace { fn replace(var self, consume value: string, divisor: i64) -> i64; }
+type Text {
+    value: string;
+}
+
+trait Replace {
+    fn replace(var self, consume value: string, divisor: i64) -> i64;
+}
+
 impl Replace for Text {
     fn replace(var self, consume value: string, divisor: i64) -> i64 {
         self.value = value;

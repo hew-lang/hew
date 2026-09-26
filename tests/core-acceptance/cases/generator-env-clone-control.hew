@@ -1,8 +1,8 @@
 type Capture {
-    label_len: i64,
-    first: i64,
-    root: i64,
-    edge: i64,
+    label_len: i64;
+    first: i64;
+    root: i64;
+    edge: i64;
 }
 
 gen fn rows(c: Capture) -> i64 {
@@ -22,31 +22,49 @@ fn main() {
             let g = rows(capture);
             loop {
                 match g.next() {
-                    .Some(value) => { if value <= 0 { panic("control complete"); } },
-                    .None => { break; },
+                    .Some(value) => {
+                        if value <= 0 {
+                            panic("control complete");
+                        }
+                    }
+                    .None => {
+                        break;
+                    }
                 }
             }
-        }
+        };
         completed = completed + 1;
         {
             let g = rows(capture);
             match g.next() {
-                .Some(value) => { if value <= 0 { panic("control suspend"); } },
+                .Some(value) => {
+                    if value <= 0 {
+                        panic("control suspend");
+                    }
+                }
                 .None => panic("control missing"),
             }
-        }
+        };
         suspended = suspended + 1;
-        { let _g = rows(capture); }
+        {
+            let _g = rows(capture);
+        };
         never_resumed = never_resumed + 1;
         {
             let g = gen { yield capture.root; };
             loop {
                 match g.next() {
-                    .Some(value) => { if value <= 0 { panic("control anon"); } },
-                    .None => { break; },
+                    .Some(value) => {
+                        if value <= 0 {
+                            panic("control anon");
+                        }
+                    }
+                    .None => {
+                        break;
+                    }
                 }
             }
-        }
+        };
         anonymous = anonymous + 1;
         i = i + 1;
     }

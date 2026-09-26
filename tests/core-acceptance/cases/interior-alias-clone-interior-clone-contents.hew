@@ -1,11 +1,18 @@
-type Row { name: string, }
+type Row {
+    name: string;
+}
 
 fn run() {
-    let rows: Vec<Row> = [ Row { name: "interior-clone-ok".to_upper() } ];
+    let rows: Vec<Row> = [Row { name: "interior-clone-ok".to_upper() }];
     let first = rows.get(0);
     match first {
-        .Some(r) => { let copied = r.name.to_upper(); print(copied); }
-        .None => { print("none"); }
+        .Some(r) => {
+            let copied = r.name.to_upper();
+            print(copied);
+        }
+        .None => {
+            print("none");
+        }
     }
 }
 

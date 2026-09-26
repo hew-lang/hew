@@ -1,16 +1,20 @@
 enum Payload {
-    Text(string),
-    Number(i64),
-    Empty,
+    Text(string);
+    Number(i64);
+    Empty;
 }
-type Outer { payload: Payload, sibling: string }
-type Holder { held: Payload }
+
+type Outer {
+    payload: Payload;
+    sibling: string;
+}
+
+type Holder {
+    held: Payload;
+}
 
 fn make_outer(k: i64) -> Outer {
-    Outer {
-        payload: Payload.Text("enum-heap-payload".to_upper()),
-        sibling: "enum-sibling-payload".to_upper(),
-    }
+    Outer { payload: Payload.Text("enum-heap-payload".to_upper()), sibling: "enum-sibling-payload".to_upper() }
 }
 
 fn deep(k: i64) -> Holder {
@@ -31,5 +35,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

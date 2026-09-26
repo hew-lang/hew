@@ -522,13 +522,30 @@ fn counted_strings_and_byte_regions_ignore_owner_identity() {
 fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
     for optimized in [false, true] {
         let physical = physical(
-            r"
-        type Inner { id: i64 }
-        impl Hash for Inner { fn hash(self) -> i64 { 1 } }
-        impl Eq for Inner { fn eq(self, other: Inner) -> bool { true } }
-        type Outer { inner: Inner }
-        fn main() { let values: HashMap<Outer, i64> = HashMap.new(); }
-    ",
+            r"type Inner {
+    id: i64;
+}
+
+impl Hash for Inner {
+    fn hash(self) -> i64 {
+        1
+    }
+}
+
+impl Eq for Inner {
+    fn eq(self, other: Inner) -> bool {
+        true
+    }
+}
+
+type Outer {
+    inner: Inner;
+}
+
+fn main() {
+    let values: HashMap<Outer, i64> = HashMap.new();
+}
+",
         );
         let ctx = Context::create();
         let llvm = ctx.create_module("key_fault");
@@ -621,12 +638,26 @@ fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
 fn owned_user_key_methods_receive_borrowed_slots_and_override_structure() {
     for optimized in [false, true] {
         let physical = physical(
-            r"
-        type Key { name: string }
-        impl Hash for Key { fn hash(self) -> i64 { 55 } }
-        impl Eq for Key { fn eq(self, other: Key) -> bool { true } }
-        fn main() { let values: HashMap<Key, i64> = HashMap.new(); }
-    ",
+            r"type Key {
+    name: string;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        55
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        true
+    }
+}
+
+fn main() {
+    let values: HashMap<Key, i64> = HashMap.new();
+}
+",
         );
         for plan in physical.value_capabilities.values() {
             if let PhysicalValueMethod::User(id) = plan.method {

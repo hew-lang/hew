@@ -1,7 +1,7 @@
 import nominal_import_payload.payload;
 
 type Delivery {
-    local: string,
+    local: string;
 }
 
 fn local_delivery() -> Delivery {

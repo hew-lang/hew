@@ -4,8 +4,8 @@
 // element leaves the vector.
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -19,30 +19,22 @@ impl Token {
 }
 
 type Meta {
-    token: Token,
-    tag: string,
+    token: Token;
+    tag: string;
 }
 
 type Crate {
-    meta: Meta,
-    name: string,
+    meta: Meta;
+    name: string;
 }
 
 fn main() -> i64 {
     var crates: Vec<Crate> = Vec.new();
-    crates.push(Crate {
-        meta: Meta { token: Token { label: "t", id: 1 }, tag: "first" },
-        name: "one",
-    });
-    crates.push(Crate {
-        meta: Meta { token: Token { label: "t", id: 2 }, tag: "second" },
-        name: "two",
-    });
-
+    crates.push(Crate { meta: Meta { token: Token { label: "t", id: 1 }, tag: "first" }, name: "one" });
+    crates.push(Crate { meta: Meta { token: Token { label: "t", id: 2 }, tag: "second" }, name: "two" });
     let _first = crates.get(0);
     let _second = crates.get(1);
     println(f"len={crates.len()}");
-
     for item in crates.into_iter() {
         item.meta.token.close();
     }

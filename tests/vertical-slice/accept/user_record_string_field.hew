@@ -1,5 +1,5 @@
 type User {
-    name: string,
+    name: string;
 }
 
 fn emit_user(print_it: bool) -> i64 {

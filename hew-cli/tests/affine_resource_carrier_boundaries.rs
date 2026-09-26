@@ -17,10 +17,9 @@ use std::process::{Command, Output};
 use support::leak_slope::{compile_to_native, measure_leaks_exact, run_under_malloc_scribble};
 use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ansi};
 
-const TOKEN: &str = r#"
-#[resource]
+const TOKEN: &str = r#"#[resource]
 type Token {
-    id: i64,
+    id: i64;
 }
 
 impl Token {
@@ -42,9 +41,8 @@ fn main() -> i64 {
 }
 ";
 
-const NESTED_IDENTITY_BODY: &str = r"
-type Wrap {
-    token: Token,
+const NESTED_IDENTITY_BODY: &str = r"type Wrap {
+    token: Token;
 }
 
 fn identity<T>(consume value: T) -> T {
@@ -152,15 +150,17 @@ fn main() -> i64 {
 }
 ";
 
-const SINK_RECORD_CLONE_BODY: &str = r"
-import std.stream;
+const SINK_RECORD_CLONE_BODY: &str = r"import std.stream;
 
 type Holder {
-    out: stream.Sink<Token>,
+    out: stream.Sink<Token>;
 }
 
 fn main() -> i64 {
-    let (tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let holder = Holder { out: tx };
     let _copy = holder.clone();
     holder.out.close();
@@ -264,11 +264,10 @@ fn main() -> i64 {
 }
 ";
 
-const CONDITIONAL_HEAP_RESOURCE_SOURCE: &str = r#"
-#[resource]
+const CONDITIONAL_HEAP_RESOURCE_SOURCE: &str = r#"#[resource]
 type Buf {
-    data: Vec<i64>,
-    id: i64,
+    data: Vec<i64>;
+    id: i64;
 }
 
 impl Buf {

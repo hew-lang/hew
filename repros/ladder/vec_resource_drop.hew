@@ -1,8 +1,14 @@
 #[resource]
-type Conn { fd: i64 }
-impl Conn {
-    fn close(consume self) { println(f"close {self.fd}"); }
+type Conn {
+    fd: i64;
 }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+    }
+}
+
 fn main() {
     var v: Vec<Conn> = Vec.new();
     v.push(Conn { fd: 1 });

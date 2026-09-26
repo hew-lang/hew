@@ -1,6 +1,10 @@
-type Holder { label: string }
+type Holder {
+    label: string;
+}
 
-fn run(f: fn() -> i64) -> i64 { f() }
+fn run(f: fn() -> i64) -> i64 {
+    f()
+}
 
 fn make() -> Generator<i64, ()> {
     var h = Holder { label: "first" + " value" };

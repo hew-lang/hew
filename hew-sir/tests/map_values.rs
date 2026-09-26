@@ -250,23 +250,27 @@ fn permanent_index_callback_fault() {
 #[test]
 fn collection_clone_and_set_emptiness_compose_without_new_runtime_operations() {
     let module = lower_source(
-        r#"
-        type Holder { values: HashMap<i64, Vec<string>> }
-        fn main() -> i64 {
-            var values: HashMap<i64, Vec<string>> = HashMap.new();
-            values.insert(7, ["kept"]);
-            let holder = Holder { values: values };
-            let cloned = holder.values.clone();
-            var members: HashSet<string> = HashSet.new();
-            let before = members.is_empty();
-            members.insert("first");
-            let copied = members.clone();
-            members.clear();
-            if before && members.is_empty() && !copied.is_empty() && cloned.contains_key(7) {
-                cloned[7].len()
-            } else { 0 }
-        }
-    "#,
+        r#"type Holder {
+    values: HashMap<i64, Vec<string>>;
+}
+
+fn main() -> i64 {
+    var values: HashMap<i64, Vec<string>> = HashMap.new();
+    values.insert(7, ["kept"]);
+    let holder = Holder { values: values };
+    let cloned = holder.values.clone();
+    var members: HashSet<string> = HashSet.new();
+    let before = members.is_empty();
+    members.insert("first");
+    let copied = members.clone();
+    members.clear();
+    if before && members.is_empty() && !copied.is_empty() && cloned.contains_key(7) {
+        cloned[7].len()
+    } else {
+        0
+    }
+}
+"#,
     );
     let families = operation_families(&module);
     assert!(families.contains(&RuntimeCallFamily::Map(MapValueOp::ContainsKey)));
@@ -308,15 +312,17 @@ fn collection_clone_and_set_emptiness_compose_without_new_runtime_operations() {
 #[test]
 fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     let module = lower_source(
-        r#"
-        type Holder { values: HashMap<i64, string> }
-        fn main() -> i64 {
-            var values: HashMap<i64, string> = HashMap.new();
-            values.insert(1, "present");
-            let holder = Holder { values: values };
-            holder.values[9].len()
-        }
-    "#,
+        r#"type Holder {
+    values: HashMap<i64, string>;
+}
+
+fn main() -> i64 {
+    var values: HashMap<i64, string> = HashMap.new();
+    values.insert(1, "present");
+    let holder = Holder { values: values };
+    holder.values[9].len()
+}
+"#,
     );
     let main = module
         .functions
@@ -513,17 +519,32 @@ fn map_emptiness_uses_the_semantic_length_operation() {
 fn collection_keys_demand_selected_methods_even_without_direct_source_calls() {
     use hew_types::{ValueCapability, ValueMethodPlan};
     let module = lower_source(
-        r#"
-        type Key { id: i64 }
-        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
-        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id % 10 == other.id % 10 } }
-        type Outer { key: Key }
-        fn main() -> i64 {
-            var values: HashMap<Outer, string> = HashMap.new();
-            values.insert(Outer { key: Key { id: 7 } }, "kept");
-            values.len()
-        }
-    "#,
+        r#"type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.id % 10 == other.id % 10
+    }
+}
+
+type Outer {
+    key: Key;
+}
+
+fn main() -> i64 {
+    var values: HashMap<Outer, string> = HashMap.new();
+    values.insert(Outer { key: Key { id: 7 } }, "kept");
+    values.len()
+}
+"#,
     );
     let mut selected = Vec::new();
     for capability in [ValueCapability::Hash, ValueCapability::Eq] {
@@ -580,15 +601,22 @@ fn collection_keys_demand_the_exact_generic_impl_specialization() {
     use hew_sir::CallableInstance;
     use hew_types::ValueMethodPlan;
     let module = lower_source(
-        r#"
-        type Key<T> { value: T }
-        impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
-        fn main() -> i64 {
-            var values: HashMap<Key<i64>, string> = HashMap.new();
-            values.insert(Key { value: 7 }, "kept");
-            values.len()
-        }
-    "#,
+        r#"type Key<T> {
+    value: T;
+}
+
+impl<T> Hash for Key<T> {
+    fn hash(self) -> i64 {
+        1
+    }
+}
+
+fn main() -> i64 {
+    var values: HashMap<Key<i64>, string> = HashMap.new();
+    values.insert(Key { value: 7 }, "kept");
+    values.len()
+}
+"#,
     );
     let plan = module
         .value_capabilities
@@ -621,15 +649,25 @@ fn collection_keys_demand_the_exact_generic_impl_specialization() {
 fn selected_key_capabilities_reject_forged_evidence_and_compatible_substitutes() {
     use hew_types::{ValueCapability, ValueMethodPlan};
     let module = lower_source(
-        r"
-        type Key { id: i64 }
-        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
-        fn other_hash(value: Key) -> i64 { value.id }
-        fn main() -> i64 {
-            let values: HashMap<Key, string> = HashMap.new();
-            values.len() + other_hash(Key { id: 7 })
-        }
-        ",
+        r"type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+fn other_hash(value: Key) -> i64 {
+    value.id
+}
+
+fn main() -> i64 {
+    let values: HashMap<Key, string> = HashMap.new();
+    values.len() + other_hash(Key { id: 7 })
+}
+",
     );
     let (user_key, user) = module
         .value_capabilities
@@ -726,13 +764,20 @@ fn collection_construction_requires_both_selected_key_operations() {
 #[test]
 fn borrowed_collection_reads_do_not_demand_key_callbacks() {
     let parsed = hew_parser::parse(
-        r"
-        type Key { id: i64 }
-        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
-        fn size(values: HashMap<Key, string>, keys: HashSet<Key>) -> i64 {
-            values.len() + keys.len()
-        }
-        ",
+        r"type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+fn size(values: HashMap<Key, string>, keys: HashSet<Key>) -> i64 {
+    values.len() + keys.len()
+}
+",
     );
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));

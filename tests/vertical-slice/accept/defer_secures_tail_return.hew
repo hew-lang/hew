@@ -7,6 +7,8 @@
 // With the fix the Move to ReturnSlot runs FIRST, so the caller sees `5`.
 fn main() -> i64 {
     var x = 5;
-    defer { x = 99; };
+    defer {
+        x = 99;
+    }
     x
 }

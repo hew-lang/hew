@@ -1,5 +1,5 @@
 type Holder {
-    items: [string],
+    items: [string];
 }
 
 fn frame(flag: bool) -> i64 {
@@ -18,5 +18,9 @@ fn main() -> i64 {
         total = total + frame(true);
         i = i + 1;
     }
-    if total == 100 { 0 } else { 73 }
+    if total == 100 {
+        0
+    } else {
+        73
+    }
 }

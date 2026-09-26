@@ -1,5 +1,9 @@
 fn f(n: i64) -> Result<i64, string> {
-    if n >= 0 { .Err("g2429-err-payload".to_upper()) } else { .Ok(n) }
+    if n >= 0 {
+        .Err("g2429-err-payload".to_upper())
+    } else {
+        .Ok(n)
+    }
 }
 
 fn main() -> i64 {
@@ -8,9 +12,17 @@ fn main() -> i64 {
     while i < 50 {
         match f(i) {
             .Ok(v) => {}
-            .Err(e) => { if !e.is_empty() { hits = hits + 1; } }
+            .Err(e) => {
+                if !e.is_empty() {
+                    hits = hits + 1;
+                }
+            }
         }
         i = i + 1;
     }
-    if hits > 0 { 0 } else { 1 }
+    if hits > 0 {
+        0
+    } else {
+        1
+    }
 }

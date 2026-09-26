@@ -1,6 +1,6 @@
 fn main() {
-  let s = "hello";
-  let t = s;
-  let _ = t;
-  let _ = s;
+    let s = "hello";
+    let t = s;
+    let _ = t;
+    let _ = s;
 }

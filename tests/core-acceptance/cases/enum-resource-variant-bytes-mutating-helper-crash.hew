@@ -14,7 +14,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: Gate,
+    let gate: Gate;
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match gate.tick() {

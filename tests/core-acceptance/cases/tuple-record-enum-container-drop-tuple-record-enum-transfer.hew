@@ -1,11 +1,11 @@
 type Holder {
-    items: Vec<string>,
-    tag: string,
+    items: Vec<string>;
+    tag: string;
 }
 
 enum Slot {
-    Filled(i64),
-    Empty,
+    Filled(i64);
+    Empty;
 }
 
 fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
@@ -23,7 +23,6 @@ fn run_case(seed: i64, fill: bool, exit_early: bool) -> i64 {
         owner.items.push("first");
         owner.items.push("second");
     }
-
     var i = 0;
     var checksum = 0;
     var done = false;
@@ -37,10 +36,10 @@ fn run_case(seed: i64, fill: bool, exit_early: bool) -> i64 {
                 if exit_early {
                     break;
                 }
-            },
+            }
             .Empty => {
                 done = true;
-            },
+            }
         }
         i = i + 1;
     }
@@ -49,10 +48,14 @@ fn run_case(seed: i64, fill: bool, exit_early: bool) -> i64 {
 
 fn main() -> i64 {
     var total = 0;
-    for frame in 0..50 {
+    for frame in 0 .. 50 {
         total = total + run_case(frame, true, false);
         total = total + run_case(frame, false, true);
         println("frame");
     }
-    if total >= 0 { 0 } else { 91 }
+    if total >= 0 {
+        0
+    } else {
+        91
+    }
 }

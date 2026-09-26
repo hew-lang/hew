@@ -1,10 +1,10 @@
 enum Status {
-    Loaded(i64),
-    Described(string),
+    Loaded(i64);
+    Described(string);
 }
 
 actor Describer {
-    let name: string,
+    let name: string;
     receive fn describe(suffix: string, sel: i64) -> Status {
         if sel % 2 == 0 {
             .Loaded(sel)
@@ -23,13 +23,21 @@ fn main() -> i64 {
         match r {
             .Ok(st) => {
                 match st {
-                    .Described(s) => { sink = sink + s.len(); },
-                    .Loaded(v) => { sink = sink + v; },
+                    .Described(s) => {
+                        sink = sink + s.len();
+                    }
+                    .Loaded(v) => {
+                        sink = sink + v;
+                    }
                 }
-            },
-            .Err(_) => {},
+            }
+            .Err(_) => {}
         }
         i = i + 1;
     }
-    if sink > 0 { 0 } else { 1 }
+    if sink > 0 {
+        0
+    } else {
+        1
+    }
 }

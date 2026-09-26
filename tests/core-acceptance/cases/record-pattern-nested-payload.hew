@@ -4,20 +4,17 @@
 //! of its fields out.
 
 type Sample {
-    label: string,
-    unit: string,
+    label: string;
+    unit: string;
 }
 
 enum Signal {
-    Reading(Sample),
-    Silence,
+    Reading(Sample);
+    Silence;
 }
 
 fn make(text: string) -> Signal {
-    Signal.Reading(Sample {
-        label: ("label-" + text),
-        unit: ("unit-" + text),
-    })
+    Signal.Reading(Sample { label: ("label-" + text), unit: ("unit-" + text) })
 }
 
 fn both(signal: Signal) -> string {
@@ -36,7 +33,6 @@ fn only_label(signal: Signal) -> string {
 
 fn main() -> i64 {
     println(both(make("a")));
-
     var i: i64 = 0;
     var last = "";
     while i < 10000 {
@@ -44,11 +40,7 @@ fn main() -> i64 {
         i = i + 1;
     }
     println(last);
-
-    let sample = Sample {
-        label: ("label-" + "c"),
-        unit: ("unit-" + "c"),
-    };
+    let sample = Sample { label: ("label-" + "c"), unit: ("unit-" + "c") };
     let moved = match sample {
         Sample { label: label, unit: _ } => label,
     };

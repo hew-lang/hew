@@ -22,8 +22,8 @@ extern "C" {
 }
 
 enum Resource {
-    Live(Handle),
-    Dead
+    Live(Handle);
+    Dead;
 }
 
 fn main() -> i64 {

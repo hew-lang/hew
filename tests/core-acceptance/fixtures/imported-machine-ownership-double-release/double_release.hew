@@ -1,7 +1,11 @@
 import runner.machine_defs;
+
 import std.string;
 
-type Envelope { value: machine_defs.PayloadLifecycle, marker: i64, }
+type Envelope {
+    value: machine_defs.PayloadLifecycle;
+    marker: i64;
+}
 
 fn local_bounce(value: machine_defs.PayloadLifecycle) -> machine_defs.PayloadLifecycle {
     value
@@ -20,12 +24,14 @@ fn main() -> i64 {
         let outbound = machine_defs.make(string.repeat("caller", 16));
         let returned = machine_defs.bounce(outbound);
         let envelope = Envelope { value: returned, marker: i };
-        if label_of(envelope.value).len() != 96 { return 71; }
-
+        if label_of(envelope.value).len() != 96 {
+            return 71;
+        }
         let inbound = machine_defs.make(string.repeat("callee", 16));
         let carried = local_bounce(inbound);
-        if label_of(carried).len() != 96 { return 72; }
-
+        if label_of(carried).len() != 96 {
+            return 72;
+        }
         println(i);
         i = i + 1;
     }

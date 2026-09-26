@@ -1,7 +1,7 @@
 import std.failure;
 
 actor VecSetCrasher {
-    var value: i64,
+    var value: i64;
 
     receive fn boom() {
         var xs: Vec<i64> = Vec.new();
@@ -24,20 +24,23 @@ actor VecSetCrasher {
 }
 
 supervisor VecSetSupervisor {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child worker: VecSetCrasher(value: 1),
+    child worker: VecSetCrasher(value: 1);
 }
 
 fn main() -> i64 {
     let sup = spawn VecSetSupervisor;
     let worker = sup.worker;
     let _ = worker.boom();
-    let restarted = await_restart sup.worker;
+    let restarted = {
+        let __hew_migrated_role_691 = sup.worker;
+        restarted(__hew_migrated_role_691);
+        __hew_migrated_role_691
+    };
     match restarted.alive() {
         .Ok(v) => v,
         .Err(_) => 1,
     }
 }
-

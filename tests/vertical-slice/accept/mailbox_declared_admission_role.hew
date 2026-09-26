@@ -4,7 +4,7 @@
 // handler occupies the only thread that could activate Slow, so the
 // capacity-one queue cannot drain between the two submissions.
 actor Slow {
-    mailbox 1 overflow fail,
+    mailbox 1 overflow fail;
     receive fn work(value: i64) {
         if value == 2 {
             println("REJECTED_WORK_DELIVERED");
@@ -13,36 +13,36 @@ actor Slow {
 }
 
 supervisor Rack {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child slow: Slow,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child slow: Slow;
 }
 
 actor Driver {
     receive fn run(rack: Rack) {
         let inbox = mailbox(rack.slow);
         match inbox.work(1) {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => {
                 println("FIRST_SEND_FAILED");
                 exit(41);
-            },
+            }
         }
         match inbox.work(2) {
             .Err(failure) => match failure.reason {
                 SendError.Full => {
                     println("ROLE_DERIVED_REJECT");
                     exit(43);
-                },
+                }
                 _ => {
                     println("UNEXPECTED_SEND_ERROR");
                     exit(44);
-                },
-            },
+                }
+            }
             .Ok(_) => {
                 println("ROLE_DERIVED_WAIT");
                 exit(45);
-            },
+            }
         }
     }
 }

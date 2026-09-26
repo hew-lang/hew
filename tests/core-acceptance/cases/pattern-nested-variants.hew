@@ -4,13 +4,13 @@
 //! payload the failing candidate probed is released exactly once.
 
 type Slot {
-    tag: string,
-    load: Option<string>,
+    tag: string;
+    load: Option<string>;
 }
 
 enum Reading {
-    Value(string),
-    Absent,
+    Value(string);
+    Absent;
 }
 
 fn pair(k: i64) -> (Option<string>, string) {
@@ -43,10 +43,11 @@ fn guarded(k: i64) -> string {
 }
 
 fn slot(k: i64) -> Slot {
-    Slot {
-        tag: f"tag {k}",
-        load: if k == 0 { .Some(f"load {k}") } else { .None },
-    }
+    Slot { tag: f"tag {k}", load: if k == 0 {
+        .Some(f"load {k}")
+    } else {
+        .None
+    } }
 }
 
 // A record field holding a variant pattern. The unmatched field's owned
@@ -98,7 +99,11 @@ fn escaping(k: i64) -> string {
 fn drained() -> i64 {
     var round = 0;
     var total = 0;
-    while let (.Some(text), side) = pair(if round < 3 { 0 } else { 1 }) {
+    while let (.Some(text), side) = pair(if round < 3 {
+        0
+    } else {
+        1
+    }) {
         total = total + text.len() + side.len();
         round = round + 1;
     }

@@ -1,15 +1,15 @@
 // Sequential actor completion calls, including calls inside a loop.
 // Each call returns its own Result before the next call begins.
 actor Worker {
-    let factor: i64,
+    let factor: i64;
     receive fn compute(n: i64) -> i64 {
         n * factor
     }
 }
 
 actor Coordinator {
-    let worker: Worker,
-    let rounds: i64,
+    let worker: Worker;
+    let rounds: i64;
 
     // Two sequential calls: 7*6 + 7*6 = 84.
     receive fn two(n: i64) -> i64 {
@@ -19,7 +19,7 @@ actor Coordinator {
             .Ok(va) => match b {
                 .Ok(vb) => va + vb,
                 .Err(_) => -1,
-            },
+            }
             .Err(_) => -1,
         }
     }
@@ -34,9 +34,9 @@ actor Coordinator {
                 .Ok(vb) => match c {
                     .Ok(vc) => va + vb + vc,
                     .Err(_) => -1,
-                },
+                }
                 .Err(_) => -1,
-            },
+            }
             .Err(_) => -1,
         }
     }
@@ -49,10 +49,10 @@ actor Coordinator {
             match r {
                 .Ok(v) => {
                     total = total + v;
-                },
+                }
                 .Err(_) => {
                     total = total - 1;
-                },
+                }
             }
         }
         total

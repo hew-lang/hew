@@ -3,7 +3,9 @@
 // other release: the frame still releases the handle it holds, and the later
 // failure joins as a secondary line.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {

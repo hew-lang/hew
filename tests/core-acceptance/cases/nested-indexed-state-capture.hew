@@ -1,15 +1,15 @@
 type Row {
-    label: string,
-    values: Vec<string>,
+    label: string;
+    values: Vec<string>;
 }
 
 type Holder {
-    rows: Vec<Row>,
-    sibling: string,
+    rows: Vec<Row>;
+    sibling: string;
 }
 
 actor Worker {
-    var state: Holder = Holder { rows: [Row { label: "initial".to_upper(), values: ["kept".to_upper()] }], sibling: "sibling".to_upper() },
+    var state: Holder = Holder { rows: [Row { label: "initial".to_upper(), values: ["kept".to_upper()] }], sibling: "sibling".to_upper() };
 
     receive fn change() {
         state.rows[0].label = "changed".to_upper();
@@ -38,9 +38,9 @@ actor Worker {
 }
 
 supervisor Group {
-    intensity: 1 within 60s,
+    intensity: 1 within 60s;
 
-    child worker: Worker,
+    child worker: Worker;
 }
 
 fn main() {
@@ -60,8 +60,16 @@ fn main() {
     let group = spawn Group;
     group.worker.change().expect("change");
     let _ = group.worker.fail();
-    let _ = await_restart group.worker;
+    let _ = {
+        let __hew_migrated_role_1803 = group.worker;
+        restarted(__hew_migrated_role_1803);
+        __hew_migrated_role_1803
+    };
     assert(group.worker.get().expect("fresh") == "INITIAL");
-    close(group);
+    {
+        let __hew_migrated_actor_1896 = group;
+        stop(__hew_migrated_actor_1896);
+        stopped(__hew_migrated_actor_1896);
+    };
     println("state and capture");
 }

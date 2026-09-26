@@ -1,9 +1,9 @@
 import std.net;
 
 actor Receiver {
-    var total: i64 = 0,
-    var size: i64 = 0,
-    var ended: bool = false,
+    var total: i64 = 0;
+    var size: i64 = 0;
+    var ended: bool = false;
 
     receive fn result() -> (bool, i64, i64) {
         (ended, total, size)
@@ -33,11 +33,11 @@ fn main() {
     let server = listener.accept();
     let receiver = spawn Receiver;
     match server.attach(receiver) {
-        .Ok(()) => {},
+        .Ok(()) => {}
         .Err(_) => panic("attach refused"),
     }
     match client.send("A\0é".to_bytes()) {
-        .Ok(()) => {},
+        .Ok(()) => {}
         .Err(_) => panic("write failed"),
     }
     client.close();
@@ -57,6 +57,10 @@ fn main() {
         sleep(1ms);
     }
     assert(finished);
-    close(receiver);
+    {
+        let __hew_migrated_actor_1451 = receiver;
+        stop(__hew_migrated_actor_1451);
+        stopped(__hew_migrated_actor_1451);
+    };
     println("tcp attached bytes and close");
 }

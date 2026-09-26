@@ -11,8 +11,8 @@ type T = bool;
 type Cargo(i64);
 
 type Message {
-    names: words.Names,
-    number: Number,
+    names: words.Names;
+    number: Number;
 }
 
 fn show(delivery: words.Delivery<string>) {
@@ -22,7 +22,7 @@ fn show(delivery: words.Delivery<string>) {
         words.Delivery.Bundle { value, names, order } => {
             let (first, second) = names;
             println(f"{order}:{value}:{first}:{second}");
-        },
+        }
     }
 }
 

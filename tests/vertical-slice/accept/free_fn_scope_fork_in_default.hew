@@ -13,7 +13,9 @@ fn worker() {
 
 fn main() -> i64 {
     scope {
-        fork { worker() }
+        fork {
+            worker()
+        }
     };
     println("after scope");
     0

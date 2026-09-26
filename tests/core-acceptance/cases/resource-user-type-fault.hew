@@ -1,7 +1,7 @@
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -11,12 +11,12 @@ impl Token {
 }
 
 type Holder {
-    token: Token,
-    tag: i64,
+    token: Token;
+    tag: i64;
 }
 
 fn divide(left: i64, right: i64) -> i64 {
-    return left / right
+    return left / right;
 }
 
 fn main() {

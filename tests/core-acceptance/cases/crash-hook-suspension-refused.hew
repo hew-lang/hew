@@ -8,9 +8,13 @@ fn settle() {
 }
 
 actor Worker {
-    var value: i64,
-    receive fn get() -> i64 { value }
-    receive fn boom() { panic("boom"); }
+    var value: i64;
+    receive fn get() -> i64 {
+        value
+    }
+    receive fn boom() {
+        panic("boom");
+    }
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
         settle();
@@ -19,15 +23,19 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
-    child w: Worker(value: 42),
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child w: Worker(value: 42);
 }
 
 fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w;
     let _ = w.boom();
-    let w2 = await_restart sup.w;
-    match w2.get() { .Ok(n) => n, .Err(_) => 1 }
+    restarted(sup.w);
+    let w2 = sup.w;
+    match w2.get() {
+        .Ok(n) => n,
+        .Err(_) => 1,
+    }
 }

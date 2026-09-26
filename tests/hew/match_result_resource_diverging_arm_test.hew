@@ -12,7 +12,7 @@
 
 #[resource]
 type Ticket {
-    id: i64,
+    id: i64;
 }
 
 impl Ticket {
@@ -56,7 +56,7 @@ fn err_arm_taken_with_diverging_ok_arm() {
         .Ok(ticket) => {
             let _ = ticket.value();
             panic("expected a decline");
-        },
+        }
         .Err(reason) => assert(reason == "declined"),
     }
 }

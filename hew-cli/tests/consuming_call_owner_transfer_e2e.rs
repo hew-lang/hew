@@ -7,11 +7,13 @@ use std::process::{Command, Output};
 
 use support::{describe_output, hew_binary, repo_root, require_codegen, run_bounded_command};
 
-const STREAM_PAIR_SOURCE: &str = r#"
-import std.stream;
+const STREAM_PAIR_SOURCE: &str = r#"import std.stream;
 
 fn main() {
-    let (text_sink, text_input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (text_sink, text_input) = match stream.pipe(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     text_sink.send("text-frame").expect("send");
     text_sink.close();
     match text_input.try_recv() {
@@ -19,11 +21,13 @@ fn main() {
             if frame != "text-frame" {
                 panic("stream text payload changed");
             }
-        },
+        }
         .None => panic("stream text frame missing"),
     }
-
-    let (bytes_sink, bytes_input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (bytes_sink, bytes_input) = match stream.pipe(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     bytes_sink.send(b"ok").expect("send");
     bytes_sink.close();
     match bytes_input.try_recv() {
@@ -31,7 +35,7 @@ fn main() {
             if frame.len() != 2 {
                 panic("stream bytes payload changed");
             }
-        },
+        }
         .None => panic("stream bytes frame missing"),
     }
     println("stream-owner-transfer-ok");

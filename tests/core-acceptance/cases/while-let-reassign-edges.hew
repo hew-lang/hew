@@ -1,6 +1,6 @@
 enum Packet {
-    Payload(string),
-    Done,
+    Payload(string);
+    Done;
 }
 
 fn next(i: i64, cap: i64) -> Packet {

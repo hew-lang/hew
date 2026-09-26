@@ -32,7 +32,7 @@ fn test_result_err() -> i32 {
         .Err(msg) => {
             println(f"  error: {msg}");
             -1
-        },
+        }
     };
     if val == -1 {
         println("PASS: Result Err");

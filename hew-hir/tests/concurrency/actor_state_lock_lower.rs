@@ -23,15 +23,15 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
 #[test]
 fn hir_receive_handler_carries_state_guard() {
     let output = lower_checked(
-        r"
-        actor Counter {
-            let count: i32,
-            receive fn inc(n: i32) {
-                let seen: i32 = n;
-            }
-        }
-        fn main() {}
-        ",
+        r"actor Counter {
+    let count: i32;
+    receive fn inc(n: i32) {
+        let seen: i32 = n;
+    }
+}
+
+fn main() {}
+",
     );
 
     assert!(

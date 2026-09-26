@@ -1,6 +1,6 @@
 #[resource]
 type Ticket {
-    id: i64,
+    id: i64;
 }
 
 impl Ticket {
@@ -10,13 +10,13 @@ impl Ticket {
 }
 
 type Booking {
-    left: Ticket,
-    right: Ticket,
-    label: string,
+    left: Ticket;
+    right: Ticket;
+    label: string;
 }
 
 type Holder {
-    ticket: Ticket,
+    ticket: Ticket;
 }
 
 fn main() {

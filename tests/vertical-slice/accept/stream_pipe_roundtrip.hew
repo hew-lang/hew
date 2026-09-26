@@ -7,8 +7,10 @@
 import std.stream;
 
 fn main() -> i64 {
-    let (sink, source): (stream.Sink<bytes>, stream.Stream<bytes>) =
-        match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (sink, source): (stream.Sink<bytes>, stream.Stream<bytes>) = match stream.pipe(16) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     sink.send(b"hi").expect("send");
     sink.send(b"abc").expect("send");
     sink.close();

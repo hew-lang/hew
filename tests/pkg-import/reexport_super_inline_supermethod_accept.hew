@@ -1,9 +1,10 @@
 // A re-exported supertrait edge resolves to the separately implemented origin.
 import hew.reexsub.{Sub};
+
 import hew.reexbase.{Base};
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl Base for W {

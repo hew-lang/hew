@@ -27,8 +27,9 @@ fn parsed_module(id: ModulePath, source: &str) -> Module {
 }
 
 fn program_with_colliding_imports_and_local_record() -> Program {
-    let root_source = r"
-type Thing { x: i64 }
+    let root_source = r"type Thing {
+    x: i64;
+}
 
 fn main() -> i64 {
     let Thing { x } = Thing { x: 1 };
@@ -55,10 +56,16 @@ fn main() -> i64 {
 
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
-        .add_module(parsed_module(a_id.clone(), "pub type Thing { a: i64 }"))
+        .add_module(parsed_module(
+            a_id.clone(),
+            "pub type Thing {\n    a: i64;\n}\n",
+        ))
         .expect("add module a");
     graph
-        .add_module(parsed_module(b_id.clone(), "pub type Thing { b: i64 }"))
+        .add_module(parsed_module(
+            b_id.clone(),
+            "pub type Thing {\n    b: i64;\n}\n",
+        ))
         .expect("add module b");
     graph.add_module(root_module).expect("add root module");
     graph.topo_order = vec![a_id, b_id, root_id];

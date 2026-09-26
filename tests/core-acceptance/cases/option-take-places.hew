@@ -1,11 +1,11 @@
 type Holder {
-    name: Option<string>,
-    count: i64,
+    name: Option<string>;
+    count: i64;
 }
 
 actor Keeper {
-    var slot: Option<string>,
-    var h: Holder,
+    var slot: Option<string>;
+    var h: Holder;
 
     receive fn grab() -> string {
         slot.take().unwrap_or("none")
@@ -27,12 +27,10 @@ fn main() {
     println(name.take().is_none());
     name = .Some("grace");
     println(name.take().unwrap_or("none"));
-
     var h = Holder { name: .Some("lin"), count: 1 };
     println(h.name.take().unwrap_or("none"));
     println(h.name.is_none());
     println(h.count);
-
     let k = spawn Keeper(slot: .Some("a"), h: Holder { name: .Some("bob"), count: 2 });
     println(k.grab().expect("grab"));
     println(k.grab().expect("grab"));

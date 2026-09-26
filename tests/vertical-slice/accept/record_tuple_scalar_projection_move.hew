@@ -1,13 +1,10 @@
 type TupleScalarMoveCarrier {
-    pair: (string, i64),
-    sibling: string,
+    pair: (string, i64);
+    sibling: string;
 }
 
 fn project(i: i64) -> i64 {
-    let r = TupleScalarMoveCarrier {
-        pair: (("tuple-" + "owner"), i),
-        sibling: ("sibling-" + "owner"),
-    };
+    let r = TupleScalarMoveCarrier { pair: (("tuple-" + "owner"), i), sibling: ("sibling-" + "owner") };
     let moved = r.pair.1;
     moved
 }
@@ -19,5 +16,9 @@ fn main() -> i64 {
         total = total + project(i);
         i = i + 1;
     }
-    if total == 2016 { 0 } else { 1 }
+    if total == 2016 {
+        0
+    } else {
+        1
+    }
 }

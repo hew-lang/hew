@@ -6,7 +6,7 @@ trait Sub: Super {
 }
 
 type Widget {
-    label: string,
+    label: string;
 }
 
 impl Super for Widget {

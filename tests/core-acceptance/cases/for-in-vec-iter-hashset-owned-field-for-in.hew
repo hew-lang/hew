@@ -1,4 +1,6 @@
-type SetBox { words: HashSet<string> }
+type SetBox {
+    words: HashSet<string>;
+}
 
 fn main() {
     var words: HashSet<string> = HashSet.new();
@@ -8,7 +10,9 @@ fn main() {
     let holder = SetBox { words: words };
     var count: i64 = 0;
     for word in holder.words {
-        if word.len() > 0 { count = count + 1; }
+        if word.len() > 0 {
+            count = count + 1;
+        }
     }
     print(count);
     print("OK");

@@ -5,7 +5,7 @@
 // Rejected by the env checker with `use of moved value`, once per shape.
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
 
 impl Conn {
@@ -18,8 +18,8 @@ impl Conn {
 fn use_after_match_join(r: Result<i64, string>) -> i64 {
     let held = Conn { fd: 1 };
     match r {
-        .Ok(_) => { held.close(); },
-        .Err(_) => { held.close(); },
+        .Ok(_) => { held.close(); }
+        .Err(_) => { held.close(); }
     }
     held.detach()
 }
@@ -45,8 +45,8 @@ fn use_after_partial_join(flag: bool) -> i64 {
 fn use_after_diverging_sibling(flag: bool) -> i64 {
     let held = Conn { fd: 4 };
     match flag {
-        true => { return 0; },
-        false => { let _ = held.detach(); },
+        true => { return 0; }
+        false => { let _ = held.detach(); }
     }
     held.detach()
 }

@@ -3,7 +3,11 @@
 // operand parks on a pipe nothing feeds.
 import std.stream;
 
-#[resource] type Handle { label: string }
+#[resource]
+type Handle {
+    label: string;
+}
+
 impl Handle {
     fn close(consume self) {
         println("closed " + self.label);
@@ -12,16 +16,22 @@ impl Handle {
         "used " + self.label
     }
 }
+
 fn make(label: string) -> Handle {
     Handle { label: label }
 }
+
 fn make_after(label: string, gate: stream.Stream<i64>) -> Handle {
     gate.recv();
     Handle { label: label }
 }
+
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    let winner = race { make_after("slow", gate), make("fast") };
+    let winner = race {
+        make_after("slow", gate),
+        make("fast"),
+    };
     println(winner.describe());
     winner.close();
 }

@@ -4,13 +4,13 @@
 //! read back independently and released once.
 
 type Holder {
-    name: string,
-    tags: Vec<string>,
+    name: string;
+    tags: Vec<string>;
 }
 
 #[resource]
 type Slot {
-    id: i64,
+    id: i64;
 }
 
 impl Slot {
@@ -20,11 +20,13 @@ impl Slot {
 }
 
 machine Meter {
-    events { Bump, }
-    state Idle,
-    state Busy,
-    on Bump: Idle => Busy,
-    on Bump: Busy => Idle,
+    events {
+        Bump;
+    }
+    state Idle;
+    state Busy;
+    on Bump: Idle => Busy;
+    on Bump: Busy => Idle;
 }
 
 fn main() {
@@ -37,20 +39,17 @@ fn main() {
     second.push("gamma");
     rows.push(second);
     println(f"rows={rows.len()} row0={rows[0].len()} row1={rows[1].len()}");
-
     var counters: Vec<HashMap<string, i64>> = Vec.new();
     var counts: HashMap<string, i64> = HashMap.new();
     counts.insert("hits", 3);
     counts.insert("misses", 1);
     counters.push(counts);
     println(f"counters={counters.len()} hits={counters[0]["hits"]}");
-
     var pairs: Vec<(string, i64)> = Vec.new();
     pairs.push(("one", 1));
     pairs.push(("two", 2));
     let pair = pairs[1];
     println(f"pairs={pairs.len()} name={pair.0} value={pair.1}");
-
     var holders: Vec<Holder> = Vec.new();
     var tags: Vec<string> = Vec.new();
     tags.push("red");
@@ -58,24 +57,20 @@ fn main() {
     holders.push(Holder { name: "first", tags: tags });
     let copied = holders.clone();
     println(f"holders={holders.len()} tags={holders[0].tags.len()} copy={copied[0].tags.len()}");
-
     var sets: Vec<HashSet<string>> = Vec.new();
     var names: HashSet<string> = HashSet.new();
     names.insert("x");
     names.insert("y");
     sets.push(names);
     println(f"sets={sets.len()} members={sets[0].len()}");
-
     var meters: Vec<Meter> = Vec.new();
     meters.push(Meter.Idle);
     meters.push(Meter.Busy);
     println(f"meters={meters.len()}");
-
     var slots: Vec<Slot> = Vec.new();
     slots.push(Slot { id: 1 });
     slots.push(Slot { id: 2 });
     println(f"slots={slots.len()}");
-
     var total = 0;
     for row in rows {
         total = total + row.len();

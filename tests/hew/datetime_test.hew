@@ -8,7 +8,7 @@ fn assert_parse_ok(actual: Result<i64, string>) -> i64 {
         .Err(message) => {
             panic(message);
             0
-        },
+        }
     }
 }
 
@@ -27,7 +27,7 @@ fn test_try_parse_invalid_timestamp_returns_err() {
         .Ok(value) => {
             panic(f"expected invalid parse to fail, got {value}");
             assert(value == 0);
-        },
+        }
         .Err(message) => assert(!message.is_empty()),
     }
 }

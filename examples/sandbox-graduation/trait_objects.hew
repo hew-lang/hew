@@ -5,11 +5,11 @@ trait Greeter {
 }
 
 type English {
-    name: string,
+    name: string;
 }
 
 type Latin {
-    name: string,
+    name: string;
 }
 
 impl Greeter for English {

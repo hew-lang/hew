@@ -8,26 +8,41 @@ fn main() -> i64 {
     let source = pipeline.run(pipeline.from(0));
     let control = match source.control_handle() {
         .Ok(value) => value,
-        .Err(_) => { return 10; },
+        .Err(_) => {
+            return 10;
+        }
     };
-
     // Fill Sink's active handler and mailbox, then hold Stage while it submits
     // a third item. Source cannot finish that request, so the selected fourth
     // push is queued but cannot dispatch before its timeout.
     var i: i64 = 0;
     while i < 50 {
-        let blocker1 = fork { source.push(item(-i * 3 - 1, f"blocker-1-{i}")) };
-        let blocker2 = fork { source.push(item(-i * 3 - 2, f"blocker-2-{i}")) };
-        let blocker3 = fork { source.push(item(-i * 3 - 3, f"blocker-3-{i}")) };
+        let blocker1 = fork {
+            source.push(item(-i * 3 - 1, f"blocker-1-{i}"))
+        };
+        let blocker2 = fork {
+            source.push(item(-i * 3 - 2, f"blocker-2-{i}"))
+        };
+        let blocker3 = fork {
+            source.push(item(-i * 3 - 3, f"blocker-3-{i}"))
+        };
         var attempts: i64 = 0;
         while attempts < (i + 1) * 3 {
             match control.attempts() {
-                .Ok(value) => { attempts = value; },
-                .Err(_) => { return 11; },
+                .Ok(value) => {
+                    attempts = value;
+                }
+                .Err(_) => {
+                    return 11;
+                }
             }
         }
         let outcome = select {
-            reply from source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") { 1 } else { -1 },
+            reply from source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") {
+                1
+            } else {
+                -1
+            }
             after 1ms => 0,
         };
         if outcome != 0 {
@@ -37,34 +52,65 @@ fn main() -> i64 {
         let _ = control.release();
         let _ = control.release();
         match await blocker1 {
-            .Ok(admitted) => { if !admitted { return 12; } },
-            .Err(_) => { return 13; },
+            .Ok(admitted) => {
+                if !admitted {
+                    return 12;
+                }
+            }
+            .Err(_) => {
+                return 13;
+            }
         }
         match await blocker2 {
-            .Ok(admitted) => { if !admitted { return 12; } },
-            .Err(_) => { return 13; },
+            .Ok(admitted) => {
+                if !admitted {
+                    return 12;
+                }
+            }
+            .Err(_) => {
+                return 13;
+            }
         }
         match await blocker3 {
-            .Ok(admitted) => { if !admitted { return 12; } },
-            .Err(_) => { return 13; },
+            .Ok(admitted) => {
+                if !admitted {
+                    return 12;
+                }
+            }
+            .Err(_) => {
+                return 13;
+            }
         }
         var posts: i64 = 0;
         while posts < (i + 1) * 3 {
             match control.post_sends() {
-                .Ok(value) => { posts = value; },
-                .Err(_) => { return 16; },
+                .Ok(value) => {
+                    posts = value;
+                }
+                .Err(_) => {
+                    return 16;
+                }
             }
         }
         match source.count() {
-            .Ok(count) => { if count != (i + 1) * 3 { return 19; } },
-            .Err(_) => { return 20; },
+            .Ok(count) => {
+                if count != (i + 1) * 3 {
+                    return 19;
+                }
+            }
+            .Err(_) => {
+                return 20;
+            }
         }
         println("cancelled");
         i = i + 1;
     }
-
     match source.shutdown(150) {
-        .Ok(drained) => if drained { 0 } else { 17 },
+        .Ok(drained) => if drained {
+            0
+        } else {
+            17
+        }
         .Err(_) => 18,
     }
 }

@@ -1,4 +1,8 @@
-type Tree { label: string, children: Vec<Tree> }
+type Tree {
+    label: string;
+    children: Vec<Tree>;
+}
+
 fn main() -> i64 {
     var tree = Tree { label: "root".to_upper(), children: Vec.new() };
     tree.children.push(tree);

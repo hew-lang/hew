@@ -2,8 +2,8 @@
 // or releases a heap payload on both arms, so a leak or double release on
 // either arm shows under the safety suite.
 type Entry {
-    key: string,
-    tags: Vec<string>,
+    key: string;
+    tags: Vec<string>;
 }
 
 fn lookup(entries: Vec<Entry>, key: string) -> Option<Entry> {

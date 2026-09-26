@@ -9,14 +9,32 @@ fn main() -> i64 {
     xs.push("elem-6");
     xs.push("elem-7");
     var hits: i64 = 0;
-    if xs[0] != "zzz" { hits = hits + 1; }
-    if xs[1] < "zzz" { hits = hits + 1; }
-    if xs[2] <= "zzz" { hits = hits + 1; }
-    if xs[3] > "zzz" { hits = hits + 1; }
-    if xs[4] >= "zzz" { hits = hits + 1; }
-    if xs[5] == "zzz" { hits = hits + 1; }
-    if xs[6] != "zzz" { hits = hits + 1; }
-    if xs[7] < "zzz" { hits = hits + 1; }
-    if hits < 0 { return 82; }
+    if xs[0] != "zzz" {
+        hits = hits + 1;
+    }
+    if xs[1] < "zzz" {
+        hits = hits + 1;
+    }
+    if xs[2] <= "zzz" {
+        hits = hits + 1;
+    }
+    if xs[3] > "zzz" {
+        hits = hits + 1;
+    }
+    if xs[4] >= "zzz" {
+        hits = hits + 1;
+    }
+    if xs[5] == "zzz" {
+        hits = hits + 1;
+    }
+    if xs[6] != "zzz" {
+        hits = hits + 1;
+    }
+    if xs[7] < "zzz" {
+        hits = hits + 1;
+    }
+    if hits < 0 {
+        return 82;
+    }
     0
 }

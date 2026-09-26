@@ -1,7 +1,12 @@
-type Pair { a: i64, b: i64 }
+type Pair {
+    a: i64;
+    b: i64;
+}
 
 fn main() {
-    let f = actor |n: i64| -> Pair { Pair { a: n, b: n + 1 } };
+    let f = actor |n: i64| -> Pair {
+        Pair { a: n, b: n + 1 }
+    };
     let a = f(41);
     match a {
         .Ok(v) => {
@@ -11,7 +16,7 @@ fn main() {
                 println("bad");
                 println(v.b)
             }
-        },
+        }
         .Err(_) => println("err"),
     }
 }

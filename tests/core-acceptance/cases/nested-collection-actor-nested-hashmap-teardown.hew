@@ -1,5 +1,5 @@
 actor Registry {
-    var buckets: Vec<HashMap<string, i64>>,
+    var buckets: Vec<HashMap<string, i64>>;
 
     receive fn total() -> i64 {
         buckets.len()
@@ -8,7 +8,7 @@ actor Registry {
 
 fn main() -> i64 {
     var buckets: Vec<HashMap<string, i64>> = Vec.new();
-    for i in 0..50 {
+    for i in 0 .. 50 {
         var m: HashMap<string, i64> = HashMap.new();
         m.insert("a", i);
         m.insert("b", i + 1);

@@ -9,14 +9,17 @@ fn open() -> Stream<string> {
 
 gen fn held() -> string {
     let input = open();
-    defer { input.close(); println("closed"); }
+    defer {
+        input.close();
+        println("closed");
+    }
     let value = "resource".to_upper();
     yield value;
     yield "later";
 }
 
 fn main() {
-    for index in 0..3 {
+    for index in 0 .. 3 {
         for value in held() {
             println(value);
             break;

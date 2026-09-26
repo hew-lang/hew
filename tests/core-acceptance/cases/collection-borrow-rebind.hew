@@ -2,7 +2,7 @@
 // The vector keeps its original resource and closes it once.
 #[resource]
 type Tok {
-    id: i64,
+    id: i64;
 }
 
 impl Tok {

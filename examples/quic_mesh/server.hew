@@ -9,17 +9,17 @@
 // Then: hew run examples/quic_mesh/client.hew
 #[wire]
 enum CounterMsg {
-    Increment(i64),
+    Increment(i64);
 }
 
 actor Counter {
-    var count: i64,
+    var count: i64;
     receive fn handle(msg: CounterMsg) {
         match msg {
             CounterMsg.Increment(n) => {
                 count = count + n;
                 println(f"[server] counter incremented by {n} → {count}");
-            },
+            }
         }
     }
     receive fn get_count() -> i64 {
@@ -36,7 +36,7 @@ fn main() {
     println("[server] starting QUIC mesh node...");
     let config = NodeConfig { bind: "127.0.0.1:9000", transport: "quic-mesh", key: "quic-mesh-server.key", trust: "pinned", peers: [], seeds: [] };
     match Node.start(config) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("node start failed"),
     }
     println("[server] listening on 127.0.0.1:9000 (QUIC/TLS 1.3)");

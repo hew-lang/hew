@@ -3,7 +3,7 @@
 // schedulers; the checker refuses it and points at the owning-actor pattern.
 
 actor Sink {
-    var seen: i64 = 0,
+    var seen: i64 = 0;
     receive fn take(handle: Rc<i64>) -> i64 {
         seen = seen + handle.get();
         seen

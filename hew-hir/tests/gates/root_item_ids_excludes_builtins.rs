@@ -29,8 +29,9 @@ use crate::support;
 use hew_hir::HirItem;
 use support::checker_pipeline::lower_through_checker;
 
-const SOURCE: &str = r"
-type Counter { n: i64 }
+const SOURCE: &str = r"type Counter {
+    n: i64;
+}
 
 impl Counter {
     fn get(self) -> i64 {

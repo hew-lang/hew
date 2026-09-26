@@ -16,7 +16,7 @@
 import std.stream;
 
 actor SlowWorker {
-    var gate: stream.Stream<i64>,
+    var gate: stream.Stream<i64>;
 
     receive fn label() -> string {
         // Reply arrives only after the deadline → cancel leg.

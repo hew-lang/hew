@@ -4,7 +4,7 @@ fn selected(value: Result<string, string>) -> string {
         .Err(error) => {
             return error;
             "unreachable".to_upper()
-        },
+        }
     }
 }
 
@@ -23,7 +23,7 @@ fn checked(value: Result<string, string>) -> string {
         .Err(error) => {
             panic(error);
             "unreachable".to_upper()
-        },
+        }
     }
 }
 

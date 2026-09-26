@@ -20,13 +20,13 @@ fn report_line(line: string) -> string {
                 return "";
             }
             return "ok";
-        },
+        }
         .Err(error) => {
             let owned_error = error;
             match owned_error {
                 ParseError.Invalid(message) => return message,
             }
-        },
+        }
     }
 }
 

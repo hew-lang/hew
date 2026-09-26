@@ -215,40 +215,6 @@ impl LowerCtx {
     /// resolver. Returning `ResolvedTraitBound` directly (rather than
     /// a forked HIR-local shape) reuses the carrier `dyn Trait`
     /// coercions and trait-object lowering already commit to.
-    pub(super) fn lower_machine_trait_bound(
-        &mut self,
-        tb: &hew_parser::ast::TraitBound,
-    ) -> hew_types::ResolvedTraitBound {
-        let args: Vec<ResolvedTy> = tb
-            .type_args
-            .as_ref()
-            .map(|args| args.iter().map(|a| self.lower_type(a)).collect())
-            .unwrap_or_default();
-        let assoc_bindings: Vec<(String, ResolvedTy)> = tb
-            .assoc_type_bindings
-            .iter()
-            .map(|b| (b.name.to_string(), self.lower_type(&b.ty)))
-            .collect();
-        hew_types::ResolvedTraitBound {
-            trait_name: tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-            trait_id: tb
-                .path
-                .segments
-                .last()
-                .and_then(|(_, span)| self.resolutions.get(&self.mk_key(span)))
-                .and_then(|resolution| match resolution {
-                    Resolution::Def(id)
-                        if self.defs.kind(*id) == hew_types::DeclarationKind::Trait =>
-                    {
-                        Some(*id)
-                    }
-                    _ => None,
-                }),
-            args,
-            assoc_bindings,
-        }
-    }
-
     /// Canonicalise an actor-state field's lowered type: a field annotated with
     /// a bare actor name (e.g. `let out: W;` where `W` is a `TypeDefKind::Actor`)
     /// holds an actor *handle*, never the actor by value — actors are reference
@@ -274,8 +240,7 @@ impl LowerCtx {
     /// the checker actually registered — never a global short-name scan across
     /// every module in the program. A bare name that collides with a LOCAL
     /// non-actor type (a record/enum shadowing an imported actor's short name)
-    /// never reaches this point as a false match: `resolve_named_type_ref`
-    /// already resolved it to the local type before `lower_type` returns, and
+    /// already carries the checker-resolved local type before this pass, and
     /// neither lookup here can accidentally re-target a different module's
     /// actor, because `{decl_module}.{name}` is scoped to the module actually
     /// being lowered (LESSONS: `per-module-type-identity`).

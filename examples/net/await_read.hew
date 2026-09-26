@@ -7,7 +7,7 @@ import std.encoding.utf8;
 import std.net;
 
 actor Reader {
-    let port: string,
+    let port: string;
     receive fn go(unused: i64) {
 
         // Give main a moment to start listening, then connect and read.
@@ -23,7 +23,7 @@ actor Reader {
                     return;
                 };
                 println(f"reader-received: {body}");
-            },
+            }
             .None => println("reader-received: peer closed"),
         }
         let _ = conn.close();

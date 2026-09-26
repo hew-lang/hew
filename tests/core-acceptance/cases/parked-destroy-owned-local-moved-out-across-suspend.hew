@@ -15,10 +15,10 @@ actor Mover {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child mover: Mover,
+    child mover: Mover;
 }
 
 fn main() {

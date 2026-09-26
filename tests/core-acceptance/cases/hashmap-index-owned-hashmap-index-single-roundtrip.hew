@@ -1,4 +1,6 @@
-type Name { label: string, }
+type Name {
+    label: string;
+}
 
 fn main() {
     var m: HashMap<string, Name> = HashMap.new();

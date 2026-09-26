@@ -11,9 +11,9 @@ actor ParkedReceiver {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child receiver: ParkedReceiver stop: 50ms,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child receiver: ParkedReceiver stop: 50ms;
 }
 
 fn main() {

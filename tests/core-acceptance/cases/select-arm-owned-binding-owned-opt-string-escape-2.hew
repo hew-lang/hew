@@ -10,7 +10,9 @@ fn main() -> i64 {
         r from m.make() => r.expect("ask reply"),
     };
     match x {
-        .Some(s) => { print(s); }
+        .Some(s) => {
+            print(s);
+        }
         .None => {}
     }
     0

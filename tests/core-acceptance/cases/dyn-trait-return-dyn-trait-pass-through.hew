@@ -5,7 +5,7 @@ trait Labeled {
 }
 
 type Person {
-    label: string,
+    label: string;
 }
 
 impl Labeled for Person {
@@ -27,10 +27,12 @@ fn inspect(value: dyn Labeled) -> i64 {
 }
 
 fn main() -> i64 {
-    for frame in 0..50 {
+    for frame in 0 .. 50 {
         let direct = identity(make_labeled(f"direct-{frame}"));
         let chained = identity(identity(make_labeled(f"chained-{frame}")));
-        if inspect(direct) < 64 || inspect(chained) < 64 { return 92; }
+        if inspect(direct) < 64 || inspect(chained) < 64 {
+            return 92;
+        }
     }
     print("OK");
     0

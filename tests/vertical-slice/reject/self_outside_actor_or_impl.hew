@@ -2,7 +2,7 @@
 // function has no receiver, so `self` there is still an undefined name and
 // the diagnostic still points at a named receiver parameter.
 type Point {
-    x: i64,
+    x: i64;
 }
 
 fn origin_x() -> i64 {

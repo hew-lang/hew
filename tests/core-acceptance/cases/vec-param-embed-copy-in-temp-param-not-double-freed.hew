@@ -1,4 +1,6 @@
-type Wrap { f: Option<string> }
+type Wrap {
+    f: Option<string>;
+}
 
 fn pushParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];

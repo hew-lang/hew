@@ -48,10 +48,9 @@ fn main() {
         .Ok(parsed) => {
             parsed.free();
             panic("malformed TOML unexpectedly parsed");
-        },
-        .Err(_) => {},
+        }
+        .Err(_) => {}
     }
-
     // A successful parse returns one root owner; a selected child is an
     // independent owner and remains valid after that root is freed.
     match toml.parse("n = 14") {
@@ -59,7 +58,7 @@ fn main() {
             let parsed_child = parsed.get_field("n");
             parsed.free();
             println(parsed_child.get_int());
-        },
+        }
         .Err(_) => panic("valid TOML did not parse"),
     }
     early_exit(true);

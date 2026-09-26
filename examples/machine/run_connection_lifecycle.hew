@@ -15,18 +15,18 @@
 // HIR, MIR, and codegen never see a composite.
 machine ConnectionLifecycle {
     events {
-        Connect,
-        AuthOk,
-        DrainStart,
-        DrainDone,
-        Disconnect,
+        Connect;
+        AuthOk;
+        DrainStart;
+        DrainDone;
+        Disconnect;
     }
 
     emits {
-        Trace { text: string, },
+        Trace { text: string; }
     }
 
-    state Disconnected,
+    state Disconnected;
 
     state Connected {
         entry {
@@ -42,7 +42,7 @@ machine ConnectionLifecycle {
             exit {
                 emit Trace { text: "Authenticating.exit" };
             }
-        },
+        }
         state Active {
             entry {
                 emit Trace { text: "Active.entry" };
@@ -50,7 +50,7 @@ machine ConnectionLifecycle {
             exit {
                 emit Trace { text: "Active.exit" };
             }
-        },
+        }
         state Draining {
             entry {
                 emit Trace { text: "Draining.entry" };
@@ -58,14 +58,14 @@ machine ConnectionLifecycle {
             exit {
                 emit Trace { text: "Draining.exit" };
             }
-        },
-        on Disconnect: _ => Disconnected,
-    },
+        }
+        on Disconnect: _ => Disconnected;
+    }
 
-    on Connect: Disconnected => Connected,
-    on AuthOk: Authenticating => Active,
-    on DrainStart: Active => Draining,
-    on DrainDone: Draining => Disconnected,
+    on Connect: Disconnected => Connected;
+    on AuthOk: Authenticating => Active;
+    on DrainStart: Active => Draining;
+    on DrainDone: Draining => Disconnected;
 
     default { state }
 }

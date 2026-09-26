@@ -1,6 +1,6 @@
 type Parcel {
-    label: string,
-    tags: Vec<string>,
+    label: string;
+    tags: Vec<string>;
 }
 
 actor Sink {
@@ -32,7 +32,7 @@ fn main() {
         .Ok(_) => println("UNEXPECTED_REPLY"),
         .Err(_) => println("SINK_DEAD"),
     }
-    for i in 0..1000 {
+    for i in 0 .. 1000 {
         let _ = sink.take_string(f"owned-payload-{i}".to_upper());
         let _ = sink.take_record(parcel(i));
         let items: Vec<string> = [f"item-{i}", "vector-heap-element".to_upper()];

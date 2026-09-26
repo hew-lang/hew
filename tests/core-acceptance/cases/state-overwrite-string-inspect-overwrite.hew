@@ -1,5 +1,5 @@
-actor Namer { 
-    var name: string,
+actor Namer {
+    var name: string;
 
     receive fn tick() {
         if name.len() < 1000000 {

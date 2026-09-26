@@ -1,11 +1,13 @@
 actor Worker {
-    receive fn scale(x: i64) -> i64 { x * 2 }
+    receive fn scale(x: i64) -> i64 {
+        x * 2
+    }
 }
 
 actor Driver {
-    var runs: i64 = 0,
-    var left: Worker,
-    var right: Worker,
+    var runs: i64 = 0;
+    var left: Worker;
+    var right: Worker;
     receive fn drive(base: i64) -> i64 {
         runs = runs + 1;
         let (a, b) = await fork (left.scale(base), right.scale(base + 1));

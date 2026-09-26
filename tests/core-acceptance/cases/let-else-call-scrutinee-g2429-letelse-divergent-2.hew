@@ -1,13 +1,22 @@
-fn some_f() -> Option<string> { .Some("g2429-letelse-taken".to_upper()) }
-fn none_f() -> Option<string> { .None }
+fn some_f() -> Option<string> {
+    .Some("g2429-letelse-taken".to_upper())
+}
+
+fn none_f() -> Option<string> {
+    .None
+}
 
 fn use_return() -> i64 {
-    let .Some(b) = some_f() else { return 0; };
+    let .Some(b) = some_f() else {
+        return 0;
+    };
     b.len()
 }
 
 fn miss_return() -> i64 {
-    let .Some(b) = none_f() else { return 7; };
+    let .Some(b) = none_f() else {
+        return 7;
+    };
     b.len()
 }
 
@@ -16,7 +25,9 @@ fn loop_continue() -> i64 {
     var i = 0;
     while i < 3 {
         i = i + 1;
-        let .Some(b) = some_f() else { continue; };
+        let .Some(b) = some_f() else {
+            continue;
+        };
         seen = seen + b.len();
     }
     seen
@@ -26,5 +37,7 @@ fn main() {
     let a = use_return();
     let b = miss_return();
     let c = loop_continue();
-    if a > 0 && b == 7 && c > 0 { print("ok"); }
+    if a > 0 && b == 7 && c > 0 {
+        print("ok");
+    }
 }

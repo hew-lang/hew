@@ -8,13 +8,16 @@ fn make() -> Vec<string> {
 fn probe(c: bool) -> i64 {
     let a = make();
     let b = make();
-    let out = match c { true => a, false => b };
+    let out = match c {
+        true => a,
+        false => b,
+    };
     out.len()
 }
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for seed in 0..50 {
+    for seed in 0 .. 50 {
         total = total + probe(seed % 2 == 0);
         println("frame");
     }

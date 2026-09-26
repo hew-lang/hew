@@ -230,7 +230,7 @@ cancellation still follows the caller's own cancellation and cleanup edges.
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
+    var count: i64 = 0;
 
     // No return type: the call still waits until the handler has finished
     receive fn increment(n: i64) {
@@ -361,8 +361,10 @@ Actors are instantiated using the `spawn` keyword with constructor arguments mat
 
 ```hew
 actor Counter {
-    var count: i64,
-    receive fn value() -> i64 { count }
+    var count: i64;
+    receive fn value() -> i64 {
+        count
+    }
 }
 
 actor WorkerActor {
@@ -372,10 +374,8 @@ actor WorkerActor {
 fn main() {
     // Spawn with named field arguments
     let counter = spawn Counter(count: 0);
-
     // Spawn with no arguments (if actor has no-arg init or no init block)
     let worker = spawn WorkerActor();
-
     close(counter);
     close(worker);
 }
@@ -403,8 +403,8 @@ Receive handlers can be annotated with `#[every(duration)]` to create periodic t
 
 ```hew
 actor HealthChecker {
-    let endpoint: string,
-    var failures: i64,
+    let endpoint: string;
+    var failures: i64;
 
     #[every(5s)]
     receive fn check() {
@@ -492,17 +492,22 @@ that addresses it.
 
 ```hew
 actor Counter {
-    var count: i64,
-    receive fn value() -> i64 { count }
+    var count: i64;
+    receive fn value() -> i64 {
+        count
+    }
 }
 
 fn main() {
     // Spawn a named actor
     let counter = spawn Counter(count: 0);
-
     // A lambda actor expression has the type `actor(M) -> R`
-    let worker: actor(i64) = actor |msg: i64| { println(msg); };          // unit reply
-    let adder: actor(i64) -> i64 = actor |x: i64| -> i64 { x + 1 };       // value reply
+    let worker: actor(i64) = actor |msg: i64| {
+        println(msg);
+    }; // unit reply
+    let adder: actor(i64) -> i64 = actor |x: i64| -> i64 {
+        x + 1
+    }; // value reply
     close(counter);
     close(worker);
     close(adder);
@@ -762,7 +767,12 @@ named field takes precedence over the base regardless of where the base
 appears in the field list. The base written first is the taught spelling:
 
 ```hew
-type Point { x: i64, y: i64, label: string, }
+type Point {
+    x: i64;
+    y: i64;
+    label: string;
+}
+
 fn main() {
     let origin = Point { x: 0, y: 0, label: "origin" };
     let shifted = Point { ..origin, x: 3 };
@@ -990,42 +1000,40 @@ For type fields:
 
 ```hew
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 fn main() {
     var p = Point { x: 0, y: 0 };
-    p.x = 10;        // OK — p is var-bound, so field mutation is allowed
-
+    p.x = 10; // OK — p is var-bound, so field mutation is allowed
     let q = Point { x: 0, y: 0 };
     // q.x = 10;     // compile error — q is let-bound
-
     println(f"{p.x} {q.x}");
 }
 ```
 
 **Type field syntax:**
 
-Type fields do NOT require a `let`/`var` prefix. Commas separate the fields:
+Type fields do NOT require a `let`/`var` prefix. Semicolons end the fields:
 
 ```hew
 type Point {
-    x: f64,          // field declaration
-    y: f64,          // field declaration
-    label: string,   // field declaration
+    x: f64;          // field declaration
+    y: f64;          // field declaration
+    label: string;   // field declaration
 }
 ```
 
 **Actor field syntax:**
 
 Actor fields use `let` or `var` to distinguish immutable and mutable state.
-Commas separate these structural members, just as in a type declaration:
+Semicolons end these members, just as in a type declaration:
 
 ```hew
 actor Counter {
-    var count: i64 = 0,     // mutable field with default
-    let name: string,       // immutable field, set by init
+    var count: i64 = 0;     // mutable field with default
+    let name: string;       // immutable field, set by init
 }
 ```
 
@@ -1080,7 +1088,9 @@ instead transfers its sole ownership and cannot be reused by the sender:
 <!-- doctest: skip -->
 
 ```hew
-type Message { body: string }
+type Message {
+    body: string;
+}
 
 actor Handler {
     receive fn process(message: Message) {
@@ -1090,7 +1100,7 @@ actor Handler {
 
 actor Forwarder {
     receive fn forward(message: Message, target: Handler) {
-        let _ = target.process(message);  // target receives a snapshot of message
+        let _ = target.process(message); // target receives a snapshot of message
     }
 }
 
@@ -1134,7 +1144,9 @@ submission. Fan-out to multiple receivers is ordinary code:
 <!-- doctest: skip -->
 
 ```hew
-type Message { body: string }
+type Message {
+    body: string;
+}
 
 actor Handler {
     receive fn process(message: Message) {
@@ -1145,7 +1157,7 @@ actor Handler {
 actor Broadcaster {
     receive fn broadcast(message: Message, first: Handler, second: Handler) {
         let _ = first.process(message);
-        let _ = second.process(message);   // message still valid — each send snapshots
+        let _ = second.process(message); // message still valid — each send snapshots
     }
 }
 
@@ -1190,7 +1202,7 @@ fn process(items: Vec<i64>) {
 }
 
 actor Example {
-    var data: Vec<i64> = Vec.new(),
+    var data: Vec<i64> = Vec.new();
 
     receive fn demo(incoming: Vec<i64>) {
         // Mutating the actor's own state - ALLOWED, no locks, no ceremony
@@ -1203,7 +1215,7 @@ actor Example {
 
         // Passing a value to a function borrows it - the binding stays valid
         process(incoming);
-        process(incoming);   // ok - calls borrow, they do not consume
+        process(incoming); // ok - calls borrow, they do not consume
     }
 }
 ```
@@ -1261,20 +1273,20 @@ Hew uses a file-based module system inspired by Rust:
 // This is module network.tcp
 
 pub type Connection {
-    address: string,       // public fields via pub keyword on type
-    internal_state: i64,   // named fields are separated by commas
+    address: string; // public fields via pub keyword on type
+    internal_state: i64; // named fields end with semicolons
 }
 
 pub enum ConnectError {
-    Refused,
-    TimedOut,
+    Refused;
+    TimedOut;
 }
 
 pub fn connect(addr: string) -> Result<Connection, ConnectError> {
     .Ok(Connection { address: addr, internal_state: 0 })
 }
 
-fn helper() {  // private to this module
+fn helper() { // private to this module
 }
 ```
 
@@ -1294,10 +1306,10 @@ instead.
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:
 
 ```hew
-import std.net.http;     // Available as "http", not "std.net.http"
-import std.fs;            // Available as "fs"
-import std.io;            // Available as "io"
-import std.text.regex;   // Available as "regex"
+import std.net.http; // Available as "http", not "std.net.http"
+import std.fs; // Available as "fs"
+import std.io; // Available as "io"
+import std.text.regex; // Available as "regex"
 
 fn main() {
     // Call module functions with dot-syntax: module.function(args)
@@ -1305,14 +1317,14 @@ fn main() {
         .Ok(server) => {
             println(f"HTTP server listening on port {http.server_port(server)}");
             server.close(); // Explicitly release the listener on every success path.
-        },
+        }
         .Err(error) => println(error),
     }
     let content = fs.read("config.toml").expect("config.toml must be readable");
-    let exists = fs.exists("output.txt");       // Returns bool
-    let line = io.read_line();                  // Preferred stdin surface
+    let exists = fs.exists("output.txt"); // Returns bool
+    let line = io.read_line(); // Preferred stdin surface
     let re = regex.new("[a-z]+");
-    let matched = re.is_match("example");      // Returns bool
+    let matched = re.is_match("example"); // Returns bool
     re.close();
 }
 ```
@@ -1494,6 +1506,22 @@ same name; qualifying with the module (or alias) resolves the conflict.
 
 ### 3.6 Trait System
 
+Names resolve in lexical scope: a local callable shadows a module function,
+and module declarations and imports take precedence over prelude functions.
+Protected prelude type and trait declarations cannot be redeclared. Compiler
+predicate spellings such as `Clone` and `Send` may name user traits; those
+traits impose their declared methods and do not acquire compiler predicate
+semantics from their spelling.
+
+For `value.method()`, an inherent method takes precedence. Otherwise exactly
+one applicable trait method must be available; multiple candidates are an
+ambiguity error. A call through a generic trait bound or `dyn Trait` uses that
+trait's method identity. Structural trait satisfaction selects an inherent
+method first, then a unique compatible trait implementation; it must not choose
+between multiple witnesses by declaration order. Distinct traits retain their
+own method identities and vtable order even when their names or signatures
+match.
+
 Traits define shared behaviour that types can implement. Hew has built-in marker traits and supports user-defined traits.
 
 **Trait declaration:**
@@ -1520,7 +1548,10 @@ trait PointRenderer {
     fn fmt(self) -> string;
 }
 
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 impl PointRenderer for Point {
     fn fmt(self) -> string {
@@ -1592,7 +1623,10 @@ one member each:
 | `consume self` | consumes the receiver | is dead after the call |
 
 ```hew
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 trait Formattable {
     fn fmt(self) -> string;
@@ -1621,7 +1655,10 @@ collection methods.
 **Calling methods:**
 
 ```hew
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 trait Formattable {
     fn fmt(self) -> string;
@@ -1635,8 +1672,8 @@ impl Formattable for Point {
 
 fn main() {
     let p = Point { x: 1.0, y: 2.0 };
-    p.fmt();    // `self` borrows: p is still valid
-    p.fmt();    // and may be called again
+    p.fmt(); // `self` borrows: p is still valid
+    p.fmt(); // and may be called again
 }
 ```
 
@@ -1670,9 +1707,9 @@ parameter — and the actor persists across handler invocations:
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
+    var count: i64 = 0;
     receive fn increment() {
-        count += 1;  // bare field access — actor persists after handler returns
+        count += 1; // bare field access — actor persists after handler returns
     }
 }
 ```
@@ -1700,9 +1737,13 @@ slot: from outside the actor it is unreachable, and naming it there is
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
-    fn next() -> i64 { count + 1 }
-    receive fn increment() { count = next(); }
+    var count: i64 = 0;
+    fn next() -> i64 {
+        count + 1
+    }
+    receive fn increment() {
+        count = next();
+    }
 }
 ```
 
@@ -1722,13 +1763,13 @@ Hew distinguishes three cases of variable shadowing:
 - **Outer-scope shadowing of an actor field** — a **hard error**. Actor fields must have unambiguous bare names; a parameter, local variable, or loop variable that shadows a field is rejected:
 
   ```hew
-  actor Example {
-      var count: i64 = 0,
+actor Example {
+    var count: i64 = 0;
 
-      receive fn update(count: i64) {
-          // compile error: variable `count` shadows a binding in an outer scope
-      }
-  }
+    receive fn update(count: i64) {
+        // compile error: variable `count` shadows a binding in an outer scope
+    }
+}
   ```
 
 - **Outer-scope shadowing of a local variable** — a **warning**. Reusing a name in a nested block is confusing but not ambiguous. The compiler emits a warning and the programmer is encouraged to choose a more descriptive name or prefix the new binding with `_` to suppress the diagnostic:
@@ -1751,7 +1792,9 @@ Hew distinguishes three cases of variable shadowing:
 <!-- doctest: skip -->
 
 ```hew
-type Message { body: string }
+type Message {
+    body: string;
+}
 
 actor Receiver {
     receive fn accept(message: Message) {
@@ -1808,17 +1851,21 @@ Within an actor, values follow Hew ownership semantics:
 
 ```hew
 #[resource]
-type Connection { fd: i64, }
+type Connection {
+    fd: i64;
+}
 
 impl Connection {
-    fn open(host: string) -> Connection { Connection { fd: 0 } }
+    fn open(host: string) -> Connection {
+        Connection { fd: 0 }
+    }
     fn close(consume self) {}
 }
 
 fn main() {
     let conn = Connection { fd: 0 };
     // ... use conn ...
-}  // conn.close() runs here automatically (implicit #[resource] drop)
+} // conn.close() runs here automatically (implicit #[resource] drop)
 ```
 
 **Principle 3: No garbage collection.**
@@ -1902,7 +1949,7 @@ etc.):
 ```hew
 #[resource]
 type FileHandle {
-    fd: i32,
+    fd: i32;
 }
 
 impl FileHandle {
@@ -1936,9 +1983,9 @@ Enum types cannot normally reference themselves because inline storage would req
 
 ```hew
 indirect enum Expr {
-    Lit(i64),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Lit(i64);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 ```
 
@@ -1954,9 +2001,9 @@ indirect enum Expr {
 
 ```hew
 indirect enum Expr {
-    Lit(i64),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Lit(i64);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 
 fn main() {
@@ -1969,9 +2016,9 @@ fn main() {
 
 ```hew
 indirect enum Expr {
-    Lit(i64),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Lit(i64);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 
 fn eval(e: Expr) -> i64 {
@@ -2036,8 +2083,8 @@ fn main() {
 
 ```hew
 type Node {
-    label: string,
-    parent: Option<Weak<Node>>,
+    label: string;
+    parent: Option<Weak<Node>>;
 }
 
 fn main() {
@@ -2120,10 +2167,12 @@ descriptor, socket, allocator handle, GPU context, libc pointer) and
 
 ```hew
 #[resource]
-type File { fd: i64 }
+type File {
+    fd: i64;
+}
 
 impl File {
-    fn close(consume self) {}   // consuming receiver, unit return, sibling impl
+    fn close(consume self) {} // consuming receiver, unit return, sibling impl
 }
 ```
 
@@ -2144,7 +2193,9 @@ Semantics:
 
 ```hew
 #[resource]
-type Session { label: string, }
+type Session {
+    label: string;
+}
 
 impl Session {
     fn close(consume self) {
@@ -2154,7 +2205,7 @@ impl Session {
 
 fn main() {
     let session = Session { label: "example" };
-    session.close();            // early release; no second close at scope exit
+    session.close(); // early release; no second close at scope exit
 }
 ```
 
@@ -2281,12 +2332,15 @@ The resource close contract has three requirements:
    block:
 
    ```hew
-   #[resource]
-   type Conn { fd: i64 }
+#[resource]
+type Conn {
+    fd: i64;
+}
 
-   impl Conn {
-       fn close(consume self) { /* release fd */ }
-   }
+impl Conn {
+    fn close(consume self) { /* release fd */
+    }
+}
    ```
 
    Declaring `close` as an inline method inside the type body is rejected
@@ -2450,7 +2504,9 @@ needs an explicit `impl Trait for T` block.
 <!-- doctest: skip -->
 
 ```hew
-type Message { body: string }
+type Message {
+    body: string;
+}
 
 actor Receiver {
     receive fn accept(message: Message) {
@@ -2510,8 +2566,8 @@ trait Sequence {
 }
 
 type RangeIter {
-    current: i32,
-    end: i32,
+    current: i32;
+    end: i32;
 }
 
 impl Sequence for RangeIter {
@@ -2539,14 +2595,19 @@ The `Send` and `Frozen` marker traits have special rules for generic types:
 
 ```hew
 // Compiler derives: Point is Send + Frozen + Copy (all fields are)
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 // Compiler derives: Container<T> is Send if T is Send
-type Container<T> { value: T, }
+type Container<T> {
+    value: T;
+}
 
 // MutableContainer has a mutable binding semantics determined by usage
 type MutableContainer<T> {
-    value: T,
+    value: T;
 }
 ```
 
@@ -2732,14 +2793,16 @@ Actor message handlers provide rich typing context:
 
 ```hew
 actor Calculator {
-    var result: i64 = 0,
+    var result: i64 = 0;
 
     // receive fn signature provides context for message arguments
     receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
         result = op(result, value);
     }
 
-    receive fn value() -> i64 { result }
+    receive fn value() -> i64 {
+        result
+    }
 }
 
 fn main() {
@@ -2833,9 +2896,13 @@ mailbox protocol or a restart budget.
 
 ```hew
 actor Latest<T> {
-    var value: Option<T> = .None,
-    receive fn put(next: T) { value = .Some(next); }
-    receive fn get() -> Option<T> { value }
+    var value: Option<T> = .None;
+    receive fn put(next: T) {
+        value = .Some(next);
+    }
+    receive fn get() -> Option<T> {
+        value
+    }
 }
 
 fn main() {
@@ -2854,12 +2921,16 @@ parameters, they are inferred the way record type arguments are:
 
 ```hew
 actor Cache<K: Hash + Eq, V: Clone> {
-    var entries: HashMap<K, V>,
-    var hits: i64 = 0,
-    receive fn insert(key: K, value: V) { entries.insert(key, value); }
+    var entries: HashMap<K, V>;
+    var hits: i64 = 0;
+    receive fn insert(key: K, value: V) {
+        entries.insert(key, value);
+    }
     receive fn lookup(key: K) -> Option<V> {
         let found = entries.get(key);
-        if found.is_some() { hits = hits + 1; }
+        if found.is_some() {
+            hits = hits + 1;
+        }
         found
     }
 }
@@ -2867,8 +2938,10 @@ actor Cache<K: Hash + Eq, V: Clone> {
 fn main() {
     var seed: HashMap<string, i64> = HashMap.new();
     seed.insert("answer", 42);
-    let cache = spawn Cache(entries: seed);   // K = string, V = i64
-    let found = cache.lookup("answer") handle error { .None };
+    let cache = spawn Cache(entries: seed); // K = string, V = i64
+    let found = cache.lookup("answer") handle error {
+        .None
+    };
     match found {
         .Some(v) => println(v),
         .None => println("miss"),
@@ -2891,14 +2964,17 @@ typed configuration and restart budget:
 
 ```hew
 actor Worker<Job: Send> {
-    var done: i64 = 0,
-    receive fn run(job: Job) -> i64 { done = done + 1; done }
+    var done: i64 = 0;
+    receive fn run(job: Job) -> i64 {
+        done = done + 1;
+        done
+    }
 }
 
 supervisor Pool<Job: Send> {
-    strategy: one_for_one,
-    intensity: 3 within 10s,
-    child worker: Worker<Job>(done: 0),
+    strategy: one_for_one;
+    intensity: 3 within 10s;
+    child worker: Worker<Job>(done: 0);
 }
 
 fn main() {
@@ -3144,18 +3220,23 @@ Destructuring hands the handle out without running `close`:
 
 ```hew
 #[opaque]
-type Handle {}
+type Handle {
+}
 
 extern "C" {
     fn handle_free(consume handle: Handle);
 }
 
 #[resource]
-type Value { handle: Handle }
+type Value {
+    handle: Handle;
+}
 
 impl Value {
     fn close(consume self) {
-        unsafe { handle_free(self.handle) };
+        unsafe {
+            handle_free(self.handle)
+        };
     }
 
     // `self.handle` alone is refused here: `close` would free it again.
@@ -3271,13 +3352,13 @@ name is not conforming.
 
 ```hew
 enum Option<T> {
-    Some(T),
-    None,
+    Some(T);
+    None;
 }
 
 enum Result<T, E> {
-    Ok(T),
-    Err(E),
+    Ok(T);
+    Err(E);
 }
 ```
 
@@ -3298,12 +3379,12 @@ for propagation. Any error type `E` may be used with `Result<T, E>`. Each module
 
 ```hew
 pub enum IoError {
-    NotFound(i64),
-    PermissionDenied(i64),
-    AlreadyExists(i64),
-    TimedOut(i64),
-    Cancelled(i64),
-    Other(i64),
+    NotFound(i64);
+    PermissionDenied(i64);
+    AlreadyExists(i64);
+    TimedOut(i64);
+    Cancelled(i64);
+    Other(i64);
 }
 ```
 
@@ -3710,32 +3791,32 @@ owns no thread, mailbox or output queue.
 
 ### 3.11.1 Declaration Syntax
 
-A machine body is a comma-separated list of members: the mandatory `events`
+A machine body contains members: the mandatory `events`
 header, the optional `emits` header, the `state` declarations, the `on` rules,
 and an optional `default`. A rule whose body is braced is self-delimiting; one
-without a body ends with `,`, like every other structural member.
+without a body ends with `;`, like every other bodyless member.
 
 ```hew
 machine Door {
     events {
-        Open { by: string },
-        Close,
+        Open { by: string; }
+        Close;
     }
 
     emits {
-        Announce { text: string },
+        Announce { text: string; }
     }
 
-    state Shut,
+    state Shut;
     state Ajar {
-        by: string,
+        by: string;
         entry {
             emit Announce { text: "opened by " + state.by };
         }
-    },
+    }
 
     on Open(by): Shut => Ajar { by: by }
-    on Close: Ajar => Shut,
+    on Close: Ajar => Shut;
 
     default { state }
 }
@@ -3773,28 +3854,28 @@ MachineDecl    = "machine" Ident MachineParams? WhereClause? "{"
 MachineParams  = "<" [ TypeParam { "," TypeParam } ]
                      { "," "const" Ident ":" "usize" [ "=" ConstExpr ] } ">" ;
 
-EventsHeader   = "events" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
-EventDecl      = Ident [ "{" FieldList "}" ] ;
-FieldList      = [ Ident ":" Type { "," Ident ":" Type } [ "," ] ] ;
-EmitsHeader    = "emits" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
+EventsHeader   = "events" "{" { EventDecl } "}" ;
+EventDecl      = Ident ( ";" | "{" FieldList "}" ) ;
+FieldList      = { Ident ":" Type ";" } ;
+EmitsHeader    = "emits" "{" { EventDecl } "}" ;
 
 StateDecl      = LeafState | CompositeState ;
-LeafState      = "state" Ident [ "{"
-                   { Ident ":" Type "," }          (* field declarations *)
+LeafState      = "state" Ident ( ";" | "{"
+                   { Ident ":" Type ";" }          (* field declarations *)
                    [ "entry" Block ]                (* entry hook *)
                    [ "exit"  Block ]                (* exit hook  *)
-                 "}" ] "," ;
+                 "}" ) ;
 CompositeState = "state" Ident "{"
-                   { Ident ":" Type "," }          (* shared fields *)
+                   { Ident ":" Type ";" }          (* shared fields *)
                    [ "entry" Block ] [ "exit" Block ]
                    { [ "initial" ] LeafState }     (* exactly one initial *)
                    { TransitionDecl }               (* parent-level rules *)
-                 "}" "," ;
+                 "}" ;
 
 TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
                  StatePattern "=>" StatePattern
                  [ "reenter" ] [ "when" Expr ] TransitionBody ;
-TransitionBody = "," | "{" FieldInitList "}" | Block ;
+TransitionBody = ";" | "{" FieldInitList "}" | Block ;
 StatePattern   = Ident | "_" ;
 DefaultArm     = "default" "{" "state" "}" ;
 
@@ -3862,19 +3943,21 @@ only what the head cannot. There are three forms.
 
 ```hew
 machine Switch {
-    events { Toggle }
+    events {
+        Toggle;
+    }
 
-    state Off,
-    state On,
+    state Off;
+    state On;
 
-    on Toggle: Off => On,
-    on Toggle: On => Off,
+    on Toggle: Off => On;
+    on Toggle: On => Off;
 }
 
 fn main() {
     var switch: Switch = .Off;
     let _ = switch.step(.Toggle);
-    println(switch.state_name());   // On
+    println(switch.state_name()); // On
 }
 ```
 
@@ -3884,12 +3967,12 @@ hold field initializers, nothing else:
 ```hew
 machine Elevator {
     events {
-        GoTo { floor: i64 },
-        Arrive,
+        GoTo { floor: i64; }
+        Arrive;
     }
 
-    state Stopped { floor: i64 },
-    state Moving { from: i64, to: i64 },
+    state Stopped { floor: i64; }
+    state Moving { from: i64; to: i64; }
 
     on GoTo: Stopped => Moving { from: state.floor, to: event.floor }
     on Arrive: Moving => Stopped { floor: state.to }
@@ -3900,10 +3983,10 @@ machine Elevator {
 fn main() {
     var lift: Elevator = .Stopped { floor: 1 };
     let _ = lift.step(.GoTo { floor: 4 });
-    println(lift.state_name());     // Moving
+    println(lift.state_name()); // Moving
     let _ = lift.step(.Arrive);
     match lift {
-        .Stopped { floor } => println(f"stopped at {floor}"),   // stopped at 4
+        .Stopped { floor } => println(f"stopped at {floor}"), // stopped at 4
         _ => println("moving"),
     }
 }
@@ -3914,10 +3997,12 @@ what it changes and `..state` carries the rest:
 
 ```hew
 machine Till {
-    events { Sale }
+    events {
+        Sale;
+    }
 
-    state Empty,
-    state Filled { count: i64, label: string },
+    state Empty;
+    state Filled { count: i64; label: string; }
 
     on Sale: Empty => Filled { count: 1, label: "open" }
     on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
@@ -3930,7 +4015,7 @@ fn main() {
     let _ = till.step(.Sale);
     let _ = till.step(.Sale);
     match till {
-        .Filled { count, label } => println(f"{label}={count}"),   // open=2
+        .Filled { count, label } => println(f"{label}={count}"), // open=2
         .Empty => println("empty"),
     }
 }
@@ -3944,16 +4029,22 @@ declares it:
 
 ```hew
 machine Meter {
-    events { Reading { value: i64 } }
-    emits { Alarm { value: i64 } }
+    events {
+        Reading { value: i64; }
+    }
+    emits {
+        Alarm { value: i64; }
+    }
 
-    state Watching { peak: i64 },
+    state Watching { peak: i64; }
 
     on Reading: Watching => Watching when event.value > state.peak {
         emit Alarm { value: event.value };
         Watching { peak: event.value }
     }
-    on Reading: Watching => Watching { state }
+    on Reading: Watching => Watching {
+        state
+    }
 }
 
 fn main() {
@@ -3961,11 +4052,11 @@ fn main() {
     let report = meter.step(.Reading { value: 7 });
     for output in report.outputs {
         match output {
-            .Alarm { value } => println(f"alarm at {value}"),   // alarm at 7
+            .Alarm { value } => println(f"alarm at {value}"), // alarm at 7
         }
     }
     let quiet = meter.step(.Reading { value: 3 });
-    println(f"outputs={quiet.outputs.len()}");                  // outputs=0
+    println(f"outputs={quiet.outputs.len()}"); // outputs=0
 }
 ```
 
@@ -3994,17 +4085,25 @@ identity rule `on E: _ => _ { state }` keeps the current state as a value.
 
 ```hew
 machine Conn {
-    events { Start, Bump, Kill }
+    events {
+        Start;
+        Bump;
+        Kill;
+    }
 
-    state Idle,
-    state Live { hits: i64 },
-    state Dead,
+    state Idle;
+    state Live { hits: i64; }
+    state Dead;
 
     on Start: Idle => Live { hits: 0 }
     on Bump: Live => _ {
-        if state.hits + 1 >= 3 { Dead } else { Live { hits: state.hits + 1 } }
+        if state.hits + 1 >= 3 {
+            Dead
+        } else {
+            Live { hits: state.hits + 1 }
+        }
     }
-    on Kill: _ => Dead,
+    on Kill: _ => Dead;
 
     default { state }
 }
@@ -4014,9 +4113,9 @@ fn main() {
     let _ = conn.step(.Start);
     let _ = conn.step(.Bump);
     let _ = conn.step(.Bump);
-    println(conn.state_name());   // Live
+    println(conn.state_name()); // Live
     let _ = conn.step(.Bump);
-    println(conn.state_name());   // Dead
+    println(conn.state_name()); // Dead
 }
 ```
 
@@ -4075,10 +4174,13 @@ independently of later state changes or the machine's lifetime.
 
 ```hew
 machine Breaker {
-    events { Trip, Reset }
-    state Closed { failures: i64 },
-    state Open,
-    on Trip: Closed => Open,
+    events {
+        Trip;
+        Reset;
+    }
+    state Closed { failures: i64; }
+    state Open;
+    on Trip: Closed => Open;
     on Reset: Open => Closed { failures: 0 }
     default { state }
 }
@@ -4091,8 +4193,8 @@ fn describe(breaker: Breaker) -> string {
 }
 
 fn main() {
-    println(describe(.Closed { failures: 2 }));   // failures = 2
-    println(describe(.Open));                     // open
+    println(describe(.Closed { failures: 2 })); // failures = 2
+    println(describe(.Open)); // open
 }
 ```
 
@@ -4102,19 +4204,22 @@ Machines are values, so they are commonly held as actor fields:
 
 ```hew
 machine Tcp {
-    events { Connect, Close }
+    events {
+        Connect;
+        Close;
+    }
 
-    state Closed,
-    state Established { port: i64 },
+    state Closed;
+    state Established { port: i64; }
 
     on Connect: Closed => Established { port: 8080 }
-    on Close: Established => Closed,
+    on Close: Established => Closed;
 
     default { state }
 }
 
 actor ConnectionManager {
-    var tcp: Tcp = .Closed,
+    var tcp: Tcp = .Closed;
 
     receive fn handle(event: TcpEvent) {
         let _report = tcp.step(event);
@@ -4127,8 +4232,8 @@ actor ConnectionManager {
 
 fn main() {
     let manager = spawn ConnectionManager();
-    let _ = manager.handle(.Connect);   // established on 8080
-    let _ = manager.handle(.Close);     // closed
+    let _ = manager.handle(.Connect); // established on 8080
+    let _ = manager.handle(.Close); // closed
 }
 ```
 
@@ -4160,15 +4265,15 @@ binding that reuses a const parameter's name is refused rather than shading it.
 ```hew
 machine Retry<const MAX: usize = 3> {
     events {
-        Fail,
+        Fail;
     }
 
-    state Trying { attempts: usize },
-    state Exhausted,
+    state Trying { attempts: usize; }
+    state Exhausted;
 
     on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
-    on Fail: Trying => Exhausted,
-    on Fail: Exhausted => Exhausted reenter,
+    on Fail: Trying => Exhausted;
+    on Fail: Exhausted => Exhausted reenter;
 }
 ```
 
@@ -4193,17 +4298,17 @@ machine, and the composite's own fields are stamped onto each of them.
 ```hew
 machine Session {
     events {
-        Open,
-        Authed,
-        Close,
+        Open;
+        Authed;
+        Close;
     }
 
     emits {
-        Trace { text: string },
+        Trace { text: string; }
     }
 
-    state Closed,
-    state Kicked,
+    state Closed;
+    state Kicked;
 
     state Live {
         entry {
@@ -4212,16 +4317,15 @@ machine Session {
         exit {
             emit Trace { text: "Live.exit" };
         }
+        initial state Authing;
+        state Active;
 
-        initial state Authing,
-        state Active,
+        on Close: _ => Closed;
+    }
 
-        on Close: _ => Closed,
-    },
-
-    on Open: Closed => Live,          // enters Authing
-    on Authed: Authing => Active,     // no composite hook
-    on Close: Active => Kicked,       // beats the parent Close rule
+    on Open: Closed => Live; // enters Authing
+    on Authed: Authing => Active; // no composite hook
+    on Close: Active => Kicked; // beats the parent Close rule
 
     default { state }
 }
@@ -4477,15 +4581,19 @@ the next message turn begins. Results returned to the handler can be used to
 update its state after joining.
 
 ```hew
-fn twice(n: i64) -> i64 { n * 2 }
+fn twice(n: i64) -> i64 {
+    n * 2
+}
 
 actor Counter {
-    var total: i64 = 0,
+    var total: i64 = 0;
     receive fn add_twice(n: i64) {
         let work = fork twice(n);
         total += await work;
     }
-    receive fn get() -> i64 { total }
+    receive fn get() -> i64 {
+        total
+    }
 }
 ```
 
@@ -4817,23 +4925,25 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 
 ```hew
 actor Worker {
-    var id: i64,
-    var count: i64,
+    var id: i64;
+    var count: i64;
     receive fn work() {}
 }
 
 actor Logger {
-    var level: i64,
-    receive fn log(msg: string) { let _ = msg; }
+    var level: i64;
+    receive fn log(msg: string) {
+        let _ = msg;
+    }
 }
 
 supervisor MyPool {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child worker1: Worker(id: 1, count: 0),
-    child worker2: Worker(id: 2, count: 0) restart: transient,
-    child logger: Logger(level: 3) restart: temporary shutdown: 10s,
+    child worker1: Worker(id: 1, count: 0);
+    child worker2: Worker(id: 2, count: 0) restart: transient;
+    child logger: Logger(level: 3) restart: temporary shutdown: 10s;
 }
 ```
 
@@ -4920,30 +5030,34 @@ The shape is:
 
 ```hew
 actor Worker {
-    let id: i64,
-    var count: i64,
-    receive fn tick() { count += 1; }
+    let id: i64;
+    var count: i64;
+    receive fn tick() {
+        count += 1;
+    }
 }
 
 actor CacheActor {
-    let capacity: i64,
-    receive fn size_limit() -> i64 { capacity }
+    let capacity: i64;
+    receive fn size_limit() -> i64 {
+        capacity
+    }
 }
 
 supervisor Inner {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child w1: Worker(id: 1, count: 0),
-    child w2: Worker(id: 2, count: 0),
+    child w1: Worker(id: 1, count: 0);
+    child w2: Worker(id: 2, count: 0);
 }
 
 supervisor Root {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child workers: Inner(),
-    child cache: CacheActor(capacity: 1000),
+    child workers: Inner();
+    child cache: CacheActor(capacity: 1000);
 }
 ```
 
@@ -5154,8 +5268,10 @@ Neither changes a completion call into a submission or makes its result unit.
 
 ```hew
 actor Worker {
-    mailbox 1024,
-    receive fn record(value: i64) { println(value); }
+    mailbox 1024;
+    receive fn record(value: i64) {
+        println(value);
+    }
 }
 ```
 
@@ -5269,13 +5385,15 @@ annotation. `open` reads a file as chunks of bytes. `forward` drains
 import std.stream;
 
 type Order {
-    id: i64,
-    note: string,
+    id: i64;
+    note: string;
 }
 
 fn main() {
-    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) =
-        match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let more = orders.clone();
     orders.send(Order { id: 1, note: "first" }).expect("send");
     more.send(Order { id: 2, note: "second" }).expect("send");
@@ -5429,9 +5547,9 @@ integer keys, and values use the table above.
 ```hew
 #[wire]
 type User {
-    id: u64 @1,
-    name: string @2,
-    email: Option<string> @3 optional,
+    id: u64 @1;
+    name: string @2;
+    email: Option<string> @3 optional;
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
@@ -5459,7 +5577,11 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 
 ```hew
 #[wire]
-enum Status { Pending, Active, Completed, }
+enum Status {
+    Pending;
+    Active;
+    Completed;
+}
 
 // Status.Pending   -> CBOR integer: 0
 // Status.Active    -> CBOR integer: 1
@@ -5473,8 +5595,8 @@ Field presence is independent of `Option<T>`'s null/value representation:
 ```hew
 #[wire]
 type Config {
-    timeout_ms: u64 @1,
-    proxy_url: Option<string> @2 optional,
+    timeout_ms: u64 @1;
+    proxy_url: Option<string> @2 optional;
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:
@@ -5501,8 +5623,8 @@ Lists are encoded as CBOR **arrays**. Each element is encoded according to the e
 ```hew
 #[wire]
 type Data {
-    values: [i64] @1,
-    tags: [string] @2,
+    values: [i64] @1;
+    tags: [string] @2;
 }
 
 // Data { values: [1, 2, 3], tags: ["a", "b"] } encodes as:
@@ -5518,9 +5640,15 @@ Nested `#[wire]` types are encoded recursively as CBOR maps:
 
 ```hew
 #[wire]
-type Inner { x: i32 @1, }
+type Inner {
+    x: i32 @1;
+}
+
 #[wire]
-type Outer { inner: Inner @1, nested_list: [Inner] @2, }
+type Outer {
+    inner: Inner @1;
+    nested_list: [Inner] @2;
+}
 
 // Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
 // CBOR map: {
@@ -5583,9 +5711,9 @@ Per-field override always wins over the type-level convention.
 #[json(camelCase)]
 #[wire]
 type User {
-    user_name: string @1,                       // JSON: "userName"
-    email_address: string @2,                   // JSON: "emailAddress"
-    internal_id: string @3 json("id"),          // JSON: "id"  (override wins)
+    user_name: string @1; // JSON: "userName"
+    email_address: string @2; // JSON: "emailAddress"
+    internal_id: string @3 json("id"); // JSON: "id"  (override wins)
 }
 ```
 
@@ -5604,8 +5732,8 @@ Without the type-level attribute, names are preserved exactly:
 ```hew
 #[wire]
 type User {
-    user_name: string @1,
-    email_address: string @2,
+    user_name: string @1;
+    email_address: string @2;
 }
 ```
 
@@ -5622,7 +5750,11 @@ Wire enums encode as the string name of the variant:
 
 ```hew
 #[wire]
-enum Status { Pending, Active, Completed, }
+enum Status {
+    Pending;
+    Active;
+    Completed;
+}
 ```
 
 ```json
@@ -5646,7 +5778,11 @@ Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or ano
 ```hew
 #[json(camelCase)]
 #[wire]
-enum Status { PendingReview, ActiveNow, Completed, }
+enum Status {
+    PendingReview;
+    ActiveNow;
+    Completed;
+}
 ```
 
 ```json
@@ -5680,15 +5816,15 @@ Explicit format selection:
 ```hew
 #[wire]
 type MyMessage {
-    id: u64 @1,
-    text: string @2,
+    id: u64 @1;
+    text: string @2;
 }
 
 fn main() {
     let msg = MyMessage { id: 1, text: "hello" };
-    let binary = msg.encode();       // CBOR bytes
-    let json_str = msg.to_json();    // JSON string
-    let yaml_str = msg.to_yaml();    // YAML string
+    let binary = msg.encode(); // CBOR bytes
+    let json_str = msg.to_json(); // JSON string
+    let yaml_str = msg.to_yaml(); // YAML string
     println(f"{binary.len()} {json_str} {yaml_str}");
 }
 ```
@@ -5698,8 +5834,8 @@ Decoding:
 ```hew
 #[wire]
 type MyMessage {
-    id: u64 @1,
-    text: string @2,
+    id: u64 @1;
+    text: string @2;
 }
 
 fn main() {
@@ -5707,7 +5843,6 @@ fn main() {
     let binary = msg.encode();
     let json_str = msg.to_json();
     let yaml_str = msg.to_yaml();
-
     let msg1 = MyMessage.decode(binary);
     let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
     let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
@@ -6166,56 +6301,57 @@ Grammar fragments illustrate the source forms beside their semantic rules.
 The parser and downstream grammars must converge on that same surface. They
 do not establish separate language variants when an implementation lags.
 
-### Structural punctuation
+### Member terminators and list separators
 
-Commas separate structural data members: type and wire fields, enum variants
-and variant fields, record values and patterns, actor state and mailbox config,
-machine events, states and bodyless routes, and supervisor config and children.
-A trailing comma is accepted before a closing brace. Adjacent members require
-a comma; a newline is whitespace, not a separator.
+Inside a declaration body, a member with its own `{ }` body ends at `}`.
+Every other member ends with `;`, including the last before the closing brace.
+This covers type and wire fields, enum variants, actor state and mailbox
+config, machine events and bodyless routes, and supervisor settings and
+children. Actor state fields start with `let` or `var`; bare field declarations
+are invalid there. A newline is whitespace and never ends a member.
 
-Semicolons terminate statements and bodyless declarations, including trait
-method signatures and extern function signatures. Function, method, lifecycle
-and executable blocks do not acquire a terminator just because they occur
-beside structural members. An array's `[T; N]` size syntax is not a member list
-and retains its semicolon.
+Commas separate elements of lists and values: arguments, parameters, tuple and
+array elements, record and map literals, record patterns, import selections,
+and attribute arguments. A trailing comma is optional. Match and select arms
+whose bodies are blocks end at their closing brace; expression arms use commas
+between them. Statements and bodyless signatures still end with `;`.
+An array's `[T; N]` size syntax retains its semicolon.
 
 ```hew
-type Point { x: i64, y: i64 }
-enum Reply { Ready, Value { label: string, count: i64 }, Failed(string) }
+type Point { x: i64; y: i64; }
+enum Reply { Ready; Value { label: string; count: i64; } Failed(string); }
 
 actor Counter {
-    var count: i64 = 0,
-    mailbox 64 overflow drop_new,
+    var count: i64 = 0;
+    mailbox 64 overflow drop_new;
     receive fn bump() { count += 1; }
 }
 
 machine Switch {
-    events { Toggle }
-    state Off,
-    state On,
-    on Toggle: Off => On,
-    on Toggle: On => Off,
+    events { Toggle; }
+    state Off;
+    state On;
+    on Toggle: Off => On;
+    on Toggle: On => Off;
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
-    child counter: Counter() restart: permanent,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child counter: Counter() restart: permanent;
 }
 
 trait Reader { fn read(self) -> i64; }
 extern "C" { fn read_value() -> i64; }
 ```
 
-Declaration context distinguishes an actor's `var count: i64 = 0,` state
-member from an executable block's `var count = 0;` local statement. A machine
-state with a body is still a structural member (`state Active { n: i64 },`);
-its `entry` and `exit` blocks contain ordinary statements. A bodyless route
-ends with a comma, whereas `on Toggle: Off => On { ... }` is self-delimiting.
-The `events { ... }`, `emits { ... }` and `default { ... }` blocks do not take
-an extra terminator. Supervisor child clauses such as `restart:` and
-`shutdown:` remain parts of one child member, whose final separator is a comma.
+An actor's `var count: i64 = 0;` state member and an executable block's
+`var count = 0;` local statement share the same terminator. A machine state
+with a body ends at its brace (`state Active { n: i64; }`); its `entry` and
+`exit` blocks contain ordinary statements. A bodyless route ends with `;`.
+The `events { ... }`, `emits { ... }` and `default { ... }` blocks take no
+extra terminator. Supervisor child clauses such as `restart:` and
+`shutdown:` remain parts of one child member, which ends with `;`.
 
 **Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
 

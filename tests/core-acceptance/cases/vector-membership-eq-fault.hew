@@ -1,11 +1,11 @@
 type Key {
-    label: string,
-    divisor: i64,
+    label: string;
+    divisor: i64;
 }
 
 type Holder {
-    values: Vec<Key>,
-    sibling: Vec<string>,
+    values: Vec<Key>;
+    sibling: Vec<string>;
 }
 
 impl Eq for Key {

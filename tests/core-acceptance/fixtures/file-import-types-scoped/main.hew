@@ -3,6 +3,7 @@
 //! through the functions it did import.
 
 import "left.hew";
+
 import "right.hew";
 
 fn main() {

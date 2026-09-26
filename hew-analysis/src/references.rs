@@ -1180,7 +1180,7 @@ mod tests {
 
     #[test]
     fn find_refs_struct_field_from_declaration() {
-        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    let q = Point { x: 3, y: 4 };\n    p.x + q.x\n}\n";
         let pr = parse(source);
         let offset = source
             .find("x: i32")
@@ -1207,7 +1207,7 @@ mod tests {
 
     #[test]
     fn find_refs_struct_field_from_access() {
-        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    let q = Point { x: 3, y: 4 };\n    p.x + q.x\n}\n";
         let pr = parse(source);
         let offset = source.find("p.x").expect("field access should exist") + 2;
         let result =

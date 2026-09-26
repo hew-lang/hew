@@ -13,7 +13,7 @@ trait Sub: Super {
 }
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl Super for W {

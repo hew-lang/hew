@@ -1,6 +1,6 @@
 type Reading {
-    label: string,
-    divisor: i64,
+    label: string;
+    divisor: i64;
 }
 
 impl Display for Reading {
@@ -15,9 +15,9 @@ impl Display for Reading {
 }
 
 type Report {
-    title: string,
-    readings: HashMap<string, Vec<Reading>>,
-    sibling: Vec<string>,
+    title: string;
+    readings: HashMap<string, Vec<Reading>>;
+    sibling: Vec<string>;
 }
 
 fn main() {

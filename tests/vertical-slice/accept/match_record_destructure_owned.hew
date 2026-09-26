@@ -15,7 +15,7 @@
 //! grow RSS linearly with iteration count.
 
 type Wrapper {
-    value: string,
+    value: string;
 }
 
 fn make_wrapper(n: i64) -> Wrapper {

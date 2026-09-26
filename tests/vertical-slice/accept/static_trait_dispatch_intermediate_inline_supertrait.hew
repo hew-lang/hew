@@ -9,7 +9,7 @@ trait Leaf: Mid {
 }
 
 type Widget {
-    label: string,
+    label: string;
 }
 
 impl Base for Widget {

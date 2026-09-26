@@ -1,6 +1,6 @@
 indirect enum Tree {
-    Leaf(i64),
-    Node(Tree, Tree),
+    Leaf(i64);
+    Node(Tree, Tree);
 }
 
 fn sum(t: Tree) -> i64 {
@@ -17,7 +17,7 @@ actor Scorer {
 }
 
 actor Coordinator {
-    let scorer: Scorer,
+    let scorer: Scorer;
 
     receive fn ask_score(tag: i64, tree: Tree) -> i64 {
         match scorer.score(tag, tree) {
@@ -31,7 +31,7 @@ actor Coordinator {
             reply from scorer.score(tag, tree) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -2,
-            },
+            }
             after 5s => -2,
         }
     }
@@ -48,7 +48,7 @@ fn main() -> i64 {
         reply from scorer.score(20, .Node(.Leaf(3), .Leaf(4))) => match reply {
             .Ok(value) => value,
             .Err(_) => -2,
-        },
+        }
         after 5s => -4,
     };
     let (joined_a_result, joined_b_result) = await fork (scorer.score(30, .Node(.Leaf(5), .Leaf(6))), scorer.score(40, .Node(.Leaf(7), .Leaf(8))));

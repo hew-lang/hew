@@ -15,7 +15,7 @@ fn assert_int_result_eq(actual: Result<i64, string>, expected: i64) {
         .Err(message) => {
             panic(message);
             assert(0 == expected);
-        },
+        }
     }
 }
 
@@ -25,7 +25,7 @@ fn assert_int_result_string_eq(actual: Result<i64, string>, expected: string) {
         .Err(message) => {
             panic(message);
             assert("" == expected);
-        },
+        }
     }
 }
 
@@ -34,7 +34,7 @@ fn assert_int_result_err(actual: Result<i64, string>, expected: string) {
         .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
             assert(value == 0);
-        },
+        }
         .Err(message) => assert(message == expected),
     }
 }
@@ -45,7 +45,7 @@ fn assert_float_result_eq(actual: Result<f64, string>, expected: f64) {
         .Err(message) => {
             panic(message);
             assert(expected == 0.0);
-        },
+        }
     }
 }
 
@@ -54,7 +54,7 @@ fn assert_float_result_err(actual: Result<f64, string>, expected: string) {
         .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
             assert(value == 0.0);
-        },
+        }
         .Err(message) => assert(message == expected),
     }
 }

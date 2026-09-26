@@ -2,7 +2,7 @@
 // argument: the map rebuilds through the user Hash and Eq, which treat every
 // key as the same one.
 type Key<T> {
-    id: T,
+    id: T;
 }
 
 impl<T: Serializable> Eq for Key<T> {

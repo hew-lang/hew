@@ -9,12 +9,17 @@
 // and a user-authored clone-total `CursorRef` that shadows the builtin):
 // the loop runs exactly once per element for each (`3`, `4`, `2`, `1`).
 
-type Point { x: i64, y: i64 }
+type Point {
+    x: i64;
+    y: i64;
+}
 
 // The builtin `CursorRef` is an affine resource and must fail generic
 // VecIter clone-out. This source declaration is a distinct clone-total nominal,
 // so short-name fallback must neither steal its builtin identity nor reject it.
-type CursorRef { ref_id: u64 }
+type CursorRef {
+    ref_id: u64;
+}
 
 fn count<T>(items: Vec<T>) -> i64 {
     var c: i64 = 0;
@@ -25,6 +30,7 @@ fn count<T>(items: Vec<T>) -> i64 {
 }
 
 type Pair(i64, string);
+
 type Slot<T>(T);
 
 // Positional records keep their payload shape outside named-field access.
@@ -73,19 +79,16 @@ fn main() {
     a.push(2);
     a.push(3);
     println(count(a));
-
     var b: Vec<string> = Vec.new();
     b.push("w");
     b.push("x");
     b.push("y");
     b.push("z");
     println(count(b));
-
     var c: Vec<Point> = Vec.new();
     c.push(Point { x: 1, y: 1 });
     c.push(Point { x: 2, y: 2 });
     println(count(c));
-
     var monitors: Vec<CursorRef> = Vec.new();
     monitors.push(CursorRef { ref_id: 7 });
     println(count(monitors));

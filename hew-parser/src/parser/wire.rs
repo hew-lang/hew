@@ -243,7 +243,7 @@ impl Parser<'_> {
                         break;
                     }
                 }
-                self.eat(&Token::Semicolon);
+                self.expect_member_terminator("reserved");
                 continue;
             }
 
@@ -282,7 +282,7 @@ impl Parser<'_> {
                 parsed_field.modifiers.since,
             ));
 
-            self.expect_structural_separator();
+            self.expect_member_terminator("field");
         }
         self.expect(&Token::RightBrace)?;
 

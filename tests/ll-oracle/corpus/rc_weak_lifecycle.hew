@@ -13,7 +13,7 @@ fn live() -> i64 {
         .Some(upgraded) => {
             rc.set(9);
             before + upgraded.strong_count() * 10 + alias.get() + uniqueness
-        },
+        }
         .None => 9000,
     }
 }

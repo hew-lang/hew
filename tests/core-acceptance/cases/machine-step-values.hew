@@ -1,18 +1,18 @@
 machine Handshake {
     events {
-        Begin { nonce: i64, label: string },
-        Answer { nonce: i64 },
-        TimedOut,
+        Begin { nonce: i64; label: string; }
+        Answer { nonce: i64; }
+        TimedOut;
     }
     emits {
-        Exchange { nonce: i64, label: string },
-        StartSession { label: string },
-        Refused { reason: string },
+        Exchange { nonce: i64; label: string; }
+        StartSession { label: string; }
+        Refused { reason: string; }
     }
-    state Idle,
-    state Waiting { nonce: i64, label: string },
-    state Established { label: string },
-    state Failed { reason: string },
+    state Idle;
+    state Waiting { nonce: i64; label: string; }
+    state Established { label: string; }
+    state Failed { reason: string; }
 
     on Begin: Idle => Waiting {
         emit Exchange { nonce: event.nonce, label: event.label };

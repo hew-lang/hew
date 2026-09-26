@@ -1,14 +1,14 @@
-enum EnumHeapMoveChoice { Pair(string, i64), }
+enum EnumHeapMoveChoice {
+    Pair(string, i64);
+}
+
 type EnumHeapMoveCarrier {
-    choice: EnumHeapMoveChoice,
-    sibling: string,
+    choice: EnumHeapMoveChoice;
+    sibling: string;
 }
 
 fn project(i: i64) -> string {
-    let r = EnumHeapMoveCarrier {
-        choice: EnumHeapMoveChoice.Pair(("enum-" + "payload"), i),
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = EnumHeapMoveCarrier { choice: EnumHeapMoveChoice.Pair(("enum-" + "payload"), i), sibling: ("sibling-" + "payload") };
     match r.choice {
         EnumHeapMoveChoice.Pair(text, _) => text,
     }
@@ -22,5 +22,9 @@ fn main() -> i64 {
         total = total + moved.len();
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

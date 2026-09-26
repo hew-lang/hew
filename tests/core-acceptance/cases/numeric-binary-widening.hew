@@ -1,4 +1,7 @@
-fn narrow() -> i32 { -2 }
+fn narrow() -> i32 {
+    -2
+}
+
 fn main() {
     let wide: i64 = 3;
     println(narrow() < wide);

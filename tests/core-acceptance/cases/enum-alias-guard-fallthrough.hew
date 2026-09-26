@@ -1,6 +1,6 @@
 enum Box {
-    Full(string),
-    Empty,
+    Full(string);
+    Empty;
 }
 
 fn main() {

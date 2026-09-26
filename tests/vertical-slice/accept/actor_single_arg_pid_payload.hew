@@ -24,7 +24,7 @@ actor Echo {
 }
 
 actor Pinger {
-    var echo: Echo,
+    var echo: Echo;
 
     receive fn ping() {
         // `self` is the Pinger's own `Pinger` — the single message arg.

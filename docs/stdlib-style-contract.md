@@ -10,7 +10,7 @@ Use explicit-width integers such as `i64` and `u32`; choose a width that matches
 the operation and any external ABI. Use `isize` or `usize` where target-sized
 arithmetic is intended. Preserve the declared index and length types of an API.
 
-Declare Hew records with `type`, comma-separated fields and ordinary `impl`
+Declare Hew records with `type`, semicolon-terminated fields and ordinary `impl`
 methods. Use `self`, `var self` or `consume self` according to the operation.
 Module paths are dotted, such as `std.fs` and `std.encoding.json`.
 

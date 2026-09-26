@@ -1,4 +1,8 @@
-type Parsed { pre: string, build: string, n: i64, }
+type Parsed {
+    pre: string;
+    build: string;
+    n: i64;
+}
 
 fn parse_or_bail(bail: bool, seed: string) -> Parsed {
     let pre = seed + "-pre";

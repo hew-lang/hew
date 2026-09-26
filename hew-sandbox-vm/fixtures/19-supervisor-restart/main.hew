@@ -8,9 +8,9 @@ actor Worker {
 }
 
 supervisor WorkerTree {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child worker: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker;
 }
 
 fn main() {

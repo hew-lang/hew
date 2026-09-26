@@ -126,12 +126,15 @@ mod fork_block_body_checks {
         // independent clone, so the capture transfers and the parent use is
         // rejected.
         let output = check_source(
-            r"
-#[resource]
-type Socket { fd: i64 }
+            r"#[resource]
+type Socket {
+    fd: i64;
+}
 
 impl Socket {
-    fn detach(consume self) -> i64 { self.fd }
+    fn detach(consume self) -> i64 {
+        self.fd
+    }
 }
 
 fn main() {
@@ -239,7 +242,7 @@ fn check_source_with_handle(source: &str, handle_type: &str) -> TypeCheckOutput 
 #[test]
 fn checker_handle_rewrite_requires_exact_receiver_owner() {
     fn shared_info(symbol: &str, return_name: &str) -> crate::stdlib_loader::ModuleInfo {
-        let parsed = hew_parser::parse("pub type Handle { value: i32, }\n");
+        let parsed = hew_parser::parse("pub type Handle {\n    value: i32;\n}\n");
         assert!(parsed.errors.is_empty());
         crate::stdlib_loader::ModuleInfo {
             source_path: None,
@@ -317,15 +320,16 @@ fn checker_handle_rewrite_requires_exact_receiver_owner() {
 #[test]
 fn direct_handle_field_return_is_rejected() {
     let output = check_source_with_handle(
-        r"
-        type PatternWrapper { pattern: regex.Pattern }
+        r"type PatternWrapper {
+    pattern: regex.Pattern;
+}
 
-        impl PatternWrapper {
-            fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
-                wrapper.pattern
-            }
-        }
-        ",
+impl PatternWrapper {
+    fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
+        wrapper.pattern
+    }
+}
+",
         "regex.Pattern",
     );
     assert!(
@@ -344,16 +348,17 @@ fn direct_handle_field_return_is_rejected() {
 #[test]
 fn bind_then_return_handle_field_is_rejected() {
     let output = check_source_with_handle(
-        r"
-        type PatternWrapper { pattern: regex.Pattern }
+        r"type PatternWrapper {
+    pattern: regex.Pattern;
+}
 
-        impl PatternWrapper {
-            fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
-                let p = wrapper.pattern;
-                p
-            }
-        }
-        ",
+impl PatternWrapper {
+    fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
+        let p = wrapper.pattern;
+        p
+    }
+}
+",
         "regex.Pattern",
     );
     assert!(
@@ -373,16 +378,17 @@ fn bind_then_return_handle_field_is_rejected() {
 #[test]
 fn bind_then_return_diagnostic_names_binding() {
     let output = check_source_with_handle(
-        r"
-        type PatternWrapper { pattern: regex.Pattern }
+        r"type PatternWrapper {
+    pattern: regex.Pattern;
+}
 
-        impl PatternWrapper {
-            fn extract(wrapper: PatternWrapper) -> regex.Pattern {
-                let p = wrapper.pattern;
-                p
-            }
-        }
-        ",
+impl PatternWrapper {
+    fn extract(wrapper: PatternWrapper) -> regex.Pattern {
+        let p = wrapper.pattern;
+        p
+    }
+}
+",
         "regex.Pattern",
     );
     let msg = output
@@ -401,17 +407,18 @@ fn bind_then_return_diagnostic_names_binding() {
 #[test]
 fn bind_then_return_with_intermediate_use_is_rejected() {
     let output = check_source_with_handle(
-        r"
-        type PatternWrapper { pattern: regex.Pattern }
+        r"type PatternWrapper {
+    pattern: regex.Pattern;
+}
 
-        impl PatternWrapper {
-            fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
-                let p = wrapper.pattern;
-                println(p);
-                p
-            }
-        }
-        ",
+impl PatternWrapper {
+    fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
+        let p = wrapper.pattern;
+        println(p);
+        p
+    }
+}
+",
         "regex.Pattern",
     );
     assert!(
@@ -429,15 +436,17 @@ fn bind_then_return_with_intermediate_use_is_rejected() {
 #[test]
 fn non_handle_field_return_is_allowed() {
     let output = check_source_with_handle(
-        r"
-        type PatternWrapper { pattern: regex.Pattern, label: string }
+        r"type PatternWrapper {
+    pattern: regex.Pattern;
+    label: string;
+}
 
-        impl PatternWrapper {
-            fn get_label(wrapper: PatternWrapper) -> string {
-                wrapper.label
-            }
-        }
-        ",
+impl PatternWrapper {
+    fn get_label(wrapper: PatternWrapper) -> string {
+        wrapper.label
+    }
+}
+",
         "regex.Pattern",
     );
     assert!(
@@ -454,16 +463,17 @@ fn non_handle_field_return_is_allowed() {
 #[test]
 fn non_field_let_binding_return_is_allowed() {
     let output = check_source_with_handle(
-        r"
-        type PatternWrapper { pattern: regex.Pattern }
+        r"type PatternWrapper {
+    pattern: regex.Pattern;
+}
 
-        impl PatternWrapper {
-            fn get_label(wrapper: PatternWrapper) -> string {
-                let s = to_string(42);
-                s
-            }
-        }
-        ",
+impl PatternWrapper {
+    fn get_label(wrapper: PatternWrapper) -> string {
+        let s = to_string(42);
+        s
+    }
+}
+",
         "regex.Pattern",
     );
     assert!(
@@ -806,15 +816,20 @@ mod task_type_surface_rules {
         // Negative control: a `#[resource]` has no independent clone, so the
         // argument transfers to the child and the parent use is refused.
         let output = check_source(
-            r"
-#[resource]
-type Socket { fd: i64 }
-
-impl Socket {
-    fn detach(consume self) -> i64 { self.fd }
+            r"#[resource]
+type Socket {
+    fd: i64;
 }
 
-fn take(s: Socket) -> i64 { s.detach() }
+impl Socket {
+    fn detach(consume self) -> i64 {
+        self.fd
+    }
+}
+
+fn take(s: Socket) -> i64 {
+    s.detach()
+}
 
 fn main() {
     let socket = Socket { fd: 3 };
@@ -1079,17 +1094,17 @@ mod opaque_receive_fn_param_rules {
         // allowed) used directly as a receive-fn parameter must still be
         // rejected: it can never cross the message boundary.
         let output = check_source(
-            r"
-            #[opaque]
-            type Handle {}
+            r"#[opaque]
+type Handle {
+}
 
-            actor Server {
-                var count: i64 = 0,
-                receive fn handle(h: Handle) {
-                    count = count + 1;
-                }
-            }
-            ",
+actor Server {
+    var count: i64 = 0;
+    receive fn handle(h: Handle) {
+        count = count + 1;
+    }
+}
+",
         );
         let errs = opaque_payload_errors(&output);
         assert_eq!(
@@ -1116,14 +1131,13 @@ mod opaque_receive_fn_param_rules {
         // A registered stdlib-style owned handle used directly as a receive-fn
         // parameter is rejected the same way.
         let output = check_source_with_handle(
-            r"
-            actor Server {
-                var count: i64 = 0,
-                receive fn handle(p: regex.Pattern) {
-                    count = count + 1;
-                }
-            }
-            ",
+            r"actor Server {
+    var count: i64 = 0;
+    receive fn handle(p: regex.Pattern) {
+        count = count + 1;
+    }
+}
+",
             "regex.Pattern",
         );
         let errs = opaque_payload_errors(&output);
@@ -1142,16 +1156,17 @@ mod opaque_receive_fn_param_rules {
         // record-wrapped handle payload is rejected too (single clean error at
         // the parameter, not a late codegen clone-gate message).
         let output = check_source_with_handle(
-            r"
-            type Wrapper { conn: regex.Pattern }
+            r"type Wrapper {
+    conn: regex.Pattern;
+}
 
-            actor Server {
-                var count: i64 = 0,
-                receive fn handle(w: Wrapper) {
-                    count = count + 1;
-                }
-            }
-            ",
+actor Server {
+    var count: i64 = 0;
+    receive fn handle(w: Wrapper) {
+        count = count + 1;
+    }
+}
+",
             "regex.Pattern",
         );
         let errs = opaque_payload_errors(&output);
@@ -1188,20 +1203,20 @@ mod opaque_receive_fn_param_rules {
     #[test]
     fn actor_pid_param_does_not_walk_referenced_actor_state() {
         let output = check_source(
-            r"
-            #[opaque]
-            type Handle {}
+            r"#[opaque]
+type Handle {
+}
 
-            actor Worker {
-                let handle: Handle,
-                receive fn run() {}
-            }
+actor Worker {
+    let handle: Handle;
+    receive fn run() {}
+}
 
-            actor Server {
-                receive fn register(worker: Worker) {}
-                receive fn register_remote(worker: RemotePid<Worker>) {}
-            }
-            ",
+actor Server {
+    receive fn register(worker: Worker) {}
+    receive fn register_remote(worker: RemotePid<Worker>) {}
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -1217,14 +1232,13 @@ mod opaque_receive_fn_param_rules {
         // Negative control: ordinary CBOR-serializable payloads must NOT trip
         // the new diagnostic.
         let output = check_source(
-            r"
-            actor Server {
-                var count: i64 = 0,
-                receive fn handle(n: i64, label: string) {
-                    count = count + n;
-                }
-            }
-            ",
+            r"actor Server {
+    var count: i64 = 0;
+    receive fn handle(n: i64, label: string) {
+        count = count + n;
+    }
+}
+",
         );
         assert!(
             opaque_payload_errors(&output).is_empty(),
@@ -1271,36 +1285,64 @@ mod actor_message_argument_transfer {
 
     /// A `#[resource]` with a plain consuming method, plus an actor that takes
     /// one by value in both an ask (`-> i64`) and a tell (unit) handler.
-    const SOCKET_ACTOR: &str = r"
-#[resource]
-type Socket { fd: i64 }
+    const SOCKET_ACTOR: &str = r"#[resource]
+type Socket {
+    fd: i64;
+}
 
 impl Socket {
     fn close(consume self) {}
-    fn detach(consume self) -> i64 { self.fd }
+    fn detach(consume self) -> i64 {
+        self.fd
+    }
 }
 
 #[linear]
-type Ticket { id: i64 }
-
-impl Ticket {
-    fn redeem(consume self) -> i64 { self.id }
+type Ticket {
+    id: i64;
 }
 
-type Holder { socket: Socket }
+impl Ticket {
+    fn redeem(consume self) -> i64 {
+        self.id
+    }
+}
 
-type Inner { socket: Socket }
+type Holder {
+    socket: Socket;
+}
 
-type Outer { inner: Inner, tag: i64 }
+type Inner {
+    socket: Socket;
+}
+
+type Outer {
+    inner: Inner;
+    tag: i64;
+}
 
 actor Sink {
-    receive fn ask_socket(s: Socket) -> i64 { s.detach() }
-    receive fn tell_socket(s: Socket) { let _ = s.detach(); }
-    receive fn ask_ticket(t: Ticket) -> i64 { t.redeem() }
-    receive fn count(n: i64) -> i64 { n }
-    receive fn echo(m: string) -> string { m }
-    receive fn hold(h: Holder) -> i64 { h.socket.detach() }
-    receive fn nest(o: Outer) -> i64 { o.inner.socket.detach() }
+    receive fn ask_socket(s: Socket) -> i64 {
+        s.detach()
+    }
+    receive fn tell_socket(s: Socket) {
+        let _ = s.detach();
+    }
+    receive fn ask_ticket(t: Ticket) -> i64 {
+        t.redeem()
+    }
+    receive fn count(n: i64) -> i64 {
+        n
+    }
+    receive fn echo(m: string) -> string {
+        m
+    }
+    receive fn hold(h: Holder) -> i64 {
+        h.socket.detach()
+    }
+    receive fn nest(o: Outer) -> i64 {
+        o.inner.socket.detach()
+    }
 }
 ";
 
@@ -1388,19 +1430,22 @@ actor Sink {
         // before dispatch picks a winner, so one owned value reaching two arms
         // is a real double transfer, not two alternatives.
         let output = check_with_socket_actor(
-            r"
-            actor Driver {
-                receive fn go() {
-                    let d1 = spawn Sink();
-                    let d2 = spawn Sink();
-                    let s = Socket { fd: 1 };
-                    select {
-                        a from d1.ask_socket(s) => { let _ = a; },
-                        b from d2.ask_socket(s) => { let _ = b; },
-                    }
-                }
+            r"actor Driver {
+    receive fn go() {
+        let d1 = spawn Sink();
+        let d2 = spawn Sink();
+        let s = Socket { fd: 1 };
+        select {
+            a from d1.ask_socket(s) => {
+                let _ = a;
             }
-            ",
+            b from d2.ask_socket(s) => {
+                let _ = b;
+            }
+        }
+    }
+}
+",
         );
         assert!(
             !move_errors(&output).is_empty(),
@@ -1413,20 +1458,23 @@ actor Sink {
     #[test]
     fn distinct_resources_in_two_select_arms_are_accepted() {
         let output = check_with_socket_actor(
-            r"
-            actor Driver {
-                receive fn go() {
-                    let d1 = spawn Sink();
-                    let d2 = spawn Sink();
-                    let s = Socket { fd: 1 };
-                    let t = Socket { fd: 2 };
-                    select {
-                        a from d1.ask_socket(s) => { let _ = a; },
-                        b from d2.ask_socket(t) => { let _ = b; },
-                    }
-                }
+            r"actor Driver {
+    receive fn go() {
+        let d1 = spawn Sink();
+        let d2 = spawn Sink();
+        let s = Socket { fd: 1 };
+        let t = Socket { fd: 2 };
+        select {
+            a from d1.ask_socket(s) => {
+                let _ = a;
             }
-            ",
+            b from d2.ask_socket(t) => {
+                let _ = b;
+            }
+        }
+    }
+}
+",
         );
         assert!(
             move_errors(&output).is_empty(),
@@ -1524,20 +1572,24 @@ actor Sink {
         // Negative control for the recursion: a record whose members carry no
         // ownership must keep copy semantics, or the walk has over-captured.
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64 }
+            r"type Point {
+    x: i64;
+    y: i64;
+}
 
-            actor Store {
-                receive fn put(p: Point) -> i64 { p.x + p.y }
-            }
+actor Store {
+    receive fn put(p: Point) -> i64 {
+        p.x + p.y
+    }
+}
 
-            fn probe() {
-                let s = spawn Store();
-                let p = Point { x: 1, y: 2 };
-                let _ = await s.put(p);
-                let _ = await s.put(p);
-            }
-            ",
+fn probe() {
+    let s = spawn Store();
+    let p = Point { x: 1, y: 2 };
+    let _ = await s.put(p);
+    let _ = await s.put(p);
+}
+",
         );
         assert!(
             move_errors(&output).is_empty(),
@@ -1554,24 +1606,23 @@ actor Sink {
         // precisely because copying the address is unsafe. Sharing one wrapper
         // between two actor states released it twice and crashed (SIGSEGV).
         let output = check_source(
-            r"
-            actor Holder {
-                let printer: actor(i64),
-                receive fn go(n: i64) {
-                    let _ = printer.send(n);
-                }
-            }
+            r"actor Holder {
+    let printer: actor(i64);
+    receive fn go(n: i64) {
+        let _ = printer.send(n);
+    }
+}
 
-            fn probe() {
-                let printer = actor |x: i64| {
-                    println(x);
-                };
-                let a = spawn Holder(printer: printer);
-                let b = spawn Holder(printer: printer);
-                a.go(1);
-                b.go(2);
-            }
-            ",
+fn probe() {
+    let printer = actor |x: i64| {
+        println(x);
+    };
+    let a = spawn Holder(printer: printer);
+    let b = spawn Holder(printer: printer);
+    a.go(1);
+    b.go(2);
+}
+",
         );
         assert!(
             !move_errors(&output).is_empty(),
@@ -1591,30 +1642,29 @@ actor Sink {
         // the qualified spelling — the reason the ownership marking must not
         // be gated on `Copy`.
         let output = check_source(
-            r"
-            import std.link_monitor.{MonitorError, MonitorRef};
+            r"import std.link_monitor.{MonitorError, MonitorRef};
 
-            actor Child {
-                receive fn ping() {}
-            }
+actor Child {
+    receive fn ping() {}
+}
 
-            actor Watcher {
-                let handle: MonitorRef,
-                receive fn go() {}
-            }
+actor Watcher {
+    let handle: MonitorRef;
+    receive fn go() {}
+}
 
-            fn probe() {
-                let child = spawn Child;
-                match monitor(child) {
-                    .Ok(m) => {
-                        let w = spawn Watcher(handle: m);
-                        w.go();
-                        m.close();
-                    },
-                    .Err(_) => {},
-                }
-            }
-            ",
+fn probe() {
+    let child = spawn Child;
+    match monitor(child) {
+        .Ok(m) => {
+            let w = spawn Watcher(handle: m);
+            w.go();
+            m.close();
+        }
+        .Err(_) => {}
+    }
+}
+",
         );
         assert!(
             !move_errors(&output).is_empty(),
@@ -1699,15 +1749,14 @@ mod actor_self_handle {
     fn bare_self_in_an_actor_body_is_the_actor_handle() {
         // One receiver token: inside an actor, `self` names the actor's own
         // handle. Actor state is still reached through a field.
-        let source = r"
-            actor Counter {
-                var count: i64 = 0,
-                receive fn tick() {
-                    let me = self;
-                    count = count + 1;
-                }
-            }
-        ";
+        let source = r"actor Counter {
+    var count: i64 = 0;
+    receive fn tick() {
+        let me = self;
+        count = count + 1;
+    }
+}
+";
         let output = check_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let handle_ty = output

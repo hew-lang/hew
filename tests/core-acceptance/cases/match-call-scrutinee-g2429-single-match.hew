@@ -4,7 +4,13 @@ fn f() -> Result<bytes, string> {
 
 fn main() {
     match f() {
-        .Ok(b) => { if b.len() == 12 { print("m"); } }
-        .Err(e) => { print("e"); }
+        .Ok(b) => {
+            if b.len() == 12 {
+                print("m");
+            }
+        }
+        .Err(e) => {
+            print("e");
+        }
     }
 }

@@ -16,5 +16,9 @@ fn main() -> i64 {
     var values: Vec<i64> = [1, 2];
     values.bump();
     println(values[0]);
-    if values[0] == 99 { 0 } else { 1 }
+    if values[0] == 99 {
+        0
+    } else {
+        1
+    }
 }

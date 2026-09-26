@@ -6,7 +6,7 @@
 // cleanup composes via `defer`, not via a non-unit `close` return.
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
 
 impl Conn {

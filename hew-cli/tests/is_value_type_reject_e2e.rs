@@ -24,44 +24,14 @@ use std::process::{Command, Output};
 use support::{hew_binary, repo_root, strip_ansi, tempdir};
 
 /// Two records compared with `is` — the repro from #3108.
-const RECORD_IS: &str = "type Point {\n\
-     x: i64,\n\
-     y: i64,\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let p = Point { x: 1, y: 2 };\n\
-     let q = Point { x: 1, y: 2 };\n\
-     let same: bool = p is q;\n\
-     println(same);\n\
-     }\n";
+const RECORD_IS: &str = "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    let q = Point { x: 1, y: 2 };\n    let same: bool = p is q;\n    println(same);\n}\n";
 
 /// The same program written with `==`, the operator the diagnostic points at.
-const RECORD_EQ: &str = "type Point {\n\
-     x: i64,\n\
-     y: i64,\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let p = Point { x: 1, y: 2 };\n\
-     let q = Point { x: 1, y: 2 };\n\
-     let same: bool = p == q;\n\
-     println(same);\n\
-     }\n";
+const RECORD_EQ: &str = "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    let q = Point { x: 1, y: 2 };\n    let same: bool = p == q;\n    println(same);\n}\n";
 
 /// Negative control: `is` on an actor handle stays accepted end to end, so
 /// the rejection above is about the value class and not about `is` itself.
-const ACTOR_IS: &str = "actor Worker {\n\
-     let _id: i64,\n\
-     receive fn ping() {}\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let a = spawn Worker(_id: 1);\n\
-     let b = spawn Worker(_id: 2);\n\
-     let same: bool = a is b;\n\
-     println(same);\n\
-     }\n";
+const ACTOR_IS: &str = "actor Worker {\n    let _id: i64;\n    receive fn ping() {}\n}\n\nfn main() {\n    let a = spawn Worker(_id: 1);\n    let b = spawn Worker(_id: 2);\n    let same: bool = a is b;\n    println(same);\n}\n";
 
 /// `Vec` is a copy-on-write value (D340), rejected like an enum or record.
 const VEC_IS: &str = "fn main() {\n\
@@ -99,67 +69,19 @@ const BYTES_IS: &str = "fn main() {\n\
      }\n";
 
 /// A fieldless enum — the #3134 repro.
-const ENUM_IS: &str = "enum Colour {\n\
-     Red,\n\
-     Green,\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let a = Colour.Red;\n\
-     let b = Colour.Green;\n\
-     let same: bool = a is b;\n\
-     println(same);\n\
-     }\n";
+const ENUM_IS: &str = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let same: bool = a is b;\n    println(same);\n}\n";
 
 /// A payload enum: carrying fields does not give a tagged value an address.
-const PAYLOAD_ENUM_IS: &str = "enum Shape {\n\
-     Circle(f64),\n\
-     Square(f64),\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let a = Shape.Circle(1.0);\n\
-     let b = Shape.Square(2.0);\n\
-     let same: bool = a is b;\n\
-     println(same);\n\
-     }\n";
+const PAYLOAD_ENUM_IS: &str = "enum Shape {\n    Circle(f64);\n    Square(f64);\n}\n\nfn main() {\n    let a = Shape.Circle(1.0);\n    let b = Shape.Square(2.0);\n    let same: bool = a is b;\n    println(same);\n}\n";
 
 /// An `indirect` enum: the box is real, but `indirect` is a layout annotation
 /// (HEW-SPEC-2026 §3.7.4) and `is` must not turn it into a semantic one, so
 /// this is rejected like every other enum rather than answering from the
 /// box's address.
-const INDIRECT_ENUM_IS: &str = "indirect enum Expr {\n\
-     Lit(i64),\n\
-     Neg(Expr),\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let a = Expr.Lit(1);\n\
-     let b = Expr.Lit(2);\n\
-     let same: bool = a is b;\n\
-     println(same);\n\
-     }\n";
+const INDIRECT_ENUM_IS: &str = "indirect enum Expr {\n    Lit(i64);\n    Neg(Expr);\n}\n\nfn main() {\n    let a = Expr.Lit(1);\n    let b = Expr.Lit(2);\n    let same: bool = a is b;\n    println(same);\n}\n";
 
 /// A two-state machine value.
-const MACHINE_IS: &str = "machine Tank {\n\
-     events {\n\
-     Fill,\n\
-     }\n\
-     \n\
-     state Filling,\n\
-     state Draining,\n\
-     \n\
-     on Fill: Filling => Draining,\n\
-     \n\
-     default { state }\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let t = Tank.Filling;\n\
-     let u = Tank.Draining;\n\
-     let same: bool = t is u;\n\
-     println(same);\n\
-     }\n";
+const MACHINE_IS: &str = "machine Tank {\n    events {\n        Fill;\n    }\n\n    state Filling;\n    state Draining;\n\n    on Fill: Filling => Draining;\n\n    default { state }\n}\n\nfn main() {\n    let t = Tank.Filling;\n    let u = Tank.Draining;\n    let same: bool = t is u;\n    println(same);\n}\n";
 
 /// An `is` inside a closure with inferred parameters. The closure body is
 /// checked before the call site unifies `a` and `b` with `Colour`, so the
@@ -167,39 +89,16 @@ const MACHINE_IS: &str = "machine Tank {\n\
 /// has to re-run its decision once inference settles. Annotating the
 /// parameters was the difference between a user diagnostic and the span-less
 /// codegen-front message.
-const INFERRED_LAMBDA_ENUM_IS: &str = "enum Colour {\n\
-     Red,\n\
-     Green,\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let same = |a, b| a is b;\n\
-     println(same(Colour.Red, Colour.Green));\n\
-     }\n";
+const INFERRED_LAMBDA_ENUM_IS: &str = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let same = |a, b| a is b;\n    println(same(Colour.Red, Colour.Green));\n}\n";
 
 /// The same inference shape over the #3108 record, so the record answer is
 /// not reachable through a closure either.
-const INFERRED_LAMBDA_RECORD_IS: &str = "type Point {\n\
-     x: i64,\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let same = |a, b| a is b;\n\
-     println(same(Point { x: 1 }, Point { x: 2 }));\n\
-     }\n";
+const INFERRED_LAMBDA_RECORD_IS: &str = "type Point {\n    x: i64;\n}\n\nfn main() {\n    let same = |a, b| a is b;\n    println(same(Point { x: 1 }, Point { x: 2 }));\n}\n";
 
 /// Negative control for the two above: the same inferred closure over actor
 /// handles stays accepted, so the deferred decision rejects the value class
 /// rather than every inferred operand.
-const INFERRED_LAMBDA_ACTOR_IS: &str = "actor Worker {\n\
-     let _id: i64,\n\
-     receive fn ping() {}\n\
-     }\n\
-     \n\
-     fn main() {\n\
-     let same = |a, b| a is b;\n\
-     println(same(spawn Worker(_id: 1), spawn Worker(_id: 2)));\n\
-     }\n";
+const INFERRED_LAMBDA_ACTOR_IS: &str = "actor Worker {\n    let _id: i64;\n    receive fn ping() {}\n}\n\nfn main() {\n    let same = |a, b| a is b;\n    println(same(spawn Worker(_id: 1), spawn Worker(_id: 2)));\n}\n";
 
 /// Every `is` program this file checks, rejected and accepted alike. The
 /// codegen-front backstop must be unreachable from all of them.

@@ -1,5 +1,14 @@
-type Packet { payload: bytes, label: string }
-impl Hash for Packet { fn hash(self) -> i64 { self.payload.len() } }
+type Packet {
+    payload: bytes;
+    label: string;
+}
+
+impl Hash for Packet {
+    fn hash(self) -> i64 {
+        self.payload.len()
+    }
+}
+
 fn main() -> i64 {
     let original = "A\0B".to_bytes();
     let independent = "A\0B".to_bytes();

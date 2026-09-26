@@ -19,14 +19,14 @@ fn same_leaf_wire_types_round_trip_independently() {
         .Ok(back) => {
             assert(back.name == "svc");
             assert(back.port == 8080);
-        },
+        }
         .Err(msg) => panic(f"env_a from_json failed: {msg}"),
     }
     match BEnv.from_json(b.to_json()) {
         .Ok(back) => {
             assert(back.label == "edge");
             assert(back.port == 9);
-        },
+        }
         .Err(msg) => panic(f"env_b from_json failed: {msg}"),
     }
 }

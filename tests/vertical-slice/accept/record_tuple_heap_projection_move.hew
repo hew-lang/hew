@@ -1,13 +1,10 @@
 type TupleHeapMoveCarrier {
-    pair: (string, i64),
-    sibling: string,
+    pair: (string, i64);
+    sibling: string;
 }
 
 fn project(i: i64) -> string {
-    let r = TupleHeapMoveCarrier {
-        pair: (("tuple-" + "payload"), i),
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = TupleHeapMoveCarrier { pair: (("tuple-" + "payload"), i), sibling: ("sibling-" + "payload") };
     r.pair.0
 }
 
@@ -19,5 +16,9 @@ fn main() -> i64 {
         total = total + moved.len();
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

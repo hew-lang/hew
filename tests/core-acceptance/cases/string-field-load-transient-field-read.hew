@@ -1,4 +1,8 @@
-type Box { key: string, n: i64, }
+type Box {
+    key: string;
+    n: i64;
+}
+
 fn main() {
     var total: i64 = 0;
     var i: i64 = 0;

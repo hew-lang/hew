@@ -4,8 +4,8 @@
 // `break` releases the elements the drain never reached, exactly once each.
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -23,7 +23,7 @@ fn make(label: string) -> Vec<Token> {
     tokens.push(Token { label: label, id: 1 });
     tokens.push(Token { label: label, id: 2 });
     tokens.push(Token { label: label, id: 3 });
-    return tokens
+    return tokens;
 }
 
 fn main() -> i64 {
@@ -42,7 +42,7 @@ fn main() -> i64 {
     for token in some.into_iter() {
         token.show();
         if token.id == 2 {
-            break
+            break;
         }
         token.close();
     }

@@ -13,7 +13,7 @@
 //! inference for contained type parameters landed.
 
 type Bag<T> {
-    items: Vec<T>,
+    items: Vec<T>;
 }
 
 #[test]

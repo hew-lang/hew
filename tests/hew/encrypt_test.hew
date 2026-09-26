@@ -56,10 +56,10 @@ fn test_open_tampered_ciphertext_returns_err_and_survives() {
             match err {
                 CryptoError.AuthFailed => {
                     survived = true;
-                },
+                }
                 _ => panic(f"expected AuthFailed, got {err}"),
             }
-        },
+        }
     }
     assert(survived);
     assert(40 + 2 == 42);
@@ -99,7 +99,7 @@ fn test_seal_preserves_a_valid_roundtrip() {
                 .Ok(plaintext) => assert(plaintext == "hew round trip"),
                 .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
             }
-        },
+        }
         .Err(err) => panic(f"try_seal unexpectedly failed: {err}"),
     }
 }
@@ -115,7 +115,7 @@ fn test_seal_of_empty_plaintext_is_not_an_empty_ciphertext() {
                 .Ok(plaintext) => assert(plaintext == ""),
                 .Err(err) => panic(f"try_open of an empty plaintext failed: {err}"),
             }
-        },
+        }
         .Err(err) => panic(f"try_seal of an empty plaintext failed: {err}"),
     }
 }
@@ -124,7 +124,7 @@ fn test_seal_of_empty_plaintext_is_not_an_empty_ciphertext() {
 fn test_seal_status_does_not_leak_into_the_next_seal() {
     match encrypt.seal("short".to_bytes(), "hew") {
         .Ok(_) => panic("expected a short key to be rejected"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
     match encrypt.seal(test_key(), "hew") {
         .Ok(ciphertext) => assert(ciphertext.len() > 0),

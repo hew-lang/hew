@@ -1,6 +1,6 @@
 type Key<T> {
-    value: T,
-    group: i64,
+    value: T;
+    group: i64;
 }
 
 impl<T> Hash for Key<T> {
@@ -16,7 +16,7 @@ impl<T> Eq for Key<T> {
 }
 
 type Outer {
-    key: Key<string>,
+    key: Key<string>;
 }
 
 fn main() -> i64 {

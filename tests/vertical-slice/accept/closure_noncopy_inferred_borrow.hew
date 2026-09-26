@@ -13,6 +13,6 @@
 fn main() {
     let name: string = "hew";
     let greet = || println(name);
-    greet();        // hew
-    println(name);  // hew — outer binding still owns it (borrow, not move)
+    greet(); // hew
+    println(name); // hew — outer binding still owns it (borrow, not move)
 }

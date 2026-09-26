@@ -5,7 +5,9 @@ actor Worker {
     }
 
     #[on(stop)]
-    fn done() { println("hook"); }
+    fn done() {
+        println("hook");
+    }
 }
 
 fn main() {
@@ -19,7 +21,7 @@ fn main() {
         .Err(failure) => match failure.reason {
             .Dead => println("dead"),
             _ => panic("wrong refusal"),
-        },
+        }
         .Ok(_) => panic("accepted after stop"),
     }
     stopped(worker);

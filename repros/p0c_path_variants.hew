@@ -3,7 +3,11 @@ import p0c_helpers;
 fn main() {
     let concrete = Option.Some(21).expect("Some succeeds");
     let option_through_closure = |seed: i64| {
-        let value: Option<i64> = if seed > 0 { Option.Some(seed) } else { Option.None };
+        let value: Option<i64> = if seed > 0 {
+            Option.Some(seed)
+        } else {
+            Option.None
+        };
         value.unwrap_or(22)
     };
     let abstract_opt = option_through_closure(0);

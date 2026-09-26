@@ -3,7 +3,7 @@
 // transfer as a consume through a borrowed parameter.
 #[resource]
 type Token {
-    id: i64,
+    id: i64;
 }
 
 impl Token {

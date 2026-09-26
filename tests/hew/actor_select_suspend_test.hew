@@ -21,7 +21,7 @@
 import std.stream;
 
 actor Fast {
-    let tag: i64,
+    let tag: i64;
     receive fn compute(n: i64) -> i64 {
         return n + tag;
     }
@@ -31,7 +31,7 @@ actor Fast {
 // whole select, so a Slow reply can never win. Dropping the gate's sink at
 // the end of the test lets any queued compute finish.
 actor Slow {
-    var gate: stream.Stream<i64>,
+    var gate: stream.Stream<i64>;
     receive fn compute(n: i64) -> i64 {
         gate.recv();
         return n;
@@ -39,18 +39,18 @@ actor Slow {
 }
 
 actor Coordinator {
-    let fast: Fast,
-    let slow: Slow,
+    let fast: Fast;
+    let slow: Slow;
     receive fn race_two(n: i64) -> i64 {
         let winner = select {
             reply from fast.compute(n) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -7,
-            },
+            }
             reply from slow.compute(99) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -7,
-            },
+            }
         };
         return winner;
     }
@@ -59,7 +59,7 @@ actor Coordinator {
             reply from slow.compute(n) => match reply {
                 .Ok(value) => value,
                 .Err(_) => -7,
-            },
+            }
             after 20ms => -7,
         };
         return result;

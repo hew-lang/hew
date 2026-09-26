@@ -1,4 +1,6 @@
-type CallableBox { f: fn(i64) -> i64 }
+type CallableBox {
+    f: fn(i64) -> i64;
+}
 
 fn store(f: fn(i64) -> i64) -> CallableBox {
     CallableBox { f: f }

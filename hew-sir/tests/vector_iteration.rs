@@ -168,22 +168,26 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
 #[test]
 fn vector_empty_checks_compose_with_iteration_and_mutation() {
     lower_source(
-        r#"
-        type Values { items: Vec<string>, }
-        fn main() -> i64 {
-            var items: Vec<string> = [];
-            if items.is_empty() { items.push("first"); }
-            let source = Values { items: items };
-            var total = 0;
-            if !source.items.is_empty() {
-                for item in source.items {
-                    items.clear();
-                    total = total + item.len();
-                }
-            }
-            total
+        r#"type Values {
+    items: Vec<string>;
+}
+
+fn main() -> i64 {
+    var items: Vec<string> = [];
+    if items.is_empty() {
+        items.push("first");
+    }
+    let source = Values { items: items };
+    var total = 0;
+    if !source.items.is_empty() {
+        for item in source.items {
+            items.clear();
+            total = total + item.len();
         }
-    "#,
+    }
+    total
+}
+"#,
     );
 }
 
@@ -210,15 +214,22 @@ fn iteration_exits_preserve_outer_values_and_clean_up_items() {
 #[test]
 fn nested_fields_update_through_the_same_aggregate_operations() {
     lower_source(
-        r#"
-        type Inner { value: string, other: Vec<string>, }
-        type Outer { inner: Inner, sibling: string, }
-        fn main() -> i64 {
-            var value = Outer { inner: Inner { value: "old", other: ["keep"] }, sibling: "sibling" };
-            value.inner.value = value.sibling;
-            value.inner.value.len()
-        }
-    "#,
+        r#"type Inner {
+    value: string;
+    other: Vec<string>;
+}
+
+type Outer {
+    inner: Inner;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    var value = Outer { inner: Inner { value: "old", other: ["keep"] }, sibling: "sibling" };
+    value.inner.value = value.sibling;
+    value.inner.value.len()
+}
+"#,
     );
 }
 

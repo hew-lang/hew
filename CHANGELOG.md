@@ -35,7 +35,8 @@ for migration guidance and known limitations.
 
 ### Changed (breaking)
 
-- Records use `type`; structural members use commas; enum variants use dotted
+- Records use `type`; bodyless declaration members end with semicolons, while
+  commas separate values and lists; enum variants use dotted
   forms, and matches must be exhaustive.
 - Actor handle types use the actor name instead of `Pid<T>` or `LocalPid<T>`.
   Supervised child handles use `ChildRef<T>`.

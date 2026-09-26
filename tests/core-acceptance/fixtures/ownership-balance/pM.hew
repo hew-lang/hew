@@ -1,23 +1,24 @@
 import std.string;
 
-type Admission { message: string, token: string }
-type Config { token: string, name: string }
+type Admission {
+    message: string;
+    token: string;
+}
+
+type Config {
+    token: string;
+    name: string;
+}
 
 fn assemble(number: i64, early: bool) -> string {
-    let admission = Admission {
-        message: "early-" + string.from_int(number),
-        token: "token-" + string.from_int(number),
-    };
+    let admission = Admission { message: "early-" + string.from_int(number), token: "token-" + string.from_int(number) };
     if early {
         return "stopped";
     }
     if number < 0 {
         return "negative";
     }
-    let config = Config {
-        token: admission.token,
-        name: "active",
-    };
+    let config = Config { token: admission.token, name: "active" };
     config.name + ":" + config.token
 }
 

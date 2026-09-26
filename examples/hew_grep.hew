@@ -21,7 +21,7 @@ fn search_file(filename: string, pattern: string, nl: string) -> i32 {
         .Err(_) => {
             println(f"hew_grep: {filename}: cannot read file");
             return 0;
-        },
+        }
     };
     let total_len = content.len();
     var matches: i32 = 0;
@@ -69,7 +69,7 @@ fn main() -> i32 {
             .Some(value) => value,
             .None => {
                 continue;
-            },
+            }
         };
         let count = search_file(filename, pattern, nl);
         total_matches = total_matches + count;

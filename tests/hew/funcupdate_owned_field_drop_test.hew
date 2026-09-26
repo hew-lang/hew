@@ -21,27 +21,26 @@
 //! out of band by the `funcupdate-owned-field-drop-*` core-acceptance safety
 //! cases under ASan/LSan.
 
-
 import std.string;
 
 type FlatConfig {
-    label: string,
-    count: i64
+    label: string;
+    count: i64;
 }
 
 type VecHolder {
-    items: Vec<i64>,
-    tag: string
+    items: Vec<i64>;
+    tag: string;
 }
 
 type MapHolder {
-    m: HashMap<string, i64>,
-    tag: i64
+    m: HashMap<string, i64>;
+    tag: i64;
 }
 
 type SetHolder {
-    s: HashSet<i64>,
-    tag: i64
+    s: HashSet<i64>;
+    tag: i64;
 }
 
 /// Overriding a `string` field replaces the heap buffer each iteration.
@@ -51,7 +50,7 @@ fn test_funcupdate_string_field_override_drops_old() {
     var c = FlatConfig { label: string.repeat("a", 32), count: 7 };
     var i = 0;
     while i < 20 {
-        c = FlatConfig { label: string.repeat("b", 32), ..c };
+        c = FlatConfig { ..c, label: string.repeat("b", 32) };
         i = i + 1;
     }
     // Non-overridden `count` carries over from base each iteration.
@@ -67,7 +66,7 @@ fn test_funcupdate_bitcopy_field_override_carries_label() {
     var c = FlatConfig { label: string.repeat("x", 16), count: 0 };
     var i = 0;
     while i < 5 {
-        c = FlatConfig { count: c.count + 1, ..c };
+        c = FlatConfig { ..c, count: c.count + 1 };
         i = i + 1;
     }
     assert(c.count == 5);
@@ -84,7 +83,7 @@ fn test_funcupdate_vec_field_override_drops_old() {
     while i < 15 {
         var next: Vec<i64> = Vec.new();
         next.push(i);
-        s = VecHolder { items: next, ..s };
+        s = VecHolder { ..s, items: next };
         i = i + 1;
     }
     // Non-overridden `tag` carries over from base each iteration.
@@ -103,7 +102,7 @@ fn test_funcupdate_multi_field_override_drops_old() {
     while i < 10 {
         var next: Vec<i64> = Vec.new();
         next.push(i);
-        s = VecHolder { items: next, tag: string.repeat("y", 8), ..s };
+        s = VecHolder { ..s, items: next, tag: string.repeat("y", 8) };
         i = i + 1;
     }
     assert(s.items.len() == 1);
@@ -122,7 +121,7 @@ fn test_funcupdate_hashmap_field_override_drops_old() {
     while i < 12 {
         var next: HashMap<string, i64> = HashMap.new();
         next.insert("k", i);
-        h = MapHolder { m: next, ..h };
+        h = MapHolder { ..h, m: next };
         i = i + 1;
     }
     // Non-overridden `tag` carries over from base each iteration.
@@ -142,7 +141,7 @@ fn test_funcupdate_hashset_field_override_drops_old() {
     while i < 12 {
         var next: HashSet<i64> = HashSet<i64>.new();
         next.insert(i);
-        h = SetHolder { s: next, ..h };
+        h = SetHolder { ..h, s: next };
         i = i + 1;
     }
     assert(h.tag == 7);

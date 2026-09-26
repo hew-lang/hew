@@ -8,12 +8,12 @@
 import std.stream;
 
 actor OwnedCoalescer {
-    var processed: i64 = 0,
-    var latest_len: i64 = -1,
-    var ready: stream.Sink<i64>,
-    var gate: stream.Stream<i64>,
+    var processed: i64 = 0;
+    var latest_len: i64 = -1;
+    var ready: stream.Sink<i64>;
+    var gate: stream.Stream<i64>;
 
-    mailbox 1 overflow coalesce(id) fallback drop_new,
+    mailbox 1 overflow coalesce(id) fallback drop_new;
     receive fn update(id: i64, payload: string, hold: bool) {
         if hold {
             ready.send(1).expect("ready");

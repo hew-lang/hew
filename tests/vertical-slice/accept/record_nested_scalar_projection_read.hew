@@ -1,17 +1,15 @@
-type NestedScalarReadInner { text: string, value: i64 }
+type NestedScalarReadInner {
+    text: string;
+    value: i64;
+}
+
 type NestedScalarReadCarrier {
-    inner: NestedScalarReadInner,
-    sibling: string,
+    inner: NestedScalarReadInner;
+    sibling: string;
 }
 
 fn project(i: i64) -> i64 {
-    let r = NestedScalarReadCarrier {
-        inner: NestedScalarReadInner {
-            text: ("inner-" + "payload"),
-            value: i,
-        },
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = NestedScalarReadCarrier { inner: NestedScalarReadInner { text: ("inner-" + "payload"), value: i }, sibling: ("sibling-" + "payload") };
     r.inner.value
 }
 
@@ -22,5 +20,9 @@ fn main() -> i64 {
         total = total + project(i);
         i = i + 1;
     }
-    if total == 2016 { 0 } else { 1 }
+    if total == 2016 {
+        0
+    } else {
+        1
+    }
 }

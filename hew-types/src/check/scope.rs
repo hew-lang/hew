@@ -191,6 +191,14 @@ struct FileScope {
     imports: HashMap<Symbol, Binding>,
 }
 
+/// A generic declaration's lexical region in its defining source file.
+#[derive(Debug, Clone)]
+struct GenericScope {
+    file: ModuleId,
+    span: Span,
+    parameters: HashMap<Ident, TypeParamId>,
+}
+
 /// Every scope of one compilation, and the resolutions made through them.
 #[derive(Debug, Clone, Default)]
 pub struct Scopes {
@@ -199,8 +207,7 @@ pub struct Scopes {
     prelude: HashMap<Symbol, Binding>,
     members: HashMap<(DefId, Symbol), Resolution>,
     variants: HashMap<(NominalId, Symbol), u32>,
-    /// Generic binders in scope, innermost last.
-    type_params: Vec<HashMap<Ident, TypeParamId>>,
+    source_type_params: Vec<GenericScope>,
     contexts: SyntaxContexts,
     resolutions: HashMap<SpanKey, Resolution>,
 }
@@ -304,14 +311,53 @@ impl Scopes {
         self.prelude.insert(name, binding);
     }
 
-    /// Open a generic binder scope.
-    pub fn push_type_params(&mut self, params: impl IntoIterator<Item = (Ident, TypeParamId)>) {
-        self.type_params.push(params.into_iter().collect());
+    /// Publish binders under their declaration and lexical source region.
+    pub fn declare_type_parameters(
+        &mut self,
+        file: ModuleId,
+        declaration: DefId,
+        span: Span,
+        names: impl IntoIterator<Item = Ident>,
+    ) {
+        let parameters: HashMap<_, _> = names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| (name, TypeParamId::new(declaration, index)))
+            .collect();
+        if parameters.is_empty() {
+            return;
+        }
+        self.source_type_params.push(GenericScope {
+            file,
+            span,
+            parameters,
+        });
     }
 
-    /// Close the innermost generic binder scope.
-    pub fn pop_type_params(&mut self) {
-        self.type_params.pop();
+    /// Resolve a parameter inside its defining lexical region.
+    #[must_use]
+    pub fn source_type_parameter(
+        &self,
+        file: ModuleId,
+        span: &Span,
+        name: Ident,
+    ) -> Option<TypeParamId> {
+        if span.is_empty() {
+            return None;
+        }
+        self.source_type_params
+            .iter()
+            .filter(|scope| {
+                scope.file == file && scope.span.start <= span.start && span.end <= scope.span.end
+            })
+            .filter_map(|scope| {
+                Some((
+                    scope.span.end - scope.span.start,
+                    *scope.parameters.get(&name)?,
+                ))
+            })
+            .min_by_key(|(size, _)| *size)
+            .map(|(_, parameter)| parameter)
     }
 
     #[must_use]
@@ -389,7 +435,7 @@ impl Scopes {
                 span: 0..0,
             });
         };
-        let Some(mut current) = self.resolve_head(env, site, namespace, *head) else {
+        let Some(mut current) = self.resolve_head(env, site, namespace, *head, head_span) else {
             return Err(Unresolved {
                 segment: 0,
                 name: *head,
@@ -423,6 +469,7 @@ impl Scopes {
         site: ScopeSite,
         namespace: Namespace,
         head: Ident,
+        span: &Span,
     ) -> Option<Resolution> {
         let module = self.contexts.def_module(head.ctx, site.file);
         let file = self.files.get(&module);
@@ -448,13 +495,8 @@ impl Scopes {
                 }
             }
             Namespace::Type => {
-                if let Some(param) = self
-                    .type_params
-                    .iter()
-                    .rev()
-                    .find_map(|scope| scope.get(&head))
-                {
-                    return Some(Resolution::Param(*param));
+                if let Some(parameter) = self.source_type_parameter(module, span, head) {
+                    return Some(Resolution::Param(parameter));
                 }
             }
         }
@@ -778,7 +820,7 @@ mod tests {
             "g",
         );
         let param = TypeParamId::new(function, 0);
-        scopes.push_type_params([(Ident::new("T"), param)]);
+        scopes.declare_type_parameters(root, function, 20..40, [Ident::new("T")]);
         let env = TypeEnv::new();
         let site = ScopeSite {
             file: root,
@@ -795,7 +837,7 @@ mod tests {
                 nominal
             )))
         );
-        scopes.pop_type_params();
+        let t = [at("T", 45)];
         assert_eq!(
             scopes.resolve(&env, site, Namespace::Type, &t),
             Ok(Resolution::Nominal(NominalId::from_minted_declaration(

@@ -388,7 +388,7 @@ impl Parser<'_> {
         //
         // `arm_body_opens_block` accepts every opener `is_block_expr` accepts —
         // not just `{` — so `if`/`match`/`unsafe`/`scope`/`select`/`fork {`/
-        // `after(..) {` arm bodies keep their optional trailing comma.
+        // `after(..) {` arm bodies end at their closing brace.
         let body_looks_like_block = self.arm_body_opens_block();
         let body = if body_looks_like_block {
             // The arm needs no trailing comma, so the next arm's pattern may
@@ -400,13 +400,7 @@ impl Parser<'_> {
         } else {
             self.parse_expr()?
         };
-        if self.peek() == Some(&Token::RightBrace) {
-            self.eat(&Token::Comma); // trailing comma optional on last arm
-        } else if body_looks_like_block {
-            self.eat(&Token::Comma);
-        } else {
-            self.expect(&Token::Comma)?;
-        }
+        self.expect_arm_separator(body_looks_like_block);
 
         Some(MatchArm {
             pattern,
@@ -430,8 +424,14 @@ impl Parser<'_> {
         }
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
-        let body = self.parse_expr()?;
-        self.eat(&Token::Comma);
+        let body_looks_like_block = self.arm_body_opens_block();
+        let body = if body_looks_like_block {
+            let _guard = self.set_block_arm_body();
+            self.parse_expr()?
+        } else {
+            self.parse_expr()?
+        };
+        self.expect_arm_separator(body_looks_like_block);
 
         Some(SelectArm {
             binding,

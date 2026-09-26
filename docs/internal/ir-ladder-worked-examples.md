@@ -71,12 +71,17 @@ the block in this file.
 ## W1. Borrowed match on a payload inside a live record (#3226)
 
 ```hew
-type Pair { other: Vec<i64>, value: Option<Vec<i64>> }
+type Pair {
+    other: Vec<i64>;
+    value: Option<Vec<i64>>;
+}
 
 fn total(p: Pair) -> i64 {
     var n = 0;
     match p.value {
-        .Some(v) => { n = v.len(); }
+        .Some(v) => {
+            n = v.len();
+        }
         .None => {}
     }
     return n + p.other.len();
@@ -241,7 +246,10 @@ print `3` for `take_first(consume Pair{other: [1], value: .Some([1,2,3])})
 ## W3. Taking one owned field while preserving its siblings
 
 ```hew
-type Job { run: fn[once]() -> string, label: string }
+type Job {
+    run: fn[once]() -> string;
+    label: string;
+}
 
 fn dispatch(consume job: Job) {
     println(job.run());
@@ -361,9 +369,18 @@ print the received string and exit 0 under ASan.
 ## W5. Block tail versus `return` of a projected field (#3274)
 
 ```hew
-type Pair2 { other: Vec<i64>, value: i64 }
-fn take_a(consume p: Pair2) -> Vec<i64> { p.other }
-fn take_b(consume p: Pair2) -> Vec<i64> { return p.other; }
+type Pair2 {
+    other: Vec<i64>;
+    value: i64;
+}
+
+fn take_a(consume p: Pair2) -> Vec<i64> {
+    p.other
+}
+
+fn take_b(consume p: Pair2) -> Vec<i64> {
+    return p.other;
+}
 ```
 
 Both functions produce **the same SIR**. A block tail in return position

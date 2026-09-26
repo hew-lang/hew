@@ -3,7 +3,7 @@ import std.stream;
 /// Fills a capacity-2 pipe with six owned strings, so the producer parks on
 /// capacity while the consumer parks on the empty queue.
 fn feed(consume tx: stream.Sink<string>, count: i64) -> i64 {
-    for index in 0..count {
+    for index in 0 .. count {
         tx.send(f"item-{index}-payload").expect("send");
     }
     tx.close();

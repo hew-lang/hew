@@ -1,8 +1,8 @@
 indirect enum Expr {
-    Num(i64),
-    Name(string),
-    Add(Expr, Expr),
-    Sum(Vec<Expr>),
+    Num(i64);
+    Name(string);
+    Add(Expr, Expr);
+    Sum(Vec<Expr>);
 }
 
 fn leaf(label: string, value: i64) -> Expr {

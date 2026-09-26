@@ -19,7 +19,7 @@ fn imported_wire_struct_json_round_trip() {
         .Ok(back) => {
             assert(back.name == "svc");
             assert(back.port == 8080);
-        },
+        }
         .Err(msg) => panic(f"from_json failed: {msg}"),
     }
 }
@@ -52,7 +52,7 @@ fn imported_wire_enum_json_round_trip() {
                 Signal.Ready => -1,
             };
             assert(tag == 4);
-        },
+        }
         .Err(msg) => panic(f"enum from_json failed: {msg}"),
     }
 }

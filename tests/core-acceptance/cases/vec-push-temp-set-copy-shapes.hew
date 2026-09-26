@@ -1,11 +1,18 @@
-type Holder { items: Vec<string> }
-type Wrap { inner: Holder }
+type Holder {
+    items: Vec<string>;
+}
+
+type Wrap {
+    inner: Holder;
+}
+
 fn mkItems(i: i64) -> Vec<string> {
     var xs: Vec<string> = Vec.new();
     xs.push("deep-elem-a");
     xs.push("deep-elem-b");
     return xs;
 }
+
 fn setBoundLive() -> i64 {
     var v: Vec<Holder> = Vec.new();
     v.push(Holder { items: mkItems(0) });
@@ -13,6 +20,7 @@ fn setBoundLive() -> i64 {
     v.set(0, h);
     return h.items.len();
 }
+
 fn setBoundTwice() -> i64 {
     var v: Vec<Holder> = Vec.new();
     v.push(Holder { items: mkItems(0) });
@@ -21,6 +29,7 @@ fn setBoundTwice() -> i64 {
     v.set(0, h);
     return h.items.len();
 }
+
 fn setClosureCapture() -> i64 {
     var v: Vec<Holder> = Vec.new();
     v.push(Holder { items: mkItems(0) });
@@ -29,6 +38,7 @@ fn setClosureCapture() -> i64 {
     v.set(0, h);
     return read_h();
 }
+
 fn setParamEmbed(p: Holder) -> i64 {
     var v: Vec<Wrap> = Vec.new();
     v.push(Wrap { inner: Holder { items: mkItems(0) } });
@@ -36,6 +46,7 @@ fn setParamEmbed(p: Holder) -> i64 {
     v.set(0, Wrap { inner: p });
     return before;
 }
+
 fn main() {
     print(setBoundLive());
     print(setBoundTwice());

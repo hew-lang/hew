@@ -1,15 +1,19 @@
 actor Worker {
-    mailbox 8 overflow drop_new,
+    mailbox 8 overflow drop_new;
     #[on(start)]
-    fn started() { println("start"); }
-    receive fn boom() { panic("worker failed"); }
+    fn started() {
+        println("start");
+    }
+    receive fn boom() {
+        panic("worker failed");
+    }
     receive fn ping() {}
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
-    child worker: Worker,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child worker: Worker;
 }
 
 fn refused(reason: SendError) {
@@ -24,7 +28,7 @@ fn refused(reason: SendError) {
 // go through a one-way `mailbox(..)` view, which reports the delivery refusal
 // this case is about rather than a handler trap. The crashes themselves go
 // through completion calls: their `Err` proves the crash record is open before
-// `await_restart`, which is what the barrier waits on.
+// `restarted`, which is what the barrier waits on.
 fn main() {
     let app = spawn App;
     let inbox = mailbox(app.worker, on_full: .Reject);
@@ -32,9 +36,13 @@ fn main() {
         .Ok(_) => println("accepted"),
         .Err(failure) => refused(failure.reason),
     }
-    for _ in 0..2 {
+    for _ in 0 .. 2 {
         let _ = app.worker.boom();
-        let _ = await_restart app.worker;
+        let _ = {
+            let __hew_migrated_role_1146 = app.worker;
+            restarted(__hew_migrated_role_1146);
+            __hew_migrated_role_1146
+        };
     }
     match inbox.ping() {
         .Ok(_) => println("accepted"),

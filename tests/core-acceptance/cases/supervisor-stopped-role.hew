@@ -7,11 +7,11 @@ actor Worker {
 }
 
 supervisor Branch {
-    child worker: Worker,
+    child worker: Worker;
 }
 
 supervisor Root {
-    child branch: Branch,
+    child branch: Branch;
 }
 
 fn main() {

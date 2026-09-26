@@ -22,7 +22,7 @@ fn span(start: i64, end: i64) -> string {
 }
 
 type Card {
-    h: i64,
+    h: i64;
 }
 
 impl Card {
@@ -36,7 +36,7 @@ trait Shape {
 }
 
 type Square {
-    side: i64,
+    side: i64;
 }
 
 impl Shape for Square {

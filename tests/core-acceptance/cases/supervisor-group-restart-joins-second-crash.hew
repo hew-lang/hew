@@ -8,8 +8,8 @@
 // handling of a's crash stops x, so a's crash always arrives while c is still
 // stopping.
 actor Gate {
-    var entered: bool,
-    var released: bool,
+    var entered: bool;
+    var released: bool;
     receive fn enter() {
         entered = true;
     }
@@ -35,10 +35,10 @@ fn wait_for(gate: Gate, released: bool) {
         match answer {
             .Ok(value) => {
                 ready = value;
-            },
+            }
             .Err(_) => {
                 ready = true;
-            },
+            }
         }
         if !ready {
             sleep(1ms);
@@ -47,8 +47,8 @@ fn wait_for(gate: Gate, released: bool) {
 }
 
 actor Worker {
-    var name: string,
-    let gate: Gate,
+    var name: string;
+    let gate: Gate;
     receive fn boom() {
         panic("worker failed");
     }
@@ -70,13 +70,13 @@ actor Worker {
 }
 
 supervisor App(gate: Gate) {
-    strategy: rest_for_one,
-    intensity: 10 within 60s,
+    strategy: rest_for_one;
+    intensity: 10 within 60s;
 
-    child a: Worker(name: "a", gate: gate),
-    child x: Worker(name: "x", gate: gate),
-    child b: Worker(name: "b", gate: gate),
-    child c: Worker(name: "c", gate: gate),
+    child a: Worker(name: "a", gate: gate);
+    child x: Worker(name: "x", gate: gate);
+    child b: Worker(name: "b", gate: gate);
+    child c: Worker(name: "c", gate: gate);
 }
 
 fn main() {
@@ -86,9 +86,21 @@ fn main() {
     // b's restart stopped c, and c now holds it open in its stop hook.
     wait_for(gate, false);
     let _ = app.a.boom();
-    let _restarted = await_restart app.a;
+    let _restarted = {
+        let __hew_migrated_role_2259 = app.a;
+        restarted(__hew_migrated_role_2259);
+        __hew_migrated_role_2259
+    };
     println("restarted");
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_2310 = app;
+        stop(__hew_migrated_actor_2310);
+        stopped(__hew_migrated_actor_2310);
+    };
     println("stopped");
-    close(gate);
+    {
+        let __hew_migrated_actor_2360 = gate;
+        stop(__hew_migrated_actor_2360);
+        stopped(__hew_migrated_actor_2360);
+    };
 }

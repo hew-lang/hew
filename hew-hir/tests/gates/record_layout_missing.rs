@@ -23,13 +23,14 @@ use hew_types::Checker;
 /// that it carries the correct record name.
 #[test]
 fn missing_record_init_type_args_emits_record_layout_missing() {
-    let source = r"
-        pub type Box<T> { value: T }
+    let source = r"pub type Box<T> {
+    value: T;
+}
 
-        fn main() {
-            let a: Box<i64> = Box { value: 42 };
-        }
-    ";
+fn main() {
+    let a: Box<i64> = Box { value: 42 };
+}
+";
 
     let parsed = hew_parser::parse(source);
     assert!(

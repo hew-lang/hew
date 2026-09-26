@@ -1,7 +1,7 @@
 // `take()` moves the value out of a `var` Option and leaves `None` behind,
 // on a local and on a record field alike.
 type Slot {
-    job: Option<string>,
+    job: Option<string>;
 }
 
 fn main() {

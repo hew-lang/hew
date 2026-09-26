@@ -153,14 +153,7 @@ fn check_no_typecheck_skips_hir_mir_gates() {
     // checker-level); under `--no-typecheck` that gate is skipped, so the
     // same source passes without reaching any deep-gate diagnostic.
     let (_dir, path) = write_fixture(
-        "type VHolder { items: Vec<i64>, tag: string }\n\
-         fn main() {\n\
-         \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
-         \x20\x20\x20\x20init.push(7);\n\
-         \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
-         \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
-         \x20\x20\x20\x20println(s2.items.len());\n\
-         }\n",
+        "type VHolder {\n    items: Vec<i64>;\n    tag: string;\n}\n\nfn main() {\n    let init: Vec<i64> = Vec.new();\n    init.push(7);\n    let s = VHolder { items: init, tag: \"base\" };\n    let s2 = VHolder { ..s, items: s.items };\n    println(s2.items.len());\n}\n",
     );
 
     let output = run_check(&["check", "--no-typecheck", path.to_str().unwrap()]);
@@ -347,33 +340,7 @@ fn check_rejects_invalid_module_const_arithmetic_without_nyi_or_artifact() {
 #[test]
 fn check_sir_unsupported_renders_with_source_span() {
     let (_dir, path) = write_fixture(
-        "#[resource]\n\
-         type Conn {\n\
-         \x20\x20\x20\x20fd: i64,\n\
-         }\n\
-         \n\
-         impl Conn {\n\
-         \x20\x20\x20\x20fn close(consume self) {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.fd}\");\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         #[resource]\n\
-         type Registry {\n\
-         \x20\x20\x20\x20conns: HashMap<string, Conn>,\n\
-         }\n\
-         \n\
-         impl Registry {\n\
-         \x20\x20\x20\x20fn close(consume self) {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20println(\"close registry\");\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20\x20\x20\x20var registry = Registry { conns: HashMap.new() };\n\
-         \x20\x20\x20\x20let conn = Conn { fd: 1 };\n\
-         \x20\x20\x20\x20registry.conns.insert(\"a\", conn);\n\
-         }\n",
+        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nfn main() {\n    var registry = Registry { conns: HashMap.new() };\n    let conn = Conn { fd: 1 };\n    registry.conns.insert(\"a\", conn);\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);
@@ -425,41 +392,7 @@ fn check_sir_unsupported_renders_with_source_span() {
 #[test]
 fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     let (_dir, path) = write_fixture(
-        "#[resource]\n\
-         type Conn {\n\
-         \x20\x20\x20\x20fd: i64,\n\
-         }\n\
-         \n\
-         impl Conn {\n\
-         \x20\x20\x20\x20fn close(consume self) {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.fd}\");\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         #[resource]\n\
-         type Registry {\n\
-         \x20\x20\x20\x20conns: HashMap<string, Conn>,\n\
-         }\n\
-         \n\
-         impl Registry {\n\
-         \x20\x20\x20\x20fn close(consume self) {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20println(\"close registry\");\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         actor Holder {\n\
-         \x20\x20\x20\x20var registry: Registry,\n\
-         \n\
-         \x20\x20\x20\x20receive fn poke() {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20let conn = Conn { fd: 1 };\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20registry.conns.insert(\"a\", conn);\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20\x20\x20\x20let h = spawn Holder(registry: Registry { conns: HashMap.new() });\n\
-         \x20\x20\x20\x20let _ = h.poke();\n\
-         }\n",
+        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nactor Holder {\n    var registry: Registry;\n\n    receive fn poke() {\n        let conn = Conn { fd: 1 };\n        registry.conns.insert(\"a\", conn);\n    }\n}\n\nfn main() {\n    let h = spawn Holder(registry: Registry { conns: HashMap.new() });\n    let _ = h.poke();\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);
@@ -496,33 +429,7 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
 #[test]
 fn check_sir_unsupported_renders_with_source_span_json() {
     let (_dir, path) = write_fixture(
-        "#[resource]\n\
-         type Conn {\n\
-         \x20\x20\x20\x20fd: i64,\n\
-         }\n\
-         \n\
-         impl Conn {\n\
-         \x20\x20\x20\x20fn close(consume self) {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.fd}\");\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         #[resource]\n\
-         type Registry {\n\
-         \x20\x20\x20\x20conns: HashMap<string, Conn>,\n\
-         }\n\
-         \n\
-         impl Registry {\n\
-         \x20\x20\x20\x20fn close(consume self) {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20println(\"close registry\");\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20\x20\x20\x20var registry = Registry { conns: HashMap.new() };\n\
-         \x20\x20\x20\x20let conn = Conn { fd: 1 };\n\
-         \x20\x20\x20\x20registry.conns.insert(\"a\", conn);\n\
-         }\n",
+        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nfn main() {\n    var registry = Registry { conns: HashMap.new() };\n    let conn = Conn { fd: 1 };\n    registry.conns.insert(\"a\", conn);\n}\n",
     );
 
     let output = Command::new(hew_binary())
@@ -560,26 +467,7 @@ fn check_sir_unsupported_renders_with_source_span_json() {
 #[test]
 fn check_former_sir_unsupported_triggers_now_compile() {
     let (_dir, path) = write_fixture(
-        "fn classify(x: i64) -> string {\n\
-         \x20\x20\x20\x20match x {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x201 | 2 | 3 => \"small\",\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20_ => \"large\",\n\
-         \x20\x20\x20\x20}\n\
-         }\n\
-         \n\
-         fn sum_first_three(values: [i64; 3]) -> i64 {\n\
-         \x20\x20\x20\x20values[0] + values[1] + values[2]\n\
-         }\n\
-         \n\
-         type Point { x: i64, y: i64 }\n\
-         \n\
-         fn main() {\n\
-         \x20\x20\x20\x20println(classify(2));\n\
-         \x20\x20\x20\x20println(sum_first_three([1, 2, 3]));\n\
-         \x20\x20\x20\x20let p = Point { x: 1, y: 2 };\n\
-         \x20\x20\x20\x20let q = Point { x: 3, ..p };\n\
-         \x20\x20\x20\x20println(q.x + q.y);\n\
-         }\n",
+        "fn classify(x: i64) -> string {\n    match x {\n        1 | 2 | 3 => \"small\",\n        _ => \"large\",\n    }\n}\n\nfn sum_first_three(values: [i64; 3]) -> i64 {\n    values[0] + values[1] + values[2]\n}\n\ntype Point {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    println(classify(2));\n    println(sum_first_three([1, 2, 3]));\n    let p = Point { x: 1, y: 2 };\n    let q = Point { ..p, x: 3 };\n    println(q.x + q.y);\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);

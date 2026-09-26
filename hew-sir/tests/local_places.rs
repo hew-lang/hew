@@ -63,7 +63,7 @@ fn strings() -> SemModule {
 
 fn linear() -> SemModule {
     let mut module = fixture(
-        "type Token { payload: string } fn probe(consume owner: Token, flag: bool) {} fn main() {}",
+        "type Token {\n    payload: string;\n}\n\nfn probe(consume owner: Token, flag: bool) {}\n\nfn main() {}\n",
     );
     let ty = probe(&mut module).params[0].ty.clone();
     // Construct the linear contract directly so malformed cleanup paths
@@ -632,17 +632,24 @@ fn checked_module_retains_the_local_plan_and_cleanup_for_each_body() {
 
 fn module_context_fixture() -> SemModule {
     let mut module = fixture(
-        r#"
-        type Row { text: string }
-        enum Choice { First(string), Second }
-        fn probe(consume owner: string, flag: bool) {}
-        fn main() {
-            let rows = [Row { text: "row" }];
-            let choice = Choice.First("choice");
-            let raw = b"raw";
-            println(rows == rows);
-        }
-    "#,
+        r#"type Row {
+    text: string;
+}
+
+enum Choice {
+    First(string);
+    Second;
+}
+
+fn probe(consume owner: string, flag: bool) {}
+
+fn main() {
+    let rows = [Row { text: "row" }];
+    let choice = Choice.First("choice");
+    let raw = b"raw";
+    println(rows == rows);
+}
+"#,
     );
     normalize(&mut module);
     assert!(hew_sir::check_module(&module).is_ok());

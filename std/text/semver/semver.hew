@@ -24,11 +24,11 @@ import std.string;
 
 /// A parsed semantic version.
 type Version {
-    pre_release: string,
-    build_meta: string,
-    maj: string,
-    min: string,
-    pat: string,
+    pre_release: string;
+    build_meta: string;
+    maj: string;
+    min: string;
+    pat: string;
 }
 
 /// Methods available on a parsed `Version`.
@@ -108,7 +108,7 @@ fn component_as_i64(name: string, digits: string) -> i64 {
         .Err(_) => {
             panic(f"semver.Version.{name}: component does not fit in i64");
             0
-        },
+        }
     }
 }
 
@@ -173,8 +173,8 @@ fn dotted_identifiers_are_valid(s: string, numeric_rules: bool) -> bool {
         match rest.find(".") {
             .Some(i) => {
                 end = pos + i;
-            },
-            .None => {},
+            }
+            .None => {}
         }
         let id = s.slice(pos, end);
         if !is_alphanumeric_identifier(id) {
@@ -244,8 +244,8 @@ pub fn parse(s: string) -> Result<Version, string> {
             main_part = s.slice(0, plus_idx);
             build = s.slice(plus_idx + 1, s.len());
             has_build = true;
-        },
-        .None => {},
+        }
+        .None => {}
     }
     if has_build && !dotted_identifiers_are_valid(build, false) {
         return .Err(f"semver: invalid build metadata: {s}");
@@ -260,8 +260,8 @@ pub fn parse(s: string) -> Result<Version, string> {
             version_part = main_part.slice(0, dash_idx);
             pre = main_part.slice(dash_idx + 1, main_part.len());
             has_pre = true;
-        },
-        .None => {},
+        }
+        .None => {}
     }
     if has_pre && !dotted_identifiers_are_valid(pre, true) {
         return .Err(f"semver: invalid pre-release: {s}");
@@ -356,8 +356,8 @@ fn compare_pre(a: string, b: string) -> i64 {
         match a_dot {
             .Some(i) => {
                 a_end = a_pos + i;
-            },
-            .None => {},
+            }
+            .None => {}
         }
         let a_id = a.slice(a_pos, a_end);
         // Extract next identifier from b
@@ -366,8 +366,8 @@ fn compare_pre(a: string, b: string) -> i64 {
         match b_dot {
             .Some(i) => {
                 b_end = b_pos + i;
-            },
-            .None => {},
+            }
+            .None => {}
         }
         let b_id = b.slice(b_pos, b_end);
         let cmp = compare_pre_id(a_id, b_id);
@@ -434,8 +434,8 @@ fn matches_req(v: Version, req: string) -> bool {
         match comma {
             .Some(i) => {
                 end = pos + i;
-            },
-            .None => {},
+            }
+            .None => {}
         }
         let part = req.slice(pos, end).trim();
         if part.len() > 0 {

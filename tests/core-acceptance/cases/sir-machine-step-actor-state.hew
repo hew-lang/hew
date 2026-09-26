@@ -1,14 +1,14 @@
 machine Gate {
     events {
-        Open { label: string },
-        Close,
+        Open { label: string; }
+        Close;
     }
     emits {
-        Opened { label: string },
-        Closed { label: string },
+        Opened { label: string; }
+        Closed { label: string; }
     }
-    state Shut,
-    state Ajar { label: string },
+    state Shut;
+    state Ajar { label: string; }
 
     on Open: Shut => Ajar {
         emit Opened { label: event.label };
@@ -22,14 +22,16 @@ machine Gate {
 }
 
 actor Probe {
-    var gate: Gate,
+    var gate: Gate;
 
     receive fn open(label: string) -> string {
         let report = gate.step(.Open { label: label });
         var seen = "none";
         for output in report.outputs {
             match output {
-                .Opened { label: opened } => { seen = opened; }
+                .Opened { label: opened } => {
+                    seen = opened;
+                }
                 .Closed { label: closed } => panic(closed),
             }
         }
@@ -41,7 +43,9 @@ actor Probe {
         var seen = "none";
         for output in report.outputs {
             match output {
-                .Closed { label: closed } => { seen = closed; }
+                .Closed { label: closed } => {
+                    seen = closed;
+                }
                 .Opened { label: opened } => panic(opened),
             }
         }

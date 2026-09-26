@@ -3,7 +3,9 @@
 // once, when the last strong reference goes.
 
 #[resource]
-type Tag { id: i64 }
+type Tag {
+    id: i64;
+}
 
 impl Tag {
     fn close(consume self) {

@@ -2,7 +2,7 @@
 // (the program traps) rather than returning a partial or garbage Packet.
 #[wire]
 type Packet {
-    id: i64 @1,
+    id: i64 @1;
 }
 
 fn main() -> i64 {

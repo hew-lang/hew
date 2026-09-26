@@ -6,7 +6,9 @@ fn recover(value: Result<string, string>) -> string {
 }
 
 fn early(value: Result<string, string>) -> string {
-    let text = value handle reason { return reason; };
+    let text = value handle reason {
+        return reason;
+    };
     text.to_upper()
 }
 

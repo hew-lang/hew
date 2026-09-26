@@ -360,9 +360,10 @@ pub(crate) fn restore_member_opacity(
             is_opaque,
         } => {
             let args = args.into_iter().map(resolve).collect();
-            let is_opaque = !head
-                .builtin()
-                .is_some_and(crate::BuiltinType::is_substrate_handle)
+            let is_opaque = !matches!(head, crate::TypeHead::Param(_))
+                && !head
+                    .builtin()
+                    .is_some_and(crate::BuiltinType::is_substrate_handle)
                 && (is_opaque || is_opaque_type(head.registry_key()));
             ResolvedTy::Named {
                 head,
@@ -1810,7 +1811,17 @@ impl Checker {
             minted
         };
         match item {
-            Item::Import(_) | Item::Impl(_) => {}
+            Item::Import(_) => {}
+            Item::Impl(_) => {
+                declare(
+                    Kind::ImplBlock,
+                    0,
+                    Symbol::intern("impl"),
+                    None,
+                    fn_path(&format!("<impl@{}:{}>", span.start, span.end)),
+                    false,
+                );
+            }
             Item::Const(decl) => {
                 let name = decl.name.name;
                 declare(Kind::Const, 0, name, None, owner_path(name.as_str()), false);
@@ -2082,10 +2093,149 @@ impl Checker {
                 }
             }
         }
+        self.declare_item_type_parameter_scopes(module, item_ordinal, item, span);
         for id in minted_types {
             if let Some(builtin) = self.declaration_builtin(id) {
                 self.defs.bind_builtin_declaration(builtin, id);
             }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive declaration walk publishes lexical generic scopes under their owners"
+    )]
+    fn declare_item_type_parameter_scopes(
+        &mut self,
+        module: Option<crate::ModuleId>,
+        item_ordinal: usize,
+        item: &Item,
+        span: &Span,
+    ) {
+        use crate::{DeclarationKind as Kind, DeclarationOccurrence};
+        let Some(module) = module else {
+            return;
+        };
+        let mut declare =
+            |kind, ordinal, region: &Span, parameters: &[hew_parser::ast::TypeParam]| {
+                let occurrence = DeclarationOccurrence::new_with_synthetic_ordinal(
+                    Some(module),
+                    span,
+                    item_ordinal,
+                    kind,
+                    ordinal,
+                );
+                if let Some(owner) = self.defs.declaration(occurrence) {
+                    self.scopes.declare_type_parameters(
+                        module,
+                        owner,
+                        region.clone(),
+                        parameters.iter().map(|param| param.name),
+                    );
+                }
+            };
+        match item {
+            Item::Function(function) => declare(
+                Kind::Function,
+                0,
+                span,
+                function.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::Impl(block) => declare(
+                Kind::ImplBlock,
+                0,
+                span,
+                block.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::TypeDecl(decl) => {
+                let kind = match decl.origin {
+                    hew_parser::ast::DeclarationOrigin::MachineState => Kind::Machine,
+                    hew_parser::ast::DeclarationOrigin::MachineEventType { .. } => {
+                        Kind::MachineEventType
+                    }
+                    _ => Kind::Type,
+                };
+                declare(
+                    kind,
+                    0,
+                    span,
+                    decl.type_params.as_deref().unwrap_or_default(),
+                );
+                for (index, method) in decl
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
+                        _ => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        Kind::TypeMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Record(decl) => declare(
+                Kind::Record,
+                0,
+                span,
+                decl.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::TypeAlias(decl) => declare(
+                Kind::TypeAlias,
+                0,
+                span,
+                decl.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::Trait(decl) => {
+                declare(
+                    Kind::Trait,
+                    0,
+                    span,
+                    decl.type_params.as_deref().unwrap_or_default(),
+                );
+                for (index, method) in decl
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TraitItem::Method(method) => Some(method),
+                        hew_parser::ast::TraitItem::AssociatedType { .. } => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        Kind::TraitMethod,
+                        index,
+                        &method.span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Actor(decl) => {
+                declare(Kind::Actor, 0, span, &decl.type_params);
+                for (index, method) in decl.receive_fns.iter().enumerate() {
+                    declare(
+                        Kind::ActorReceive,
+                        index,
+                        &method.span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::ActorMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Supervisor(decl) => declare(Kind::Supervisor, 0, span, &decl.type_params),
+            Item::Machine(decl) => declare(Kind::Machine, 0, span, &decl.type_params),
+            _ => {}
         }
     }
 
@@ -2905,6 +3055,20 @@ impl Checker {
             typed
         };
 
+        let mut resolved_annotation_types = HashMap::new();
+        let saved_module = self.current_module.clone();
+        for (site, (ty, module)) in std::mem::take(&mut self.annotation_types) {
+            self.current_module = module;
+            let ty = self.finalize_type_for_handoff(&ty);
+            if let Ok(ty) = ResolvedTy::from_ty(&ty) {
+                let ty = restore_member_opacity(ty, &|name| {
+                    self.class_declarations().is_opaque_type(name)
+                });
+                resolved_annotation_types.insert(site, ty);
+            }
+        }
+        self.current_module = saved_module;
+
         // #1929 Stage 1: classify every concrete generic type-argument's
         // `Vec<T>` element ABI now, while `self.registry` (the `Copy` marker
         // authority) and the resolved `type_defs` (the `is_indirect` authority)
@@ -2957,6 +3121,7 @@ impl Checker {
         let resolutions = self.scopes.take_resolutions();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
+            resolved_annotation_types,
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,

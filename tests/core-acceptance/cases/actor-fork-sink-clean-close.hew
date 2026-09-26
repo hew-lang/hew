@@ -10,7 +10,7 @@ fn hold(consume out: stream.Sink<i64>) -> i64 {
 }
 
 actor Producer {
-    var out: stream.Sink<i64>,
+    var out: stream.Sink<i64>;
 
     receive fn go() {
         out.send(1).expect("send");
@@ -28,7 +28,11 @@ fn main() -> i64 {
         .Ok(_v) => println("handler returned"),
         .Err(_e) => println("handler crashed"),
     }
-    close(p);
+    {
+        let __hew_migrated_actor_818 = p;
+        stop(__hew_migrated_actor_818);
+        stopped(__hew_migrated_actor_818);
+    };
     match data.recv() {
         .Some(v) => println(f"first={v}"),
         .None => println("clean-none-1"),

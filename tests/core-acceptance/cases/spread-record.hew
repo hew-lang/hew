@@ -7,8 +7,8 @@
 
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -17,9 +17,20 @@ impl Token {
     }
 }
 
-type Point { x: i64, y: i64, }
-type Line { start: Point, end: Point, }
-type Holder { token: Token, tag: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
+type Line {
+    start: Point;
+    end: Point;
+}
+
+type Holder {
+    token: Token;
+    tag: i64;
+}
 
 fn seed() -> Holder {
     Holder { token: Token { label: "s", id: 1 }, tag: 1 }
@@ -27,11 +38,10 @@ fn seed() -> Holder {
 
 fn main() {
     let base = Point { x: 1, y: 1 };
-
     // Base first is the spelling the spec teaches; a base at the end names the
     // same value, because the base fills only what the literal leaves unnamed.
     let moved = Point { ..base, y: 2 };
-    let trailing = Point { y: 2, ..base };
+    let trailing = Point { ..base, y: 2 };
     println(f"moved={moved.x}:{moved.y} trailing={trailing.x}:{trailing.y}");
 
     // The base is copied here, so it stays usable.

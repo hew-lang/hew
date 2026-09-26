@@ -78,14 +78,15 @@ fn typecheck_and_lower_allowing_diags(source: &str) -> hew_hir::LowerOutput {
 /// produce two registry entries with distinct mangled names.
 #[test]
 fn generic_record_at_two_types_produces_two_entries() {
-    let source = r#"
-        pub type Box<T> { value: T }
+    let source = r#"pub type Box<T> {
+    value: T;
+}
 
-        fn main() {
-            let a: Box<i64> = Box { value: 42 };
-            let b: Box<string> = Box { value: "hi" };
-        }
-    "#;
+fn main() {
+    let a: Box<i64> = Box { value: 42 };
+    let b: Box<string> = Box { value: "hi" };
+}
+"#;
 
     let output = typecheck_and_lower(source);
     assert!(
@@ -144,14 +145,15 @@ fn generic_record_at_two_types_produces_two_entries() {
 /// same concrete `T` produces a single registry entry (dedup).
 #[test]
 fn generic_record_at_same_type_dedupes() {
-    let source = r"
-        pub type Box<T> { value: T }
+    let source = r"pub type Box<T> {
+    value: T;
+}
 
-        fn main() {
-            let a: Box<i64> = Box { value: 1 };
-            let b: Box<i64> = Box { value: 2 };
-        }
-    ";
+fn main() {
+    let a: Box<i64> = Box { value: 1 };
+    let b: Box<i64> = Box { value: 2 };
+}
+";
 
     let output = typecheck_and_lower(source);
     assert!(
@@ -178,14 +180,16 @@ fn generic_record_at_same_type_dedupes() {
 /// arg tuples produces two entries with distinct mangled names.
 #[test]
 fn two_param_record_at_two_arg_sets_produces_two_entries() {
-    let source = r#"
-        pub type Pair<A, B> { first: A, second: B }
+    let source = r#"pub type Pair<A, B> {
+    first: A;
+    second: B;
+}
 
-        fn main() {
-            let p: Pair<i64, string> = Pair { first: 1, second: "s" };
-            let q: Pair<i64, bool> = Pair { first: 2, second: true };
-        }
-    "#;
+fn main() {
+    let p: Pair<i64, string> = Pair { first: 1, second: "s" };
+    let q: Pair<i64, bool> = Pair { first: 2, second: true };
+}
+"#;
 
     let output = typecheck_and_lower(source);
     assert!(
@@ -250,15 +254,16 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     // `Vec<i64>` as a function parameter and feed it into the
     // `Box` literal — this exercises the same struct-init lowering
     // path without needing a Vec constructor in scope.
-    let source = r"
-        pub type Box<T> { value: T }
+    let source = r"pub type Box<T> {
+    value: T;
+}
 
-        fn wrap(xs: Vec<i64>) -> Box<Vec<i64>> {
-            return Box { value: xs };
-        }
+fn wrap(xs: Vec<i64>) -> Box<Vec<i64>> {
+    return Box { value: xs };
+}
 
-        fn main() {}
-    ";
+fn main() {}
+";
 
     let output = typecheck_and_lower_allowing_diags(source);
 
@@ -321,13 +326,15 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
 /// independently.
 #[test]
 fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
-    let source = r"
-        pub type Grow<T> { tag: i64, sub: Grow<Grow<i64>> }
+    let source = r"pub type Grow<T> {
+    tag: i64;
+    sub: Grow<Grow<i64>>;
+}
 
-        fn main() {
-            let g: Grow<i64> = Grow { tag: 1, sub: hole };
-        }
-    ";
+fn main() {
+    let g: Grow<i64> = Grow { tag: 1, sub: hole };
+}
+";
 
     let output = typecheck_and_lower_allowing_diags(source);
 
@@ -374,13 +381,15 @@ fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
 /// layouts only.
 #[test]
 fn monomorphic_record_does_not_appear_in_registry() {
-    let source = r"
-        pub type Point { x: i64, y: i64 }
+    let source = r"pub type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn main() {
-            let p: Point = Point { x: 1, y: 2 };
-        }
-    ";
+fn main() {
+    let p: Point = Point { x: 1, y: 2 };
+}
+";
 
     let output = typecheck_and_lower(source);
     assert!(
@@ -403,15 +412,16 @@ fn monomorphic_record_does_not_appear_in_registry() {
 #[test]
 fn record_layout_cap_exceeded_emits_fail_closed_diagnostic() {
     // Cap at 2, force 3 distinct concrete instantiations of `Box`.
-    let source = r#"
-        pub type Box<T> { value: T }
+    let source = r#"pub type Box<T> {
+    value: T;
+}
 
-        fn main() {
-            let a: Box<i64> = Box { value: 1 };
-            let b: Box<string> = Box { value: "x" };
-            let c: Box<bool> = Box { value: true };
-        }
-    "#;
+fn main() {
+    let a: Box<i64> = Box { value: 1 };
+    let b: Box<string> = Box { value: "x" };
+    let c: Box<bool> = Box { value: true };
+}
+"#;
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),

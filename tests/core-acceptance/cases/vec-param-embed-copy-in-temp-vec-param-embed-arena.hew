@@ -1,6 +1,14 @@
-type Key<T> { index: i64 }
-type Slot<T> { value: Option<T> }
-type Arena<T> { slots: Vec<Slot<T>> }
+type Key<T> {
+    index: i64;
+}
+
+type Slot<T> {
+    value: Option<T>;
+}
+
+type Arena<T> {
+    slots: Vec<Slot<T>>;
+}
 
 fn newArena<T>() -> Arena<T> {
     Arena { slots: Vec.new() }
@@ -25,13 +33,19 @@ impl<T> Arena<T> {
 
 fn main() -> i64 {
     var arena = newArena<string>();
-    for i in 0..50 {
+    for i in 0 .. 50 {
         let key = arena.insert(f"item-{i}");
         let got = arena.remove(key);
         let expected = f"item-{i}";
-        if got != expected { return 52; }
-        if got.len() != expected.len() { return 53; }
-        if arena.len() != 0 { return 55; }
+        if got != expected {
+            return 52;
+        }
+        if got.len() != expected.len() {
+            return 53;
+        }
+        if arena.len() != 0 {
+            return 55;
+        }
     }
     0
 }

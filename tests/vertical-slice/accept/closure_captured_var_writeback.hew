@@ -20,5 +20,5 @@ fn main() {
     };
     println(acc(5)); // 5
     println(acc(3)); // 8
-    println(total);  // 0
+    println(total); // 0
 }

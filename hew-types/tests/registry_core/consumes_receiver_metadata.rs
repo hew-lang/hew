@@ -21,22 +21,23 @@ use hew_types::Checker;
 
 use common::parse_program;
 
-const TRAIT_AND_IMPL: &str = r#"
-    trait Sink {
-        fn drain(val: Self);
-    }
+const TRAIT_AND_IMPL: &str = r#"trait Sink {
+    fn drain(val: Self);
+}
 
-    type Bucket { tag: string, }
+type Bucket {
+    tag: string;
+}
 
-    impl Sink for Bucket {
-        fn drain(val: Bucket) {}
-    }
+impl Sink for Bucket {
+    fn drain(val: Bucket) {}
+}
 
-    fn main() {
-        let b = Bucket { tag: "x" };
-        b.drain();
-        b.drain();
-    }
+fn main() {
+    let b = Bucket { tag: "x" };
+    b.drain();
+    b.drain();
+}
 "#;
 
 fn run_checker(source: &str, register_consume: bool) -> hew_types::TypeCheckOutput {
@@ -138,22 +139,23 @@ fn method_sig_round_trips_consumes_receiver_flag() {
 /// span of the consuming call, so codegen can look it up by call site.
 #[test]
 fn flag_span_matches_consuming_call_site() {
-    let source = r#"
-        trait Sink {
-            fn drain(val: Self);
-        }
+    let source = r#"trait Sink {
+    fn drain(val: Self);
+}
 
-        type Bucket { tag: string, }
+type Bucket {
+    tag: string;
+}
 
-        impl Sink for Bucket {
-            fn drain(val: Bucket) {}
-        }
+impl Sink for Bucket {
+    fn drain(val: Bucket) {}
+}
 
-        fn main() {
-            let b = Bucket { tag: "x" };
-            b.drain();
-        }
-    "#;
+fn main() {
+    let b = Bucket { tag: "x" };
+    b.drain();
+}
+"#;
 
     let program = parse_program(source);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));

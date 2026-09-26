@@ -11,9 +11,9 @@
 //! program with the dot.
 
 enum Choice {
-    Present(i64),
-    Absent,
-    Named { count: i64 }
+    Present(i64);
+    Absent;
+    Named { count: i64; }
 }
 
 fn read(value: Choice) -> i64 {

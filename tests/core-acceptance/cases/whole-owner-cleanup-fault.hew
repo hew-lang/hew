@@ -1,6 +1,6 @@
 #[resource]
 type Guard {
-    id: i64,
+    id: i64;
 }
 
 impl Guard {
@@ -11,7 +11,7 @@ impl Guard {
 }
 
 type Meta {
-    tag: string,
+    tag: string;
 }
 
 impl Meta {
@@ -22,9 +22,9 @@ impl Meta {
 
 #[resource]
 type Conn {
-    fd: i64,
-    meta: Meta,
-    items: [i64],
+    fd: i64;
+    meta: Meta;
+    items: [i64];
 }
 
 impl Conn {

@@ -1,6 +1,6 @@
 #[resource]
 type Tok {
-    id: i64,
+    id: i64;
 }
 
 impl Tok {
@@ -10,7 +10,7 @@ impl Tok {
 }
 
 type ResRec {
-    t: Tok,
+    t: Tok;
 }
 
 fn run() -> i64 {

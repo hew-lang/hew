@@ -3,7 +3,7 @@ trait Transform {
 }
 
 type Holder {
-    value: i64,
+    value: i64;
 }
 
 impl Transform for Holder {
@@ -13,9 +13,9 @@ impl Transform for Holder {
 }
 
 type Pair<L, R> {
-    left: L,
-    right: R,
-    value: i64,
+    left: L;
+    right: R;
+    value: i64;
 }
 
 // Impl parameters and method parameters come from separate authorities. The
@@ -56,7 +56,7 @@ trait Recorder {
 }
 
 type Counter {
-    calls: i64,
+    calls: i64;
 }
 
 impl Recorder for Counter {
@@ -71,7 +71,7 @@ impl Recorder for Counter {
 
 #[resource]
 type Mark {
-    label: string,
+    label: string;
 }
 
 impl Mark {

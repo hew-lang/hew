@@ -9,7 +9,7 @@ fn main() {
             println(table.get_by_name(0, "name"));
             println(table.data[0][1]);
             println(table.get(1, 0));
-        },
+        }
         .Err(error) => panic(error),
     }
     match csv.parse("name\n\"unterminated") {

@@ -9,18 +9,18 @@ import std.stream;
 
 machine M {
     events {
-        Tick,
+        Tick;
     }
 
-    state Idle,
-    state Done,
+    state Idle;
+    state Done;
 
     on Tick: Idle => Done {
         match stream.pipe(8) {
             .Ok((_tx, rx)) => {
                 let _received: Option<i64> = rx.recv();
                 Done
-            },
+            }
             .Err(_) => Done,
         }
     }

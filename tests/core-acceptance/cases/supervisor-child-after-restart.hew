@@ -1,13 +1,17 @@
 actor Worker {
-    var value: i64,
-    receive fn get_value() -> i64 { value }
-    receive fn crash_me() { panic("worker failed"); }
+    var value: i64;
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("worker failed");
+    }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w1: Worker(value: 7),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w1: Worker(value: 7);
 }
 
 fn main() {
@@ -20,12 +24,20 @@ fn main() {
     let _ = w.crash_me();
     // Discard the handle the barrier re-fetches: the read below goes through a
     // fresh supervisor slot lookup, which must find the replacement Live.
-    let _ = await_restart app.w1;
+    let _ = {
+        let __hew_migrated_role_631 = app.w1;
+        restarted(__hew_migrated_role_631);
+        __hew_migrated_role_631
+    };
     let fresh = app.w1;
     match fresh.get_value() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_798 = app;
+        stop(__hew_migrated_actor_798);
+        stopped(__hew_migrated_actor_798);
+    };
     println("stopped");
 }

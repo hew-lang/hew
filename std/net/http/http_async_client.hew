@@ -81,9 +81,9 @@ pub const CLIENT_MAX_READS: i64 = 8192;
 /// between the status line and the blank line, CRLF-separated), parsed on demand
 /// by [`AsyncResponse.header`].
 pub type AsyncResponse {
-    code: i64,
-    body_text: string,
-    header_section: string,
+    code: i64;
+    body_text: string;
+    header_section: string;
 }
 
 /// Methods on [`AsyncResponse`] — byte-identical surface to the blocking
@@ -212,9 +212,9 @@ fn split_authority_path(after_scheme: string) -> (string, string) {
                 Option.Some(s)
             } else {
                 Option.Some(q)
-            },
+            }
             .None => .Some(s),
-        },
+        }
         .None => query,
     };
     match end {
@@ -226,7 +226,7 @@ fn split_authority_path(after_scheme: string) -> (string, string) {
             } else {
                 (authority, suffix)
             }
-        },
+        }
         .None => (after_scheme, "/"),
     }
 }
@@ -267,7 +267,7 @@ fn authority_with_port(authority: string, scheme: string) -> string {
                 } else {
                     f"{authority}:{default_port(scheme)}"
                 }
-            },
+            }
             .None => f"{authority}:{default_port(scheme)}",
         }
     } else {
@@ -413,8 +413,8 @@ fn find_response_header(header_section: string, name: string) -> string {
                 if key == target {
                     found = string.trim(line.slice(colon + 1, line.len()));
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
     found

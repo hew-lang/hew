@@ -1,4 +1,7 @@
-type User { name: string, id: i64 }
+type User {
+    name: string;
+    id: i64;
+}
 
 fn main() {
     var users: HashMap<i64, User> = HashMap.new();

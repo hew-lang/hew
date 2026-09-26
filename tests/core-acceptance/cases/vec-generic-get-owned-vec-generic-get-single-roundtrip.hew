@@ -1,4 +1,6 @@
-type Name { label: string, }
+type Name {
+    label: string;
+}
 
 fn first<T: Clone>(v: Vec<T>) -> Option<T> {
     v.get(0)
@@ -9,7 +11,10 @@ fn main() {
     vn.push(Name { label: "owned-ok" });
     let got = match first(vn) {
         .Some(g) => g,
-        .None => { print("none"); return; }
+        .None => {
+            print("none");
+            return;
+        }
     };
     print(got.label);
 }

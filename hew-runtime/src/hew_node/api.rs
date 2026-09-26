@@ -9,9 +9,9 @@ use super::{
 };
 use crate::connection;
 use crate::node_identity::{HewNodeId, HewRemotePid};
-use crate::peer_binding::{
-    ConfigState, PeerCredential, TransportSelection as PeerTransport, PEER_AUTH_STATE,
-};
+#[cfg(any(feature = "quic", feature = "encryption"))]
+use crate::peer_binding::TransportSelection as PeerTransport;
+use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::vec::HewVec;

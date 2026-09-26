@@ -12,8 +12,8 @@ use hew_types::check::dispatch::CallTarget;
 use hew_types::check::SpanKey;
 use hew_types::env::TypeBindingId;
 use hew_types::{
-    CallableCandidate, DeclarationKind, DeclarationOccurrence, DefId, IndirectCallCandidates, Ty,
-    TypeCheckOutput, TypeHead,
+    CallableCandidate, DeclarationKind, DeclarationOccurrence, DefId, IndirectCallCandidates,
+    NominalId, ResolvedTy, Ty, TypeCheckOutput,
 };
 
 use crate::{
@@ -35,42 +35,135 @@ enum CallableNode {
     Closure(SpanKey),
 }
 
-type CandidateEnv = HashMap<TypeBindingId, IndirectCallCandidates>;
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ResolvedField {
+    owner: NominalId,
+    index: u32,
+    values: Vec<ResolvedValue>,
+}
+
+/// A value origin resolved under its calling context. Aggregate fields and
+/// closure captures retain that context when the value crosses another call.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ResolvedValue {
+    Declaration(DefId),
+    Closure {
+        span: SpanKey,
+        captures: Vec<(TypeBindingId, Vec<Self>)>,
+    },
+    Aggregate(Vec<ResolvedField>),
+    Unknown,
+}
+
+type CandidateEnv = HashMap<TypeBindingId, Vec<ResolvedValue>>;
+
+fn selected_call_declaration(output: &TypeCheckOutput, span: &SpanKey) -> Option<DefId> {
+    output
+        .method_call_rewrites
+        .get(span)
+        .and_then(|rewrite| match rewrite {
+            hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
+            | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+            | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+            _ => None,
+        })
+        .or_else(|| output.direct_call_targets.get(span))
+        .and_then(target_declaration)
+}
 
 fn resolve_candidates(
+    output: &TypeCheckOutput,
     candidates: &IndirectCallCandidates,
     env: &CandidateEnv,
-) -> IndirectCallCandidates {
-    fn expand(
-        candidates: &IndirectCallCandidates,
-        env: &CandidateEnv,
-        seen: &mut HashSet<TypeBindingId>,
-        result: &mut IndirectCallCandidates,
-    ) {
-        result.may_be_unknown |= candidates.may_be_unknown;
-        for candidate in &candidates.known {
-            if let CallableCandidate::Formal(formal) = candidate {
-                if !seen.insert(*formal) {
-                    result.may_be_unknown = true;
-                } else if let Some(bound) = env.get(formal) {
-                    expand(bound, env, seen, result);
-                    seen.remove(formal);
-                } else {
-                    result.may_be_unknown = true;
-                    seen.remove(formal);
-                }
-            } else if !result.known.contains(candidate) {
-                result.known.push(candidate.clone());
+    depth: usize,
+) -> Vec<ResolvedValue> {
+    if depth > 128 {
+        return vec![ResolvedValue::Unknown];
+    }
+    let mut values = Vec::new();
+    if candidates.may_be_unknown {
+        values.push(ResolvedValue::Unknown);
+    }
+    for candidate in &candidates.known {
+        for value in resolve_candidate(output, candidate, env, depth + 1) {
+            if !values.contains(&value) {
+                values.push(value);
             }
         }
     }
+    if values.is_empty() {
+        values.push(ResolvedValue::Unknown);
+    }
+    values
+}
 
-    let mut result = IndirectCallCandidates {
-        known: Vec::new(),
-        may_be_unknown: false,
-    };
-    expand(candidates, env, &mut HashSet::new(), &mut result);
-    result
+fn resolve_candidate(
+    output: &TypeCheckOutput,
+    candidate: &CallableCandidate,
+    env: &CandidateEnv,
+    depth: usize,
+) -> Vec<ResolvedValue> {
+    if depth > 128 {
+        return vec![ResolvedValue::Unknown];
+    }
+    match candidate {
+        CallableCandidate::Declaration(id) => vec![ResolvedValue::Declaration(*id)],
+        CallableCandidate::Closure(span) => vec![ResolvedValue::Closure {
+            span: span.clone(),
+            captures: env_key(env),
+        }],
+        CallableCandidate::Formal(formal) => env
+            .get(formal)
+            .cloned()
+            .unwrap_or_else(|| vec![ResolvedValue::Unknown]),
+        CallableCandidate::Aggregate(span) => {
+            let Some(fields) = output.aggregate_field_candidates.get(span) else {
+                return vec![ResolvedValue::Unknown];
+            };
+            let mut fields = fields
+                .iter()
+                .map(|field| ResolvedField {
+                    owner: field.owner,
+                    index: field.index,
+                    values: resolve_candidates(output, &field.candidates, env, depth + 1),
+                })
+                .collect::<Vec<_>>();
+            fields.sort_by_key(|field| (field.owner, field.index));
+            vec![ResolvedValue::Aggregate(fields)]
+        }
+        CallableCandidate::CallResult(span) => {
+            let Some(callee) = selected_call_declaration(output, span) else {
+                return vec![ResolvedValue::Unknown];
+            };
+            let Some(returned) = output.callable_return_candidates.get(&callee) else {
+                return vec![ResolvedValue::Unknown];
+            };
+            let next_env = callee_env(output, span, callee, env, depth + 1);
+            resolve_candidates(output, returned, &next_env, depth + 1)
+        }
+        CallableCandidate::Field {
+            receiver,
+            owner,
+            index,
+        } => {
+            let mut values = Vec::new();
+            for value in resolve_candidate(output, receiver, env, depth + 1) {
+                let projected = match value {
+                    ResolvedValue::Aggregate(fields) => fields
+                        .into_iter()
+                        .find(|field| field.owner == *owner && field.index == *index)
+                        .map_or_else(|| vec![ResolvedValue::Unknown], |field| field.values),
+                    _ => vec![ResolvedValue::Unknown],
+                };
+                for value in projected {
+                    if !values.contains(&value) {
+                        values.push(value);
+                    }
+                }
+            }
+            values
+        }
+    }
 }
 
 fn callee_env(
@@ -78,8 +171,9 @@ fn callee_env(
     span: &SpanKey,
     callee: DefId,
     caller_env: &CandidateEnv,
+    depth: usize,
 ) -> CandidateEnv {
-    output
+    let direct: CandidateEnv = output
         .callable_argument_flows
         .get(span)
         .into_iter()
@@ -88,18 +182,36 @@ fn callee_env(
         .map(|flow| {
             (
                 flow.formal,
-                resolve_candidates(&flow.candidates, caller_env),
+                resolve_candidates(output, &flow.candidates, caller_env, depth + 1),
             )
+        })
+        .collect();
+    if !direct.is_empty() {
+        return direct;
+    }
+    let Some(actuals) = output.generic_trait_call_arguments.get(span) else {
+        return CandidateEnv::new();
+    };
+    let Some(formals) = output.callable_formals.get(&callee) else {
+        return CandidateEnv::new();
+    };
+    actuals
+        .iter()
+        .filter_map(|actual| {
+            Some((
+                *formals.get(actual.slot)?,
+                resolve_candidates(output, &actual.candidates, caller_env, depth + 1),
+            ))
         })
         .collect()
 }
 
-fn env_key(env: &CandidateEnv) -> Vec<(TypeBindingId, Vec<CallableCandidate>, bool)> {
+fn env_key(env: &CandidateEnv) -> Vec<(TypeBindingId, Vec<ResolvedValue>)> {
     let mut key = env
         .iter()
-        .map(|(formal, candidates)| (*formal, candidates.known.clone(), candidates.may_be_unknown))
+        .map(|(formal, values)| (*formal, values.clone()))
         .collect::<Vec<_>>();
-    key.sort_by_key(|(formal, _, _)| formal.0);
+    key.sort_by_key(|(formal, _)| formal.0);
     key
 }
 
@@ -539,14 +651,15 @@ pub(super) fn check(
                         diagnostics.push(diagnostic);
                     }
                 } else if matches!(call.target, CallTarget::IndirectFunctionValue) {
-                    let candidates = output
+                    let values = output
                         .indirect_call_candidates
                         .get(&call.span)
-                        .map(|candidates| resolve_candidates(candidates, &caller_env));
-                    if candidates
-                        .as_ref()
-                        .is_none_or(|candidates| candidates.may_be_unknown)
-                    {
+                        .map(|candidates| resolve_candidates(output, candidates, &caller_env, 0));
+                    if values.as_ref().is_none_or(|values| {
+                        values.iter().any(|value| {
+                            matches!(value, ResolvedValue::Unknown | ResolvedValue::Aggregate(_))
+                        })
+                    }) {
                         if let Some((site, source, filename)) = selected_site.clone() {
                             if reported_indirect.insert((root, filename.clone(), site.span.start)) {
                                 let name = output.defs.name(root);
@@ -574,29 +687,29 @@ pub(super) fn check(
                             }
                         }
                     }
-                    if let Some(candidates) = &candidates {
-                        for candidate in &candidates.known {
-                            let next = match candidate {
-                                CallableCandidate::Declaration(id) => {
-                                    CallableNode::Declaration(*id)
+                    if let Some(values) = &values {
+                        for value in values {
+                            match value {
+                                ResolvedValue::Declaration(id) => {
+                                    let next_env =
+                                        callee_env(output, &call.span, *id, &caller_env, 0);
+                                    queue.push_back((
+                                        CallableNode::Declaration(*id),
+                                        selected_site.clone(),
+                                        Vec::new(),
+                                        next_env,
+                                    ));
                                 }
-                                CallableCandidate::Closure(span) => {
-                                    CallableNode::Closure(span.clone())
+                                ResolvedValue::Closure { span, captures } => {
+                                    queue.push_back((
+                                        CallableNode::Closure(span.clone()),
+                                        selected_site.clone(),
+                                        Vec::new(),
+                                        captures.iter().cloned().collect(),
+                                    ));
                                 }
-                                CallableCandidate::Formal(_) => {
-                                    unreachable!("formal candidates are resolved before traversal")
-                                }
-                            };
-                            let next_env = match candidate {
-                                CallableCandidate::Declaration(id) => {
-                                    callee_env(output, &call.span, *id, &caller_env)
-                                }
-                                CallableCandidate::Closure(_) => caller_env.clone(),
-                                CallableCandidate::Formal(_) => {
-                                    unreachable!("formal candidates are resolved before traversal")
-                                }
-                            };
-                            queue.push_back((next, selected_site.clone(), Vec::new(), next_env));
+                                ResolvedValue::Aggregate(_) | ResolvedValue::Unknown => {}
+                            }
                         }
                     }
                 } else if let Some(next) = target_declaration(&call.target) {
@@ -605,7 +718,7 @@ pub(super) fn check(
                         .get(&call.span)
                         .cloned()
                         .unwrap_or_default();
-                    let next_env = callee_env(output, &call.span, next, &caller_env);
+                    let next_env = callee_env(output, &call.span, next, &caller_env, 0);
                     queue.push_back((
                         CallableNode::Declaration(next),
                         selected_site,
@@ -640,16 +753,25 @@ pub(super) fn check(
                                 .position(|name| name == param)
                         })
                         .and_then(|index| type_args.get(index))
-                        .and_then(|ty| match ty {
-                            Ty::Named {
-                                head: TypeHead::Nominal(nominal) | TypeHead::Actor(nominal),
-                                ..
-                            } => Some(nominal.id),
-                            _ => None,
+                        .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+                        .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                        .map(|instance| {
+                            (
+                                instance.nominal,
+                                instance.args.iter().map(ResolvedTy::to_ty).collect(),
+                            )
                         });
-                    let nominals: Vec<_> = concrete
-                        .map_or_else(|| output.type_defs.keys().copied().collect(), |id| vec![id]);
-                    for nominal in nominals {
+                    let nominals: Vec<_> = concrete.map_or_else(
+                        || {
+                            output
+                                .type_defs
+                                .keys()
+                                .map(|id| (*id, Vec::new()))
+                                .collect()
+                        },
+                        |concrete| vec![concrete],
+                    );
+                    for (nominal, next_args) in nominals {
                         for (name, owner, candidate) in output.dispatch.methods_of(nominal) {
                             if name == method_name
                                 && (owner
@@ -660,11 +782,11 @@ pub(super) fn check(
                                         ))
                             {
                                 let next_env =
-                                    callee_env(output, &call.span, candidate, &caller_env);
+                                    callee_env(output, &call.span, candidate, &caller_env, 0);
                                 queue.push_back((
                                     CallableNode::Declaration(candidate),
                                     selected_site.clone(),
-                                    Vec::new(),
+                                    next_args.clone(),
                                     next_env,
                                 ));
                             }
@@ -681,7 +803,7 @@ pub(super) fn check(
                         .filter(|entry| entry.method == *method)
                         .filter_map(|entry| entry.impl_method);
                     for candidate in candidates {
-                        let next_env = callee_env(output, &call.span, candidate, &caller_env);
+                        let next_env = callee_env(output, &call.span, candidate, &caller_env, 0);
                         queue.push_back((
                             CallableNode::Declaration(candidate),
                             selected_site.clone(),
@@ -943,6 +1065,32 @@ mod tests {
     #[test]
     fn imported_methods_use_their_checked_rewrite() {
         let source = "import std.bench;\nfn main() { var s = bench.suite(\"suite\"); s.add(\"noop\", 1, || {}); s.report(); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn imported_iterator_combinators_preserve_callback_origin() {
+        let source = "import std.iter;\nfn main() { var v: Vec<string> = Vec.new(); v.push(\"a\"); let result = iter.collect(iter.map(v.into_iter(), |s: string| s + \"!\")); assert(result.len() == 1); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn collected_iterator_reaches_its_callback_host_operation() {
+        let source = "import std.io;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let result = iter.collect(iter.map(v.into_iter(), |n: i64| { let line = io.read_line(); n })); assert(result.len() == 1); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+        assert!(
+            !failure.contains("E_DETERMINISTIC_INDIRECT_CALL"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn uncollected_iterator_does_not_invoke_its_callback() {
+        let source = "import std.io;\nimport std.iter;\nfn main() { var v: Vec<i64> = Vec.new(); v.push(1); let unused = iter.map(v.into_iter(), |n: i64| { let line = io.read_line(); n }); println(\"safe\"); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 

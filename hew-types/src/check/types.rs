@@ -999,9 +999,12 @@ pub struct ClosureCaptureFact {
 /// Escape classification for one closure literal.
 ///
 /// Conservative by default: a closure is `Escapes` unless the classifier
-/// can positively prove `Local` or `Forked`.
+/// can positively prove `NeverInvoked`, `Local` or `Forked`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureEscapeKind {
+    /// The introducing let binding has no use in its remaining lexical scope,
+    /// including nested closure bodies. Its body cannot be invoked.
+    NeverInvoked,
     /// All use-sites are direct calls within the closure's introducing
     /// lexical scope; the environment never outlives that scope.
     Local,
@@ -1017,12 +1020,15 @@ pub enum ClosureEscapeKind {
 
 /// Which inference rule fired to produce a [`ClosureEscapeKind`].
 ///
-/// `Local` and `Forked` carry the positive rule that classified them;
+/// `NeverInvoked`, `Local` and `Forked` carry their positive rule;
 /// `Escapes` carries the conservative-default rule that rejected
 /// `Local`/`Forked`. The rule remains part of the checker-owned fact so
 /// downstream consumers can inspect why the closure may escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureEscapeRule {
+    /// The bound closure name is absent from every later expression in its
+    /// introducing block and nested closure bodies.
+    NoUsesInScope,
     /// Every use of the closure-bound name is a direct call `f(args)`.
     DirectCallOnly,
     /// Closure literal sits directly inside a `fork { ... }` body, OR

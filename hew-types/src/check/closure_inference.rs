@@ -48,14 +48,12 @@ pub(super) fn classify_closure_escape_in_block(
     }
 
     if !acc.any_use {
-        // No use-sites — conservative default. The closure
-        // never runs and never escapes, but the classifier cannot
-        // *positively* prove `Local` (the introduction may be a typo
-        // or dead branch). Conservative call: `Escapes` /
-        // `NoStaticBinding`.
+        // The bound name has no use in the rest of its lexical scope,
+        // including nested closure bodies. This is a positive fact about
+        // invocation, separate from an unknown anonymous closure escape.
         return ClosureEscapeFact {
-            kind: ClosureEscapeKind::Escapes,
-            rule: ClosureEscapeRule::NoStaticBinding,
+            kind: ClosureEscapeKind::NeverInvoked,
+            rule: ClosureEscapeRule::NoUsesInScope,
         };
     }
     if acc.forked_use {
@@ -353,10 +351,18 @@ fn esc_visit_expr(
                 esc_visit_expr(&arm.body.0, name, in_fork, acc, is_tail);
             }
         }
-        // Nested closures: don't descend syntactically. The
-        // transitive-escape rule is honored at dispatcher level by
-        // observing the inner closure's own classification.
-        Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => {}
+        // A nested closure can retain this binding and later invoke it. Its
+        // body must participate in the no-use proof even when the nested
+        // closure is itself never called; a false positive only refuses the
+        // stronger NeverInvoked fact.
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            let mut nested = EscapeAccumulator::default();
+            esc_visit_expr(&body.0, name, in_fork, &mut nested, false);
+            if nested.any_use {
+                acc.any_use = true;
+                acc.record_nonlocal(ClosureEscapeRule::StoredOrSent);
+            }
+        }
         Expr::Spawn { target, args, .. } => {
             esc_visit_expr(&target.0, name, in_fork, acc, false);
             for (_, (e, _)) in args {

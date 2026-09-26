@@ -3,8 +3,6 @@
 
 import "file_imported_machine_support/machine.hew";
 
-import std.testing;
-
 fn carry_file_lifecycle(value: FileLifecycle) -> FileLifecycle {
     value
 }
@@ -16,5 +14,5 @@ fn file_imported_machine_crosses_the_importer_boundary() {
         FileLifecycle.Running => 1,
         FileLifecycle.Completed => 0,
     };
-    testing.assert_eq(running, 1);
+    assert(running == 1);
 }

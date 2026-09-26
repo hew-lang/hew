@@ -1,0 +1,14 @@
+[[case]]
+id = "driver-deadlock"
+intent = "A deterministic run whose only participant waits on work nothing can do fails closed as a deadlock."
+source = "cases/driver-deadlock.hew"
+suites = ["acceptance"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = "schedule=fifo"
+
+[case.expected]
+stdout = ""
+stderr = "hew: deadlock: nothing is runnable and no timer is pending after 0 steps at virtual time 0 ms (schedule fifo, seed 0x0)\n"
+exit = 3

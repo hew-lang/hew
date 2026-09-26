@@ -8,19 +8,19 @@
 // isize_shift_boundary.hew for the same native-width scoping note).
 fn main() -> i64 {
     let a: i8 = -128;
-    assert_eq(a as i64, -128);
+    assert((a as i64) == -128);
 
     let b: i16 = -32768;
-    assert_eq(b as i64, -32768);
+    assert((b as i64) == -32768);
 
     let c: i32 = -2147483648;
-    assert_eq(c as i64, -2147483648);
+    assert((c as i64) == -2147483648);
 
     let d: i64 = -9223372036854775808;
-    assert_eq(d, -9223372036854775808);
+    assert(d == -9223372036854775808);
 
     let e: isize = -9223372036854775808;
-    assert_eq(e as i64, -9223372036854775808);
+    assert((e as i64) == -9223372036854775808);
 
     0
 }

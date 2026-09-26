@@ -5,13 +5,11 @@
 
 import std.fs;
 
-import std.testing;
-
 #[test]
 fn test_cross_module_enum_variant_construction() {
     let err = fs.IoError.TimedOut(42);
     match err {
-        IoError.TimedOut(code) => testing.assert_eq(code, 42),
+        IoError.TimedOut(code) => assert(code == 42),
         _ => panic("expected IoError::TimedOut"),
     }
 }
@@ -20,7 +18,7 @@ fn test_cross_module_enum_variant_construction() {
 fn test_cross_module_enum_variant_zero_code() {
     let err = fs.IoError.NotFound(0);
     match err {
-        IoError.NotFound(code) => testing.assert_eq(code, 0),
+        IoError.NotFound(code) => assert(code == 0),
         _ => panic("expected IoError::NotFound"),
     }
 }

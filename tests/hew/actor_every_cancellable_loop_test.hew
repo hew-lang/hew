@@ -5,8 +5,6 @@
 //! handler is a normal actor message, so it can interleave between ticks because
 //! each tick returns control to the mailbox.
 
-import std.testing;
-
 actor Worker {
     var running: bool = true,
     var ticks: i64 = 0,
@@ -62,5 +60,5 @@ fn halt_message_prevents_more_periodic_work() {
     while calls_of(worker) < halted_calls + 2 {
         sleep(10ms);
     }
-    testing.assert_eq(ticks_of(worker), halted_ticks);
+    assert(ticks_of(worker) == halted_ticks);
 }

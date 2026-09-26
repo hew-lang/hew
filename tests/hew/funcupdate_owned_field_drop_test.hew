@@ -21,7 +21,6 @@
 //! out of band by the `funcupdate-owned-field-drop-*` core-acceptance safety
 //! cases under ASan/LSan.
 
-import std.testing;
 
 import std.string;
 
@@ -56,9 +55,9 @@ fn test_funcupdate_string_field_override_drops_old() {
         i = i + 1;
     }
     // Non-overridden `count` carries over from base each iteration.
-    testing.assert_eq(c.count, 7);
+    assert(c.count == 7);
     // Final value of `label` is the replacement.
-    testing.assert_eq_str(c.label, string.repeat("b", 32));
+    assert(c.label == string.repeat("b", 32));
 }
 
 /// Overriding the `count` (BitCopy) field leaves `label` intact.
@@ -71,8 +70,8 @@ fn test_funcupdate_bitcopy_field_override_carries_label() {
         c = FlatConfig { count: c.count + 1, ..c };
         i = i + 1;
     }
-    testing.assert_eq(c.count, 5);
-    testing.assert_eq_str(c.label, string.repeat("x", 16));
+    assert(c.count == 5);
+    assert(c.label == string.repeat("x", 16));
 }
 
 /// Overriding a `Vec<i64>` field: old Vec buffer is released each iteration.
@@ -89,9 +88,9 @@ fn test_funcupdate_vec_field_override_drops_old() {
         i = i + 1;
     }
     // Non-overridden `tag` carries over from base each iteration.
-    testing.assert_eq_str(s.tag, "initial");
+    assert(s.tag == "initial");
     // Final Vec has the last iteration's element.
-    testing.assert_eq(s.items.len(), 1);
+    assert(s.items.len() == 1);
 }
 
 /// Both `string` and `Vec` fields overridden simultaneously.
@@ -107,8 +106,8 @@ fn test_funcupdate_multi_field_override_drops_old() {
         s = VecHolder { items: next, tag: string.repeat("y", 8), ..s };
         i = i + 1;
     }
-    testing.assert_eq(s.items.len(), 1);
-    testing.assert_eq_str(s.tag, string.repeat("y", 8));
+    assert(s.items.len() == 1);
+    assert(s.tag == string.repeat("y", 8));
 }
 
 /// Overriding a `HashMap` field releases the old map (single-pointer COW
@@ -127,9 +126,9 @@ fn test_funcupdate_hashmap_field_override_drops_old() {
         i = i + 1;
     }
     // Non-overridden `tag` carries over from base each iteration.
-    testing.assert_eq(h.tag, 42);
+    assert(h.tag == 42);
     // Final map has the last iteration's single entry.
-    testing.assert_eq(h.m.len(), 1);
+    assert(h.m.len() == 1);
 }
 
 /// Overriding a `HashSet` field releases the old set (single-pointer COW
@@ -146,6 +145,6 @@ fn test_funcupdate_hashset_field_override_drops_old() {
         h = SetHolder { s: next, ..h };
         i = i + 1;
     }
-    testing.assert_eq(h.tag, 7);
-    testing.assert_eq(h.s.len(), 1);
+    assert(h.tag == 7);
+    assert(h.s.len() == 1);
 }

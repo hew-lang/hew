@@ -5,7 +5,6 @@
 //! the generated callback and spawn wiring preserve both message kinds.
 
 import std.stream;
-import std.testing;
 
 actor KindCoalescer {
     var alpha_count: i64 = 0,
@@ -65,18 +64,18 @@ fn coalesce_same_key_different_message_types_do_not_merge() {
         .Ok(value) => {
             alpha_count = value;
         },
-        .Err(_) => testing.assert_true(false),
+        .Err(_) => assert(false),
     }
     match worker.beta_seen() {
         .Ok(value) => {
             beta_count = value;
         },
-        .Err(_) => testing.assert_true(false),
+        .Err(_) => assert(false),
     }
-    testing.assert_eq(beta_count, 64);
-    testing.assert_eq(alpha_count, 0);
+    assert(beta_count == 64);
+    assert(alpha_count == 0);
     match worker.latest() {
-        .Ok(value) => testing.assert_eq(value, -1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(value) => assert(value == -1),
+        .Err(_) => assert(false),
     }
 }

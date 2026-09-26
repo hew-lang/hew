@@ -11,8 +11,6 @@
 //! constructor: an all-scalar `W<i64>` rides the plain `_layout` ops, a
 //! heap-owning `W<string>` rides the owned family.
 
-import std.testing;
-
 type W<T> {
     v: T,
 }
@@ -30,7 +28,7 @@ fn store_and_read<T: Clone>(x: T) -> T {
 // layout ABI on BOTH the constructor and the push — no clone-thunk panic.
 #[test]
 fn test_generic_vec_scalar_composite_reads_back() {
-    testing.assert_eq(store_and_read(7), 7);
+    assert(store_and_read(7) == 7);
 }
 
 // The heap-owning instantiation (`W<string>`) rides the owned-descriptor ABI
@@ -38,7 +36,7 @@ fn test_generic_vec_scalar_composite_reads_back() {
 #[test]
 fn test_generic_vec_heap_composite_reads_back() {
     let s = store_and_read("hello");
-    testing.assert_eq(s.len(), 5);
+    assert(s.len() == 5);
 }
 
 fn count_options<T: Clone>(x: T) -> i64 {
@@ -55,7 +53,7 @@ fn count_options<T: Clone>(x: T) -> i64 {
 // inline tagged-union layout ABI (was: `MethodCallNoRewrite` / NYI at check).
 #[test]
 fn test_generic_vec_option_element() {
-    testing.assert_eq(count_options(9), 2);
+    assert(count_options(9) == 2);
 }
 
 // The concrete twin must also compile and run — `Option<i64>` is now a
@@ -69,6 +67,6 @@ fn test_concrete_vec_option_element() {
         .Some(.Some(v)) => v,
         _ => -1,
     };
-    testing.assert_eq(got, 5);
-    testing.assert_eq(items.len(), 2);
+    assert(got == 5);
+    assert(items.len() == 2);
 }

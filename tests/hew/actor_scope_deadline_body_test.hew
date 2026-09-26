@@ -13,7 +13,6 @@
 //! success path, or skips it on the timeout path, fails the exact value.
 
 import std.stream;
-import std.testing;
 
 actor Deadliner {
     var fired: i64 = 0,
@@ -86,8 +85,8 @@ fn deadline_body_runs_when_timeout_wins() {
     let d = spawn Deadliner(fired: 0);
     // The work never finishes on its own → the deadline wins and the body runs.
     match d.run_timeout_wins() {
-        .Ok(v) => testing.assert_eq(v, 7),
-        .Err(_) => testing.assert_true(false),
+        .Ok(v) => assert(v == 7),
+        .Err(_) => assert(false),
     }
 }
 
@@ -97,8 +96,8 @@ fn deadline_body_skipped_when_work_finishes_first() {
     // The work finishes at once, deadline is 200ms → the scope completes first
     // and the body is skipped, so `fired` stays 0.
     match d.run_work_wins() {
-        .Ok(v) => testing.assert_eq(v, 0),
-        .Err(_) => testing.assert_true(false),
+        .Ok(v) => assert(v == 0),
+        .Err(_) => assert(false),
     }
 }
 
@@ -110,7 +109,7 @@ fn nested_scope_deadlines_each_take_their_own_branch() {
     // Exactly 1 proves the inner timeout fired and the outer skipped — a swapped
     // branch (101, 100, or 0) would fail.
     match d.run_nested() {
-        .Ok(v) => testing.assert_eq(v, 1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(v) => assert(v == 1),
+        .Err(_) => assert(false),
     }
 }

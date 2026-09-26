@@ -8,8 +8,6 @@
 //! test — this pins it). The clone must deep-copy each element's owned `string`
 //! field so the clone survives independently of the original.
 
-import std.testing;
-
 type Item {
     name: string,
     n: i64,
@@ -23,13 +21,13 @@ fn test_clone_vec_of_owned_records_copies_fields() {
     xs.push(Item { name: "alpha", n: 10 });
     xs.push(Item { name: "beta", n: 20 });
     let ys = xs.clone();
-    testing.assert_eq(ys.len(), 2);
+    assert(ys.len() == 2);
     let a = ys[0];
     let b = ys[1];
-    testing.assert_eq_str(a.name, "alpha");
-    testing.assert_eq(a.n, 10);
-    testing.assert_eq_str(b.name, "beta");
-    testing.assert_eq(b.n, 20);
+    assert(a.name == "alpha");
+    assert(a.n == 10);
+    assert(b.name == "beta");
+    assert(b.n == 20);
 }
 
 // Growing the clone leaves the source untouched, proving
@@ -40,9 +38,9 @@ fn test_clone_vec_of_owned_records_is_independent() {
     xs.push(Item { name: "only", n: 1 });
     var ys = xs.clone();
     ys.push(Item { name: "extra", n: 2 });
-    testing.assert_eq(xs.len(), 1);
-    testing.assert_eq(ys.len(), 2);
+    assert(xs.len() == 1);
+    assert(ys.len() == 2);
     let extra = ys[1];
-    testing.assert_eq_str(extra.name, "extra");
-    testing.assert_eq(extra.n, 2);
+    assert(extra.name == "extra");
+    assert(extra.n == 2);
 }

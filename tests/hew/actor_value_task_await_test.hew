@@ -18,7 +18,6 @@
 //! double-free of a managed result would corrupt the exact value or abort under
 //! the sanitizer — not merely fail a `> 0` smoke check.
 
-import std.testing;
 
 type Pair {
     n: i64,
@@ -101,8 +100,8 @@ actor ValueWorker {
 fn _value_task_await_binds_i64_result() {
     let w = spawn ValueWorker(acc: 0);
     match w.run_i64() {
-        .Ok(n) => testing.assert_eq(n, 42),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 42),
+        .Err(_) => assert(false),
     }
 }
 
@@ -110,8 +109,8 @@ fn _value_task_await_binds_i64_result() {
 fn _value_task_await_binds_string_result() {
     let w = spawn ValueWorker(acc: 0);
     match w.run_string() {
-        .Ok(s) => testing.assert_eq_str(s, "forty-two"),
-        .Err(_) => testing.assert_true(false),
+        .Ok(s) => assert(s == "forty-two"),
+        .Err(_) => assert(false),
     }
 }
 
@@ -119,8 +118,8 @@ fn _value_task_await_binds_string_result() {
 fn _value_task_await_binds_record_result() {
     let w = spawn ValueWorker(acc: 0);
     match w.run_pair() {
-        .Ok(n) => testing.assert_eq(n, 7),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 7),
+        .Err(_) => assert(false),
     }
 }
 
@@ -128,7 +127,7 @@ fn _value_task_await_binds_record_result() {
 fn _two_value_awaits_in_one_handler_resume_in_order() {
     let w = spawn ValueWorker(acc: 0);
     match w.run_twice() {
-        .Ok(n) => testing.assert_eq(n, 84),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 84),
+        .Err(_) => assert(false),
     }
 }

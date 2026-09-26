@@ -6,8 +6,6 @@
 //! executable test proves the unavailable path remains distinct from a normal
 //! rate-limit denial.
 
-import std.testing;
-
 actor ProbeLimiter {
     receive fn acquire() -> i64 {
         0
@@ -52,18 +50,18 @@ fn _rate_limit_denial_does_not_hide_ask_failure() {
     let tree = spawn ProbeTree;
     let worker = spawn ProbeWorker(tree: tree, rejected: 0, unavailable: 0);
     match worker.handle_request() {
-        .Ok(outcome) => testing.assert_eq(outcome, 1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(outcome) => assert(outcome == 1),
+        .Err(_) => assert(false),
     }
     supervisor_stop(tree);
     match worker.handle_request() {
-        .Ok(outcome) => testing.assert_eq(outcome, 2),
-        .Err(_) => testing.assert_true(false),
+        .Ok(outcome) => assert(outcome == 2),
+        .Err(_) => assert(false),
     }
     // 10 means one legitimate rejection; the ones digit means one separate
     // unavailable result. If Err were mapped to rejection this would be 20.
     match worker.outcome_totals() {
-        .Ok(total) => testing.assert_eq(total, 11),
-        .Err(_) => testing.assert_true(false),
+        .Ok(total) => assert(total == 11),
+        .Err(_) => assert(false),
     }
 }

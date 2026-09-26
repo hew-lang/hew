@@ -2097,9 +2097,14 @@ fn schedule_delayed_restart(
         return false;
     };
     let sup_addr = sup as usize;
+    // WHY: the restart timer is a host thread on the real clock; the
+    // single-thread driver waits for it rather than reporting a deadlock.
+    // WHEN obsolete: restart timers move onto the driver's timer wheel.
+    let host_work = crate::driver::active().then(crate::driver::HostWork::begin);
     let spawn_result = std::thread::Builder::new()
         .name("hew-supervisor-restart-timer".to_owned())
         .spawn(move || {
+            let _host_work = host_work;
             timer.wait_and_run(delay, || {
                 let sup_ptr = sup_addr as *mut HewSupervisor;
                 // SAFETY: the timer lease's pending count keeps `sup_ptr`

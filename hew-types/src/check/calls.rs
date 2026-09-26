@@ -2438,6 +2438,16 @@ impl Checker {
                 .get(&resolved_fn_name)
                 .cloned()
                 .unwrap_or_default();
+            // `assert` takes one optional parameter, the failure message.
+            let assertion = self.call_target_for_signature(&resolved_fn_name)
+                == CallTarget::Builtin {
+                    endpoint: crate::stdlib_catalog_identity::ASSERT.to_string(),
+                };
+            let sig = if assertion && args.len() == 2 {
+                crate::check::assertion::with_message(sig)
+            } else {
+                sig
+            };
             let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                 &sig,
                 &assoc_bindings,
@@ -2462,6 +2472,9 @@ impl Checker {
                     key: &resolved_fn_name,
                 }),
             );
+            if assertion {
+                self.record_unrendered_assertion_operands(args);
+            }
 
             // A codec imported by name (`import std.encoding.wire.{to_json}`)
             // is the same compiler operation as `wire.to_json(..)`.

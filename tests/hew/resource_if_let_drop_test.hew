@@ -1,7 +1,6 @@
 //! Regression coverage for owned resource payloads bound by conditional patterns.
 
 import std.stream;
-import std.testing;
 
 /// The conditional patterns below all bind one owned `Sink` out of a `Result`.
 /// The paired `Stream` stays with the caller, so what the arm did with the
@@ -17,14 +16,14 @@ fn test_if_let_resource_can_close_explicitly() {
         sink.send("rc1").expect("send");
         sink.close();
     }
-    testing.assert_eq_str(input.collect(), "rc1");
+    assert(input.collect() == "rc1");
 }
 
 #[test]
 fn test_if_let_resource_empty_body_drops_at_scope_exit() {
     let (writer, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
     if let .Ok(sink) = opened(writer) {}
-    testing.assert_eq_str(input.collect(), "");
+    assert(input.collect() == "");
 }
 
 #[test]
@@ -37,7 +36,7 @@ fn test_match_resource_can_close_explicitly() {
         },
         .Err(_) => panic("expected a sink"),
     }
-    testing.assert_eq_str(input.collect(), "match");
+    assert(input.collect() == "match");
 }
 
 #[test]
@@ -48,7 +47,7 @@ fn test_while_let_resource_can_close_explicitly() {
         sink.close();
         break;
     }
-    testing.assert_eq_str(input.collect(), "while");
+    assert(input.collect() == "while");
 }
 
 type Endpoint { host: string, port: i64 }
@@ -87,7 +86,7 @@ fn describe_endpoint(addr: string) -> string {
 
 #[test]
 fn test_match_payload_binders_share_one_scrutinee_release() {
-    testing.assert_eq_str(describe_endpoint("localhost"), "localhost:7");
+    assert(describe_endpoint("localhost") == "localhost:7");
 }
 
 fn sink_from_if_let(consume writer: stream.Sink<string>) -> Result<stream.Sink<string>, string> {
@@ -107,5 +106,5 @@ fn test_if_let_resource_can_be_returned() {
         },
         .Err(_) => panic("expected a sink"),
     }
-    testing.assert_eq_str(input.collect(), "returned");
+    assert(input.collect() == "returned");
 }

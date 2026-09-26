@@ -1,0 +1,30 @@
+// Two tasks read then write one balance. On the deterministic driver the
+// interleaving is a function of the schedule and seed alone.
+actor Account {
+    var balance: i64 = 0,
+    receive fn balance() -> i64 { balance }
+    receive fn set(amount: i64) { balance = amount; }
+}
+
+fn deposit(account: Account, amount: i64) -> () fails ActorError {
+    let current = account.balance()?;
+    account.set(current + amount)?;
+}
+
+fn read(account: Account) -> i64 {
+    match account.balance() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}
+
+fn main() {
+    let account = spawn Account(balance: 0);
+    scope {
+        let first = fork deposit(account, 10);
+        let second = fork deposit(account, 20);
+        let _ = await first;
+        let _ = await second;
+    }
+    println(read(account));
+}

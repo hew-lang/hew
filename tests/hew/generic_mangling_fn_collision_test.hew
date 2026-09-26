@@ -3,8 +3,6 @@
 //! collide. Both values must retain their independent fields after distinct
 //! monomorphizations are emitted.
 
-import std.testing;
-
 type Foo<T> {
     value: T,
 }
@@ -21,7 +19,7 @@ fn through<T>(value: T) -> T {
 fn test_generic_mangle_keeps_literal_and_generic_specializations_distinct() {
     let generic = through(Foo { value: 17 });
     let literal = through(Foo_i64 { value: 29 });
-    testing.assert_eq(generic.value, 17);
-    testing.assert_eq(literal.value, 29);
+    assert(generic.value == 17);
+    assert(literal.value == 29);
     println("VALUES-OK generic-mangling-fn");
 }

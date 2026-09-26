@@ -4,85 +4,83 @@ import std.io.scanner;
 
 import std.fs;
 
-import std.testing;
-
 // ── lines() batch API ─────────────────────────────────────────────────
 #[test]
 fn test_lines_empty_input_returns_empty_vec() {
     let ls = scanner.lines("");
-    testing.assert_eq(ls.len(), 0);
+    assert(ls.len() == 0);
 }
 
 #[test]
 fn test_lines_single_line_no_newline() {
     let ls = scanner.lines("hello");
-    testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls[0], "hello");
+    assert(ls.len() == 1);
+    assert(ls[0] == "hello");
 }
 
 #[test]
 fn test_lines_single_line_with_trailing_newline() {
     let ls = scanner.lines("hello\n");
-    testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls[0], "hello");
+    assert(ls.len() == 1);
+    assert(ls[0] == "hello");
 }
 
 #[test]
 fn test_lines_two_lines() {
     let ls = scanner.lines("foo\nbar");
-    testing.assert_eq(ls.len(), 2);
-    testing.assert_eq_str(ls[0], "foo");
-    testing.assert_eq_str(ls[1], "bar");
+    assert(ls.len() == 2);
+    assert(ls[0] == "foo");
+    assert(ls[1] == "bar");
 }
 
 #[test]
 fn test_lines_trailing_newline_no_extra_element() {
     let ls = scanner.lines("foo\nbar\n");
-    testing.assert_eq(ls.len(), 2);
-    testing.assert_eq_str(ls[0], "foo");
-    testing.assert_eq_str(ls[1], "bar");
+    assert(ls.len() == 2);
+    assert(ls[0] == "foo");
+    assert(ls[1] == "bar");
 }
 
 #[test]
 fn test_lines_crlf_endings_stripped() {
     let ls = scanner.lines("a\r\nb\r\nc");
-    testing.assert_eq(ls.len(), 3);
-    testing.assert_eq_str(ls[0], "a");
-    testing.assert_eq_str(ls[1], "b");
-    testing.assert_eq_str(ls[2], "c");
+    assert(ls.len() == 3);
+    assert(ls[0] == "a");
+    assert(ls[1] == "b");
+    assert(ls[2] == "c");
 }
 
 #[test]
 fn test_lines_blank_lines_preserved() {
     let ls = scanner.lines("a\n\nb");
-    testing.assert_eq(ls.len(), 3);
-    testing.assert_eq_str(ls[0], "a");
-    testing.assert_eq_str(ls[1], "");
-    testing.assert_eq_str(ls[2], "b");
+    assert(ls.len() == 3);
+    assert(ls[0] == "a");
+    assert(ls[1] == "");
+    assert(ls[2] == "b");
 }
 
 #[test]
 fn test_lines_only_newline() {
     // "\n" → one empty content line, trailing newline suppressed
     let ls = scanner.lines("\n");
-    testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls[0], "");
+    assert(ls.len() == 1);
+    assert(ls[0] == "");
 }
 
 #[test]
 fn test_lines_multiple_trailing_newlines() {
     // "a\n\n" → "a", "" (the empty line between \n and \n)
     let ls = scanner.lines("a\n\n");
-    testing.assert_eq(ls.len(), 2);
-    testing.assert_eq_str(ls[0], "a");
-    testing.assert_eq_str(ls[1], "");
+    assert(ls.len() == 2);
+    assert(ls[0] == "a");
+    assert(ls[1] == "");
 }
 
 #[test]
 fn test_lines_crlf_trailing() {
     let ls = scanner.lines("x\r\n");
-    testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls[0], "x");
+    assert(ls.len() == 1);
+    assert(ls[0] == "x");
 }
 
 // ── scan() / has_next() / text() iterative API ────────────────────────
@@ -95,27 +93,27 @@ fn test_scan_iterate_three_lines() {
         result.push(scanner.text(sc));
         sc = scanner.scan(sc);
     }
-    testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result[0], "line1");
-    testing.assert_eq_str(result[1], "line2");
-    testing.assert_eq_str(result[2], "line3");
+    assert(result.len() == 3);
+    assert(result[0] == "line1");
+    assert(result[1] == "line2");
+    assert(result[2] == "line3");
 }
 
 #[test]
 fn test_scan_empty_input_no_tokens() {
     var sc = scanner.from_string("");
     sc = scanner.scan(sc);
-    testing.assert_false(scanner.has_next(sc));
+    assert(!scanner.has_next(sc));
 }
 
 #[test]
 fn test_scan_single_line_without_newline() {
     var sc = scanner.from_string("only");
     sc = scanner.scan(sc);
-    testing.assert_true(scanner.has_next(sc));
-    testing.assert_eq_str(scanner.text(sc), "only");
+    assert(scanner.has_next(sc));
+    assert(scanner.text(sc) == "only");
     sc = scanner.scan(sc);
-    testing.assert_false(scanner.has_next(sc));
+    assert(!scanner.has_next(sc));
 }
 
 #[test]
@@ -127,10 +125,10 @@ fn test_scan_blank_lines_emitted() {
         result.push(scanner.text(sc));
         sc = scanner.scan(sc);
     }
-    testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result[0], "a");
-    testing.assert_eq_str(result[1], "");
-    testing.assert_eq_str(result[2], "b");
+    assert(result.len() == 3);
+    assert(result[0] == "a");
+    assert(result[1] == "");
+    assert(result[2] == "b");
 }
 
 #[test]
@@ -142,10 +140,10 @@ fn test_scan_crlf_stripped() {
         result.push(scanner.text(sc));
         sc = scanner.scan(sc);
     }
-    testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result[0], "p");
-    testing.assert_eq_str(result[1], "q");
-    testing.assert_eq_str(result[2], "r");
+    assert(result.len() == 3);
+    assert(result[0] == "p");
+    assert(result[1] == "q");
+    assert(result[2] == "r");
 }
 
 #[test]
@@ -157,9 +155,9 @@ fn test_scan_trailing_newline_no_extra_token() {
         result.push(scanner.text(sc));
         sc = scanner.scan(sc);
     }
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result[0], "x");
-    testing.assert_eq_str(result[1], "y");
+    assert(result.len() == 2);
+    assert(result[0] == "x");
+    assert(result[1] == "y");
 }
 
 // ── next_line() ───────────────────────────────────────────────────────
@@ -169,7 +167,7 @@ fn test_next_line_returns_some_for_real_empty_line_only() {
     let (sc1, first) = scanner.next_line(sc);
     sc = sc1;
     match first {
-        .Some(line) => testing.assert_eq_str(line, "alpha"),
+        .Some(line) => assert(line == "alpha"),
         .None => {
             panic("expected first line");
         },
@@ -177,7 +175,7 @@ fn test_next_line_returns_some_for_real_empty_line_only() {
     let (sc2, blank) = scanner.next_line(sc);
     sc = sc2;
     match blank {
-        .Some(line) => testing.assert_eq_str(line, ""),
+        .Some(line) => assert(line == ""),
         .None => {
             panic("expected blank line");
         },
@@ -185,7 +183,7 @@ fn test_next_line_returns_some_for_real_empty_line_only() {
     let (sc3, third) = scanner.next_line(sc);
     sc = sc3;
     match third {
-        .Some(line) => testing.assert_eq_str(line, "omega"),
+        .Some(line) => assert(line == "omega"),
         .None => {
             panic("expected third line");
         },
@@ -195,7 +193,7 @@ fn test_next_line_returns_some_for_real_empty_line_only() {
         .Some(line) => {
             panic("unexpected EOF token: " + line);
         },
-        .None => testing.assert_true(true),
+        .None => assert(true),
     }
 }
 
@@ -205,59 +203,59 @@ fn test_next_line_uses_line_mode_without_changing_split() {
     sc = scanner.with_split(sc, SplitMode.SplitWords);
     let (next, line) = scanner.next_line(sc);
     match line {
-        .Some(value) => testing.assert_eq_str(value, "one two"),
+        .Some(value) => assert(value == "one two"),
         .None => {
             panic("expected line");
         },
     }
     let after = scanner.scan(next);
-    testing.assert_true(scanner.has_next(after));
-    testing.assert_eq_str(scanner.text(after), "three");
+    assert(scanner.has_next(after));
+    assert(scanner.text(after) == "three");
 }
 
 // ── words() batch API ─────────────────────────────────────────────────
 #[test]
 fn test_words_empty_input_returns_empty_vec() {
     let ws = scanner.words("");
-    testing.assert_eq(ws.len(), 0);
+    assert(ws.len() == 0);
 }
 
 #[test]
 fn test_words_single_word() {
     let ws = scanner.words("hello");
-    testing.assert_eq(ws.len(), 1);
-    testing.assert_eq_str(ws[0], "hello");
+    assert(ws.len() == 1);
+    assert(ws[0] == "hello");
 }
 
 #[test]
 fn test_words_two_words_single_space() {
     let ws = scanner.words("hello world");
-    testing.assert_eq(ws.len(), 2);
-    testing.assert_eq_str(ws[0], "hello");
-    testing.assert_eq_str(ws[1], "world");
+    assert(ws.len() == 2);
+    assert(ws[0] == "hello");
+    assert(ws[1] == "world");
 }
 
 #[test]
 fn test_words_leading_trailing_whitespace_ignored() {
     let ws = scanner.words("  hello   world  ");
-    testing.assert_eq(ws.len(), 2);
-    testing.assert_eq_str(ws[0], "hello");
-    testing.assert_eq_str(ws[1], "world");
+    assert(ws.len() == 2);
+    assert(ws[0] == "hello");
+    assert(ws[1] == "world");
 }
 
 #[test]
 fn test_words_tab_and_newline_as_separator() {
     let ws = scanner.words("a\tb\nc");
-    testing.assert_eq(ws.len(), 3);
-    testing.assert_eq_str(ws[0], "a");
-    testing.assert_eq_str(ws[1], "b");
-    testing.assert_eq_str(ws[2], "c");
+    assert(ws.len() == 3);
+    assert(ws[0] == "a");
+    assert(ws[1] == "b");
+    assert(ws[2] == "c");
 }
 
 #[test]
 fn test_words_only_whitespace_returns_empty() {
     let ws = scanner.words("   \t\n  ");
-    testing.assert_eq(ws.len(), 0);
+    assert(ws.len() == 0);
 }
 
 // ── with_split() mode switching ───────────────────────────────────────
@@ -271,10 +269,10 @@ fn test_with_split_switches_to_words_mode() {
         result.push(scanner.text(sc));
         sc = scanner.scan(sc);
     }
-    testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result[0], "foo");
-    testing.assert_eq_str(result[1], "bar");
-    testing.assert_eq_str(result[2], "baz");
+    assert(result.len() == 3);
+    assert(result[0] == "foo");
+    assert(result[1] == "bar");
+    assert(result[2] == "baz");
 }
 
 #[test]
@@ -285,8 +283,8 @@ fn test_with_split_resets_position() {
     sc = scanner.with_split(sc, SplitMode.SplitLines);
     sc = scanner.scan(sc);
     // Should see "a" again after reset.
-    testing.assert_true(scanner.has_next(sc));
-    testing.assert_eq_str(scanner.text(sc), "a");
+    assert(scanner.has_next(sc));
+    assert(scanner.text(sc) == "a");
 }
 
 // ── collect() ────────────────────────────────────────────────────────
@@ -295,10 +293,10 @@ fn test_collect_from_fresh_scanner_scans_all() {
     var sc = scanner.from_string("x\ny\nz");
     sc = scanner.scan(sc);
     let all = scanner.collect(sc);
-    testing.assert_eq(all.len(), 3);
-    testing.assert_eq_str(all[0], "x");
-    testing.assert_eq_str(all[1], "y");
-    testing.assert_eq_str(all[2], "z");
+    assert(all.len() == 3);
+    assert(all[0] == "x");
+    assert(all[1] == "y");
+    assert(all[2] == "z");
 }
 
 #[test]
@@ -308,10 +306,10 @@ fn test_collect_after_partial_advance() {
     sc = scanner.scan(sc); // current = "b"
     let rest = scanner.collect(sc);
     // collect includes current ("b") plus remainder
-    testing.assert_eq(rest.len(), 3);
-    testing.assert_eq_str(rest[0], "b");
-    testing.assert_eq_str(rest[1], "c");
-    testing.assert_eq_str(rest[2], "d");
+    assert(rest.len() == 3);
+    assert(rest[0] == "b");
+    assert(rest[1] == "c");
+    assert(rest[2] == "d");
 }
 
 #[test]
@@ -320,7 +318,7 @@ fn test_collect_exhausted_scanner_returns_empty() {
     sc = scanner.scan(sc); // current = "solo"
     sc = scanner.scan(sc); // exhausted
     let rest = scanner.collect(sc);
-    testing.assert_eq(rest.len(), 0);
+    assert(rest.len() == 0);
 }
 
 // ── file constructors ─────────────────────────────────────────────────
@@ -338,7 +336,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
             let (sc1, first) = scanner.next_line(sc);
             sc = sc1;
             match first {
-                .Some(line) => testing.assert_eq_str(line, "red"),
+                .Some(line) => assert(line == "red"),
                 .None => {
                     panic("expected red");
                 },
@@ -346,7 +344,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
             let (sc2, blank) = scanner.next_line(sc);
             sc = sc2;
             match blank {
-                .Some(line) => testing.assert_eq_str(line, ""),
+                .Some(line) => assert(line == ""),
                 .None => {
                     panic("expected blank line");
                 },
@@ -354,7 +352,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
             let (sc3, third) = scanner.next_line(sc);
             sc = sc3;
             match third {
-                .Some(line) => testing.assert_eq_str(line, "blue"),
+                .Some(line) => assert(line == "blue"),
                 .None => {
                     panic("expected blue");
                 },
@@ -364,7 +362,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
                 .Some(line) => {
                     panic("unexpected EOF token: " + line);
                 },
-                .None => testing.assert_true(true),
+                .None => assert(true),
             }
         },
         .Err(e) => {
@@ -382,7 +380,7 @@ fn test_from_file_missing_path_returns_io_error() {
             panic("expected missing-file error");
         },
         .Err(e) => match e {
-            IoError.NotFound(_) => testing.assert_true(true),
+            IoError.NotFound(_) => assert(true),
             _ => {
                 panic("expected NotFound");
             },

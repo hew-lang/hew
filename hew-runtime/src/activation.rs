@@ -684,7 +684,10 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
         }
     };
     // Scale budget by priority: high (0) = 2×, normal (1) = 1×, low (2) = ½×.
+    // The single-thread driver takes one message per turn, so every other
+    // ready participant gets a turn between an actor's messages.
     let budget = match a.priority.load(Ordering::Relaxed) {
+        _ if crate::driver::active() => 1,
         actor::HEW_PRIORITY_HIGH => base_budget.saturating_mul(2),
         actor::HEW_PRIORITY_LOW => (base_budget / 2).max(1),
         _ => base_budget,

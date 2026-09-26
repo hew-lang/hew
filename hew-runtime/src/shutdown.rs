@@ -358,6 +358,14 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
         ms => Duration::from_millis(ms as u64),
     };
 
+    // The single-thread driver has no other thread to do the drain's work:
+    // the caller orchestrates inline, stepping the driver where the threaded
+    // runtime waits for its workers.
+    if crate::driver::active() {
+        shutdown_orchestrate_mode(timeout, cancel_parked_waits);
+        return;
+    }
+
     // Spawn a background thread to orchestrate the shutdown phases
     // so the caller is not blocked.
     match std::thread::Builder::new()
@@ -561,7 +569,7 @@ fn drain_until_idle(timeout: Duration) -> bool {
         if remaining.is_zero() {
             break;
         }
-        std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
+        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining));
     }
     // Covers the case where the deadline expired while sleeping but the runtime
     // became idle before the final observation.
@@ -640,7 +648,7 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
             shutdown_phase_store(PHASE_FAILED, Ordering::Release);
             return false;
         }
-        std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
+        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining));
     }
 }
 

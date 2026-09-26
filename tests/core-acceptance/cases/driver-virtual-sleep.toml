@@ -1,0 +1,13 @@
+[[case]]
+id = "driver-virtual-sleep"
+intent = "A deterministic run's sleep advances the virtual clock instead of waiting on the host."
+source = "cases/driver-virtual-sleep.hew"
+suites = ["acceptance"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "true\n"
+exit = 0

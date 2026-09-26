@@ -1,7 +1,5 @@
 import std.encoding.xml;
 
-import std.testing;
-
 type ParseError {
     message: string,
     offset: i64,
@@ -32,43 +30,43 @@ fn classify(s: string) -> ParseOutcome {
 #[test]
 fn result_resource_and_string_variants() {
     match xml.parse("<a/>") {
-        .Ok(node) => testing.assert_eq_str(node.get_tag(), "a"),
-        .Err(_) => testing.assert_true(false),
+        .Ok(node) => assert(node.get_tag() == "a"),
+        .Err(_) => assert(false),
     }
     match xml.parse("<a>") {
         .Ok(node) => {
             node.close();
-            testing.assert_true(false);
+            assert(false);
         },
-        .Err(message) => testing.assert_true(message.starts_with("xml:")),
+        .Err(message) => assert(message.starts_with("xml:")),
     }
 }
 
 #[test]
 fn user_enum_resource_and_heap_siblings() {
     match classify("<doc/>") {
-        ParseOutcome.Parsed(node) => testing.assert_eq_str(node.get_tag(), "doc"),
-        ParseOutcome.Failed(_) => testing.assert_true(false),
-        ParseOutcome.Skipped(_) => testing.assert_true(false),
+        ParseOutcome.Parsed(node) => assert(node.get_tag() == "doc"),
+        ParseOutcome.Failed(_) => assert(false),
+        ParseOutcome.Skipped(_) => assert(false),
     }
     match classify("<doc>") {
         ParseOutcome.Parsed(node) => {
             node.close();
-            testing.assert_true(false);
+            assert(false);
         },
         ParseOutcome.Failed(error) => {
-            testing.assert_eq(error.offset, 0);
-            testing.assert_true(error.message.starts_with("xml:"));
+            assert(error.offset == 0);
+            assert(error.message.starts_with("xml:"));
         },
-        ParseOutcome.Skipped(_) => testing.assert_true(false),
+        ParseOutcome.Skipped(_) => assert(false),
     }
     match classify("") {
         ParseOutcome.Parsed(node) => {
             node.close();
-            testing.assert_true(false);
+            assert(false);
         },
-        ParseOutcome.Failed(_) => testing.assert_true(false),
-        ParseOutcome.Skipped(message) => testing.assert_eq_str(message, "EMPTY"),
+        ParseOutcome.Failed(_) => assert(false),
+        ParseOutcome.Skipped(message) => assert(message == "EMPTY"),
     }
 }
 
@@ -79,7 +77,7 @@ fn scalar_sibling_control() {
         .Err(reason) => panic(reason),
     };
     match value {
-        ScalarSibling.Loaded(node) => testing.assert_eq_str(node.get_tag(), "x"),
-        ScalarSibling.Count(_) => testing.assert_true(false),
+        ScalarSibling.Loaded(node) => assert(node.get_tag() == "x"),
+        ScalarSibling.Count(_) => assert(false),
     }
 }

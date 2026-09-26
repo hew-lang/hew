@@ -17,7 +17,6 @@ import std.net.url;
 
 import std.net.websocket;
 
-import std.testing;
 
 /// Claim an ephemeral loopback port and release it.
 ///
@@ -42,7 +41,7 @@ fn test_http_listen_on_an_ephemeral_port_succeeds() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
             server.close();
-            testing.assert_true(true);
+            assert(true);
         },
         .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
@@ -66,7 +65,7 @@ fn test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
                 .Err(err) => {
                     held.close();
                     let reason = to_string(err);
-                    testing.assert_true(reason.contains("AddressInUse"));
+                    assert(reason.contains("AddressInUse"));
                 },
             }
         },
@@ -86,8 +85,8 @@ fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
         .Err(err) => {
             match err {
                 NetError.InvalidArgument(detail) => {
-                    testing.assert_eq_str(detail, "http.listen: cannot bind `not an address`: invalid socket address");
-                    testing.assert_eq_str(http.listen_error(), detail);
+                    assert(detail == "http.listen: cannot bind `not an address`: invalid socket address");
+                    assert(http.listen_error() == detail);
                 },
                 _ => panic(f"expected InvalidArgument, got {err}"),
             }
@@ -124,7 +123,7 @@ fn test_http_listen_clears_the_detail_slot_on_success() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
             server.close();
-            testing.assert_eq_str(http.listen_error(), "");
+            assert(http.listen_error() == "");
         },
         .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
@@ -138,7 +137,7 @@ fn test_websocket_listen_on_an_ephemeral_port_succeeds() {
         .Ok(server) => {
             let port = server.port();
             server.close();
-            testing.assert_true(port > 0);
+            assert(port > 0);
         },
         .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
@@ -161,7 +160,7 @@ fn test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server(
                 .Err(err) => {
                     held.close();
                     let reason = to_string(err);
-                    testing.assert_true(reason.contains("AddressInUse"));
+                    assert(reason.contains("AddressInUse"));
                 },
             }
         },
@@ -181,8 +180,8 @@ fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
         .Err(err) => {
             match err {
                 NetError.InvalidArgument(detail) => {
-                    testing.assert_eq_str(detail, "websocket.listen: cannot bind `not an address`");
-                    testing.assert_eq_str(websocket.last_error(), detail);
+                    assert(detail == "websocket.listen: cannot bind `not an address`");
+                    assert(websocket.last_error() == detail);
                 },
                 _ => panic(f"expected InvalidArgument, got {err}"),
             }
@@ -204,7 +203,7 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
         .Err(err) => {
             match err {
                 NetError.ConnectionRefused(_errno) => {
-                    testing.assert_true(!websocket.last_error().is_empty());
+                    assert(!websocket.last_error().is_empty());
                 },
                 _ => panic(f"expected ConnectionRefused, got {err}"),
             }
@@ -222,8 +221,8 @@ fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
         .Err(err) => {
             match err {
                 NetError.InvalidArgument(detail) => {
-                    testing.assert_eq_str(detail, "websocket.connect: HTTP format error: invalid uri character");
-                    testing.assert_eq_str(websocket.last_error(), detail);
+                    assert(detail == "websocket.connect: HTTP format error: invalid uri character");
+                    assert(websocket.last_error() == detail);
                 },
                 _ => panic(f"expected InvalidArgument, got {err}"),
             }
@@ -245,7 +244,7 @@ fn test_websocket_listen_clears_the_detail_slot_on_success() {
     match websocket.listen("127.0.0.1:0") {
         .Ok(server) => {
             server.close();
-            testing.assert_eq_str(websocket.last_error(), "");
+            assert(websocket.last_error() == "");
         },
         .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
@@ -258,7 +257,7 @@ fn test_url_resolve_returns_the_joined_url() {
     let base = url.parse("https://example.com/a/b");
     match base.resolve("../c") {
         .Ok(joined) => {
-            testing.assert_eq_str(joined.to_string(), "https://example.com/c");
+            assert(joined.to_string() == "https://example.com/c");
             joined.close();
         },
         .Err(_msg) => {
@@ -278,7 +277,7 @@ fn test_url_resolve_reports_an_unresolvable_path_as_a_failure() {
             panic("expected an unresolvable path to be rejected");
         },
         .Err(msg) => {
-            testing.assert_true(msg.contains("cannot resolve"));
+            assert(msg.contains("cannot resolve"));
         },
     }
 }

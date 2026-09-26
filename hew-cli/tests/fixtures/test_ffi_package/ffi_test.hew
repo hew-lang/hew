@@ -4,5 +4,5 @@ extern "C" {
 
 #[test]
 fn native_ffi_is_linked() {
-    assert_eq(unsafe { hew_test_ffi_answer() }, 42);
+    assert(unsafe { hew_test_ffi_answer() } == 42);
 }

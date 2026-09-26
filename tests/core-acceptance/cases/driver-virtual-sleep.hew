@@ -1,0 +1,7 @@
+// A minute of sleeping on the deterministic driver's virtual clock returns
+// at once; the case's hang guard is far shorter than the sleep.
+fn main() {
+    let start = instant.now();
+    sleep(60s);
+    println(start.elapsed() >= 60s);
+}

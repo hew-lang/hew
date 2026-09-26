@@ -4,11 +4,6 @@
 //! (Copy tuple). The checker rewrites `clone` to `hew_vec_clone_layout`;
 //! codegen synthesises the hidden HewTypeLayout* operand from the element
 //! type; the runtime memcpys all element bytes into a fresh allocation.
-//!
-//! Uses inline `if … { panic(…) }` assertions because the `hew test`
-//! extracted-function context does not yet support module-qualified
-//! `testing.*` calls (pre-existing MethodCallNoRewrite limitation; see
-//! deque_test.hew and vec_layout_remove.hew on v05-integration).
 
 type Point {
     x: i64,

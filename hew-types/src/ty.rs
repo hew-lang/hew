@@ -1393,6 +1393,43 @@ impl Ty {
         matches!(self, Ty::FloatLiteral)
     }
 
+    /// Whether a resolved type has a structural rendering: a value `f"{v:?}"`
+    /// can spell from its own parts. A pending inference variable defers - the
+    /// surrounding inference reports its own error - and a user declaration
+    /// renders through its declared fields; a compiler carrier renders only
+    /// when its builtin identity says it has structure.
+    #[must_use]
+    pub fn renders_structurally(&self) -> bool {
+        match self {
+            Ty::Var(_)
+            | Ty::Error
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::IntLiteral
+            | Ty::FloatLiteral
+            | Ty::Bool
+            | Ty::Char
+            | Ty::String
+            | Ty::Unit => true,
+            Ty::Tuple(members) => members.iter().all(Ty::renders_structurally),
+            Ty::Named { args, builtin, .. } => {
+                builtin.is_none_or(BuiltinType::renders_structurally)
+                    && args.iter().all(Ty::renders_structurally)
+            }
+            _ => false,
+        }
+    }
+
     /// Materialize any remaining numeric literal kinds to their canonical
     /// concrete defaults for downstream consumers that require fixed widths.
     #[must_use]

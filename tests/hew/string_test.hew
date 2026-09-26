@@ -2,31 +2,29 @@
 
 import std.string;
 
-import std.testing;
-
 fn assert_string_vec_eq(actual: Vec<string>, expected: Vec<string>) {
-    testing.assert_eq(actual.len(), expected.len());
+    assert(actual.len() == expected.len());
     for i in 0 .. expected.len() {
-        testing.assert_eq_str(actual[i], expected[i]);
+        assert(actual[i] == expected[i]);
     }
 }
 
 fn assert_int_result_eq(actual: Result<i64, string>, expected: i64) {
     match actual {
-        .Ok(value) => testing.assert_eq(value, expected),
+        .Ok(value) => assert(value == expected),
         .Err(message) => {
             panic(message);
-            testing.assert_eq(0, expected);
+            assert(0 == expected);
         },
     }
 }
 
 fn assert_int_result_string_eq(actual: Result<i64, string>, expected: string) {
     match actual {
-        .Ok(value) => testing.assert_eq_str(string.from_int(value), expected),
+        .Ok(value) => assert(string.from_int(value) == expected),
         .Err(message) => {
             panic(message);
-            testing.assert_eq_str("", expected);
+            assert("" == expected);
         },
     }
 }
@@ -35,18 +33,18 @@ fn assert_int_result_err(actual: Result<i64, string>, expected: string) {
     match actual {
         .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
-            testing.assert_eq(value, 0);
+            assert(value == 0);
         },
-        .Err(message) => testing.assert_eq_str(message, expected),
+        .Err(message) => assert(message == expected),
     }
 }
 
 fn assert_float_result_eq(actual: Result<f64, string>, expected: f64) {
     match actual {
-        .Ok(value) => testing.assert_true(value == expected),
+        .Ok(value) => assert(value == expected),
         .Err(message) => {
             panic(message);
-            testing.assert_true(expected == 0.0);
+            assert(expected == 0.0);
         },
     }
 }
@@ -55,34 +53,34 @@ fn assert_float_result_err(actual: Result<f64, string>, expected: string) {
     match actual {
         .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
-            testing.assert_true(value == 0.0);
+            assert(value == 0.0);
         },
-        .Err(message) => testing.assert_eq_str(message, expected),
+        .Err(message) => assert(message == expected),
     }
 }
 
 #[test]
 fn test_from_int_formats_positive_and_negative_values() {
-    testing.assert_eq_str(string.from_int(42), "42");
-    testing.assert_eq_str(string.from_int(-7), "-7");
+    assert(string.from_int(42) == "42");
+    assert(string.from_int(-7) == "-7");
 }
 
 #[test]
 fn test_from_float_formats_decimal_values() {
-    testing.assert_eq_str(string.from_float(3.5), "3.5");
-    testing.assert_eq_str(string.from_float(-0.25), "-0.25");
+    assert(string.from_float(3.5) == "3.5");
+    assert(string.from_float(-0.25) == "-0.25");
 }
 
 #[test]
 fn test_from_bool_formats_boolean_values() {
-    testing.assert_eq_str(string.from_bool(true), "true");
-    testing.assert_eq_str(string.from_bool(false), "false");
+    assert(string.from_bool(true) == "true");
+    assert(string.from_bool(false) == "false");
 }
 
 #[test]
 fn test_from_char_formats_single_character_strings() {
-    testing.assert_eq_str(string.from_char(65), "A");
-    testing.assert_eq_str(string.from_char(10), "\n");
+    assert(string.from_char(65) == "A");
+    assert(string.from_char(10) == "\n");
 }
 
 #[test]
@@ -93,24 +91,24 @@ fn test_from_char_rejects_i64_max_instead_of_narrowing() {
 
 #[test]
 fn test_to_int_parses_signed_decimal_strings() {
-    testing.assert_eq(string.to_int("12345").unwrap_or(-1), 12345);
-    testing.assert_eq(string.to_int("-19").unwrap_or(0), -19);
-    testing.assert_eq(string.to_int("+8").unwrap_or(-1), 8);
+    assert(string.to_int("12345").unwrap_or(-1) == 12345);
+    assert(string.to_int("-19").unwrap_or(0) == -19);
+    assert(string.to_int("+8").unwrap_or(-1) == 8);
 }
 
 #[test]
 fn test_to_int_parses_real_zero_as_ok() {
     // `Ok(0)` proves a genuine zero is distinguishable from a failed parse.
     let z = string.to_int("0");
-    testing.assert_true(z.is_ok());
-    testing.assert_eq(z.unwrap_or(-1), 0);
+    assert(z.is_ok());
+    assert(z.unwrap_or(-1) == 0);
 }
 
 #[test]
 fn test_to_int_returns_error_for_invalid_and_partial_inputs() {
-    testing.assert_true(string.to_int("").is_err());
-    testing.assert_true(string.to_int("+").is_err());
-    testing.assert_true(string.to_int("42abc").is_err());
+    assert(string.to_int("").is_err());
+    assert(string.to_int("+").is_err());
+    assert(string.to_int("42abc").is_err());
 }
 
 #[test]
@@ -175,20 +173,20 @@ fn test_to_float_rejects_invalid_literals() {
 
 #[test]
 fn test_pad_left_adds_padding_until_width() {
-    testing.assert_eq_str(string.pad_left("7", 3, "0"), "007");
-    testing.assert_eq_str(string.pad_left("hello", 3, "0"), "hello");
+    assert(string.pad_left("7", 3, "0") == "007");
+    assert(string.pad_left("hello", 3, "0") == "hello");
 }
 
 #[test]
 fn test_pad_right_adds_padding_until_width() {
-    testing.assert_eq_str(string.pad_right("7", 3, "0"), "700");
-    testing.assert_eq_str(string.pad_right("hello", 3, "0"), "hello");
+    assert(string.pad_right("7", 3, "0") == "700");
+    assert(string.pad_right("hello", 3, "0") == "hello");
 }
 
 #[test]
 fn test_padding_counts_unicode_characters_not_utf8_bytes() {
-    testing.assert_eq_str(string.pad_left("é", 3, "0"), "00é");
-    testing.assert_eq_str(string.pad_right("é", 3, "0"), "é00");
+    assert(string.pad_left("é", 3, "0") == "00é");
+    assert(string.pad_right("é", 3, "0") == "é00");
 }
 
 #[test]
@@ -199,17 +197,17 @@ fn test_padding_rejects_multi_character_pad() {
 
 #[test]
 fn test_is_numeric_requires_only_ascii_digits() {
-    testing.assert_true(string.is_numeric("012345"));
-    testing.assert_false(string.is_numeric("12a3"));
-    testing.assert_false(string.is_numeric(""));
-    testing.assert_false(string.is_numeric("-12"));
+    assert(string.is_numeric("012345"));
+    assert(!string.is_numeric("12a3"));
+    assert(!string.is_numeric(""));
+    assert(!string.is_numeric("-12"));
 }
 
 #[test]
 fn test_count_counts_non_overlapping_occurrences() {
-    testing.assert_eq(string.count("aaaa", "aa"), 2);
-    testing.assert_eq(string.count("banana", "na"), 2);
-    testing.assert_eq(string.count("hello", ""), 0);
+    assert(string.count("aaaa", "aa") == 2);
+    assert(string.count("banana", "na") == 2);
+    assert(string.count("hello", "") == 0);
 }
 
 #[test]
@@ -259,10 +257,10 @@ fn test_lines_returns_single_empty_line_for_empty_input() {
 #[test]
 fn test_join_handles_empty_and_single_element_inputs() {
     let empty: Vec<string> = Vec.new();
-    testing.assert_eq_str(string.join(empty, ","), "");
+    assert(string.join(empty, ",") == "");
     var single: Vec<string> = Vec.new();
     single.push("solo");
-    testing.assert_eq_str(string.join(single, ","), "solo");
+    assert(string.join(single, ",") == "solo");
 }
 
 #[test]
@@ -271,31 +269,31 @@ fn test_join_inserts_separator_between_elements() {
     parts.push("red");
     parts.push("green");
     parts.push("blue");
-    testing.assert_eq_str(string.join(parts, "|"), "red|green|blue");
+    assert(string.join(parts, "|") == "red|green|blue");
 }
 
 // ── is_ascii boundary tests (regression lock for #2082 / PR #2081 fix) ──────
 #[test]
 fn test_is_ascii_accepts_del_127_and_below() {
     // Empty string and pure-ASCII strings are accepted.
-    testing.assert_true(string.is_ascii(""));
-    testing.assert_true(string.is_ascii("hello"));
+    assert(string.is_ascii(""));
+    assert(string.is_ascii("hello"));
     // NUL (0) is within the ASCII range.
-    testing.assert_true(string.is_ascii(string.from_char(0)));
+    assert(string.is_ascii(string.from_char(0)));
     // Tilde (126) is the last printable ASCII character.
-    testing.assert_true(string.is_ascii(string.from_char(126)));
+    assert(string.is_ascii(string.from_char(126)));
     // DEL (127) is the last 7-bit ASCII codepoint; must be accepted.
     // Before PR #2081 the condition was `ch > 126`, which wrongly rejected
     // DEL.  This assertion locks that fix in place.
-    testing.assert_true(string.is_ascii(string.from_char(127)));
+    assert(string.is_ascii(string.from_char(127)));
 }
 
 #[test]
 fn test_is_ascii_rejects_128_and_above() {
     // 128 (0x80) is the first codepoint outside the 7-bit ASCII range.
-    testing.assert_false(string.is_ascii(string.from_char(128)));
+    assert(!string.is_ascii(string.from_char(128)));
     // A string containing a non-ASCII multibyte sequence is also rejected.
-    testing.assert_false(string.is_ascii("héllo"));
+    assert(!string.is_ascii("héllo"));
 }
 
 // ── from_char multi-byte round-trip (regression lock for A195 fix) ───────────
@@ -304,13 +302,13 @@ fn test_from_char_emits_full_utf8_for_two_byte_codepoint() {
     // U+00E9 (é) is a two-byte UTF-8 sequence: 0xC3 0xA9.
     // Before the A195 fix, only the first byte was encoded, producing a
     // one-byte garbage string rather than "é".
-    testing.assert_eq_str(string.from_char(233), "é");
+    assert(string.from_char(233) == "é");
 }
 
 #[test]
 fn test_from_char_emits_full_utf8_for_four_byte_codepoint() {
     // U+1F600 (😀) encodes as four UTF-8 bytes: 0xF0 0x9F 0x98 0x80.
-    testing.assert_eq_str(string.from_char(128512), "😀");
+    assert(string.from_char(128512) == "😀");
 }
 
 // ── split empty-separator multi-byte exact values ─────────────────────────────

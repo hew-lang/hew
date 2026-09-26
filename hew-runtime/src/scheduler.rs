@@ -319,6 +319,7 @@ pub(crate) fn drain_is_idle() -> bool {
         return false;
     }
     if !sched.global_queue.is_empty()
+        || crate::driver::has_queued_work()
         || !sched.task_queue.lock_or_recover().is_empty()
         || crate::task_scope::checked::TaskExecution::has_live_tasks()
     {
@@ -500,7 +501,13 @@ fn configured_scheduler_worker_count() -> usize {
 /// printing a diagnostic — scheduler init failure is unrecoverable.
 #[no_mangle]
 pub extern "C" fn hew_sched_init() -> c_int {
-    let worker_count = configured_scheduler_worker_count();
+    // The single-thread driver runs every participant on the process thread:
+    // the runtime is installed with no worker to spawn.
+    let worker_count = if crate::driver::active() {
+        0
+    } else {
+        configured_scheduler_worker_count()
+    };
 
     match std::env::var("HEW_SEED") {
         Ok(seed_str) => {
@@ -893,7 +900,7 @@ fn quiesce_until(timeout: Duration, settled: impl Fn() -> bool) {
         if std::time::Instant::now() >= deadline {
             return;
         }
-        std::thread::sleep(SHUTDOWN_QUIESCE_POLL);
+        crate::driver::drain_poll(SHUTDOWN_QUIESCE_POLL);
     }
 }
 
@@ -1176,7 +1183,7 @@ fn release_abandoned_global_queue_refs(sched: &Scheduler) {
 /// avoiding always waking the same worker.
 pub fn sched_try_wake() {
     static WAKE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    if let Some(sched) = get_scheduler() {
+    if let Some(sched) = get_scheduler().filter(|sched| sched.worker_count != 0) {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "modulo by worker_count keeps result within usize range"

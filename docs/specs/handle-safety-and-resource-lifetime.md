@@ -279,7 +279,7 @@ which mechanism applies and the order of the per-handle migration PRs.
 | `std/net/quic` | `QUICEvent` | `close()` | 1 — per-event allocation | C + H | **B-1 safe set — landed** | Event accessors borrow; release is a single `Box::from_raw`. |
 | `std/net/websocket` | `Message` | `close()` | 1 — per-recv allocation | C + H, scoped to the read-loop iteration | **B-1 safe set — landed** | Independent per-recv allocation; affine drop fires per loop iteration. |
 | Runtime actor / scheduler | implicit | `hew_runtime_cleanup` (`hew-runtime/src/scheduler.rs:459-490`) | 4 — runtime scope | I (session-reset registry) only; not affine | runtime-scope cleanup milestone | Process-scoped; the session-reset hook registry is the canonical teardown (LESSONS `cleanup-all-exits`). No user-facing release call; no per-binding affinity. Tracked under issue #1228. |
-| wasm32 | same runtime | `hew-runtime/src/wasm_driver.rs` drives `scheduler.rs` | 4 — runtime scope | I, same registry | runtime-scope cleanup milestone | One runtime, one session-reset registry: wasm32 reaches it through the same `hew_sched_shutdown` path. See §10. |
+| wasm32 | same runtime | `hew-runtime/src/driver.rs` drives `scheduler.rs` | 4 — runtime scope | I, same registry | runtime-scope cleanup milestone | One runtime, one session-reset registry: wasm32 reaches it through the same `hew_sched_shutdown` path. See §10. |
 
 Tiers explained:
 
@@ -352,7 +352,7 @@ invariant restated as a property of the table.
 ## 10. WASM parity
 
 wasm32 runs the same runtime the native target does, driven by
-`hew-runtime/src/wasm_driver.rs` in place of worker threads. Handle-lifecycle
+`hew-runtime/src/driver.rs` in place of worker threads. Handle-lifecycle
 behaviour that lands in `hew-runtime/src/scheduler.rs` is therefore wasm32
 behaviour too; a wasm32 gap is a capability the manifest rejects, not a second
 implementation to keep in step.
@@ -481,7 +481,7 @@ as a record of the discipline the v0.4.x → v0.5 migration followed:
   migration), #1399 (move-checker substrate), #1500 (`http.Request` /
   `json.Value` manual-release migration).
 - Substrate paths cited in this spec: `hew-mir/`, `hew-codegen-rs/`,
-  `hew-runtime/src/scheduler.rs`, `hew-runtime/src/wasm_driver.rs`,
+  `hew-runtime/src/scheduler.rs`, `hew-runtime/src/driver.rs`,
   `hew-runtime/src/session.rs`, `hew-cabi/tests/`.
 - LESSONS rows: `ffi-ownership-contracts`, `raii-null-after-move`,
   `field-alias-fail-closed`, `cleanup-all-exits`, `checker-output-boundary`,

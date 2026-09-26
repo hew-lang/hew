@@ -2,14 +2,12 @@
 
 import std.net.http.http_client;
 
-import std.testing;
-
 #[test]
 fn test_request_surface_is_importable_from_http_client() {
     let headers: Vec<(string, string)> = Vec.new();
     http_client.set_timeout(250);
     let resp = http_client.request("TRACE", "http://example.com", "", headers);
-    testing.assert_true(resp.status() == -1);
+    assert(resp.status() == -1);
     resp.close();
 }
 
@@ -21,8 +19,8 @@ fn test_request_string_surface_is_importable_from_http_client() {
     // TRACE is unsupported — returns None (transport/validation failure).
     let result = http_client.request_string("TRACE", "http://example.com", "", headers);
     match result {
-        .Some(_) => testing.assert_true(true),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(true),
+        .None => assert(true),
     }
 }
 
@@ -36,5 +34,5 @@ fn test_request_with_header_pairs() {
     // Transport will fail (TRACE/unsupported method or network), status -1 is acceptable.
     // The important property is that the call compiles and executes without panic.
     resp.close();
-    testing.assert_true(true);
+    assert(true);
 }

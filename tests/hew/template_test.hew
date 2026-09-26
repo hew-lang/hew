@@ -2,15 +2,13 @@
 
 import std.text.template;
 
-import std.testing;
-
 // ── Literal passthrough ───────────────────────────────────────────────
 #[test]
 fn _literal_text_passthrough_returns_unchanged() {
     let ctx = template.new_ctx();
     let r = template.render("hello world", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "hello world"),
+        .Ok(s) => assert(s == "hello world"),
         .Err(e) => panic(e),
     }
 }
@@ -20,7 +18,7 @@ fn _empty_template_returns_empty_string() {
     let ctx = template.new_ctx();
     let r = template.render("", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, ""),
+        .Ok(s) => assert(s == ""),
         .Err(e) => panic(e),
     }
 }
@@ -32,7 +30,7 @@ fn _dot_key_string_substituted() {
     ctx.set_str("name", "Alice");
     let r = template.render("Hello {{.name}}!", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "Hello Alice!"),
+        .Ok(s) => assert(s == "Hello Alice!"),
         .Err(e) => panic(e),
     }
 }
@@ -43,7 +41,7 @@ fn _dot_key_int_substituted() {
     ctx.set_int("count", 42);
     let r = template.render("count={{.count}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "count=42"),
+        .Ok(s) => assert(s == "count=42"),
         .Err(e) => panic(e),
     }
 }
@@ -54,7 +52,7 @@ fn _dot_key_bool_true_substituted() {
     ctx.set_bool("flag", true);
     let r = template.render("flag={{.flag}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "flag=true"),
+        .Ok(s) => assert(s == "flag=true"),
         .Err(e) => panic(e),
     }
 }
@@ -64,7 +62,7 @@ fn _dot_key_missing_key_expands_to_empty() {
     let ctx = template.new_ctx();
     let r = template.render("x={{.missing}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "x="),
+        .Ok(s) => assert(s == "x="),
         .Err(e) => panic(e),
     }
 }
@@ -76,7 +74,7 @@ fn _multiple_substitutions_in_one_template() {
     ctx.set_str("b", "bar");
     let r = template.render("{{.a}} and {{.b}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "foo and bar"),
+        .Ok(s) => assert(s == "foo and bar"),
         .Err(e) => panic(e),
     }
 }
@@ -88,7 +86,7 @@ fn _if_true_branch_rendered() {
     ctx.set_bool("ok", true);
     let r = template.render("{{if .ok}}yes{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "yes"),
+        .Ok(s) => assert(s == "yes"),
         .Err(e) => panic(e),
     }
 }
@@ -99,7 +97,7 @@ fn _if_false_branch_suppressed() {
     ctx.set_bool("ok", false);
     let r = template.render("{{if .ok}}yes{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, ""),
+        .Ok(s) => assert(s == ""),
         .Err(e) => panic(e),
     }
 }
@@ -110,7 +108,7 @@ fn _if_else_true_branch_rendered() {
     ctx.set_str("active", "yes");
     let r = template.render("{{if .active}}on{{else}}off{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "on"),
+        .Ok(s) => assert(s == "on"),
         .Err(e) => panic(e),
     }
 }
@@ -121,7 +119,7 @@ fn _if_else_false_branch_rendered() {
     ctx.set_bool("active", false);
     let r = template.render("{{if .active}}on{{else}}off{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "off"),
+        .Ok(s) => assert(s == "off"),
         .Err(e) => panic(e),
     }
 }
@@ -132,7 +130,7 @@ fn _if_surrounds_literal_text_correctly() {
     ctx.set_str("show", "1");
     let r = template.render("A{{if .show}}B{{end}}C", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "ABC"),
+        .Ok(s) => assert(s == "ABC"),
         .Err(e) => panic(e),
     }
 }
@@ -148,7 +146,7 @@ fn _range_non_empty_list_iterates_all_elements() {
     ctx.set_list("xs", items);
     let r = template.render("{{range .xs}}[{{.}}]{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "[a][b][c]"),
+        .Ok(s) => assert(s == "[a][b][c]"),
         .Err(e) => panic(e),
     }
 }
@@ -160,7 +158,7 @@ fn _range_empty_list_produces_no_output() {
     ctx.set_list("xs", empty);
     let r = template.render("{{range .xs}}X{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, ""),
+        .Ok(s) => assert(s == ""),
         .Err(e) => panic(e),
     }
 }
@@ -173,7 +171,7 @@ fn _range_dot_is_current_element() {
     ctx.set_list("words", items);
     let r = template.render("{{range .words}}{{.}}{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "hello"),
+        .Ok(s) => assert(s == "hello"),
         .Err(e) => panic(e),
     }
 }
@@ -186,7 +184,7 @@ fn _range_surrounds_literal_text_correctly() {
     ctx.set_list("xs", items);
     let r = template.render("before{{range .xs}}{{.}}{{end}}after", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "beforexafter"),
+        .Ok(s) => assert(s == "beforexafter"),
         .Err(e) => panic(e),
     }
 }
@@ -204,7 +202,7 @@ fn _nested_substitution_and_literal_in_range() {
     // the outer context scalar, not the range element
     let r = template.render("{{range .parts}}{{.}}{{end}}", ctx);
     match r {
-        .Ok(s) => testing.assert_eq_str(s, "onetwo"),
+        .Ok(s) => assert(s == "onetwo"),
         .Err(e) => panic(e),
     }
 }
@@ -216,7 +214,7 @@ fn _malformed_unclosed_brace_returns_error() {
     let r = template.render("{{.name", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{"),
-        .Err(e) => testing.assert_true(!e.is_empty()),
+        .Err(e) => assert(!e.is_empty()),
     }
 }
 
@@ -227,7 +225,7 @@ fn _malformed_unclosed_if_returns_error() {
     let r = template.render("{{if .x}}body", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{if}}"),
-        .Err(e) => testing.assert_true(!e.is_empty()),
+        .Err(e) => assert(!e.is_empty()),
     }
 }
 
@@ -240,7 +238,7 @@ fn _malformed_unclosed_range_returns_error() {
     let r = template.render("{{range .xs}}body", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{range}}"),
-        .Err(e) => testing.assert_true(!e.is_empty()),
+        .Err(e) => assert(!e.is_empty()),
     }
 }
 
@@ -250,7 +248,7 @@ fn _malformed_dot_outside_range_returns_error() {
     let r = template.render("{{.}}", ctx);
     match r {
         .Ok(_) => panic("expected error for {{.}} outside range"),
-        .Err(e) => testing.assert_true(!e.is_empty()),
+        .Err(e) => assert(!e.is_empty()),
     }
 }
 
@@ -260,7 +258,7 @@ fn _malformed_unexpected_end_returns_error() {
     let r = template.render("{{end}}", ctx);
     match r {
         .Ok(_) => panic("expected error for unexpected {{end}}"),
-        .Err(e) => testing.assert_true(!e.is_empty()),
+        .Err(e) => assert(!e.is_empty()),
     }
 }
 
@@ -280,7 +278,7 @@ fn _test_render_rejects_a_duplicate_else_in_one_if() {
     let r = template.render("{{if .a}}A{{else}}B{{else}}C{{end}}", ctx);
     match r {
         .Ok(out) => panic(f"expected a duplicate else to be rejected, rendered `{out}`"),
-        .Err(e) => testing.assert_eq_str(e, "template: duplicate `{{else}}` in one `{{if}}`"),
+        .Err(e) => assert(e == "template: duplicate `{{else}}` in one `{{if}}`"),
     }
 }
 
@@ -301,7 +299,7 @@ fn _test_render_still_accepts_one_else_per_if() {
     ctx.set_bool("c", false);
     let r = template.render("{{if .a}}A{{else}}B{{end}}{{if .c}}C{{else}}D{{end}}", ctx);
     match r {
-        .Ok(out) => testing.assert_eq_str(out, "AD"),
+        .Ok(out) => assert(out == "AD"),
         .Err(e) => panic(f"one else per if must render: {e}"),
     }
 }
@@ -313,7 +311,7 @@ fn _test_render_still_accepts_an_else_after_a_closed_inner_if() {
     ctx.set_bool("b", false);
     let r = template.render("{{if .a}}{{if .b}}X{{else}}Y{{end}}{{else}}Z{{end}}", ctx);
     match r {
-        .Ok(out) => testing.assert_eq_str(out, "Y"),
+        .Ok(out) => assert(out == "Y"),
         .Err(e) => panic(f"an else after a closed inner if must render: {e}"),
     }
 }
@@ -324,7 +322,7 @@ fn _test_render_selects_the_else_branch_with_a_spaced_end_tag() {
     ctx.set_bool("a", false);
     let r = template.render("{{if .a}}yes{{else}}no{{ end }}", ctx);
     match r {
-        .Ok(out) => testing.assert_eq_str(out, "no"),
+        .Ok(out) => assert(out == "no"),
         .Err(e) => panic(f"a spaced end tag must render: {e}"),
     }
 }
@@ -332,5 +330,5 @@ fn _test_render_selects_the_else_branch_with_a_spaced_end_tag() {
 #[test]
 fn test_template_error_display_prints_the_carried_detail() {
     let err = TemplateError.UnknownDirective("template: unknown directive `{{foo}}`");
-    testing.assert_eq_str(to_string(err), "template: unknown directive `{{foo}}`");
+    assert(to_string(err) == "template: unknown directive `{{foo}}`");
 }

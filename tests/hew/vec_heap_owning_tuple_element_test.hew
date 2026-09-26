@@ -10,8 +10,6 @@
 //! built through the OWNED ABI. The fix routes the tuple arm through the
 //! record-aware authority, so getter/constructor/free agree.
 
-import std.testing;
-
 type Rec {
     s: string,
 }
@@ -23,10 +21,10 @@ fn heap_owning_tuple_element_round_trips() {
     v.push((Rec { s: "world" }, 2));
     let p0 = v[0];
     let p1 = v[1];
-    testing.assert_eq_str(p0.0.s, "hello");
-    testing.assert_eq(p0.1, 1);
-    testing.assert_eq_str(p1.0.s, "world");
-    testing.assert_eq(p1.1, 2);
+    assert(p0.0.s == "hello");
+    assert(p0.1 == 1);
+    assert(p1.0.s == "world");
+    assert(p1.1 == 2);
 }
 
 #[test]
@@ -34,5 +32,5 @@ fn heap_owning_tuple_element_sum_payload() {
     var v: Vec<(Rec, i64)> = Vec.new();
     v.push((Rec { s: "a" }, 10));
     v.push((Rec { s: "b" }, 32));
-    testing.assert_eq(v[0].1 + v[1].1, 42);
+    assert(v[0].1 + v[1].1 == 42);
 }

@@ -13,8 +13,6 @@
 
 import std.string;
 
-import std.testing;
-
 enum Action {
     Move,
     Left,
@@ -47,10 +45,10 @@ fn action_name(a: Action) -> string {
 
 #[test]
 fn test_string_return_from_all_diverging_tail_match() {
-    testing.assert_eq_str(action_name(Action.Move), "MOVE");
-    testing.assert_eq_str(action_name(Action.Left), "LEFT");
-    testing.assert_eq_str(action_name(Action.Right), "RIGHT");
-    testing.assert_eq_str(action_name(Action.Wait), "WAIT");
+    assert(action_name(Action.Move) == "MOVE");
+    assert(action_name(Action.Left) == "LEFT");
+    assert(action_name(Action.Right) == "RIGHT");
+    assert(action_name(Action.Wait) == "WAIT");
 }
 
 // ── Vec return from an all-diverging tail match ───────────────────────────
@@ -84,16 +82,16 @@ fn action_codes(a: Action) -> Vec<i64> {
 #[test]
 fn test_vec_return_from_all_diverging_tail_match() {
     let m = action_codes(Action.Move);
-    testing.assert_eq(m.len(), 2);
-    testing.assert_eq(m[0], 10);
-    testing.assert_eq(m[1], 11);
+    assert(m.len() == 2);
+    assert(m[0] == 10);
+    assert(m[1] == 11);
     let r = action_codes(Action.Right);
-    testing.assert_eq(r.len(), 3);
-    testing.assert_eq(r[0], 30);
-    testing.assert_eq(r[1], 31);
-    testing.assert_eq(r[2], 32);
+    assert(r.len() == 3);
+    assert(r[0] == 30);
+    assert(r[1] == 31);
+    assert(r[2] == 32);
     let w = action_codes(Action.Wait);
-    testing.assert_eq(w.len(), 0);
+    assert(w.len() == 0);
 }
 
 // ── record return from an all-diverging tail match ────────────────────────
@@ -117,11 +115,11 @@ fn action_point(a: Action) -> Pt {
 #[test]
 fn test_record_return_from_all_diverging_tail_match() {
     let p = action_point(Action.Right);
-    testing.assert_eq(p.x, 5);
-    testing.assert_eq(p.y, 6);
+    assert(p.x == 5);
+    assert(p.y == 6);
     let q = action_point(Action.Move);
-    testing.assert_eq(q.x, 1);
-    testing.assert_eq(q.y, 2);
+    assert(q.x == 1);
+    assert(q.y == 2);
 }
 
 // ── value-yielding tail match must keep working (guard does not fire) ──────
@@ -136,8 +134,8 @@ fn loud(a: Action) -> string {
 
 #[test]
 fn test_value_yielding_tail_match_still_returns_arm_value() {
-    testing.assert_eq_str(loud(Action.Right), "right");
-    testing.assert_eq_str(loud(Action.Wait), "wait");
+    assert(loud(Action.Right) == "right");
+    assert(loud(Action.Wait) == "wait");
 }
 
 // ── divergence THROUGH a nested if/else (both branches return) ─────────────
@@ -175,12 +173,12 @@ fn routed(a: Action, c: bool) -> string {
 
 #[test]
 fn test_return_through_nested_if_in_every_arm() {
-    testing.assert_eq_str(routed(Action.Move, true), "MOVE-C");
-    testing.assert_eq_str(routed(Action.Move, false), "MOVE-NC");
-    testing.assert_eq_str(routed(Action.Left, true), "LEFT-C");
-    testing.assert_eq_str(routed(Action.Left, false), "LEFT-NC");
-    testing.assert_eq_str(routed(Action.Right, true), "RIGHT");
-    testing.assert_eq_str(routed(Action.Wait, false), "WAIT");
+    assert(routed(Action.Move, true) == "MOVE-C");
+    assert(routed(Action.Move, false) == "MOVE-NC");
+    assert(routed(Action.Left, true) == "LEFT-C");
+    assert(routed(Action.Left, false) == "LEFT-NC");
+    assert(routed(Action.Right, true) == "RIGHT");
+    assert(routed(Action.Wait, false) == "WAIT");
 }
 
 // ── Vec return through a nested if in every diverging arm ──────────────────
@@ -214,14 +212,14 @@ fn routed_codes(a: Action, c: bool) -> Vec<i64> {
 #[test]
 fn test_vec_return_through_nested_if() {
     let a = routed_codes(Action.Move, true);
-    testing.assert_eq(a.len(), 2);
-    testing.assert_eq(a[0], 1);
-    testing.assert_eq(a[1], 2);
+    assert(a.len() == 2);
+    assert(a[0] == 1);
+    assert(a[1] == 2);
     let b = routed_codes(Action.Move, false);
-    testing.assert_eq(b.len(), 1);
-    testing.assert_eq(b[0], 9);
+    assert(b.len() == 1);
+    assert(b[0] == 9);
     let w = routed_codes(Action.Wait, true);
-    testing.assert_eq(w.len(), 0);
+    assert(w.len() == 0);
 }
 
 // ── NORMAL value-returning tail if must still secure the Move (no regression)
@@ -238,8 +236,8 @@ fn pick(c: bool) -> string {
 
 #[test]
 fn test_normal_value_returning_tail_if_unaffected() {
-    testing.assert_eq_str(pick(true), "yes");
-    testing.assert_eq_str(pick(false), "no");
+    assert(pick(true) == "yes");
+    assert(pick(false) == "no");
 }
 
 // ── NORMAL guarded one-armed if: diverging then-branch, value tail after ────
@@ -254,6 +252,6 @@ fn guarded(c: bool) -> string {
 
 #[test]
 fn test_guarded_one_armed_if_keeps_reachable_join() {
-    testing.assert_eq_str(guarded(true), "early");
-    testing.assert_eq_str(guarded(false), "late");
+    assert(guarded(true) == "early");
+    assert(guarded(false) == "late");
 }

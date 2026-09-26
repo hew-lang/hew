@@ -6,142 +6,140 @@ import std.path;
 
 import std.process;
 
-import std.testing;
-
 import std.time.datetime;
 
 // ── combine ─────────────────────────────────────────────────────────────
 #[test]
 fn test_combine_avoids_double_slash_when_left_has_trailing_slash() {
-    testing.assert_eq_str(path.combine("/a/", "b"), "/a/b");
+    assert(path.combine("/a/", "b") == "/a/b");
 }
 
 #[test]
 fn test_combine_inserts_separator_when_left_has_no_trailing_slash() {
-    testing.assert_eq_str(path.combine("/a", "b"), "/a/b");
+    assert(path.combine("/a", "b") == "/a/b");
 }
 
 #[test]
 fn test_combine_returns_absolute_right_hand_side_unchanged() {
-    testing.assert_eq_str(path.combine("/a", "/b"), "/b");
+    assert(path.combine("/a", "/b") == "/b");
 }
 
 #[test]
 fn test_combine_returns_empty_string_when_both_inputs_are_empty() {
-    testing.assert_eq_str(path.combine("", ""), "");
+    assert(path.combine("", "") == "");
 }
 
 // ── dirname ─────────────────────────────────────────────────────────────
 #[test]
 fn test_dirname_returns_parent_for_simple_file_path() {
-    testing.assert_eq_str(path.dirname("/home/user/file.txt"), "/home/user");
+    assert(path.dirname("/home/user/file.txt") == "/home/user");
 }
 
 #[test]
 fn test_dirname_returns_root_for_root_file() {
-    testing.assert_eq_str(path.dirname("/file"), "/");
+    assert(path.dirname("/file") == "/");
 }
 
 #[test]
 fn test_dirname_returns_empty_string_when_no_slash_exists() {
-    testing.assert_eq_str(path.dirname("file.txt"), "");
+    assert(path.dirname("file.txt") == "");
 }
 
 #[test]
 fn test_dirname_strips_trailing_slash_before_split() {
-    testing.assert_eq_str(path.dirname("/home/user/"), "/home");
+    assert(path.dirname("/home/user/") == "/home");
 }
 
 // ── basename ────────────────────────────────────────────────────────────
 #[test]
 fn test_basename_returns_final_component_for_standard_path() {
-    testing.assert_eq_str(path.basename("/home/user/file.txt"), "file.txt");
+    assert(path.basename("/home/user/file.txt") == "file.txt");
 }
 
 #[test]
 fn test_basename_strips_trailing_slash() {
-    testing.assert_eq_str(path.basename("/home/user/"), "user");
+    assert(path.basename("/home/user/") == "user");
 }
 
 #[test]
 fn test_basename_returns_entire_string_when_no_slash_exists() {
-    testing.assert_eq_str(path.basename("file.txt"), "file.txt");
+    assert(path.basename("file.txt") == "file.txt");
 }
 
 #[test]
 fn test_basename_returns_empty_string_for_root() {
-    testing.assert_eq_str(path.basename("/"), "");
+    assert(path.basename("/") == "");
 }
 
 // ── extension ───────────────────────────────────────────────────────────
 #[test]
 fn test_extension_returns_standard_extension() {
-    testing.assert_eq_str(path.extension("photo.jpg"), "jpg");
+    assert(path.extension("photo.jpg") == "jpg");
 }
 
 #[test]
 fn test_extension_uses_last_dot_for_multi_dot_names() {
-    testing.assert_eq_str(path.extension("archive.tar.gz"), "gz");
+    assert(path.extension("archive.tar.gz") == "gz");
 }
 
 #[test]
 fn test_extension_returns_empty_string_when_no_dot_exists() {
-    testing.assert_eq_str(path.extension("Makefile"), "");
+    assert(path.extension("Makefile") == "");
 }
 
 #[test]
 fn test_extension_returns_empty_string_for_leading_dot_only() {
-    testing.assert_eq_str(path.extension(".gitignore"), "");
+    assert(path.extension(".gitignore") == "");
 }
 
 #[test]
 fn test_extension_uses_basename_for_full_path() {
-    testing.assert_eq_str(path.extension("/home/user/file.txt"), "txt");
+    assert(path.extension("/home/user/file.txt") == "txt");
 }
 
 // ── normalize ───────────────────────────────────────────────────────────
 #[test]
 fn test_normalize_collapses_dotdot_against_preceding_component() {
-    testing.assert_eq_str(path.normalize("/var/www/../../etc/passwd"), "/etc/passwd");
+    assert(path.normalize("/var/www/../../etc/passwd") == "/etc/passwd");
 }
 
 #[test]
 fn test_normalize_collapses_dot_and_dotdot_in_relative_path() {
-    testing.assert_eq_str(path.normalize("a/./b/../c"), "a/c");
+    assert(path.normalize("a/./b/../c") == "a/c");
 }
 
 #[test]
 fn test_normalize_preserves_leading_dotdot_on_relative_path() {
     // A relative path with no earlier component to cancel against keeps the
     // leading `..` — there is nothing lexical to resolve it to.
-    testing.assert_eq_str(path.normalize("../../etc/passwd"), "../../etc/passwd");
+    assert(path.normalize("../../etc/passwd") == "../../etc/passwd");
 }
 
 #[test]
 fn test_normalize_empty_path_returns_dot() {
-    testing.assert_eq_str(path.normalize(""), ".");
+    assert(path.normalize("") == ".");
 }
 
 #[test]
 fn test_normalize_root_stays_root() {
-    testing.assert_eq_str(path.normalize("/"), "/");
+    assert(path.normalize("/") == "/");
 }
 
 #[test]
 fn test_normalize_strips_trailing_slash() {
-    testing.assert_eq_str(path.normalize("/a/b/"), "/a/b");
+    assert(path.normalize("/a/b/") == "/a/b");
 }
 
 #[test]
 fn test_normalize_dotdot_above_root_collapses_to_root() {
     // `..` above the root has nowhere to go; filepath.Clean semantics
     // collapse it back to root rather than erroring or escaping.
-    testing.assert_eq_str(path.normalize("/../a"), "/a");
+    assert(path.normalize("/../a") == "/a");
 }
 
 #[test]
 fn test_normalize_collapses_repeated_separators() {
-    testing.assert_eq_str(path.normalize("/home//user"), "/home/user");
+    assert(path.normalize("/home//user") == "/home/user");
 }
 
 #[test]
@@ -150,7 +148,7 @@ fn test_normalize_absolute_with_escape_shape_stays_lexically_clean() {
     // (`<cwd>/../../etc/passwd`); normalize(absolute(p)) is the documented
     // safe pattern for lexical cleanup.
     let escaped = path.combine("/srv/app/data", "../../etc/passwd");
-    testing.assert_eq_str(path.normalize(escaped), "/srv/etc/passwd");
+    assert(path.normalize(escaped) == "/srv/etc/passwd");
 }
 
 // ── heap-string regression tests ────────────────────────────────────────
@@ -171,12 +169,12 @@ fn test_normalize_absolute_with_escape_shape_stays_lexically_clean() {
 fn test_combine_absolute_right_hand_side_with_heap_inputs() {
     let prefix = "/" + "home";
     let result = path.combine("/left", prefix);
-    testing.assert_eq_str(result, "/home");
+    assert(result == "/home");
     // Call twice in the same scope: if a duplicate drop were triggered on
     // the first call, the allocator would abort before we reach this line.
     let prefix2 = "/" + "usr";
     let result2 = path.combine("/x", prefix2);
-    testing.assert_eq_str(result2, "/usr");
+    assert(result2 == "/usr");
 }
 
 // combine — empty left-hand side with heap right
@@ -185,10 +183,10 @@ fn test_combine_absolute_right_hand_side_with_heap_inputs() {
 fn test_combine_empty_left_hand_with_heap_right() {
     let rhs = "rel" + "/path";
     let result = path.combine("", rhs);
-    testing.assert_eq_str(result, "rel/path");
+    assert(result == "rel/path");
     let rhs2 = "other" + "/dir";
     let result2 = path.combine("", rhs2);
-    testing.assert_eq_str(result2, "other/dir");
+    assert(result2 == "other/dir");
 }
 
 // dirname — no trailing slash, exercising the strip_trailing_slash no-op path
@@ -198,10 +196,10 @@ fn test_combine_empty_left_hand_with_heap_right() {
 fn test_dirname_no_trailing_slash_with_heap_input() {
     let p = "/home/" + "user/file.txt";
     let result = path.dirname(p);
-    testing.assert_eq_str(result, "/home/user");
+    assert(result == "/home/user");
     let p2 = "/var/" + "log/app.log";
     let result2 = path.dirname(p2);
-    testing.assert_eq_str(result2, "/var/log");
+    assert(result2 == "/var/log");
 }
 
 // basename — no slash in input, exercising strip_trailing_slash no-op and
@@ -211,10 +209,10 @@ fn test_dirname_no_trailing_slash_with_heap_input() {
 fn test_basename_no_slash_with_heap_input() {
     let p = "file" + ".txt";
     let result = path.basename(p);
-    testing.assert_eq_str(result, "file.txt");
+    assert(result == "file.txt");
     let p2 = "README" + ".md";
     let result2 = path.basename(p2);
-    testing.assert_eq_str(result2, "README.md");
+    assert(result2 == "README.md");
 }
 
 // extension — path with slash and dot, exercises basename → strip_trailing_slash
@@ -223,10 +221,10 @@ fn test_basename_no_slash_with_heap_input() {
 fn test_extension_with_heap_input() {
     let p = "/home/user/" + "photo.jpg";
     let result = path.extension(p);
-    testing.assert_eq_str(result, "jpg");
+    assert(result == "jpg");
     let p2 = "/var/log/" + "app.log";
     let result2 = path.extension(p2);
-    testing.assert_eq_str(result2, "log");
+    assert(result2 == "log");
 }
 
 // ── glob expansion truth ────────────────────────────────────────────────
@@ -251,9 +249,9 @@ fn chmod_dir(mode: string, dir: string) -> i64 {
 fn test_try_glob_reports_matches_for_a_completed_walk() {
     match path.glob("std/*.hew") {
         .Ok(matches) => {
-            testing.assert_true(matches.len() > 0);
+            assert(matches.len() > 0);
             match matches.try_get(0) {
-                .Some(first) => testing.assert_true(first.starts_with("std/")),
+                .Some(first) => assert(first.starts_with("std/")),
                 .None => panic("expected a first match"),
             }
         },
@@ -264,7 +262,7 @@ fn test_try_glob_reports_matches_for_a_completed_walk() {
 #[test]
 fn test_try_glob_reports_no_match_as_an_empty_success() {
     match path.glob("std/hew-no-such-glob-subject-*.hew") {
-        .Ok(matches) => testing.assert_true(matches.len() == 0),
+        .Ok(matches) => assert(matches.len() == 0),
         .Err(_) => panic("a completed walk that matched nothing is not a failure"),
     }
 }
@@ -276,7 +274,7 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
     let inner = f"{dir}/sub";
     fs.mkdir_all(inner).expect("mkdir_all succeeds");
     fs.write(f"{inner}/present.txt", "x").expect("write succeeds");
-    testing.assert_true(chmod_dir("000", inner) == 0);
+    assert(chmod_dir("000", inner) == 0);
     let observed = match path.glob(f"{inner}/*") {
         .Ok(_) => "fabricated-empty-success",
         .Err(err) => to_string(err),
@@ -284,7 +282,7 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
     chmod_dir("755", inner);
     let _ = fs.delete(f"{inner}/present.txt");
     process.run_argv("rm", rm_rf_args(dir)).expect("run_argv succeeds");
-    testing.assert_true(observed.contains("aborted"));
+    assert(observed.contains("aborted"));
 }
 
 fn rm_rf_args(dir: string) -> Vec<string> {
@@ -300,26 +298,26 @@ fn test_glob_try_get_rejects_a_wrapped_index() {
         .Ok(matches) => matches,
         .Err(error) => panic(to_string(error)),
     };
-    testing.assert_true(matches.len() > 0);
+    assert(matches.len() > 0);
     // 2^32 narrows to 0 under `index as i32`.
-    testing.assert_true(match matches.try_get(4294967296) {
+    assert(match matches.try_get(4294967296) {
         .Some(_) => false,
         .None => true,
     });
     // 2^32 - 1 narrows to -1.
-    testing.assert_true(match matches.try_get(4294967295) {
+    assert(match matches.try_get(4294967295) {
         .Some(_) => false,
         .None => true,
     });
-    testing.assert_true(match matches.try_get(-1) {
+    assert(match matches.try_get(-1) {
         .Some(_) => false,
         .None => true,
     });
-    testing.assert_true(match matches.try_get(matches.len()) {
+    assert(match matches.try_get(matches.len()) {
         .Some(_) => false,
         .None => true,
     });
-    testing.assert_true(match matches.try_get(0) {
+    assert(match matches.try_get(0) {
         .Some(_) => true,
         .None => false,
     });
@@ -330,7 +328,7 @@ fn test_glob_try_get_rejects_a_wrapped_index() {
 #[test]
 fn test_path_error_display_prints_the_carried_detail() {
     let glob_failed = PathError.GlobFailed("boom");
-    testing.assert_eq_str(to_string(glob_failed), "boom");
+    assert(to_string(glob_failed) == "boom");
     let out_of_range = PathError.IndexOutOfRange("index 3 out of range");
-    testing.assert_eq_str(to_string(out_of_range), "index 3 out of range");
+    assert(to_string(out_of_range) == "index 3 out of range");
 }

@@ -77,11 +77,11 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
     Some(match name {
         "resource" | "linear" | "opaque" | "json" | "yaml" | "deprecated" => &[TypeDecl],
         "wire" => &[TypeDecl, Field],
-        // `#[ignore]`/`#[should_panic]`/`#[serial]` structurally sit at
+        // `#[ignore]`/`#[should_panic]`/`#[serial]`/`#[real_time]` sit at
         // `FreeFn` like `#[test]` and `#[export]`; the co-occurrence half of
         // their `#[test]`-only rule is enforced by
         // `Parser::validate_attributes_for`, not by this table.
-        "test" | "export" | "ignore" | "should_panic" | "serial" => &[FreeFn],
+        "test" | "export" | "ignore" | "should_panic" | "serial" | "real_time" => &[FreeFn],
         "on" => &[ActorMemberFn],
         "every" => &[ActorReceiveFn],
         "max_heap" => &[ActorDecl],
@@ -110,11 +110,14 @@ impl Parser<'_> {
         let has_test = attrs.iter().any(|a| a.name == "test");
         for attr in attrs {
             let in_table = legal_positions(&attr.name).is_some_and(|p| p.contains(&position));
-            // `#[ignore]`, `#[should_panic]`, and `#[serial]` structurally sit
+            // `#[ignore]`, `#[should_panic]`, `#[serial]` and `#[real_time]` sit
             // at `FreeFn` like `#[test]` itself, but §12.6 only legalises them
             // on a function that also carries `#[test]` — a misspelled
             // `#[test]` must not leave them silently accepted either.
-            let requires_test = matches!(attr.name.as_str(), "ignore" | "should_panic" | "serial");
+            let requires_test = matches!(
+                attr.name.as_str(),
+                "ignore" | "should_panic" | "serial" | "real_time"
+            );
             let legal = in_table && (!requires_test || has_test);
             if !legal {
                 self.error_at(

@@ -8,8 +8,6 @@
 //! All tests assert EXACT field values — a runtime-green exit alone is not
 //! evidence (a garbage codegen path can produce exit 0 with wrong field data).
 
-import std.testing;
-
 type Point {
     x: i64,
     y: i64,
@@ -29,8 +27,8 @@ fn scale(p: Point, factor: i64) -> Point {
 fn destruct_function_return_exact_values() {
     let p = make_point(3, 4);
     let Point { x, y } = p;
-    testing.assert_eq(x, 3);
-    testing.assert_eq(y, 4);
+    assert(x == 3);
+    assert(y == 4);
 }
 
 /// Destructure inside a helper function and return a scaled result.
@@ -39,8 +37,8 @@ fn destruct_inside_called_function_exact_values() {
     let p = make_point(5, 6);
     let scaled = scale(p, 2);
     let Point { x, y } = scaled;
-    testing.assert_eq(x, 10);
-    testing.assert_eq(y, 12);
+    assert(x == 10);
+    assert(y == 12);
 }
 
 /// Chain: construct → destructure → re-construct → destructure again.
@@ -51,8 +49,8 @@ fn destruct_chained_construction_exact_values() {
     let Point { x: a, y: b } = p1;
     let p2 = Point { x: a + 1, y: b + 1 };
     let Point { x: c, y: d } = p2;
-    testing.assert_eq(a, 2);
-    testing.assert_eq(b, 3);
-    testing.assert_eq(c, 3);
-    testing.assert_eq(d, 4);
+    assert(a == 2);
+    assert(b == 3);
+    assert(c == 3);
+    assert(d == 4);
 }

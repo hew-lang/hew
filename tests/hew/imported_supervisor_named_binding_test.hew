@@ -5,8 +5,6 @@ import tests.hew.imported_supervisor_named_binding_support.worker.{Worker};
 
 import tests.hew.imported_supervisor_named_binding_support.worker.{Worker as Renamed};
 
-import std.testing;
-
 supervisor DirectPool {
     strategy: one_for_one,
 
@@ -23,14 +21,14 @@ supervisor AliasedPool {
 fn named_and_aliased_actors_run_as_supervised_children() {
     let direct = spawn DirectPool;
     match direct.worker.identify() {
-        .Ok(id) => testing.assert_eq(id, 31),
-        .Err(_) => testing.assert_true(false),
+        .Ok(id) => assert(id == 31),
+        .Err(_) => assert(false),
     }
     supervisor_stop(direct);
     let aliased = spawn AliasedPool;
     match aliased.worker.identify() {
-        .Ok(id) => testing.assert_eq(id, 47),
-        .Err(_) => testing.assert_true(false),
+        .Ok(id) => assert(id == 47),
+        .Err(_) => assert(false),
     }
     supervisor_stop(aliased);
 }

@@ -5617,11 +5617,11 @@ fn recognised_attribute_name_rejected_in_wrong_position() {
 
 #[test]
 fn test_trio_attrs_rejected_without_co_occurring_test_attr() {
-    // `#[ignore]`, `#[should_panic]`, and `#[serial]` are only legal on a
+    // `#[ignore]`, `#[should_panic]`, `#[serial]` and `#[real_time]` are only legal on a
     // function that also carries `#[test]` (§12.6). Without it, each is
     // E_UNKNOWN_ATTRIBUTE — a misspelled `#[test]` must not leave these
     // siblings silently accepted either.
-    for attr in ["ignore", "should_panic", "serial"] {
+    for attr in ["ignore", "should_panic", "serial", "real_time"] {
         let source = format!("#[{attr}]\nfn probe() {{}}\nfn main() {{ probe(); }}");
         let result = parse(&source);
         assert!(
@@ -5638,8 +5638,8 @@ fn test_trio_attrs_rejected_without_co_occurring_test_attr() {
 #[test]
 fn test_trio_attrs_accepted_with_co_occurring_test_attr() {
     // The positive control for `test_trio_attrs_rejected_without_co_occurring_test_attr`:
-    // the same three attributes are legal once `#[test]` is present.
-    for attr in ["ignore", "should_panic", "serial"] {
+    // the same attributes are legal once `#[test]` is present.
+    for attr in ["ignore", "should_panic", "serial", "real_time"] {
         let source = format!("#[test]\n#[{attr}]\nfn probe() {{}}\nfn main() {{}}");
         let result = parse(&source);
         assert!(

@@ -71,7 +71,7 @@ fn main() {
     };
     println(f"[client] received: {resp_msg}");
     let eof = stream.recv();
-    assert_eq(eof.len(), 0);
+    assert(eof.len() == 0);
 
     // Clean shutdown of stream.
     stream.close();

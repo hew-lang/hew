@@ -3,12 +3,12 @@
 // rejected them. Pin that they now compute exact values.
 fn main() -> i64 {
     let m: isize = 6;
-    assert_eq((m * 7) as i64, 42);
+    assert(((m * 7) as i64) == 42);
 
     let s: isize = 50;
-    assert_eq((s - 8) as i64, 42);
+    assert(((s - 8) as i64) == 42);
 
     let a: isize = 40;
-    assert_eq((a + 2) as i64, 42);
+    assert(((a + 2) as i64) == 42);
     0
 }

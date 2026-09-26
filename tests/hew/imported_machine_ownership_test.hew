@@ -7,8 +7,6 @@
 
 import tests.hew.imported_machine_support.machine_defs;
 
-import std.testing;
-
 type Envelope {
     value: machine_defs.PayloadLifecycle,
     marker: i64,
@@ -37,7 +35,7 @@ fn imported_private_machine_crosses_an_owned_call_boundary() {
         machine_defs.RunLifecycle.Running => 1,
         _ => 0,
     };
-    testing.assert_eq(tag, 1);
+    assert(tag == 1);
 }
 
 #[test]
@@ -45,18 +43,18 @@ fn imported_payload_machine_covers_construction_calls_returns_and_record_storage
     let direct = machine_defs.make("caller-to-callee".to_upper());
     let returned = machine_defs.bounce(direct);
     let envelope = Envelope { value: returned, marker: 17 };
-    testing.assert_eq(envelope.marker, 17);
-    testing.assert_eq_str(payload_label(envelope.value), "CALLER-TO-CALLEE");
+    assert(envelope.marker == 17);
+    assert(payload_label(envelope.value) == "CALLER-TO-CALLEE");
     let made = machine_defs.make("callee-to-caller".to_upper());
     let carried = carry_payload(made);
-    testing.assert_eq_str(payload_label(carried), "CALLEE-TO-CALLER");
+    assert(payload_label(carried) == "CALLEE-TO-CALLER");
 }
 
 #[test]
 fn imported_machine_transitions_and_supports_dotted_unit_construction() {
     var value = machine_defs.PayloadLifecycle.Empty;
     value.step(machine_defs.PayloadLifecycleEvent.Load);
-    testing.assert_eq_str(payload_label(value), "TRANSITIONED");
+    assert(payload_label(value) == "TRANSITIONED");
 }
 
 /// `payload_label`'s match arms are `module.Type::Variant` patterns
@@ -70,7 +68,7 @@ fn imported_machine_transitions_and_supports_dotted_unit_construction() {
 #[test]
 fn module_qualified_variant_pattern_selects_the_matching_arm_for_both_states() {
     let empty = machine_defs.PayloadLifecycle.Empty;
-    testing.assert_eq_str(payload_label(empty), "empty");
+    assert(payload_label(empty) == "empty");
     let loaded = machine_defs.make("direct".to_upper());
-    testing.assert_eq_str(payload_label(loaded), "DIRECT");
+    assert(payload_label(loaded) == "DIRECT");
 }

@@ -33,7 +33,7 @@ fn main() {
     println(kept);
 }
 "#,
-        "condition\nstill live\ncondition\nowned assertion value\nparent cleanup\nhew: failure: UserPanic (212): assertion failed\n\nstill live\n",
+        "condition\nstill live\ncondition\nowned assertion value\nparent cleanup\nhew: failure: UserPanic (212): assertion failed: check(false)\n\nstill live\n",
         0,
         "",
     );

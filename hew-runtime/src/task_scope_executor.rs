@@ -184,7 +184,11 @@ impl Driver {
 }
 
 fn enqueue(execution: Arc<TaskExecution>) {
-    crate::scheduler::enqueue_task(execution);
+    if crate::driver::active() {
+        crate::driver::publish_task(execution);
+    } else {
+        crate::scheduler::enqueue_task(execution);
+    }
 }
 
 unsafe extern "C" fn wake(context: *mut c_void) {

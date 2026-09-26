@@ -13,8 +13,6 @@
 //! the handler resumes; results consumed via `await` are BitCopy scalars
 //! (i64), so scope exit carries no heap ownership to release here.
 
-import std.testing;
-
 // No-arg unit-returning generic callee. The two type args (`i64`, `string`)
 // each generate a separate monomorphized function (`unit_work$$i64`,
 // `unit_work$$string`), each with its own task-entry adapter.
@@ -88,8 +86,8 @@ actor TaskRunner {
 fn test_generic_free_fn_task_spawn_value() {
     let r = spawn TaskRunner(total: 0);
     match r.run_value_tasks() {
-        .Ok(n) => testing.assert_eq(n, 84),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 84),
+        .Err(_) => assert(false),
     }
 }
 
@@ -97,8 +95,8 @@ fn test_generic_free_fn_task_spawn_value() {
 fn test_generic_free_fn_task_spawn_unit_fork_block() {
     let r = spawn TaskRunner(total: 0);
     match r.run_unit_fork_block() {
-        .Ok(n) => testing.assert_eq(n, 7),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 7),
+        .Err(_) => assert(false),
     }
 }
 
@@ -106,7 +104,7 @@ fn test_generic_free_fn_task_spawn_unit_fork_block() {
 fn test_generic_free_fn_task_spawn_arg_fork_block() {
     let r = spawn TaskRunner(total: 0);
     match r.run_arg_fork_block() {
-        .Ok(n) => testing.assert_eq(n, 55),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 55),
+        .Err(_) => assert(false),
     }
 }

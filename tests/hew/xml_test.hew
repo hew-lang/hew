@@ -2,8 +2,6 @@
 
 import std.encoding.xml;
 
-import std.testing;
-
 // ── Happy-path parse ──────────────────────────────────────────────────
 #[test]
 fn test_parse_root_tag() {
@@ -11,7 +9,7 @@ fn test_parse_root_tag() {
         .Ok(node) => node,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(root.get_tag(), "a");
+    assert(root.get_tag() == "a");
     root.close();
 }
 
@@ -21,7 +19,7 @@ fn test_parse_text_content() {
         .Ok(node) => node,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(root.get_text(), "hello");
+    assert(root.get_text() == "hello");
     root.close();
 }
 
@@ -31,7 +29,7 @@ fn test_parse_children_count() {
         .Ok(node) => node,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(root.children_count(), 2);
+    assert(root.children_count() == 2);
     root.close();
 }
 
@@ -42,7 +40,7 @@ fn test_parse_child_tag() {
         .Err(reason) => panic(reason),
     };
     let child = root.get_child(0);
-    testing.assert_eq_str(child.get_tag(), "item");
+    assert(child.get_tag() == "item");
     child.close();
     root.close();
 }
@@ -53,7 +51,7 @@ fn test_parse_attribute() {
         .Ok(node) => node,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(root.get_attribute("id"), "42");
+    assert(root.get_attribute("id") == "42");
     root.close();
 }
 
@@ -64,7 +62,7 @@ fn test_is_element_returns_positive_for_element() {
         .Err(reason) => panic(reason),
     };
     // is_element == 1 for element nodes
-    testing.assert_eq(root.is_element() as i64, 1);
+    assert((root.is_element() as i64) == 1);
     root.close();
 }
 
@@ -84,7 +82,7 @@ fn test_missing_attribute_returns_empty() {
         .Ok(node) => node,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(root.get_attribute("missing"), "");
+    assert(root.get_attribute("missing") == "");
     root.close();
 }
 
@@ -112,12 +110,12 @@ fn test_parse_rejects_malformed_input() {
 
 #[test]
 fn test_is_wellformed_true_for_valid_xml() {
-    testing.assert_true(xml.is_wellformed("<a>text</a>"));
+    assert(xml.is_wellformed("<a>text</a>"));
 }
 
 #[test]
 fn test_is_wellformed_false_for_malformed_xml() {
-    testing.assert_false(xml.is_wellformed("<unclosed"));
+    assert(!xml.is_wellformed("<unclosed"));
 }
 
 // ── XML documents must be structurally well-formed to parse ───────────
@@ -128,7 +126,7 @@ fn test_parse_rejects_multiple_root_elements() {
             node.close();
             panic("expected a document with two roots to be rejected");
         },
-        .Err(reason) => testing.assert_eq_str(reason, "xml: document has more than one root element"),
+        .Err(reason) => assert(reason == "xml: document has more than one root element"),
     }
 }
 
@@ -139,7 +137,7 @@ fn test_parse_rejects_a_close_tag_that_does_not_match() {
             node.close();
             panic("expected a mismatched close tag to be rejected");
         },
-        .Err(reason) => testing.assert_true(reason.contains("</c>")),
+        .Err(reason) => assert(reason.contains("</c>")),
     }
 }
 
@@ -150,7 +148,7 @@ fn test_parse_rejects_a_malformed_attribute() {
             node.close();
             panic("expected a malformed attribute to be rejected");
         },
-        .Err(reason) => testing.assert_eq_str(reason, "xml: element `a` has a malformed attribute"),
+        .Err(reason) => assert(reason == "xml: element `a` has a malformed attribute"),
     }
 }
 
@@ -161,7 +159,7 @@ fn test_parse_rejects_an_unknown_entity_reference() {
             node.close();
             panic("expected an unknown entity reference to be rejected");
         },
-        .Err(reason) => testing.assert_eq_str(reason, "xml: `&nope;` is not a known entity reference"),
+        .Err(reason) => assert(reason == "xml: `&nope;` is not a known entity reference"),
     }
 }
 
@@ -172,7 +170,7 @@ fn test_parse_rejects_a_document_with_no_root_element() {
             node.close();
             panic("expected a document with no root element to be rejected");
         },
-        .Err(reason) => testing.assert_eq_str(reason, "xml: document has no root element"),
+        .Err(reason) => assert(reason == "xml: document has no root element"),
     }
 }
 
@@ -180,10 +178,10 @@ fn test_parse_rejects_a_document_with_no_root_element() {
 fn test_parse_preserves_a_well_formed_document() {
     match xml.parse("<root a=\"1\"><kid>hi</kid></root>") {
         .Ok(node) => {
-            testing.assert_eq_str(node.get_tag(), "root");
-            testing.assert_eq_str(node.get_attribute("a"), "1");
-            testing.assert_eq(node.children_count(), 1);
-            testing.assert_eq_str(node.get_text(), "hi");
+            assert(node.get_tag() == "root");
+            assert(node.get_attribute("a") == "1");
+            assert(node.children_count() == 1);
+            assert(node.get_text() == "hi");
             node.close();
         },
         .Err(reason) => panic(f"a well-formed document must parse: {reason}"),
@@ -194,7 +192,7 @@ fn test_parse_preserves_a_well_formed_document() {
 fn test_parse_preserves_predefined_entities() {
     match xml.parse("<root>a &lt; b &amp; c</root>") {
         .Ok(node) => {
-            testing.assert_eq_str(node.get_text(), "a < b & c");
+            assert(node.get_text() == "a < b & c");
             node.close();
         },
         .Err(reason) => panic(f"predefined entities must still expand: {reason}"),
@@ -205,7 +203,7 @@ fn test_parse_preserves_predefined_entities() {
 fn test_parse_decodes_entities_in_attributes() {
     match xml.parse("<root label=\"a &lt; b &amp; &quot;q&quot;\"/>") {
         .Ok(node) => {
-            testing.assert_eq_str(node.get_attribute("label"), "a < b & \"q\"");
+            assert(node.get_attribute("label") == "a < b & \"q\"");
             node.close();
         },
         .Err(reason) => panic(f"attribute entities must expand: {reason}"),
@@ -219,14 +217,14 @@ fn test_parse_rejects_non_whitespace_outside_the_root() {
             node.close();
             panic("text before the root must be rejected");
         },
-        .Err(reason) => testing.assert_true(reason.contains("outside the root")),
+        .Err(reason) => assert(reason.contains("outside the root")),
     }
     match xml.parse("<root/>after") {
         .Ok(node) => {
             node.close();
             panic("text after the root must be rejected");
         },
-        .Err(reason) => testing.assert_true(reason.contains("outside the root")),
+        .Err(reason) => assert(reason.contains("outside the root")),
     }
 }
 
@@ -240,8 +238,8 @@ fn test_parse_allows_xml_whitespace_around_the_root() {
 
 #[test]
 fn test_is_wellformed_rejects_multiple_roots() {
-    testing.assert_false(xml.is_wellformed("<a/><b/>"));
-    testing.assert_true(xml.is_wellformed("<a><b/></a>"));
+    assert(!xml.is_wellformed("<a/><b/>"));
+    assert(xml.is_wellformed("<a><b/></a>"));
 }
 
 #[test]

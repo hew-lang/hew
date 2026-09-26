@@ -664,7 +664,7 @@ fn test_runner_relative_path_invocation_discovers_same_tests_as_absolute_path() 
     write_file(
         dir.path(),
         "suite/relative_discovery_test.hew",
-        "#[test]\n#[ignore]\nfn before_import() {\n    assert(true);\n}\n\nimport std.testing;\n\n#[test]\n#[ignore]\nfn after_import() {\n    assert(true);\n}\n",
+        "#[test]\n#[ignore]\nfn before_import() {\n    assert(true);\n}\n\nimport std.math;\n\n#[test]\n#[ignore]\nfn after_import() {\n    assert(true);\n}\n",
     );
     let absolute_path = dir.path().join("suite").join("relative_discovery_test.hew");
 

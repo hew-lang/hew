@@ -20,8 +20,6 @@
 //! `exercised_*` test pins the already-working matched-Option path so the fix
 //! does not perturb it.
 
-import std.testing;
-
 // ── SF2-shape: transitively-nested `Option<string>`, never exercised. ──
 type CSlot {
     generation: i64,
@@ -43,8 +41,8 @@ fn _constructs_record_with_unexercised_nested_option_field() {
     let a: CArena = _cnew();
     // Assert exact structural values without touching the Option field, so the
     // present-but-unexercised trigger is preserved.
-    testing.assert_eq(a.slots.len(), 0);
-    testing.assert_eq(a.free.len(), 0);
+    assert(a.slots.len() == 0);
+    assert(a.free.len() == 0);
 }
 
 // ── Nested-enum coverage: `Result<i64, string>`, never exercised. ──
@@ -64,7 +62,7 @@ fn _rnew() -> RBox {
 #[test]
 fn _constructs_record_with_unexercised_nested_result_field() {
     let b: RBox = _rnew();
-    testing.assert_eq(b.slots.len(), 0);
+    assert(b.slots.len() == 0);
 }
 
 // ── Nested generic-enum-of-user-enum: `Option<Colour>`, never exercised. ──
@@ -90,7 +88,7 @@ fn _canvas_new() -> Canvas {
 #[test]
 fn _constructs_record_with_unexercised_nested_generic_enum_field() {
     let c: Canvas = _canvas_new();
-    testing.assert_eq(c.pixels.len(), 0);
+    assert(c.pixels.len() == 0);
 }
 
 // ── Regression pin: the matched-Option path still round-trips its value. ──
@@ -118,5 +116,5 @@ fn _exercised_nested_option_field_roundtrips_value() {
         },
         .None => "NONE",
     };
-    testing.assert_eq_str(got, "hello");
+    assert(got == "hello");
 }

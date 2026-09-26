@@ -58,7 +58,6 @@ std.semaphore	semaphore.new(1);
 std.sort	sort.sort_ints([1]);
 std.stream	let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe"); tx.close(); rx.close();
 std.string	string.from_int(1);
-std.testing	testing.assert_eq(1, 1);
 std.text.regex	regex.new("a");
 std.text.semver	semver.parse("1.2.3");
 std.text.template	template.parse("");

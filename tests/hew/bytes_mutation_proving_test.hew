@@ -8,8 +8,6 @@
 //! mutates the source, and asserts the slice still reads the pre-mutation
 //! bytes -- the exact-value form, not a smoke check.
 
-import std.testing;
-
 #[test]
 fn test_push_cow_leaves_slice_intact() {
     var source: bytes = bytes.new();
@@ -20,12 +18,12 @@ fn test_push_cow_leaves_slice_intact() {
     // The slice shares the buffer; pushing onto the source must CoW.
     let view: bytes = source[0..3];
     source.push(4);
-    testing.assert_eq(source.len(), 4);
-    testing.assert_eq_u8(source[3], 4);
+    assert(source.len() == 4);
+    assert(source[3] == 4);
     // The slice keeps its three pre-push bytes.
-    testing.assert_eq(view.len(), 3);
-    testing.assert_eq_u8(view[0], 1);
-    testing.assert_eq_u8(view[2], 3);
+    assert(view.len() == 3);
+    assert(view[0] == 1);
+    assert(view[2] == 3);
 }
 
 #[test]
@@ -38,10 +36,10 @@ fn test_set_cow_leaves_slice_intact() {
     source.set(0, 99);
 
     // The source's byte 0 changed; the slice keeps the original byte 0.
-    testing.assert_eq_u8(source[0], 99);
-    testing.assert_eq_u8(view[0], 10);
-    testing.assert_eq_u8(view[1], 20);
-    testing.assert_eq_u8(view[2], 30);
+    assert(source[0] == 99);
+    assert(view[0] == 10);
+    assert(view[1] == 20);
+    assert(view[2] == 30);
 }
 
 #[test]
@@ -52,11 +50,11 @@ fn test_pop_cow_leaves_slice_intact() {
     source.push(7);
     let view: bytes = source[0..3];
     let popped: u8 = source.pop();
-    testing.assert_eq_u8(popped, 7);
-    testing.assert_eq(source.len(), 2);
+    assert(popped == 7);
+    assert(source.len() == 2);
     // The slice still reads all three bytes.
-    testing.assert_eq(view.len(), 3);
-    testing.assert_eq_u8(view[2], 7);
+    assert(view.len() == 3);
+    assert(view[2] == 7);
 }
 
 #[test]
@@ -69,12 +67,12 @@ fn test_clear_on_owner_leaves_slice_alive() {
     source.push(3);
     let view: bytes = source[0..3];
     source.clear();
-    testing.assert_true(source.is_empty());
+    assert(source.is_empty());
     // The slice is unaffected and still fully readable.
-    testing.assert_eq(view.len(), 3);
-    testing.assert_eq_u8(view[0], 1);
-    testing.assert_eq_u8(view[1], 2);
-    testing.assert_eq_u8(view[2], 3);
+    assert(view.len() == 3);
+    assert(view[0] == 1);
+    assert(view[1] == 2);
+    assert(view[2] == 3);
 }
 
 #[test]
@@ -87,10 +85,10 @@ fn test_append_cow_leaves_slice_intact() {
     extra.push(3);
     extra.push(4);
     source.append(extra);
-    testing.assert_eq(source.len(), 4);
-    testing.assert_eq_u8(source[3], 4);
+    assert(source.len() == 4);
+    assert(source[3] == 4);
     // The slice keeps its own two bytes.
-    testing.assert_eq(view.len(), 2);
-    testing.assert_eq_u8(view[0], 1);
-    testing.assert_eq_u8(view[1], 2);
+    assert(view.len() == 2);
+    assert(view[0] == 1);
+    assert(view[1] == 2);
 }

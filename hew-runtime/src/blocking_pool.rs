@@ -102,6 +102,15 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     if !running {
         return -1;
     }
+    // The single-thread driver runs offloaded work inline at submission, so
+    // its completion enters the ready list in program order.
+    if crate::driver::active() {
+        drop(guard);
+        // SAFETY: the caller keeps `arg` valid until `func` completes, which
+        // is before this call returns.
+        unsafe { func(arg) };
+        return 0;
+    }
     queue.push(Task { func, arg });
     p.inner.condvar.notify_one();
     0

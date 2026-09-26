@@ -44,9 +44,6 @@ hew-suite	*	tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response
 hew-suite	*	tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path	runtime	#3584	tracked failure; see linked issue
 hew-suite	*	tests/hew/net_scalar_failclosed_test.hew::test_http_client_set_timeout_panics_at_legacy_boundary	runtime	#3585	tracked failure; see linked issue
 hew-suite	*	tests/hew/owned_nested_aggregate_clone_drop_test.hew::test_vec_clone_drops_nested_bytes_leaf_cleanly	runtime	#3586	tracked failure; see linked issue
-hew-suite	*	tests/hew/pipeline_i64_two_stage_test.hew::admission_reply_waits_for_downstream_post_send_barrier	timeout	#3587	tracked failure; see linked issue
-hew-suite	*	tests/hew/pipeline_i64_two_stage_test.hew::cancelled_admission_settles_and_pipeline_continues	timeout	#3588	tracked failure; see linked issue
-hew-suite	*	tests/hew/pipeline_i64_two_stage_test.hew::graceful_shutdown_drains_queued_owned_items	timeout	#3589	tracked failure; see linked issue
 nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1a_inherent_wins_dot_call	failure	#3566	W1 (D554-1/R1): dot-call dispatch picks the last-registered impl instead of the inherent method
 nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1b_dot_ambiguous_trait_method_refused	failure	#3567	W1/R1: dot-call dispatch with two same-named trait methods and no inherent method silently picks the last-registered impl instead of refusing as ambiguous
 nextest	linux,macos,windows,freebsd	hew-cli::identity_authority_vertical_slice::identity_w1c_inherent_wins_over_structural_trait	failure	#3568	W1/R4: same leaf mechanism as w1a, structural D509 witness case

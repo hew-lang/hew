@@ -737,7 +737,7 @@ impl<K, V> Index<K> for HashMap<K, V> {
 /// Convert a value of type `Self` into a human-readable `string`.
 ///
 /// Implementing `Display` for a type lets it flow through `print`,
-/// `println`, `assert_eq`, `assert_ne`, `to_string`, `len`, and `stop`.
+/// `println`, `to_string`, `len`, and `stop`.
 /// The trait method must return a `string` derived from the receiver
 /// without invoking `print` itself (otherwise the output path becomes
 /// recursive).
@@ -987,23 +987,14 @@ pub fn print(value: dyn Display) {}
 // ---------------------------------------------------------------------------
 // Assertions
 // ---------------------------------------------------------------------------
-/// Assert that a condition is true. Panics if `condition` is false.
+/// Assert that a condition is true, raising a recoverable logical fault when it
+/// is false.
 ///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let x = 5;
-///     assert(x > 0);
-/// }
-/// ```
-pub fn assert(condition: bool) {}
-
-/// Assert that two values are equal.
-///
-/// Both operands share one type that carries equality and a `Display`
-/// rendering. A mismatch raises the same recoverable logical fault `assert`
-/// and `panic` raise, with a message showing both values.
+/// A failure reports the condition's source text. When the condition is a
+/// comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), both operands are evaluated
+/// once and shown, with a line diff when either value spans lines. The
+/// optional second argument, `assert(condition, message)`, is a `string`
+/// evaluated only when the assertion fails.
 ///
 /// # Examples
 ///
@@ -1013,27 +1004,11 @@ pub fn assert(condition: bool) {}
 /// }
 ///
 /// fn main() {
-///     assert_eq(add(1, 2), 3);
+///     assert(add(1, 2) == 3);
+///     assert(add(2, 2) > 3, "sums grow");
 /// }
 /// ```
-pub fn assert_eq<T: Eq + Display>(left: T, right: T) {}
-
-/// Assert that two values are not equal.
-///
-/// Both operands share one type that carries equality and a `Display`
-/// rendering. A match raises the same recoverable logical fault `assert`
-/// and `panic` raise, with a message showing both values.
-///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let a = 1;
-///     let b = 2;
-///     assert_ne(a, b);
-/// }
-/// ```
-pub fn assert_ne<T: Eq + Display>(left: T, right: T) {}
+pub fn assert(condition: bool) {}
 
 // ---------------------------------------------------------------------------
 // string operations

@@ -10,8 +10,6 @@
 //! values (not just lengths) so an allocator-interleaving corruption cannot
 //! read as green.
 
-import std.testing;
-
 type S {
     n: i64,
     v: Vec<i64>,
@@ -52,10 +50,10 @@ fn _test_var_reassign_through_aliasing_fn_is_exact() {
     var s = mk();
     s = grow(s);
     s = grow(s);
-    testing.assert_eq(s.n, 2);
-    testing.assert_eq(s.v.len(), 2);
-    testing.assert_eq(s.v[0], 0);
-    testing.assert_eq(s.v[1], 1);
+    assert(s.n == 2);
+    assert(s.v.len() == 2);
+    assert(s.v[0] == 0);
+    assert(s.v[1] == 1);
 }
 
 // The accumulator idiom under repeated reassignment: every element must be
@@ -66,11 +64,11 @@ fn _test_loop_reassignment_accumulates_exact_elements() {
     for i in 0 .. 12 {
         s = grow(s);
     }
-    testing.assert_eq(s.n, 12);
-    testing.assert_eq(s.v.len(), 12);
-    testing.assert_eq(s.v[0], 0);
-    testing.assert_eq(s.v[6], 6);
-    testing.assert_eq(s.v[11], 11);
+    assert(s.n == 12);
+    assert(s.v.len() == 12);
+    assert(s.v[0] == 0);
+    assert(s.v[6] == 6);
+    assert(s.v[11] == 11);
 }
 
 // Two owned Vec fields moved through the same call: both must survive the
@@ -81,13 +79,13 @@ fn _test_two_vec_record_reassignment_is_exact() {
     p = _grow_pair(p);
     p = _grow_pair(p);
     p = _grow_pair(p);
-    testing.assert_eq(p.n, 3);
-    testing.assert_eq(p.a.len(), 3);
-    testing.assert_eq(p.b.len(), 3);
-    testing.assert_eq(p.a[0], 0);
-    testing.assert_eq(p.a[2], 2);
-    testing.assert_eq(p.b[0], 0);
-    testing.assert_eq(p.b[2], 20);
+    assert(p.n == 3);
+    assert(p.a.len() == 3);
+    assert(p.b.len() == 3);
+    assert(p.a[0] == 0);
+    assert(p.a[2] == 2);
+    assert(p.b[0] == 0);
+    assert(p.b[2] == 20);
 }
 
 // A callee whose return is a proven-fresh record keeps the overwrite release:
@@ -97,12 +95,12 @@ fn _test_reassignment_from_fresh_returning_fn_resets() {
     var s = mk();
     s = grow(s);
     s = _refresh(s);
-    testing.assert_eq(s.n, 0);
-    testing.assert_eq(s.v.len(), 0);
+    assert(s.n == 0);
+    assert(s.v.len() == 0);
     s = grow(s);
-    testing.assert_eq(s.n, 1);
-    testing.assert_eq(s.v.len(), 1);
-    testing.assert_eq(s.v[0], 0);
+    assert(s.n == 1);
+    assert(s.v.len() == 1);
+    assert(s.v[0] == 0);
 }
 
 // Conditional reassignment: the maybe-reassigned join must be exact on both
@@ -119,11 +117,11 @@ fn _test_conditional_reassignment_join_is_exact() {
     if cold {
         skipped = grow(skipped);
     }
-    testing.assert_eq(taken.n, 1);
-    testing.assert_eq(taken.v.len(), 1);
-    testing.assert_eq(taken.v[0], 0);
-    testing.assert_eq(skipped.n, 0);
-    testing.assert_eq(skipped.v.len(), 0);
+    assert(taken.n == 1);
+    assert(taken.v.len() == 1);
+    assert(taken.v[0] == 0);
+    assert(skipped.n == 0);
+    assert(skipped.v.len() == 0);
 }
 
 // The caller-side literal form of the same alias: the RHS embeds a projection
@@ -135,9 +133,9 @@ fn _test_literal_rhs_embedding_own_projection_is_exact() {
     s.v.push(7);
     s = S { n: s.n + 1, v: s.v };
     s = S { n: s.n + 1, v: s.v };
-    testing.assert_eq(s.n, 2);
-    testing.assert_eq(s.v.len(), 1);
-    testing.assert_eq(s.v[0], 7);
+    assert(s.n == 2);
+    assert(s.v.len() == 1);
+    assert(s.v[0] == 7);
 }
 
 // ── Actor state channel ─────────────────────────────────────────────────
@@ -218,16 +216,16 @@ fn _test_actor_record_state_reassign_accumulates_exact() {
         let _ = a.bump();
     }
     match a.report() {
-        .Ok(x) => testing.assert_eq(x, 12012),
-        .Err(_) => testing.assert_true(false),
+        .Ok(x) => assert(x == 12012),
+        .Err(_) => assert(false),
     }
     match a.at(0) {
-        .Ok(x) => testing.assert_eq(x, 0),
-        .Err(_) => testing.assert_true(false),
+        .Ok(x) => assert(x == 0),
+        .Err(_) => assert(false),
     }
     match a.at(11) {
-        .Ok(x) => testing.assert_eq(x, 11),
-        .Err(_) => testing.assert_true(false),
+        .Ok(x) => assert(x == 11),
+        .Err(_) => assert(false),
     }
 }
 
@@ -243,12 +241,12 @@ fn _test_actor_record_state_fresh_reset_is_exact() {
     let _ = a.reset();
     let _ = a.bump();
     match a.report() {
-        .Ok(x) => testing.assert_eq(x, 1001),
-        .Err(_) => testing.assert_true(false),
+        .Ok(x) => assert(x == 1001),
+        .Err(_) => assert(false),
     }
     match a.at(0) {
-        .Ok(x) => testing.assert_eq(x, 0),
-        .Err(_) => testing.assert_true(false),
+        .Ok(x) => assert(x == 0),
+        .Err(_) => assert(false),
     }
 }
 
@@ -261,8 +259,8 @@ fn _test_actor_vec_state_reassign_accumulates_exact() {
         let _ = b.bump(i);
     }
     match b.checksum() {
-        .Ok(x) => testing.assert_eq(x, 6612),
-        .Err(_) => testing.assert_true(false),
+        .Ok(x) => assert(x == 6612),
+        .Err(_) => assert(false),
     }
 }
 
@@ -277,7 +275,7 @@ fn _test_actor_record_state_field_swap_is_exact() {
     let _ = s.flip();
     let _ = s.flip();
     match s.probe() {
-        .Ok(x) => testing.assert_eq(x, 21),
-        .Err(_) => testing.assert_true(false),
+        .Ok(x) => assert(x == 21),
+        .Err(_) => assert(false),
     }
 }

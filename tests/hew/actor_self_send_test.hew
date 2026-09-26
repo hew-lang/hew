@@ -7,8 +7,6 @@
 //! re-enqueues until a bound), not a no-op lowering: a no-op would never
 //! advance the counter past its first tick.
 
-import std.testing;
-
 actor Counter {
     var n: i64 = 0,
 
@@ -62,8 +60,8 @@ fn self_send_drives_bounded_recursion_to_exact_terminal() {
         sleep(1ms);
     }
     match c.total() {
-        .Ok(n) => testing.assert_eq(n, 3),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 3),
+        .Err(_) => assert(false),
     }
 }
 
@@ -75,7 +73,7 @@ fn self_send_with_higher_bound_reaches_that_bound() {
         sleep(1ms);
     }
     match p.total() {
-        .Ok(n) => testing.assert_eq(n, 7),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 7),
+        .Err(_) => assert(false),
     }
 }

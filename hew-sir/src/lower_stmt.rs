@@ -700,41 +700,6 @@ impl Builder<'_, '_> {
         self.finish_panic(operand, &loans)
     }
 
-    pub(super) fn lower_assert(&mut self, expr: &HirExpr, args: &[HirExpr]) -> Result<(), String> {
-        let [condition] = args else {
-            return Err("assert requires exactly one boolean condition".into());
-        };
-        if self.ty(&condition.ty) != ResolvedTy::Bool || self.ty(&expr.ty) != ResolvedTy::Unit {
-            return Err("assert requires a boolean condition and a unit result".into());
-        }
-        let condition = self.lower_read_operand(condition, "assert condition")?;
-        let success = self.new_block(Vec::new());
-        let failure = self.new_block(Vec::new());
-        self.set_terminator(SemTerminator::Branch {
-            condition,
-            then_target: Edge {
-                target: success,
-                args: Vec::new(),
-            },
-            else_target: Edge {
-                target: failure,
-                args: Vec::new(),
-            },
-        })?;
-        let before = self.control_state();
-        self.current = failure;
-        let literal = self.service.intern_string("assertion failed");
-        let message = self.emit_typed(
-            Provenance::Site(expr.site),
-            &ResolvedTy::String,
-            SemOpKind::ConstStr(literal),
-        )?;
-        self.finish_panic(Operand { value: message }, &[])?;
-        self.restore_control_state(&before);
-        self.current = success;
-        Ok(())
-    }
-
     pub(super) fn finish_panic(
         &mut self,
         operand: Operand,

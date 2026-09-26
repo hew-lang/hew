@@ -8,8 +8,6 @@
 //! fails when the push aliases instead of deep-cloning, and a companion to the
 //! memory-safety leak oracle that pins the source's exactly-once field drop.
 
-import std.testing;
-
 type Boxed {
     payload: [i64],
 }
@@ -31,17 +29,17 @@ fn test_record_collection_field_push_is_copy_in() {
     xs.push(src);
     xs.push(src);
     src.payload.push(30);
-    testing.assert_eq(xs.len(), 2);
+    assert(xs.len() == 2);
     let a = xs[0];
     let b = xs[1];
-    testing.assert_eq(a.payload.len(), 2);
-    testing.assert_eq(a.payload[0], 10);
-    testing.assert_eq(a.payload[1], 20);
-    testing.assert_eq(b.payload.len(), 2);
-    testing.assert_eq(b.payload[1], 20);
+    assert(a.payload.len() == 2);
+    assert(a.payload[0] == 10);
+    assert(a.payload[1] == 20);
+    assert(b.payload.len() == 2);
+    assert(b.payload[1] == 20);
     // The live source kept growing without disturbing the stored clones.
-    testing.assert_eq(src.payload.len(), 3);
-    testing.assert_eq(src.payload[2], 30);
+    assert(src.payload.len() == 3);
+    assert(src.payload[2] == 30);
 }
 
 // A freshly built source per push still yields the exact stored contents.
@@ -50,11 +48,11 @@ fn test_record_collection_field_push_reads_back_exact() {
     var xs: [Boxed] = [];
     xs.push(Boxed { payload: [1, 2, 3] });
     xs.push(Boxed { payload: [4] });
-    testing.assert_eq(xs.len(), 2);
-    testing.assert_eq(xs[0].payload.len(), 3);
-    testing.assert_eq(xs[0].payload[2], 3);
-    testing.assert_eq(xs[1].payload.len(), 1);
-    testing.assert_eq(xs[1].payload[0], 4);
+    assert(xs.len() == 2);
+    assert(xs[0].payload.len() == 3);
+    assert(xs[0].payload[2] == 3);
+    assert(xs[1].payload.len() == 1);
+    assert(xs[1].payload[0] == 4);
 }
 
 // ── self-recursive enum (Redis/JSON reply shape) ───────────────────────────
@@ -66,11 +64,11 @@ fn test_self_recursive_enum_push() {
     var xs: [Reply] = [];
     xs.push(Reply.Num(7));
     xs.push(Reply.Arr([Reply.Nil, Reply.Num(9)]));
-    testing.assert_eq(xs.len(), 2);
+    assert(xs.len() == 2);
     let head = xs[0];
     match head {
-        Reply.Num(n) => testing.assert_eq(n, 7),
-        _ => testing.assert_true(false),
+        Reply.Num(n) => assert(n == 7),
+        _ => assert(false),
     }
 }
 
@@ -82,9 +80,9 @@ fn test_self_recursive_enum_live_source_push() {
     let src = Reply.Arr([Reply.Nil, Reply.Num(9)]);
     xs.push(src);
     xs.push(src);
-    testing.assert_eq(xs.len(), 2);
+    assert(xs.len() == 2);
     match src {
-        Reply.Arr(items) => testing.assert_eq(items.len(), 2),
-        _ => testing.assert_true(false),
+        Reply.Arr(items) => assert(items.len() == 2),
+        _ => assert(false),
     }
 }

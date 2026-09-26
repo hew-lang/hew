@@ -1,7 +1,5 @@
 //! Regression coverage for compiler-derived structural equality.
 
-import std.testing;
-
 type Point {
     x: i64,
     y: i64,
@@ -25,10 +23,10 @@ fn record_equality_is_field_wise_and_recursive() {
     let p3 = Point { x: 1, y: 9 };
     let l1 = Line { a: p1, b: p3 };
     let l2 = Line { a: p2, b: Point { x: 1, y: 9 } };
-    testing.assert_true(p1 == p2);
-    testing.assert_false(p1 == p3);
-    testing.assert_true(l1 == l2);
-    testing.assert_false(l1 != l2);
+    assert(p1 == p2);
+    assert(!(p1 == p3));
+    assert(l1 == l2);
+    assert(!(l1 != l2));
 }
 
 #[test]
@@ -37,10 +35,10 @@ fn payload_enum_equality_compares_tags_and_payloads() {
     let c2: Shape = Shape.Circle(3);
     let c3: Shape = Shape.Circle(4);
     let r1: Shape = Shape.Rect(3, 3);
-    testing.assert_true(c1 == c2);
-    testing.assert_false(c1 == c3);
-    testing.assert_false(c1 == r1);
-    testing.assert_true(c1 != r1);
+    assert(c1 == c2);
+    assert(!(c1 == c3));
+    assert(!(c1 == r1));
+    assert(c1 != r1);
 }
 
 #[test]
@@ -50,10 +48,10 @@ fn builtin_payload_enum_equality_compares_payloads() {
     let c: Option<i64> = .Some(2);
     let ok: Result<i64, i64> = .Ok(7);
     let err: Result<i64, i64> = .Err(7);
-    testing.assert_true(a == b);
-    testing.assert_false(a == c);
-    testing.assert_false(ok == err);
-    testing.assert_true(ok != err);
+    assert(a == b);
+    assert(!(a == c));
+    assert(!(ok == err));
+    assert(ok != err);
 }
 
 #[test]
@@ -63,9 +61,9 @@ fn tuple_equality_is_member_wise_and_recursive() {
     let flat_c = (1, "other");
     let nested_a: Option<(i64, string)> = .Some((2, "two"));
     let nested_b: Option<(i64, string)> = .Some((2, "two"));
-    testing.assert_true(flat_a == flat_b);
-    testing.assert_false(flat_a == flat_c);
-    testing.assert_true(nested_a == nested_b);
+    assert(flat_a == flat_b);
+    assert(!(flat_a == flat_c));
+    assert(nested_a == nested_b);
 }
 
 #[test]
@@ -73,8 +71,8 @@ fn vec_contains_copy_record_stays_structural() {
     var points: Vec<Point> = Vec.new();
     points.push(Point { x: 1, y: 2 });
     points.push(Point { x: 3, y: 4 });
-    testing.assert_true(points.contains(Point { x: 1, y: 2 }));
-    testing.assert_false(points.contains(Point { x: 9, y: 9 }));
+    assert(points.contains(Point { x: 1, y: 2 }));
+    assert(!points.contains(Point { x: 9, y: 9 }));
 }
 
 /// Structural equality over a type parameter is admitted in the template and
@@ -88,6 +86,6 @@ fn generic_equality_compares_eligible_instantiations_member_wise() {
     let a: Option<i64> = .Some(1);
     let b: Option<i64> = .Some(1);
     let c: Option<i64> = .Some(2);
-    testing.assert_true(same(a, b));
-    testing.assert_false(same(a, c));
+    assert(same(a, b));
+    assert(!same(a, c));
 }

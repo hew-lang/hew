@@ -2,12 +2,10 @@
 
 import std.semaphore;
 
-import std.testing;
-
 #[test]
 fn test_new_preserves_valid_permit_count() {
     let sem = semaphore.new(3);
-    testing.assert_eq(sem.count(), 3);
+    assert(sem.count() == 3);
     sem.close();
 }
 

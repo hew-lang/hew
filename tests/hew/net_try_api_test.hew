@@ -7,7 +7,6 @@ import std.encoding.utf8;
 
 import std.net;
 
-import std.testing;
 
 // ── try_connect ───────────────────────────────────────────────────────
 #[test]
@@ -155,7 +154,7 @@ fn test_recv_reports_an_orderly_eof_as_none() {
     client.close();
     match server.recv() {
         .Some(data) => panic(f"expected EOF, got {data.len()} bytes"),
-        .None => testing.assert_true(true),
+        .None => assert(true),
     }
     server.close();
     listener.close();
@@ -186,7 +185,7 @@ fn test_recv_delivers_payload_bytes_unchanged() {
     let server = listener.accept();
     client.send("ping".to_bytes()).expect("send");
     match server.recv() {
-        .Some(data) => testing.assert_eq_str(utf8.decode(data).expect("utf-8 payload"), "ping"),
+        .Some(data) => assert(utf8.decode(data).expect("utf-8 payload") == "ping"),
         .None => panic("expected a payload read to succeed"),
     }
     client.close();
@@ -230,6 +229,6 @@ fn test_send_error_display_names_the_refusal() {
     // `Connection.send` answers with the one `SendError` the whole pipe family
     // uses; a full send buffer past its deadline is `Full`, a gone peer is
     // `Closed`, and anything else traps rather than returning a variant.
-    testing.assert_eq_str(to_string(SendError.Full), "the destination mailbox is full");
-    testing.assert_eq_str(to_string(SendError.Closed), "the destination is closed or no longer alive");
+    assert(to_string(SendError.Full) == "the destination mailbox is full");
+    assert(to_string(SendError.Closed) == "the destination is closed or no longer alive");
 }

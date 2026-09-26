@@ -5064,12 +5064,7 @@ fn impl_target_type_arguments_still_need_the_declared_bound() {
 /// `fmt` symbol to call, which surfaced as an internal compiler error.
 #[test]
 fn display_is_satisfied_only_where_an_impl_exists() {
-    for renderable in [
-        "println(42)",
-        "println(\"hi\")",
-        "println(true)",
-        "assert_eq(1, 1)",
-    ] {
+    for renderable in ["println(42)", "println(\"hi\")", "println(true)"] {
         let output = check_source(&format!("fn main() {{ {renderable}; }}"));
         assert!(
             output.errors.is_empty(),
@@ -5078,7 +5073,8 @@ fn display_is_satisfied_only_where_an_impl_exists() {
         );
     }
 
-    for unrenderable in ["println([1, 2])", "assert_eq([1, 2], [1, 2])"] {
+    {
+        let unrenderable = "println([1, 2])";
         let output = check_source(&format!("fn main() {{ {unrenderable}; }}"));
         let hit = output
             .errors

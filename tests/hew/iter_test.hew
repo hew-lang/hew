@@ -11,7 +11,6 @@
 
 import std.iter;
 
-import std.testing;
 
 type Claim {
     run_id: string,
@@ -30,16 +29,16 @@ fn test_map_str_transforms_each_element() {
     v.push("hello");
     v.push("world");
     let result = iter.collect(iter.map(v.into_iter(), |s: string| s + "!"));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result[0], "hello!");
-    testing.assert_eq_str(result[1], "world!");
+    assert(result.len() == 2);
+    assert(result[0] == "hello!");
+    assert(result[1] == "world!");
 }
 
 #[test]
 fn test_map_empty_vec_yields_empty() {
     let v: Vec<string> = Vec.new();
     let result = iter.collect(iter.map(v.into_iter(), |s: string| s + "!"));
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }
 
 #[test]
@@ -48,9 +47,9 @@ fn test_map_f64_doubles_elements() {
     v.push(1.0);
     v.push(2.5);
     let result = iter.collect(iter.map(v.into_iter(), |x: f64| x * 2.0));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_true(result[0] == 2.0);
-    testing.assert_true(result[1] == 5.0);
+    assert(result.len() == 2);
+    assert(result[0] == 2.0);
+    assert(result[1] == 5.0);
 }
 
 // ── filter ─────────────────────────────────────────────────────────────────
@@ -61,9 +60,9 @@ fn test_filter_str_keeps_matching_elements() {
     v.push("bar");
     v.push("baz");
     let result = iter.collect(iter.filter(v.into_iter(), |s: string| s.starts_with("b")));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result[0], "bar");
-    testing.assert_eq_str(result[1], "baz");
+    assert(result.len() == 2);
+    assert(result[0] == "bar");
+    assert(result[1] == "baz");
 }
 
 #[test]
@@ -72,7 +71,7 @@ fn test_filter_none_match_yields_empty() {
     v.push("foo");
     v.push("qux");
     let result = iter.collect(iter.filter(v.into_iter(), |s: string| s.starts_with("z")));
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }
 
 #[test]
@@ -82,9 +81,9 @@ fn test_filter_f64_keeps_positives() {
     v.push(2.5);
     v.push(3.0);
     let result = iter.collect(iter.filter(v.into_iter(), |x: f64| x > 0.0));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_true(result[0] == 2.5);
-    testing.assert_true(result[1] == 3.0);
+    assert(result.len() == 2);
+    assert(result[0] == 2.5);
+    assert(result[1] == 3.0);
 }
 
 // ── fold ───────────────────────────────────────────────────────────────────
@@ -95,14 +94,14 @@ fn test_fold_str_concatenates() {
     v.push("b");
     v.push("c");
     let result = iter.fold(v.into_iter(), "", |acc: string, s: string| acc + s);
-    testing.assert_eq_str(result, "abc");
+    assert(result == "abc");
 }
 
 #[test]
 fn test_fold_empty_vec_returns_init() {
     let v: Vec<string> = Vec.new();
     let result = iter.fold(v.into_iter(), "init", |acc: string, s: string| acc + s);
-    testing.assert_eq_str(result, "init");
+    assert(result == "init");
 }
 
 #[test]
@@ -112,7 +111,7 @@ fn test_fold_f64_sums_elements() {
     v.push(2.0);
     v.push(3.0);
     let result = iter.fold(v.into_iter(), 0.0, |acc: f64, x: f64| acc + x);
-    testing.assert_true(result == 6.0);
+    assert(result == 6.0);
 }
 
 // ── any / all ──────────────────────────────────────────────────────────────
@@ -121,7 +120,7 @@ fn test_any_str_true_when_one_matches() {
     var v: Vec<string> = Vec.new();
     v.push("foo");
     v.push("bar");
-    testing.assert_true(iter.any(v.into_iter(), |s: string| s == "bar"));
+    assert(iter.any(v.into_iter(), |s: string| s == "bar"));
 }
 
 #[test]
@@ -129,13 +128,13 @@ fn test_any_false_when_none_match() {
     var v: Vec<string> = Vec.new();
     v.push("foo");
     v.push("bar");
-    testing.assert_false(iter.any(v.into_iter(), |s: string| s == "baz"));
+    assert(!iter.any(v.into_iter(), |s: string| s == "baz"));
 }
 
 #[test]
 fn test_any_false_on_empty() {
     let v: Vec<string> = Vec.new();
-    testing.assert_false(iter.any(v.into_iter(), |s: string| s == "x"));
+    assert(!iter.any(v.into_iter(), |s: string| s == "x"));
 }
 
 #[test]
@@ -144,7 +143,7 @@ fn test_any_f64_true_when_one_matches() {
     v.push(1.0);
     v.push(2.0);
     v.push(3.0);
-    testing.assert_true(iter.any(v.into_iter(), |x: f64| x > 2.5));
+    assert(iter.any(v.into_iter(), |x: f64| x > 2.5));
 }
 
 #[test]
@@ -152,7 +151,7 @@ fn test_all_str_true_when_all_match() {
     var v: Vec<string> = Vec.new();
     v.push("foo");
     v.push("fob");
-    testing.assert_true(iter.all(v.into_iter(), |s: string| s.starts_with("fo")));
+    assert(iter.all(v.into_iter(), |s: string| s.starts_with("fo")));
 }
 
 #[test]
@@ -160,13 +159,13 @@ fn test_all_false_when_one_fails() {
     var v: Vec<string> = Vec.new();
     v.push("foo");
     v.push("bar");
-    testing.assert_false(iter.all(v.into_iter(), |s: string| s.starts_with("fo")));
+    assert(!iter.all(v.into_iter(), |s: string| s.starts_with("fo")));
 }
 
 #[test]
 fn test_all_true_on_empty() {
     let v: Vec<string> = Vec.new();
-    testing.assert_true(iter.all(v.into_iter(), |s: string| s == "x"));
+    assert(iter.all(v.into_iter(), |s: string| s == "x"));
 }
 
 #[test]
@@ -174,7 +173,7 @@ fn test_all_f64_false_when_one_fails() {
     var v: Vec<f64> = Vec.new();
     v.push(1.0);
     v.push(-1.0);
-    testing.assert_false(iter.all(v.into_iter(), |x: f64| x > 0.0));
+    assert(!iter.all(v.into_iter(), |x: f64| x > 0.0));
 }
 
 // ── sum / sum_f64 ──────────────────────────────────────────────────────────
@@ -184,13 +183,13 @@ fn test_sum_f64_three_elements() {
     v.push(1.0);
     v.push(2.5);
     v.push(3.0);
-    testing.assert_true(iter.sum_f64(v.into_iter()) == 6.5);
+    assert(iter.sum_f64(v.into_iter()) == 6.5);
 }
 
 #[test]
 fn test_sum_f64_empty_vec_returns_zero() {
     let v: Vec<f64> = Vec.new();
-    testing.assert_true(iter.sum_f64(v.into_iter()) == 0.0);
+    assert(iter.sum_f64(v.into_iter()) == 0.0);
 }
 
 // ── take ───────────────────────────────────────────────────────────────────
@@ -201,9 +200,9 @@ fn test_take_fewer_than_length() {
     v.push("b");
     v.push("c");
     let result = iter.collect(iter.take(v.into_iter(), 2));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result[0], "a");
-    testing.assert_eq_str(result[1], "b");
+    assert(result.len() == 2);
+    assert(result[0] == "a");
+    assert(result[1] == "b");
 }
 
 #[test]
@@ -212,7 +211,7 @@ fn test_take_more_than_length_clamps() {
     v.push("x");
     v.push("y");
     let result = iter.collect(iter.take(v.into_iter(), 99));
-    testing.assert_eq(result.len(), 2);
+    assert(result.len() == 2);
 }
 
 #[test]
@@ -220,7 +219,7 @@ fn test_take_zero_returns_empty() {
     var v: Vec<string> = Vec.new();
     v.push("x");
     let result = iter.collect(iter.take(v.into_iter(), 0));
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }
 
 #[test]
@@ -229,7 +228,7 @@ fn test_take_negative_n_returns_empty() {
     v.push("a");
     v.push("b");
     let result = iter.collect(iter.take(v.into_iter(), -5));
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }
 
 #[test]
@@ -239,9 +238,9 @@ fn test_take_f64_fewer_than_length() {
     v.push(2.0);
     v.push(3.0);
     let result = iter.collect(iter.take(v.into_iter(), 2));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_true(result[0] == 1.0);
-    testing.assert_true(result[1] == 2.0);
+    assert(result.len() == 2);
+    assert(result[0] == 1.0);
+    assert(result[1] == 2.0);
 }
 
 // ── skip ───────────────────────────────────────────────────────────────────
@@ -252,9 +251,9 @@ fn test_skip_drops_first_n() {
     v.push("b");
     v.push("c");
     let result = iter.collect(iter.skip(v.into_iter(), 1));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result[0], "b");
-    testing.assert_eq_str(result[1], "c");
+    assert(result.len() == 2);
+    assert(result[0] == "b");
+    assert(result[1] == "c");
 }
 
 #[test]
@@ -263,7 +262,7 @@ fn test_skip_more_than_length_returns_empty() {
     v.push("a");
     v.push("b");
     let result = iter.collect(iter.skip(v.into_iter(), 10));
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }
 
 #[test]
@@ -272,7 +271,7 @@ fn test_skip_zero_returns_all() {
     v.push("p");
     v.push("q");
     let result = iter.collect(iter.skip(v.into_iter(), 0));
-    testing.assert_eq(result.len(), 2);
+    assert(result.len() == 2);
 }
 
 // Regression: skip with n < 0 previously aborted with a Vec
@@ -287,8 +286,8 @@ fn test_skip_negative_n_returns_all() {
     v.push("a");
     v.push("b");
     let result = iter.collect(iter.skip(v.into_iter(), -5));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result[0], "a");
+    assert(result.len() == 2);
+    assert(result[0] == "a");
 }
 
 #[test]
@@ -298,9 +297,9 @@ fn test_skip_f64_drops_first_n() {
     v.push(2.0);
     v.push(3.0);
     let result = iter.collect(iter.skip(v.into_iter(), 1));
-    testing.assert_eq(result.len(), 2);
-    testing.assert_true(result[0] == 2.0);
-    testing.assert_true(result[1] == 3.0);
+    assert(result.len() == 2);
+    assert(result[0] == 2.0);
+    assert(result[1] == 3.0);
 }
 
 // ── count with predicate (via filter + count) ─────────────────────────────
@@ -315,7 +314,7 @@ fn test_count_of_filter_prefix_match() {
     v.push("bar");
     v.push("baz");
     let matched = iter.count(iter.filter(v.into_iter(), |s: string| s.starts_with("b")));
-    testing.assert_eq(matched, 2);
+    assert(matched == 2);
 }
 
 #[test]
@@ -324,7 +323,7 @@ fn test_count_of_filter_none_match_is_zero() {
     v.push("foo");
     v.push("qux");
     let matched = iter.count(iter.filter(v.into_iter(), |s: string| s.starts_with("z")));
-    testing.assert_eq(matched, 0);
+    assert(matched == 0);
 }
 
 #[test]
@@ -334,7 +333,7 @@ fn test_count_of_filter_f64_positives() {
     v.push(-1.0);
     v.push(2.5);
     let matched = iter.count(iter.filter(v.into_iter(), |x: f64| x > 0.0));
-    testing.assert_eq(matched, 2);
+    assert(matched == 2);
 }
 
 // ── product / product_f64 ─────────────────────────────────────────────────
@@ -344,13 +343,13 @@ fn test_product_three_elements() {
     v.push(2);
     v.push(3);
     v.push(4);
-    testing.assert_eq(iter.product(v.into_iter()), 24);
+    assert(iter.product(v.into_iter()) == 24);
 }
 
 #[test]
 fn test_product_empty_vec_returns_one() {
     let v: Vec<i64> = Vec.new();
-    testing.assert_eq(iter.product(v.into_iter()), 1);
+    assert(iter.product(v.into_iter()) == 1);
 }
 
 #[test]
@@ -359,13 +358,13 @@ fn test_product_f64_three_elements() {
     v.push(2.0);
     v.push(0.5);
     v.push(4.0);
-    testing.assert_true(iter.product_f64(v.into_iter()) == 4.0);
+    assert(iter.product_f64(v.into_iter()) == 4.0);
 }
 
 #[test]
 fn test_product_f64_empty_vec_returns_one() {
     let v: Vec<f64> = Vec.new();
-    testing.assert_true(iter.product_f64(v.into_iter()) == 1.0);
+    assert(iter.product_f64(v.into_iter()) == 1.0);
 }
 
 // ── VecIter fluent surface ────────────────────────────────────────────────
@@ -376,16 +375,16 @@ fn test_vec_iter_map_method_delegates_to_iter() {
     values.push(2);
     values.push(3);
     let result = iter.collect(values.into_iter().map(|x: i64| x * 2));
-    testing.assert_eq(result.len(), 3);
-    testing.assert_eq(result[0], 2);
-    testing.assert_eq(result[2], 6);
+    assert(result.len() == 3);
+    assert(result[0] == 2);
+    assert(result[2] == 6);
 }
 
 #[test]
 fn test_vec_from_array_uses_the_canonical_vec_construction() {
     let values: Vec<i64> = Vec.from([4, 5, 6]);
-    testing.assert_eq(values.len(), 3);
-    testing.assert_eq(values[1], 5);
+    assert(values.len() == 3);
+    assert(values[1] == 5);
 }
 
 #[test]
@@ -397,9 +396,9 @@ fn test_vec_iter_filter_method_keeps_exact_matching_values() {
     values.push(5);
     let filtered = values.into_iter().filter(|value: i64| value % 2 == 0);
     let result = iter.collect(filtered);
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result[0], 2);
-    testing.assert_eq(result[1], 4);
+    assert(result.len() == 2);
+    assert(result[0] == 2);
+    assert(result[1] == 4);
 }
 
 #[test]
@@ -409,7 +408,7 @@ fn test_vec_iter_fold_method_accumulates_exact_value() {
     values.push(3);
     values.push(4);
     let product = values.into_iter().fold(1, |acc: i64, value: i64| acc * value);
-    testing.assert_eq(product, 24);
+    assert(product == 24);
 }
 
 #[test]
@@ -418,7 +417,7 @@ fn test_vec_iter_any_method_short_circuits_to_true() {
     values.push("alpha");
     values.push("beta");
     values.push("gamma");
-    testing.assert_true(values.into_iter().any(|value: string| value == "beta"));
+    assert(values.into_iter().any(|value: string| value == "beta"));
 }
 
 #[test]
@@ -427,7 +426,7 @@ fn test_vec_iter_all_method_detects_a_non_matching_value() {
     values.push(4);
     values.push(6);
     values.push(7);
-    testing.assert_false(values.into_iter().all(|value: i64| value % 2 == 0));
+    assert(!values.into_iter().all(|value: i64| value % 2 == 0));
 }
 
 #[test]
@@ -437,8 +436,8 @@ fn test_vec_iter_find_method_returns_the_exact_item() {
     values.push("two");
     values.push("three");
     match values.into_iter().find(|value: string| value.starts_with("tw")) {
-        .Some(value) => testing.assert_eq_str(value, "two"),
-        .None => testing.assert_true(false),
+        .Some(value) => assert(value == "two"),
+        .None => assert(false),
     }
 }
 
@@ -449,7 +448,7 @@ fn test_vec_iter_count_method_counts_every_item() {
     values.push(22);
     values.push(33);
     values.push(44);
-    testing.assert_eq(values.into_iter().count(), 4);
+    assert(values.into_iter().count() == 4);
 }
 
 #[test]
@@ -458,11 +457,11 @@ fn test_vec_iter_enumerate_method_keeps_indices_and_values() {
     values.push(7);
     values.push(9);
     let indexed = iter.collect(values.into_iter().enumerate());
-    testing.assert_eq(indexed.len(), 2);
-    testing.assert_eq(indexed[0].0, 0);
-    testing.assert_eq(indexed[0].1, 7);
-    testing.assert_eq(indexed[1].0, 1);
-    testing.assert_eq(indexed[1].1, 9);
+    assert(indexed.len() == 2);
+    assert(indexed[0].0 == 0);
+    assert(indexed[0].1 == 7);
+    assert(indexed[1].0 == 1);
+    assert(indexed[1].1 == 9);
 }
 
 #[test]
@@ -472,9 +471,9 @@ fn test_vec_iter_take_method_clamps_to_exact_prefix() {
     values.push(6);
     values.push(7);
     let prefix = iter.collect(values.into_iter().take(2));
-    testing.assert_eq(prefix.len(), 2);
-    testing.assert_eq(prefix[0], 5);
-    testing.assert_eq(prefix[1], 6);
+    assert(prefix.len() == 2);
+    assert(prefix[0] == 5);
+    assert(prefix[1] == 6);
 }
 
 #[test]
@@ -484,8 +483,8 @@ fn test_vec_iter_skip_method_keeps_exact_suffix() {
     values.push(6);
     values.push(7);
     let suffix = iter.collect(values.into_iter().skip(2));
-    testing.assert_eq(suffix.len(), 1);
-    testing.assert_eq(suffix[0], 7);
+    assert(suffix.len() == 1);
+    assert(suffix[0] == 7);
 }
 
 #[test]
@@ -495,10 +494,10 @@ fn test_vec_iter_collect_method_preserves_every_value() {
     values.push(13);
     values.push(21);
     let collected = values.into_iter().collect();
-    testing.assert_eq(collected.len(), 3);
-    testing.assert_eq(collected[0], 8);
-    testing.assert_eq(collected[1], 13);
-    testing.assert_eq(collected[2], 21);
+    assert(collected.len() == 3);
+    assert(collected[0] == 8);
+    assert(collected[1] == 13);
+    assert(collected[2] == 21);
 }
 
 #[test]
@@ -511,9 +510,9 @@ fn test_filter_map_collect_two_deep_chain_preserves_values() {
     let filtered = values.into_iter().filter(|value: i64| value % 2 == 0);
     let mapped = iter.map(filtered, |value: i64| value * 10);
     let result = iter.collect(mapped);
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result[0], 20);
-    testing.assert_eq(result[1], 40);
+    assert(result.len() == 2);
+    assert(result[0] == 20);
+    assert(result[1] == 40);
 }
 
 #[test]
@@ -523,7 +522,7 @@ fn test_terminal_into_iter_method_chain_executes() {
     values.push(4);
     values.push(5);
     let total = values.into_iter().fold(0, |acc: i64, value: i64| acc + value);
-    testing.assert_eq(total, 12);
+    assert(total == 12);
 }
 
 #[test]
@@ -532,7 +531,7 @@ fn test_let_bound_into_iter_method_chain_executes() {
     values.push(9);
     values.push(10);
     let iterator = values.into_iter();
-    testing.assert_eq(iterator.count(), 2);
+    assert(iterator.count() == 2);
 }
 
 // ── fully fluent adapter chains (hew-lang/hew#2933) ─────────────────────
@@ -552,9 +551,9 @@ fn test_fully_fluent_filter_map_collect_chain() {
     values.push(4);
     // Negative control: 1 and 3 fail `% 2 == 0` and must not survive.
     let result = values.into_iter().filter(|value: i64| value % 2 == 0).map(|value: i64| value * 10).collect();
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result[0], 20);
-    testing.assert_eq(result[1], 40);
+    assert(result.len() == 2);
+    assert(result[0] == 20);
+    assert(result[1] == 40);
 }
 
 #[test]
@@ -567,9 +566,9 @@ fn test_fully_fluent_chain_across_statements() {
     let filtered = cursor.filter(|value: i64| value > 1);
     let mapped = filtered.map(|value: i64| value * 100);
     let result = mapped.collect();
-    testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result[0], 200);
-    testing.assert_eq(result[1], 300);
+    assert(result.len() == 2);
+    assert(result[0] == 200);
+    assert(result[1] == 300);
 }
 
 #[test]
@@ -581,10 +580,10 @@ fn test_fully_fluent_skip_take_map_chain() {
     // Negative control: indices 0-1 (skipped) and 5-9 (past take(3)) must not
     // appear in the result.
     let result = values.into_iter().skip(2).take(3).map(|value: i64| value + 1).collect();
-    testing.assert_eq(result.len(), 3);
-    testing.assert_eq(result[0], 3);
-    testing.assert_eq(result[1], 4);
-    testing.assert_eq(result[2], 5);
+    assert(result.len() == 3);
+    assert(result[0] == 3);
+    assert(result[1] == 4);
+    assert(result[2] == 5);
 }
 
 fn without_terminal_claims(ledger: ClaimsLedger) -> Vec<Claim> {
@@ -604,9 +603,9 @@ fn test_claims_ledger_filter_collect_keeps_non_terminal_claims() {
     terminal_runs.push("terminal");
     let ledger = ClaimsLedger { claims: claims, terminal_runs: terminal_runs };
     let active = without_terminal_claims(ledger);
-    testing.assert_eq(active.len(), 2);
-    testing.assert_eq_str(active[0].run_id, "first");
-    testing.assert_eq(active[0].amount, 10);
-    testing.assert_eq_str(active[1].run_id, "last");
-    testing.assert_eq(active[1].amount, 30);
+    assert(active.len() == 2);
+    assert(active[0].run_id == "first");
+    assert(active[0].amount == 10);
+    assert(active[1].run_id == "last");
+    assert(active[1].amount == 30);
 }

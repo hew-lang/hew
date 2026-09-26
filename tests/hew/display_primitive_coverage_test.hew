@@ -1,8 +1,6 @@
 //! Ratchets generic Display coverage for canonical numeric primitives through
 //! `println`, `to_string`, and f-string interpolation.
 
-import std.testing;
-
 fn print_generic<T: Display>(x: T) {
     println(x);
 }
@@ -60,19 +58,19 @@ fn test_generic_to_string_formats_canonical_numeric_primitives() {
     let usizev: usize = 4000000000;
     let f32v: f32 = 1.5;
     let f64v: f64 = -2.25;
-    testing.assert_eq_str(render_generic(i8v), "-7");
-    testing.assert_eq_str(render_generic(i16v), "-1234");
-    testing.assert_eq_str(render_generic(i32v), "-123456");
-    testing.assert_eq_str(render_generic(i64v), "-1234567890123");
-    testing.assert_eq_str(render_generic(u8v), "250");
-    testing.assert_eq_str(render_generic(u16v), "65000");
-    testing.assert_eq_str(render_generic(u32v), "4000000000");
-    testing.assert_eq_str(render_generic(u32_boundary), "65536");
-    testing.assert_eq_str(render_generic(u64v), "18446744073709551615");
-    testing.assert_eq_str(render_generic(isizev), "-4096");
-    testing.assert_eq_str(render_generic(usizev), "4000000000");
-    testing.assert_eq_str(render_generic(f32v), "1.5");
-    testing.assert_eq_str(render_generic(f64v), "-2.25");
+    assert(render_generic(i8v) == "-7");
+    assert(render_generic(i16v) == "-1234");
+    assert(render_generic(i32v) == "-123456");
+    assert(render_generic(i64v) == "-1234567890123");
+    assert(render_generic(u8v) == "250");
+    assert(render_generic(u16v) == "65000");
+    assert(render_generic(u32v) == "4000000000");
+    assert(render_generic(u32_boundary) == "65536");
+    assert(render_generic(u64v) == "18446744073709551615");
+    assert(render_generic(isizev) == "-4096");
+    assert(render_generic(usizev) == "4000000000");
+    assert(render_generic(f32v) == "1.5");
+    assert(render_generic(f64v) == "-2.25");
 }
 
 #[test]
@@ -90,17 +88,17 @@ fn test_generic_fstring_formats_canonical_numeric_primitives() {
     let usizev: usize = 4000000000;
     let f32v: f32 = 1.5;
     let f64v: f64 = -2.25;
-    testing.assert_eq_str(interpolate_generic(i8v), "-7");
-    testing.assert_eq_str(interpolate_generic(i16v), "-1234");
-    testing.assert_eq_str(interpolate_generic(i32v), "-123456");
-    testing.assert_eq_str(interpolate_generic(i64v), "-1234567890123");
-    testing.assert_eq_str(interpolate_generic(u8v), "250");
-    testing.assert_eq_str(interpolate_generic(u16v), "65000");
-    testing.assert_eq_str(interpolate_generic(u32v), "4000000000");
-    testing.assert_eq_str(interpolate_generic(u32_boundary), "65536");
-    testing.assert_eq_str(interpolate_generic(u64v), "18446744073709551615");
-    testing.assert_eq_str(interpolate_generic(isizev), "-4096");
-    testing.assert_eq_str(interpolate_generic(usizev), "4000000000");
-    testing.assert_eq_str(interpolate_generic(f32v), "1.5");
-    testing.assert_eq_str(interpolate_generic(f64v), "-2.25");
+    assert(interpolate_generic(i8v) == "-7");
+    assert(interpolate_generic(i16v) == "-1234");
+    assert(interpolate_generic(i32v) == "-123456");
+    assert(interpolate_generic(i64v) == "-1234567890123");
+    assert(interpolate_generic(u8v) == "250");
+    assert(interpolate_generic(u16v) == "65000");
+    assert(interpolate_generic(u32v) == "4000000000");
+    assert(interpolate_generic(u32_boundary) == "65536");
+    assert(interpolate_generic(u64v) == "18446744073709551615");
+    assert(interpolate_generic(isizev) == "-4096");
+    assert(interpolate_generic(usizev) == "4000000000");
+    assert(interpolate_generic(f32v) == "1.5");
+    assert(interpolate_generic(f64v) == "-2.25");
 }

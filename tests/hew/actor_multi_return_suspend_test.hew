@@ -12,8 +12,6 @@
 //! mis-routes a return's deposit (wrong value through the shared block) fails,
 //! not just a crash. `Counter.step()` returns 1, 2, 3, 4, ... across calls.
 
-import std.testing;
-
 actor Counter {
     var n: i64 = 0,
     receive fn step() -> i64 {
@@ -81,8 +79,8 @@ fn multi_return_value_handler_deposits_each_path() {
 
 fn expect_classify(c: Classifier, want: i64) {
     match c.classify() {
-        .Ok(got) => testing.assert_eq(got, want),
-        .Err(e) => testing.assert_true(false),
+        .Ok(got) => assert(got == want),
+        .Err(e) => assert(false),
     }
 }
 
@@ -94,7 +92,7 @@ fn early_return_out_of_loop_after_await_returns_stop_value() {
     // 3 (the early `return v` inside the loop), proving the in-loop early
     // return deposits its value through the shared block.
     match c.scan_until(3) {
-        .Ok(at) => testing.assert_eq(at, 3),
-        .Err(e) => testing.assert_true(false),
+        .Ok(at) => assert(at == 3),
+        .Err(e) => assert(false),
     }
 }

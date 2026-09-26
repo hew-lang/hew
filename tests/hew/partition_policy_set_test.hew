@@ -15,8 +15,6 @@
 
 import std.link_monitor.{PartitionPolicy, set_partition_policy};
 
-import std.testing;
-
 actor PolicyProbe {
     var all_ok: bool = true,
 
@@ -52,7 +50,7 @@ fn set_partition_policy_accepts_every_variant_in_a_dispatch() {
     // The probe call waits for its handler, so the observation reflects the
     // completed probe.
     match p.all_accepted() {
-        .Ok(ok) => testing.assert_true(ok),
-        .Err(_) => testing.assert_true(false),
+        .Ok(ok) => assert(ok),
+        .Err(_) => assert(false),
     }
 }

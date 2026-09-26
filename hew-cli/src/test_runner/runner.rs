@@ -3,6 +3,7 @@
 use super::discovery::TestCase;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -232,6 +233,82 @@ pub struct TestRunOptions<'a> {
     pub compile_paths: &'a TestCompilePaths,
     pub timeout: Duration,
     pub jobs: usize,
+    pub schedules: ScheduleOptions,
+    /// Directory test identities (`path::name`) are relative to.
+    pub root: &'a Path,
+}
+
+/// How the single-thread driver orders a deterministic test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Schedule {
+    /// Participants run in the order they became ready.
+    Fifo,
+    /// Each pick is a seeded uniform choice over the ready participants.
+    Random,
+}
+
+impl Schedule {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fifo => "fifo",
+            Self::Random => "random",
+        }
+    }
+}
+
+/// Schedule selection for every deterministic test in a run.
+#[derive(Debug, Clone, Copy)]
+pub struct ScheduleOptions {
+    /// The schedule of each test's first run.
+    pub schedule: Schedule,
+    /// Overrides the per-test seed (a stable hash of the test's identity).
+    pub seed: Option<u64>,
+    /// Additional `random` schedules explored after the first run.
+    pub explore: u32,
+}
+
+/// One execution of a compiled test: a driver schedule and seed, or the
+/// threaded runtime for a `#[real_time]` test.
+#[derive(Debug, Clone, Copy)]
+struct Execution {
+    driver: Option<(Schedule, u64)>,
+}
+
+impl Execution {
+    fn environment(self) -> Option<String> {
+        self.driver
+            .map(|(schedule, seed)| format!("schedule={},seed={seed:#x}", schedule.as_str()))
+    }
+}
+
+/// The seed of the `index`th explored schedule: a splitmix64 output over the
+/// test's base seed, so the sequence is fixed per test and independent of the
+/// other tests in the run.
+fn explored_seed(base: u64, index: u32) -> u64 {
+    let mut z = base.wrapping_add(u64::from(index + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Every execution one test gets: the first run under the selected schedule,
+/// then the explored `random` schedules. A `#[real_time]` test runs once on
+/// the threaded runtime.
+fn executions(test: &TestCase, options: &TestRunOptions<'_>) -> Vec<Execution> {
+    if test.clock == crate::test_runner::discovery::TestClock::RealTime {
+        return vec![Execution { driver: None }];
+    }
+    let schedules = options.schedules;
+    let base = schedules
+        .seed
+        .unwrap_or_else(|| super::stable_hash(&super::test_identity(test, options.root)));
+    let mut runs = vec![Execution {
+        driver: Some((schedules.schedule, base)),
+    }];
+    runs.extend((0..schedules.explore).map(|index| Execution {
+        driver: Some((Schedule::Random, explored_seed(base, index))),
+    }));
+    runs
 }
 
 /// Run a set of test cases.
@@ -284,12 +361,7 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                 continue;
             }
 
-            let result = run_single_test(
-                test,
-                options.ffi_lib,
-                options.compile_paths,
-                options.timeout,
-            );
+            let result = run_single_test(test, options);
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
                 TestOutcome::Failed(_) => failed += 1,
@@ -379,19 +451,9 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                         let _serial_guard = serial_gate
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        run_single_test(
-                            &task.test,
-                            options.ffi_lib,
-                            options.compile_paths,
-                            options.timeout,
-                        )
+                        run_single_test(&task.test, options)
                     } else {
-                        run_single_test(
-                            &task.test,
-                            options.ffi_lib,
-                            options.compile_paths,
-                            options.timeout,
-                        )
+                        run_single_test(&task.test, options)
                     };
                     result_slots
                         .lock()
@@ -487,15 +549,10 @@ fn compile_test(
     })
 }
 
-fn run_single_test(
-    test: &TestCase,
-    ffi_lib: Option<&str>,
-    compile_paths: &TestCompilePaths,
-    timeout: Duration,
-) -> TestResult {
+fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult {
     let start = std::time::Instant::now();
 
-    let artifact = match compile_test(test, ffi_lib, compile_paths) {
+    let artifact = match compile_test(test, options.ffi_lib, options.compile_paths) {
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -515,74 +572,177 @@ fn run_single_test(
         }
     };
 
-    // Execute the compiled binary with a timeout.
-    let run_result = crate::process::run_binary_with_timeout(&artifact.binary_path, timeout);
+    let runs = executions(test, options);
+    let mut first_output = None;
+    let mut first_failure: Option<(Execution, TestFailure, String)> = None;
+    let mut failed_runs = 0usize;
+    for execution in &runs {
+        let (outcome, output) = judge_run(
+            test,
+            crate::process::run_binary_with_driver(
+                &artifact.binary_path,
+                options.timeout,
+                execution.environment().as_deref(),
+            ),
+            options.timeout,
+        );
+        match outcome {
+            TestOutcome::Failed(failure) => {
+                failed_runs += 1;
+                if first_failure.is_none() {
+                    first_failure = Some((*execution, failure, output));
+                }
+            }
+            TestOutcome::Passed | TestOutcome::Ignored => {
+                first_output.get_or_insert(output);
+            }
+        }
+    }
 
     let duration = start.elapsed();
+    let Some((execution, failure, output)) = first_failure else {
+        return TestResult {
+            test: test.clone(),
+            outcome: TestOutcome::Passed,
+            output: first_output.unwrap_or_default(),
+            duration,
+        };
+    };
+    let message = match execution.driver {
+        None => failure.message,
+        Some((schedule, seed)) => {
+            let mut message = failure.message.trim_end().to_string();
+            if runs.len() > 1 {
+                let _ = write!(
+                    message,
+                    "\nfailed on {failed_runs} of {} schedules",
+                    runs.len()
+                );
+            }
+            let _ = write!(
+                message,
+                "\nschedule {}, seed {seed:#x}\nreproduce: hew test {} --filter {} --schedule {} --seed {seed:#x}",
+                schedule.as_str(),
+                test.file,
+                test.name,
+                schedule.as_str(),
+            );
+            message
+        }
+    };
+    TestResult {
+        test: test.clone(),
+        outcome: TestOutcome::failed(failure.kind, message),
+        output,
+        duration,
+    }
+}
+
+/// Operands shorter than this that fit on one line are compared by eye.
+const DIFF_THRESHOLD: usize = 40;
+
+/// Append a line diff to a failed comparison's report when an operand is too
+/// long or spans lines to compare by eye. A one-line value is split after each
+/// `, ` so a record or collection diffs field by field.
+fn with_operand_diff(report: String) -> String {
+    let Some((head, right)) = report.rsplit_once("\n right: ") else {
+        return report;
+    };
+    let Some((_, left)) = head.rsplit_once("\n  left: ") else {
+        return report;
+    };
+    let right = right.trim_end_matches('\n');
+    if left.len().max(right.len()) < DIFF_THRESHOLD && !left.contains('\n') && !right.contains('\n')
+    {
+        return report;
+    }
+    let pieces = |value: &str| -> Vec<String> {
+        if value.contains('\n') {
+            value.lines().map(str::to_string).collect()
+        } else {
+            value.split_inclusive(", ").map(str::to_string).collect()
+        }
+    };
+    let (left, right) = (pieces(left), pieces(right));
+    // Longest common subsequence table, then walk it into -/+ lines.
+    let mut common = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+    for i in (0..left.len()).rev() {
+        for j in (0..right.len()).rev() {
+            common[i][j] = if left[i] == right[j] {
+                common[i + 1][j + 1] + 1
+            } else {
+                common[i + 1][j].max(common[i][j + 1])
+            };
+        }
+    }
+    let mut diff = String::from("\ndiff (-left +right):");
+    let (mut i, mut j) = (0, 0);
+    while i < left.len() || j < right.len() {
+        let line = if i < left.len() && j < right.len() && left[i] == right[j] {
+            i += 1;
+            j += 1;
+            format!("\n    {}", left[i - 1])
+        } else if i < left.len() && (j == right.len() || common[i + 1][j] >= common[i][j + 1]) {
+            i += 1;
+            format!("\n  - {}", left[i - 1])
+        } else {
+            j += 1;
+            format!("\n  + {}", right[j - 1])
+        };
+        diff.push_str(line.trim_end());
+    }
+    format!("{}{diff}\n", report.trim_end_matches('\n'))
+}
+
+/// Decide one execution's outcome, returning it with the captured stdout.
+fn judge_run(
+    test: &TestCase,
+    run_result: Result<crate::process::BinaryRunOutcome, String>,
+    timeout: Duration,
+) -> (TestOutcome, String) {
     match run_result {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
             if test.should_panic {
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::failed(
+                (
+                    TestOutcome::failed(
                         TestFailureKind::Runtime,
                         "expected test to panic, but it completed successfully",
                     ),
-                    output: stdout,
-                    duration,
-                }
+                    stdout,
+                )
             } else {
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::Passed,
-                    output: stdout,
-                    duration,
-                }
+                (TestOutcome::Passed, stdout)
             }
         }
         Ok(crate::process::BinaryRunOutcome::Failed { stdout, stderr, .. }) => {
             if test.should_panic {
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::Passed,
-                    output: stdout,
-                    duration,
-                }
+                (TestOutcome::Passed, stdout)
             } else {
                 let msg = if stderr.is_empty() {
                     "test exited with non-zero status".to_string()
                 } else {
-                    stderr
+                    with_operand_diff(stderr)
                 };
-                TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::failed(TestFailureKind::Runtime, msg),
-                    output: stdout,
-                    duration,
-                }
+                (TestOutcome::failed(TestFailureKind::Runtime, msg), stdout)
             }
         }
-        Ok(crate::process::BinaryRunOutcome::Timeout) => TestResult {
-            test: test.clone(),
-            outcome: TestOutcome::failed(
+        Ok(crate::process::BinaryRunOutcome::Timeout) => (
+            TestOutcome::failed(
                 TestFailureKind::Timeout,
                 format!(
                     "test timed out after {}",
                     crate::process::format_timeout(timeout)
                 ),
             ),
-            output: String::new(),
-            duration,
-        },
-        Err(e) => TestResult {
-            test: test.clone(),
-            outcome: TestOutcome::failed(
+            String::new(),
+        ),
+        Err(e) => (
+            TestOutcome::failed(
                 TestFailureKind::Launch,
                 format!("cannot execute test binary: {e}"),
             ),
-            output: String::new(),
-            duration,
-        },
+            String::new(),
+        ),
     }
 }
 
@@ -591,6 +751,12 @@ mod tests {
     use super::super::discovery;
     use super::*;
     use std::sync::OnceLock;
+
+    const FIFO_ONCE: ScheduleOptions = ScheduleOptions {
+        schedule: Schedule::Fifo,
+        seed: None,
+        explore: 0,
+    };
 
     fn require_codegen() -> bool {
         test_toolchain_lib().is_some()
@@ -714,6 +880,10 @@ mod tests {
     }
 
     fn run_inline_with_timeout(source: &str, timeout: Duration) -> TestSummary {
+        run_inline_with(source, timeout, FIFO_ONCE)
+    }
+
+    fn run_inline_with(source: &str, timeout: Duration, schedules: ScheduleOptions) -> TestSummary {
         let result = hew_parser::parse(source);
         let tests = discovery::discover_tests(&result.program, "<inline>");
         // Keep each invocation's source isolated from concurrent test processes
@@ -741,6 +911,8 @@ mod tests {
                 compile_paths: cargo_test_compile_paths(),
                 timeout,
                 jobs: 1,
+                schedules,
+                root: Path::new("/"),
             },
         );
         drop(source_dir);
@@ -760,6 +932,8 @@ mod tests {
                 compile_paths: cargo_test_compile_paths(),
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 1,
+                schedules: FIFO_ONCE,
+                root: Path::new("/"),
             },
         )
     }
@@ -893,7 +1067,7 @@ fn add(a: i64, b: i64) -> i64 { a + b }
 
 #[test]
 fn test_add() {
-    assert_eq(add(1, 2), 3);
+    assert(add(1, 2) == 3);
 }
 ",
         );
@@ -901,7 +1075,7 @@ fn test_add() {
     }
 
     #[test]
-    fn assert_eq_fail() {
+    fn failed_comparison_reports_expression_and_operands() {
         if !require_codegen() {
             return;
         }
@@ -909,19 +1083,18 @@ fn test_add() {
             r"
 #[test]
 fn test_bad_eq() {
-    assert_eq(1, 2);
+    assert(1 == 2);
 }
 ",
         );
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
         if let TestOutcome::Failed(failure) = &summary.results[0].outcome {
             assert_eq!(failure.kind, TestFailureKind::Runtime);
-            // The desugar names the relation that was violated, plus both
-            // rendered operands, so a failure report says what went wrong
-            // without the reader re-running the test.
+            // The desugar reports the condition's text and both rendered
+            // operands, so a failure says what went wrong without a rerun.
             assert!(
-                failure.message.contains("assertion failed: left != right")
-                    && failure.message.contains("left: 1"),
+                failure.message.contains("assertion failed: 1 == 2")
+                    && failure.message.contains("  left: 1\n right: 2"),
                 "error message: {}",
                 failure.message
             );
@@ -938,7 +1111,7 @@ fn test_bad_eq() {
 #[test]
 fn test_compile_failure() {
     let value: i64 = "not an integer";
-    assert_eq(value, 0);
+    assert(value == 0);
 }
 "#,
         );
@@ -1055,6 +1228,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
+                clock: crate::test_runner::discovery::TestClock::Deterministic,
             },
             TestCase {
                 name: "beta".into(),
@@ -1069,6 +1243,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
+                clock: crate::test_runner::discovery::TestClock::Deterministic,
             },
             TestCase {
                 name: "gamma".into(),
@@ -1083,6 +1258,7 @@ fn test_timeout() {
                 ignored: true,
                 should_panic: false,
                 serial: false,
+                clock: crate::test_runner::discovery::TestClock::Deterministic,
             },
         ];
 
@@ -1104,6 +1280,8 @@ fn test_timeout() {
                 compile_paths: &unused_paths,
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 2,
+                schedules: FIFO_ONCE,
+                root: Path::new("/"),
             },
         );
         let names: Vec<_> = summary
@@ -1113,5 +1291,137 @@ fn test_timeout() {
             .collect();
 
         assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+    }
+
+    const LEDGER: &str = r"
+actor Account {
+    var balance: i64 = 0,
+    receive fn balance() -> i64 { balance }
+    receive fn set(amount: i64) { balance = amount; }
+    receive fn deposit(amount: i64) { balance = balance + amount; }
+}
+
+fn read_then_write(account: Account, amount: i64) -> () fails ActorError {
+    let current = account.balance()?;
+    account.set(current + amount)?;
+}
+
+fn one_turn(account: Account, amount: i64) -> () fails ActorError {
+    account.deposit(amount)?;
+}
+
+fn read(account: Account) -> i64 {
+    match account.balance() {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    }
+}
+";
+
+    fn ledger_test(deposit: &str) -> String {
+        format!(
+            "{LEDGER}
+#[test]
+fn concurrent_deposits_are_not_lost() {{
+    let account = spawn Account(balance: 0);
+    scope {{
+        let first = fork {deposit}(account, 10);
+        let second = fork {deposit}(account, 20);
+        let _ = await first;
+        let _ = await second;
+    }}
+    assert(read(account) == 30);
+}}
+"
+        )
+    }
+
+    const EXPLORE: ScheduleOptions = ScheduleOptions {
+        schedule: Schedule::Fifo,
+        seed: None,
+        explore: 64,
+    };
+
+    /// A read-then-write race loses an update on some schedules; exploring
+    /// finds one and names a seed that reproduces it.
+    #[test]
+    fn exploration_finds_a_lost_update_and_names_its_seed() {
+        if !require_codegen() {
+            return;
+        }
+        let summary = run_inline_with(
+            &ledger_test("read_then_write"),
+            DEFAULT_TEST_TIMEOUT,
+            EXPLORE,
+        );
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
+        let TestOutcome::Failed(failure) = &summary.results[0].outcome else {
+            unreachable!("counted as failed");
+        };
+        assert!(
+            failure.message.contains("of 65 schedules")
+                && failure.message.contains("--seed 0x")
+                && failure
+                    .message
+                    .contains("assertion failed: read(account) == 30"),
+            "{}",
+            failure.message
+        );
+    }
+
+    /// The control: one turn per deposit passes every explored schedule.
+    #[test]
+    fn exploration_passes_a_race_free_ledger() {
+        if !require_codegen() {
+            return;
+        }
+        let summary = run_inline_with(&ledger_test("one_turn"), DEFAULT_TEST_TIMEOUT, EXPLORE);
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
+    }
+
+    /// A deterministic test sleeps on the virtual clock, so a minute-long
+    /// sleep finishes inside a one-second hang guard; the same test on the
+    /// host clock runs into the guard.
+    #[test]
+    fn deterministic_sleep_runs_on_the_virtual_clock() {
+        if !require_codegen() {
+            return;
+        }
+        let source = |attribute: &str| {
+            format!("#[test]\n{attribute}fn waits() {{\n    sleep(60s);\n    assert(true);\n}}\n")
+        };
+        let guard = Duration::from_secs(1);
+        let virtual_run = run_inline_with_timeout(&source(""), guard);
+        assert_eq!(virtual_run.passed, 1, "{}", describe(&virtual_run));
+        let host_run = run_inline_with_timeout(&source("#[real_time]\n"), guard);
+        assert!(
+            matches!(
+                &host_run.results[0].outcome,
+                TestOutcome::Failed(TestFailure {
+                    kind: TestFailureKind::Timeout,
+                    ..
+                })
+            ),
+            "{}",
+            describe(&host_run)
+        );
+    }
+
+    #[test]
+    fn operand_diff_marks_only_the_differing_field() {
+        let report = "hew: failure: UserPanic (212): assertion failed: a == b\n  left: User { name: ada, age: 36, tags: [admin] }\n right: User { name: ada, age: 37, tags: [admin] }\n".to_string();
+        let rendered = with_operand_diff(report);
+        assert!(
+            rendered.ends_with(
+                "diff (-left +right):\n    User { name: ada,\n  - age: 36,\n  + age: 37,\n    tags: [admin] }\n"
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn short_operands_get_no_diff() {
+        let report = "assertion failed: x == 2\n  left: 1\n right: 2\n".to_string();
+        assert_eq!(with_operand_diff(report.clone()), report);
     }
 }

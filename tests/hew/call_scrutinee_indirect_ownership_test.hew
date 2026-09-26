@@ -1,8 +1,6 @@
 //! An indirect call that returns an owned Result preserves its payload when
 //! used as a match scrutinee.
 
-import std.testing;
-
 fn make(value: string) -> Result<string, string> {
     .Ok(value)
 }
@@ -29,10 +27,10 @@ fn inspect_nonowning() -> i64 {
 
 #[test]
 fn indirect_owned_result_call_scrutinee_preserves_payload() {
-    testing.assert_eq(inspect(), 7);
+    assert(inspect() == 7);
 }
 
 #[test]
 fn indirect_nonowning_result_call_scrutinee_preserves_scalar() {
-    testing.assert_eq(inspect_nonowning(), 1);
+    assert(inspect_nonowning() == 1);
 }

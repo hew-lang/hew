@@ -4,8 +4,6 @@
 //! after the loop — the binding is NOT consumed.  Element values are asserted
 //! exactly so the test fails on uninitialised memory or wrong indices.
 
-import std.testing;
-
 // ── Vec<i64> ──────────────────────────────────────────────────────────────────
 #[test]
 fn test_vec_i64_for_in_borrows_collection() {
@@ -18,12 +16,12 @@ fn test_vec_i64_for_in_borrows_collection() {
         sum = sum + x;
     }
     // Collection must still be alive after the loop.
-    testing.assert_eq(v.len(), 3);
-    testing.assert_eq(v[0], 10);
-    testing.assert_eq(v[1], 20);
-    testing.assert_eq(v[2], 30);
+    assert(v.len() == 3);
+    assert(v[0] == 10);
+    assert(v[1] == 20);
+    assert(v[2] == 30);
     // Loop must have seen all elements.
-    testing.assert_eq(sum, 60);
+    assert(sum == 60);
 }
 
 #[test]
@@ -41,9 +39,9 @@ fn test_vec_i64_second_loop_after_first() {
     for x in v {
         second_sum = second_sum + x;
     }
-    testing.assert_eq(first_sum, 6);
-    testing.assert_eq(second_sum, 6);
-    testing.assert_eq(v.len(), 3);
+    assert(first_sum == 6);
+    assert(second_sum == 6);
+    assert(v.len() == 3);
 }
 
 // ── Vec<string> ───────────────────────────────────────────────────────────────
@@ -58,12 +56,12 @@ fn test_vec_string_for_in_borrows_collection() {
         count = count + s.len();
     }
     // Collection must still be alive after the loop.
-    testing.assert_eq(v.len(), 3);
-    testing.assert_eq_str(v[0], "alpha");
-    testing.assert_eq_str(v[1], "beta");
-    testing.assert_eq_str(v[2], "gamma");
+    assert(v.len() == 3);
+    assert(v[0] == "alpha");
+    assert(v[1] == "beta");
+    assert(v[2] == "gamma");
     // alpha=5, beta=4, gamma=5 = 14
-    testing.assert_eq(count, 14);
+    assert(count == 14);
 }
 
 // ── Vec<f64> ──────────────────────────────────────────────────────────────────
@@ -78,11 +76,11 @@ fn test_vec_f64_for_in_borrows_collection() {
         total = total + x;
     }
     // Collection must still be alive after the loop.
-    testing.assert_eq(v.len(), 3);
-    testing.assert_true(v[0] == 1.5);
-    testing.assert_true(v[1] == 2.5);
-    testing.assert_true(v[2] == 3.0);
-    testing.assert_true(total == 7.0);
+    assert(v.len() == 3);
+    assert(v[0] == 1.5);
+    assert(v[1] == 2.5);
+    assert(v[2] == 3.0);
+    assert(total == 7.0);
 }
 
 // ── range 0..n ────────────────────────────────────────────────────────────────
@@ -97,9 +95,9 @@ fn test_range_for_in_elements_and_count() {
         sum = sum + i;
         count = count + 1;
     }
-    testing.assert_eq(count, 5);
+    assert(count == 5);
     // 0+1+2+3+4 = 10
-    testing.assert_eq(sum, 10);
+    assert(sum == 10);
 }
 
 // ── Empty Vec — loop body does not execute ────────────────────────────────────
@@ -111,8 +109,8 @@ fn test_empty_vec_for_in_borrows_collection() {
         count = count + x;
     }
     // Loop body never ran; collection still alive.
-    testing.assert_eq(v.len(), 0);
-    testing.assert_eq(count, 0);
+    assert(v.len() == 0);
+    assert(count == 0);
 }
 
 // ── for-in then mutate the collection ─────────────────────────────────────────
@@ -127,6 +125,6 @@ fn test_vec_mutable_after_for_in() {
     }
     // Push a new element after iterating — collection is still alive.
     v.push(3);
-    testing.assert_eq(v.len(), 3);
-    testing.assert_eq(v[2], 3);
+    assert(v.len() == 3);
+    assert(v[2] == 3);
 }

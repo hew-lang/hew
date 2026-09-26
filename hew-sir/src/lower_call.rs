@@ -1305,10 +1305,6 @@ impl Builder<'_, '_> {
             } => {
                 self.lower_actor_attachment_runtime(expr, *family, endpoints, args, value_required)
             }
-            CallTarget::Builtin { endpoint } if endpoint == "assert" => {
-                self.lower_assert(expr, args)?;
-                Ok(None)
-            }
             CallTarget::Builtin { endpoint } if endpoint == "sleep" => {
                 self.lower_sleep(expr, args)?;
                 Ok(None)

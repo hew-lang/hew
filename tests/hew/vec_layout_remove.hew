@@ -4,10 +4,6 @@
 //! with two i64 fields.  The checker rewrites the `remove` call to
 //! `hew_vec_remove_at_layout`; codegen synthesises the hidden HewTypeLayout*
 //! operand; the runtime shifts subsequent elements left using memmove semantics.
-//!
-//! Uses inline `if … { panic(…) }` assertions because the `hew test` extracted-
-//! function context does not yet support module-qualified `testing.*` calls
-//! (pre-existing MethodCallNoRewrite limitation, see deque_test.hew on v05-integration).
 
 type Point {
     x: i64,

@@ -326,6 +326,46 @@ impl Checker {
             .record_resolution(site, span, super::scope::Resolution::Local(binding.id));
     }
 
+    /// Record the item prefix of a written value path. `Scope` stops at the
+    /// first value member, which the field or call checker publishes after it
+    /// selects that member from the receiver's type.
+    pub(super) fn record_value_path_resolution(
+        &mut self,
+        expr: &hew_parser::ast::Expr,
+        span: &hew_parser::ast::Span,
+    ) {
+        fn segments(
+            expr: &hew_parser::ast::Expr,
+            span: &hew_parser::ast::Span,
+            out: &mut Vec<hew_parser::ast::Spanned<hew_parser::ast::Ident>>,
+        ) -> bool {
+            match expr {
+                hew_parser::ast::Expr::Ident(name) => {
+                    out.push((*name, span.clone()));
+                    true
+                }
+                hew_parser::ast::Expr::FieldAccess { object, field } => {
+                    if !segments(&object.0, &object.1, out) {
+                        return false;
+                    }
+                    out.push(field.clone());
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        let mut path = Vec::new();
+        if segments(expr, span, &mut path) {
+            let _ =
+                self.scopes
+                    .resolve_prefix(&self.env, site, super::scope::Namespace::Value, &path);
+        }
+    }
+
     /// Publish a record field chosen from the receiver's resolved nominal.
     /// The field index is declaration order, not hash-map iteration order.
     pub(super) fn record_field_resolution(

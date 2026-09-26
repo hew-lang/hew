@@ -1085,6 +1085,9 @@ pub struct DynAssocBinding {
 pub struct DynVtableKey {
     /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
     pub trait_name: String,
+    /// Exact bound declarations in source order. A compiler predicate has no
+    /// declaration and keeps `None` in its position.
+    pub trait_ids: Vec<Option<crate::DefId>>,
     /// Resolved concrete `Self` type at the coercion site.
     pub concrete_type: Ty,
     /// Canonical associated-type bindings sorted by `(trait_name, assoc_name)`.
@@ -1118,6 +1121,10 @@ pub struct DynVtableEntry {
 pub struct DynCoercion {
     /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
     pub trait_name: String,
+    /// Ordered checker-resolved bounds of the target trait object. Each
+    /// declared trait carries its exact declaration identity, including when
+    /// it has no methods and therefore contributes no vtable entry.
+    pub trait_bounds: Vec<crate::ty::TraitObjectBound>,
     /// Resolved concrete `Self` type at the coercion site.
     pub concrete_type: Ty,
     /// Canonical vtable key used to distinguish projections such as

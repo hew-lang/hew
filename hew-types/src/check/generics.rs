@@ -42,7 +42,7 @@ impl Checker {
         // A trait object's source spelling is a lookup surface. The signature's
         // associated-type carriers are declaration-owned, so resolve the bound
         // once and use its canonical trait key for both metadata and projection.
-        let trait_key = self.trait_ref_lookup_key(&bound.trait_name);
+        let trait_key = self.dyn_bound_trait_key(bound);
         if let Some(trait_info) = self.trait_def_at(&trait_key) {
             let type_params = &trait_info.type_params;
             if type_params.len() == bound.args.len() {
@@ -1790,7 +1790,7 @@ impl Checker {
         let mut visited = std::collections::HashSet::new();
         for (bound, trait_object_bound) in traits.iter().enumerate() {
             let pushed = self.push_dyn_layout_trait(
-                &self.trait_ref_lookup_key(&trait_object_bound.trait_name),
+                &self.dyn_bound_trait_key(trait_object_bound),
                 &trait_object_bound.trait_name,
                 bound,
                 &mut visited,

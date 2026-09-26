@@ -580,6 +580,83 @@ fn module_local_dyn_trait_method_records_vtable_call() {
 }
 
 #[test]
+fn qualified_dyn_trait_keeps_foreign_method_order_and_identity() {
+    let foreign = hew_parser::parse(
+        "pub trait Shape { fn name(self) -> string; fn kind(self) -> string; } \
+         pub fn show(s: dyn Shape) { println(s.name() + s.kind()); }",
+    );
+    assert!(foreign.errors.is_empty(), "{:#?}", foreign.errors);
+    let source = "import ma; trait Shape { fn kind(self) -> string; fn name(self) -> string; } \
+        type Box { v: i64 } impl Shape for Box { \
+        fn kind(self) -> string { \"K\" } fn name(self) -> string { \"N\" } } \
+        fn announce(shape: dyn ma.Shape) -> string { shape.name() } \
+        fn main() { ma.show(Box { v: 1 }); }";
+    let mut root = hew_parser::parse(source);
+    assert!(root.errors.is_empty(), "{:#?}", root.errors);
+    let (Item::Import(import), _) = &mut root.program.items[0] else {
+        panic!("expected module import");
+    };
+    import.resolved_items = Some(foreign.program.items.clone().into());
+    import.resolved_source_paths = vec![std::path::PathBuf::from("ma.hew")];
+    let root_id = ModulePath::root();
+    let ma_id = ModulePath::new(["ma"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    for (id, items, path) in [
+        (ma_id.clone(), foreign.program.items, "ma.hew"),
+        (root_id.clone(), root.program.items.clone(), "main.hew"),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: vec![std::path::PathBuf::from(path)],
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![ma_id, root_id];
+    root.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&root.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let foreign_trait = output.defs.lookup_path("ma.Shape").expect("foreign trait");
+    let show = output
+        .defs
+        .lookup_path("ma.show")
+        .expect("foreign function");
+    let Ty::TraitObject { traits } = &output.fn_sigs[&show].params[0] else {
+        panic!("foreign parameter should be a trait object");
+    };
+    assert_eq!(traits[0].trait_id, Some(foreign_trait));
+    let annotation = source.find("dyn ma.Shape").unwrap() + "dyn ma.".len();
+    assert_eq!(
+        output.resolutions.get(&SpanKey::in_module(
+            &(annotation..annotation + "Shape".len()),
+            0
+        )),
+        Some(&crate::check::scope::Resolution::Def(foreign_trait))
+    );
+    let coercion = output
+        .dyn_trait_coercions
+        .values()
+        .next()
+        .expect("concrete argument to foreign trait object");
+    assert_eq!(coercion.trait_bounds[0].trait_id, Some(foreign_trait));
+    assert_eq!(
+        coercion
+            .vtable_entries
+            .iter()
+            .map(|entry| entry.method_name.as_str())
+            .collect::<Vec<_>>(),
+        ["name", "kind"]
+    );
+    assert!(coercion
+        .vtable_entries
+        .iter()
+        .all(|entry| output.defs.owner(entry.method) == Some(foreign_trait)));
+}
+
+#[test]
 fn dyn_trait_return_signature_is_admitted() {
     let source = r#"
         trait Named {

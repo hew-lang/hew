@@ -189,8 +189,6 @@ pub enum ResolvedTy {
 
 /// A single trait bound in a resolved trait object.
 ///
-/// TRANSITION(A1 commit 4): comparisons ignore `trait_id`; see
-/// [`crate::ty::TraitObjectBound`].
 #[derive(Debug, Clone)]
 pub struct ResolvedTraitBound {
     /// Trait name
@@ -204,8 +202,20 @@ pub struct ResolvedTraitBound {
 }
 
 impl ResolvedTraitBound {
-    fn comparison_key(&self) -> (&String, &Vec<ResolvedTy>, &Vec<(String, ResolvedTy)>) {
-        (&self.trait_name, &self.args, &self.assoc_bindings)
+    fn comparison_key(
+        &self,
+    ) -> (
+        &Option<crate::DefId>,
+        &String,
+        &Vec<ResolvedTy>,
+        &Vec<(String, ResolvedTy)>,
+    ) {
+        (
+            &self.trait_id,
+            &self.trait_name,
+            &self.args,
+            &self.assoc_bindings,
+        )
     }
 }
 

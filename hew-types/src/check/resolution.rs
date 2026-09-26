@@ -1276,9 +1276,22 @@ impl Checker {
             }
         }
 
+        let trait_id = self.trait_key_id(&trait_lookup_key);
+        if let (Some(site), Some(id)) = (self.scope_site(), trait_id) {
+            let _ = self.scopes.resolve_prefix(
+                &self.env,
+                site,
+                super::scope::Namespace::Type,
+                &bound.path.segments,
+            );
+            if let Some((_, name_span)) = bound.path.segments.last() {
+                self.scopes
+                    .record_resolution(site, name_span, super::scope::Resolution::Def(id));
+            }
+        }
         crate::ty::TraitObjectBound {
             trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-            trait_id: self.trait_key_id(&trait_lookup_key),
+            trait_id,
             args,
             assoc_bindings,
         }

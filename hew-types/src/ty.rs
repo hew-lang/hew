@@ -101,9 +101,6 @@ impl fmt::Display for TypeVar {
 
 /// A single trait bound in a trait object.
 ///
-/// TRANSITION(A1 commit 4): equality and hashing ignore `trait_id` while HIR
-/// still lowers `dyn` types from syntax without it; B1 lowers them from the
-/// checker's types and the derive returns.
 #[derive(Debug, Clone)]
 pub struct TraitObjectBound {
     /// Trait name
@@ -123,7 +120,8 @@ pub struct TraitObjectBound {
 
 impl PartialEq for TraitObjectBound {
     fn eq(&self, other: &Self) -> bool {
-        self.trait_name == other.trait_name
+        self.trait_id == other.trait_id
+            && self.trait_name == other.trait_name
             && self.args == other.args
             && self.assoc_bindings == other.assoc_bindings
     }
@@ -133,6 +131,7 @@ impl Eq for TraitObjectBound {}
 
 impl std::hash::Hash for TraitObjectBound {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.trait_id.hash(state);
         self.trait_name.hash(state);
         self.args.hash(state);
         self.assoc_bindings.hash(state);

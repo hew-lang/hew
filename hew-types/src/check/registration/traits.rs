@@ -1099,6 +1099,35 @@ impl Checker {
         name: &str,
         scope: TraitRefScope<'_>,
     ) -> ResolvedTraitIdentity {
+        // A qualified bound carries an explicit module binding. Resolve that
+        // owner before considering local same-name traits; stripping the
+        // qualifier through the suffix scan can put a foreign method table in
+        // a dyn value whose annotation named a different trait.
+        if let Some((binding, tail)) = name.split_once('.') {
+            if matches!(scope, TraitRefScope::Current) {
+                if let Some(owner) = self.module_import_bindings.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    binding.to_string(),
+                )) {
+                    let key = format!("{owner}.{tail}");
+                    if self.has_trait_def(&key) {
+                        return self.identity_from_trait_defs_key(&key);
+                    }
+                }
+            }
+            if self.has_trait_def(name)
+                && (self.current_module.as_deref() == name.rsplit_once('.').map(|(owner, _)| owner)
+                    || self.canonical_std_module_sources.contains(binding))
+            {
+                return self.identity_from_trait_defs_key(name);
+            }
+            return ResolvedTraitIdentity {
+                owner: None,
+                source_trait_name: name.to_string(),
+                is_local: false,
+            };
+        }
         // (1) LOCAL SHADOW — only in the CURRENT module's scope. A supertrait edge
         //     spelled in a DECLARING module is never the importer's local trait of
         //     the same name; gating this on `Current` is the H11 scope correctness.
@@ -1211,6 +1240,18 @@ impl Checker {
     pub(in crate::check) fn trait_ref_lookup_key(&self, name: &str) -> String {
         let identity = self.resolve_trait_ref(name, TraitRefScope::Current);
         self.trait_defs_key_for_identity(&identity)
+    }
+
+    /// Resolve a checked dyn bound through its declaration, independent of
+    /// the module currently checking a call or coercion using that bound.
+    pub(in crate::check) fn dyn_bound_trait_key(
+        &self,
+        bound: &crate::ty::TraitObjectBound,
+    ) -> String {
+        bound.trait_id.map_or_else(
+            || self.trait_ref_lookup_key(&bound.trait_name),
+            |id| self.defs.path(id).to_string(),
+        )
     }
 
     pub(in crate::check) fn resolved_trait_defaults(

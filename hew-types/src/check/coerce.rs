@@ -597,7 +597,7 @@ impl Checker {
         span: &Span,
     ) -> Option<bool> {
         let trait_name = bound.trait_name.as_str();
-        let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
+        let trait_lookup_key = self.dyn_bound_trait_key(bound);
         // Resolve the trait declaration; an unregistered trait can never be
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
@@ -760,6 +760,7 @@ impl Checker {
         }
         let vtable_key = DynVtableKey {
             trait_name: composite_trait_name.clone(),
+            trait_ids: traits.iter().map(|bound| bound.trait_id).collect(),
             concrete_type: concrete_type.clone(),
             assoc_bindings: assoc_bindings.clone(),
         };
@@ -768,6 +769,7 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             DynCoercion {
                 trait_name: composite_trait_name,
+                trait_bounds: traits.to_vec(),
                 concrete_type: concrete_type.clone(),
                 vtable_key,
                 assoc_bindings,

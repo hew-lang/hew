@@ -690,6 +690,8 @@ mod tests {
     /// Bind a listener on `path`, accept one connection, send `response`,
     /// then close.  Spawned on a background thread so the test's
     /// `ProfilerClient` can connect from the main thread.
+    /// Serve one response. The socket is bound before this returns, so a
+    /// client may connect at once: the kernel queues it for the accept.
     fn serve_once(path: &Path, response: &'static str) {
         let listener = UnixListener::bind(path).expect("bind");
         std::thread::spawn(move || {
@@ -763,7 +765,6 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
         );
         serve_once(&sock, response);
-        std::thread::sleep(Duration::from_millis(50));
 
         let mut client = ProfilerClient::new_unix(&sock);
         let crashes = client
@@ -793,7 +794,6 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
         );
         serve_once(&sock, response);
-        std::thread::sleep(Duration::from_millis(50));
 
         let mut client = ProfilerClient::new_unix(&sock);
         let result = client.fetch_crashes();
@@ -823,7 +823,6 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
         );
         serve_once(&sock, response);
-        std::thread::sleep(Duration::from_millis(50));
 
         let mut client = ProfilerClient::new_unix(&sock);
         let result = client.fetch_crashes();
@@ -913,22 +912,17 @@ mod tests {
         );
     }
 
+    /// Poll until the live profiler serves metrics; the test runner's
+    /// timeout is the hang guard.
     fn wait_for_live_profiler(base_url: &str) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut last_error = None;
-        while std::time::Instant::now() < deadline {
-            match ProfilerClient::new_tcp(base_url) {
-                Ok(mut client) => {
-                    if client.fetch_metrics().is_some() {
-                        return;
-                    }
-                    last_error = client.last_error.map(|err| err.to_string());
+        loop {
+            if let Ok(mut client) = ProfilerClient::new_tcp(base_url) {
+                if client.fetch_metrics().is_some() {
+                    return;
                 }
-                Err(err) => last_error = Some(err.to_string()),
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        panic!("live profiler did not become ready at {base_url}: {last_error:?}");
     }
 
     fn bind_ephemeral_profiler_listener() -> (std::net::TcpListener, std::net::SocketAddr) {
@@ -969,8 +963,6 @@ mod tests {
         let sock = tmp.path().join("bad_status.sock");
 
         serve_once(&sock, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
-        // Give the thread a moment to bind.
-        std::thread::sleep(Duration::from_millis(50));
 
         let mut client = ProfilerClient::new_unix(&sock);
         let result = client.fetch_metrics();
@@ -994,7 +986,6 @@ mod tests {
             &sock,
             "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nnot json",
         );
-        std::thread::sleep(Duration::from_millis(50));
 
         let mut client = ProfilerClient::new_unix(&sock);
         let result = client.fetch_metrics();
@@ -1031,7 +1022,6 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{metrics_json}");
         let response: &'static str = Box::leak(response.into_boxed_str());
         serve_once(&sock_ok, response);
-        std::thread::sleep(Duration::from_millis(50));
 
         client.transport = Transport::Unix {
             socket_path: sock_ok.clone(),

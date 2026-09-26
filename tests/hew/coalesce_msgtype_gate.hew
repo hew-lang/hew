@@ -1,9 +1,10 @@
 //! Coalesce regression for spec section 6.3: equal keys on different message
-//! types must not merge. A wide bounded queue is filled with beta messages,
-//! then flooded with alpha messages carrying the same keys. Exact runtime
+//! types must not merge. While the actor is held, its bounded queue is filled
+//! with beta messages, then flooded with alpha messages carrying the same keys. Exact runtime
 //! queue-order coverage lives in `hew-runtime`; this compiled fixture proves
 //! the generated callback and spawn wiring preserve both message kinds.
 
+import std.stream;
 import std.testing;
 
 actor KindCoalescer {
@@ -13,14 +14,18 @@ actor KindCoalescer {
 
     mailbox 64 overflow coalesce(id) fallback drop_new,
 
+    // Holds the actor: reports that it is running, then waits for its gate.
+    receive fn hold(started: stream.Sink<i64>, gate: stream.Stream<i64>) {
+        started.send(1).expect("started");
+        gate.recv();
+    }
+
     receive fn alpha(id: i64, value: i64) {
-        sleep(5ms);
         alpha_count = alpha_count + 1;
         alpha_latest = value;
     }
 
     receive fn beta(id: i64, value: i64) {
-        sleep(5ms);
         beta_count = beta_count + 1;
     }
 
@@ -41,13 +46,19 @@ actor KindCoalescer {
 fn coalesce_same_key_different_message_types_do_not_merge() {
     let worker = spawn KindCoalescer(alpha_count: 0, beta_count: 0, alpha_latest: -1);
     let intake = mailbox(worker);
+    let (started_tx, started) = stream.pipe(1).expect("started");
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let _ = intake.hold(started_tx, gate);
+    started.recv();
+    // With the actor held, the betas fill every seat, so each alpha with a
+    // matching key must be refused rather than merged into a beta.
     for id in 0 .. 64 {
         let _ = intake.beta(id, id);
     }
     for id in 0 .. 64 {
         let _ = intake.alpha(id, id + 1000);
     }
-    sleep(2s);
+    release.send(1).expect("release");
     var alpha_count: i64 = -1;
     var beta_count: i64 = -1;
     match worker.alpha_seen() {
@@ -62,9 +73,10 @@ fn coalesce_same_key_different_message_types_do_not_merge() {
         },
         .Err(_) => testing.assert_true(false),
     }
-    testing.assert_true(beta_count > alpha_count);
+    testing.assert_eq(beta_count, 64);
+    testing.assert_eq(alpha_count, 0);
     match worker.latest() {
-        .Ok(value) => testing.assert_true(value == -1 || value >= 1000),
+        .Ok(value) => testing.assert_eq(value, -1),
         .Err(_) => testing.assert_true(false),
     }
 }

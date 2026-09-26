@@ -150,10 +150,8 @@ supervisor Pool {
 
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w1 = sup.w1;
     let _ = w1.work();
-    sleep(20ms);
 
     let loner = spawn Loner;
     match loner.boom() {
@@ -189,15 +187,11 @@ supervisor Pool {
 
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     var f1 = sup.f1;
     let _ = f1.work();
-    sleep(20ms);
     let _ = f1.boom();
-    sleep(500ms);
-    f1 = sup.f1;
+    f1 = await_restart sup.f1;
     let _ = f1.work();
-    sleep(50ms);
     println("MAIN_DONE");
 }
 "#;
@@ -221,13 +215,11 @@ supervisor Pool {
 
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     var f1 = sup.f1;
     let _ = f1.boom();
-    sleep(400ms);
-    f1 = sup.f1;
+    f1 = await_restart sup.f1;
     let _ = f1.boom();
-    sleep(600ms);
+    let _ = await_restart sup.f1;
     println("MAIN_DONE");
 }
 "#;
@@ -269,7 +261,7 @@ fn main() {
     let probe = spawn Probe;
     let w = sup.w;
     let _ = w.boom();
-    sleep(300ms);
+    let _ = await_restart sup.w;
     match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
@@ -367,10 +359,9 @@ supervisor Pool {
 fn main() {
     let sup = spawn Pool;
     let probe = spawn Probe;
-    sleep(30ms);
     let t1 = sup.t1;
     let _ = t1.boom();
-    sleep(300ms);
+    let _ = await_restart sup.t1;
     match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
@@ -414,7 +405,7 @@ fn main() {
     let probe = spawn Probe;
     let w = sup.w;
     let _ = w.boom();
-    sleep(300ms);
+    let _ = await_restart sup.w;
     match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
@@ -443,7 +434,6 @@ supervisor Pool {
 
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let f1 = sup.f1;
     let _ = f1.boom();
     println("MAIN_RETURNS_IMMEDIATELY");
@@ -539,23 +529,18 @@ supervisor Outer {
 
 fn main() {
     let outer = spawn Outer;
-    sleep(80ms);
     var inner = outer.inner;
     var f1 = inner.f1;
     let _ = f1.work();
-    sleep(40ms);
 
     let _ = f1.boom();
-    sleep(400ms);
-    inner = outer.inner;
-    f1 = inner.f1;
+    f1 = await_restart inner.f1;
     let _ = f1.boom();
-    sleep(800ms);
-
-    inner = outer.inner;
+    // The inner budget is spent, so the escalation hands the subtree to the
+    // outer supervisor, which restarts it.
+    inner = await_restart outer.inner;
     f1 = inner.f1;
     let _ = f1.work();
-    sleep(100ms);
     println("MAIN_DONE");
 }
 "#;
@@ -593,21 +578,17 @@ supervisor GivingUp {
 fn main() {
     let good = spawn Recovering;
     let bad = spawn GivingUp;
-    sleep(50ms);
 
     var r1 = good.r1;
     let _ = r1.boom();
-    sleep(400ms);
-    r1 = good.r1;
+    r1 = await_restart good.r1;
     let _ = r1.work();
-    sleep(40ms);
 
     var g1 = bad.g1;
     let _ = g1.boom();
-    sleep(400ms);
-    g1 = bad.g1;
+    g1 = await_restart bad.g1;
     let _ = g1.boom();
-    sleep(600ms);
+    let _ = await_restart bad.g1;
     println("MAIN_DONE");
 }
 "#;

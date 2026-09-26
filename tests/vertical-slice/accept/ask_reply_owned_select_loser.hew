@@ -2,42 +2,50 @@
 //
 // Design intent (the owned-reply analog of actor_ask_race):
 //   - FastWorker.label() returns an owned `string` immediately; always wins.
-//   - SlowWorker.label() sleeps 50 ms, returning an owned `string`; always
-//     loses. Its reply is released on the loser teardown leg (delivered-but
+//   - SlowWorker.label() waits on a gate main opens after the select, then
+//     returns an owned `string`; always loses. Its reply is released on the loser teardown leg (delivered-but
 //     -never-consumed, or cancelled-before-delivery) by the channel's
 //     registered destructor — without leaking and without double-freeing what
 //     the winner owns.
-//   - after 100ms: safety-net arm, also an owned `string`; should never fire.
 //
 // Exit-code contract: main returns the winning reply's length. FastWorker's
 // "winner-owned-reply".to_upper() is "WINNER-OWNED-REPLY" = 18 chars, so
 // the process exits 18. A crash on the loser teardown leg (double-free / UAF)
 // or a hang would fail this fixture instead.
+import std.stream;
+
 actor FastWorker {
     receive fn label() -> string {
 
-        // No sleep — reply immediately with an owned (heap) string.
+        // Reply immediately with an owned (heap) string.
         "winner-owned-reply".to_upper()
     }
 }
 
 actor SlowWorker {
-    receive fn label() -> string {
+    var gate: stream.Stream<i64>,
 
-        // Park 50 ms so FastWorker's reply wins; this owned reply is abandoned.
-        sleep(50ms);
+    receive fn label() -> string {
+        // Wait on a gate main opens only after the select, so FastWorker's
+        // reply wins; this owned reply is abandoned.
+        gate.recv();
         "loser-owned-reply".to_upper()
     }
+
+    receive fn ping() {}
 }
 
 fn main() -> i64 {
     let fast = spawn FastWorker;
-    let slow = spawn SlowWorker;
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let slow = spawn SlowWorker(gate: gate);
     let winner = select {
         reply from fast.label() => reply.expect("ask reply"),
         reply from slow.label() => reply.expect("ask reply"),
-        after 100ms => "timeout-owned-reply".to_upper(),
     };
+    // The losing owned reply lands on its abandoned channel before exit.
+    release.send(1).expect("release");
+    slow.ping().expect("ping");
     // "WINNER-OWNED-REPLY" is 18 characters; exit code == 18.
     winner.len()
 }

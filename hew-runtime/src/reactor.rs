@@ -2618,7 +2618,7 @@ mod tests {
 
         let mut detach = Some(std::thread::spawn(|| reactor_detach_actor(OLD_ACTOR)));
         evicted_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv()
             .expect("detach must reach the post-eviction window");
 
         // Before the fix, actor eviction drops the registration here, closing
@@ -2891,7 +2891,7 @@ mod tests {
             .write_all(b"unread-because-dead")
             .expect("client write");
         client.flush().ok();
-        std::thread::sleep(Duration::from_millis(20));
+        wait_readable_for_bytes(fd);
 
         handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
 
@@ -2960,7 +2960,7 @@ mod tests {
         // Make the fd readable.
         client.write_all(b"dropped").expect("client write");
         client.flush().ok();
-        std::thread::sleep(Duration::from_millis(20));
+        wait_readable_for_bytes(fd);
 
         handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
 
@@ -3307,7 +3307,7 @@ mod tests {
         // Make the fd readable so the deposit path runs.
         client.write_all(b"deposit-race").expect("client write");
         client.flush().ok();
-        std::thread::sleep(Duration::from_millis(20));
+        wait_readable_for_bytes(fd);
 
         // Install the mid-deposit hook: at the moment the reactor is about to
         // deposit (in-flight ref held), run the teardown ordering that the
@@ -3445,7 +3445,7 @@ mod tests {
 
         client.write_all(b"shutdown-race").expect("client write");
         client.flush().ok();
-        std::thread::sleep(Duration::from_millis(20));
+        wait_readable_for_bytes(fd);
 
         let slot_addr = slot as usize;
         let refs_observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3694,6 +3694,7 @@ mod tests {
         assert_eq!(registration_count_for_test(), 0, "not yet inserted");
 
         // Spawn the synchronous detach; it must block in phase 2 on the guard.
+        let phase_two = detach_reaches_phase_two();
         let detach_returned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let detach_returned_t = std::sync::Arc::clone(&detach_returned);
         let handle = std::thread::spawn(move || {
@@ -3701,16 +3702,13 @@ mod tests {
             detach_returned_t.store(true, Ordering::SeqCst);
         });
 
-        // While the guard is held, detach must not return.
-        let blocked_deadline = Instant::now() + Duration::from_millis(40);
-        while Instant::now() < blocked_deadline {
-            assert!(
-                !detach_returned.load(Ordering::SeqCst),
-                "reactor_detach_actor returned while PROMOTING_ACTOR still named the actor — \
-                 the phase-2 promotion guard is not gating the free (UAF risk)"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        // Once past phase 1, detach must not return while the guard is held.
+        phase_two.recv().expect("detach reaches phase 2");
+        assert!(
+            !detach_returned.load(Ordering::SeqCst),
+            "reactor_detach_actor returned while PROMOTING_ACTOR still named the actor — \
+             the phase-2 promotion guard is not gating the free (UAF risk)"
+        );
 
         // The reactor "finishes" the promotion: insert the registration, then
         // clear the guard — exactly the order `apply_add` uses.
@@ -3718,15 +3716,8 @@ mod tests {
         set_promoting_actor_for_test(None);
 
         // Detach must now return AND have re-scrubbed the just-promoted entry.
-        let release_deadline = Instant::now() + Duration::from_secs(1);
-        while !detach_returned.load(Ordering::SeqCst) {
-            assert!(
-                Instant::now() < release_deadline,
-                "reactor_detach_actor did not return after the promotion guard cleared"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
         handle.join().expect("detach thread should join cleanly");
+        assert!(detach_returned.load(Ordering::SeqCst));
 
         assert_eq!(
             registration_count_for_test(),
@@ -3779,6 +3770,7 @@ mod tests {
         assert_eq!(pending_count_for_test(), 0, "add already left pending");
         assert_eq!(registration_count_for_test(), 0, "not yet inserted");
 
+        let phase_two = detach_reaches_phase_two();
         let detach_returned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let detach_returned_t = std::sync::Arc::clone(&detach_returned);
         let handle = std::thread::spawn(move || {
@@ -3788,9 +3780,9 @@ mod tests {
             detach_returned_t.store(true, Ordering::SeqCst);
         });
 
-        // Give the detach thread time to clear phase 1 and reach the lock-free
+        // The detach thread clears phase 1 and heads into the lock-free
         // phase-2 spin-wait on the promotion guard.
-        std::thread::sleep(Duration::from_millis(20));
+        phase_two.recv().expect("detach reaches phase 2");
         assert!(
             !detach_returned.load(Ordering::SeqCst),
             "detach must still be spin-waiting on the promotion guard"
@@ -3829,6 +3821,9 @@ mod tests {
         // DELIVERING_ACTOR == KEY is still set (the modelled send is in flight),
         // so the detach MUST loop back and keep waiting — it must NOT return.
         // Pre-fix it returns here (the bug); post-fix it stays blocked.
+        // WHY a window: nothing reports that the re-scrub has run, so this leg
+        // passes vacuously when the host is slow. WHAT the real fix is: a hook
+        // after the phase-2 re-scrub, as the post-evict hook marks phase 1.
         let blocked_deadline = Instant::now() + Duration::from_millis(60);
         while Instant::now() < blocked_deadline {
             assert!(
@@ -3843,15 +3838,8 @@ mod tests {
         // The modelled delivery completes: clear the guard. Detach must now drain
         // (scrub finds nothing, no guard set) and return.
         set_delivering_actor_for_test(None);
-        let release_deadline = Instant::now() + Duration::from_secs(1);
-        while !detach_returned.load(Ordering::SeqCst) {
-            assert!(
-                Instant::now() < release_deadline,
-                "reactor_detach_actor did not return after DELIVERING_ACTOR cleared"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
         handle.join().expect("detach thread should join cleanly");
+        assert!(detach_returned.load(Ordering::SeqCst));
 
         assert_eq!(
             registration_count_for_test(),
@@ -3865,6 +3853,16 @@ mod tests {
             libc::close(wfd);
         }
         reset_reactor();
+    }
+
+    /// Report when a detach has finished its phase-1 eviction and is about to
+    /// enter the phase-2 guard wait.
+    fn detach_reaches_phase_two() -> std::sync::mpsc::Receiver<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        set_detach_post_evict_hook(Some(Box::new(move || {
+            let _ = tx.send(());
+        })));
+        rx
     }
 
     // ---- 4d: Dekker detach-during-in-flight-delivery UAF guard -------------
@@ -3903,6 +3901,7 @@ mod tests {
         set_delivering_actor_for_test(Some(KEY));
 
         // Spawn the synchronous detach; it must spin-wait in Phase 2.
+        let phase_two = detach_reaches_phase_two();
         let detach_returned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let detach_returned_t = std::sync::Arc::clone(&detach_returned);
         let handle = std::thread::spawn(move || {
@@ -3910,31 +3909,19 @@ mod tests {
             detach_returned_t.store(true, Ordering::SeqCst);
         });
 
-        // While the guard is held, detach must remain blocked. Poll a short
-        // window; if it returns here, the spin-wait is not gating the free.
-        let blocked_deadline = Instant::now() + Duration::from_millis(50);
-        while Instant::now() < blocked_deadline {
-            assert!(
-                !detach_returned.load(Ordering::SeqCst),
-                "reactor_detach_actor returned while DELIVERING_ACTOR still named the actor — \
-                 the Phase-2 spin-wait is not guarding the in-flight delivery (UAF risk)"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        // Once past phase 1, detach must remain blocked while the guard is held.
+        phase_two.recv().expect("detach reaches phase 2");
+        assert!(
+            !detach_returned.load(Ordering::SeqCst),
+            "reactor_detach_actor returned while DELIVERING_ACTOR still named the actor — \
+             the Phase-2 spin-wait is not guarding the in-flight delivery (UAF risk)"
+        );
 
         // Clear the guard: the in-flight delivery has finished. Detach must now
         // make progress and return promptly.
         set_delivering_actor_for_test(None);
-        let release_deadline = Instant::now() + Duration::from_secs(1);
-        while !detach_returned.load(Ordering::SeqCst) {
-            assert!(
-                Instant::now() < release_deadline,
-                "reactor_detach_actor did not return within 1s after the guard cleared — \
-                 the spin-wait failed to observe the cleared guard"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
         handle.join().expect("detach thread should join cleanly");
+        assert!(detach_returned.load(Ordering::SeqCst));
 
         // SAFETY: closing our own fds.
         unsafe {
@@ -4241,6 +4228,22 @@ mod tests {
     // in `Registration::new` is the only thing standing between a stale wake and
     // a stranger being moved `Suspended -> Runnable` with no readiness behind
     // it. The sibling families live in `crate::wake_incarnation_tests`.
+
+    /// Wait until the bytes a test just wrote are readable on `fd`, so the
+    /// deposit path the test drives actually has data to deposit.
+    #[cfg(unix)]
+    fn wait_readable_for_bytes(fd: c_int) {
+        wait_readable_for_test(fd);
+    }
+
+    /// WHY: this crate binds no Winsock poll, so Windows cannot observe
+    /// readiness here and gives the loopback write a moment to land instead.
+    /// WHEN obsolete: once `windows-sys` carries `Win32_Networking_WinSock`.
+    /// WHAT the real fix is: `WSAPoll` on the socket, as `poll` does on unix.
+    #[cfg(windows)]
+    fn wait_readable_for_bytes(_fd: c_int) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     /// Block until `fd` is readable, so the incarnation arms observe readiness
     /// instead of guessing at it. Without this the socket can still be empty

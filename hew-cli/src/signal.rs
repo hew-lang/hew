@@ -106,20 +106,11 @@ pub fn reset_sigpipe_to_default() -> bool {
 mod tests {
     use super::*;
     use std::process::{Child, Command, ExitStatus};
-    use std::thread;
-    use std::time::Duration;
 
+    /// Wait for the child to exit after its forwarded signal; the test
+    /// runner's timeout is the hang guard.
     fn wait_for_child_exit(child: &mut Child) -> ExitStatus {
-        for _ in 0..20 {
-            if let Some(status) = child.try_wait().expect("failed to poll child") {
-                return status;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-
-        child.kill().ok();
-        let _ = child.wait();
-        panic!("child did not exit after forwarded signal");
+        child.wait().expect("failed to wait for child")
     }
 
     #[test]

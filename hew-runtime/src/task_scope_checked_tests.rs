@@ -4,7 +4,6 @@ use crate::coro_state::{hew_coro_state_finish, hew_coro_state_is_cancelled};
 use crate::wake::blocking::Readiness;
 use hew_cabi::value::HewTypeOwnershipKind;
 use std::sync::{mpsc, Condvar};
-use std::time::Duration;
 
 struct TaskRuntime {
     _guard: crate::RuntimeTestGuard,
@@ -236,7 +235,7 @@ fn scope_retains_pending_result_cleanup_and_transfers_its_fault_once() {
             ResultValue::Closing(true),
         );
         let observation = hew_checked_task_wait_new(task, waker.descriptor());
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
         release(&gate);
         while hew_checked_task_wait_status(observation) == PENDING {
             readiness.wait();
@@ -286,7 +285,7 @@ fn discarded_await_result_closes_before_observer_release() {
             ResultValue::Closing(false),
         );
         let wait = hew_checked_task_wait_new(task, waker.descriptor());
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
         release(&gate);
         while hew_checked_task_wait_status(wait) == PENDING {
             readiness.wait();
@@ -334,7 +333,7 @@ fn transferred_result_is_closed_only_by_its_new_owner() {
             ResultValue::Closing(false),
         );
         let observation = hew_checked_task_wait_new(task, waker.descriptor());
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
         release(&gate);
         while hew_checked_task_wait_status(observation) == PENDING {
             readiness.wait();
@@ -395,8 +394,8 @@ fn child_fault_remains_primary_while_result_cleanup_is_pending() {
         );
         let value = hew_checked_task_wait_new(value, waker.descriptor());
         let failed = hew_checked_task_wait_new(failed, waker.descriptor());
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
+        receive.recv().unwrap();
         release(&gate);
         for observation in [value, failed] {
             while hew_checked_task_wait_status(observation) == PENDING {
@@ -490,8 +489,8 @@ fn pending_scope_drain_preserves_completed_child_faults() {
             Arc::clone(&drops),
             ResultValue::Scalar(42),
         );
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
+        receive.recv().unwrap();
         let observation = hew_checked_task_wait_new(completed, waker.descriptor());
         let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         hew_checked_scope_cancel(scope);
@@ -542,7 +541,7 @@ fn cancellation_does_not_release_captures_before_the_child_stops() {
             Arc::clone(&drops),
             ResultValue::Scalar(42),
         );
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
         let wait = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         hew_task_free(task); // unawaited handle does not end scope-owned execution
         hew_checked_scope_cancel(scope);
@@ -589,8 +588,8 @@ fn children_start_concurrently_and_each_result_transfers_once() {
             Arc::clone(&drops),
             ResultValue::Scalar(42),
         );
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
+        receive.recv().unwrap();
         let first = hew_checked_task_wait_new(first, waker.descriptor());
         let second = hew_checked_task_wait_new(second, waker.descriptor());
         release(&gate);
@@ -650,7 +649,7 @@ fn closing_scope_releases_unobserved_result_before_remaining_handle() {
             Arc::clone(&drops),
             ResultValue::Owned,
         );
-        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        receive.recv().unwrap();
         let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         release(&gate);
         while hew_checked_scope_wait_status(drain) == 0 {
@@ -694,8 +693,8 @@ fn select_observation_retains_both_results_after_a_task_or_timer_wins() {
                     ResultValue::Scalar(42),
                 ),
             ];
-            receive.recv_timeout(Duration::from_secs(2)).unwrap();
-            receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            receive.recv().unwrap();
+            receive.recv().unwrap();
             let selection = hew_checked_task_select_new(waker.descriptor());
             for task in tasks {
                 hew_checked_task_select_add_task(selection, task);
@@ -786,10 +785,10 @@ fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellati
             // Two deliberately blocking test callbacks occupy both workers.
             // Complete the second before waiting for the queued third to start.
             for _ in 0..2 {
-                receive.recv_timeout(Duration::from_secs(2)).unwrap();
+                receive.recv().unwrap();
             }
             release(&second_gate);
-            receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            receive.recv().unwrap();
             let first_wait = hew_checked_task_wait_new(first, waker.descriptor());
             let second_wait = hew_checked_task_wait_new(second, waker.descriptor());
             release(&second_gate);

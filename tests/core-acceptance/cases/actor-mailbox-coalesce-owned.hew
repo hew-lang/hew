@@ -1,14 +1,22 @@
 // A coalescing mailbox replaces the queued message its key supersedes. The
 // superseded message owns a string, so each replacement must release exactly
 // one payload: a missed release leaks and a double release corrupts the heap.
+import std.stream;
+
 actor Latest {
     var processed: i64 = 0,
     var length: i64 = -1,
+    var started: stream.Sink<i64>,
+    var gate: stream.Stream<i64>,
 
     mailbox 1 overflow coalesce(id) fallback drop_new,
 
-    receive fn update(id: i64, payload: string, pause: duration) {
-        sleep(pause);
+    // A held update reports that it is running, then waits for the gate.
+    receive fn update(id: i64, payload: string, hold: bool) {
+        if hold {
+            started.send(1).expect("started");
+            gate.recv();
+        }
         processed = processed + 1;
         length = payload.len() as i64;
     }
@@ -23,17 +31,19 @@ actor Latest {
 }
 
 fn main() {
-    let worker = spawn Latest(processed: 0, length: -1);
+    let (started_tx, started) = stream.pipe(1).expect("started");
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let worker = spawn Latest(processed: 0, length: -1, started: started_tx, gate: gate);
     // The actor declared the coalescing policy, so the view takes it.
     let intake = mailbox(worker);
     // The first message occupies the actor, so the rest queue behind it.
-    let _ = intake.update(0, "busy", 150ms);
-    sleep(20ms);
-    let _ = intake.update(9, "one", 0ns);
-    let _ = intake.update(9, "two-two", 0ns);
-    let _ = intake.update(9, "three-three-three", 0ns);
-    let _ = intake.update(9, "latest-payload", 0ns);
-    sleep(350ms);
+    let _ = intake.update(0, "busy", true);
+    started.recv();
+    let _ = intake.update(9, "one", false);
+    let _ = intake.update(9, "two-two", false);
+    let _ = intake.update(9, "three-three-three", false);
+    let _ = intake.update(9, "latest-payload", false);
+    release.send(1).expect("release");
     match worker.seen() {
         .Ok(count) => println(count),
         .Err(_) => println("failed"),

@@ -1,5 +1,7 @@
 // A `ScopeFailure` passed to a helper by its written type matches on the same
 // declaration the handler binding carries.
+import std.stream;
+
 fn verdict(failure: ScopeFailure) -> string {
     match failure {
         .Deadline { message } => if message.contains("Deadline") { "deadline" } else { "bad deadline" },
@@ -8,8 +10,9 @@ fn verdict(failure: ScopeFailure) -> string {
 }
 
 fn main() {
+    let (_never, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let late = scope within 20ms {
-        sleep(1s);
+        gate.recv();
         "done"
     } handle failure {
         verdict(failure)

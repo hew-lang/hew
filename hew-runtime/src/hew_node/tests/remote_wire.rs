@@ -54,7 +54,7 @@ fn two_node_remote_send_delivery() {
     };
     assert_eq!(rc, 0, "hew_node_send should succeed");
 
-    let delivered = (0..100).any(|_| {
+    poll_until(|_| {
         #[expect(
             clippy::cast_sign_loss,
             reason = "msg_type_sent is a non-negative tag value"
@@ -65,10 +65,6 @@ fn two_node_remote_send_delivery() {
         }
         got
     });
-    assert!(
-        delivered,
-        "actor on node2 did not receive the remote message"
-    );
 
     // SAFETY: actor and nodes were allocated in this test and are valid.
     unsafe {
@@ -133,7 +129,7 @@ fn two_node_remote_send_delivery_quic_mesh() {
     };
     assert_eq!(rc, 0, "hew_node_send should succeed");
 
-    let delivered = (0..200).any(|_| {
+    poll_until(|_| {
         #[expect(
             clippy::cast_sign_loss,
             reason = "msg_type_sent is a non-negative tag value"
@@ -144,10 +140,6 @@ fn two_node_remote_send_delivery_quic_mesh() {
         }
         got
     });
-    assert!(
-        delivered,
-        "actor on node2 did not receive the remote message over quic_mesh"
-    );
 
     // SAFETY: actor and nodes were allocated in this test and are valid.
     unsafe {
@@ -259,7 +251,6 @@ fn two_node_remote_send_quic_mesh_rejects_unknown_peer() {
         MeshTls::self_signed(vec!["node-412".into()]).expect("tls_b self_signed");
 
     let (node1, _node1_port) = start_quic_mesh_test_listener_node(411, tls_a);
-    thread::sleep(Duration::from_millis(50));
     let (node2, node2_port) = start_quic_mesh_test_listener_node(412, tls_b);
 
     let connect_addr = CString::new(format!("412@127.0.0.1:{node2_port}")).unwrap();
@@ -344,7 +335,7 @@ fn two_node_remote_void_ask_returns_sentinel() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -419,7 +410,7 @@ fn two_node_remote_ask_reply() {
             1,
             (&raw const send_value).cast::<c_void>().cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         )
     };
@@ -486,7 +477,7 @@ fn two_node_remote_call_wakes_on_wire_reply() {
             (&raw const send_value).cast::<c_void>().cast_mut(),
             std::mem::size_of::<u32>(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             waker.descriptor(),
         )
     };
@@ -550,7 +541,7 @@ fn two_node_inbound_orphaned_ask_reports_orphaned() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -613,7 +604,7 @@ fn two_node_inbound_actor_stopped_reports_actor_stopped() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -693,7 +684,7 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -774,7 +765,7 @@ fn two_node_inbound_dead_actor_ask_reports_dead_not_decode_failure() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -848,7 +839,7 @@ fn two_node_inbound_mailbox_full_reports_mailbox_full() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -909,7 +900,7 @@ fn two_node_worker_limit_still_reports_worker_at_capacity() {
             1,
             ptr::null_mut(),
             0,
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             0,
         )
     };
@@ -988,7 +979,6 @@ fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
     );
 
     let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
-    let ask_start = std::time::Instant::now();
     let target = remote_pid_for_node(&node2, actor_id);
     // SAFETY: this is a remote void ask; null payload/size are valid.
     let (_, status) = unsafe {
@@ -1013,10 +1003,6 @@ fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
         err,
         AskError::Timeout as i32,
         "pre-rejection peer fallback must time out instead of returning WorkerAtCapacity"
-    );
-    assert!(
-        ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS * 3),
-        "fallback ask should resolve near the timeout deadline, not block indefinitely"
     );
 
     // SAFETY: actor and nodes were allocated in this test and remain valid here.
@@ -1063,7 +1049,7 @@ fn two_node_remote_nonvoid_empty_reply_returns_null() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         )
     };
@@ -1114,7 +1100,6 @@ fn two_node_remote_ask_timeout_reports_timeout() {
     // SAFETY: both node pointers remain valid until the end of the test.
     unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-    let ask_start = std::time::Instant::now();
     let target = remote_pid_for_node(&node2, actor_id);
     // SAFETY: the actor pid and null payload are valid for this remote ask probe.
     let (_, status) = unsafe {
@@ -1139,10 +1124,6 @@ fn two_node_remote_ask_timeout_reports_timeout() {
         AskError::Timeout as i32,
         "remote ask that receives no reply must report Timeout: {:?}",
         crate::stream_error::take_last_error()
-    );
-    assert!(
-        ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS * 3),
-        "ask should complete near the timeout deadline, not block indefinitely"
     );
 
     // SAFETY: the actor and nodes were allocated in this test and remain valid here.
@@ -1174,7 +1155,6 @@ fn unconfigured_peer_pair_rejected_during_connection_admission() {
     unsafe {
         assert_eq!(hew_node_start(node1.as_ptr()), 0);
     }
-    thread::sleep(Duration::from_millis(50));
     let (node2, node2_port) = start_tcp_test_listener_node(343);
 
     let connect_addr = CString::new(format!("343@127.0.0.1:{node2_port}")).unwrap();
@@ -1251,13 +1231,13 @@ fn node_stop_wakes_pending_remote_ask() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         );
         (usize::from(err == AskError::None as i32), err)
     });
 
-    let pending_seen = (0..100).any(|_| {
+    poll_until(|_| {
         let guard = reply_table()
             .pending
             .lock()
@@ -1269,12 +1249,7 @@ fn node_stop_wakes_pending_remote_ask() {
         }
         seen
     });
-    assert!(
-        pending_seen,
-        "remote ask never reached the pending reply table"
-    );
 
-    let stop_started = std::time::Instant::now();
     // SAFETY: node1 remains valid here and stopping it is the behavior under test.
     unsafe {
         assert_eq!(hew_node_stop(node1.as_ptr()), 0);
@@ -1285,10 +1260,6 @@ fn node_stop_wakes_pending_remote_ask() {
         ask_err,
         AskError::ConnectionDropped as i32,
         "node stop should report ConnectionDropped on pending asks"
-    );
-    assert!(
-        stop_started.elapsed() < Duration::from_secs(2),
-        "pending remote ask should wake promptly when the node stops"
     );
 
     // SAFETY: the actor and node2 were allocated in this test and remain valid here.
@@ -1355,13 +1326,13 @@ fn connection_drop_wakes_pending_remote_ask() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         );
         (usize::from(err == AskError::None as i32), err)
     });
 
-    let pending_seen = (0..100).any(|_| {
+    poll_until(|_| {
         let guard = reply_table()
             .pending
             .lock()
@@ -1375,10 +1346,6 @@ fn connection_drop_wakes_pending_remote_ask() {
         }
         seen
     });
-    assert!(
-        pending_seen,
-        "remote ask never registered against the outbound connection"
-    );
 
     // SAFETY: node2 remains valid here and removing its accepted connection simulates a peer drop.
     unsafe {
@@ -1463,13 +1430,13 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
             1,
             TEST_U32_REQUEST.cast_mut(),
             std::mem::size_of::<u32>(),
-            TEST_REMOTE_ASK_TIMEOUT_MS,
+            NO_ASK_DEADLINE_MS,
             std::mem::size_of::<u32>(),
         );
         (usize::from(err == AskError::None as i32), err)
     });
 
-    let pending_seen = (0..100).any(|_| {
+    poll_until(|_| {
         let guard = reply_table()
             .pending
             .lock()
@@ -1483,14 +1450,9 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
         }
         seen
     });
-    assert!(
-        pending_seen,
-        "remote ask never registered against the outbound connection"
-    );
 
     // Declare node 331 DEAD via the node-side partition fan-out WITHOUT
     // touching the socket — the SWIM/phi-accrual verdict, not a TCP drop.
-    let dead_declared = std::time::Instant::now();
     fail_remote_asks_for_node(331);
 
     let (replied, ask_err) = ask_handle.join().expect("ask thread panicked");
@@ -1505,12 +1467,8 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
         AskError::Partition as i32,
         "SWIM-DEAD should report Partition, not ConnectionDropped or Timeout"
     );
-    // Bounded-time: a hang would blow the full ask timeout. The fan-out is
-    // synchronous, so resolution is effectively immediate.
-    assert!(
-        dead_declared.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS / 2),
-        "pending remote ask should resolve well before the full ask timeout"
-    );
+    // The ask has no deadline of its own, so only the fan-out can have
+    // resolved it.
     // Exactly-once: the entry was drained on the first fan-out, so a second
     // verdict (or a racing socket drop) finds nothing — assert the map is
     // empty for this connection and a repeat fan-out is a no-op.

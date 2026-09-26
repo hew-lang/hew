@@ -7,10 +7,15 @@
 // `mailbox(..)` delivery view because a completion call to the running handler
 // would be a cycle no leg could finish. The countdown self-sends 10 -> 1 and
 // prints once at the base case, proving every recursive hop delivered.
+import std.stream;
+
 actor Countdown {
+    var done: stream.Sink<i64>,
+
     receive fn tick(n: i64, me: Countdown) {
         if n == 1 {
             println("liftoff");
+            done.send(1).expect("done");
         }
         if n > 1 {
             let _ = mailbox(me, on_full: .Wait).tick(n - 1, me);
@@ -19,7 +24,9 @@ actor Countdown {
 }
 
 fn main() {
-    let count = spawn Countdown;
+    let (done, finished) = stream.pipe(1).expect("done");
+    let count = spawn Countdown(done: done);
     let _ = count.tick(10, count);
-    sleep(400ms);
+    // The first call returns after one hop; the base case reports the rest.
+    finished.recv();
 }

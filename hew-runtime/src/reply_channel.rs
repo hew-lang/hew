@@ -1431,8 +1431,10 @@ mod tests {
             // A post-abandon wheel tick must NOT fire the cancelled deadline — a
             // fired callback here would be a use-after-free against the freed
             // arbiter.
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            let fired = crate::timer_wheel::hew_timer_wheel_tick(tw);
+            let fired = crate::timer_wheel::timer_wheel_tick_to(
+                tw,
+                crate::clock::hew_now_ms().saturating_add(5),
+            );
             assert_eq!(
                 fired, 0,
                 "a cancelled select deadline must not fire — a non-zero count would \

@@ -1040,6 +1040,20 @@ pub(crate) fn assert_current_actor_routes_empty() {
     assert_eq!(count, 0, "local actor handle routes survived actor cleanup");
 }
 
+/// Whether the current runtime still admits spawn publication. Shutdown
+/// closes it before waiting for in-flight spawns.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn current_publication_open_for_test() -> bool {
+    current_handles().is_some_and(|handles| {
+        handles
+            .publication_gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .accepting
+    })
+}
+
 /// Close publication and wait for every in-flight spawn before bulk drain.
 pub(crate) fn begin_current_shutdown() {
     if let Some(handles) = current_handles() {

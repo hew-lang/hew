@@ -757,7 +757,7 @@ mod tests {
             release.wait();
 
             // Follow-up call composes: pool is not wedged.
-            let result2 = spawn_blocking_result(pool, || 7_i32, Some(Duration::from_millis(500)));
+            let result2 = spawn_blocking_result(pool, || 7_i32, None);
             assert_eq!(result2, Ok(7));
 
             hew_blocking_pool_stop(pool);

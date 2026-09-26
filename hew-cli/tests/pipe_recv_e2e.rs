@@ -39,7 +39,6 @@ actor Worker {
 fn main() {
     let w = spawn Worker;
     let _ = w.run();
-    sleep(100ms);
 }
 "#;
 
@@ -81,7 +80,6 @@ actor Worker {
 fn main() {
     let w = spawn Worker;
     let _ = w.run();
-    sleep(100ms);
 }
 "#;
 

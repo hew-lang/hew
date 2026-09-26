@@ -29,7 +29,6 @@ fn main() -> i64 {
     let crasher = spawn VecIterCrasher;
     let probe = spawn VecIterProbe;
     let _ = crasher.boom();
-    sleep(300ms);
     match probe.ping() {
         .Ok(value) => value,
         .Err(_) => 1,

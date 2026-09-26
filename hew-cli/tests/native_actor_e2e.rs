@@ -378,25 +378,32 @@ fn main() {
 #[test]
 fn suspended_turn_preserves_state_and_releases_the_only_worker() {
     run_actor(
-        r#"actor Probe {
-    receive fn run() { println("other-actor"); }
+        r#"import std.stream;
+
+actor Probe {
+    receive fn run(ran: stream.Sink<i64>) {
+        println("other-actor");
+        ran.send(1).expect("ran");
+    }
 }
 actor Gate {
     var phase: string,
     receive fn observe() { println(phase); }
-    receive fn slow(message: string) {
+    // Suspends until Probe has run on the only worker.
+    receive fn slow(message: string, probe_ran: stream.Stream<i64>) {
         phase = "before";
-        sleep(20ms);
+        probe_ran.recv();
         phase = message;
         println("finished");
     }
 }
 fn main() {
+    let (ran, probe_ran): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
     let probe = spawn Probe();
     let gate = spawn Gate(phase: "initial");
-    let _ = mailbox(gate, on_full: .Reject).slow("after".to_upper());
+    let _ = mailbox(gate, on_full: .Reject).slow("after".to_upper(), probe_ran);
     let _ = mailbox(gate, on_full: .Reject).observe();
-    let _ = mailbox(probe, on_full: .Reject).run();
+    let _ = mailbox(probe, on_full: .Reject).run(ran);
 }
 "#,
         "other-actor\nfinished\nAFTER\n",
@@ -536,17 +543,28 @@ fn main() {
 #[test]
 fn waiting_submission_releases_worker_and_transfers_owned_message_on_capacity() {
     run_actor(
-        r#"actor Probe { receive fn run() { println("other-actor"); } }
-actor Sink {
+        r#"import std.stream;
+
+actor Probe {
+    var ran: stream.Sink<i64>,
+    receive fn run() {
+        println("other-actor");
+        ran.send(1).expect("ran");
+    }
+}
+actor Queue {
+    var probe_ran: stream.Stream<i64>,
     mailbox 1,
-    receive fn hold(me: Sink, driver: Driver, probe: Probe) {
+    // Holds the queue until Probe has run, which happens only once the
+    // waiting Driver has released the only worker.
+    receive fn hold(me: Queue, driver: Driver, probe: Probe) {
         let _ = mailbox(driver, on_full: .Reject).run(me, probe);
-        sleep(20ms);
+        probe_ran.recv();
     }
     receive fn process(value: string) { println(value); }
 }
 actor Driver {
-    receive fn run(sink: Sink, probe: Probe) {
+    receive fn run(sink: Queue, probe: Probe) {
         let _ = mailbox(sink, on_full: .Reject).process("first".to_upper());
         let _ = mailbox(probe, on_full: .Reject).run();
         let waiting = mailbox(sink, on_full: .Wait);
@@ -557,9 +575,10 @@ actor Driver {
     }
 }
 fn main() {
-    let sink = spawn Sink();
+    let (ran, probe_ran): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let sink = spawn Queue(probe_ran: probe_ran);
     let driver = spawn Driver();
-    let probe = spawn Probe();
+    let probe = spawn Probe(ran: ran);
     let _ = mailbox(sink, on_full: .Reject).hold(sink, driver, probe);
 }
 "#,
@@ -620,12 +639,16 @@ fn main() {
 #[test]
 fn actor_close_waits_for_handler_cleanup() {
     run_actor(
-        r#"actor Holder {
+        r#"import std.stream;
+
+actor Holder {
     label: string,
+    // Parks on a pipe nothing feeds, so only close can end the turn.
     receive fn slow(me: Holder, closer: Closer) {
         defer println(label);
+        let (_keep, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
         let _ = mailbox(closer, on_full: .Reject).started(me);
-        sleep(1s);
+        gate.recv();
         println("must-not-complete");
     }
 }

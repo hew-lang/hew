@@ -53,9 +53,9 @@ fn main() {
     // Fire-and-forget crash: the on_crash hook returns Escalate, which the
     // root supervisor has nowhere to route.
     let _ = w.boom();
-    // Give the crash-handling dispatch time to run to completion. A
-    // pre-fix binary aborts the whole process during this window.
-    sleep(300ms);
+    // Wait for the ruling on that crash to settle. A pre-fix binary aborts
+    // the whole process while it runs.
+    let _ = await_restart sup.w;
     let probed = match probe.ping() {
         .Ok(v) => v,
         .Err(_) => 1,

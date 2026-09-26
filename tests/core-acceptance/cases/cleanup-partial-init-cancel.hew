@@ -3,6 +3,8 @@
 // paths that reach the suspension. The cancellation edge releases exactly the
 // contents that are still there: the held record once, the moved record not at
 // all, and the record whose construction crossed the suspension once.
+import std.stream;
+
 type Payload {
     name: string,
     note: string,
@@ -20,10 +22,11 @@ fn string_len(text: string) -> i64 {
     text.len()
 }
 
-// Cancelled at `sleep`. `held` is initialized on every path; `moved` is
-// initialized on one path and gone on the other; `crossing` is a value built
-// before the suspension and consumed only after it.
-fn cancelled(flag: bool) -> i64 {
+// Cancelled at the receive on a gate nothing feeds, after it reports that it
+// reached it. `held` is initialized on every path; `moved` is initialized on
+// one path and gone on the other; `crossing` is a value built before the
+// suspension and consumed only after it.
+fn cancelled(flag: bool, parked: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
     let held = build("held");
     let moved = build("moved");
     var total: i64 = 0;
@@ -31,17 +34,20 @@ fn cancelled(flag: bool) -> i64 {
         total = total + sink(moved);
     }
     let crossing = build("crossing");
-    sleep(5s);
+    parked.send(1).expect("parked");
+    gate.recv();
     total + string_len(held.name) + string_len(crossing.note)
 }
 
-fn winner() -> i64 {
-    sleep(1ms);
+fn winner(parked: stream.Stream<i64>) -> i64 {
+    parked.recv();
     println("winner done");
     7
 }
 
 fn main() {
-    let picked = race { winner(), cancelled(true) };
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
+    let picked = race { winner(parked), cancelled(true, parked_tx, gate) };
     println("picked " + to_string(picked));
 }

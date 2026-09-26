@@ -2,6 +2,7 @@
 //! skipping a drop leaks under the vertical-slice leak oracle, while dropping
 //! twice trips the poisoned allocator/double-free path.
 
+import std.stream;
 import std.testing;
 
 actor OwnedCoalescer {
@@ -10,8 +11,13 @@ actor OwnedCoalescer {
 
     mailbox 1 overflow coalesce(id) fallback drop_new,
 
-    receive fn update(id: i64, payload: string, pause: duration) {
-        sleep(pause);
+    // Holds the actor: reports that it is running, then waits for its gate.
+    receive fn hold(started: stream.Sink<i64>, gate: stream.Stream<i64>) {
+        started.send(1).expect("started");
+        gate.recv();
+    }
+
+    receive fn update(id: i64, payload: string) {
         processed = processed + 1;
         latest_len = payload.len() as i64;
     }
@@ -29,15 +35,17 @@ actor OwnedCoalescer {
 fn coalesce_owned_payload_superseded_values_drop_once() {
     let worker = spawn OwnedCoalescer(processed: 0, latest_len: -1);
     let intake = mailbox(worker);
-    let _ = intake.update(0, "active", 150ms);
-    sleep(20ms);
-    let _ = intake.update(9, "one", 0ns);
-    let _ = intake.update(9, "two-two", 0ns);
-    let _ = intake.update(9, "three-three-three", 0ns);
-    let _ = intake.update(9, "latest-payload", 0ns);
-    sleep(350ms);
+    let (started_tx, started) = stream.pipe(1).expect("started");
+    let (release, gate) = stream.pipe(1).expect("gate");
+    let _ = intake.hold(started_tx, gate);
+    started.recv();
+    let _ = intake.update(9, "one");
+    let _ = intake.update(9, "two-two");
+    let _ = intake.update(9, "three-three-three");
+    let _ = intake.update(9, "latest-payload");
+    release.send(1).expect("release");
     match worker.count() {
-        .Ok(value) => testing.assert_eq(value, 2),
+        .Ok(value) => testing.assert_eq(value, 1),
         .Err(_) => testing.assert_true(false),
     }
     match worker.length() {

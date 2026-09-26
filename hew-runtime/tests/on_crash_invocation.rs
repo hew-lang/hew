@@ -113,18 +113,12 @@ fn cstr(s: &str) -> CString {
 unsafe fn wait_for_child(
     sup: *mut hew_runtime::supervisor::HewSupervisor,
     index: i32,
-    timeout_ms: u64,
 ) -> *mut hew_runtime::actor::HewActor {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
         let child = unsafe { hew_runtime::supervisor::hew_supervisor_get_child(sup, index) };
         if !child.is_null() {
             return child;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for child[{index}] to be spawned"
-        );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -188,7 +182,7 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
         );
         assert_eq!(sup.start(), 0);
 
-        let child = wait_for_child(sup.as_ptr(), 0, 2000);
+        let child = wait_for_child(sup.as_ptr(), 0);
         crash_child(child);
 
         // Wait for the restart cycle to complete.
@@ -227,7 +221,7 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
         );
 
         // The restart still happened: child slot 0 is non-null again.
-        let restarted = wait_for_child(sup.as_ptr(), 0, 2000);
+        let restarted = wait_for_child(sup.as_ptr(), 0);
         assert!(
             !restarted.is_null(),
             "child should have been restarted after the on_crash handler ran"
@@ -295,7 +289,7 @@ fn null_on_crash_handler_is_skipped_cleanly() {
         );
         assert_eq!(sup.start(), 0);
 
-        let child = wait_for_child(sup.as_ptr(), 0, 2000);
+        let child = wait_for_child(sup.as_ptr(), 0);
         crash_child(child);
 
         let count = test_wait_for_restart(sup.as_ptr(), 1, 5000);
@@ -307,7 +301,7 @@ fn null_on_crash_handler_is_skipped_cleanly() {
             "no handler installed: ON_CRASH_CALLS must stay at zero"
         );
 
-        let restarted = wait_for_child(sup.as_ptr(), 0, 2000);
+        let restarted = wait_for_child(sup.as_ptr(), 0);
         assert!(
             !restarted.is_null(),
             "child should still be restarted when no handler is installed"
@@ -379,7 +373,7 @@ fn on_crash_kill_return_terminates_child_overriding_restart_policy() {
         );
         assert_eq!(sup.start(), 0);
 
-        let child = wait_for_child(sup.as_ptr(), 0, 2000);
+        let child = wait_for_child(sup.as_ptr(), 0);
         crash_child(child);
 
         // The handler fires; then the Kill return short-circuits the restart.
@@ -479,7 +473,7 @@ fn on_crash_escalate_on_root_supervisor_does_not_abort() {
         );
         assert_eq!(sup.start(), 0);
 
-        let child = wait_for_child(sup.as_ptr(), 0, 2000);
+        let child = wait_for_child(sup.as_ptr(), 0);
         crash_child(child);
 
         // The handler fires; Escalate (like Kill) short-circuits the

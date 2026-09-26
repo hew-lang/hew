@@ -4,14 +4,16 @@
 // refuses instead of parking and reports `Rejected(SendFailure<Req>)`, which is
 // the one outcome from which the same call may safely be made again. `.Wait`
 // is the bare-handle behaviour and is the control here.
+import std.stream;
+
 actor Gate {
     mailbox 1,
     var done: i64 = 0,
 
     // A one-way handler the mailbox view can submit to, and a value-returning
-    // one the completion views call.
-    receive fn occupy(ms: i64) {
-        sleep(ms * 1ms);
+    // one the completion views call. `occupy` runs until its gate opens.
+    receive fn occupy(hold: stream.Stream<i64>) {
+        hold.recv();
         done = done + 1;
     }
 
@@ -34,14 +36,18 @@ fn main() {
     let gate = spawn Gate();
     let refusing = policy(gate, on_full: .Reject);
     let inbox = mailbox(gate, on_full: .Wait);
-    // Two accepted submissions: one the actor is running for a long turn, one
-    // occupying its single mailbox seat. Both return only once accepted, so
-    // the seat is provably taken before the next call is made.
-    match inbox.occupy(2000) {
+    // Two accepted submissions: one the actor is running for a turn that lasts
+    // until `release` opens its gate, one occupying its single mailbox seat.
+    // Both return only once accepted, so the seat is provably taken before the
+    // next call is made.
+    let (release, hold): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (opened, open): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    opened.send(1).expect("open");
+    match inbox.occupy(hold) {
         .Ok(outcome) => println(f"submitted: {outcome}"),
         .Err(_) => panic("the first submission was refused"),
     }
-    match inbox.occupy(0) {
+    match inbox.occupy(open) {
         .Ok(_) => {},
         .Err(_) => panic("the queued submission was refused"),
     }
@@ -74,7 +80,9 @@ fn main() {
         .Err(ActorError.Rejected(failure)) => failure,
         _ => panic("the full mailbox accepted the terminal-origin request"),
     };
-    // A bare-handle call waits for a seat instead, and completes.
+    // A bare-handle call waits for a seat instead, and completes once the long
+    // turn ends.
+    release.send(1).expect("release");
     match gate.tally() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),

@@ -82,7 +82,6 @@ actor Dispatcher {
 #[test]
 fn sibling_asks_after_crash_reach_named_children() {
     let sup = spawn Pool;
-    sleep(30ms);
     let d = spawn Dispatcher(sup: sup);
     match d.siblings_after_crash() {
         .Ok(code) => testing.assert_eq(code, 123),
@@ -93,10 +92,8 @@ fn sibling_asks_after_crash_reach_named_children() {
 #[test]
 fn refused_role_ask_reports_real_error_kind() {
     let sup = spawn Pool;
-    sleep(30ms);
     let d = spawn Dispatcher(sup: sup);
     supervisor_stop(sup);
-    sleep(80ms);
     match d.refusal_kind() {
         .Ok(kind) => testing.assert_eq(kind, 1),
         .Err(_) => testing.assert_true(false),

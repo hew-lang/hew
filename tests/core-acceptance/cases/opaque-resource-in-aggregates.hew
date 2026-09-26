@@ -1,6 +1,8 @@
 // The same authored `#[resource] #[opaque]` handle releases exactly once
 // through its own `close` when it is owned by a record field, by a vector
 // element, and by a frame cancelled at its suspension.
+import std.stream;
+
 #[resource]
 #[opaque]
 type Dq {}
@@ -32,17 +34,19 @@ fn in_vector() {
     println("vector " + to_string(handles.len()));
 }
 
-// Cancelled at `sleep`: the losing frame's record is still held, so the
-// cancellation edge runs the field's close exactly once.
-fn cancelled() -> i64 {
+// Cancelled at the receive on a gate nothing feeds, after it reports that it
+// reached it: the losing frame's record is still held, so the cancellation
+// edge runs the field's close exactly once.
+fn cancelled(parked: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
     let holder = Holder { handle: unsafe { hew_deque_new() }, label: "cancelled" };
     println(holder.label);
-    sleep(5s);
+    parked.send(1).expect("parked");
+    gate.recv();
     0
 }
 
-fn winner() -> i64 {
-    sleep(50ms);
+fn winner(parked: stream.Stream<i64>) -> i64 {
+    parked.recv();
     println("winner");
     7
 }
@@ -50,6 +54,8 @@ fn winner() -> i64 {
 fn main() {
     in_record();
     in_vector();
-    let picked = race { winner(), cancelled() };
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
+    let picked = race { winner(parked), cancelled(parked_tx, gate) };
     println("picked " + to_string(picked));
 }

@@ -18,7 +18,6 @@ fn main() -> i64 {
     let crasher = spawn DequePopFrontCrasher;
     let probe = spawn DequePopFrontProbe;
     let _ = crasher.boom();
-    sleep(300ms);
     match probe.ping() {
         .Ok(v) => v,
         .Err(_) => 1,

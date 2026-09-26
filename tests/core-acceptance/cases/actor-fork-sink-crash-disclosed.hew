@@ -4,8 +4,8 @@ import std.stream;
 // while that task is live, so the task is cancelled and its handle released
 // off the actor's thread. The release still belongs to the crashed actor, so
 // the consumer must trap on the crash rather than read a clean end.
-fn hold(consume out: stream.Sink<i64>) -> i64 {
-    sleep(1s);
+fn hold(consume out: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
+    gate.recv();
     out.close();
     0
 }
@@ -15,8 +15,11 @@ actor Producer {
 
     receive fn go() {
         out.send(1).expect("send");
+        // Nothing feeds the gate, so the task still holds its sink when the
+        // actor crashes; the gate's own sink outlives the scope that cancels it.
+        let (_never, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
         scope {
-            let _writer = fork hold(out.clone());
+            let _writer = fork hold(out.clone(), gate);
             panic("producer crash");
         }
     }

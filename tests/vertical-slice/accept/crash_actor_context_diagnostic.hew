@@ -9,8 +9,7 @@
 // registry codegen populates at startup ("Crasher::on_trigger", or at minimum
 // the actor type name "Crasher"), never the opaque "msg_type=-N" format.
 //
-// A sleep after the send gives the scheduler time to deliver the message and
-// run the crash path before the process exits.
+// The call waits for the handler, so the crash path has run when it returns.
 //
 // run.sh asserts:
 //   1. Exit is 1 after the unsupervised actor crash settles.
@@ -27,9 +26,8 @@ actor Crasher {
 
 fn main() -> i64 {
     let c = spawn Crasher;
-    // Fire-and-forget: send the message that will crash the actor.
+    // The call returns once the handler has crashed.
     let _ = c.on_trigger(99);
     // Give the scheduler time to deliver the message and emit the diagnostic.
-    sleep(300ms);
     0
 }

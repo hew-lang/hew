@@ -1,5 +1,8 @@
 // The winning race operand returns a resource handle that stays usable in
-// the enclosing scope and is closed exactly once, by the caller.
+// the enclosing scope and is closed exactly once, by the caller. The losing
+// operand parks on a pipe nothing feeds.
+import std.stream;
+
 #[resource] type Handle { label: string }
 impl Handle {
     fn close(consume self) {
@@ -9,12 +12,16 @@ impl Handle {
         "used " + self.label
     }
 }
-fn make(label: string, delay: duration) -> Handle {
-    sleep(delay);
+fn make(label: string) -> Handle {
+    Handle { label: label }
+}
+fn make_after(label: string, gate: stream.Stream<i64>) -> Handle {
+    gate.recv();
     Handle { label: label }
 }
 fn main() {
-    let winner = race { make("slow", 5s), make("fast", 20ms) };
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let winner = race { make_after("slow", gate), make("fast") };
     println(winner.describe());
     winner.close();
 }

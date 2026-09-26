@@ -4,6 +4,8 @@
 // caller; the abandoned leg - the reply is deposited after the deadline has
 // already passed - frees it through the registered destructor when the channel
 // is torn down.
+import std.stream;
+
 indirect enum Tree {
     Leaf(i64),
     Node(Tree, Tree),
@@ -37,10 +39,13 @@ actor Caller {
 }
 
 actor Slow {
-    receive fn echo(message: string) -> string {
-        sleep(30ms);
+    // Holds the reply until the caller releases the gate, which it does only
+    // after its own deadline has passed.
+    receive fn echo(message: string, gate: stream.Stream<i64>) -> string {
+        gate.recv();
         message.to_upper()
     }
+    receive fn ping() {}
 }
 
 fn main() {
@@ -59,16 +64,21 @@ fn main() {
     // into a channel nobody reads, and its registered destructor frees it.
     let slow = spawn Slow;
     for i in 0..4 {
+        let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
         let outcome = scope within 1ms {
-            match slow.echo("abandoned") {
+            match slow.echo("abandoned", gate) {
                 .Ok(value) => value,
                 .Err(_) => "unexpected-error",
             }
         } handle failure {
             match failure { .Deadline { message } => "timed-out", .Fault { message } => "unexpected-fault", }
         };
+        // A request the deadline withdrew before dispatch took its gate with
+        // it, so the release may find no reader.
+        let _ = release.send(1);
         println(outcome);
     }
-    sleep(100ms);
+    // FIFO: every released echo has deposited its reply before this returns.
+    slow.ping().expect("ping");
     println("done");
 }

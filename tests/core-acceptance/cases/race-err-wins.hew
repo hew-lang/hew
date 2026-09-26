@@ -1,15 +1,18 @@
 // An ordinary Err completing first wins the race exactly as an Ok would:
-// completion is completion, and there is no Result flattening.
-fn fails(delay: duration) -> Result<i64, string> {
-    sleep(delay);
+// completion is completion, and there is no Result flattening. The Ok operand
+// parks on a pipe nothing feeds, so the Err operand is the only completion.
+import std.stream;
+
+fn fails() -> Result<i64, string> {
     Result.Err("fast failure")
 }
-fn succeeds(delay: duration) -> Result<i64, string> {
-    sleep(delay);
+fn succeeds(gate: stream.Stream<i64>) -> Result<i64, string> {
+    gate.recv();
     Result.Ok(7)
 }
 fn main() {
-    let result = race { fails(20ms), succeeds(5s) };
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let result = race { fails(), succeeds(gate) };
     match result {
         .Ok(value) => println("ok " + to_string(value)),
         .Err(message) => println("err " + message),

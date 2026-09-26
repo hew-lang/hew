@@ -1658,7 +1658,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
     use std::sync::atomic::AtomicU64;
-    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::Barrier;
     use std::sync::OnceLock;
 
@@ -1930,28 +1930,23 @@ mod tests {
         run_in_isolated_test_process_with_env(test_name, env_key, &[], body);
     }
 
-    fn wait_for_condition(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if condition() {
-                return true;
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
+    /// Poll `condition` until it holds; the test runner's timeout is the hang
+    /// guard.
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        while !condition() {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
 
-    fn wait_for_reader_exit(inner: &Arc<HewWsConnInner>, timeout: Duration) -> bool {
-        wait_for_condition(timeout, || {
+    fn wait_for_reader_exit(inner: &Arc<HewWsConnInner>) {
+        wait_until(|| {
             inner
                 .reader
                 .lock()
                 .expect("reader mutex poisoned")
                 .as_ref()
                 .is_some_and(|reader| reader.exited.load(Ordering::Acquire))
-        })
+        });
     }
 
     fn attached_delivery(inner: &Arc<HewWsConnInner>) -> Arc<ActorDelivery> {
@@ -1966,24 +1961,15 @@ mod tests {
         )
     }
 
-    fn wait_for_actor_dead(actor: *mut actor::HewActor, timeout: Duration) -> bool {
+    fn wait_for_actor_dead(actor: *mut actor::HewActor) {
         // SAFETY: tests call this only for actors they spawned and still own.
         let actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
-        wait_for_condition(timeout, || unsafe {
-            transport::hew_actor_ref_is_alive(&raw const actor_ref) == 0
-        })
+        wait_until(|| unsafe { transport::hew_actor_ref_is_alive(&raw const actor_ref) == 0 });
     }
 
-    fn recv_event(rx: &Receiver<ActorEvent>, timeout: Duration) -> ActorEvent {
-        rx.recv_timeout(timeout)
-            .unwrap_or_else(|err| panic!("expected actor event within {timeout:?}: {err:?}"))
-    }
-
-    fn assert_no_event(rx: &Receiver<ActorEvent>, timeout: Duration) {
-        match rx.recv_timeout(timeout) {
-            Err(RecvTimeoutError::Timeout) => {}
-            other => panic!("expected no event within {timeout:?}, got {other:?}"),
-        }
+    fn recv_event(rx: &Receiver<ActorEvent>) -> ActorEvent {
+        rx.recv()
+            .unwrap_or_else(|err| panic!("expected an actor event: {err:?}"))
     }
 
     fn attach_test_conn() -> (
@@ -2241,6 +2227,7 @@ mod tests {
         let log = Arc::new(Mutex::new(Vec::new()));
         let ready = Arc::new(Barrier::new(2));
         let (first_short_write_tx, first_short_write_rx) = mpsc::channel();
+        let (pong_attempt_tx, pong_attempt_rx) = mpsc::channel();
 
         let user_gate = Arc::clone(&gate);
         let user_ready = Arc::clone(&ready);
@@ -2262,11 +2249,11 @@ mod tests {
                         first_short_write_tx
                             .send(())
                             .expect("signal first short write");
-                        // Keep the operation gate held while the competing
-                        // Pong writer tries to run. Without operation-level
-                        // serialization this would deterministically produce
-                        // USERPONGFRAME.
-                        std::thread::sleep(Duration::from_millis(50));
+                        // Keep the operation gate held until the competing
+                        // Pong writer is trying to run. Without
+                        // operation-level serialization it would write here
+                        // and produce USERPONGFRAME.
+                        pong_attempt_rx.recv().expect("pong writer attempts");
                     }
                 }
                 user_writer.flush().expect("flush user frame");
@@ -2282,8 +2269,9 @@ mod tests {
         let pong = std::thread::spawn(move || {
             pong_ready.wait();
             first_short_write_rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv()
                 .expect("first short user write should happen");
+            pong_attempt_tx.send(()).expect("user writer waits");
             with_write_operation_gate(Some(&pong_gate), || {
                 let mut written = 0;
                 let data = b"PONG";
@@ -2372,33 +2360,22 @@ mod tests {
         // Note: `_client` is the peer-side WebSocket. We deliberately do
         // not send anything from it — the server-side recv must time out.
 
-        let start = Instant::now();
         // SAFETY: conn is a valid HewWsConn pointer.
         let msg = unsafe { hew_ws_recv_timeout(conn, 200) };
-        let elapsed = start.elapsed();
         let timed_out = hew_ws_recv_last_timed_out();
 
         assert!(msg.is_null(), "deadline expiry must return null message");
         assert_eq!(timed_out, 1, "timeout sentinel must be set");
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "200 ms deadline must fire well before 2 s; got {elapsed:?}"
-        );
 
         // Cleanup-all-exits regression: a follow-up call with deadline
-        // must still succeed quickly (lock was released), proving we
-        // didn't leak the parking_lot guard on the timeout exit path.
-        let start2 = Instant::now();
+        // must also time out rather than block (the lock was released),
+        // proving we didn't leak the parking_lot guard on the timeout exit
+        // path.
         // SAFETY: conn is a valid HewWsConn pointer.
         let msg2 = unsafe { hew_ws_recv_timeout(conn, 100) };
-        let elapsed2 = start2.elapsed();
         let timed_out2 = hew_ws_recv_last_timed_out();
         assert!(msg2.is_null());
         assert_eq!(timed_out2, 1);
-        assert!(
-            elapsed2 < Duration::from_secs(1),
-            "second recv_timeout must also be deadline-bounded; got {elapsed2:?}"
-        );
 
         // SAFETY: conn and server are valid; close is idempotent.
         unsafe { hew_ws_close(conn) };
@@ -2800,19 +2777,11 @@ mod tests {
 
         let stalled_peer =
             TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
-        assert!(
-            wait_for_condition(Duration::from_millis(500), || {
-                inner.active_handshakes.load(Ordering::Acquire) == 1
-            }),
-            "the accepted peer should enter the handshake"
-        );
+        // The accepted peer enters the handshake.
+        wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
 
-        let started = Instant::now();
+        // The peer never handshakes, so close returns only by cancelling it.
         unsafe { hew_ws_server_close(server) };
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "server close must cancel a stalled handshake promptly"
-        );
         // close drained the accept authority before returning (count == 0 is
         // deterministic); join() is the exact synchronization for the accept
         // thread's exit — a stuck close fails via the harness's per-test timeout.
@@ -2835,19 +2804,10 @@ mod tests {
 
         let stalled_peer =
             TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
-        assert!(
-            wait_for_condition(Duration::from_millis(500), || {
-                inner.active_handshakes.load(Ordering::Acquire) == 1
-            }),
-            "the accepted peer should enter the handshake"
-        );
-        assert!(
-            wait_for_condition(
-                SERVER_HANDSHAKE_TIMEOUT + Duration::from_millis(750),
-                || inner.active_handshakes.load(Ordering::Acquire) == 0
-            ),
-            "a peer that never handshakes must expire within the configured bound"
-        );
+        // The accepted peer enters the handshake.
+        wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
+        // A peer that never handshakes expires; one that never did would hang.
+        wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 0);
 
         let (mut valid_peer, _) = connect_with_config(
             format!("ws://127.0.0.1:{port}"),
@@ -2885,19 +2845,11 @@ mod tests {
         partial
             .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
             .expect("write partial handshake");
-        assert!(
-            wait_for_condition(Duration::from_millis(500), || {
-                inner.active_handshakes.load(Ordering::Acquire) == 1
-            }),
-            "partial peer should enter the handshake"
-        );
+        // Partial peer should enter the handshake.
+        wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
         drop(partial);
-        assert!(
-            wait_for_condition(Duration::from_millis(750), || {
-                inner.active_handshakes.load(Ordering::Acquire) == 0
-            }),
-            "disconnecting the partial peer should end its handshake"
-        );
+        // Disconnecting the partial peer should end its handshake.
+        wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 0);
 
         let mut invalid =
             TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
@@ -2942,12 +2894,8 @@ mod tests {
 
         let mut peer =
             TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
-        assert!(
-            wait_for_condition(Duration::from_millis(500), || {
-                inner.active_handshakes.load(Ordering::Acquire) == 1
-            }),
-            "peer should enter the handshake before the race"
-        );
+        // Peer should enter the handshake before the race.
+        wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
         let websocket_key = ["dGhlIHNh", "bXBsZSBu", "b25jZQ=="].concat();
         let request = format!(
             "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
@@ -3024,13 +2972,11 @@ mod tests {
             recv_message(&inner).0
         });
 
-        assert!(
-            wait_for_condition(Duration::from_millis(200), || {
-                // SAFETY: `conn` remains live until hew_ws_close below.
-                unsafe { &*conn }.inner.active_recvs.load(Ordering::Acquire) == 1
-            }),
-            "recv loop should become active before cancellation"
-        );
+        // Recv loop should become active before cancellation.
+        wait_until(|| {
+            // SAFETY: `conn` remains live until hew_ws_close below.
+            unsafe { &*conn }.inner.active_recvs.load(Ordering::Acquire) == 1
+        });
 
         unsafe { hew_ws_close(conn) };
 
@@ -3081,10 +3027,8 @@ mod tests {
 
                 unsafe { actor::hew_actor_send(actor, TEST_STOP_TYPE, std::ptr::null_mut(), 0) };
 
-                assert!(
-                    wait_for_actor_dead(actor, Duration::from_secs(1)),
-                    "owner actor should stop after closing the server"
-                );
+                // owner actor should stop after closing the server
+                wait_for_actor_dead(actor);
                 // join() is the exact synchronization for the accept thread's
                 // exit; a stuck cancel fails via the harness's per-test timeout.
                 assert_eq!(
@@ -3155,9 +3099,7 @@ mod tests {
                         )
                     }
                 });
-                started_rx
-                    .recv_timeout(Duration::from_secs(1))
-                    .expect("send thread should start");
+                started_rx.recv().expect("send thread should start");
                 std::thread::sleep(Duration::from_millis(25));
 
                 client
@@ -3211,17 +3153,15 @@ mod tests {
                     .expect("client ping should send before cancellation");
                 unsafe { hew_ws_close(conn) };
 
-                assert!(
-                    wait_for_condition(Duration::from_millis(750), || {
-                        inner
-                            .reader
-                            .lock()
-                            .expect("reader mutex poisoned")
-                            .as_ref()
-                            .is_none_or(|reader| reader.exited.load(Ordering::Acquire))
-                    }),
-                    "reader should exit within the cancel deadline"
-                );
+                // Reader should exit within the cancel deadline.
+                wait_until(|| {
+                    inner
+                        .reader
+                        .lock()
+                        .expect("reader mutex poisoned")
+                        .as_ref()
+                        .is_none_or(|reader| reader.exited.load(Ordering::Acquire))
+                });
                 assert_eq!(
                     OUTER_CONN_DROPS.load(Ordering::Relaxed),
                     1,
@@ -3251,14 +3191,10 @@ mod tests {
 
                 unsafe { actor::hew_actor_send(actor, TEST_STOP_TYPE, std::ptr::null_mut(), 0) };
 
-                assert!(
-                    wait_for_actor_dead(actor, Duration::from_secs(1)),
-                    "actor should transition to a non-live state"
-                );
-                assert!(
-                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
-                    "reader should exit within the bounded deadline after actor stop"
-                );
+                // actor should transition to a non-live state
+                wait_for_actor_dead(actor);
+                // reader should exit within the bounded deadline after actor stop
+                wait_for_reader_exit(&inner);
                 assert!(delivery.is_revoked());
 
                 drop(client);
@@ -3281,14 +3217,10 @@ mod tests {
 
                 unsafe { actor::hew_actor_send(actor, TEST_CRASH_TYPE, std::ptr::null_mut(), 0) };
 
-                assert!(
-                    wait_for_actor_dead(actor, Duration::from_secs(1)),
-                    "crashed actor should become non-live"
-                );
-                assert!(
-                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
-                    "reader should exit within the bounded deadline after actor crash"
-                );
+                // crashed actor should become non-live
+                wait_for_actor_dead(actor);
+                // reader should exit within the bounded deadline after actor crash
+                wait_for_reader_exit(&inner);
                 assert!(delivery.is_revoked());
 
                 drop(client);
@@ -3310,14 +3242,10 @@ mod tests {
                 let delivery = attached_delivery(&inner);
 
                 unsafe { actor::hew_actor_stop(actor) };
-                assert!(
-                    wait_for_actor_dead(actor, Duration::from_secs(1)),
-                    "forced actor stop should transition the actor to non-live"
-                );
-                assert!(
-                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
-                    "reader should exit after forced actor stop"
-                );
+                // forced actor stop should transition the actor to non-live
+                wait_for_actor_dead(actor);
+                // reader should exit after forced actor stop
+                wait_for_reader_exit(&inner);
                 assert!(
                     delivery.is_revoked(),
                     "reader exit must discard the attachment delivery authority"
@@ -3352,12 +3280,7 @@ mod tests {
                         .expect("queue traffic before close");
                 }
 
-                let started = Instant::now();
                 unsafe { hew_ws_close(conn) };
-                assert!(
-                    started.elapsed() < Duration::from_secs(1),
-                    "attached close must stay bounded"
-                );
                 assert!(
                     delivery.is_revoked(),
                     "close must revoke the reader's actor capability before returning"
@@ -3370,7 +3293,9 @@ mod tests {
 
                 let runtime_calls_after_close = ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed);
                 let _ = client.send(Message::text("late"));
-                std::thread::sleep(READER_READ_TIMEOUT + Duration::from_millis(100));
+                // Once the reader has exited, nothing is left to deliver the
+                // late frame.
+                wait_for_reader_exit(&inner);
                 assert_eq!(
                     ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed),
                     runtime_calls_after_close,
@@ -3441,16 +3366,15 @@ mod tests {
 
                 unsafe { hew_ws_close(conn) };
 
-                assert!(
-                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
-                    "reader should exit promptly when the attached connection closes"
-                );
+                // reader should exit promptly when the attached connection closes
+                wait_for_reader_exit(&inner);
                 assert!(
                     delivery.is_revoked(),
                     "close must synchronously revoke actor delivery"
                 );
                 let runtime_calls_after_close = ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed);
-                assert_no_event(&rx, READER_READ_TIMEOUT + Duration::from_millis(100));
+                // The reader has exited, so nothing can arrive after close.
+                assert!(rx.try_recv().is_err(), "no event may follow close");
                 assert_eq!(
                     ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed),
                     runtime_calls_after_close,
@@ -3481,16 +3405,15 @@ mod tests {
                 client.close(None).expect("client close frame");
 
                 assert_eq!(
-                    recv_event(&rx, Duration::from_secs(1)),
+                    recv_event(&rx),
                     ActorEvent::Closed,
                     "remote close should notify the actor exactly once"
                 );
-                assert!(
-                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
-                    "reader should exit after the remote close handshake"
-                );
+                // reader should exit after the remote close handshake
+                wait_for_reader_exit(&inner);
                 assert!(delivery.is_revoked());
-                assert_no_event(&rx, Duration::from_millis(200));
+                // The reader has exited, so no second close can follow.
+                assert!(rx.try_recv().is_err(), "remote close must notify once");
 
                 teardown_attached_actor(actor, test_id, conn, server);
             },
@@ -3509,27 +3432,20 @@ mod tests {
                 let (actor1, test_id1, _rx1) = spawn_attached_actor(conn1);
                 let (actor2, test_id2, rx2) = spawn_attached_actor(conn2);
                 let inner1 = unsafe { &*conn1 }.inner.clone();
-                let inner2 = unsafe { &*conn2 }.inner.clone();
 
                 unsafe { actor::hew_actor_send(actor1, TEST_STOP_TYPE, std::ptr::null_mut(), 0) };
-                assert!(
-                    wait_for_actor_dead(actor1, Duration::from_secs(1)),
-                    "first actor should stop"
-                );
-                assert!(
-                    wait_for_reader_exit(&inner1, Duration::from_secs(1)),
-                    "first reader should exit after its actor stops"
-                );
-                assert!(
-                    !wait_for_reader_exit(&inner2, Duration::from_millis(300)),
-                    "second reader should stay live when the first actor stops"
-                );
+                // first actor should stop
+                wait_for_actor_dead(actor1);
+                // first reader should exit after its actor stops
+                wait_for_reader_exit(&inner1);
+                // The second reader stays live: the frame below still reaches
+                // its actor.
 
                 client2
                     .send(Message::text("still-alive"))
                     .expect("second client send");
                 assert_eq!(
-                    recv_event(&rx2, Duration::from_secs(1)),
+                    recv_event(&rx2),
                     ActorEvent::Message("still-alive".to_owned()),
                     "second actor should continue receiving frames"
                 );

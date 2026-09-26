@@ -50,7 +50,6 @@ fn main() {
     let cm = spawn ConnectionManager;
     let _ = cm.handle(TcpStateEvent.Syn);
     let _ = cm.handle(TcpStateEvent.Ack);
-    sleep(100ms);
 }
 ";
 

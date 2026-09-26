@@ -1,3 +1,5 @@
+import std.stream;
+
 actor Audit {
     var created: i64 = 0,
     var closed: i64 = 0,
@@ -34,9 +36,11 @@ impl Ticket {
 }
 
 actor Worker {
-    receive fn create(audit: Audit) -> Ticket {
+    // Holds the ticket until the caller releases the gate, which it does only
+    // after its own deadline has passed.
+    receive fn create(audit: Audit, gate: stream.Stream<i64>) -> Ticket {
         audit.create(9).expect("audit");
-        sleep(20ms);
+        gate.recv();
         Ticket { audit: audit, id: 9 }
     }
     receive fn ready() {}
@@ -47,16 +51,16 @@ fn main() {
     let worker = spawn Worker;
     // A deadline withdraws a request the worker has not dispatched yet, so no
     // ticket exists on that leg. Repeat until the worker dispatched the request
-    // and the caller's deadline left the late reply with the handler.
+    // and the caller's deadline left the late reply with the handler; a
+    // dispatched request always leaves it, because its gate opens only after
+    // the deadline.
     var late = false;
-    var attempts = 0;
     var closed_before = 0;
     while !late {
-        attempts += 1;
-        assert(attempts <= 100);
         var timed_out = false;
+        let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
         scope within 2ms {
-            let ticket = worker.create(audit).expect("created");
+            let ticket = worker.create(audit, gate).expect("created");
             assert(ticket.id == 9);
         } handle failure {
             match failure {
@@ -66,6 +70,9 @@ fn main() {
                 .Fault { message } => panic(message),
             }
         };
+        // A withdrawn request took its gate with it, so the release may find
+        // no reader.
+        let _ = release.send(1);
         worker.ready().expect("ready");
         let closed = audit.receipt().expect("receipt");
         late = timed_out && closed > closed_before;

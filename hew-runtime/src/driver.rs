@@ -142,6 +142,29 @@ pub fn initialize_clock() {
     let _configured = config();
 }
 
+/// Return whether this process has the deterministic test driver and virtual
+/// clock. `std.testing` uses this to reject controls under `#[real_time]`.
+#[no_mangle]
+pub extern "C" fn hew_test_driver_active() -> bool {
+    config().is_some_and(|config| config.virtual_clock)
+}
+
+/// Return the seed selected for the deterministic process entry.
+/// `std.testing` checks the driver mode before calling this entry.
+#[no_mangle]
+pub extern "C" fn hew_test_seed() -> u64 {
+    config().map_or(0, |config| config.seed)
+}
+
+/// Run ready work to quiescence without advancing the virtual clock.
+/// `std.testing` checks the driver mode before calling this entry.
+#[no_mangle]
+pub extern "C" fn hew_test_settle() {
+    if hew_test_driver_active() {
+        run_to_quiescence();
+    }
+}
+
 fn active_config() -> &'static Config {
     config().expect("driver entry outside a driver run")
 }

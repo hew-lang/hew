@@ -1,0 +1,5 @@
+import std.testing;
+
+fn main() {
+    testing.settle();
+}

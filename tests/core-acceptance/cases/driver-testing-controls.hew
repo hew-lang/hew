@@ -1,0 +1,20 @@
+import std.testing;
+
+actor Worker {
+    receive fn ping() { println("turn"); }
+}
+
+fn send_ping(worker: Worker) -> () fails ActorError {
+    worker.ping()?;
+}
+
+fn main() {
+    assert(testing.seed() == 42);
+    let worker = spawn Worker;
+    scope {
+        let pending = fork send_ping(worker);
+        testing.settle();
+        println("settled");
+        let _ = await pending;
+    }
+}

@@ -1,0 +1,13 @@
+[[case]]
+id = "driver-testing-controls"
+intent = "The test controls expose the selected seed and drain ready work without moving virtual time."
+source = "cases/driver-testing-controls.hew"
+suites = ["acceptance"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = "schedule=fifo,seed=42"
+
+[case.expected]
+stdout = "turn\nsettled\n"
+exit = 0

@@ -2309,9 +2309,10 @@ mod tests {
         assert_eq!(result, 0);
         let socket_addr = server_socket_addr(srv);
 
-        // The client trickles a second byte only after the 100 ms body
-        // deadline has certainly passed: a sleep never returns early, so the
-        // server's pre-read deadline check always fires on it.
+        // Hold the rest of the body until the server has observed the
+        // deadline. This keeps the timeout outcome independent of when the
+        // client thread is scheduled.
+        let (release_tx, release_rx) = mpsc::channel();
         let handle = std::thread::spawn(move || {
             let mut stream = TcpStream::connect(socket_addr).unwrap();
             stream
@@ -2319,7 +2320,9 @@ mod tests {
                     b"POST /slow HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2048\r\n\r\nx",
                 )
                 .unwrap();
-            std::thread::sleep(Duration::from_millis(150));
+            release_rx
+                .recv()
+                .expect("server should finish the body read");
             let _ = stream.write_all(b"y");
             let _ = stream.shutdown(Shutdown::Write);
 
@@ -2342,6 +2345,7 @@ mod tests {
             // SAFETY: req is valid; text is a live managed string.
             let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         }
+        release_tx.send(()).expect("client should still be present");
 
         let response = handle.join().unwrap();
         assert!(body_ptr.is_null(), "timed out body should be rejected");
@@ -2363,19 +2367,31 @@ mod tests {
         // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
-        // A deadline no loaded host reaches: this test's subject is a body that
-        // arrives in time, so the deadline must not be what decides it.
-        // SAFETY: srv is valid; 60s is a valid timeout.
-        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 60_000) };
+        // SAFETY: srv is valid; 250ms is a valid timeout.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 250) };
         assert_eq!(result, 0);
-        let base = server_addr(srv);
+        let socket_addr = server_socket_addr(srv);
         let body = vec![b'a'; 2048];
+        let (ready_tx, ready_rx) = mpsc::channel();
 
         let handle = std::thread::spawn(move || {
-            ureq::post(&format!("{base}/timely"))
-                .header("Content-Type", "text/plain")
-                .send(body.as_slice())
+            let mut stream = TcpStream::connect(socket_addr).expect("connect to server");
+            stream
+                .write_all(b"POST /timely HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 2048\r\n\r\n")
+                .expect("write request headers");
+            stream.write_all(&body).expect("write complete body");
+            ready_tx.send(()).expect("server should still be present");
+            let mut response = String::new();
+            stream.read_to_string(&mut response).expect("read response");
+            response
         });
+
+        // Start the server-side body deadline only after the complete body is
+        // available. A scheduling delay cannot turn this positive case into a
+        // timeout, and the separate stalled-body cases test expiry.
+        ready_rx
+            .recv()
+            .expect("client should send the complete body");
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };
@@ -2396,11 +2412,8 @@ mod tests {
         // SAFETY: req is valid; text is a live managed string.
         let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
 
-        let client_result = handle.join().unwrap();
-        match client_result {
-            Ok(resp) => assert_eq!(resp.status().as_u16(), 200),
-            Err(e) => panic!("unexpected error: {e}"),
-        }
+        let response = handle.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"));
 
         // SAFETY: req and srv are valid.
         unsafe { hew_http_request_free(req) };

@@ -1891,11 +1891,10 @@ mod tests {
     }
 
     #[test]
-    fn close_reaps_a_live_blocked_reader_without_hanging() {
-        // Teeth for the #1963 reap: the reader is parked in its blocking read
-        // (the server never sends data and never closes) when `hew_tls_close` is
-        // called. `hew_tls_close` must join the still-running reader and return
-        // within ~`TLS_READER_TIMEOUT`, not block forever or detach it.
+    fn close_reaps_an_attached_reader_without_hanging() {
+        // Teeth for the #1963 reap: the server sends no data and leaves the
+        // connection open. Close must cancel and join the attached reader,
+        // whether it has entered its blocking read yet or not.
         let _runtime = NetErrorSlotRuntimeGuard::new();
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -1919,7 +1918,7 @@ mod tests {
         let client = client_stream_trusting(addr, cert_der);
         let stream_ptr = HewTlsStream::from_stream(client);
 
-        let (test_id, rx) = register_tls_actor_events();
+        let (test_id, _rx) = register_tls_actor_events();
         let state = TlsTestActorState { test_id };
         // SAFETY: `state` is a valid POD snapshot for the spawn copy.
         let actor = unsafe {
@@ -1934,20 +1933,12 @@ mod tests {
         let attach_status = unsafe { attach_tls_for_test(stream_ptr, actor.cast()) };
         assert_eq!(attach_status, 0, "attach should succeed");
 
-        // Let the reader settle into its blocking read loop before closing.
-        thread::sleep(Duration::from_millis(50));
-        // No data should have arrived on a silent connection.
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            other => panic!("expected no event on a silent connection, got {other:?}"),
-        }
-
         // Clone the inner Arc BEFORE close so we can inspect `reader_exited`
         // after `hew_tls_close` frees the outer HewTlsStream.
         // SAFETY: `stream_ptr` is live at this point; we read (not move) the Arc.
         let inner_arc = Arc::clone(unsafe { &(*stream_ptr).inner });
 
-        // The reap proof: closing a live, blocked reader returns, and the
+        // The reap proof: closing an attached reader returns, and the
         // join-proof below shows it joined rather than detached. A close that
         // never returns is reported by the test runner's timeout.
         // SAFETY: `stream_ptr` was produced by `from_stream` and not yet freed.

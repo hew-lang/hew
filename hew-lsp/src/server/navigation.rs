@@ -1025,7 +1025,7 @@ fn dedup_cross_file_conflicts(
 ///   same `WorkspaceEdit` [`build_workspace_edit`] would produce.
 /// - `Ok(None)` when the cursor is not on a valid rename target.
 /// - `Err(RenameError)` when the rename is refused — the new name is
-///   a keyword / builtin, is not a valid identifier, or would clash
+///   a keyword, is not a valid identifier, or would clash
 ///   with an existing binding in any file that would be edited.
 ///
 /// Unlike [`hew_analysis::rename::plan_rename`] (which validates a

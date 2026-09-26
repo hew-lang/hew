@@ -196,8 +196,7 @@ pub enum RenameConflictKind {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RenameError {
-    /// The new name is a language keyword or a builtin identifier that
-    /// cannot be shadowed by user code.
+    /// The new name is a language keyword that cannot be used as an identifier.
     Builtin { name: String, message: String },
     /// The new name is syntactically invalid (empty, starts with a
     /// digit, contains non-identifier characters).

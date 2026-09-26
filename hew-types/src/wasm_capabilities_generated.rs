@@ -313,6 +313,77 @@ pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
     "sign",
 ];
 
+/// A manifest-owned deterministic host-operation refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeterministicOperation {
+    pub identity: &'static str,
+    pub capability: WasmCapabilityId,
+}
+
+/// Source declaration paths refused by the deterministic driver.
+pub const DETERMINISTIC_FUNCTION_REJECTIONS: &[DeterministicOperation] = &[
+];
+
+/// Trusted compiler and runtime endpoints refused by the deterministic driver.
+pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
+    DeterministicOperation { identity: "hew_http_request_hew", capability: WasmCapabilityId("http-client") },
+    DeterministicOperation { identity: "hew_smtp_connect", capability: WasmCapabilityId("smtp") },
+    DeterministicOperation { identity: "hew_smtp_connect_tls", capability: WasmCapabilityId("smtp") },
+    DeterministicOperation { identity: "hew_smtp_send", capability: WasmCapabilityId("smtp") },
+    DeterministicOperation { identity: "hew_smtp_send_html", capability: WasmCapabilityId("smtp") },
+    DeterministicOperation { identity: "hew_smtp_send_once", capability: WasmCapabilityId("smtp") },
+    DeterministicOperation { identity: "hew_smtp_send_html_once", capability: WasmCapabilityId("smtp") },
+    DeterministicOperation { identity: "hew_ws_connect", capability: WasmCapabilityId("websocket") },
+    DeterministicOperation { identity: "hew_ws_recv", capability: WasmCapabilityId("websocket") },
+    DeterministicOperation { identity: "hew_ws_recv_timeout", capability: WasmCapabilityId("websocket") },
+    DeterministicOperation { identity: "hew_ws_server_new", capability: WasmCapabilityId("websocket") },
+    DeterministicOperation { identity: "hew_ws_server_accept", capability: WasmCapabilityId("websocket") },
+    DeterministicOperation { identity: "hew_http_server_new", capability: WasmCapabilityId("http-server") },
+    DeterministicOperation { identity: "hew_http_server_recv", capability: WasmCapabilityId("http-server") },
+    DeterministicOperation { identity: "hew_http_respond_bridge", capability: WasmCapabilityId("http-server") },
+    DeterministicOperation { identity: "hew_http_respond_text", capability: WasmCapabilityId("http-server") },
+    DeterministicOperation { identity: "hew_http_respond_json", capability: WasmCapabilityId("http-server") },
+    DeterministicOperation { identity: "hew_http_respond_stream", capability: WasmCapabilityId("http-server") },
+    DeterministicOperation { identity: "hew_tcp_listen", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "hew_tcp_accept", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "hew_tcp_connect", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "hew_tcp_connect_timeout", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "hew_tcp_read", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "hew_tcp_write", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "hew_tcp_broadcast_except", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "hew_process_run", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "hew_process_run_argv", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "hew_process_spawn", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "hew_process_spawn_argv", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "hew_process_wait", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "hew_tls_connect", capability: WasmCapabilityId("tls") },
+    DeterministicOperation { identity: "hew_tls_read_result", capability: WasmCapabilityId("tls") },
+    DeterministicOperation { identity: "hew_tls_write_result", capability: WasmCapabilityId("tls") },
+    DeterministicOperation { identity: "hew_quic_new_client", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_new_client_with_ca", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_new_server", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_new_server_with_tls", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_endpoint_connect", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_endpoint_accept", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_conn_open_stream", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_conn_accept_stream", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_stream_send", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_stream_recv", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_stream_send_timeout_hew", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_quic_stream_recv_timeout_hew", capability: WasmCapabilityId("quic") },
+    DeterministicOperation { identity: "hew_dns_resolve", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "hew_dns_lookup_host", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "hew_dns_resolve_timed", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "hew_dns_lookup_host_timed", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "hew_node_api_start_config", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_api_connect", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_api_register_by_pid_string", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_monitor_location", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_link_remote_location", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_io_read_line", capability: WasmCapabilityId("stdin-input") },
+    DeterministicOperation { identity: "hew_io_read_all", capability: WasmCapabilityId("stdin-input") },
+];
+
 }
 
 pub use generated::*;

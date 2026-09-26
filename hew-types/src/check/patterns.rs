@@ -1073,7 +1073,8 @@ impl Checker {
                 }
                 self.check_shadowing(name.name.as_str(), span);
                 self.env
-                    .define_with_span(name.to_string(), ty.clone(), is_mutable, span.clone());
+                    .define_with_span(*name, ty.clone(), is_mutable, span.clone());
+                self.record_local_resolution(*name, span);
             }
             // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {

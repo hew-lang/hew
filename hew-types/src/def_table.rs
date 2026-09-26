@@ -139,6 +139,12 @@ impl DeclarationOccurrence {
         self.kind
     }
 
+    /// Source-order index among declarations of this kind inside the item.
+    #[must_use]
+    pub fn ordinal(self) -> u32 {
+        self.ordinal
+    }
+
     /// The parsed item's source span, for diagnostics that point back at an
     /// already-established declaration.
     #[must_use]
@@ -1197,7 +1203,7 @@ impl DefTable {
 
     /// The source file a minted module identity was established from.
     #[must_use]
-    pub(crate) fn module_source(&self, id: ModuleId) -> Option<&Path> {
+    pub fn module_source(&self, id: ModuleId) -> Option<&Path> {
         self.modules[id.0 as usize].canonical_source.as_deref()
     }
 

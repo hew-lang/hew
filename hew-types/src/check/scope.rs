@@ -79,6 +79,8 @@ pub enum Resolution {
     Builtin(BuiltinType),
     /// A variant of an enum, by declaration index.
     Variant(NominalId, u32),
+    /// A declared record field, by its nominal owner and declaration index.
+    Field(NominalId, u32),
     /// A member row under a nominal, trait or actor: a method, handler,
     /// machine state or companion.
     Member(DefId),
@@ -331,6 +333,18 @@ impl Scopes {
         std::mem::take(&mut self.resolutions)
     }
 
+    /// Publish an identity already selected by the checker for one source
+    /// segment. Value and method checking use this for declarations whose
+    /// selection also depends on inferred receiver or binding types.
+    pub(crate) fn record_resolution(
+        &mut self,
+        site: ScopeSite,
+        span: &Span,
+        resolution: Resolution,
+    ) {
+        self.record(site, span, resolution);
+    }
+
     /// Resolve a whole path. Every segment must name something.
     ///
     /// # Errors
@@ -453,7 +467,8 @@ impl Scopes {
             Resolution::Param(_)
             | Resolution::Local(_)
             | Resolution::Builtin(_)
-            | Resolution::Variant(..) => None,
+            | Resolution::Variant(..)
+            | Resolution::Field(..) => None,
         }
     }
 

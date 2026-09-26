@@ -95,6 +95,19 @@ fn identity_w3b_closure_shadows_fn() {
     );
 }
 
+/// A lexical value also shadows a same-named function when it cannot be
+/// called. The checker must report the value's type instead of calling the
+/// function declaration.
+#[test]
+fn identity_w3b_noncallable_value_shadows_fn() {
+    let (ok, combined) = check_reject_fixture("identity_w3b_noncallable");
+    assert!(!ok, "a local integer cannot be called; got success");
+    assert!(
+        combined.contains("cannot call value of type `i64`"),
+        "expected a value-call diagnostic; got:\n{combined}"
+    );
+}
+
 /// W4 (R6 type parameters): a type parameter never resolves to a nominal
 /// of the same spelling, so `g<T>(x: T) { x.v }` is refused beside
 /// `type T { v: i64 }` exactly as it is without one.

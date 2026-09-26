@@ -1825,7 +1825,12 @@ impl Checker {
             );
             return Ty::Error;
         }
-        // Get function name from expression
+        // A body-local binding shadows a function of the same spelling (R3).
+        // Keep it on the ordinary value-call path below, which also handles
+        // polymorphic closures and actor-handle capture checks.
+        let lexical_shadow_of_item = matches!(&func.0, Expr::Ident(name)
+            if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
+                && self.visible_fn_signature_key(name.name.as_str()).is_some());
         let func_name = match &func.0 {
             Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => {
@@ -2323,9 +2328,12 @@ impl Checker {
 
         // Prefer a declaration or an exact file import, then an enclosing
         // actor helper. A signature published by another file is not a binding.
-        let visible_fn_key = self
-            .visible_fn_signature_key(&func_name)
-            .or_else(|| self.enclosing_actor_method_key(&func_name));
+        let visible_fn_key = if lexical_shadow_of_item {
+            None
+        } else {
+            self.visible_fn_signature_key(&func_name)
+                .or_else(|| self.enclosing_actor_method_key(&func_name))
+        };
         let has_visible_fn_signature = visible_fn_key.is_some();
         let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
         // An actor method reads and writes the actor's own state, so it is

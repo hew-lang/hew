@@ -23,6 +23,7 @@ mod non_root_module_inference_scope {
             type_params: None,
             params: vec![Param {
                 name: Ident::new("x"),
+                name_span: 0..0,
                 ty: (param_ty, 10..11),
                 is_mutable: false,
                 is_consume: false,
@@ -164,6 +165,7 @@ mod non_root_module_inference_scope {
             type_params: None,
             params: vec![Param {
                 name: Ident::new("v"),
+                name_span: 0..0,
                 ty: (TypeExpr::Infer, 50..51),
                 is_mutable: false,
                 is_consume: false,
@@ -220,6 +222,7 @@ mod non_root_module_inference_scope {
                 type_params: None,
                 params: vec![Param {
                     name: Ident::new("a"),
+                    name_span: 0..0,
                     ty: (TypeExpr::Infer, span_start..span_start + 1),
                     is_mutable: false,
                     is_consume: false,
@@ -300,6 +303,7 @@ mod non_root_module_inference_scope {
             type_params: None,
             params: vec![Param {
                 name: Ident::new("x"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(
@@ -501,6 +505,7 @@ mod non_root_module_inference_scope {
                 type_params: None,
                 params: vec![Param {
                     name: Ident::new("value"),
+                    name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
                             path: hew_parser::ast::Path::single(
@@ -612,6 +617,7 @@ mod non_root_module_inference_scope {
                 type_params: None,
                 params: vec![Param {
                     name: Ident::new("value"),
+                    name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
                             path: hew_parser::ast::Path::single(

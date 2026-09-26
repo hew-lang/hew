@@ -388,11 +388,12 @@ impl Checker {
                 ),
             );
             self.env.define_param_with_span(
-                param.name.to_string(),
+                param.name,
                 ty,
                 param.is_mutable,
-                param.ty.1.clone(),
+                param.name_span.clone(),
             );
+            self.record_local_resolution(param.name, &param.name_span);
         }
 
         for child in &sd.children {
@@ -957,23 +958,20 @@ impl Checker {
                 && !is_receiver
                 && self.parameter_has_independent_clone(&ty);
             if in_actor {
-                self.check_shadowing(p.name.name.as_str(), &p.ty.1);
+                self.check_shadowing(p.name.name.as_str(), &p.name_span);
             }
             if is_receiver {
                 self.env.define_receiver_param_with_span(
-                    p.name.to_string(),
+                    p.name,
                     ty,
                     p.is_mutable,
-                    p.ty.1.clone(),
+                    p.name_span.clone(),
                 );
             } else {
-                self.env.define_param_with_span(
-                    p.name.to_string(),
-                    ty,
-                    p.is_mutable,
-                    p.ty.1.clone(),
-                );
+                self.env
+                    .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
             }
+            self.record_local_resolution(p.name, &p.name_span);
             self.env.set_parameter_consume(
                 p.name.name.as_str(),
                 p.is_consume || (is_receiver && fd.consumes_self),
@@ -1797,7 +1795,8 @@ impl Checker {
                 format!("init parameter `{}` of actor `{actor_name}`", p.name),
             );
             self.env
-                .define_param_with_span(p.name.to_string(), ty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
+            self.record_local_resolution(p.name, &p.name_span);
         }
 
         // Init returns unit — no meaningful return type
@@ -2096,7 +2095,8 @@ impl Checker {
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
-                .define_param_with_span(p.name.to_string(), pty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name, pty, p.is_mutable, p.name_span.clone());
+            self.record_local_resolution(p.name, &p.name_span);
         }
 
         self.current_return_type = Some(return_ty);
@@ -2200,7 +2200,8 @@ impl Checker {
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
-                .define_param_with_span(p.name.to_string(), pty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name, pty, p.is_mutable, p.name_span.clone());
+            self.record_local_resolution(p.name, &p.name_span);
         }
 
         self.current_return_type = Some(Ty::Unit);
@@ -2278,7 +2279,8 @@ impl Checker {
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
-                .define_param_with_span(p.name.to_string(), pty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name, pty, p.is_mutable, p.name_span.clone());
+            self.record_local_resolution(p.name, &p.name_span);
         }
         self.current_return_type = Some(Ty::Unit);
         let _body_ty = self.check_block(&hook.body, None);
@@ -2509,11 +2511,12 @@ impl Checker {
         self.env.push_scope();
 
         for p in &rf.params {
-            self.check_shadowing(p.name.name.as_str(), &p.ty.1);
+            self.check_shadowing(p.name.name.as_str(), &p.name_span);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.env
-                .define_param_with_span(p.name.to_string(), ty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name, ty, p.is_mutable, p.name_span.clone());
+            self.record_local_resolution(p.name, &p.name_span);
             // The receiving handler owns the delivered message. Its fields
             // may move out of an aggregate parameter just as they may from a
             // local owner; ordinary function parameters retain borrow semantics.

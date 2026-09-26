@@ -656,6 +656,10 @@ impl Parser<'_> {
         // not allow `self` receivers (a free function), falls through to the
         // regular param path and is rejected there.
         let consuming_self_span = self.peek_span();
+        let consuming_self_name_span = self
+            .tokens
+            .get(self.pos + 1)
+            .map_or_else(|| consuming_self_span.clone(), |(_, span)| span.clone());
         let consumes_self = self.allow_implicit_self_params && self.eat_consume_self_receiver();
         let mut params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
         // A `consume self` receiver is materialised as a leading by-value
@@ -668,6 +672,7 @@ impl Parser<'_> {
                 0,
                 Param {
                     name: Ident::from_symbol(sym::SELF_VALUE),
+                    name_span: consuming_self_name_span,
                     ty: (
                         TypeExpr::Named {
                             path: Path::single(
@@ -1322,6 +1327,10 @@ impl Parser<'_> {
 
                 self.expect(&Token::LeftParen)?;
                 let consuming_self_span = self.peek_span();
+                let consuming_self_name_span = self
+                    .tokens
+                    .get(self.pos + 1)
+                    .map_or_else(|| consuming_self_span.clone(), |(_, span)| span.clone());
                 let consumes_self = self.eat_consume_self_receiver();
                 let mut params = self.parse_params_with_implicit_self(true);
                 if consumes_self {
@@ -1329,6 +1338,7 @@ impl Parser<'_> {
                         0,
                         Param {
                             name: Ident::from_symbol(sym::SELF_VALUE),
+                            name_span: consuming_self_name_span,
                             ty: (
                                 TypeExpr::Named {
                                     path: Path::single(

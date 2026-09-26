@@ -208,6 +208,7 @@ impl LowerCtx {
                 Expr::StructInit {
                     path: Path::single(Ident::new(&contextual_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
                     fields: record.fields.clone(),
+                    field_name_spans: Vec::new(),
                     type_args: None,
                     base: record.base.clone(),
                 }
@@ -670,6 +671,7 @@ impl LowerCtx {
                 // where applicable), so we ignore the raw surface args here.
                 type_args: _,
                 base,
+                ..
             } => {
                 let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                                                     // Inside a machine body, check if the struct-init name is a state

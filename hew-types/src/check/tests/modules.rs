@@ -377,6 +377,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         type_params: None,
         params: vec![Param {
             name: Ident::new("math"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(
@@ -541,6 +542,7 @@ fn module_graph_body_private_local_type_is_available() {
                                 0..0,
                             ),
                             fields: vec![(Ident::new("x"), make_int_literal(1, 0..1))],
+                            field_name_spans: Vec::new(),
                             type_args: None,
                             base: None,
                         },
@@ -737,6 +739,7 @@ fn adopting_declaration_keeps_its_own_provenance() {
             name: Ident::new(fn_name),
             params: vec![hew_parser::ast::Param {
                 name: Ident::new("x"),
+                name_span: 0..0,
                 ty: (i64_ty.clone(), 0..3),
                 is_mutable: false,
                 is_consume: false,
@@ -839,6 +842,7 @@ fn same_module_span_colliding_drifting_declarations_conflict() {
             name: Ident::new("hew_bytes_from_str"),
             params: vec![hew_parser::ast::Param {
                 name: Ident::new("s"),
+                name_span: 0..0,
                 ty: (param_ty, 0..6),
                 is_mutable: false,
                 is_consume: false,
@@ -1360,6 +1364,7 @@ mod module_body_diagnostic_envelope {
             type_params: None,
             params: vec![Param {
                 name: Ident::new("x"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(
@@ -1427,6 +1432,7 @@ mod module_body_diagnostic_envelope {
             type_params: None,
             params: vec![Param {
                 name: Ident::new("v"),
+                name_span: 0..0,
                 ty: (TypeExpr::Infer, 10..11),
                 is_mutable: false,
                 is_consume: false,
@@ -2153,6 +2159,7 @@ mod warning_source_attribution {
                 type_params: None,
                 params: vec![Param {
                     name: Ident::new("val"),
+                    name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
                             path: hew_parser::ast::Path::single(
@@ -2586,6 +2593,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
                 name: Ident::new(fn_name),
                 params: vec![Param {
                     name: Ident::new("p"),
+                    name_span: 0..0,
                     ty: (TypeExpr::Infer, 20..21),
                     is_mutable: false,
                     is_consume: false,

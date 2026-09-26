@@ -635,7 +635,7 @@ impl Parser<'_> {
             self.expect(&Token::LeftBrace)?;
             // The head already named the target, so the braces hold exactly a
             // record literal's field list — `..base` included.
-            let (fields, base) = self.parse_struct_init_fields()?;
+            let (fields, field_name_spans, base) = self.parse_struct_init_fields()?;
             let be = self.peek_span().start;
             // A contextual target keeps its contextual form when it carries a
             // payload: `=> .Faulted { error }` resolves against the machine's
@@ -649,6 +649,7 @@ impl Parser<'_> {
                 Expr::StructInit {
                     path: Path::single(target_state, target_span.clone()),
                     fields,
+                    field_name_spans,
                     type_args: None,
                     base,
                 }

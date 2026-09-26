@@ -1984,7 +1984,6 @@ dependencies = [
 name = "hew-sir"
 version = "0.6.0-rc4"
 dependencies = [
- "heck",
  "hew-hir",
  "hew-parser",
  "hew-types",
@@ -2047,6 +2046,7 @@ dependencies = [
 name = "hew-types"
 version = "0.6.0-rc4"
 dependencies = [
+ "heck",
  "hew-cabi",
  "hew-parser",
  "hew-runtime",

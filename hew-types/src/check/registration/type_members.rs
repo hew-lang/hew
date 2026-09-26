@@ -14,8 +14,20 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
+use heck::{ToKebabCase, ToLowerCamelCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use hew_parser::ast::Ident;
-use hew_parser::ast::WireMetadata;
+use hew_parser::ast::{NamingCase, WireMetadata};
+
+fn wire_name(name: &str, case: Option<NamingCase>) -> String {
+    match case {
+        None => name.to_owned(),
+        Some(NamingCase::CamelCase) => name.to_lower_camel_case(),
+        Some(NamingCase::PascalCase) => name.to_upper_camel_case(),
+        Some(NamingCase::SnakeCase) => name.to_snake_case(),
+        Some(NamingCase::ScreamingSnake) => name.to_shouty_snake_case(),
+        Some(NamingCase::KebabCase) => name.to_kebab_case(),
+    }
+}
 
 impl Checker {
     pub(super) fn refresh_handle_bearing_structs(&mut self) {
@@ -1705,6 +1717,7 @@ impl Checker {
         else {
             return;
         };
+        self.validate_wire_text_names(type_name, &layout_entry);
         // Track wire structs and wire enums so the method-dispatch arms can
         // recognise the binary `encode`/`decode` codec calls (which lower to the
         // `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*` thunks) without
@@ -1805,8 +1818,14 @@ impl Checker {
                 .map(|field| WireFieldLayout {
                     name: field.field_name.clone(),
                     tag: field.field_number,
-                    json_name: field.json_name.clone(),
-                    yaml_name: field.yaml_name.clone(),
+                    json_name: field
+                        .json_name
+                        .clone()
+                        .unwrap_or_else(|| wire_name(&field.field_name, wire.json_case)),
+                    yaml_name: field
+                        .yaml_name
+                        .clone()
+                        .unwrap_or_else(|| wire_name(&field.field_name, wire.yaml_case)),
                     presence: if field.is_optional {
                         WireFieldPresence::Optional
                     } else {
@@ -1851,20 +1870,72 @@ impl Checker {
                         .get(name.as_str())
                         .copied()
                         .unwrap_or(default_tag);
-                    (name, tag)
+                    WireVariantLayout {
+                        json_name: wire_name(&name, wire.json_case),
+                        yaml_name: wire_name(&name, wire.yaml_case),
+                        name,
+                        tag,
+                    }
                 })
                 .collect()
         };
 
         WireLayoutEntry {
             is_struct: is_wire_struct,
-            json_case: wire.json_case,
-            yaml_case: wire.yaml_case,
             version: wire.version,
             min_version: wire.min_version,
             fields,
             variants,
         }
+    }
+
+    fn validate_wire_text_names(&mut self, type_name: &str, layout: &WireLayoutEntry) {
+        for (format, yaml) in [("JSON", false), ("YAML", true)] {
+            let mut names = HashSet::new();
+            if layout.is_struct {
+                for field in &layout.fields {
+                    let name = if yaml {
+                        &field.yaml_name
+                    } else {
+                        &field.json_name
+                    };
+                    if !names.insert(name.as_str()) {
+                        self.wire_text_name_collision(type_name, format, "field", name);
+                    }
+                }
+            } else {
+                for variant in &layout.variants {
+                    let name = if yaml {
+                        &variant.yaml_name
+                    } else {
+                        &variant.json_name
+                    };
+                    if !names.insert(name.as_str()) {
+                        self.wire_text_name_collision(type_name, format, "variant", name);
+                    }
+                }
+            }
+        }
+    }
+
+    fn wire_text_name_collision(
+        &mut self,
+        type_name: &str,
+        format: &str,
+        member: &str,
+        name: &str,
+    ) {
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::InvalidOperation,
+            span: self.type_def_spans.get(type_name).cloned().unwrap_or(0..0),
+            message: format!(
+                "wire {format} {member} name `{name}` is ambiguous after naming metadata"
+            ),
+            notes: vec![],
+            suggestions: vec![],
+            source_module: self.current_module.clone(),
+        });
     }
 
     /// Validate version constraints on a wire type.

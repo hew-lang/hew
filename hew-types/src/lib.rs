@@ -73,6 +73,7 @@ pub use check::{
     TypeAliasDef, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch,
     VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
     WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    WireVariantLayout,
 };
 pub use def_table::{
     DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, KnownDecl,

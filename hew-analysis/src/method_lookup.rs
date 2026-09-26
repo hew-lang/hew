@@ -4,6 +4,12 @@ use hew_types::{method_resolution, Ty, TypeCheckOutput};
 pub(crate) fn find_receiver_type(tc: &TypeCheckOutput, end_offset: usize) -> Option<&Ty> {
     let mut best: Option<(&SpanKey, &Ty)> = None;
     for (span_key, ty) in &tc.expr_types {
+        // Analysis requests in this crate are for the root editor buffer.
+        // Imported modules can have identical byte offsets and must not
+        // displace the root receiver's type according to HashMap iteration.
+        if span_key.module_idx != 0 {
+            continue;
+        }
         if span_key.end <= end_offset && span_key.end + 1 >= end_offset {
             match best {
                 Some((prev, _)) if span_key.end > prev.end => {
@@ -23,6 +29,40 @@ pub(crate) fn find_receiver_type(tc: &TypeCheckOutput, end_offset: usize) -> Opt
         }
     }
     best.map(|(_, ty)| ty)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[test]
+    fn receiver_type_uses_the_editor_buffer_module() {
+        let tc = TypeCheckOutput {
+            expr_types: HashMap::from([
+                (
+                    SpanKey {
+                        start: 12,
+                        end: 13,
+                        module_idx: 0,
+                    },
+                    Ty::I64,
+                ),
+                (
+                    SpanKey {
+                        start: 12,
+                        end: 13,
+                        module_idx: 1,
+                    },
+                    Ty::Bool,
+                ),
+            ]),
+            ..TypeCheckOutput::default()
+        };
+
+        assert_eq!(find_receiver_type(&tc, 14), Some(&Ty::I64));
+    }
 }
 
 pub(crate) fn collect_method_sigs_for_receiver(

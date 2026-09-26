@@ -51,6 +51,11 @@ pub fn hover(
     // Fall back to narrowest expression type that covers this offset.
     let mut best: Option<(&SpanKey, &Ty)> = None;
     for (span_key, ty) in &type_output.expr_types {
+        // The source passed to hover is the root editor buffer. An imported
+        // module may have the same offsets with an unrelated type.
+        if span_key.module_idx != 0 {
+            continue;
+        }
         if span_key.start <= offset && offset <= span_key.end {
             match best {
                 Some((prev, _)) if (span_key.end - span_key.start) < (prev.end - prev.start) => {
@@ -1882,6 +1887,30 @@ mod tests {
         assert!(result.is_some(), "should find hover via expr_types");
         let hr = result.unwrap();
         assert!(hr.contents.contains("i32"), "should show expression type");
+    }
+
+    #[test]
+    fn hover_uses_root_type_when_imported_file_has_same_span() {
+        let source = "fn main() { 42; }";
+        let pr = hew_parser::parse(source);
+        let offset = source.find("42").unwrap();
+        let root_key = SpanKey {
+            start: offset,
+            end: offset + 2,
+            module_idx: 0,
+        };
+        let imported_key = SpanKey {
+            module_idx: 1,
+            ..root_key.clone()
+        };
+        let tc = TypeCheckOutput {
+            expr_types: HashMap::from([(root_key, Ty::I64), (imported_key, Ty::Bool)]),
+            ..TypeCheckOutput::default()
+        };
+
+        let result = hover(source, &pr, Some(&tc), offset).expect("root literal hover");
+        assert!(result.contents.contains("i64"), "{result:?}");
+        assert!(!result.contents.contains("bool"), "{result:?}");
     }
 
     #[test]

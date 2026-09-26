@@ -116,11 +116,10 @@ impl LowerCtx {
                         .count
                         .as_ref()
                         .map(|spanned_expr| self.lower_expr(spanned_expr, IntentKind::Read)),
-                    shutdown: child.shutdown.as_ref().map(|s| match s {
-                        ShutdownDirective::Timeout(d) => HirShutdownDirective::Timeout(d.clone()),
-                        ShutdownDirective::BrutalKill => HirShutdownDirective::BrutalKill,
-                        ShutdownDirective::Infinity => HirShutdownDirective::Infinity,
-                    }),
+                    stop: child
+                        .stop
+                        .as_ref()
+                        .map(|duration| self.lower_expr(duration, IntentKind::Read)),
                     // Real site for this child declaration, registered below
                     // by `verify.rs` so MIR diagnostics with no specific
                     // argument to blame (a missing required field) carry a

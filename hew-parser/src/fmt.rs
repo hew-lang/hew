@@ -13,10 +13,10 @@ use crate::ast::{
     FieldDecl, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam,
     Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm,
     NamingCase, NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
-    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Span,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
-    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
+    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -2853,12 +2853,12 @@ impl<'a> Formatter<'a> {
                 RestartPolicy::Temporary => self.write("temporary"),
             }
         }
-        if let Some(shutdown) = &spec.shutdown {
-            self.write(" shutdown: ");
-            match shutdown {
-                ShutdownDirective::Timeout(d) => self.write(d),
-                ShutdownDirective::BrutalKill => self.write("brutal_kill"),
-                ShutdownDirective::Infinity => self.write("infinity"),
+        if let Some(stop) = &spec.stop {
+            self.write(" stop: ");
+            if matches!(&stop.0, Expr::Literal(Literal::Duration(0))) {
+                self.write("0s");
+            } else {
+                self.format_expr(stop);
             }
         }
         // `wired_to:` was silently dropped by the old formatter — preserve it.

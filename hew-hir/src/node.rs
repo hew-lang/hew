@@ -786,9 +786,9 @@ pub struct HirSupervisorChild {
     /// into the pool slot. `count` is a reserved arg name on pool declarations,
     /// not a per-member init field, so it is removed from `init_args`.
     pub pool_count: Option<HirExpr>,
-    /// Per-child graceful-stop directive from the `shutdown:` clause.
+    /// Per-child graceful-stop deadline from the `stop:` clause.
     /// `None` means the supervisor default applies.
-    pub shutdown: Option<HirShutdownDirective>,
+    pub stop: Option<HirExpr>,
     /// Real, verifier-registered site for this child declaration, minted from
     /// the same monotonic allocator as every other HIR site
     /// (`self.ids.site()`). MIR diagnostics that have no specific
@@ -816,19 +816,6 @@ pub enum HirRestartPolicy {
     Permanent,
     Transient,
     Temporary,
-}
-
-/// Per-child shutdown directive lowered from the `shutdown:` clause.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HirShutdownDirective {
-    /// Graceful-stop deadline as a raw duration source string (e.g. `"30s"`);
-    /// codegen interprets the unit.
-    Timeout(String),
-    /// Skip the deadline; kill immediately.
-    BrutalKill,
-    /// Wait indefinitely. ACCEPTED-ONLY in v0.5 — there is no per-child
-    /// deadline wheel in the runtime yet, so codegen does not enforce it.
-    Infinity,
 }
 
 /// Semantic declaration kind, including enums with no inhabited variants.

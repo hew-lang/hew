@@ -51,12 +51,7 @@ pub(crate) fn prefix_bp(op: &Token) -> Option<u8> {
         // `*expr` is a raw-pointer dereference.  v0.5 parses it only so
         // the type checker can reject it deterministically — no codegen
         // path is reached.  Same binding power as the other unary prefixes.
-        Token::Bang
-        | Token::Minus
-        | Token::Tilde
-        | Token::Await
-        | Token::AwaitRestart
-        | Token::Star => Some(25),
+        Token::Bang | Token::Minus | Token::Tilde | Token::Await | Token::Star => Some(25),
         _ => None,
     }
 }

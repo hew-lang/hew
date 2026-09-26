@@ -428,6 +428,11 @@ impl Checker {
         // positive literal) while config params are still in scope so a
         // `count: config.workers` expr resolves.
         self.check_supervisor_pool_count(sd, span);
+        for child in &sd.children {
+            if let Some(duration) = &child.stop {
+                self.check_against(&duration.0, &duration.1, &Ty::Duration);
+            }
+        }
 
         self.env.pop_scope();
     }

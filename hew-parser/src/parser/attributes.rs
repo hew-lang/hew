@@ -76,7 +76,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
 
     Some(match name {
         "resource" | "linear" | "opaque" | "json" | "yaml" | "deprecated" => &[TypeDecl],
-        "wire" => &[TypeDecl, Field],
+        "wire" => &[TypeDecl, Field, ActorReceiveFn],
         // `#[ignore]`/`#[should_panic]`/`#[serial]`/`#[real_time]` sit at
         // `FreeFn` like `#[test]` and `#[export]`; the co-occurrence half of
         // their `#[test]`-only rule is enforced by

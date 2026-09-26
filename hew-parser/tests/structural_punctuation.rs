@@ -64,7 +64,7 @@ fn supervisor_config_and_wire_fields_use_structural_commas() {
         supervisor App {
             strategy: one_for_one,
             intensity: 5 within 60s,
-            child worker: Worker() restart: permanent shutdown: 5s,
+            child worker: Worker() restart: permanent stop: 5s,
         }
     ";
     let parsed = parse(source);
@@ -75,7 +75,7 @@ fn supervisor_config_and_wire_fields_use_structural_commas() {
         formatted.contains("intensity: 5 within 60s,"),
         "{formatted}"
     );
-    assert!(formatted.contains("shutdown: 5s,"), "{formatted}");
+    assert!(formatted.contains("stop: 5s,"), "{formatted}");
     let reparsed = parse(&formatted);
     assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
     assert_eq!(format_source(&formatted, &reparsed.program), formatted);

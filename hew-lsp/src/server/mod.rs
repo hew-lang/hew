@@ -1647,6 +1647,51 @@ impl Worker {
     }
 
     #[test]
+    fn checked_field_navigation_and_references_keep_nominal_owners_distinct() {
+        let source = "type A { x: i64 }\ntype B { x: i64 }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.x); println(b.x); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-fields.hew");
+        let a_use = source.find("a.x").unwrap() + 2;
+        let b_use = source.find("b.x").unwrap() + 2;
+        let expected_b = source.find("type B { x:").unwrap() + "type B { ".len();
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, b_use, &DashMap::new())
+                .expect("B.x must resolve through checker identity");
+        assert_eq!(location.uri, uri);
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(source, &doc.line_offsets, expected_b, expected_b + 1)
+        );
+        let refs = super::navigation::identity_reference_locations(&uri, &doc, b_use, true)
+            .expect("checked B.x references");
+        assert!(refs.iter().any(|site| site.range == location.range));
+        assert!(refs
+            .iter()
+            .any(|site| site.range
+                == offset_range_to_lsp(source, &doc.line_offsets, b_use, b_use + 1)));
+        assert!(!refs
+            .iter()
+            .any(|site| site.range
+                == offset_range_to_lsp(source, &doc.line_offsets, a_use, a_use + 1)));
+    }
+
+    #[test]
+    fn checked_method_navigation_selects_second_impl() {
+        let source = "type A { x: i64 }\nimpl A { fn get(self) -> i64 { self.x } }\ntype B { x: i64 }\nimpl B { fn get(self) -> i64 { self.x } }\nfn main() { let b = B { x: 2 }; println(b.get()); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-methods.hew");
+        let call = source.rfind("b.get").unwrap() + 2;
+        let expected = source.rfind("fn get").unwrap() + 3;
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
+                .expect("B.get must resolve through checker identity");
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(source, &doc.line_offsets, expected, expected + 3)
+        );
+    }
+
+    #[test]
     fn goto_def_resolves_nominal_type_name_to_declaration_span() {
         let source =
             "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";

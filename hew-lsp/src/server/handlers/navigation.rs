@@ -48,6 +48,11 @@ pub(crate) fn goto_definition(
     let doc = server.documents.get(uri)?;
 
     let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
+    if let Some(location) =
+        super::super::navigation::identity_definition_location(uri, &doc, offset, &server.documents)
+    {
+        return Some(GotoDefinitionResponse::Scalar(location));
+    }
     let word = word_at_offset(&doc.source, offset)?;
 
     if let Some(resolution) = hew_analysis::resolver::resolve_symbol_at_raw(

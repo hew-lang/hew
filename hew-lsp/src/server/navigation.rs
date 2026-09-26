@@ -33,6 +33,116 @@ fn read_source_or_io_error(uri: &Url) -> Result<String, hew_analysis::RenameErro
 
 // ── Go-to-definition ─────────────────────────────────────────────────
 
+/// Resolve a checked source segment to its declaration. The checker carries
+/// both the declaration identity and source module, so equal spellings and
+/// equal byte offsets in imported files cannot redirect this lookup.
+pub(super) fn identity_definition_location(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<Location> {
+    let output = doc.type_output.as_ref()?;
+    let (_, resolution) = hew_analysis::identity::resolution_at(output, 0, offset)?;
+    if let hew_types::check::scope::Resolution::Local(_) = resolution {
+        let span = *hew_analysis::identity::reference_spans(output, 0, resolution).first()?;
+        return Some(Location {
+            uri: uri.clone(),
+            range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
+        });
+    }
+    let target = hew_analysis::identity::declaration_target(output, resolution)?;
+    let target_uri = target
+        .source
+        .as_deref()
+        .and_then(Url::from_file_path)
+        .unwrap_or_else(|| uri.clone());
+    if target_uri == *uri {
+        let span =
+            hew_analysis::identity::declaration_name_span(&doc.source, &doc.parse_result, &target)?;
+        return Some(Location {
+            uri: target_uri,
+            range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
+        });
+    }
+    if let Some(target_doc) = documents.get(&target_uri) {
+        let span = hew_analysis::identity::declaration_name_span(
+            &target_doc.source,
+            &target_doc.parse_result,
+            &target,
+        )?;
+        return Some(Location {
+            uri: target_uri,
+            range: offset_range_to_lsp(
+                &target_doc.source,
+                &target_doc.line_offsets,
+                span.start,
+                span.end,
+            ),
+        });
+    }
+    let source = std::fs::read_to_string(target.source.as_ref()?).ok()?;
+    let parsed = hew_parser::parse(&source);
+    let span = hew_analysis::identity::declaration_name_span(&source, &parsed, &target)?;
+    let offsets = hew_analysis::util::compute_line_offsets(&source);
+    Some(Location {
+        uri: target_uri,
+        range: offset_range_to_lsp(&source, &offsets, span.start, span.end),
+    })
+}
+
+/// Use the checker's identity for occurrences in the current source unit.
+/// Other files retain the import-aware workspace path until their checker
+/// module indices and unsaved buffers are joined by one project analysis.
+pub(super) fn identity_reference_locations(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    include_declaration: bool,
+) -> Option<Vec<Location>> {
+    let output = doc.type_output.as_ref()?;
+    let (_, resolution) = hew_analysis::identity::resolution_at(output, 0, offset)?;
+    if !matches!(
+        resolution,
+        hew_types::check::scope::Resolution::Field(_, _)
+            | hew_types::check::scope::Resolution::Local(_)
+    ) {
+        return None;
+    }
+    let declaration = match resolution {
+        hew_types::check::scope::Resolution::Local(_) => {
+            hew_analysis::identity::reference_spans(output, 0, resolution)
+                .first()
+                .copied()
+        }
+        _ => hew_analysis::identity::declaration_target(output, resolution).and_then(|target| {
+            if target
+                .source
+                .as_deref()
+                .and_then(Url::from_file_path)
+                .is_some_and(|source_uri| source_uri != *uri)
+            {
+                return None;
+            }
+            hew_analysis::identity::declaration_name_span(&doc.source, &doc.parse_result, &target)
+        }),
+    };
+    let mut locations = Vec::new();
+    for span in hew_analysis::identity::reference_spans(output, 0, resolution) {
+        if !include_declaration && Some(span) == declaration {
+            continue;
+        }
+        push_location_for_span(&mut locations, uri, &doc.source, &doc.line_offsets, span);
+    }
+    if include_declaration {
+        if let Some(span) = declaration {
+            push_location_for_span(&mut locations, uri, &doc.source, &doc.line_offsets, span);
+        }
+    }
+    sort_and_dedup_locations(&mut locations);
+    Some(locations)
+}
+
 /// Search for a definition matching `word` in the AST, returning an LSP `Range`.
 pub(super) fn find_definition_in_ast(
     source: &str,
@@ -535,6 +645,9 @@ pub(super) fn build_reference_locations(
     include_declaration: bool,
     documents: &DashMap<Url, DocumentState>,
 ) -> Vec<Location> {
+    if let Some(locations) = identity_reference_locations(uri, doc, offset, include_declaration) {
+        return locations;
+    }
     let importer_index = build_named_importer_index(documents);
     let Some((name, _)) = hew_analysis::util::simple_word_at_offset(&doc.source, offset) else {
         return Vec::new();

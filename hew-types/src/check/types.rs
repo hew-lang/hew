@@ -603,6 +603,8 @@ pub struct TypeCheckOutput {
     pub contexts: super::scope::SyntaxContexts,
     /// The checker-selected process entry and its complete exit contract.
     pub entry_exit_plan: Option<EntryExitPlan>,
+    /// Ordered checker-selected test entries and their complete exit contracts.
+    pub test_entry_plans: Vec<EntryExitPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
     /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
     /// minted at the first declaration; later declarations must agree and
@@ -1612,6 +1614,7 @@ impl Default for TypeCheckOutput {
             resolutions: HashMap::new(),
             contexts: super::scope::SyntaxContexts::new(),
             entry_exit_plan: None,
+            test_entry_plans: Vec::new(),
             extern_contracts: crate::extern_table::ExternTable::new(),
             dispatch: super::dispatch_table::DispatchTable::default(),
             fn_sigs: HashMap::new(),
@@ -3100,6 +3103,8 @@ pub struct Checker {
     pub(super) current_item_ordinal: usize,
     /// Exact source occurrence selected as process entry by a file frontend.
     pub(super) entry_selection: Option<crate::DeclarationOccurrence>,
+    /// Explicit test mode, with selected root functions in discovery order.
+    pub(super) test_entry_selections: Option<Vec<crate::DeclarationOccurrence>>,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority
     /// behind extern-signature nominal identity: a bare name in an extern
@@ -4310,6 +4315,7 @@ impl Checker {
             current_item_source: None,
             current_item_ordinal: 0,
             entry_selection: None,
+            test_entry_selections: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             protected_prelude_declaration_collisions: HashSet::new(),

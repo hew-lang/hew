@@ -145,7 +145,7 @@ impl Checker {
             }
             Expr::Ident(name) => {
                 let ty = self.synthesize_identifier(name.name.as_str(), span);
-                self.record_local_resolution(*name, span);
+                self.record_value_path_resolution(expr, span);
                 ty
             }
             Expr::ContextVariant(context) => {
@@ -228,6 +228,7 @@ impl Checker {
             } => {
                 let ty = self.check_call(function, type_args.as_deref(), args, span);
                 if !matches!(&ty, Ty::Error) {
+                    self.record_value_path_resolution(&function.0, &function.1);
                     let (callee_span, method_like) = match &function.0 {
                         Expr::FieldAccess { field, .. } => (&field.1, true),
                         _ => (&function.1, false),
@@ -246,6 +247,7 @@ impl Checker {
             } => {
                 let ty = self.check_method_call(receiver, method.0.name.as_str(), args, span);
                 if !matches!(&ty, Ty::Error) {
+                    self.record_value_path_resolution(&receiver.0, &receiver.1);
                     self.record_call_resolution(span, &method.1, true);
                 }
                 self.finish_named_arguments(args, || format!("method `{}`", method.0), &ty, span);
@@ -256,6 +258,7 @@ impl Checker {
             Expr::FieldAccess { object, field } => {
                 let ty = self.check_field_access(object, field.0.name.as_str(), span);
                 if !matches!(&ty, Ty::Error) {
+                    self.record_value_path_resolution(expr, span);
                     self.record_field_resolution(object, field);
                 }
                 ty

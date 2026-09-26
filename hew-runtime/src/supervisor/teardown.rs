@@ -579,29 +579,6 @@ pub(crate) unsafe fn stop_supervisor_owned(
         s.self_actor = ptr::null_mut();
     }
 
-    // Drain any parked `await_restart` continuations on teardown: wake each so
-    // the resumed actor re-resolves the (now shut-down) supervisor and fails
-    // closed (`child_get` → Dead(SupervisorShutdown)) rather than hanging
-    // forever, and release the observer's retained slot ref. Mirrors the
-    // notify_restart wake discipline; teardown is the abandon-everything edge.
-    let parked: Vec<RestartAwaitWaiter> =
-        std::mem::take(&mut *s.restart_await_waiters.lock_or_recover());
-    for waiter in parked {
-        // SAFETY: the observer holds an in-flight ref; depositing readiness is
-        // the reactor-deposit contract (no-op if the abandon edge cancelled it).
-        let do_wake = unsafe {
-            crate::read_slot::read_slot_deposit_status(
-                waiter.slot,
-                crate::read_slot::ReadStatus::Data,
-            )
-        };
-        if do_wake {
-            crate::scheduler::enqueue_resume_by_incarnation(waiter.actor);
-        }
-        // SAFETY: the observer owned this ref; nothing else releases it.
-        unsafe { crate::read_slot::hew_read_slot_free(waiter.slot) };
-    }
-
     let (pools, config_buf, config_drop_fn) = {
         let mut roster = s.roster.lock_or_recover();
         let pools = std::mem::take(&mut roster.pool_slots);

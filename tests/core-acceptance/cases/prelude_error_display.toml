@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "the destination is closed or no longer alive\nno actor is registered under the requested name\nthe local node is not running\nthe deadline fired before the recv completed\nthe target actor has already exited\n"
+stdout = "the sink or connection is closed\nno actor is registered under the requested name\nthe local node is not running\nthe deadline fired before the recv completed\nthe target actor has already exited\n"
 exit = 0

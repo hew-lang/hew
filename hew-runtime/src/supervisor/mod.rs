@@ -22,7 +22,6 @@ use crate::exit_status::{FaultRecord, FaultRuling, RoleKey};
 use crate::internal::types::{
     HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewSysDispatchFn,
 };
-use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -998,37 +997,11 @@ pub struct HewSupervisor {
     /// Index of this supervisor in parent's `child_supervisors` vec.
     index_in_parent: usize,
 
-    /// Completed restart cycles on this supervisor, and the Condvar every
-    /// restart barrier sleeps on.
-    ///
-    /// `notify_restart` advances the epoch at the tail of a restart cycle.
-    /// `wake_restart_waiters` re-fires the Condvar WITHOUT advancing it when a
-    /// slot instead reaches a terminal state (supervisor cancellation, or a
-    /// spec this supervisor declined to restart), so a barrier re-reads the
-    /// slot as Dead and returns. Every reader holds the allocation live — the
-    /// native entry through a `SupervisorPin`, tests by ownership — so the
-    /// epoch is an inline field rather than an `Arc`.
-    ///
-    /// LOCK ORDER: acquired BEFORE `roster` and AFTER `restart_await_waiters`.
-    /// Nothing may acquire it while holding `roster`.
+    /// Completed restart cycles for Rust test observers and
+    /// `hew_supervisor_get_child_wait`. Native role observers use retained
+    /// wakers and re-check their selected slot after each notification.
     restart_epoch: (Mutex<u64>, Condvar),
 
-    /// Parked `await_restart` continuations — the COOPERATIVE restart observer.
-    ///
-    /// Distinct from `restart_epoch` (the restart counter/Condvar the
-    /// contextless blocking `await_restart` and test-support observers read).
-    /// Each waiter is an actor that executed
-    /// `await_restart sup.child` on a Transient slot and parked instead of
-    /// thread-blocking the single cooperative scheduler. `notify_restart` fires
-    /// every waiter (deposit readiness + `enqueue_resume`) after the restart
-    /// cycle completes, so the resumed continuation re-resolves a Live slot
-    /// (`notify_restart` runs AFTER `store_child_slot`). `wake_restart_waiters`
-    /// fires them the same way on a terminal ruling, so a cancellation or a
-    /// spent spec resumes a continuation into a Dead slot, which fails closed
-    /// at the bind. Either way a resumed continuation re-resolves to Live or
-    /// Dead, never Transient. Drained on fire and on supervisor teardown; a
-    /// cancelled slot drops its wake (the channel-core race guard).
-    restart_await_waiters: Mutex<Vec<RestartAwaitWaiter>>,
     /// Native coroutine observers retain their own wake targets and re-check
     /// the selected role after each restart or terminal ruling.
     native_restart_wakers: crate::wake::ReadinessRegistrations,
@@ -1486,24 +1459,6 @@ fn finish_supervisor_reclamation(access: &ClosedSupervisorAccess) {
     unsafe { &*access.handles }.remove_supervisor_control(&access.control);
 }
 
-/// One parked `await_restart` continuation: the awaiting actor + its readiness
-/// slot. `notify_restart` fires every waiter exactly once per restart cycle,
-/// depositing readiness into `slot` and re-enqueuing `actor` on the scheduler.
-struct RestartAwaitWaiter {
-    /// The parked-continuation actor's incarnation, woken via
-    /// `enqueue_resume_by_incarnation`. Captured at park time, when the actor is
-    /// live; a restart that recycles the awaiter's allocation cannot inherit
-    /// this wake.
-    actor: ActorIncarnation,
-    /// The readiness slot; the observer holds one retained ref while registered.
-    slot: *mut crate::read_slot::HewReadSlot,
-}
-
-// SAFETY: `actor` is a pair of scalars carrying no allocation; `slot` is
-// reference-counted. The waiter is only moved between the supervisor's
-// `restart_await_waiters` mutex and the firing path, both single-consumer.
-unsafe impl Send for RestartAwaitWaiter {}
-
 /// Circuit breaker configuration and state for a child.
 #[derive(Debug)]
 struct CircuitBreakerState {
@@ -1864,7 +1819,7 @@ fn supervisor_actor_id(sup: *mut HewSupervisor) -> u64 {
 ///
 /// The child occupies slot `child_index` on `sup`; `sup` may itself occupy a
 /// declared nested slot on its parent, and so on to the root. Every one of
-/// those roles is spellable as `await_restart`, and every one of them is still
+/// those roles is spellable as `restarted(role)`, and every one is still
 /// unsettled while the fault is: an escalation hands the SAME record to the
 /// parent, so a parent's nested role stays pending until the parent rules.
 ///
@@ -2278,32 +2233,7 @@ fn schedule_delayed_restart(
     true
 }
 
-/// Advance the restart epoch and wake every restart waiter.
-///
-/// Three wake paths fire here, all AFTER the restart cycle's `store_child_slot`
-/// has made the new child reachable (this function is called at the tail of
-/// `restart_with_budget_and_strategy` / `restart_child_supervisor_with_budget`):
-///
-/// 1. The `restart_epoch` counter/Condvar — the bump + `notify_all`, read by
-///    `hew_supervisor_get_child_wait` and by test-support code.
-/// 2. The supervision generation, which is what the contextless blocking
-///    cooperative restart observers wait on. The
-///    restart changed a slot without touching a fault record, so a barrier
-///    parked on that slot has to be told.
-/// 3. The COOPERATIVE `await_restart` observers — every parked continuation in
-///    `restart_await_waiters` gets readiness deposited + `enqueue_resume`, then
-///    the registry is drained. A resumed continuation re-resolves the slot and
-///    is guaranteed Live (the store-before-notify ordering is the resume-contract
-///    anchor).
-///
-/// ORDERING INVARIANT (lost-wakeup guard): the epoch bump MUST happen before
-/// `wake_restart_await_waiters` acquires `restart_await_waiters`. A racing
-/// `hew_supervisor_restart_await_suspend` re-reads the epoch while holding
-/// `restart_await_waiters`; bumping first means that if this drain ran against an
-/// empty registry (the waiter not yet pushed), the awaiting actor's under-lock
-/// recheck observes the advanced epoch and resolves READY instead of parking
-/// against a wake that already fired. Do not reorder the bump after the drain.
-/// The epoch guard is released before the drain so the two locks never nest.
+/// Publish a completed restart after the new child is stored in its slot.
 fn notify_restart(sup: *mut HewSupervisor) {
     {
         // SAFETY: callers keep `sup` live through this inline-field access.
@@ -2312,25 +2242,11 @@ fn notify_restart(sup: *mut HewSupervisor) {
         *count += 1;
         cv.notify_all();
     }
-    wake_restart_await_waiters(sup);
     // SAFETY: callers keep the supervisor live through the notification.
     unsafe { &(*sup).native_restart_wakers }.notify();
 }
 
-/// Re-fire every restart waiter WITHOUT advancing the epoch.
-///
-/// A restart barrier also has to be released when the slot it waits on reaches
-/// a TERMINAL state instead of being restarted: the supervisor was cancelled or
-/// ran out of budget, or the fault ruling declined to restart this spec. The
-/// state transition is published before this call, so a woken barrier re-reads
-/// the slot as Dead and returns. The epoch must NOT move: it counts completed
-/// restart cycles, which is what `test_wait_for_restart` and
-/// `hew_supervisor_get_child_wait` read. The supervision generation does move,
-/// because a barrier's answer may have changed.
-///
-/// Same ordering as `notify_restart`: `notify_all` under the epoch mutex (a
-/// bare notify could land between a waiter's slot read and its `wait` and be
-/// lost), then release it before draining `restart_await_waiters`.
+/// Wake observers when a role becomes terminal without a completed restart.
 fn wake_restart_waiters(sup: *mut HewSupervisor) {
     {
         // SAFETY: callers keep `sup` live through this inline-field access.
@@ -2338,37 +2254,8 @@ fn wake_restart_waiters(sup: *mut HewSupervisor) {
         let _epoch = lock.lock_or_recover();
         cv.notify_all();
     }
-    wake_restart_await_waiters(sup);
     // SAFETY: callers keep the supervisor live through the notification.
     unsafe { &(*sup).native_restart_wakers }.notify();
-}
-
-/// Fire and drain every parked `await_restart` continuation. Mirrors the
-/// task-completion observer wake discipline (`task_await_wake`): deposit a Data
-/// readiness status into each waiter's slot (a no-op + no wake if its abandon
-/// edge cancelled the slot first), `enqueue_resume` the parked actor on a
-/// successful deposit, then release the observer's retained slot ref.
-fn wake_restart_await_waiters(sup: *mut HewSupervisor) {
-    // SAFETY: caller keeps `sup` live while its waiter registry is drained.
-    let waiters: Vec<RestartAwaitWaiter> =
-        std::mem::take(&mut *unsafe { &(*sup).restart_await_waiters }.lock_or_recover());
-    for waiter in waiters {
-        // SAFETY: the observer holds an in-flight ref on the slot; depositing a
-        // terminal status is the documented reactor-deposit contract. A no-op +
-        // no wake if the abandon edge cancelled the slot first.
-        let do_wake = unsafe {
-            crate::read_slot::read_slot_deposit_status(
-                waiter.slot,
-                crate::read_slot::ReadStatus::Data,
-            )
-        };
-        if do_wake {
-            crate::scheduler::enqueue_resume_by_incarnation(waiter.actor);
-        }
-        // Release the observer's retained in-flight ref (the single authority).
-        // SAFETY: the observer owned this ref; nothing else releases it.
-        unsafe { crate::read_slot::hew_read_slot_free(waiter.slot) };
-    }
 }
 
 fn load_child_slot(sup: *mut HewSupervisor, index: usize) -> *mut HewActor {
@@ -2641,22 +2528,6 @@ static FAIL_DELAYED_RESTART_ARM: AtomicBool = AtomicBool::new(false);
 #[cfg(all(test, not(target_arch = "wasm32")))]
 fn should_fail_delayed_restart_arm() -> bool {
     FAIL_DELAYED_RESTART_ARM.load(Ordering::Acquire)
-}
-
-/// Test-only hook fired in `hew_supervisor_restart_await_suspend` exactly in the
-/// gap between the pre-park `child_get` and acquiring `restart_await_waiters`.
-/// The concurrency regression installs a closure that drives a full restart cycle
-/// (and its `notify_restart`) on another thread *while this thread is paused in
-/// the gap*, reproducing the lost-wakeup interleaving deterministically.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static RESTART_AWAIT_PARK_GAP_HOOK: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn fire_restart_await_park_gap_hook() {
-    let hook = RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover().clone();
-    if let Some(hook) = hook {
-        hook();
-    }
 }
 
 mod child;

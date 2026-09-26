@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1623u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1621u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -6634,11 +6634,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "c_int, ) -> usize\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_native_nested_child",
-     "{\"native\": \"fn hew_supervisor_native_nested_child( HewLocalPidId, "
-     "u32, ) -> HewLocalPidId\"}",
-     "native", "unclassified-stdlib", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_restart_wait_free",
      "{\"native\": \"fn hew_supervisor_native_restart_wait_free( *mut "
      "HewNativeRestartWait)\"}",
@@ -6659,9 +6654,14 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      ") -> HewLocalPidId\"}",
      "native", "non-declarable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_role_request",
+     "{\"native\": \"fn hew_supervisor_native_role_request( HewLocalPidId, "
+     "u32, c_int, )\"}",
+     "native", "non-declarable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_role_wait_new",
      "{\"native\": \"fn hew_supervisor_native_role_wait_new( HewLocalPidId, "
-     "u32, *const HewWaker, c_int, c_int, ) -> *mut HewNativeActorWait\"}",
+     "u32, *const HewWaker, c_int, ) -> *mut HewNativeActorWait\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_spawn",
@@ -6724,16 +6724,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1623] = {
      "{\"native\": \"fn hew_supervisor_remove_child( *mut HewSupervisor, "
      "c_int, ) -> c_int\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_restart_await_detach",
-     "{\"native\": \"fn hew_supervisor_restart_await_detach( *mut "
-     "HewSupervisor, *mut HewReadSlot, )\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_restart_await_suspend",
-     "{\"native\": \"fn hew_supervisor_restart_await_suspend( *mut "
-     "HewSupervisor, u32, *mut HewActor, *mut HewReadSlot, ) -> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_role_ask",
      "{\"native\": \"fn hew_supervisor_role_ask( HewLocalPidId, u32, i32, *mut "

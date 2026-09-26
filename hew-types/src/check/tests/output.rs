@@ -37,6 +37,13 @@ fn source_resolutions_join_var_statement_and_use() {
         binding,
         Some(crate::check::scope::Resolution::Local(_))
     ));
+    let name = source.find("var x").unwrap() + "var ".len();
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(name..name + 1), 0)),
+        binding
+    );
     assert_eq!(
         output
             .resolutions

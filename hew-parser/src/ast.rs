@@ -690,6 +690,9 @@ pub enum Stmt {
     },
     Var {
         name: Ident,
+        /// The written binding name, separate from the whole statement span.
+        #[serde(skip)]
+        name_span: Span,
         ty: Option<Spanned<TypeExpr>>,
         value: Option<Spanned<Expr>>,
     },

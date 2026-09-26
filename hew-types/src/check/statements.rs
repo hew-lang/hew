@@ -1408,7 +1408,12 @@ impl Checker {
                     }
                 }
             }
-            Stmt::Var { name, ty, value } => {
+            Stmt::Var {
+                name,
+                name_span,
+                ty,
+                value,
+            } => {
                 let binding_context = format!("local binding `{name}`");
                 let deferred_hole_mark = self.deferred_inference_holes.len();
                 let deferred_cast_mark = self.deferred_cast_checks.len();
@@ -1480,6 +1485,7 @@ impl Checker {
                 self.env
                     .define_with_span(name.to_string(), val_ty, true, span.clone());
                 self.record_local_resolution(*name, span);
+                self.record_local_resolution(*name, name_span);
                 self.env
                     .set_collection_borrow(name.name.as_str(), collection_borrow);
                 if value_is_direct_generic_lambda {

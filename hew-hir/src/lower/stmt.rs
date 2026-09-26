@@ -412,7 +412,9 @@ impl LowerCtx {
                 let binding = self.bind(name, binding_ty, false, pattern.1.clone());
                 HirStmtKind::Let(binding, value)
             }
-            Stmt::Var { name, ty, value } => {
+            Stmt::Var {
+                name, ty, value, ..
+            } => {
                 let value = value
                     .as_ref()
                     .map(|expr| self.lower_expr(expr, IntentKind::Consume));

@@ -627,6 +627,9 @@ impl Checker {
                     crate::KnownDecl::head,
                 ))
             }
+            Ok(super::scope::Resolution::Param(_)) => {
+                Some(crate::TypeHead::param(path.segments[0].0.name.as_str()))
+            }
             Ok(super::scope::Resolution::Builtin(builtin)) => {
                 Some(crate::TypeHead::Builtin(builtin))
             }

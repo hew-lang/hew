@@ -507,6 +507,7 @@ pub unsafe extern "C" fn hew_actor_terminate(actor: *mut HewActor) {
         // SAFETY: the flag is a nonallocating out-of-band cancellation request.
         unsafe { mailbox::mailbox_request_stop(mb) };
     }
+    crate::actor_native::cleanup::cancel_stop_hook(a);
 
     if a.actor_state
         .compare_exchange(

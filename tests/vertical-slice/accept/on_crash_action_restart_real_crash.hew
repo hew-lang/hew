@@ -35,7 +35,7 @@ actor Worker {
         if !info.message.is_empty() {
             CrashAction.Restart
         } else {
-            CrashAction.Kill
+            CrashAction.GiveUp
         }
     }
 }

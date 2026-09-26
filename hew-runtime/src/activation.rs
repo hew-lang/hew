@@ -1349,7 +1349,16 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             // run it too.
             if a.native_completion.is_none() {
                 // Native completion publishes DOWN after typed state cleanup.
-                crate::actor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+                crate::actor::notify_monitors_on_death(
+                    a.id,
+                    HewActorState::Stopped as i32,
+                    0,
+                    crate::internal::types::ActorEndReason::from_terminal(
+                        HewActorState::Stopped as i32,
+                        // SAFETY: this terminal actor still owns its mailbox.
+                        unsafe { crate::mailbox::mailbox_terminate_requested(a.mailbox.cast()) },
+                    ),
+                );
             }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
@@ -1908,7 +1917,16 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             // finalize. See the companion comment in `activate_actor`.
             if a.native_completion.is_none() {
                 // Native completion publishes DOWN after typed state cleanup.
-                crate::actor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+                crate::actor::notify_monitors_on_death(
+                    a.id,
+                    HewActorState::Stopped as i32,
+                    0,
+                    crate::internal::types::ActorEndReason::from_terminal(
+                        HewActorState::Stopped as i32,
+                        // SAFETY: this terminal actor still owns its mailbox.
+                        unsafe { crate::mailbox::mailbox_terminate_requested(a.mailbox.cast()) },
+                    ),
+                );
             }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.

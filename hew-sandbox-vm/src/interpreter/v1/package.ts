@@ -521,6 +521,7 @@ export type ActorOperation =
         | "stop"
         | "terminate"
         | "await_stopped"
+        | "await_restarted"
         | "close"
         | "await_closed";
       actor: number;
@@ -536,14 +537,14 @@ export type ActorOperation =
         | "supervisor_await_closed"
         | "stop"
         | "terminate"
-        | "await_stopped";
+        | "await_stopped"
+        | "await_restarted";
       supervisor: number;
     }
   | {
       op:
         | "supervisor_child"
         | "supervisor_await_restart"
-        | "await_restarted"
         | "supervisor_pool_view";
       supervisor: number;
       child: number;

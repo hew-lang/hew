@@ -78,8 +78,8 @@ pub use resource::{
     verify_resource_release, ExternSignature, ResourceCarrier, ResourceExtern, ResourceRelease,
 };
 pub use supervisor::{
-    SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor, SemSupervisorChild,
-    SupervisorId,
+    SemRestartPolicy, SemRestartStrategy, SemStopDeadline, SemSupervisedRole, SemSupervisor,
+    SemSupervisorChild, SupervisorId,
 };
 pub use verify::{
     check_module, place_lifetimes, verify_function, verify_function_in_module, verify_module,

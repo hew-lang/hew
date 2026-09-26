@@ -3023,12 +3023,17 @@ pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
 /// `link` and `monitor` are a manifest reject on wasm32 (`link-monitor`), so no
 /// program this target admits can hold either: there is no watcher to notify
 /// and no graph entry to reclaim.
-pub(crate) fn notify_monitors_on_death(actor_id: u64, state: i32, reason: u32) {
+pub(crate) fn notify_monitors_on_death(
+    actor_id: u64,
+    state: i32,
+    reason: u32,
+    end: crate::internal::types::ActorEndReason,
+) {
     #[cfg(not(target_arch = "wasm32"))]
-    crate::monitor::notify_monitors_on_death(actor_id, state, reason);
+    crate::monitor::notify_monitors_on_end(actor_id, state, reason, end);
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (actor_id, state, reason);
+        let _ = (actor_id, state, reason, end);
     }
 }
 
@@ -3233,7 +3238,7 @@ impl TerminalNotification {
         } else {
             0
         };
-        notify_monitors_on_death(actor_id, terminal, crash_kind);
+        notify_monitors_on_death(actor_id, terminal, crash_kind, end_reason);
 
         // Wake any actor group condvars waiting on this actor.
         crate::actor_group::notify_actor_death(actor_id);

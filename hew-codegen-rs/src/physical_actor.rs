@@ -3027,7 +3027,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_select(
                 closed,
-                self.ctx.i8_type().const_int(1, false),
+                self.ctx.i8_type().const_int(10, false),
                 self.ctx.i8_type().const_int(9, false),
                 "submission.reason",
             )

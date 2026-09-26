@@ -13,9 +13,47 @@ use super::{
     ValueId,
 };
 use crate::{
-    ActorOperation, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole, SemSupervisor,
-    SemSupervisorChild, SupervisorId,
+    ActorOperation, SemRestartPolicy, SemRestartStrategy, SemStopDeadline, SemSupervisedRole,
+    SemSupervisor, SemSupervisorChild, SupervisorId,
 };
+
+fn stop_deadline(
+    child: &hew_hir::HirSupervisorChild,
+    source: &hew_hir::HirSupervisorDecl,
+    role: SemSupervisedRole,
+) -> Result<SemStopDeadline, String> {
+    let Some(stop) = &child.stop else {
+        return Ok(SemStopDeadline::Literal(
+            if matches!(role, SemSupervisedRole::Actor(_)) {
+                5_000_000_000
+            } else {
+                -1
+            },
+        ));
+    };
+    if matches!(role, SemSupervisedRole::Supervisor(_)) {
+        return Err("a nested supervisor uses its children's stop deadlines".into());
+    }
+    match &stop.kind {
+        HirExprKind::Literal(hew_hir::HirLiteral::Duration(ns)) if *ns >= 0 => {
+            Ok(SemStopDeadline::Literal(*ns))
+        }
+        HirExprKind::BindingRef {
+            resolved: hew_hir::ResolvedRef::Binding(binding),
+            ..
+        } => source
+            .params
+            .iter()
+            .position(|param| param.id == *binding)
+            .map(SemStopDeadline::Config)
+            .ok_or_else(|| {
+                "child stop deadline does not name a supervisor config parameter".into()
+            }),
+        _ => Err(
+            "child stop deadline requires a duration literal or supervisor config parameter".into(),
+        ),
+    }
+}
 
 pub(super) fn declaration<'a>(
     module: &'a HirModule,
@@ -183,6 +221,7 @@ impl InstanceService<'_> {
                 name: child.name.clone(),
                 role,
                 restart,
+                stop_deadline: stop_deadline(child, &source, role)?,
                 pool_count: pool_count(child)?,
                 spawn,
             });

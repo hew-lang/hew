@@ -453,6 +453,11 @@ impl LowerCtx {
             state_fields,
             init,
             receive_handlers,
+            coalesce_keys: self
+                .actor_coalesce_keys
+                .get(&declaration)
+                .cloned()
+                .unwrap_or_default(),
             methods,
             lifecycle_hooks,
             max_heap_bytes: decl.max_heap_bytes,

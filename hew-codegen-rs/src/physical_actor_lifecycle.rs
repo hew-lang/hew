@@ -261,9 +261,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 invalid,
                 &[
                     (self.ctx.i32_type().const_zero(), done),
-                    (self.ctx.i32_type().const_int(1, false), crashed),
-                    (self.ctx.i32_type().const_int(2, false), done),
+                    (self.ctx.i32_type().const_int(1, false), done),
+                    (self.ctx.i32_type().const_int(2, false), crashed),
                     (self.ctx.i32_type().const_int(3, false), done),
+                    (self.ctx.i32_type().const_int(4, false), done),
                 ],
             )
             .llvm_ctx("decode DOWN reason")?;
@@ -282,7 +283,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let kind = builder
             .build_load(kind_ty, kind_ptr, "down.crash.value")
             .llvm_ctx("read DOWN crash kind")?;
-        self.lifecycle_variant_payload(builder, reason_ptr, BuiltinType::DownReason, 1, &[kind])?;
+        self.lifecycle_variant_payload(builder, reason_ptr, BuiltinType::DownReason, 2, &[kind])?;
         builder
             .build_unconditional_branch(done)
             .llvm_ctx("finish crashed DOWN reason")?;

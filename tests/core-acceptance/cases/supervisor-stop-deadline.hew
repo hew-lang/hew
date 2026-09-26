@@ -1,0 +1,18 @@
+actor Worker {
+    #[on(stop)]
+    fn done() {
+        sleep(10s);
+        println("unexpected hook completion");
+    }
+}
+
+supervisor Team {
+    child worker: Worker() stop: 50ms,
+}
+
+fn main() {
+    let team = spawn Team();
+    stop(team);
+    stopped(team);
+    println("released");
+}

@@ -52,5 +52,6 @@ fn main() {
         .Ok(length) => println(length),
         .Err(_) => println("failed"),
     }
-    close(worker);
+    stop(worker);
+    stopped(worker);
 }

@@ -2411,6 +2411,145 @@ fn copy_migration_snapshot_tree(
     clippy::too_many_lines,
     reason = "the migration must keep checker resolution, refusal reporting, and source edits in one transaction"
 )]
+fn actor_lifecycle_migration(
+    source: &str,
+    error: &hew_types::error::TypeError,
+) -> Result<Option<hew_parser::fmt::SelectedMigration>, String> {
+    use hew_types::error::TypeErrorKind;
+    if !matches!(
+        error.kind,
+        TypeErrorKind::ActorLifecycleRetired | TypeErrorKind::ActorHandleMethodRetired
+    ) {
+        return Ok(None);
+    }
+    let text = source
+        .get(error.span.clone())
+        .ok_or("retired actor operation has no source span")?;
+    let trimmed = text.trim();
+    let replacement = if trimmed.starts_with("#[on(") && trimmed.ends_with(")]") {
+        if !trimmed.contains("exit") {
+            return Err("retired hook does not name `exit`".into());
+        }
+        trimmed.replacen("exit", "link", 1)
+    } else if let Some(inner) = trimmed
+        .strip_prefix("closed(")
+        .and_then(|call| call.strip_suffix(')'))
+    {
+        format!("stopped({inner})")
+    } else if let Some(inner) = trimmed
+        .strip_prefix("close(")
+        .or_else(|| trimmed.strip_prefix("supervisor_stop("))
+        .and_then(|call| call.strip_suffix(')'))
+    {
+        if inner.trim().is_empty() {
+            return Err("retired lifecycle call has no handle".into());
+        }
+        let handle = format!("__hew_migrated_actor_{}", error.span.start);
+        format!("{{ let {handle} = {inner}; stop({handle}); stopped({handle}); }}")
+    } else if let Some(call) = trimmed.strip_suffix(')') {
+        let call = call.trim_end();
+        let call = call
+            .strip_suffix('(')
+            .ok_or("retired actor method is not a zero-argument call")?;
+        let (receiver, method) = call
+            .rsplit_once('.')
+            .ok_or("retired actor method has no receiver")?;
+        match method.trim() {
+            "stop" => format!("stop({receiver})"),
+            "close" => {
+                let handle = format!("__hew_migrated_actor_{}", error.span.start);
+                format!("{{ let {handle} = {receiver}; stop({handle}); stopped({handle}); }}")
+            }
+            _ => return Err("retired actor method is not `stop` or `close`".into()),
+        }
+    } else {
+        return Err("retired actor operation has no supported edit".into());
+    };
+    Ok(Some(hew_parser::fmt::SelectedMigration {
+        span: error.span.clone(),
+        replacement,
+    }))
+}
+
+fn actor_parser_migration(
+    source: &str,
+    error: &hew_parser::ParseError,
+) -> Result<Option<hew_parser::fmt::SelectedMigration>, String> {
+    use hew_parser::ParseDiagnosticKind;
+    match &error.kind {
+        ParseDiagnosticKind::SupervisorStopClauseRetired => {
+            let clause = source
+                .get(error.span.clone())
+                .ok_or("retired supervisor clause has no source span")?;
+            let replacement = if clause.trim() == "shutdown: infinity" {
+                String::new()
+            } else if clause.trim() == "shutdown: brutal_kill" {
+                "stop: 0s".to_string()
+            } else if let Some(value) = clause.trim().strip_prefix("shutdown:") {
+                format!("stop:{value}")
+            } else {
+                return Err("retired supervisor clause is not `shutdown:`".into());
+            };
+            Ok(Some(hew_parser::fmt::SelectedMigration {
+                span: error.span.clone(),
+                replacement,
+            }))
+        }
+        ParseDiagnosticKind::AwaitRestartRetired => {
+            let tokens = hew_lexer::lex(source);
+            let mut index = tokens
+                .iter()
+                .position(|(_, span)| span.start >= error.span.end)
+                .ok_or("`await_restart` has no role operand")?;
+            if !matches!(tokens[index].0, hew_lexer::Token::Identifier(_)) {
+                return Err("`await_restart` needs a supervised role path".into());
+            }
+            let start = tokens[index].1.start;
+            let mut end = tokens[index].1.end;
+            index += 1;
+            while index < tokens.len() {
+                match tokens[index].0 {
+                    hew_lexer::Token::Dot
+                        if index + 1 < tokens.len()
+                            && matches!(tokens[index + 1].0, hew_lexer::Token::Identifier(_)) =>
+                    {
+                        end = tokens[index + 1].1.end;
+                        index += 2;
+                    }
+                    hew_lexer::Token::LeftBracket => {
+                        let mut depth = 1usize;
+                        index += 1;
+                        while index < tokens.len() && depth != 0 {
+                            match tokens[index].0 {
+                                hew_lexer::Token::LeftBracket => depth += 1,
+                                hew_lexer::Token::RightBracket => depth -= 1,
+                                _ => {}
+                            }
+                            end = tokens[index].1.end;
+                            index += 1;
+                        }
+                        if depth != 0 {
+                            return Err("`await_restart` has an unfinished role index".into());
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            let role = source
+                .get(start..end)
+                .ok_or("`await_restart` role has no source span")?;
+            let binding = format!("__hew_migrated_role_{}", error.span.start);
+            Ok(Some(hew_parser::fmt::SelectedMigration {
+                span: error.span.start..end,
+                replacement: format!(
+                    "{{ let {binding} = {role}; restarted({binding}); {binding} }}"
+                ),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
     let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
     let label = file_path.display().to_string();
@@ -2482,21 +2621,48 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         .collect();
     let tokens = hew_lexer::lex(&source);
     let mut variants = Vec::new();
+    let mut selected = Vec::new();
     let mut refusals = Vec::new();
+    if let Some(parse) = &state.parse_result {
+        for error in &parse.errors {
+            match actor_parser_migration(&source, error) {
+                Ok(Some(edit)) => selected.push(edit),
+                Err(reason) => refusals.push(format!(
+                    "{}:{}-{}: {reason}",
+                    file, error.span.start, error.span.end
+                )),
+                Ok(None) => {}
+            }
+        }
+    }
     for error in &typecheck.warnings {
+        if error
+            .source_module
+            .as_ref()
+            .is_some_and(|module| !own_modules.contains(module))
+        {
+            continue;
+        }
+        match actor_lifecycle_migration(&source, error) {
+            Ok(Some(edit)) => {
+                selected.push(edit);
+                continue;
+            }
+            Err(reason) => {
+                refusals.push(format!(
+                    "{}:{}-{}: {reason}",
+                    file, error.span.start, error.span.end
+                ));
+                continue;
+            }
+            Ok(None) => {}
+        }
         let is_expression = matches!(error.kind, hew_types::error::TypeErrorKind::BareVariantExpr);
         let is_pattern = matches!(
             error.kind,
             hew_types::error::TypeErrorKind::BareVariantPattern
         );
         if !is_expression && !is_pattern {
-            continue;
-        }
-        if error
-            .source_module
-            .as_ref()
-            .is_some_and(|module| !own_modules.contains(module))
-        {
             continue;
         }
         let Some((name, span)) = tokens.iter().find_map(|(token, span)| {
@@ -2586,7 +2752,7 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         return Err(());
     }
 
-    match hew_parser::fmt::migrate_legacy_syntax(&source, &variants) {
+    match hew_parser::fmt::migrate_legacy_syntax_with_selected(&source, &variants, &selected) {
         Ok(migrated) => Ok(migrated),
         Err(error) => {
             for refusal in error.refusals {

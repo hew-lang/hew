@@ -17,7 +17,7 @@ actor Worker {
         match action {
             0 => CrashAction.Restart,
             1 => CrashAction.Escalate,
-            _ => CrashAction.Kill,
+            _ => CrashAction.GiveUp,
         }
     }
 }

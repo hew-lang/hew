@@ -194,8 +194,15 @@ impl Checker {
             return;
         };
         let mut declared = false;
-        for rf in &ad.receive_fns {
-            let Some(param) = rf.params.iter().find(|param| param.name == *key_field) else {
+        let actor = self.require_declaration_occurrence(span, crate::DeclarationKind::Actor, 0);
+        let mut selected = Vec::new();
+        for (handler_index, rf) in ad.receive_fns.iter().enumerate() {
+            let Some((param_index, param)) = rf
+                .params
+                .iter()
+                .enumerate()
+                .find(|(_, param)| param.name == *key_field)
+            else {
                 continue;
             };
             declared = true;
@@ -246,6 +253,22 @@ impl Checker {
                         ty.user_facing()
                     ),
                 );
+                continue;
+            }
+            if let Some(handler) = self.require_declaration_occurrence(
+                span,
+                crate::DeclarationKind::ActorReceive,
+                handler_index,
+            ) {
+                if let Ok(param) = u32::try_from(param_index) {
+                    selected.push((handler, param));
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "coalesce key parameter index exceeds u32".to_string(),
+                    );
+                }
             }
         }
         if !declared {
@@ -258,6 +281,9 @@ impl Checker {
                     ad.name
                 ),
             );
+        }
+        if let Some(actor) = actor {
+            self.actor_coalesce_keys.insert(actor, selected);
         }
     }
 

@@ -172,7 +172,16 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
         // SAFETY: terminal ownership retains the supervisor across publication.
         unsafe { notice.publish_terminal_notification() };
     } else if state == HewActorState::Stopped as i32 {
-        crate::actor::notify_monitors_on_death(actor_id, state, 0);
+        crate::actor::notify_monitors_on_death(
+            actor_id,
+            state,
+            0,
+            crate::internal::types::ActorEndReason::from_terminal(
+                state,
+                // SAFETY: terminal publication retains the actor and mailbox.
+                unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) },
+            ),
+        );
         if !actor.supervisor.is_null() {
             if let Ok(child_index) = u32::try_from(actor.supervisor_child_index) {
                 // SAFETY: the supervisor remains the child's parent through

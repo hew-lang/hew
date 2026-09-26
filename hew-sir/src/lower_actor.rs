@@ -116,22 +116,14 @@ fn actor_coalesce(
         }
     };
     let mut keys = Vec::new();
-    for handler in handlers {
-        let declared = source
-            .receive_handlers
+    for &(declaration, param) in &source.coalesce_keys {
+        let handler = handlers
             .iter()
-            .find(|declared| declared.name == handler.name)
-            .ok_or("a registered handler lost its declaration")?;
-        let Some(param) = declared
-            .params
-            .iter()
-            .position(|param| param.name == key_field.name.as_str())
-        else {
-            continue;
-        };
+            .find(|handler| handler.declaration == declaration)
+            .ok_or("checked coalesce member has no registered handler")?;
         let ty = handler
             .params
-            .get(param)
+            .get(param as usize)
             .ok_or("coalesce key parameter is absent from the message payload")?;
         let kind = coalesce_key_kind(ty).ok_or_else(|| {
             format!(
@@ -141,7 +133,7 @@ fn actor_coalesce(
         })?;
         keys.push(crate::SemCoalesceKey {
             message: handler.message_id,
-            param: u32::try_from(param).map_err(|_| "coalesce key index exceeds u32")?,
+            param,
             kind,
         });
     }
@@ -1637,13 +1629,16 @@ impl Builder<'_, '_> {
                 };
                 self.make_delivery_record(expression, vec![target, message.id, payload.id])
             }
-            ActorDeliveryCall::Submit { .. }
-            | ActorDeliveryCall::Stop
-            | ActorDeliveryCall::Terminate
-            | ActorDeliveryCall::AwaitStopped
-            | ActorDeliveryCall::AwaitRestarted => self
+            ActorDeliveryCall::Submit { .. } => self
                 .lower_actor_boundary(expression)?
                 .ok_or_else(|| "submission has no result".into()),
+            ActorDeliveryCall::Stop
+            | ActorDeliveryCall::Terminate
+            | ActorDeliveryCall::AwaitStopped
+            | ActorDeliveryCall::AwaitRestarted => {
+                self.lower_actor_boundary(expression)?;
+                self.emit(expression, SemOpKind::ConstUnit)
+            }
         }
     }
 

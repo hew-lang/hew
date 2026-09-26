@@ -2579,7 +2579,7 @@ class ExecutorV1 {
         };
         const submit = () => {
           if (!actor.alive || actor.closing) {
-            finish(rejected("Closed"));
+            finish(rejected("Dead"));
             return;
           }
           const full =
@@ -2760,7 +2760,6 @@ class ExecutorV1 {
       }
       case "supervisor_pool_view":
       case "supervisor_await_restart":
-      case "await_restarted":
       case "supervisor_child": {
         const owner = this.supervisorFor(args[0]!);
         const spec = owner.layout.children[operation.child];
@@ -2791,8 +2790,7 @@ class ExecutorV1 {
         const value = makeRole(offset);
         const role = this.roles.get((value as { id: string }).id)!;
         if (
-          (operation.op === "supervisor_await_restart" ||
-            operation.op === "await_restarted") &&
+          operation.op === "supervisor_await_restart" &&
           this.rolePending(role)
         ) {
           this.running = false;
@@ -2801,20 +2799,29 @@ class ExecutorV1 {
               role.waiting.push(settled);
               return;
             }
-            this.completeShim(
-              act,
-              term,
-              operation.op === "await_restarted" ? UNIT : value,
-            );
+            this.completeShim(act, term, value);
             this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
           };
           role.waiting.push(settled);
-        } else
-          this.completeShim(
-            act,
-            term,
-            operation.op === "await_restarted" ? UNIT : value,
-          );
+        } else this.completeShim(act, term, value);
+        return;
+      }
+      case "await_restarted": {
+        const target = args[0]!;
+        const role = "id" in target ? this.roles.get(target.id) : undefined;
+        if (!role) throw new Error("restarted requires a supervised role");
+        if (this.rolePending(role)) {
+          this.running = false;
+          const settled = () => {
+            if (this.rolePending(role)) {
+              role.waiting.push(settled);
+              return;
+            }
+            this.completeShim(act, term, UNIT);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          };
+          role.waiting.push(settled);
+        } else this.completeShim(act, term, UNIT);
         return;
       }
       case "stop": {

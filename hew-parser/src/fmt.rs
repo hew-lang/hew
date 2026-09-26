@@ -114,6 +114,15 @@ pub struct VariantMigration {
     pub replacement: String,
 }
 
+/// A checker-selected source replacement whose range is the complete syntax
+/// node. The checker decides that it is an actor operation before passing it
+/// here; the formatter only applies the byte edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMigration {
+    pub span: Range<usize>,
+    pub replacement: String,
+}
+
 /// A source location the legacy-syntax migrator deliberately declined to edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationRefusal {
@@ -153,6 +162,18 @@ pub fn migrate_legacy_syntax(
     source: &str,
     variants: &[VariantMigration],
 ) -> Result<String, MigrationError> {
+    migrate_legacy_syntax_with_selected(source, variants, &[])
+}
+
+/// Apply legacy syntax edits together with checker-selected actor edits.
+///
+/// # Errors
+/// Refuses invalid spans or overlapping edits.
+pub fn migrate_legacy_syntax_with_selected(
+    source: &str,
+    variants: &[VariantMigration],
+    selected: &[SelectedMigration],
+) -> Result<String, MigrationError> {
     let tokens = hew_lexer::lex(source);
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
 
@@ -185,6 +206,17 @@ pub fn migrate_legacy_syntax(
             continue;
         }
         edits.push((variant.span.clone(), variant.replacement.clone()));
+    }
+
+    for edit in selected {
+        if source.get(edit.span.clone()).is_none() {
+            refusals.push(MigrationRefusal {
+                span: edit.span.clone(),
+                reason: "checker-selected edit has no valid source span".to_string(),
+            });
+        } else {
+            edits.push((edit.span.clone(), edit.replacement.clone()));
+        }
     }
 
     edits.sort_by_key(|(span, _)| (span.start, span.end));

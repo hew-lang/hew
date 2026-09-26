@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-queued-child-stop"
+intent = "Stopping a supervisor handles a child message accepted before its first dispatch, then terminates a parked turn at the child deadline."
+source = "cases/supervisor-queued-child-stop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "parked\nreleased\n"
+exit = 0

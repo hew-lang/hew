@@ -137,6 +137,22 @@ pub(crate) fn wake(actor: &HewActor) {
     }
 }
 
+/// Cancel a stop hook already parked in terminal cleanup. State release still
+/// follows through the same cleanup driver after the hook's cancel edge.
+pub(crate) fn cancel_stop_hook(actor: &HewActor) {
+    let Some(completion) = &actor.native_completion else {
+        return;
+    };
+    let work = completion.cleanup.work.lock_or_recover();
+    if let Some(work) = work.as_ref() {
+        if work.releasing == Releasing::Stop {
+            if let Some(driver) = work.driver.as_ref() {
+                driver.cancel_active();
+            }
+        }
+    }
+}
+
 /// Drive pending releases before another message or terminal completion.
 /// Returns true when this activation was used by cleanup.
 /// # Safety
@@ -181,15 +197,36 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
     let _ = crate::execution_context::set_current_context(&raw mut context);
     let mut pending = false;
     loop {
+        if work.releasing == Releasing::Stop
+            // SAFETY: this activation retains the actor and its mailbox.
+            && unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) }
+        {
+            if let Some(driver) = work.driver.as_ref() {
+                driver.cancel_active();
+            }
+        }
         if let Some(driver) = work.driver.as_mut() {
             // SAFETY: the boxed driver and parent retain every borrowed output.
             if !unsafe { driver.poll(work.state) } {
                 pending = true;
                 break;
             }
-            // SAFETY: both operands are distinct diagnostic owners.
-            work.fault =
-                unsafe { crate::fault::hew_fault_combine(work.fault, driver.take_fault()) };
+            let fault = driver.take_fault();
+            let stopped_by_termination = work.releasing == Releasing::Stop
+                // SAFETY: this activation retains the actor and its mailbox.
+                && unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) };
+            if stopped_by_termination
+                // SAFETY: this owner retains the diagnostic until the branch ends.
+                && unsafe { crate::fault::hew_fault_code(fault) }
+                    == crate::fault::HEW_FAULT_CANCELLED
+            {
+                // SAFETY: this cancellation was requested to skip the stop
+                // hook; state release remains the same driver's next phase.
+                unsafe { crate::fault::hew_fault_drop(fault) };
+            } else {
+                // SAFETY: both operands are distinct diagnostic owners.
+                work.fault = unsafe { crate::fault::hew_fault_combine(work.fault, fault) };
+            }
             work.driver = None;
             match work.releasing {
                 Releasing::Payload => cleanup.retire_without_release(),

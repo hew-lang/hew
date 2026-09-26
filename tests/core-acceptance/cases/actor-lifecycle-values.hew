@@ -7,7 +7,7 @@ fn main() {
     let value = link_monitor.DownNotification {
         monitor: link_monitor.MonitorId { value: 7 },
         target: .Local(4),
-        reason: .Crashed(failure.CrashKind.Crashed),
+        reason: .Crashed(failure.CrashKind.Fault),
     };
     assert(note(value) == 7);
 }

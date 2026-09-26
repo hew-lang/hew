@@ -1027,6 +1027,7 @@ struct LowerCtx {
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     actor_delivery_calls: HashMap<SpanKey, hew_types::actor_delivery::ActorDeliveryCall>,
+    actor_coalesce_keys: HashMap<hew_types::DefId, Vec<(hew_types::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.

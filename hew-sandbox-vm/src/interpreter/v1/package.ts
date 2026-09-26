@@ -541,6 +541,7 @@ export interface PackageV1 {
   resources?: Array<{
     kind: string;
     ty?: string;
+    shape?: number;
     close?: number;
     release?: string;
   }>;

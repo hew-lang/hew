@@ -352,6 +352,7 @@ class ExecutorV1 {
       enumValue: (shape, caseName, payload) => ({
         kind: "enum",
         typeId: shape.name,
+        shape: shape.id,
         // The tag is the case's position in the descriptor's declaration order.
         tag: shape.cases.findIndex((entry) => entry.name === caseName),
         payload,
@@ -731,6 +732,7 @@ class ExecutorV1 {
         this.define(act, op.dst, {
           kind: "record",
           typeId: this.aggregateName(op.shape),
+          shape: op.shape ?? undefined,
           fields: op.fields.map((id) => this.read(act, id)),
         });
         return;
@@ -773,6 +775,7 @@ class ExecutorV1 {
         this.define(act, op.dst, {
           kind: "enum",
           typeId: this.variantName(op.shape),
+          shape: op.shape,
           tag: op.variant,
           payload: op.fields.map((id) => this.read(act, id)),
         });
@@ -780,17 +783,23 @@ class ExecutorV1 {
       case "variant.is":
         this.define(act, op.dst, {
           kind: "bool",
-          value: tagOf(this.read(act, op.source)) === op.variant,
+          value:
+            this.variantAt(this.read(act, op.source), op.shape).tag ===
+            op.variant,
         });
         return;
       case "variant.project_copy":
         this.define(
           act,
           op.dst,
-          cloneValue(payloadOf(this.read(act, op.source))[op.field] ?? UNIT),
+          cloneValue(
+            this.variantAt(this.read(act, op.source), op.shape, op.variant)
+              .payload[op.field] ?? UNIT,
+          ),
         );
         return;
       case "variant.project_borrow":
+        this.variantAt(this.read(act, op.source), op.shape, op.variant);
         act.env.set(op.dst, {
           kind: "payload",
           parent: this.refOf(act, op.source),
@@ -798,7 +807,12 @@ class ExecutorV1 {
         });
         return;
       case "variant.destructure":
-        this.spread(act, payloadOf(this.read(act, op.source)), op.results);
+        this.spread(
+          act,
+          this.variantAt(this.read(act, op.source), op.shape, op.variant)
+            .payload,
+          op.results,
+        );
         this.invalidate(act, op.source);
         return;
 
@@ -1090,8 +1104,11 @@ class ExecutorV1 {
         );
         return;
       case "switch.variant": {
-        const scrutinee = this.read(act, term.scrutinee);
-        const tag = tagOf(scrutinee);
+        const scrutinee = this.variantAt(
+          this.read(act, term.scrutinee),
+          term.shape,
+        );
+        const tag = scrutinee.tag;
         // The arms cover every tag; there is no default.
         const arm = term.arms.find((candidate) => candidate.variant === tag);
         if (!arm) {
@@ -1351,10 +1368,12 @@ class ExecutorV1 {
           term.result_shape == null
             ? undefined
             : this.pkg.variants[term.result_shape];
+        if (!shape) throw new Error("recover_fault has no exact variant shape");
         const deadline = fault.kind === "panic" && fault.deadline;
         const value: VmValue = {
           kind: "enum",
-          typeId: shape?.name ?? "",
+          typeId: shape.name,
+          shape: shape.id,
           tag: deadline ? term.deadline_variant : term.fault_variant,
           payload: [
             {
@@ -2161,7 +2180,7 @@ class ExecutorV1 {
           case "record": {
             const resource = (this.pkg.resources ?? []).find(
               (resource) =>
-                resource.kind === "record" && resource.ty === value.typeId,
+                resource.kind === "record" && resource.shape === value.shape,
             );
             if (resource?.close !== undefined) {
               if (this.consumedResources.has(value)) break;
@@ -2291,7 +2310,24 @@ class ExecutorV1 {
       throw new Error(`runtime result has no variant shape ${shapeId}`);
     const tag = shape.cases.findIndex((entry) => entry.name === name);
     if (tag < 0) throw new Error(`${shape.name} has no ${name} case`);
-    return { kind: "enum", typeId: shape.name, tag, payload };
+    return { kind: "enum", typeId: shape.name, shape: shape.id, tag, payload };
+  }
+
+  private variantAt(
+    value: VmValue,
+    shape: number,
+    tag?: number,
+  ): Extract<VmValue, { kind: "enum" }> {
+    if (
+      value.kind !== "enum" ||
+      value.shape !== shape ||
+      (tag !== undefined && value.tag !== tag)
+    ) {
+      throw new TypeError(
+        `expected variant ${shape}${tag === undefined ? "" : `:${tag}`}`,
+      );
+    }
+    return value;
   }
 
   private completion(
@@ -2518,6 +2554,7 @@ class ExecutorV1 {
             {
               kind: "record",
               typeId: this.aggregateName(shapes.failure!),
+              shape: shapes.failure!,
               fields: [this.variant(shapes.reason, reason), request],
             },
           ]);
@@ -2922,6 +2959,7 @@ class ExecutorV1 {
           const record = (shape: number, fields: VmValue[]): VmValue => ({
             kind: "record",
             typeId: this.aggregateName(shape),
+            shape,
             fields,
           });
           const owner: VmValue = {
@@ -3102,6 +3140,7 @@ class ExecutorV1 {
       const info: VmValue = {
         kind: "record",
         typeId: this.aggregateName(actor.layout.crash_info!),
+        shape: actor.layout.crash_info!,
         fields: [
           { kind: "i64", value: BigInt(code!) },
           { kind: "string", value: String(message) },
@@ -3549,13 +3588,6 @@ function payloadOf(value: VmValue): VmValue[] {
     throw new TypeError(`expected an enum value, got ${value.kind}`);
   }
   return value.payload;
-}
-
-function tagOf(value: VmValue): number {
-  if (value.kind !== "enum") {
-    throw new TypeError(`expected an enum value, got ${value.kind}`);
-  }
-  return value.tag;
 }
 
 function calleeFunction(value: VmValue): number {

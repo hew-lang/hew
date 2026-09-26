@@ -11,6 +11,16 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        // A root record with the runtime admission type's display name must
+        // not acquire its resource close when making an actor request.
+        test_name: "identity_w7_sandbox",
+        source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox.hew",
+    },
+    ParityCase {
+        test_name: "identity_w7_sandbox_control",
+        source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox_control.hew",
+    },
+    ParityCase {
         // A lambda built, passed to a function taking a callable, and called
         // there through the same indirect path both engines use.
         test_name: "closure_values",
@@ -584,6 +594,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "dyn_multibound_dispatch" => {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }
+        "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
         _ => None,
     };
     if let Some(expected) = expected {

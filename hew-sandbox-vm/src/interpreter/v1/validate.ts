@@ -195,6 +195,18 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   }
 
   for (const resource of pkg.resources ?? []) {
+    if (
+      resource.kind === "record" &&
+      (resource.shape === undefined ||
+        !pkg.aggregates.some((shape) => shape.id === resource.shape))
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.resource_shape_missing",
+        capability: null,
+        message: "record resource has no exact aggregate shape",
+        span: null,
+      };
     if (resource.kind === "opaque") return unavailable("resource.opaque_close");
     if (
       resource.kind === "nominal" &&

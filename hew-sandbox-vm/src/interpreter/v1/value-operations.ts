@@ -190,6 +190,7 @@ function option(
   return {
     kind: "enum",
     typeId: descriptor.name,
+    shape: descriptor.id,
     tag: descriptor.cases.findIndex((entry) => entry.name === name),
     payload: value === undefined ? [] : [value],
   };

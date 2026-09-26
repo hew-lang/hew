@@ -18,8 +18,14 @@ export type VmValue =
   | { kind: "sink"; channelId: string }
   | { kind: "duplex"; channelId: string }
   | { kind: "regex"; source: string; regex: RegExp }
-  | { kind: "record"; typeId: string; fields: VmValue[] }
-  | { kind: "enum"; typeId: string; tag: number; payload: VmValue[] }
+  | { kind: "record"; typeId: string; shape?: number; fields: VmValue[] }
+  | {
+      kind: "enum";
+      typeId: string;
+      shape: number;
+      tag: number;
+      payload: VmValue[];
+    }
   | { kind: "vector"; elementType: string; items: VmValue[] }
   /** A map or set owns its occupied slots. Selected Hash/Eq operations probe
    *  the table; tombstones preserve collision chains across removal. */
@@ -81,12 +87,14 @@ export function cloneValue(value: VmValue): VmValue {
       return {
         kind: "record",
         typeId: value.typeId,
+        shape: value.shape,
         fields: value.fields.map(cloneValue),
       };
     case "enum":
       return {
         kind: "enum",
         typeId: value.typeId,
+        shape: value.shape,
         tag: value.tag,
         payload: value.payload.map(cloneValue),
       };

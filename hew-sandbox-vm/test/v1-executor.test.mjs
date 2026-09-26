@@ -415,6 +415,27 @@ test("v1: switch.variant dispatches on the recorded tag", () => {
   assert.equal(stdout(run(forTag(1))), "none\n");
 });
 
+test("v1: switch.variant does not join equal display names across shapes", () => {
+  const trace = run(pkg({
+    variants: [
+      { id: 0, name: "Choice", cases: [{ name: "Yes", fields: [] }] },
+      { id: 1, name: "Choice", cases: [{ name: "Yes", fields: [] }] }
+    ],
+    functions: [fn(0, "main", [
+      block(0, [
+        { op: "variant.make", dst: 0, shape: 0, variant: 0, fields: [], span: null }
+      ], {
+        op: "switch.variant", shape: 1, scrutinee: 0,
+        arms: [{ variant: 0, fields: [], edge: { to: 1, args: [] } }],
+        span: null
+      }),
+      block(1, [], RETURN_UNIT)
+    ])]
+  }));
+  assert.equal(trace.result, "runtime_failure");
+  assert.match(trace.final_state.runtime_failures[0].message, /expected variant 1/);
+});
+
 test("v1: read_line hands out successive lines of the replay stdin", () => {
   const trace = run(
     pkg({

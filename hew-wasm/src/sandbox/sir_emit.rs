@@ -587,7 +587,15 @@ impl<'m> Walker<'m> {
         self.module.resources.iter().map(|(ty, release)| {
                 use hew_sir::ResourceRelease;
                 Ok(match release {
-                    ResourceRelease::RecordClose { close, .. } => serde_json::json!({"kind": "record", "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?}),
+                    ResourceRelease::RecordClose { close, .. } => {
+                        let shape = self.module.aggregate_shape_for_type(ty).ok_or_else(|| {
+                            EmitError::new(format!(
+                                "record resource `{}` has no exact aggregate shape",
+                                ty.user_facing()
+                            ))
+                        })?;
+                        serde_json::json!({"kind": "record", "shape": shape.id.0, "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?})
+                    },
                     ResourceRelease::OpaqueClose { close, .. } => serde_json::json!({"kind": "opaque", "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?}),
                     ResourceRelease::Nominal { release, .. } => serde_json::json!({"kind": "nominal", "ty": ty.user_facing().to_string(), "release": release.symbol}),
                     ResourceRelease::Task => serde_json::json!({"kind": "task"}),

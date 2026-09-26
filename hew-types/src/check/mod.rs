@@ -360,9 +360,10 @@ pub(crate) fn restore_member_opacity(
             is_opaque,
         } => {
             let args = args.into_iter().map(resolve).collect();
-            let is_opaque = !head
-                .builtin()
-                .is_some_and(crate::BuiltinType::is_substrate_handle)
+            let is_opaque = !matches!(head, crate::TypeHead::Param(_))
+                && !head
+                    .builtin()
+                    .is_some_and(crate::BuiltinType::is_substrate_handle)
                 && (is_opaque || is_opaque_type(head.registry_key()));
             ResolvedTy::Named {
                 head,
@@ -2583,6 +2584,7 @@ impl Checker {
         // Effect and transfer checks consume capture and actor-dispatch facts
         // before those facts are moved into the checked-program handoff.
         self.report_completion_call_cycles();
+        let checked_impl_body_callees = self.checked_impl_body_callees();
         let suspension_effects = self.finish_suspension_effects();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()
@@ -2708,8 +2710,7 @@ impl Checker {
         for sig in resolved_fn_sigs.values_mut() {
             *sig = self.resolve_fn_sig(sig);
         }
-        let imported_impl_body_facts = self
-            .checked_impl_body_callees()
+        let imported_impl_body_facts = checked_impl_body_callees
             .into_iter()
             .filter_map(|(declaration, callees)| {
                 let sig = resolved_fn_sigs.get(&declaration)?;
@@ -2905,6 +2906,20 @@ impl Checker {
             typed
         };
 
+        let mut resolved_annotation_types = HashMap::new();
+        let saved_module = self.current_module.clone();
+        for (site, (ty, module)) in std::mem::take(&mut self.annotation_types) {
+            self.current_module = module;
+            let ty = self.finalize_type_for_handoff(&ty);
+            if let Ok(ty) = ResolvedTy::from_ty(&ty) {
+                let ty = restore_member_opacity(ty, &|name| {
+                    self.class_declarations().is_opaque_type(name)
+                });
+                resolved_annotation_types.insert(site, ty);
+            }
+        }
+        self.current_module = saved_module;
+
         // #1929 Stage 1: classify every concrete generic type-argument's
         // `Vec<T>` element ABI now, while `self.registry` (the `Copy` marker
         // authority) and the resolved `type_defs` (the `is_indirect` authority)
@@ -2957,6 +2972,7 @@ impl Checker {
         let resolutions = self.scopes.take_resolutions();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
+            resolved_annotation_types,
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,
@@ -3008,6 +3024,7 @@ impl Checker {
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             actor_delivery_calls: std::mem::take(&mut self.actor_delivery_calls),
+            actor_coalesce_keys: std::mem::take(&mut self.actor_coalesce_keys),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),

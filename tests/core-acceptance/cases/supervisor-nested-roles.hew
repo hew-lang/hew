@@ -40,14 +40,26 @@ fn main() {
     assert(read_leaf(inner) == "NESTED\0CONFIG");
     leaf.put("changed".to_upper()).expect("modify first incarnation");
     let _ = leaf.fail();
-    let _ = await_restart inner.leaf;
+    let _ = {
+        let __hew_migrated_role_1034 = inner.leaf;
+        restarted(__hew_migrated_role_1034);
+        __hew_migrated_role_1034
+    };
     assert(leaf.get().expect("restarted leaf") == "NESTED\0CONFIG");
     let _ = leaf.fail();
-    let _ = await_restart root.outer.inner;
+    let _ = {
+        let __hew_migrated_role_1166 = root.outer.inner;
+        restarted(__hew_migrated_role_1166);
+        __hew_migrated_role_1166
+    };
     assert(read_leaf(inner) == "NESTED\0CONFIG");
     assert(leaf.get().expect("retained leaf after subtree replacement") == "NESTED\0CONFIG");
-    close(root);
-    closed(root);
+    {
+        let __hew_migrated_actor_1346 = root;
+        stop(__hew_migrated_actor_1346);
+        stopped(__hew_migrated_actor_1346);
+    };
+    stopped(root);
     assert(leaf.get().is_err());
     assert(inner.leaf.get().is_err());
     println("nested config and retained roles survive subtree replacement");

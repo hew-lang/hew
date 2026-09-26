@@ -1316,25 +1316,6 @@ impl Checker {
                 } else {
                     crate::BuiltinType::ActorHandle
                 };
-                // `stop` is the actor handle's own lifecycle method
-                // (HEW-SPEC-2026 §2.1): it requests a graceful stop and
-                // returns at once, so `self.stop()` lets the current handler
-                // finish before `#[on(stop)]` runs. A supervisor's lifecycle
-                // is `close`, which tears its tree down.
-                let supervisor = matches!(
-                    resolved.as_actor_handle(),
-                    Some(Ty::Named { head, .. }) if self.supervisor_children.contains_key(head.registry_key())
-                );
-                if method == "stop" && resolved.as_actor_handle().is_some() && !supervisor {
-                    if !self.check_arity(args, 0, "`stop`", span) {
-                        return Ty::Error;
-                    }
-                    self.actor_delivery_calls.insert(
-                        SpanKey::in_module(span, self.current_module_idx),
-                        crate::actor_delivery::ActorDeliveryCall::Stop,
-                    );
-                    return Ty::Unit;
-                }
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
                 let has_user_send_handler = if method == "send" {
@@ -1529,6 +1510,20 @@ impl Checker {
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
+                }
+                if method == "stop" && resolved.as_actor_handle().is_some() {
+                    self.report_migration_diagnostic(
+                        TypeErrorKind::ActorHandleMethodRetired,
+                        "E_ACTOR_HANDLE_METHOD_RETIRED: actor `.stop()` is retired".to_string(),
+                        "write `stop(actor)`; a receive handler named `stop` remains callable"
+                            .to_string(),
+                        span,
+                    );
+                    return if self.migration_mode {
+                        Ty::Unit
+                    } else {
+                        Ty::Error
+                    };
                 }
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedMethod,

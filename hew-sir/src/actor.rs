@@ -767,7 +767,7 @@ pub(crate) fn verify_operation(
     })())
 }
 
-/// Actor boundary selected from an exact demanded protocol.
+/// Exact actor, supervisor or stable role selected for a lifecycle operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorCallProtocol {
     pub actor: ActorId,
@@ -887,6 +887,48 @@ impl RemoteObservationKind {
 }
 
 /// Actor boundary selected from an exact demanded protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleTarget {
+    Actor(ActorId),
+    ActorRole(ActorId),
+    Supervisor(crate::SupervisorId),
+    SupervisorRole(crate::SupervisorId),
+}
+
+impl LifecycleTarget {
+    fn handle_ty(
+        self,
+        actors: &[SemActor],
+        supervisors: &[crate::SemSupervisor],
+    ) -> Result<ResolvedTy, String> {
+        match self {
+            Self::Actor(id) | Self::ActorRole(id) => {
+                let actor = actors
+                    .get(id.0 as usize)
+                    .filter(|actor| actor.id == id)
+                    .ok_or("unknown lifecycle actor identity")?;
+                Ok(if matches!(self, Self::ActorRole(_)) {
+                    actor.child_ref_ty()
+                } else {
+                    actor.handle_ty.clone()
+                })
+            }
+            Self::Supervisor(id) | Self::SupervisorRole(id) => {
+                let supervisor = supervisors
+                    .get(id.0 as usize)
+                    .filter(|supervisor| supervisor.id == id)
+                    .ok_or("unknown lifecycle supervisor identity")?;
+                Ok(if matches!(self, Self::SupervisorRole(_)) {
+                    supervisor.child_ref_ty()
+                } else {
+                    supervisor.handle_ty.clone()
+                })
+            }
+        }
+    }
+}
+
+/// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
     LocalObservation {
@@ -898,6 +940,10 @@ pub enum ActorOperation {
     CallStart(ActorCallProtocol),
     /// Consume an operation selected as ready, materializing its checked result.
     CallTake(ActorCallProtocol),
+    Stop(LifecycleTarget),
+    Terminate(LifecycleTarget),
+    AwaitStopped(LifecycleTarget),
+    AwaitRestarted(LifecycleTarget),
     Close(ActorId),
     AwaitClosed(ActorId),
     Spawn(ActorId),
@@ -1114,6 +1160,28 @@ impl ActorOperation {
         if matches!(self, Self::CallStart(_) | Self::CallTake(_)) {
             return self.completion_signature(defs, actors);
         }
+        if let Self::Stop(target)
+        | Self::Terminate(target)
+        | Self::AwaitStopped(target)
+        | Self::AwaitRestarted(target) = self
+        {
+            if matches!(self, Self::AwaitRestarted(_))
+                && !matches!(
+                    target,
+                    LifecycleTarget::ActorRole(_) | LifecycleTarget::SupervisorRole(_)
+                )
+            {
+                return Err("restart wait requires a supervised role".into());
+            }
+            return Ok(crate::SemSignature {
+                params: vec![crate::SemAbiParam {
+                    ty: target.handle_ty(actors, supervisors)?,
+                    passing: crate::SemParamPassing::Borrow,
+                    caller_visible_projection: false,
+                }],
+                return_ty: ResolvedTy::Unit,
+            });
+        }
         if let Self::LocalObservation {
             kind,
             target,
@@ -1145,7 +1213,11 @@ impl ActorOperation {
             Self::LocalObservation { .. }
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
-            | Self::CallTake(_) => {
+            | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             Self::Spawn(id)
@@ -1182,6 +1254,10 @@ impl ActorOperation {
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_)
             | Self::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }

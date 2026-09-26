@@ -26,7 +26,7 @@ actor Worker { receive fn work() {} }
 supervisor App {
     strategy: one_for_one;
     intensity: 5 within 60s;
-    child worker: Worker() restart: permanent shutdown: 5s;
+    child worker: Worker() restart: permanent stop: 5s;
 }
 fn main() {
     let point = Point { x: 1, y: 2 };

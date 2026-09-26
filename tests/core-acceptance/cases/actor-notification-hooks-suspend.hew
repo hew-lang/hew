@@ -38,7 +38,7 @@ actor Watcher {
         sleep(1ms);
         audit.note("exit").expect("audit exit");
         assert(note.actor_id > 0);
-        assert(note.kind == failure.CrashKind.Crashed);
+        assert(note.kind == failure.CrashKind.Fault);
         exits = exits + 1;
     }
 
@@ -47,7 +47,7 @@ actor Watcher {
         audit.note("down").expect("audit down");
         sleep(1ms);
         assert(match note.reason {
-            .Crashed(kind) => kind == failure.CrashKind.Crashed,
+            .Crashed(kind) => kind == failure.CrashKind.Fault,
             _ => false,
         });
         downs = downs + 1;

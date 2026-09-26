@@ -18,7 +18,7 @@ actor VecSetCrasher {
         if info.code == 205 {
             CrashAction.Restart
         } else {
-            CrashAction.Kill
+            CrashAction.GiveUp
         }
     }
 }
@@ -34,7 +34,11 @@ fn main() -> i64 {
     let sup = spawn VecSetSupervisor;
     let worker = sup.worker;
     let _ = worker.boom();
-    let restarted = await_restart sup.worker;
+    let restarted = {
+        let __hew_migrated_role_691 = sup.worker;
+        restarted(__hew_migrated_role_691);
+        __hew_migrated_role_691
+    };
     match restarted.alive() {
         .Ok(v) => v,
         .Err(_) => 1,

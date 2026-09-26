@@ -14,10 +14,10 @@ pub(crate) use crate::ast::{
     MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
     NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
     Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart,
-    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
+    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
@@ -760,6 +760,10 @@ pub enum ParseDiagnosticKind {
     LegacyTurbofish,
     /// A removed glob import was used instead of an explicit selection.
     ImportGlobRemoved,
+    /// Retired `await_restart role` keyword form.
+    AwaitRestartRetired,
+    /// Retired supervisor child `shutdown:` clause.
+    SupervisorStopClauseRetired,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -807,6 +811,8 @@ impl ParseDiagnosticKind {
             Self::LegacyPathSeparator => "E_PATH_LEGACY_SEPARATOR",
             Self::LegacyTurbofish => "E_LEGACY_TURBOFISH",
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
+            Self::AwaitRestartRetired => "E_AWAIT_RESTART_RETIRED",
+            Self::SupervisorStopClauseRetired => "E_SUPERVISOR_STOP_CLAUSE",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",

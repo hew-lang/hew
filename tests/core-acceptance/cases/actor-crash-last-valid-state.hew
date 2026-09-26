@@ -30,8 +30,16 @@ fn main() {
     let group = spawn Group;
     group.worker.rename("changed".to_upper()).expect("rename");
     let _ = group.worker.fail();
-    let _ = await_restart group.worker;
+    let _ = {
+        let __hew_migrated_role_734 = group.worker;
+        restarted(__hew_migrated_role_734);
+        __hew_migrated_role_734
+    };
     assert(group.worker.get().expect("fresh") == "initial");
-    close(group);
+    {
+        let __hew_migrated_actor_827 = group;
+        stop(__hew_migrated_actor_827);
+        stopped(__hew_migrated_actor_827);
+    };
     println("last valid crash state, fresh restart");
 }

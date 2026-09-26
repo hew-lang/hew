@@ -33,7 +33,11 @@ fn main() -> i64 {
     let w = sup.w;
     let _ = w.boom();
     // Only a completed restart resolves this role Live again.
-    let fresh = await_restart sup.w;
+    let fresh = {
+        let __hew_migrated_role_979 = sup.w;
+        restarted(__hew_migrated_role_979);
+        __hew_migrated_role_979
+    };
     match fresh.get() {
         .Ok(n) => n,
         .Err(_) => 1,

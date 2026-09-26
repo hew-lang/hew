@@ -177,8 +177,8 @@ impl Verifier {
                         for (_, arg) in &child.init_args {
                             self.expr(arg);
                         }
-                        if let Some(pool_count) = &child.pool_count {
-                            self.expr(pool_count);
+                        for expr in child.pool_count.iter().chain(child.stop.iter()) {
+                            self.expr(expr);
                         }
                     }
                 }

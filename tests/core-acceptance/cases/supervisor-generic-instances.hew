@@ -61,20 +61,44 @@ fn main() {
     assert(words.worker.get().expect("text worker") == "CHANGED");
     assert(record_role.get().expect("record worker").label == "changed");
     let _ = number_role.fail();
-    let _ = await_restart numbers.worker;
+    let _ = {
+        let __hew_migrated_role_1908 = numbers.worker;
+        restarted(__hew_migrated_role_1908);
+        __hew_migrated_role_1908
+    };
     assert(read_number(number_role) == 41);
     assert(number_role.count().expect("fresh number") == 0);
     let _ = record_role.fail();
-    let _ = await_restart records.worker;
+    let _ = {
+        let __hew_migrated_role_2087 = records.worker;
+        restarted(__hew_migrated_role_2087);
+        __hew_migrated_role_2087
+    };
     let restarted = record_role.get().expect("restarted record");
     assert(restarted.label == seed.label);
     assert(restarted.data == seed.data);
     assert(restarted.history[0] == seed.history[0]);
     assert(record_role.count().expect("fresh record") == 0);
     assert(words.worker.count().expect("unchanged text instance") == 1);
-    close(batches);
-    close(records);
-    close(words);
-    close(numbers);
+    {
+        let __hew_migrated_actor_2458 = batches;
+        stop(__hew_migrated_actor_2458);
+        stopped(__hew_migrated_actor_2458);
+    };
+    {
+        let __hew_migrated_actor_2478 = records;
+        stop(__hew_migrated_actor_2478);
+        stopped(__hew_migrated_actor_2478);
+    };
+    {
+        let __hew_migrated_actor_2498 = words;
+        stop(__hew_migrated_actor_2498);
+        stopped(__hew_migrated_actor_2498);
+    };
+    {
+        let __hew_migrated_actor_2516 = numbers;
+        stop(__hew_migrated_actor_2516);
+        stopped(__hew_migrated_actor_2516);
+    };
     println("generic supervisor config, roles and restarts");
 }

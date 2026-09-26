@@ -86,9 +86,21 @@ fn main() {
     // b's restart stopped c, and c now holds it open in its stop hook.
     wait_for(gate, false);
     let _ = app.a.boom();
-    let _restarted = await_restart app.a;
+    let _restarted = {
+        let __hew_migrated_role_2259 = app.a;
+        restarted(__hew_migrated_role_2259);
+        __hew_migrated_role_2259
+    };
     println("restarted");
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_2310 = app;
+        stop(__hew_migrated_actor_2310);
+        stopped(__hew_migrated_actor_2310);
+    };
     println("stopped");
-    close(gate);
+    {
+        let __hew_migrated_actor_2360 = gate;
+        stop(__hew_migrated_actor_2360);
+        stopped(__hew_migrated_actor_2360);
+    };
 }

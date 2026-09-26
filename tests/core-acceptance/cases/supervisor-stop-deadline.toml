@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-stop-deadline"
+intent = "A child's stop deadline cancels a suspended stop hook, releases the child and completes the supervisor wait."
+source = "cases/supervisor-stop-deadline.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "released\n"
+exit = 0

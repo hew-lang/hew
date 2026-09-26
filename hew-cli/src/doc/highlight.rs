@@ -64,7 +64,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Fork
         | Token::Spawn
         | Token::Await
-        | Token::AwaitRestart
         | Token::Receive
         | Token::Init
         | Token::Type
@@ -97,7 +96,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         Token::Permanent
         | Token::Transient
         | Token::Temporary
-        | Token::BrutalKill
         | Token::OneForOne
         | Token::OneForAll
         | Token::RestForOne

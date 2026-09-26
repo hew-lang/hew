@@ -60,8 +60,16 @@ fn main() {
     let group = spawn Group;
     group.worker.change().expect("change");
     let _ = group.worker.fail();
-    let _ = await_restart group.worker;
+    let _ = {
+        let __hew_migrated_role_1803 = group.worker;
+        restarted(__hew_migrated_role_1803);
+        __hew_migrated_role_1803
+    };
     assert(group.worker.get().expect("fresh") == "INITIAL");
-    close(group);
+    {
+        let __hew_migrated_actor_1896 = group;
+        stop(__hew_migrated_actor_1896);
+        stopped(__hew_migrated_actor_1896);
+    };
     println("state and capture");
 }

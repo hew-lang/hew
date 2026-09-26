@@ -194,8 +194,15 @@ impl Checker {
             return;
         };
         let mut declared = false;
-        for rf in &ad.receive_fns {
-            let Some(param) = rf.params.iter().find(|param| param.name == *key_field) else {
+        let actor = self.require_declaration_occurrence(span, crate::DeclarationKind::Actor, 0);
+        let mut selected = Vec::new();
+        for (handler_index, rf) in ad.receive_fns.iter().enumerate() {
+            let Some((param_index, param)) = rf
+                .params
+                .iter()
+                .enumerate()
+                .find(|(_, param)| param.name == *key_field)
+            else {
                 continue;
             };
             declared = true;
@@ -246,6 +253,22 @@ impl Checker {
                         ty.user_facing()
                     ),
                 );
+                continue;
+            }
+            if let Some(handler) = self.require_declaration_occurrence(
+                span,
+                crate::DeclarationKind::ActorReceive,
+                handler_index,
+            ) {
+                if let Ok(param) = u32::try_from(param_index) {
+                    selected.push((handler, param));
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "coalesce key parameter index exceeds u32".to_string(),
+                    );
+                }
             }
         }
         if !declared {
@@ -258,6 +281,9 @@ impl Checker {
                     ad.name
                 ),
             );
+        }
+        if let Some(actor) = actor {
+            self.actor_coalesce_keys.insert(actor, selected);
         }
     }
 
@@ -428,6 +454,11 @@ impl Checker {
         // positive literal) while config params are still in scope so a
         // `count: config.workers` expr resolves.
         self.check_supervisor_pool_count(sd, span);
+        for child in &sd.children {
+            if let Some(duration) = &child.stop {
+                self.check_against(&duration.0, &duration.1, &Ty::Duration);
+            }
+        }
 
         self.env.pop_scope();
     }
@@ -1483,7 +1514,7 @@ impl Checker {
                     crash_hooks.push(method);
                     continue;
                 }
-                "exit" => {
+                "link" => {
                     self.check_exit_hook(ad.name.name.as_str(), method, &ad.fields);
                     continue;
                 }
@@ -1521,19 +1552,28 @@ impl Checker {
                     hook_attr.span.clone(),
                     format!(
                         "`#[on]` on `{actor_name}.{method_name}` requires a hook kind argument; \
-                         valid hook kinds are: start, stop, crash, exit, down"
+                         valid hook kinds are: start, stop, crash, link, down"
                     ),
                 ));
                 return None;
             }
-            Some("start" | "stop" | "crash" | "exit" | "down") => {}
+            Some("start" | "stop" | "crash" | "link" | "down") => {}
+            Some("exit") => {
+                self.report_migration_diagnostic(
+                    TypeErrorKind::ActorLifecycleRetired,
+                    "E_ACTOR_LIFECYCLE_RETIRED: `#[on(exit)]` is retired".to_string(),
+                    "replace `#[on(exit)]` with `#[on(link)]`".to_string(),
+                    &hook_attr.span,
+                );
+                return self.migration_mode.then_some("link");
+            }
             Some(unknown) => {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     hook_attr.span.clone(),
                     format!(
                         "`#[on({unknown})]` on `{actor_name}.{method_name}` is not a recognised \
-                         lifecycle hook; valid hook kinds are: start, stop, crash, exit, down"
+                         lifecycle hook; valid hook kinds are: start, stop, crash, link, down"
                     ),
                 ));
                 return None;
@@ -1545,7 +1585,7 @@ impl Checker {
         // start/stop already reject extra args via `check_lifecycle_hook`'s
         // signature checks; for typed hooks we validate the attribute shape here
         // because their signature/body checking is event-specific.
-        if matches!(hook_kind_str, "crash" | "exit" | "down") && hook_attr.args.len() > 1 {
+        if matches!(hook_kind_str, "crash" | "link" | "down") && hook_attr.args.len() > 1 {
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
                 hook_attr.span.clone(),
@@ -2161,7 +2201,7 @@ impl Checker {
         self.env.pop_scope();
     }
 
-    /// Validate a `#[on(exit)]` linked-actor exit hook (M-7-R, Q210/A211).
+    /// Validate a `#[on(link)]` linked-actor end hook (M-7-R, Q210/A211).
     ///
     /// Fires when an actor THIS actor is linked to crashes/exits, delivering a
     /// typed `CrashNotification { actor_id, kind }`. Mirrors `#[on(crash)]`'s
@@ -2175,7 +2215,7 @@ impl Checker {
         hook: &FnDecl,
         fields: &[FieldDecl],
     ) {
-        let hook_kind = "on(exit)";
+        let hook_kind = "on(link)";
 
         self.reject_hook_modifier_set(actor_name, hook, hook_kind);
 
@@ -2500,16 +2540,6 @@ impl Checker {
         rf: &ReceiveFnDecl,
         fields: &[FieldDecl],
     ) {
-        if rf.name == Ident::new("stop") {
-            self.report_error_with_suggestions(
-                TypeErrorKind::InvalidOperation,
-                &rf.span,
-                "E_RESERVED_HANDLER_NAME: `stop` is the actor handle's own lifecycle \
-                 method, so no receive handler can take its name"
-                    .to_string(),
-                vec!["rename the handler, or call `self.stop()` to stop the actor".to_string()],
-            );
-        }
         // Validate #[every(duration)] attribute if present.
         self.validate_every_attribute(rf);
         self.actor_handler_state_guards.insert(

@@ -32,10 +32,10 @@ actor Watcher {
         exits * 10 + downs
     }
 
-    #[on(exit)]
+    #[on(link)]
     fn exited(note: failure.CrashNotification) {
         assert(note.actor_id > 0);
-        assert(note.kind == failure.CrashKind.Crashed);
+        assert(note.kind == failure.CrashKind.Fault);
         exit_actor = note.actor_id;
         exits = exits + 1;
     }
@@ -48,8 +48,8 @@ actor Watcher {
             _ => false,
         });
         assert(match note.reason {
-            .Crashed(kind) => exit_actor > 0 && kind == failure.CrashKind.Crashed,
-            .Exited => exit_actor == 0,
+            .Crashed(kind) => exit_actor > 0 && kind == failure.CrashKind.Fault,
+            .Stopped => exit_actor == 0,
             _ => false,
         });
         downs = downs + 1;
@@ -67,11 +67,13 @@ fn main() {
     observation.close();
     let normal_target = spawn Target;
     let normal_observation = watcher.watch_normal(normal_target).expect("watch normal target");
-    close(normal_target);
+    stop(normal_target);
+    stopped(normal_target);
     while watcher.counts().expect("normal hook outcome") != 12 {
         sleep(1ms);
     }
     normal_observation.close();
-    close(watcher);
-    println("typed EXIT and DOWN retain actor and monitor identities");
+    stop(watcher);
+    stopped(watcher);
+    println("typed LINK and DOWN retain actor and monitor identities");
 }

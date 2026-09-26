@@ -18,6 +18,20 @@ retired. Run `hew fmt --migrate` across a project before checking or building
 it. The command rewrites punctuation before checker-backed migrations, so
 imports using the old spelling can migrate together.
 
+## Declaration identity in v0.6.0
+
+Calls now follow the declaration selected by lexical scope and trait dispatch.
+A local closure shadows a same-named function, and user functions named `len`,
+`to_string`, `println` or `assert_eq` take precedence over prelude functions.
+An inherent method wins a dot-call over a trait method; two applicable trait
+methods without an inherent method produce an ambiguity diagnostic. Generic
+bounds and `dyn` values preserve the selected trait's method identity.
+
+User traits named like compiler predicates, including `Clone` and `Send`, are
+ordinary traits. They do not inherit the predicates' capabilities. Protected
+prelude declarations remain protected. There is no implicit `Drop` trait;
+resource cleanup uses `#[resource]` and its checked `close` method.
+
 ## Named arguments bind by name in v0.6.0
 
 - A named argument binds to the parameter it names. Earlier builds bound

@@ -70,8 +70,16 @@ fn main() {
     let group = spawn Group;
     println(group.holder.poke(false).expect("poke"));
     let _ = group.holder.poke(true);
-    let _ = await_restart group.holder;
+    let _ = {
+        let __hew_migrated_role_1498 = group.holder;
+        restarted(__hew_migrated_role_1498);
+        __hew_migrated_role_1498
+    };
     println(group.holder.poke(false).expect("fresh"));
-    close(group);
+    {
+        let __hew_migrated_actor_1585 = group;
+        stop(__hew_migrated_actor_1585);
+        stopped(__hew_migrated_actor_1585);
+    };
     println("done");
 }

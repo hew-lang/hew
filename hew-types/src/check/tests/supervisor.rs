@@ -17,6 +17,28 @@ fn nested_supervisor_remains_a_valid_child_target() {
 }
 
 #[test]
+fn supervisor_stop_clause_checks_a_configured_duration() {
+    let output = check_source(
+        "actor Worker { receive fn ping() {} }\n\
+         supervisor Team(grace: duration) { child worker: Worker() stop: grace, }",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let invalid = check_source(
+        "actor Worker { receive fn ping() {} }\n\
+         supervisor Team { child worker: Worker() stop: \"later\", }",
+    );
+    assert!(
+        invalid
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "{:#?}",
+        invalid.errors
+    );
+}
+
+#[test]
 fn generic_supervisor_infers_config_and_child_type_before_function_projection() {
     let output = check_source(
         r#"fn main() {

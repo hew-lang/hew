@@ -1467,6 +1467,8 @@ fn parse_for_frontend(source: &str, mode: FrontendParseMode) -> hew_parser::Pars
                 error.kind,
                 hew_parser::ParseDiagnosticKind::LegacyPathSeparator
                     | hew_parser::ParseDiagnosticKind::LegacyTurbofish
+                    | hew_parser::ParseDiagnosticKind::AwaitRestartRetired
+                    | hew_parser::ParseDiagnosticKind::SupervisorStopClauseRetired
             ) {
                 error.severity = hew_parser::Severity::Warning;
             }

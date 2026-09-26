@@ -18,9 +18,17 @@ fn main() {
     let app = spawn App;
     let started = datetime.now_ms();
     let _ = app.worker.crash_me();
-    let _ = await_restart app.worker;
+    let _ = {
+        let __hew_migrated_role_362 = app.worker;
+        restarted(__hew_migrated_role_362);
+        __hew_migrated_role_362
+    };
     let _ = app.worker.crash_me();
     testing.settle();
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_449 = app;
+        stop(__hew_migrated_actor_449);
+        stopped(__hew_migrated_actor_449);
+    };
     println(datetime.now_ms() - started < 200);
 }

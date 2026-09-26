@@ -8,17 +8,17 @@
 // field; tag != 0 branches to hew_trap_with_code(206) + llvm.trap instead of
 // yielding a null handle. Tag == 0 (Live) yields the actor handle safely.
 //
-// The barrier is `await_restart`, the cooperative restart wait: it suspends
+// The barrier is `restarted`, the cooperative restart wait: it suspends
 // until the named static child's slot is Live again. This fixture discards the
-// handle the barrier re-fetches and reads `sup.w1` a second time, so what it
-// proves is the slot-table lookup after a restart, not the barrier's own
-// re-fetch (supervisor_await_restart.hew covers that).
+// result of the wait and reads `sup.w1` a second time, so this proves the
+// slot-table lookup after a restart (supervisor_await_restart.hew covers the
+// role reference used after the wait).
 //
 //   1. Supervisor spawns Worker(value: 7); sup.w1 is Live immediately.
 //   2. w.crash_me() panics inside the actor; the supervisor processes the
 //      crash notification and restarts the child (first crash:
 //      restart_delay_ms starts at 0, so the restart is immediate).
-//   3. `await_restart sup.w1` parks until the restart cycle completes.
+//   3. `restarted(sup.w1)` parks until the restart cycle completes.
 //   4. A fresh `sup.w1` returns a Live handle — tag == 0 is guaranteed by
 //      step 3. If the child were still Transient, hew_trap_with_code(206)
 //      would fire and the process would exit 133 (SIGTRAP).
@@ -28,7 +28,7 @@
 // No sleep_ms is used; the ordering comes from the restart barrier.
 //
 // Exit code 7 proves:
-//   - await_restart resumed after one completed restart cycle.
+//   - restarted resumed after one completed restart cycle.
 //   - a fresh sup.w1 lookup returned Live (not Transient).
 //   - The restarted actor's state was deep-cloned correctly.
 actor Worker {
@@ -66,7 +66,11 @@ fn main() -> i64 {
     let _ = w.crash_me();
     // Suspend until the supervisor completes the restart cycle. The re-fetched
     // handle is discarded on purpose: the next line re-reads the slot.
-    let _ = await_restart sup.w1;
+    let _ = {
+        let __hew_migrated_role_2759 = sup.w1;
+        restarted(__hew_migrated_role_2759);
+        __hew_migrated_role_2759
+    };
     // Access the restarted child via the supervisor — tag must be 0 (Live).
     // A Transient result would emit hew_trap_with_code(206) and SIGTRAP.
     let w2 = sup.w1;

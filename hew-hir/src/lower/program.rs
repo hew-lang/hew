@@ -110,7 +110,12 @@ pub fn lower_program_with_mono_cap(
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
         match builtin_declarations.clone() {
             Some(program) => match check_builtin_callable_impl_program(&program, &ctx.defs) {
-                Ok(output) => (Some(program), Some(output)),
+                Ok(output) => {
+                    // Embedded checking appends declaration rows. Every fact
+                    // consumed below must index that same extended table.
+                    Arc::make_mut(&mut ctx.defs).include_embedded(&output.defs);
+                    (Some(program), Some(output))
+                }
                 Err(diagnostic) => {
                     builtin_impl_diagnostics.push(*diagnostic);
                     (None, None)
@@ -195,9 +200,7 @@ pub fn lower_program_with_mono_cap(
     {
         let canonical = format!("std.builtins.{name}");
         ctx.source_type_identities.insert(canonical.clone());
-        // A bare reference at root binds to the same owner. A root
-        // declaration of the same name still wins: the local-declaration
-        // check in `resolve_named_type_ref` runs before this alias.
+        // Expression carriers use the checker-published root owner.
         ctx.file_import_root_type_aliases
             .insert(name.to_string(), canonical);
     }
@@ -462,27 +465,8 @@ pub fn lower_program_with_mono_cap(
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
                 let saved_module_idx = ctx.current_module_idx;
-                let private_fns = module
-                    .items
-                    .iter()
-                    .filter_map(|(item, _)| match item {
-                        Item::Function(function) if !function.visibility.is_pub() => {
-                            Some(function.name.to_string())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let private_closure = collect_imported_private_fn_closure(
-                    module,
-                    &private_fns,
-                    ctx.trait_defaults
-                        .values()
-                        .flatten()
-                        .filter(|default| {
-                            default.source_module.as_deref() == Some(module_full_path.as_str())
-                        })
-                        .filter_map(|default| default.method.body.as_ref()),
-                );
+                let private_closure =
+                    collect_imported_private_fn_closure(&ctx, module, &span_indices);
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                     ctx.current_item_ordinal = item_idx;
                     ctx.current_module_idx = span_indices
@@ -490,8 +474,7 @@ pub fn lower_program_with_mono_cap(
                         .unwrap_or_default();
                     match item {
                         Item::Function(func)
-                            if func.visibility.is_pub()
-                                || private_closure.contains(func.name.name.as_str()) =>
+                            if func.visibility.is_pub() || private_closure.contains(&item_idx) =>
                         {
                             // File imports are already flattened into the root
                             // item stream. Their source declaration was bound
@@ -1733,7 +1716,11 @@ pub fn lower_program_with_mono_cap(
     // source-body lowering without perturbing stable user `ItemId`s. Ordinary
     // trait impls use the same module-qualified symbols as imported impls;
     // receiver-specific cursor and duration impls retain their compiler owner.
-    if let Some(program) = &builtin_callable_impl_program {
+    if let (Some(program), Some(output)) = (
+        &builtin_callable_impl_program,
+        &builtin_callable_impl_output,
+    ) {
+        ctx.with_typecheck_facts(output, |ctx| {
         for (item, _) in &program.items {
             if let Item::ExternBlock(block) = item {
                 for function in &block.functions {
@@ -1837,6 +1824,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
         }
+        });
     }
 
     // Establish every executable impl body before lowering any source body.
@@ -2292,35 +2280,8 @@ pub fn lower_program_with_mono_cap(
                 ctx.current_module_name = Some(source_module.clone());
                 let diag_start = ctx.diagnostics.len();
                 let item_start = items.len();
-                // Per-module helper sets used by the imported-body scan in
-                // both the free-fn (Item::Function) and impl-method
-                // (Item::Impl) arms. Computed once per module so the two
-                // arms agree on which same-module callees count as
-                // private vs. pub and so iteration cost is linear in the
-                // module's item count rather than quadratic across arms.
-                let same_module_private_fns: HashSet<String> = module
-                    .items
-                    .iter()
-                    .filter_map(|(it, _)| {
-                        if let Item::Function(f) = it {
-                            if !f.visibility.is_pub() {
-                                return Some(f.name.to_string());
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                let imported_private_closure = collect_imported_private_fn_closure(
-                    module,
-                    &same_module_private_fns,
-                    ctx.trait_defaults
-                        .values()
-                        .flatten()
-                        .filter(|default| {
-                            default.source_module.as_deref() == Some(source_module.as_str())
-                        })
-                        .filter_map(|default| default.method.body.as_ref()),
-                );
+                let imported_private_closure =
+                    collect_imported_private_fn_closure(&ctx, module, &span_indices);
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
                     .iter()
@@ -2394,9 +2355,7 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Function(lowered));
                             }
                         }
-                        Item::Function(func)
-                            if imported_private_closure.contains(func.name.name.as_str()) =>
-                        {
+                        Item::Function(func) if imported_private_closure.contains(&item_idx) => {
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -2507,35 +2466,10 @@ pub fn lower_program_with_mono_cap(
                                 }));
                             }
                         }
-                        // Emit `HirItem::Function` entries for the methods of an
-                        // imported impl block so that MIR/codegen can process
-                        // cross-module method calls on named types.
-                        //
-                        // No per-method `pub` gate: impl methods in Hew have no
-                        // independent visibility (impl bodies never carry
-                        // `pub fn`; access is governed by the trait/type), so a
-                        // `pub` filter excluded ALL imported impl methods. That
-                        // left non-trivial builder methods (e.g. JSON `with_*` /
-                        // `push_*`, whose bodies are a void C call followed by
-                        // `return self`, so they are NOT captured by the runtime
-                        // handle-method pass-through path) without a MIR body,
-                        // surfacing as `CallableUnsupportedInMir` /
-                        // `IndirectCallUnsupported` at the import boundary. The
-                        // root impl-block path emits every method
-                        // (`pub_only = false`); the imported path now matches.
-                        //
-                        // A method whose body calls a private (non-pub) free
-                        // function in the same module that is NOT in the imported
-                        // private-fn closure cannot be lowered (the helper is not
-                        // in the emitted item list and has no qualified rewrite).
-                        // Such methods are skipped — matching the prior behaviour
-                        // where every imported impl method was dropped — so the
-                        // module still imports cleanly. If an importer actually
-                        // CALLS a skipped method it fails closed downstream with
-                        // `CallableUnsupportedInMir`, exactly as before this
-                        // change. (Lowering those bodies requires registering the
-                        // private-helper closure reachable from impl methods, a
-                        // follow-up to the free-fn closure already wired here.)
+                        // Emit imported implementation bodies selected by the
+                        // checker-owned declaration and typed-signature facts.
+                        // A missing body fact skips that exact declaration;
+                        // a call to it later fails at the callable-set boundary.
                         Item::Impl(impl_decl) => {
                             // `std/prelude.hew` is the compiler's import-only
                             // authority manifest. Its explicit `std.builtins`
@@ -2567,48 +2501,10 @@ pub fn lower_program_with_mono_cap(
                                 path: named_path, ..
                             } = &impl_decl.target_type.0
                             {
-                                let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                                              // Conservatively lower only the imported impl
-                                                                              // methods that are provably safe cross-module;
-                                                                              // skip the rest so the module still imports
-                                                                              // cleanly and an actual call to a skipped method
-                                                                              // fails closed downstream.
-                                                                              //
-                                                                              // A method is skipped when EITHER:
-                                                                              //  - its body calls a bare name that resolves in
-                                                                              //    neither the same-module rewrite map,
-                                                                              //    `fn_registry` (which by now holds every
-                                                                              //    seeded stdlib/runtime symbol and every
-                                                                              //    same-module extern fn), a lexically-bound
-                                                                              //    fn-typed parameter, nor the source builtin
-                                                                              //    overload set — catches codegen-intercepted
-                                                                              //    builtins that are not extern-declared, e.g.
-                                                                              //    `Stream.recv` → `hew_stream_next_layout`; OR
-                                                                              //  - its signature names a user type that would
-                                                                              //    not resolve at the MIR boundary — a
-                                                                              //    cross-module dotted type (`fs.IoError`) or a
-                                                                              //    user trait/type used as a generic argument
-                                                                              //    (an actor handle such as `WebSocketHandler`). Only
-                                                                              //    primitives/builtins and the impl's own self
-                                                                              //    type are admitted.
-                                                                              //
-                                                                              // This is intentionally tight: it captures the
-                                                                              // fluent-builder shape (e.g. JSON `with_*` /
-                                                                              // `push_*`, params `string`/`i64`/`f64`/`bool`,
-                                                                              // returning the opaque self handle) without
-                                                                              // eagerly lowering methods that would unmask
-                                                                              // pre-existing per-module cross-module-resolution
-                                                                              // gaps. Lifting the signature restriction needs
-                                                                              // imported user-type/trait registration at the
-                                                                              // MIR boundary — a separate lane.
-                                                                              // Generic type parameters in scope on the impl
-                                                                              // block. A signature naming one (`Option<B>` on
-                                                                              // `impl<I, A, B> Iterator for Map<I, A, B>`) is a
-                                                                              // carrier resolved at monomorphisation time, not a
-                                                                              // The pre-lowering body plan and this emitter
-                                                                              // share one exact eligibility authority.
-                                let skip_methods =
-                                    ctx.imported_impl_skip_methods(impl_decl, &source_module);
+                                let self_type_name = &named_path.to_string();
+                                // The pre-lowering plan and this emitter share
+                                // the same exact declaration eligibility set.
+                                let skip_methods = ctx.imported_impl_skip_methods(impl_decl);
                                 // Impl method symbols are declaration-owned,
                                 // not collision-owned. Consume the canonical
                                 // owner established by the declaration-keyed
@@ -2876,7 +2772,7 @@ pub fn lower_program_with_mono_cap(
                         } else {
                             imported_impl_symbol_self_name("std.builtins", name)
                         };
-                        let skipped_methods: HashSet<String> = impl_decl
+                        let skipped_methods: HashSet<hew_types::DefId> = impl_decl
                             .methods
                             .iter()
                             .filter(|method| {
@@ -2887,9 +2783,25 @@ pub fn lower_program_with_mono_cap(
                                     ),
                                 )
                             })
-                            .map(|method| method.name.to_string())
+                            .filter_map(|method| {
+                                let symbol = crate::node::HirImplBlock::method_symbol(
+                                    name,
+                                    method.name.name.as_str(),
+                                );
+                                ctx.impl_method_declaration_ids
+                                    .get(&symbol)
+                                    .or_else(|| output.impl_method_declaration_ids.get(&symbol))
+                                    .copied()
+                            })
                             .collect();
-                        if skipped_methods.len() == impl_decl.methods.len() {
+                        if impl_decl.methods.iter().all(|method| {
+                            !builtin_callable_impl_method_symbols.contains(
+                                &crate::node::HirImplBlock::method_symbol(
+                                    &symbol_owner,
+                                    method.name.name.as_str(),
+                                ),
+                            )
+                        }) {
                             continue;
                         }
                         // The checker output for the isolated builtins source

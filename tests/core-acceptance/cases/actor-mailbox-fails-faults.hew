@@ -87,10 +87,14 @@ fn main() {
     }
     // A one-way submission reports acceptance, not the fault it goes on to
     // cause, so the program observes the crash with a completion call queued
-    // behind it on the same incarnation. `await_restart` waits for a crash the
+    // behind it on the same incarnation. `restarted` waits for a crash the
     // supervisor has been told about; this is what tells it.
     let _ = bank.ledger.balance_now();
-    let _ = await_restart bank.ledger;
+    let _ = {
+        let __hew_migrated_role_2637 = bank.ledger;
+        restarted(__hew_migrated_role_2637);
+        __hew_migrated_role_2637
+    };
     match bank.ledger.balance_now() {
         .Ok(left) => println(left),
         .Err(_) => println("unavailable"),
@@ -103,7 +107,11 @@ fn main() {
         .Err(_) => println("refused"),
     }
     let _ = bank.vault.balance_now();
-    let _ = await_restart bank.vault;
+    let _ = {
+        let __hew_migrated_role_3099 = bank.vault;
+        restarted(__hew_migrated_role_3099);
+        __hew_migrated_role_3099
+    };
     match bank.vault.balance_now() {
         .Ok(left) => println(left),
         .Err(_) => println("unavailable"),

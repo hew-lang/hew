@@ -13,7 +13,7 @@
 // HELD handle reaches the FRESH child — no UAF, no trap.
 //
 // This test BINDS the handle BEFORE the crash and holds it ACROSS the restart,
-// then asks through the same binding AFTER. The barrier (`await_restart`) makes
+// then asks through the same binding AFTER. The barrier (`restarted`) makes
 // the ordering deterministic — no sleep_ms race. Exit 7 proves the held,
 // pre-crash handle re-resolved to the restarted child whose init value is 7.
 actor Worker {
@@ -41,7 +41,11 @@ fn main() -> i64 {
     let _ = w.crash_me();
     // Wait for the supervisor to complete the restart cycle. The handle the
     // barrier re-fetches is discarded: the ask below goes through `w`.
-    let _ = await_restart sup.w1;
+    let _ = {
+        let __hew_migrated_role_1869 = sup.w1;
+        restarted(__hew_migrated_role_1869);
+        __hew_migrated_role_1869
+    };
     // Ask through the PRE-CRASH held handle. The fungible reference re-resolves
     // to the restarted child; a snapshot would reach the freed actor and trap.
     match w.get_value() {

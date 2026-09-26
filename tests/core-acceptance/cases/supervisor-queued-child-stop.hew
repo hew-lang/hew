@@ -1,0 +1,25 @@
+import std.stream;
+
+actor ParkedReceiver {
+    receive fn run(index: i64) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("pipe");
+        tx.send(f"item-{index}").expect("send");
+        for item in rx {
+            println("parked");
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child receiver: ParkedReceiver stop: 50ms;
+}
+
+fn main() {
+    let app = spawn App;
+    mailbox(app.receiver, on_full: .Wait).run(0).expect("submit");
+    stop(app);
+    stopped(app);
+    println("released");
+}

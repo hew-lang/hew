@@ -81,7 +81,7 @@ actor Watcher {
     fn on_down(note: DownNotification) {
         outcome = match note.target {
             DownTarget.Remote(_) => match note.reason {
-                DownReason.Exited => 1,
+                DownReason.Stopped => 1,
                 _ => 2,
             }
             DownTarget.Local(_) => 3,

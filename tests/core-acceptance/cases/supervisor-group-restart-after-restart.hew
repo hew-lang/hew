@@ -31,11 +31,23 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let _ = app.b.boom();
-    let _b = await_restart app.b;
+    let _b = {
+        let __hew_migrated_role_823 = app.b;
+        restarted(__hew_migrated_role_823);
+        __hew_migrated_role_823
+    };
     println("restarted b");
     let _ = app.a.boom();
-    let _a = await_restart app.a;
+    let _a = {
+        let __hew_migrated_role_911 = app.a;
+        restarted(__hew_migrated_role_911);
+        __hew_migrated_role_911
+    };
     println("restarted a");
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_964 = app;
+        stop(__hew_migrated_actor_964);
+        stopped(__hew_migrated_actor_964);
+    };
     println("stopped");
 }

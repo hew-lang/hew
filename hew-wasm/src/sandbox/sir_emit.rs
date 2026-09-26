@@ -1873,6 +1873,27 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         })
     }
     match operation {
+        Op::Stop(target)
+        | Op::Terminate(target)
+        | Op::AwaitStopped(target)
+        | Op::AwaitRestarted(target) => {
+            let op = match operation {
+                Op::Stop(_) => "stop",
+                Op::Terminate(_) => "terminate",
+                Op::AwaitStopped(_) => "await_stopped",
+                Op::AwaitRestarted(_) => "await_restarted",
+                _ => unreachable!(),
+            };
+            match target {
+                hew_sir::LifecycleTarget::Actor(id) | hew_sir::LifecycleTarget::ActorRole(id) => {
+                    serde_json::json!({ "op": op, "actor": id.0 })
+                }
+                hew_sir::LifecycleTarget::Supervisor(id)
+                | hew_sir::LifecycleTarget::SupervisorRole(id) => {
+                    serde_json::json!({ "op": op, "supervisor": id.0 })
+                }
+            }
+        }
         Op::Spawn(actor) => serde_json::json!({ "op": "spawn", "actor": actor.0 }),
         Op::SelfHandle(actor) => serde_json::json!({ "op": "self_handle", "actor": actor.0 }),
         Op::Close(actor) => serde_json::json!({ "op": "close", "actor": actor.0 }),

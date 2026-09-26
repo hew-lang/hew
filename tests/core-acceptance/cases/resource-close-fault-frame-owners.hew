@@ -33,6 +33,10 @@ supervisor Rack {
 fn main() {
     let rack = spawn Rack;
     let _ = rack.drain.run();
-    let _ = await_restart rack.drain;
+    let _ = {
+        let __hew_migrated_role_846 = rack.drain;
+        restarted(__hew_migrated_role_846);
+        __hew_migrated_role_846
+    };
     println("restarted");
 }

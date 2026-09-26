@@ -13,6 +13,6 @@ fn note(value: link_monitor.DownNotification) -> u64 {
 
 fn main() {
     assert(info(failure.CrashInfo { code: 1, message: "hello".to_upper() }) == 1);
-    let value = link_monitor.DownNotification { monitor: link_monitor.MonitorId { value: 7 }, target: .Local(4), reason: .Crashed(failure.CrashKind.Crashed) };
+    let value = link_monitor.DownNotification { monitor: link_monitor.MonitorId { value: 7 }, target: .Local(4), reason: .Crashed(failure.CrashKind.Fault) };
     assert(note(value) == 7);
 }

@@ -586,12 +586,6 @@ fn fmt_totality_expr_await() {
     assert_roundtrip("fn f() {\n    let r = await task();\n}\n");
 }
 
-/// `Expr::AwaitRestart`
-#[test]
-fn fmt_totality_expr_await_restart() {
-    assert_roundtrip("fn f() {\n    let w = await_restart sup.worker;\n}\n");
-}
-
 /// `Expr::RegexLiteral`
 #[test]
 fn fmt_totality_expr_regex_literal() {

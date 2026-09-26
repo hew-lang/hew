@@ -6,7 +6,7 @@
 // retired init-arg bit-copy refusal, which limited child init arguments to
 // bit-copyable scalars.
 //
-// The restart is observed with `await_restart`, the language-primitive restart
+// The restart is observed with `restarted`, the language-primitive restart
 // barrier: it suspends until the child slot is Live again and re-fetches the
 // now-Live handle.
 //
@@ -73,7 +73,11 @@ fn main() -> i64 {
         }
     }
     let _ = w.crash_me();
-    let w2 = await_restart sup.w;
+    let w2 = {
+        let __hew_migrated_role_2088 = sup.w;
+        restarted(__hew_migrated_role_2088);
+        __hew_migrated_role_2088
+    };
     // The second incarnation must carry the same owned values.
     match w2.region_matches() {
         .Err(_) => {

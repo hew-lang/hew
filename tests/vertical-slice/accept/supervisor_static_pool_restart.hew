@@ -4,7 +4,7 @@
 // supervised slot, so only that member restarts, and `sup.workers[i]`
 // re-resolves through the live slot to the fresh member — no stale PID cached.
 //
-// `await_restart sup.workers[0]` is the barrier: it returns only once that
+// `restarted(sup.workers[0])` is the barrier: it returns only once that
 // member's own slot is Live again (or permanently gone), so the following
 // access is guaranteed to reach the restarted member.
 //
@@ -47,7 +47,11 @@ fn main() -> i64 {
     // Crash member 0 (fire-and-forget). Only its own slot restarts.
     let _ = m0.crash_me();
     // Wait for that member's slot to be Live again, then read through it.
-    let m0b = await_restart sup.workers[0];
+    let m0b = {
+        let __hew_migrated_role_1652 = sup.workers[0];
+        restarted(__hew_migrated_role_1652);
+        __hew_migrated_role_1652
+    };
     match m0b.get_value() {
         .Ok(v) => v,
         .Err(_) => 0,

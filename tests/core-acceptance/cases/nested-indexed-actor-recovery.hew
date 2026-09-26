@@ -27,8 +27,16 @@ fn main() {
     let group = spawn Group;
     group.worker.change().expect("change");
     let _ = group.worker.fail();
-    let _ = await_restart group.worker;
+    let _ = {
+        let __hew_migrated_role_702 = group.worker;
+        restarted(__hew_migrated_role_702);
+        __hew_migrated_role_702
+    };
     assert(group.worker.get().expect("fresh") == "INITIAL");
-    close(group);
+    {
+        let __hew_migrated_actor_795 = group;
+        stop(__hew_migrated_actor_795);
+        stopped(__hew_migrated_actor_795);
+    };
     println("recovered");
 }

@@ -35,7 +35,11 @@ fn main() {
         .Err(_) => println("read failed"),
     }
     let _ = app.left.boom();
-    let replacement = await_restart app.left;
+    let replacement = {
+        let __hew_migrated_role_773 = app.left;
+        restarted(__hew_migrated_role_773);
+        __hew_migrated_role_773
+    };
     match replacement.read() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
@@ -44,6 +48,10 @@ fn main() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_1035 = app;
+        stop(__hew_migrated_actor_1035);
+        stopped(__hew_migrated_actor_1035);
+    };
     println("stopped");
 }

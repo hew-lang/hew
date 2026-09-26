@@ -21,7 +21,11 @@ fn main() {
     let started = datetime.now_ms();
     for _ in 0 .. 9 {
         let _ = app.worker.crash_me();
-        let fresh = await_restart app.worker;
+        let fresh = {
+            let __hew_migrated_role_458 = app.worker;
+            restarted(__hew_migrated_role_458);
+            __hew_migrated_role_458
+        };
         match fresh.read() {
             .Ok(value) => assert(value == 7),
             .Err(_) => panic("restarted child unavailable"),
@@ -29,5 +33,9 @@ fn main() {
     }
     let elapsed = datetime.now_ms() - started;
     println(elapsed >= 50000 && elapsed < 52000);
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_737 = app;
+        stop(__hew_migrated_actor_737);
+        stopped(__hew_migrated_actor_737);
+    };
 }

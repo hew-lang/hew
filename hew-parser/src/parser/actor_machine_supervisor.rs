@@ -1469,12 +1469,12 @@ impl Parser<'_> {
 
                     // Per-child suffix clauses, accepted in any order:
                     //   restart: permanent | transient | temporary
-                    //   shutdown: <duration> | brutal_kill | infinity
+                    //   stop: <duration>
                     //   wired_to: { param: sibling, bare_sibling }
                     //   count: <expr>            (pool children only)
                     let mut restart: Option<RestartPolicy> = None;
                     let mut count: Option<Spanned<Expr>> = None;
-                    let mut shutdown: Option<ShutdownDirective> = None;
+                    let mut stop: Option<Spanned<Expr>> = None;
                     let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
                     loop {
                         match self.peek() {
@@ -1506,32 +1506,30 @@ impl Parser<'_> {
                                     }
                                 };
                             }
-                            // `shutdown: <duration> | brutal_kill | infinity` clause.
-                            // `infinity` is accepted without a per-child deadline
-                            // wheel and is a contextual keyword.
-                            Some(Token::Identifier(s)) if *s == "shutdown" => {
+                            // The retired `shutdown:` spelling is recognised
+                            // for migration, but strict parsing never lowers it.
+                            Some(Token::Identifier(s)) if *s == "stop" || *s == "shutdown" => {
+                                let retired = *s == "shutdown";
+                                let clause_start = self.peek_span().start;
                                 self.advance();
                                 self.expect(&Token::Colon)?;
-                                shutdown = match self.peek() {
-                                    Some(Token::Duration(d)) => {
-                                        let d = d.to_string();
+                                let value = match self.peek() {
+                                    Some(Token::Identifier(k))
+                                        if *k == "brutal_kill" && retired =>
+                                    {
+                                        let span = self.peek_span();
                                         self.advance();
-                                        Some(ShutdownDirective::Timeout(d))
+                                        Some((Expr::Literal(Literal::Duration(0)), span))
                                     }
-                                    Some(Token::BrutalKill) => {
+                                    Some(Token::Identifier(k)) if *k == "infinity" && retired => {
                                         self.advance();
-                                        Some(ShutdownDirective::BrutalKill)
-                                    }
-                                    Some(Token::Identifier(k)) if *k == "infinity" => {
-                                        self.advance();
-                                        Some(ShutdownDirective::Infinity)
+                                        None
                                     }
                                     Some(Token::Integer(n)) => {
                                         let n = n.to_string();
                                         self.error_with_hint(
                                             format!(
-                                                "supervisor child `shutdown:` must be a duration \
-                                                 literal, `brutal_kill`, or `infinity`, \
+                                                "supervisor child `stop:` needs a duration, \
                                                  not a bare integer `{n}`"
                                             ),
                                             format!("write `{n}s` (or another unit: {n}ms, {n}m)"),
@@ -1539,17 +1537,42 @@ impl Parser<'_> {
                                         self.advance();
                                         None
                                     }
-                                    _ => {
+                                    Some(Token::Comma | Token::Semicolon | Token::RightBrace)
+                                    | None => {
                                         self.error_with_hint(
-                                            "supervisor child `shutdown:` requires a duration, \
-                                             `brutal_kill`, or `infinity`"
+                                            "supervisor child `stop:` requires a duration"
                                                 .to_string(),
-                                            "write `shutdown: 30s`, `shutdown: brutal_kill`, \
-                                             or `shutdown: infinity`",
+                                            "write `stop: 30s` or `stop: 0s` to terminate at once",
                                         );
                                         None
                                     }
+                                    _ => self.parse_expr(),
                                 };
+                                if retired {
+                                    let hint = if value.as_ref().is_some_and(|(expr, _)| {
+                                        matches!(expr, Expr::Literal(Literal::Duration(0)))
+                                    }) {
+                                        "replace `shutdown: brutal_kill` with `stop: 0s`"
+                                    } else if value.is_none() {
+                                        "remove `shutdown: infinity` on a supervisor child"
+                                    } else {
+                                        "replace `shutdown:` with `stop:`"
+                                    };
+                                    self.error_at_with_kind_and_hint(
+                                        "E_SUPERVISOR_STOP_CLAUSE: `shutdown:` is retired"
+                                            .to_string(),
+                                        clause_start..self.last_token_end,
+                                        hint,
+                                        ParseDiagnosticKind::SupervisorStopClauseRetired,
+                                    );
+                                }
+                                if stop.is_some() {
+                                    self.error_at(
+                                        "duplicate supervisor child `stop:` clause".to_string(),
+                                        clause_start..self.last_token_end,
+                                    );
+                                }
+                                stop = value;
                             }
                             // `wired_to: { key: sibling, bare_sibling }` clause.
                             Some(Token::Identifier(s)) if *s == "wired_to" => {
@@ -1575,7 +1598,7 @@ impl Parser<'_> {
                                 wired_to = if map.is_empty() { None } else { Some(map) };
                             }
                             // `count: <expr>` clause — pool arity. Contextual,
-                            // like `shutdown` and `wired_to`, so `count` stays
+                            // like `stop` and `wired_to`, so `count` stays
                             // an ordinary identifier everywhere else (including
                             // as an actor field name inside the init-arg list).
                             Some(Token::Identifier(s)) if *s == "count" => {
@@ -1639,7 +1662,7 @@ impl Parser<'_> {
                         restart,
                         wired_to,
                         is_pool,
-                        shutdown,
+                        stop,
                         count,
                         span: child_start..self.last_token_end,
                     });

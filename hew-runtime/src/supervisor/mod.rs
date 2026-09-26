@@ -838,6 +838,7 @@ struct ChildEvent {
     child_index: u32,
     child_id: u64,
     exit_state: c_int,
+    end_reason: crate::internal::types::ActorEndReason,
     crash_code: c_int,
     /// The crash record opened at the crash site. This supervisor's ruling
     /// settles it, or hands it to the next authority. `0` for a graceful stop,
@@ -928,6 +929,8 @@ pub(crate) struct SupervisorChildSpec {
     spawn: SupervisorChildSpawn,
     identity: u64,
     restart_policy: c_int,
+    /// Nested supervisors carry no separate deadline; their children do.
+    stop_ns: i64,
     spent: bool,
 }
 
@@ -1565,6 +1568,8 @@ struct InternalChildSpec {
     dispatch: Option<HewDispatchFn>,
     sys_dispatch: Option<HewSysDispatchFn>,
     restart_policy: c_int,
+    /// Graceful stop deadline in nanoseconds; zero terminates at once.
+    stop_ns: i64,
     mailbox_capacity: c_int,
     overflow: c_int,
     coalesce_key_fn: Option<mailbox::HewCoalesceKeyFn>,
@@ -1738,6 +1743,7 @@ impl Default for InternalChildSpec {
             dispatch: None,
             sys_dispatch: None,
             restart_policy: RESTART_PERMANENT,
+            stop_ns: 5_000_000_000,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
             coalesce_key_fn: None,

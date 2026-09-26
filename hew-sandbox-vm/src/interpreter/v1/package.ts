@@ -514,13 +514,31 @@ export interface ActorProtocol {
 }
 
 export type ActorOperation =
-  | { op: "spawn" | "self_handle" | "close" | "await_closed"; actor: number }
+  | {
+      op:
+        | "spawn"
+        | "self_handle"
+        | "stop"
+        | "terminate"
+        | "await_stopped"
+        | "await_restarted"
+        | "close"
+        | "await_closed";
+      actor: number;
+    }
   | { op: "call_start" | "call_take"; protocol: ActorProtocol }
   | { op: "submit"; actor: number; policy: ActorProtocol["policy"] }
   | { op: "stream_start"; actor: number; message: number }
   | { op: "local_observation"; kind: string }
   | {
-      op: "supervisor_spawn" | "supervisor_stop" | "supervisor_await_closed";
+      op:
+        | "supervisor_spawn"
+        | "supervisor_stop"
+        | "supervisor_await_closed"
+        | "stop"
+        | "terminate"
+        | "await_stopped"
+        | "await_restarted";
       supervisor: number;
     }
   | {
@@ -577,6 +595,7 @@ export interface SupervisorShape {
     name: string;
     role: { actor: number } | { supervisor: number };
     restart: string;
+    stop_ns?: number | null;
     pool_count?: number;
     spawn: number;
   }>;

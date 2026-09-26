@@ -52,7 +52,11 @@ fn main() {
     let _ = m0.crash_me();
     // Only member 0's slot restarts; its init template is re-applied, owned
     // state and all.
-    let fresh = await_restart farm.workers[0];
+    let fresh = {
+        let __hew_migrated_role_1325 = farm.workers[0];
+        restarted(__hew_migrated_role_1325);
+        __hew_migrated_role_1325
+    };
     match fresh.id_of() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
@@ -68,6 +72,10 @@ fn main() {
             .Err(_) => println("read failed"),
         }
     }
-    supervisor_stop(farm);
+    {
+        let __hew_migrated_actor_1828 = farm;
+        stop(__hew_migrated_actor_1828);
+        stopped(__hew_migrated_actor_1828);
+    };
     println("stopped");
 }

@@ -52,6 +52,7 @@ struct MonitorShard {
 struct TerminalMonitorReason {
     state: i32,
     crash_kind: u32,
+    end: crate::internal::types::ActorEndReason,
 }
 
 /// Per-runtime actor-monitor state: the sharded monitor table plus the
@@ -713,10 +714,11 @@ fn terminal_monitor_reason(actor_state: i32) -> Option<i32> {
 
 const DOWN_TARGET_LOCAL: u32 = 0;
 const DOWN_TARGET_REMOTE: u32 = 1;
-const DOWN_REASON_EXITED: u32 = 0;
-const DOWN_REASON_CRASHED: u32 = 1;
-const DOWN_REASON_MONITOR_LOST: u32 = 2;
-const DOWN_REASON_LOCAL_SHUTDOWN: u32 = 3;
+const DOWN_REASON_STOPPED: u32 = 0;
+const DOWN_REASON_TERMINATED: u32 = 1;
+const DOWN_REASON_CRASHED: u32 = 2;
+const DOWN_REASON_MONITOR_LOST: u32 = 3;
+const DOWN_REASON_LOCAL_SHUTDOWN: u32 = 4;
 
 /// Fixed actor-mailbox DOWN payload.
 #[repr(C)]
@@ -733,11 +735,16 @@ pub struct HewDownMessage {
 }
 
 impl HewDownMessage {
-    fn local(monitor_id: u64, actor_id: u64, terminal: i32, crash_kind: u32) -> Self {
-        let reason_kind = if terminal == HewActorState::Stopped as i32 {
-            DOWN_REASON_EXITED
-        } else {
-            DOWN_REASON_CRASHED
+    fn local(
+        monitor_id: u64,
+        actor_id: u64,
+        end: crate::internal::types::ActorEndReason,
+        crash_kind: u32,
+    ) -> Self {
+        let reason_kind = match end {
+            crate::internal::types::ActorEndReason::Stopped => DOWN_REASON_STOPPED,
+            crate::internal::types::ActorEndReason::Terminated => DOWN_REASON_TERMINATED,
+            crate::internal::types::ActorEndReason::Crashed => DOWN_REASON_CRASHED,
         };
         Self {
             monitor_id,
@@ -762,7 +769,7 @@ impl HewDownMessage {
         crash_kind: u32,
     ) -> Self {
         let reason_kind = if terminal == HewActorState::Stopped as i32 {
-            DOWN_REASON_EXITED
+            DOWN_REASON_STOPPED
         } else {
             DOWN_REASON_CRASHED
         };
@@ -919,6 +926,10 @@ unsafe fn register_local_monitor(
         }) {
             Some(TerminalMonitorReason {
                 state: reason,
+                end: crate::internal::types::ActorEndReason::from_terminal(
+                    reason,
+                    crate::mailbox::mailbox_terminate_requested(target_ref.mailbox.cast()),
+                ),
                 crash_kind: if reason == HewActorState::Crashed as i32 {
                     crate::internal::types::CrashKind::tag_from_error_code(
                         target_ref.error_code.load(Ordering::Acquire),
@@ -934,6 +945,7 @@ unsafe fn register_local_monitor(
             Some(TerminalMonitorReason {
                 state: HewActorState::Stopped as i32,
                 crash_kind: 0,
+                end: crate::internal::types::ActorEndReason::Stopped,
             })
         } else {
             shard
@@ -953,7 +965,7 @@ unsafe fn register_local_monitor(
     });
 
     if let Some(reason) = terminal_reason {
-        let down = HewDownMessage::local(ref_id, target_id, reason.state, reason.crash_kind);
+        let down = HewDownMessage::local(ref_id, target_id, reason.end, reason.crash_kind);
         deliver_down_message(watcher_id, down);
     }
 
@@ -1171,7 +1183,12 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
 /// This function is called from `hew_actor_trap` after the actor has
 /// transitioned to a terminal state. It removes all monitors for the
 /// dead actor and sends DOWN messages to all monitoring actors.
-pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u32) {
+pub(crate) fn notify_monitors_on_end(
+    actor_id: u64,
+    reason: i32,
+    crash_kind: u32,
+    end: crate::internal::types::ActorEndReason,
+) {
     let shard_index = get_shard_index(actor_id);
     // No runtime → no per-runtime monitor table → no monitors to notify. This
     // path is reachable from `hew_actor_trap` without an installed runtime
@@ -1189,6 +1206,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
             TerminalMonitorReason {
                 state: reason,
                 crash_kind,
+                end,
             },
         );
 
@@ -1238,7 +1256,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
     for (monitor_id, watcher_actor_id) in claimed {
         deliver_down_message(
             watcher_actor_id,
-            HewDownMessage::local(monitor_id, actor_id, reason, crash_kind),
+            HewDownMessage::local(monitor_id, actor_id, end, crash_kind),
         );
     }
 
@@ -1248,6 +1266,16 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
     // fan-out is fail-closed and no-ops when no remote watcher exists or no
     // node/conn-mgr is installed (R7), so the local sweep above is unaffected.
     crate::hew_node::fan_out_remote_monitor_down(actor_id, remote_watchers, reason, crash_kind);
+}
+
+#[cfg(test)]
+pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u32) {
+    notify_monitors_on_end(
+        actor_id,
+        reason,
+        crash_kind,
+        crate::internal::types::ActorEndReason::from_terminal(reason, false),
+    );
 }
 
 #[cfg(test)]
@@ -2290,6 +2318,7 @@ mod tests {
                 Some(TerminalMonitorReason {
                     state: HewActorState::Crashed as i32,
                     crash_kind: 0,
+                    end: crate::internal::types::ActorEndReason::Crashed,
                 }),
                 "the installed runtime's monitor table must record the terminal sweep"
             );

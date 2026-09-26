@@ -26,11 +26,19 @@ fn main() {
     let short = group.short_lived;
     let durable = group.durable;
     let _ = short.fail();
-    let _ = await_restart group.short_lived;
+    let _ = {
+        let __hew_migrated_role_751 = group.short_lived;
+        restarted(__hew_migrated_role_751);
+        __hew_migrated_role_751
+    };
     assert(short.get().is_err());
     durable.put(7).expect("mark the surviving role");
     let _ = durable.fail();
-    let _ = await_restart group.durable;
+    let _ = {
+        let __hew_migrated_role_912 = group.durable;
+        restarted(__hew_migrated_role_912);
+        __hew_migrated_role_912
+    };
     assert(durable.get().expect("the group restart replaced the durable role") == 0);
     assert(group.short_lived.get().is_err());
     println("a declined role stays dead through a sibling group restart");

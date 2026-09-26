@@ -478,6 +478,15 @@ pub(crate) struct ReleaseDriver {
 }
 
 impl ReleaseDriver {
+    /// Cancel the active callback while keeping this driver's remaining
+    /// release slots available for normal cleanup.
+    pub(crate) fn cancel_active(&self) {
+        if !self.state.is_null() {
+            // SAFETY: the driver owns this child invocation until it finishes.
+            unsafe { crate::coro_state::hew_coro_state_cancel(self.state) };
+        }
+    }
+
     #[expect(
         clippy::unnecessary_box_returns,
         reason = "generated child frames retain fault output addresses in this allocation"

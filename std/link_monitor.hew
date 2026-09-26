@@ -81,8 +81,10 @@ pub enum DownTarget {
 
 /// Terminal cause carried by a DOWN notification.
 pub enum DownReason {
-    /// The monitored actor exited normally.
-    Exited;
+    /// The monitored actor completed a graceful stop.
+    Stopped;
+    /// The monitored actor was forcefully terminated.
+    Terminated;
     /// The monitored actor crashed.
     Crashed(CrashKind);
     /// The remote actor became unreachable.

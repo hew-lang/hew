@@ -44,7 +44,11 @@ fn main() -> i64 {
         .Err(_) => return 1,
     };
     let _ = sup.worker.crash();
-    let restarted = await_restart sup.worker;
+    let restarted = {
+        let __hew_migrated_role_1026 = sup.worker;
+        restarted(__hew_migrated_role_1026);
+        __hew_migrated_role_1026
+    };
     let second = match restarted.get() {
         .Ok(value) => value,
         .Err(_) => return 2,

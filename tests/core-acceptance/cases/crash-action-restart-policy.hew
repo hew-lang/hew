@@ -17,7 +17,7 @@ actor Worker {
         match action {
             0 => CrashAction.Restart,
             1 => CrashAction.Escalate,
-            _ => CrashAction.Kill,
+            _ => CrashAction.GiveUp,
         }
     }
 }
@@ -42,15 +42,31 @@ fn main() {
     let app = spawn App;
     let once = app.once;
     assert(once.fail().is_err());
-    expect_spent(await_restart app.once);
+    expect_spent({
+        let __hew_migrated_role_908 = app.once;
+        restarted(__hew_migrated_role_908);
+        __hew_migrated_role_908
+    });
     println("temporary stopped");
     let discarded = app.discarded;
     assert(discarded.fail().is_err());
-    expect_spent(await_restart app.discarded);
+    expect_spent({
+        let __hew_migrated_role_1058 = app.discarded;
+        restarted(__hew_migrated_role_1058);
+        __hew_migrated_role_1058
+    });
     println("kill stopped");
     let escalated = app.escalated;
     assert(escalated.fail().is_err());
-    expect_spent(await_restart app.escalated);
+    expect_spent({
+        let __hew_migrated_role_1208 = app.escalated;
+        restarted(__hew_migrated_role_1208);
+        __hew_migrated_role_1208
+    });
     println("root escalation stopped");
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_1282 = app;
+        stop(__hew_migrated_actor_1282);
+        stopped(__hew_migrated_actor_1282);
+    };
 }

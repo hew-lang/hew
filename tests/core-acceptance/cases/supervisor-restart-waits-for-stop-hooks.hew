@@ -42,7 +42,11 @@ fn main() {
     let audit = spawn Audit;
     let app = spawn App(audit: audit);
     let _ = app.left.boom();
-    let replacement = await_restart app.left;
+    let replacement = {
+        let __hew_migrated_role_1122 = app.left;
+        restarted(__hew_migrated_role_1122);
+        __hew_migrated_role_1122
+    };
     match replacement.ping() {
         .Ok(value) => println(f"left {value}"),
         .Err(_) => println("left failed"),
@@ -51,7 +55,15 @@ fn main() {
         .Ok(value) => println(f"right {value}"),
         .Err(_) => println("right failed"),
     }
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_1406 = app;
+        stop(__hew_migrated_actor_1406);
+        stopped(__hew_migrated_actor_1406);
+    };
     println("stopped");
-    close(audit);
+    {
+        let __hew_migrated_actor_1456 = audit;
+        stop(__hew_migrated_actor_1456);
+        stopped(__hew_migrated_actor_1456);
+    };
 }

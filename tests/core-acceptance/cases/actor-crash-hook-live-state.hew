@@ -48,8 +48,16 @@ fn main() {
         println(group.vault.swap(false).expect("swap"));
     }
     let _ = group.vault.swap(true);
-    let _ = await_restart group.vault;
+    let _ = {
+        let __hew_migrated_role_1039 = group.vault;
+        restarted(__hew_migrated_role_1039);
+        __hew_migrated_role_1039
+    };
     println(group.vault.swap(false).expect("fresh"));
-    close(group);
+    {
+        let __hew_migrated_actor_1124 = group;
+        stop(__hew_migrated_actor_1124);
+        stopped(__hew_migrated_actor_1124);
+    };
     println("done");
 }

@@ -1506,6 +1506,22 @@ same name; qualifying with the module (or alias) resolves the conflict.
 
 ### 3.6 Trait System
 
+Names resolve in lexical scope: a local callable shadows a module function,
+and module declarations and imports take precedence over prelude functions.
+Protected prelude type and trait declarations cannot be redeclared. Compiler
+predicate spellings such as `Clone` and `Send` may name user traits; those
+traits impose their declared methods and do not acquire compiler predicate
+semantics from their spelling.
+
+For `value.method()`, an inherent method takes precedence. Otherwise exactly
+one applicable trait method must be available; multiple candidates are an
+ambiguity error. A call through a generic trait bound or `dyn Trait` uses that
+trait's method identity. Structural trait satisfaction selects an inherent
+method first, then a unique compatible trait implementation; it must not choose
+between multiple witnesses by declaration order. Distinct traits retain their
+own method identities and vtable order even when their names or signatures
+match.
+
 Traits define shared behaviour that types can implement. Hew has built-in marker traits and supports user-defined traits.
 
 **Trait declaration:**

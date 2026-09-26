@@ -27,8 +27,16 @@ fn main() {
     let root = spawn Root(seed: "one initial incarnation".to_upper());
     let worker = root.branch.worker;
     let _ = worker.fail();
-    let _ = await_restart root.branch;
+    let _ = {
+        let __hew_migrated_role_628 = root.branch;
+        restarted(__hew_migrated_role_628);
+        __hew_migrated_role_628
+    };
     assert(worker.ping().is_err());
-    close(root);
+    {
+        let __hew_migrated_actor_695 = root;
+        stop(__hew_migrated_actor_695);
+        stopped(__hew_migrated_actor_695);
+    };
     println("zero budget performs no restart");
 }

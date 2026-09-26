@@ -428,6 +428,8 @@ pub struct TypeCheckOutput {
     /// (zero behaviour change). Phase 2 promotes this to the primary read path;
     /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    /// Resolved source annotations, keyed by their defining file and span.
+    pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
     /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
     /// [`TypeInstanceKey`].
@@ -519,6 +521,9 @@ pub struct TypeCheckOutput {
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
+    /// Coalescing members and their key parameter slots, selected by exact
+    /// checker declaration identity.
+    pub actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by the method call span.
     ///
     /// Populated for every accepted `.step()` / `.state_name()` call on a
@@ -1657,6 +1662,7 @@ impl Default for TypeCheckOutput {
             owning_take_vec_cursors: HashSet::new(),
             borrowed_element_option_reads: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            resolved_annotation_types: HashMap::new(),
             type_facts: BTreeMap::new(),
             type_fact_context: TypeFactContext::default(),
             is_type_patterns: HashMap::new(),
@@ -1718,6 +1724,7 @@ impl Default for TypeCheckOutput {
             pool_accessor_sites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_delivery_calls: HashMap::new(),
+            actor_coalesce_keys: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
             result_return_coercions: HashMap::new(),
@@ -3132,6 +3139,7 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) annotation_types: HashMap<SpanKey, (Ty, Option<String>)>,
     pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
     pub(super) unrendered_assertion_operands: HashSet<SpanKey>,
     /// Checker-side accumulator for
@@ -3307,6 +3315,7 @@ pub struct Checker {
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub(super) actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
+    pub(super) actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
     /// Mailbox overflow policy keyed by the actor's canonical declaration
     /// identity. Absence means an unbounded mailbox. A bounded declaration
     /// with no explicit policy is recorded as `Block`.
@@ -4382,6 +4391,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            annotation_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             unrendered_assertion_operands: HashSet::new(),
             user_comparison_dispatch: HashMap::new(),
@@ -4439,6 +4449,7 @@ impl Checker {
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_delivery_calls: HashMap::new(),
+            actor_coalesce_keys: HashMap::new(),
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             tail_ok_coercions: HashSet::new(),

@@ -14,9 +14,8 @@ use hew_parser::ast::{
     condition_exprs, ActorDecl, ArrayElement, AttributeArg, BinaryOp, Block, CallArg,
     CompoundAssignOp, ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal,
     MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy,
-    SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, UnaryOp,
+    SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
+    TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::check::scope::Resolution;
@@ -44,9 +43,9 @@ use crate::node::{
     HirGenCapture, HirGenCaptureSource, HirItem, HirLambdaCapture, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
     HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind,
+    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker};
@@ -639,10 +638,6 @@ fn builtin_enum_variant_names() -> impl Iterator<Item = &'static str> {
         .flat_map(BuiltinEnumSpec::variant_names)
 }
 
-fn is_builtin_enum_variant_bare_name(name: &str) -> bool {
-    builtin_enum_variant_names().any(|candidate| candidate == name)
-}
-
 pub(crate) fn builtin_enum_hir_variants(spec: &BuiltinEnumSpec) -> Vec<HirVariant> {
     spec.variant_names()
         .enumerate()
@@ -829,12 +824,12 @@ struct RecordEntry {
 }
 
 /// Per-impl-block context threaded into `lower_impl_block` for imported
-/// modules. Carries the set of method names to skip because their bodies or signatures cannot
-/// be resolved safely across the module boundary. `symbol_self_name` is the
+/// modules. Carries exact checker declarations whose bodies cannot be lowered
+/// across the module boundary. `symbol_self_name` is the
 /// exact declaration-keyed owner selected by the pre-lowering body plan,
 /// including any concrete type-argument suffix.
 struct ImportedImplLowering<'a> {
-    skip_methods: &'a HashSet<String>,
+    skip_methods: &'a HashSet<hew_types::DefId>,
     symbol_self_name: Option<&'a str>,
 }
 
@@ -989,6 +984,7 @@ struct LowerCtx {
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
     impl_method_declaration_ids: HashMap<String, hew_types::DefId>,
+    imported_impl_body_facts: HashMap<hew_types::DefId, hew_types::check::ImportedImplBodyFact>,
     /// Checker declarations whose legacy physical method spelling collides.
     impl_method_symbol_collisions: HashSet<hew_types::DefId>,
     consuming_inherent_methods: HashSet<hew_types::DefId>,
@@ -1031,6 +1027,7 @@ struct LowerCtx {
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     actor_delivery_calls: HashMap<SpanKey, hew_types::actor_delivery::ActorDeliveryCall>,
+    actor_coalesce_keys: HashMap<hew_types::DefId, Vec<(hew_types::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
@@ -1126,6 +1123,7 @@ struct LowerCtx {
     /// every fail-open / boundary-violation site. Zero behaviour change in
     /// Phase 1; Phase 2 promotes this to the primary read path.
     resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a
     /// value expression to lower through lexical bindings.
@@ -1561,8 +1559,7 @@ struct LowerCtx {
     /// `"subpkg.helper"`): `None` for root items, `Some(path.join("."))` for
     /// imported package/file modules.  Mirrors the checker's
     /// `Checker::current_module` EXACTLY (same `mod_id.path.join(".")`
-    /// derivation) so the per-module alias map key in `resolve_named_type_ref`
-    /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
+    /// derivation) so per-module alias lookups agree with the checker's inserts for depth-≥2
     /// importers; the short last segment would diverge and miss.
     current_module_name: Option<String>,
     /// Exact checker-minted source module selected by the parser's per-file
@@ -1572,15 +1569,12 @@ struct LowerCtx {
     declaration_module_by_file_index: HashMap<u32, hew_types::ModuleId>,
     /// Immutable checker declaration authority. This view cannot mint.
     defs: std::sync::Arc<hew_types::DefTable>,
-    type_aliases: HashMap<hew_types::DefId, hew_types::TypeAliasDef>,
     /// Checker-authoritative import resolution table: maps `(importer_module,
     /// source spelling)` → canonical qualified source identity for named/glob
     /// imports and canonical lifecycle whole-module aliases.
     ///
     /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
     /// at `LowerCtx::new` time and consulted in:
-    /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)` or
-    ///   `fn f(x: lifecycle.CrashNotification)`).
     /// - `lookup_variant_ctor`: `Tag::Variant` enum-constructor paths.
     ///
     /// Per-module keying prevents a same-named alias from a different imported
@@ -1603,13 +1597,6 @@ struct LowerCtx {
     /// same scope the checker admitted it in.
     published_bare_const_owners:
         HashMap<(Option<String>, u32, String), std::collections::BTreeSet<String>>,
-    /// Exact owner identities for the bare function bindings an import
-    /// published, keyed by the file that wrote the import. The companion of
-    /// `published_bare_const_owners`; see `resolved_bare_function_symbol`.
-    import_fn_name_aliases: HashMap<(Option<String>, u32, String), String>,
-    /// Root-scope value bindings the program itself declares. A root
-    /// declaration outranks a name an import published into the root scope.
-    root_value_bindings: HashSet<String>,
 }
 
 /// Whether `ty` transitively carries a value whose SOLE ownership crosses an

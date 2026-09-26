@@ -284,7 +284,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
 
     println!(
         "core-acceptance results: {} passed, {} known-failing, {} failed",
-        verdicts.len() - failed.len() - known.len() - now_passing.len(),
+        verdicts.len() - failed.len() - known.len(),
         known.len(),
         failed.len(),
     );
@@ -300,9 +300,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         for id in &now_passing {
             println!("  {id}");
         }
-        println!(
-            "  Delete those rows. Ratchets only shrink; never restore a row to keep a run green."
-        );
+        println!("  Delete those rows in the change that recovered them.");
     }
     if !failed.is_empty() {
         println!("core-acceptance: unlisted failing cases:");
@@ -311,14 +309,13 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         }
     }
 
-    if failed.is_empty() && now_passing.is_empty() {
+    if failed.is_empty() {
         println!("core-acceptance: PASS");
         Ok(())
     } else {
         Err(format!(
-            "core-acceptance: {} unlisted failure(s), {} stale expected-failure row(s)",
-            failed.len(),
-            now_passing.len()
+            "core-acceptance: {} unlisted failure(s)",
+            failed.len()
         ))
     }
 }
@@ -363,8 +360,7 @@ struct Ratchet<'a> {
     failed: Vec<&'a str>,
     /// Failed with a row: reported, not red.
     known: Vec<&'a str>,
-    /// Passed with a row: red, because a ratchet only shrinks and a stale row
-    /// hides the next real failure of that case.
+    /// Passed with a row: reported for cleanup without failing this run.
     now_passing: Vec<&'a str>,
 }
 

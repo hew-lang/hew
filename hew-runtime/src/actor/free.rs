@@ -3146,8 +3146,7 @@ fn publish_crash_fault_record(
         // it, so it must not fail the process the way a genuine unrecovered
         // crash does. Any other error_code, including a cancellation outside
         // shutdown, is still unrecovered.
-        let cancelled_by_shutdown = error_code == crate::fault::HEW_FAULT_CANCELLED
-            && crate::shutdown::hew_is_shutting_down() != 0;
+        let cancelled_by_shutdown = crate::fault::cancelled_by_shutdown(error_code);
         if !cancelled_by_shutdown {
             crate::exit_status::record_unrecovered_actor_fault();
         }

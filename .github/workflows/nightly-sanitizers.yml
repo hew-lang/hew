@@ -139,7 +139,7 @@ jobs:
           #   4. Runs clean-probe (zero findings), leak-probe (must catch the
           #      Hew generated-code malloc leak), clean-probe CLI-link (zero
           #      findings).
-          make asan-fixtures
+          make core-safety
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime TSan — data-race detection for the actor runtime

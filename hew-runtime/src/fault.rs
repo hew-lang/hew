@@ -17,6 +17,21 @@ use crate::internal::types::{ExitReason, HEW_TRAP_USER_PANIC};
 
 /// Private completion codes kept distinct from source panic and trap codes.
 pub const HEW_FAULT_CANCELLED: i32 = -1;
+
+/// Whether `code` is a cancellation that a requested shutdown caused. Such a
+/// cancellation is an expected stop, not a fault. The wasm32 driver has no
+/// shutdown sequence, so there it is always false.
+pub(crate) fn cancelled_by_shutdown(code: i32) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        code == HEW_FAULT_CANCELLED && crate::shutdown::hew_is_shutting_down() != 0
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = code;
+        false
+    }
+}
 pub const HEW_FAULT_DEADLINE: i32 = -2;
 /// Internal cancellation requested after another race child has completed.
 /// Only the owning race drain may suppress this completion diagnostic.

@@ -1684,8 +1684,7 @@ unsafe fn finish_failed_resume(
     // call an expected stop a crash before that resolution ever runs. A
     // cancellation for any OTHER reason (a deadline, a lost select race, an
     // actor's own unrelated `.stop()`) still reports normally.
-    let cancelled_by_shutdown =
-        code == crate::fault::HEW_FAULT_CANCELLED && crate::shutdown::hew_is_shutting_down() != 0;
+    let cancelled_by_shutdown = crate::fault::cancelled_by_shutdown(code);
     if !cancelled_by_shutdown {
         crate::crash::record_logical_crash(
             a.id,

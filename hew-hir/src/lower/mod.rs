@@ -925,10 +925,10 @@ struct LowerCtx {
     current_actor_nominal: Option<hew_types::NominalId>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
-    /// Exact source function declaration → registered emission entry. The
-    /// symbol is a projection; the ItemId cross-check rejects registry
-    /// overwrites by another same-named callable.
-    source_fn_entries: HashMap<hew_types::DefId, (String, ItemId)>,
+    /// Exact source declaration → linker spelling and registered signature.
+    /// Extern declarations can share a linker spelling across modules; ordinary
+    /// function entries retain an `ItemId` seal against registry overwrites.
+    source_fn_entries: HashMap<hew_types::DefId, (String, FnEntry)>,
     /// Item-keyed linker-symbol substitutions for source callables whose
     /// surface spelling is reserved by a generated process adapter.
     fn_symbol_overrides: HashMap<ItemId, String>,

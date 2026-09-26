@@ -278,7 +278,7 @@ impl LowerCtx {
 
     /// Register a source free function and bind its checker declaration to
     /// the emitted entry. A symbol collision can overwrite `fn_registry`, but
-    /// a later value use will detect the changed ItemId rather than selecting
+    /// a later value use will detect the changed `ItemId` rather than selecting
     /// the wrong declaration.
     pub(super) fn register_declared_fn_entry(
         &mut self,
@@ -290,8 +290,10 @@ impl LowerCtx {
         if let Some(declaration) =
             self.source_declaration(item_span, hew_types::DeclarationKind::Function, 0)
         {
-            self.source_fn_entries
-                .insert(declaration, (symbol.to_string(), id));
+            if let Some(entry) = self.fn_registry.get(symbol).cloned() {
+                self.source_fn_entries
+                    .insert(declaration, (symbol.to_string(), entry));
+            }
         }
         id
     }
@@ -377,14 +379,16 @@ impl LowerCtx {
         block_span: &Span,
         ordinal: usize,
     ) {
-        let id = self.register_extern_fn_entry(decl);
+        self.register_extern_fn_entry(decl);
         if let Some(declaration) = self.source_declaration(
             block_span,
             hew_types::DeclarationKind::ExternFunction,
             ordinal,
         ) {
-            self.source_fn_entries
-                .insert(declaration, (decl.name.to_string(), id));
+            if let Some(entry) = self.fn_registry.get(decl.name.name.as_str()).cloned() {
+                self.source_fn_entries
+                    .insert(declaration, (decl.name.to_string(), entry));
+            }
         }
     }
 }

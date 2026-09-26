@@ -360,41 +360,14 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
-        let symbol = if let CallTarget::User(declaration) = &target {
-            let Some(symbol) = self.registered_source_function_symbol(*declaration) else {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: self.defs.path(*declaration).to_string(),
-                        reason: "selected source function has no exact registered body".into(),
-                    },
-                    span.clone(),
-                    "module call cannot recover its callee from an ABI spelling",
-                ));
+        let symbol = match self.checked_module_direct_symbol(&target, c_symbol, span) {
+            Ok(symbol) => symbol,
+            Err(reason) => {
                 return (
-                    HirExprKind::Unsupported("unregistered checked module function".into()),
+                    HirExprKind::Unsupported(reason.to_string()),
                     ResolvedTy::Unit,
                 );
-            };
-            symbol
-        } else if let CallTarget::ImplMethod(declaration) = &target {
-            let Some(symbol) = self.registered_impl_method_symbol(*declaration) else {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CallableUnsupportedInMir {
-                        name: self.defs.path(*declaration).to_string(),
-                    },
-                    span.clone(),
-                    "checker selected an associated implementation declaration whose HIR body was not registered",
-                ));
-                return (
-                    HirExprKind::Unsupported(
-                        "associated implementation call has no registered HIR body".to_string(),
-                    ),
-                    ResolvedTy::Unit,
-                );
-            };
-            symbol
-        } else {
-            crate::mangle_dotted_name(c_symbol)
+            }
         };
         let selected_declaration = match &target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
@@ -453,6 +426,42 @@ impl LowerCtx {
             },
             ret_ty,
         )
+    }
+
+    fn checked_module_direct_symbol(
+        &mut self,
+        target: &CallTarget,
+        c_symbol: &str,
+        span: &Span,
+    ) -> Result<String, &'static str> {
+        if let CallTarget::User(declaration) = target {
+            let Some(symbol) = self.registered_source_function_symbol(*declaration) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: self.defs.path(*declaration).to_string(),
+                        reason: "selected source function has no exact registered body".into(),
+                    },
+                    span.clone(),
+                    "module call cannot recover its callee from an ABI spelling",
+                ));
+                return Err("unregistered checked module function");
+            };
+            Ok(symbol)
+        } else if let CallTarget::ImplMethod(declaration) = target {
+            let Some(symbol) = self.registered_impl_method_symbol(*declaration) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CallableUnsupportedInMir {
+                        name: self.defs.path(*declaration).to_string(),
+                    },
+                    span.clone(),
+                    "checker selected an associated implementation declaration whose HIR body was not registered",
+                ));
+                return Err("associated implementation call has no registered HIR body");
+            };
+            Ok(symbol)
+        } else {
+            Ok(crate::mangle_dotted_name(c_symbol))
+        }
     }
 
     pub(super) fn lower_positional_record_constructor(

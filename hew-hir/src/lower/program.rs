@@ -1737,13 +1737,17 @@ pub fn lower_program_with_mono_cap(
         for (item, _) in &program.items {
             if let Item::ExternBlock(block) = item {
                 for function in &block.functions {
-                    let id = ctx.register_extern_fn_entry(function);
+                    ctx.register_extern_fn_entry(function);
                     let path = format!("std.builtins.{}", function.name);
                     if let Some(declaration) = ctx.defs.lookup_path(&path).filter(|declaration| {
                         ctx.defs.kind(*declaration) == hew_types::DeclarationKind::ExternFunction
                     }) {
-                        ctx.source_fn_entries
-                            .insert(declaration, (function.name.to_string(), id));
+                        if let Some(entry) =
+                            ctx.fn_registry.get(function.name.name.as_str()).cloned()
+                        {
+                            ctx.source_fn_entries
+                                .insert(declaration, (function.name.to_string(), entry));
+                        }
                     }
                 }
             }

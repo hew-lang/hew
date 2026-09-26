@@ -208,8 +208,8 @@ fn module_call_uses_its_declaration_when_abi_spelling_disagrees() {
         "pub fn entry(n: i64) -> i64 { n + 1 }",
         "import m; fn main() -> i64 { m.entry(41) }",
     );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let mut checked = checker.check_program(&program);
+    let mut type_checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut checked = type_checker.check_program(&program);
     assert!(
         checked.errors.is_empty(),
         "type errors: {:#?}",
@@ -399,6 +399,28 @@ fn main() -> i64 {{
             Some("answer")
         );
     }
+}
+
+#[test]
+fn root_extern_call_keeps_its_declaration_when_import_shares_c_symbol() {
+    let program = build_program_with_imported_module(
+        "extern \"C\" { fn answer() -> i64; }",
+        r#"import m;
+extern "C" { fn answer() -> i64; }
+fn main() -> i64 { unsafe { answer() } }"#,
+    );
+    let (output, tco) = lower_with_checker(&program);
+
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        output.diagnostics.is_empty(),
+        "root extern call must retain its checked declaration: {:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "main")),
+        Some("answer")
+    );
 }
 
 #[test]

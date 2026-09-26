@@ -1359,31 +1359,7 @@ impl Parser<'_> {
                     consumes_self,
                 }))
             }
-            Some(Token::Type) => {
-                let type_start = self.peek_span().start;
-                self.advance();
-                let name = self.expect_ident()?;
-
-                let bounds = if self.eat(&Token::Colon) {
-                    self.parse_trait_bound_list()?
-                } else {
-                    Vec::new()
-                };
-
-                let default = if self.eat(&Token::Equal) {
-                    Some(self.parse_type()?)
-                } else {
-                    None
-                };
-
-                let semi_span = self.expect(&Token::Semicolon)?;
-                Some(TraitItem::AssociatedType {
-                    name,
-                    bounds,
-                    default,
-                    span: type_start..semi_span.end,
-                })
-            }
+            Some(Token::Type) => self.parse_trait_associated_type(),
             _ => {
                 let found = match self.peek() {
                     Some(tok) => format!("{tok}"),
@@ -1396,6 +1372,31 @@ impl Parser<'_> {
                 None
             }
         }
+    }
+
+    fn parse_trait_associated_type(&mut self) -> Option<TraitItem> {
+        let type_start = self.peek_span().start;
+        self.advance();
+        let name = self.expect_ident()?;
+
+        let bounds = if self.eat(&Token::Colon) {
+            self.parse_trait_bound_list()?
+        } else {
+            Vec::new()
+        };
+        let default = if self.eat(&Token::Equal) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let semi_span = self.expect(&Token::Semicolon)?;
+        Some(TraitItem::AssociatedType {
+            name,
+            bounds,
+            default,
+            span: type_start..semi_span.end,
+        })
     }
 
     fn parse_trait_method_params(&mut self) -> (Vec<Param>, bool) {

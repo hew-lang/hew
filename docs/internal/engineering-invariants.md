@@ -23,6 +23,21 @@ specifications.
 - When two representations disagree, reject the ambiguity or resolve it at the
   owning layer before crossing the boundary.
 
+## Declaration and type identity
+
+- Resolve source names in the checker. Later stages consume declaration,
+  binding and type identities; rendered names describe those identities.
+- Source annotations cross the checker boundary as resolved types keyed by
+  their source file and span. HIR must reject a missing annotation fact rather
+  than resolve its spelling again.
+- A declaration ID belongs to its compilation's declaration table. When
+  embedded source checking appends rows, publish the extended table with every
+  fact that can refer to those rows. Never interpret an ID through a shorter
+  table or an unrelated compilation.
+- Private helper reachability follows checked declaration references, including
+  function values and closure bodies. A local binding that shadows a function
+  does not make that function reachable.
+
 ## Lifecycle symmetry
 
 - Every acquire, register, borrow, send, or spawn operation has a clearly

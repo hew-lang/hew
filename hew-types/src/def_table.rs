@@ -944,6 +944,28 @@ impl DefTable {
         })
     }
 
+    /// Adopt declaration rows appended by embedded checking while preserving
+    /// this compilation's root namespace. The embedded root is a distinct
+    /// module; its temporary bare-name index must not replace source bindings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `extension` changed an existing declaration identity.
+    pub fn include_embedded(&mut self, extension: &Self) {
+        assert!(
+            extension.extends(self),
+            "embedded declarations must append to their owning table"
+        );
+        let mut combined = extension.clone();
+        combined.root = self.root;
+        combined.by_path.extend(self.by_path.clone());
+        combined.module_by_path.extend(self.module_by_path.clone());
+        combined
+            .module_by_source
+            .extend(self.module_by_source.clone());
+        *self = combined;
+    }
+
     /// The table a second checker run over the embedded builtin source mints
     /// into: every row of `self` keeps its id, so the std.builtins
     /// declarations the run re-declares resolve to the same identities, while
@@ -1598,6 +1620,13 @@ mod tests {
         )
         .expect("the fork's root namespace starts empty");
         assert!(fork.extends(&table));
+        let source_cursor = table.lookup_path("Cursor").unwrap();
+        let embedded_cursor = fork.lookup_path("Cursor").unwrap();
+        table.include_embedded(&fork);
+        assert_eq!(table.root_module(), Some(root));
+        assert_eq!(table.lookup_path("Cursor"), Some(source_cursor));
+        assert_eq!(table.module(embedded_cursor), Some(fork_root));
+        assert_eq!(table.name(embedded_cursor), Symbol::intern("Cursor"));
     }
 
     #[test]

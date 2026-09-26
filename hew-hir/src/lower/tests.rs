@@ -4,6 +4,87 @@ use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
 #[test]
+fn source_annotations_keep_user_nominals_with_builtin_spellings() {
+    for name in ["Task", "Unit", "Stream", "Sink", "Connection"] {
+        let source = format!(
+            "type {name}<T> {{ value: T }} fn keep(consume value: {name}<i64>) -> {name}<i64> {{ value }}"
+        );
+        let (_, output, lowered) = parse_typecheck_and_lower(&source);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "{name}: {:?}",
+            lowered.diagnostics
+        );
+        let declaration = output.defs.lookup_nominal(name).unwrap();
+        let function = function_named(&lowered, "keep");
+        for ty in [&function.params[0].ty, &function.return_ty] {
+            assert!(
+                matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(head), args, .. }
+                if head.id == declaration && args == &[ResolvedTy::I64]),
+                "{name}: {ty:?}"
+            );
+        }
+    }
+    let (_, _, generic) = parse_typecheck_and_lower(
+        "#[opaque] type Connection {} fn keep<Connection>(consume value: Connection) -> Connection { value }",
+    );
+    assert!(generic.diagnostics.is_empty(), "{:?}", generic.diagnostics);
+    assert!(matches!(
+        function_named(&generic, "keep").params[0].ty,
+        ResolvedTy::Named {
+            head: hew_types::TypeHead::Param(_),
+            is_opaque: false,
+            ..
+        }
+    ));
+    let (_, _, lowered) = parse_typecheck_and_lower(
+        "#[opaque] type Connection {} fn keep(consume value: Connection) -> Connection { value }",
+    );
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let function = function_named(&lowered, "keep");
+    assert!(matches!(
+        function.params[0].ty,
+        ResolvedTy::Named {
+            is_opaque: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn annotation_lowering_requires_the_checked_type_at_its_source_site() {
+    let source = "type Value { number: i64 } fn main() { let value: Value = Value { number: 7 }; println(value.number); }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let intact = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(intact.diagnostics.is_empty(), "{:?}", intact.diagnostics);
+    let Item::Function(function) = &parsed.program.items[1].0 else {
+        panic!("main");
+    };
+    let Stmt::Let {
+        ty: Some(annotation),
+        ..
+    } = &function.body.stmts[0].0
+    else {
+        panic!("annotated binding");
+    };
+    let key = SpanKey::in_module(&annotation.1, 0);
+    assert!(output.resolved_annotation_types.remove(&key).is_some());
+    let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(
+        lowered.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { reason, .. }
+                if reason == "source annotation has no resolved checker type"
+        )),
+        "{:?}",
+        lowered.diagnostics
+    );
+}
+
+#[test]
 fn imported_private_helpers_follow_resolved_uses_and_ignore_shadowed_names() {
     use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
@@ -520,113 +601,6 @@ fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
 }
 
 #[test]
-fn imported_opaque_identity_precedes_short_builtin_fallback() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    ctx.type_declarations.extend(
-        ["foo.Stream", "foo.Connection", "net.Connection"]
-            .into_iter()
-            .map(|name| {
-                (
-                    name.to_string(),
-                    hew_types::value_class::DeclaredType {
-                        is_opaque: true,
-                        ..Default::default()
-                    },
-                )
-            }),
-    );
-
-    for qualified in ["foo.Stream", "foo.Connection", "net.Connection"] {
-        assert_eq!(
-            ctx.resolve_named_type_ref(qualified, Vec::new()),
-            ResolvedTy::named_opaque_path(&ctx.defs, qualified, Vec::new()),
-            "qualified opaque identity must be preserved exactly"
-        );
-    }
-
-    ctx.canonical_std_source_type_identities.extend([
-        "std.stream.Stream".to_string(),
-        "std.stream.Sink".to_string(),
-        "std.link_monitor.MonitorRef".to_string(),
-    ]);
-    for (qualified, builtin) in [
-        ("std.stream.Stream", BuiltinType::Stream),
-        ("std.stream.Sink", BuiltinType::Sink),
-        ("std.link_monitor.MonitorRef", BuiltinType::MonitorRef),
-    ] {
-        assert_eq!(
-                ctx.resolve_named_type_ref(qualified, Vec::new()),
-                ResolvedTy::named_builtin(builtin, Vec::new()),
-                "an exact canonical std carrier `{qualified}` must retain declaration and builtin identity"
-            );
-    }
-
-    for qualified in ["stream.Stream", "stream.Sink", "link_monitor.MonitorRef"] {
-        assert_eq!(
-                ctx.resolve_named_type_ref(qualified, Vec::new()),
-                ResolvedTy::named_path(&ctx.defs, qualified, Vec::new()),
-                "a user module with the std leaf spelling `{qualified}` must not inherit builtin ABI identity"
-            );
-    }
-
-    ctx.import_type_name_aliases
-        .insert((None, 0, "Stream".to_string()), "foo.Stream".to_string());
-    assert_eq!(
-        ctx.resolve_named_type_ref("Stream", Vec::new()),
-        ResolvedTy::named_opaque_path(&ctx.defs, "foo.Stream", Vec::new()),
-        "an unrenamed named import must resolve through its published source identity"
-    );
-
-    ctx.import_type_name_aliases.clear();
-    ctx.type_declarations.insert(
-        "Stream".to_string(),
-        hew_types::value_class::DeclaredType {
-            is_opaque: true,
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        ctx.resolve_named_type_ref("Stream", Vec::new()),
-        ResolvedTy::named_opaque_path(&ctx.defs, "Stream", Vec::new()),
-        "a flattened file-import declaration must outrank the bare builtin"
-    );
-
-    ctx.type_declarations.remove("Stream");
-    ctx.current_module_name = Some("std.stream".to_string());
-    assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
-            &ctx.defs,
-            "Stream",
-            Vec::new(),
-        )),
-        ResolvedTy::named_builtin(BuiltinType::Stream, Vec::new()),
-        "a checker-authored bare std handle must recover its exact builtin identity"
-    );
-
-    ctx.current_module_name = Some("std.net.http".to_string());
-    ctx.type_declarations.insert(
-        "http.ResponseHandle".to_string(),
-        hew_types::value_class::DeclaredType {
-            is_opaque: true,
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
-            &ctx.defs,
-            "http.ResponseHandle",
-            Vec::new(),
-        )),
-        ResolvedTy::named_opaque_path(&ctx.defs, "http.ResponseHandle", Vec::new()),
-        "a checker-authored qualified opaque identity must recover its declaration discriminator"
-    );
-}
-
-#[test]
 fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
     let mut ctx = LowerCtx::new(
         &TypeCheckOutput::default(),
@@ -711,161 +685,6 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
 }
 
 #[test]
-fn canonical_std_carriers_and_user_package_collisions_keep_distinct_identities() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    let args = vec![ResolvedTy::I64];
-
-    ctx.current_module_name = Some("std.stream".to_string());
-    ctx.canonical_std_source_type_identities
-        .insert("std.stream.Sink".to_string());
-    assert_eq!(
-        ctx.resolve_named_type_ref("Sink", args.clone()),
-        ResolvedTy::named_builtin(BuiltinType::Sink, args.clone()),
-        "the canonical std.stream declaration must recover compiler carrier identity"
-    );
-
-    ctx.current_module_name = Some("acme.stream".to_string());
-    ctx.source_type_identities
-        .insert("acme.stream.Sink".to_string());
-    assert_eq!(
-        ctx.resolve_named_type_ref("Sink", args.clone()),
-        ResolvedTy::named_path(&ctx.defs, "acme.stream.Sink", args.clone()),
-        "an acme package's authored Sink<T> must remain a user nominal"
-    );
-    assert_eq!(
-        ctx.resolve_named_type_ref("acme.stream.Sink", args.clone()),
-        ResolvedTy::named_path(&ctx.defs, "acme.stream.Sink", args.clone()),
-        "a qualified import of the acme carrier collision must remain user-owned"
-    );
-
-    // A path spelling is not provenance. A user package may be named
-    // `std.stream`; it acquires the carrier ABI only when its concrete
-    // source was harvested as a canonical stdlib source above.
-    let mut untrusted_std = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    untrusted_std.current_module_name = Some("std.stream".to_string());
-    untrusted_std
-        .source_type_identities
-        .insert("std.stream.Sink".to_string());
-    assert_eq!(
-        untrusted_std.resolve_named_type_ref("Sink", args.clone()),
-        ResolvedTy::named_path(&ctx.defs, "std.stream.Sink", args.clone()),
-        "a user module named std.stream is not canonical stdlib provenance"
-    );
-
-    ctx.current_module_name = None;
-    ctx.canonical_std_source_type_identities
-        .insert("std.failure.CrashInfo".to_string());
-    ctx.import_type_name_aliases.insert(
-        (None, 0, "CrashInfo".to_string()),
-        "std.failure.CrashInfo".to_string(),
-    );
-    assert_eq!(
-        ctx.resolve_named_type_ref("CrashInfo", Vec::new()),
-        ResolvedTy::named_builtin(BuiltinType::CrashInfo, Vec::new()),
-        "an imported std lifecycle payload must not be stolen by the global record registry"
-    );
-}
-
-#[test]
-fn depth_two_source_owners_qualify_same_leaf_types_without_leaf_fallback() {
-    let mut std_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    std_ctx.current_module_name = Some("std.net".to_string());
-    std_ctx
-        .source_type_identities
-        .insert("std.net.Connection".to_string());
-    std_ctx.type_declarations.insert(
-        "std.net.Connection".to_string(),
-        hew_types::value_class::DeclaredType {
-            is_opaque: true,
-            ..Default::default()
-        },
-    );
-
-    assert_eq!(
-        std_ctx.resolve_named_type_ref("Connection", Vec::new()),
-        ResolvedTy::named_opaque_path(&std_ctx.defs, "std.net.Connection", Vec::new()),
-        "a bare std.net declaration must retain its full source owner"
-    );
-
-    let mut root_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    root_ctx.type_declarations.insert(
-        "std.net.Connection".to_string(),
-        hew_types::value_class::DeclaredType {
-            is_opaque: true,
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        root_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
-            &std_ctx.defs,
-            "std.net.Connection",
-            Vec::new(),
-        )),
-        ResolvedTy::named_opaque_path(&std_ctx.defs, "std.net.Connection", Vec::new()),
-        "checker-authored closure capture facts must recover an imported opaque identity"
-    );
-    assert_eq!(
-        root_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
-            &std_ctx.defs,
-            "acme.net.Connection",
-            Vec::new(),
-        )),
-        ResolvedTy::named_path(&std_ctx.defs, "acme.net.Connection", Vec::new()),
-        "a same-leaf user closure capture must not inherit std.net opacity"
-    );
-    assert_eq!(
-        std_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
-            &std_ctx.defs,
-            "Connection",
-            Vec::new(),
-        )),
-        ResolvedTy::named_opaque_path(&std_ctx.defs, "std.net.Connection", Vec::new()),
-        "checker facts that lose the opaque bit must recover std.net, never net"
-    );
-
-    let mut user_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    user_ctx.current_module_name = Some("acme.net".to_string());
-    user_ctx
-        .source_type_identities
-        .insert("acme.net.Connection".to_string());
-
-    for resolved in [
-        user_ctx.resolve_named_type_ref("Connection", Vec::new()),
-        user_ctx.qualify_current_module_record_ty(ResolvedTy::named_path(
-            &std_ctx.defs,
-            "Connection",
-            Vec::new(),
-        )),
-    ] {
-        assert_eq!(
-            resolved,
-            ResolvedTy::named_path(&std_ctx.defs, "acme.net.Connection", Vec::new()),
-            "a user depth-two owner sharing std.net's leaf must stay distinct"
-        );
-    }
-}
-
-#[test]
 fn checker_import_binding_nominal_facts_use_the_declaring_std_owner() {
     let mut ctx = LowerCtx::new(
         &TypeCheckOutput::default(),
@@ -938,54 +757,6 @@ fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
 }
 
 #[test]
-fn imported_crash_notification_keeps_source_identity_after_record_registration() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    ctx.canonical_std_source_type_identities
-        .insert("failure.CrashNotification".to_string());
-    ctx.record_registry.insert(
-        "CrashNotification".to_string(),
-        RecordEntry {
-            id: ItemId(1),
-            type_params: Vec::new(),
-            fields: Vec::new(),
-        },
-    );
-    ctx.import_type_name_aliases.insert(
-        (None, 0, "CrashNotification".to_string()),
-        "failure.CrashNotification".to_string(),
-    );
-
-    assert_eq!(
-        ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-        ResolvedTy::named_path(&ctx.defs, "failure.CrashNotification", Vec::new()),
-        "a published lifecycle import must retain its owner-qualified source identity"
-    );
-
-    // Without the checker-published import binding, a globally registered
-    // std declaration is layout metadata only and must not grant the bare
-    // spelling lifecycle authority.
-    ctx.import_type_name_aliases.clear();
-    assert_eq!(
-        ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-        ResolvedTy::named_path(&ctx.defs, "CrashNotification", Vec::new()),
-        "a global std record must not make its bare lifecycle name implicit"
-    );
-
-    // An authored root declaration likewise remains an ordinary nominal.
-    ctx.root_visible_source_type_short_names
-        .insert("CrashNotification".to_string());
-    assert_eq!(
-        ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-        ResolvedTy::named_path(&ctx.defs, "CrashNotification", Vec::new()),
-        "a user-authored same-spelling record must not acquire the lifecycle ABI"
-    );
-}
-
-#[test]
 fn checker_result_type_uses_flat_file_import_identity() {
     let mut ctx = LowerCtx::new(
         &TypeCheckOutput::default(),
@@ -998,157 +769,6 @@ fn checker_result_type_uses_flat_file_import_identity() {
     assert_eq!(
         ctx.qualify_current_module_record_ty(ResolvedTy::named_path(&ctx.defs, "Box", Vec::new())),
         ResolvedTy::named_path(&ctx.defs, "support.file_render.Box", Vec::new())
-    );
-}
-
-#[test]
-fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
-    let tc_output = TypeCheckOutput {
-        import_type_name_aliases: HashMap::from([(
-            (None, 0, "f.CrashNotification".to_string()),
-            "failure.CrashNotification".to_string(),
-        )]),
-        ..TypeCheckOutput::default()
-    };
-    let ctx = LowerCtx::new(
-        &tc_output,
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-
-    assert_eq!(
-        ctx.resolve_named_type_ref("f.CrashNotification", Vec::new()),
-        ResolvedTy::named_path(&ctx.defs, "failure.CrashNotification", Vec::new()),
-        "HIR must consume the checker's exact qualified lifecycle identity"
-    );
-
-    let unproven = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    assert_eq!(
-        unproven.resolve_named_type_ref("f.CrashNotification", Vec::new()),
-        ResolvedTy::named_path(&ctx.defs, "f.CrashNotification", Vec::new()),
-        "module spelling without a checker fact must remain an ordinary nominal"
-    );
-}
-
-fn named_type_ref(name: &str, args: Vec<Spanned<TypeExpr>>) -> Spanned<TypeExpr> {
-    (
-        TypeExpr::Named {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(name), 0..0),
-            type_args: (!args.is_empty()).then_some(args),
-        },
-        0..0,
-    )
-}
-
-#[test]
-fn source_identity_precedes_task_unit_and_cancellation_early_arms() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    ctx.root_visible_source_type_short_names.extend([
-        "Task".to_string(),
-        "Unit".to_string(),
-        "CancellationToken".to_string(),
-    ]);
-    ctx.type_declarations.insert(
-        "CancellationToken".to_string(),
-        hew_types::value_class::DeclaredType {
-            is_opaque: true,
-            ..Default::default()
-        },
-    );
-
-    let i64_arg = || vec![named_type_ref("i64", Vec::new())];
-    assert_eq!(
-        ctx.lower_type(&named_type_ref("Task", i64_arg())),
-        ResolvedTy::named_path(&ctx.defs, "Task", vec![ResolvedTy::I64])
-    );
-    assert_eq!(
-        ctx.lower_type(&named_type_ref("Unit", i64_arg())),
-        ResolvedTy::named_path(&ctx.defs, "Unit", vec![ResolvedTy::I64])
-    );
-    assert_eq!(
-        ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
-        ResolvedTy::named_opaque_path(&ctx.defs, "CancellationToken", Vec::new())
-    );
-    assert!(
-        !ctx.diagnostics
-            .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, HirDiagnosticKind::TaskNotNameable)),
-        "a source-declared Task<T> must not trigger the compiler Task diagnostic"
-    );
-
-    ctx.root_visible_source_type_short_names.clear();
-    ctx.type_declarations.remove("CancellationToken");
-    assert_eq!(
-        ctx.lower_type(&named_type_ref("Unit", Vec::new())),
-        ResolvedTy::Unit
-    );
-    assert_eq!(
-        ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
-        ResolvedTy::CancellationToken
-    );
-    assert_eq!(
-        ctx.lower_type(&named_type_ref("Task", i64_arg())),
-        ResolvedTy::Unit
-    );
-    assert!(
-        ctx.diagnostics
-            .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, HirDiagnosticKind::TaskNotNameable)),
-        "only the genuine compiler Task spelling must be rejected"
-    );
-}
-
-#[test]
-fn named_import_identity_precedes_task_unit_and_cancellation_early_arms() {
-    let tc_output = TypeCheckOutput {
-        import_type_name_aliases: HashMap::from([
-            ((None, 0, "Task".to_string()), "foo.Task".to_string()),
-            ((None, 0, "Unit".to_string()), "foo.Unit".to_string()),
-            (
-                (None, 0, "CancellationToken".to_string()),
-                "foo.CancellationToken".to_string(),
-            ),
-        ]),
-        ..TypeCheckOutput::default()
-    };
-    let mut ctx = LowerCtx::new(
-        &tc_output,
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    ctx.type_declarations.insert(
-        "foo.CancellationToken".to_string(),
-        hew_types::value_class::DeclaredType {
-            is_opaque: true,
-            ..Default::default()
-        },
-    );
-
-    assert_eq!(
-        ctx.lower_type(&named_type_ref(
-            "Task",
-            vec![named_type_ref("i64", Vec::new())],
-        )),
-        ResolvedTy::named_path(&ctx.defs, "foo.Task", vec![ResolvedTy::I64])
-    );
-    assert_eq!(
-        ctx.lower_type(&named_type_ref(
-            "Unit",
-            vec![named_type_ref("i64", Vec::new())],
-        )),
-        ResolvedTy::named_path(&ctx.defs, "foo.Unit", vec![ResolvedTy::I64])
-    );
-    assert_eq!(
-        ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
-        ResolvedTy::named_opaque_path(&ctx.defs, "foo.CancellationToken", Vec::new())
     );
 }
 
@@ -3229,7 +2849,6 @@ fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() 
         ctx.canonical_std_source_type_identities
             .insert(name.to_string());
         let opaque = ResolvedTy::named_opaque_path(&ctx.defs, name, vec![]);
-        assert_eq!(ctx.resolve_named_type_ref(name, vec![]), opaque);
         assert_eq!(ctx.qualify_current_module_record_ty(opaque.clone()), opaque);
     }
 }

@@ -110,7 +110,12 @@ pub fn lower_program_with_mono_cap(
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
         match builtin_declarations.clone() {
             Some(program) => match check_builtin_callable_impl_program(&program, &ctx.defs) {
-                Ok(output) => (Some(program), Some(output)),
+                Ok(output) => {
+                    // Embedded checking appends declaration rows. Every fact
+                    // consumed below must index that same extended table.
+                    Arc::make_mut(&mut ctx.defs).include_embedded(&output.defs);
+                    (Some(program), Some(output))
+                }
                 Err(diagnostic) => {
                     builtin_impl_diagnostics.push(*diagnostic);
                     (None, None)
@@ -195,9 +200,7 @@ pub fn lower_program_with_mono_cap(
     {
         let canonical = format!("std.builtins.{name}");
         ctx.source_type_identities.insert(canonical.clone());
-        // A bare reference at root binds to the same owner. A root
-        // declaration of the same name still wins: the local-declaration
-        // check in `resolve_named_type_ref` runs before this alias.
+        // Expression carriers use the checker-published root owner.
         ctx.file_import_root_type_aliases
             .insert(name.to_string(), canonical);
     }
@@ -1713,7 +1716,11 @@ pub fn lower_program_with_mono_cap(
     // source-body lowering without perturbing stable user `ItemId`s. Ordinary
     // trait impls use the same module-qualified symbols as imported impls;
     // receiver-specific cursor and duration impls retain their compiler owner.
-    if let Some(program) = &builtin_callable_impl_program {
+    if let (Some(program), Some(output)) = (
+        &builtin_callable_impl_program,
+        &builtin_callable_impl_output,
+    ) {
+        ctx.with_typecheck_facts(output, |ctx| {
         for (item, _) in &program.items {
             if let Item::ExternBlock(block) = item {
                 for function in &block.functions {
@@ -1817,6 +1824,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
         }
+        });
     }
 
     // Establish every executable impl body before lowering any source body.

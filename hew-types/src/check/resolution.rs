@@ -2837,6 +2837,10 @@ impl Checker {
                 self.resolve_type_path_head(path);
             }
         }
+        self.annotation_types.insert(
+            SpanKey::in_module(&te.1, self.current_module_idx),
+            (ty.clone(), self.current_module.clone()),
+        );
         ty
     }
 

@@ -1479,6 +1479,7 @@ impl Checker {
                 self.check_shadowing(name.name.as_str(), span);
                 self.env
                     .define_with_span(name.to_string(), val_ty, true, span.clone());
+                self.record_local_resolution(*name, span);
                 self.env
                     .set_collection_borrow(name.name.as_str(), collection_borrow);
                 if value_is_direct_generic_lambda {

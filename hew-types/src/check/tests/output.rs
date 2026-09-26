@@ -21,6 +21,31 @@ fn source_resolutions_join_local_definition_and_use() {
 }
 
 #[test]
+fn source_resolutions_join_var_statement_and_use() {
+    let source = "fn main() { var x: i64 = 1; x = 2; println(x); }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Function(main), _) = &parsed.program.items[0] else {
+        panic!("expected main function");
+    };
+    let declaration = &main.body.stmts[0].1;
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let use_site = source.rfind("x)").unwrap();
+    let binding = output.resolutions.get(&SpanKey::in_module(declaration, 0));
+    assert!(matches!(
+        binding,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(use_site..use_site + 1), 0)),
+        binding
+    );
+}
+
+#[test]
 fn source_resolutions_join_function_and_closure_parameters_to_uses() {
     let source = "fn identity(value: i64) -> i64 { value } \
         fn main() { let f = |n: i64| -> i64 { n + 1 }; println(f(identity(2))); }";

@@ -2456,6 +2456,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 type_params: None,
                 params: vec![Param {
                     name: Ident::new("val"),
+                    name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
                             path: hew_parser::ast::Path::single(
@@ -2500,6 +2501,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             type_params: None,
             params: vec![Param {
                 name: Ident::new("val"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(
@@ -2555,6 +2557,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             }]),
             params: vec![Param {
                 name: Ident::new("val"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(
@@ -2597,6 +2600,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             type_params: None,
             params: vec![Param {
                 name: Ident::new("val"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
                         path: hew_parser::ast::Path::single(

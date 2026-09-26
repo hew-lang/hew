@@ -726,7 +726,7 @@ impl Parser<'_> {
                 false
             };
             let is_mutable = self.eat(&Token::Var);
-            let Some(name) = self.expect_ident() else {
+            let Some((name, name_span)) = self.expect_ident_spanned() else {
                 break;
             };
 
@@ -757,6 +757,7 @@ impl Parser<'_> {
                     }
                     params.push(Param {
                         name,
+                        name_span: name_span.clone(),
                         ty: (
                             TypeExpr::Named {
                                 path: Path::single(
@@ -807,6 +808,7 @@ impl Parser<'_> {
             if let Some(ty) = self.parse_type_with_context(context) {
                 params.push(Param {
                     name,
+                    name_span,
                     ty,
                     is_mutable,
                     is_consume,

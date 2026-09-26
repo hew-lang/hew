@@ -21,6 +21,88 @@ fn source_resolutions_join_local_definition_and_use() {
 }
 
 #[test]
+fn source_resolutions_join_unannotated_local_token_and_use() {
+    let source = "fn main() { let result = 41; println(result + 1); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let declared = source.find("result =").unwrap();
+    let used = source.rfind("result +").unwrap();
+    let at = |start| SpanKey::in_module(&(start..start + "result".len()), 0);
+    let binding = output.resolutions.get(&at(declared));
+    assert!(matches!(
+        binding,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert_eq!(output.resolutions.get(&at(used)), binding);
+}
+
+#[test]
+fn source_resolutions_publish_return_annotation_nominal() {
+    let source = "type Point { x: i64 } fn origin() -> Point { Point { x: 1 } }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let name = source.find("-> Point").unwrap() + "-> ".len();
+    assert!(matches!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(name..name + "Point".len()), 0)),
+        Some(crate::check::scope::Resolution::Nominal(_))
+    ));
+}
+
+#[test]
+fn source_resolutions_join_recovery_binding_and_use() {
+    let source = "fn recover(problem: string) -> i64 { 7 } \
+        fn f(value: Result<i64, string>) -> i64 { value handle problem { recover(problem) } }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let declared = source.find("handle problem").unwrap() + "handle ".len();
+    let used = source.rfind("problem)").unwrap();
+    let at = |start| SpanKey::in_module(&(start..start + "problem".len()), 0);
+    let binding = output.resolutions.get(&at(declared));
+    assert!(matches!(
+        binding,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert_eq!(output.resolutions.get(&at(used)), binding);
+}
+
+#[test]
+fn source_resolutions_distinguish_shorthand_pattern_binders() {
+    let source = "enum Config { Named { key: string, value: string }, Anonymous, } \
+        fn probe(config: Config) -> string { \
+        let Config.Named { key, value } = config else { return \"anonymous\"; }; \
+        let _ = key; value }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let pattern = source.find("{ key, value }").unwrap();
+    let key = pattern + "{ ".len();
+    let value = pattern + "{ key, ".len();
+    let use_key = source.find("= key;").unwrap() + "= ".len();
+    let use_value = source.rfind("value }").unwrap();
+    let at = |start, len| SpanKey::in_module(&(start..start + len), 0);
+    let key_binding = output.resolutions.get(&at(key, "key".len()));
+    let value_binding = output.resolutions.get(&at(value, "value".len()));
+    assert!(matches!(
+        key_binding,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert!(matches!(
+        value_binding,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert_ne!(key_binding, value_binding);
+    assert_eq!(
+        output.resolutions.get(&at(use_key, "key".len())),
+        key_binding
+    );
+    assert_eq!(
+        output.resolutions.get(&at(use_value, "value".len())),
+        value_binding
+    );
+}
+
+#[test]
 fn source_resolutions_join_var_statement_and_use() {
     let source = "fn main() { var x: i64 = 1; x = 2; println(x); }";
     let parsed = hew_parser::parse(source);

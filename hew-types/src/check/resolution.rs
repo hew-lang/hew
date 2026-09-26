@@ -2819,6 +2819,11 @@ impl Checker {
             }
         }
         self.canonicalize_actor_handles(&mut ty);
+        if !matches!(ty, Ty::Error) {
+            if let TypeExpr::Named { path, .. } = &te.0 {
+                self.resolve_type_path_head(path);
+            }
+        }
         ty
     }
 

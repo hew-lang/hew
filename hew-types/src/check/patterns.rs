@@ -595,7 +595,10 @@ impl Checker {
             .map(|(decl_idx, (name, field_ty))| {
                 let (sub, field_span) = if let Some(field) = listed.get(name.as_str()) {
                     match &field.pattern {
-                        None => (PlanSub::Binding(field.name.to_string()), span.clone()),
+                        None => (
+                            PlanSub::Binding(field.name.to_string()),
+                            field.name_span.clone(),
+                        ),
                         Some((Pattern::Wildcard, sub_span)) => {
                             (PlanSub::Wildcard, sub_span.clone())
                         }
@@ -699,6 +702,7 @@ impl Checker {
                         is_mutable,
                         field.span.clone(),
                     );
+                    self.record_local_resolution(Ident::new(name), &field.span);
                 }
                 // A wildcard field names nothing, so it takes nothing: the
                 // field stays owned by the place the pattern destructures.

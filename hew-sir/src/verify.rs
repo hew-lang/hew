@@ -1776,10 +1776,15 @@ fn verify_callable_table<'a>(
                 }
             }
             CallableInstance::EntryAdapter => {
-                if module.entry_callable != Some(callable.id) {
+                if module.entry_callable != Some(callable.id)
+                    && !module
+                        .test_entries
+                        .iter()
+                        .any(|entry| entry.callable == callable.id)
+                {
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                         callable: callable.id,
-                        reason: "entry adapter is not the module's entry callable".to_string(),
+                        reason: "entry adapter is not a selected process entry".to_string(),
                     }));
                 }
             }
@@ -1986,6 +1991,49 @@ fn verify_callable_table<'a>(
                 }));
             }
             Some(_) => {}
+        }
+    }
+    if !module.test_entries.is_empty()
+        && (module.entry_callable.is_some() || module.entry_exit_plan.is_some())
+    {
+        diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+            callable: module.test_entries[0].callable,
+            reason: "test dispatcher conflicts with a process entry".into(),
+        }));
+    }
+    let mut test_declarations = BTreeSet::new();
+    for test in &module.test_entries {
+        let invalid = if !test_declarations.insert(test.declaration) {
+            Some("duplicate test declaration")
+        } else if matches!(test.action, hew_types::EntryExitAction::Result { .. }) {
+            Some("Result test entry lacks a semantic exit adapter")
+        } else {
+            match by_id.get(&test.callable) {
+                None => Some("selected test callable is absent"),
+                Some(callable)
+                    if callable.declaration != test.declaration
+                        || callable.source_origin != crate::FunctionSourceOrigin::RootUnit
+                        || !module.root_unit_callables.contains(&test.callable) =>
+                {
+                    Some("selected test callable has wrong source declaration or provenance")
+                }
+                Some(callable) if !callable.signature.params.is_empty() => {
+                    Some("selected test callable is not parameterless")
+                }
+                Some(callable)
+                    if callable.signature.return_ty != ResolvedTy::Unit
+                        && !callable.signature.return_ty.is_integer() =>
+                {
+                    Some("selected test callable has unsupported exit type")
+                }
+                Some(_) => None,
+            }
+        };
+        if let Some(reason) = invalid {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidEntryCallable {
+                callable: test.callable,
+                reason: reason.into(),
+            }));
         }
     }
     CallableContext {

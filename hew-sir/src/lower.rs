@@ -552,7 +552,8 @@ struct InstanceService<'a> {
     /// Dispatch tables demanded by the erasure sites this module lowered.
     vtables: Vec<crate::SemVtable>,
     vtables_by_erasure: HashMap<(ResolvedTy, ResolvedTy), crate::SemVtableId>,
-    entry_adapter: Option<EntryAdapter>,
+    entry_adapters: HashMap<CallableId, EntryAdapter>,
+    test_entries: Vec<crate::SemTestEntry>,
     /// Only template headers that back a requested concrete SIR instance are
     /// emitted into the SIR module. HIR remains the authority for unselected
     /// generic definitions, so SIR does not accumulate an unrelated second
@@ -1300,7 +1301,6 @@ enum BodySource {
 /// exit status.
 #[derive(Debug, Clone)]
 struct EntryAdapter {
-    callable: CallableId,
     entry: CallableId,
     action: EntryExitAction,
 }

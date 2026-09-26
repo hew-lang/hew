@@ -18,6 +18,17 @@ struct FaultEvidence {
 
 static FAULT: Mutex<Option<FaultEvidence>> = Mutex::new(None);
 
+/// Return the zero-based entry chosen by the test runner. An absent or
+/// malformed selection is invalid, so the generated dispatcher can fail
+/// closed before calling any test body.
+#[no_mangle]
+pub extern "C" fn hew_test_selected() -> i64 {
+    std::env::var("HEW_TEST")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map_or(-1, i64::from)
+}
+
 pub(crate) fn note_fault(
     kind: &'static str,
     code: i32,

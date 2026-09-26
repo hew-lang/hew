@@ -60,7 +60,12 @@ use std::fmt::Write as _;
 #[must_use]
 pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
     let c = if use_color { &COLORS } else { &NO_COLORS };
-    let total = summary.passed + summary.failed + summary.ignored;
+    let total = summary.results.len()
+        + summary
+            .compile_failures
+            .iter()
+            .map(|failure| failure.tests.len())
+            .sum::<usize>();
     let mut out = String::new();
 
     let _ = writeln!(out, "\nrunning {total} tests");
@@ -73,6 +78,9 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
         };
         let _ = writeln!(out, "test {} ... {status}", result.test.name);
     }
+    for failure in &summary.compile_failures {
+        let _ = writeln!(out, "file {} ... {}FAILED{}", failure.file, c.red, c.reset);
+    }
 
     // Print failure details.
     let failures: Vec<_> = summary
@@ -81,8 +89,13 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
         .filter(|r| matches!(r.outcome, TestOutcome::Failed(_)))
         .collect();
 
-    if !failures.is_empty() {
+    if !failures.is_empty() || !summary.compile_failures.is_empty() {
         out.push_str("\nfailures:\n\n");
+        for failure in &summary.compile_failures {
+            let _ = writeln!(out, "---- {} (compile) ----", failure.file);
+            let _ = writeln!(out, "selected tests: {}", failure.tests.join(", "));
+            let _ = writeln!(out, "{}\n", failure.message);
+        }
         for result in &failures {
             let _ = writeln!(out, "---- {} ----", result.test.name);
             if let TestOutcome::Failed(failure) = &result.outcome {
@@ -109,9 +122,18 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
 
     let _ = write!(
         out,
-        "test result: {result_word}. {} passed; {} failed; {} ignored\n\n",
+        "test result: {result_word}. {} passed; {} failed; {} ignored",
         summary.passed, summary.failed, summary.ignored,
     );
+    let not_run = summary
+        .compile_failures
+        .iter()
+        .map(|failure| failure.tests.len())
+        .sum::<usize>();
+    if not_run > 0 {
+        let _ = write!(out, "; {not_run} not run after file compilation failed");
+    }
+    out.push_str("\n\n");
 
     out
 }
@@ -133,13 +155,21 @@ fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> Str
             .or_default()
             .push(result);
     }
+    for failure in &summary.compile_failures {
+        suites.entry(failure.file.as_str()).or_default();
+    }
 
     let total = summary.passed + summary.failed + summary.ignored;
     let total_time: f64 = summary
         .results
         .iter()
         .map(|r| r.duration.as_secs_f64())
-        .sum();
+        .sum::<f64>()
+        + summary
+            .compile_failures
+            .iter()
+            .map(|failure| failure.duration.as_secs_f64())
+            .sum::<f64>();
 
     let mut out = String::new();
     writeln!(out, r#"<?xml version="1.0" encoding="UTF-8"?>"#).unwrap();
@@ -151,17 +181,26 @@ fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> Str
     .unwrap();
 
     for (file, results) in &suites {
+        let compile_failure = summary
+            .compile_failures
+            .iter()
+            .find(|failure| failure.file == *file);
         let classname = junit_classname(file, invocation_root);
-        let suite_tests = results.len();
+        let suite_tests = results.len() + usize::from(compile_failure.is_some());
         let suite_failures = results
             .iter()
             .filter(|r| matches!(r.outcome, TestOutcome::Failed(_)))
-            .count();
+            .count()
+            + usize::from(compile_failure.is_some());
         let suite_skipped = results
             .iter()
             .filter(|r| matches!(r.outcome, TestOutcome::Ignored))
             .count();
-        let suite_time: f64 = results.iter().map(|r| r.duration.as_secs_f64()).sum();
+        let suite_time: f64 = results
+            .iter()
+            .map(|r| r.duration.as_secs_f64())
+            .sum::<f64>()
+            + compile_failure.map_or(0.0, |failure| failure.duration.as_secs_f64());
 
         writeln!(
             out,
@@ -205,6 +244,28 @@ fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> Str
                 }
             }
 
+            writeln!(out, "    </testcase>").unwrap();
+        }
+        if let Some(failure) = compile_failure {
+            let detail = format!(
+                "selected tests: {}\n{}",
+                failure.tests.join(", "),
+                failure.message
+            );
+            writeln!(
+                out,
+                r#"    <testcase name="&lt;compile&gt;" classname="{}" time="{:.3}">"#,
+                xml_escape(&classname),
+                failure.duration.as_secs_f64(),
+            )
+            .unwrap();
+            writeln!(
+                out,
+                r#"      <failure type="compile" message="{}">{}</failure>"#,
+                xml_escape(&detail),
+                xml_escape(&detail),
+            )
+            .unwrap();
             writeln!(out, "    </testcase>").unwrap();
         }
 
@@ -310,6 +371,7 @@ mod tests {
             passed: 1,
             failed: 0,
             ignored: 0,
+            compile_failures: Vec::new(),
         };
         let rendered = render_results(&summary, false);
         assert!(rendered.contains("running 1 tests"));
@@ -343,6 +405,7 @@ mod tests {
             passed: 0,
             failed: 1,
             ignored: 0,
+            compile_failures: Vec::new(),
         };
         let rendered = render_results(&summary, false);
         assert!(rendered.contains("test test_bad ... FAILED"));
@@ -419,6 +482,7 @@ mod tests {
             passed: 1,
             failed: 1,
             ignored: 1,
+            compile_failures: Vec::new(),
         };
         let rendered = render_junit(&summary, std::path::Path::new("."));
         assert!(

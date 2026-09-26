@@ -85,6 +85,8 @@ pub struct FrontendOptions {
     /// Exact root declaration selected as the process entry. File test
     /// discovery records this occurrence before checker identities exist.
     pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// Exact test roots for one compiled dispatcher, in selection order.
+    pub test_entry_selections: Vec<hew_types::DeclarationOccurrence>,
     /// Compile-time host-operation admission for selected deterministic roots.
     pub deterministic_admission: DeterministicAdmission,
     /// The sole deterministic production peer for a selected `_test.hew`
@@ -279,12 +281,24 @@ impl Session {
             .normalized_machines
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
-        let lowered =
+        let mut lowered =
             hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
         if !lowered.diagnostics.is_empty() {
             return Err(SessionError::Hir(lowered.diagnostics));
         }
-        let roots = Self::source_roots(program, tco)?;
+        if !tco.test_entry_plans.is_empty() {
+            hew_hir::test_entry::install_test_entry_plans(
+                &mut lowered.module,
+                &tco.test_entry_plans,
+            )
+            .map_err(|message| SessionError::Unsupported {
+                callable: None,
+                message,
+                span: None,
+            })?;
+        }
+        let mut roots = Self::source_roots(program, tco)?;
+        roots.extend(tco.test_entry_plans.iter().map(|plan| plan.entry));
         self.lower_hir_module(&lowered.module, tco, &roots)
     }
 
@@ -390,6 +404,20 @@ impl Session {
             return Err(SessionError::Semantic(diagnostics));
         }
         require_complete_semantics(&sir, module.entry_exit_plan.is_some())?;
+        if sir.module.test_entries.len() != module.test_entry_plans.len()
+            || sir
+                .module
+                .test_entries
+                .iter()
+                .zip(&module.test_entry_plans)
+                .any(|(entry, plan)| entry.declaration != plan.entry)
+        {
+            return Err(SessionError::Unsupported {
+                callable: None,
+                message: "semantic test dispatcher does not match checked entry plans".into(),
+                span: None,
+            });
+        }
         let body_index = sir.module.function_index();
         let mut compiled_roots = roots
             .iter()
@@ -411,6 +439,10 @@ impl Session {
             .collect::<Result<Vec<_>, SessionError>>()?;
         if let Some(entry) = sir.module.entry_callable {
             compiled_roots.push(entry);
+        }
+        for entry in &sir.module.test_entries {
+            require_semantic_body(&sir.module, &body_index, entry.callable)?;
+            compiled_roots.push(entry.callable);
         }
         compiled_roots.sort_unstable();
         compiled_roots.dedup();
@@ -1738,7 +1770,9 @@ fn typecheck_program_with_diagnostics(
     if mode == FrontendParseMode::Migration {
         checker.set_migration_mode();
     }
-    if let Some(entry_selection) = entry_selection {
+    if !options.test_entry_selections.is_empty() {
+        checker.set_test_entry_selections(options.test_entry_selections.clone());
+    } else if let Some(entry_selection) = entry_selection {
         checker.set_entry_selection(entry_selection);
     }
     checker.set_lint_levels(options.lint_levels.clone());

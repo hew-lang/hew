@@ -238,6 +238,7 @@ pub fn lower_physical_module(
         functions,
         entry_callable: module.entry_callable,
         entry_exit_plan: module.entry_exit_plan.clone(),
+        test_entries: module.test_entries.clone(),
         string_literals: module.string_literals.clone(),
         bytes_literals: module.bytes_literals.clone(),
         regex_patterns: module.regex_patterns.clone(),

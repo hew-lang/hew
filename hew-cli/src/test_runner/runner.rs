@@ -97,8 +97,6 @@ impl TestOutcome {
 /// Stable stage at which a compiled Hew test failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestFailureKind {
-    /// The selected test root could not be compiled.
-    Compile,
     /// The compiled program ran and reported failure.
     Runtime,
     /// The compiled program exceeded its execution deadline.
@@ -112,7 +110,6 @@ impl TestFailureKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Compile => "compile",
             Self::Runtime => "runtime",
             Self::Timeout => "timeout",
             Self::Launch => "launch",
@@ -153,6 +150,17 @@ pub struct TestSummary {
     pub failed: usize,
     /// Number of tests that were ignored.
     pub ignored: usize,
+    /// One compilation diagnostic per source file whose selected tests did not run.
+    pub compile_failures: Vec<FileCompileFailure>,
+}
+
+/// A file-level compilation failure and the selected tests it prevented.
+#[derive(Debug)]
+pub struct FileCompileFailure {
+    pub file: String,
+    pub tests: Vec<String>,
+    pub message: String,
+    pub duration: Duration,
 }
 
 /// Filesystem inputs needed by the in-process native compiler.
@@ -323,8 +331,8 @@ fn executions(test: &TestCase, options: &TestRunOptions<'_>) -> Vec<Execution> {
 
 /// Run a set of test cases.
 ///
-/// Each test is compiled to a native binary via the `hew compile` pipeline and
-/// executed as a child process for isolation.
+/// Each selected file is compiled once. Every test then runs in its own child
+/// process using the same binary and an ordinal-selected entry.
 #[must_use]
 pub fn run_tests(tests: &[TestCase], options: TestRunOptions<'_>) -> TestSummary {
     if options.jobs <= 1 {
@@ -336,9 +344,7 @@ pub fn run_tests(tests: &[TestCase], options: TestRunOptions<'_>) -> TestSummary
 
 fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSummary {
     let mut results = Vec::new();
-    let mut passed = 0;
-    let mut failed = 0;
-    let mut ignored = 0;
+    let mut compile_failures = Vec::new();
 
     // Group tests by file for efficiency while preserving discovery order.
     let mut by_file: Vec<(&str, Vec<&TestCase>)> = Vec::new();
@@ -359,9 +365,30 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
     }
 
     for (_, file_tests) in by_file {
+        let selected: Vec<_> = file_tests
+            .iter()
+            .copied()
+            .filter(|test| !test.ignored || options.include_ignored)
+            .collect();
+        let compilation = if selected.is_empty() {
+            None
+        } else {
+            let start = std::time::Instant::now();
+            match compile_test(&selected, options.ffi_lib, options.compile_paths) {
+                Ok(artifact) => Some(artifact),
+                Err(message) => {
+                    compile_failures.push(FileCompileFailure {
+                        file: selected[0].file.clone(),
+                        tests: selected.iter().map(|test| test.name.clone()).collect(),
+                        message,
+                        duration: start.elapsed(),
+                    });
+                    None
+                }
+            }
+        };
         for test in file_tests {
             if test.ignored && !options.include_ignored {
-                ignored += 1;
                 results.push(TestResult {
                     test: test.clone(),
                     outcome: TestOutcome::Ignored,
@@ -370,28 +397,20 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                 });
                 continue;
             }
-
-            let result = run_single_test(test, options);
-            match &result.outcome {
-                TestOutcome::Passed => passed += 1,
-                TestOutcome::Failed(_) => failed += 1,
-                TestOutcome::Ignored => ignored += 1,
+            if let Some(artifact) = compilation.as_ref() {
+                let ordinal = selected
+                    .iter()
+                    .position(|candidate| std::ptr::eq(*candidate, test))
+                    .expect("selected test has a dispatcher ordinal");
+                results.push(run_compiled_test(test, ordinal, artifact, options));
             }
-            results.push(result);
         }
     }
-
-    TestSummary {
-        results,
-        passed,
-        failed,
-        ignored,
-    }
+    summarize(results, compile_failures)
 }
 
 struct TestTask {
-    result_index: usize,
-    test: TestCase,
+    tests: Vec<(usize, TestCase)>,
 }
 
 #[allow(
@@ -424,6 +443,7 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
     let mut result_index = 0;
 
     for (_, file_tests) in by_file {
+        let mut file_task = Vec::new();
         for test in file_tests {
             if test.ignored && !options.include_ignored {
                 result_slots[result_index] = Some(TestResult {
@@ -433,17 +453,18 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                     duration: Duration::ZERO,
                 });
             } else {
-                tasks.push(TestTask {
-                    result_index,
-                    test: test.clone(),
-                });
+                file_task.push((result_index, test.clone()));
             }
             result_index += 1;
+        }
+        if !file_task.is_empty() {
+            tasks.push(TestTask { tests: file_task });
         }
     }
 
     let next_task = AtomicUsize::new(0);
     let result_slots = Mutex::new(result_slots);
+    let compile_failures = Mutex::new(Vec::new());
     let serial_gate = Mutex::new(());
     let worker_count = options.jobs.min(tasks.len().max(1));
 
@@ -457,34 +478,62 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                     let Some(task) = tasks.get(task_index) else {
                         break;
                     };
-                    let result = if task.test.serial {
-                        let _serial_guard = serial_gate
+                    let selected: Vec<_> = task.tests.iter().map(|(_, test)| test).collect();
+                    let start = std::time::Instant::now();
+                    let artifact =
+                        match compile_test(&selected, options.ffi_lib, options.compile_paths) {
+                            Ok(artifact) => artifact,
+                            Err(message) => {
+                                compile_failures
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .push(FileCompileFailure {
+                                        file: selected[0].file.clone(),
+                                        tests: selected
+                                            .iter()
+                                            .map(|test| test.name.clone())
+                                            .collect(),
+                                        message,
+                                        duration: start.elapsed(),
+                                    });
+                                continue;
+                            }
+                        };
+                    for (ordinal, (result_index, test)) in task.tests.iter().enumerate() {
+                        let result = if test.serial {
+                            let _serial_guard = serial_gate
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            run_compiled_test(test, ordinal, &artifact, options)
+                        } else {
+                            run_compiled_test(test, ordinal, &artifact, options)
+                        };
+                        result_slots
                             .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        run_single_test(&task.test, options)
-                    } else {
-                        run_single_test(&task.test, options)
-                    };
-                    result_slots
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)[task.result_index] =
-                        Some(result);
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)[*result_index] =
+                            Some(result);
+                    }
                 })
                 .expect("failed to spawn Hew test compiler worker");
         }
     });
 
+    let mut compile_failures = compile_failures
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    compile_failures.sort_unstable_by(|left, right| left.file.cmp(&right.file));
     summarize(
         result_slots
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .into_iter()
-            .map(|result| result.expect("every scheduled test returns a result"))
+            .flatten()
             .collect(),
+        compile_failures,
     )
 }
 
-fn summarize(results: Vec<TestResult>) -> TestSummary {
+fn summarize(results: Vec<TestResult>, compile_failures: Vec<FileCompileFailure>) -> TestSummary {
     let mut passed = 0;
     let mut failed = 0;
     let mut ignored = 0;
@@ -498,8 +547,9 @@ fn summarize(results: Vec<TestResult>) -> TestSummary {
     TestSummary {
         results,
         passed,
-        failed,
+        failed: failed + compile_failures.len(),
         ignored,
+        compile_failures,
     }
 }
 
@@ -509,10 +559,16 @@ struct CompiledTestArtifact {
 }
 
 fn compile_test(
-    test: &TestCase,
+    tests: &[&TestCase],
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
 ) -> Result<CompiledTestArtifact, String> {
+    let test = tests
+        .first()
+        .ok_or("cannot compile a file with no selected tests")?;
+    if tests.iter().any(|candidate| candidate.file != test.file) {
+        return Err("selected test entries span multiple source files".into());
+    }
     let emit_dir = tempfile::Builder::new()
         .prefix("hew_test_emit_")
         .tempdir_in(std::env::temp_dir())
@@ -531,12 +587,14 @@ fn compile_test(
     let options = crate::compile::CompileOptions {
         project_dir: Some(compile_paths.paths.project_dir.clone()),
         module_search_paths: Some(compile_paths.paths.module_search_paths.clone()),
-        entry_selection: Some(test.occurrence),
-        deterministic_admission: if test.clock == TestClock::Deterministic {
-            hew_compile::DeterministicAdmission::Tests(vec![test.occurrence])
-        } else {
-            hew_compile::DeterministicAdmission::Off
-        },
+        test_entry_selections: tests.iter().map(|test| test.occurrence).collect(),
+        deterministic_admission: hew_compile::DeterministicAdmission::Tests(
+            tests
+                .iter()
+                .filter(|test| test.clock == TestClock::Deterministic)
+                .map(|test| test.occurrence)
+                .collect(),
+        ),
         companion: test.companion.as_deref().map(PathBuf::from),
         ..crate::compile::CompileOptions::default()
     };
@@ -568,6 +626,7 @@ fn execute_test_run(
     binary: &Path,
     timeout: Duration,
     execution: &Execution,
+    ordinal: u32,
 ) -> (
     Result<crate::process::BinaryRunOutcome, String>,
     Option<TestReport>,
@@ -592,6 +651,7 @@ fn execute_test_run(
                 binary,
                 timeout,
                 execution.environment().as_deref(),
+                Some(ordinal),
                 &path,
                 &scratch,
             )
@@ -602,28 +662,14 @@ fn execute_test_run(
     (run, report, Some(dir))
 }
 
-fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult {
+fn run_compiled_test(
+    test: &TestCase,
+    ordinal: usize,
+    artifact: &CompiledTestArtifact,
+    options: &TestRunOptions<'_>,
+) -> TestResult {
     let start = std::time::Instant::now();
-
-    let artifact = match compile_test(test, options.ffi_lib, options.compile_paths) {
-        Ok(artifact) => artifact,
-        Err(msg) => {
-            let outcome = if test.should_panic {
-                TestOutcome::failed(
-                    TestFailureKind::Compile,
-                    format!("compile error (expected panic, got compile error): {msg}"),
-                )
-            } else {
-                TestOutcome::failed(TestFailureKind::Compile, format!("compile error: {msg}"))
-            };
-            return TestResult {
-                test: test.clone(),
-                outcome,
-                output: String::new(),
-                duration: start.elapsed(),
-            };
-        }
-    };
+    let ordinal = u32::try_from(ordinal).expect("test dispatcher ordinal exceeds u32");
 
     let runs = executions(test, options);
     let mut first_output = None;
@@ -631,7 +677,7 @@ fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult 
     let mut failed_runs = 0usize;
     for execution in &runs {
         let (run_result, report, report_dir) =
-            execute_test_run(&artifact.binary_path, options.timeout, execution);
+            execute_test_run(&artifact.binary_path, options.timeout, execution, ordinal);
         let (outcome, output) = judge_run(test, run_result, options.timeout, report.as_ref());
         match outcome {
             TestOutcome::Failed(mut failure) => {
@@ -950,6 +996,12 @@ mod tests {
                 TestOutcome::Ignored => Some(format!("{} ignored", result.test.name)),
                 TestOutcome::Passed => None,
             })
+            .chain(
+                summary
+                    .compile_failures
+                    .iter()
+                    .map(|failure| format!("{} COMPILE FAILED: {}", failure.file, failure.message)),
+            )
             .collect::<Vec<_>>()
             .join("; ");
         format!(
@@ -1207,18 +1259,34 @@ fn test_compile_failure() {
 "#,
         );
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
-        match &summary.results[0].outcome {
-            TestOutcome::Failed(failure) => {
-                assert_eq!(failure.kind, TestFailureKind::Compile);
-                assert!(!failure.message.is_empty());
-            }
-            outcome => panic!("expected compile failure, got {outcome:?}"),
+        assert!(summary.results.is_empty(), "{summary:?}");
+        assert_eq!(summary.compile_failures.len(), 1);
+        assert!(summary.compile_failures[0].message.contains("type"));
+        assert_eq!(summary.compile_failures[0].tests, ["test_compile_failure"]);
+    }
+
+    #[test]
+    fn one_file_error_names_every_selected_test_once() {
+        if !require_codegen() {
+            return;
         }
+        let summary = run_inline(
+            r#"
+#[test]
+fn first() { assert(true); }
+
+#[test]
+fn second() { let value: i64 = "wrong"; assert(value == 0); }
+"#,
+        );
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
+        assert!(summary.results.is_empty(), "{summary:?}");
+        assert_eq!(summary.compile_failures.len(), 1);
+        assert_eq!(summary.compile_failures[0].tests, ["first", "second"]);
     }
 
     #[test]
     fn failure_kind_junit_values_are_stable() {
-        assert_eq!(TestFailureKind::Compile.as_str(), "compile");
         assert_eq!(TestFailureKind::Runtime.as_str(), "runtime");
         assert_eq!(TestFailureKind::Timeout.as_str(), "timeout");
         assert_eq!(TestFailureKind::Launch.as_str(), "launch");

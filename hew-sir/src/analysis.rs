@@ -607,6 +607,7 @@ mod tests {
             root_unit_callables: Vec::new(),
             entry_exit_plan: None,
             entry_callable: None,
+            test_entries: Vec::new(),
             functions: vec![function],
             aggregate_shapes: Vec::new(),
             variant_shapes: Vec::new(),

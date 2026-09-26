@@ -3182,6 +3182,7 @@ pub fn lower_program_with_mono_cap(
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
         entry_exit_plan,
+        test_entry_plans: type_check_output.test_entry_plans.clone(),
         wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
         type_classes: ctx.type_classes,
         monomorphisations,

@@ -34,7 +34,8 @@ impl<'a> InstanceService<'a> {
             closure_sources: Vec::new(),
             vtables: Vec::new(),
             vtables_by_erasure: HashMap::new(),
-            entry_adapter: None,
+            entry_adapters: HashMap::new(),
+            test_entries: Vec::new(),
             used_templates: std::collections::HashSet::new(),
             scanned_record_closes: 0,
             demanded_opaque_closes: std::collections::HashSet::new(),
@@ -438,6 +439,10 @@ impl<'a> InstanceService<'a> {
     /// A module without one is not an executable program, so it has no demand
     /// and lowers nothing.
     pub(super) fn request_entry(&mut self) {
+        if !self.module.test_entry_plans.is_empty() {
+            self.request_test_entries();
+            return;
+        }
         let Some(declaration) = self.table.entry_exit_plan.as_ref().map(|plan| plan.entry) else {
             return;
         };
@@ -496,12 +501,63 @@ impl<'a> InstanceService<'a> {
             &mut plan.action,
             EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
         );
-        self.entry_adapter = Some(EntryAdapter {
-            callable: id,
-            entry,
-            action,
-        });
+        self.entry_adapters
+            .insert(id, EntryAdapter { entry, action });
         self.request_body(id);
+    }
+
+    fn request_test_entries(&mut self) {
+        for (ordinal, plan) in self.module.test_entry_plans.iter().enumerate() {
+            let Ok(entry) = self.admit_monomorphic(plan.entry) else {
+                continue;
+            };
+            self.request_body(entry);
+            let (callable, action) = if matches!(plan.action, EntryExitAction::Result { .. }) {
+                let Some(source) = self.table.callable(entry).cloned() else {
+                    continue;
+                };
+                let id = CallableId(
+                    u32::try_from(self.table.callables.len())
+                        .expect("SIR callable count exceeds the module-local ID range"),
+                );
+                self.table.callables.push(SemCallable {
+                    id,
+                    function: source.function,
+                    declaration: source.declaration,
+                    instance: CallableInstance::EntryAdapter,
+                    symbol: format!("__hew_test_entry_{ordinal}"),
+                    source_origin: source.source_origin,
+                    signature: SemSignature {
+                        params: Vec::new(),
+                        return_ty: ResolvedTy::I64,
+                    },
+                    call_conv: SemCallConv::Default,
+                    kind: SemCallableKind::HewDirect,
+                });
+                self.states.push(CallableState::Unreached);
+                self.statuses.push(None);
+                self.table.root_unit_callables.push(id);
+                self.entry_adapters.insert(
+                    id,
+                    EntryAdapter {
+                        entry,
+                        action: plan.action.clone(),
+                    },
+                );
+                self.request_body(id);
+                (
+                    id,
+                    EntryExitAction::Integer(hew_types::EntryIntegerType::I64),
+                )
+            } else {
+                (entry, plan.action.clone())
+            };
+            self.test_entries.push(crate::SemTestEntry {
+                callable,
+                declaration: plan.entry,
+                action,
+            });
+        }
     }
 
     /// Intern the dispatch table for one `(dyn Trait, concrete type)` erasure.
@@ -991,9 +1047,9 @@ impl<'a> InstanceService<'a> {
             })?;
         if callable_meta.instance == CallableInstance::EntryAdapter {
             let adapter = self
-                .entry_adapter
-                .clone()
-                .filter(|adapter| adapter.callable == callable)
+                .entry_adapters
+                .get(&callable)
+                .cloned()
                 .ok_or("entry adapter has no exit plan")?;
             return Ok(LoweringInput {
                 function: Cow::Borrowed(function),
@@ -1506,6 +1562,7 @@ impl<'a> InstanceService<'a> {
             module,
             table,
             checked_facts,
+            test_entries,
             used_templates,
             mut functions,
             closures,
@@ -1599,6 +1656,7 @@ impl<'a> InstanceService<'a> {
             root_unit_callables: table.root_unit_callables,
             entry_exit_plan: table.entry_exit_plan,
             entry_callable: table.entry_callable,
+            test_entries,
             functions,
             aggregate_shapes,
             variant_shapes,

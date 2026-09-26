@@ -1282,6 +1282,7 @@ mod tests {
         HirModule {
             indexed_place_operations: HashMap::new(),
             entry_exit_plan: None,
+            test_entry_plans: Vec::new(),
             items,
             diagnostic_source_modules: HashMap::new(),
             root_item_ids: HashSet::default(),

@@ -39,6 +39,8 @@ pub struct CompileOptions {
     pub module_search_paths: Option<Vec<PathBuf>>,
     /// Exact source occurrence selected as the process entry by `hew test`.
     pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// Test functions selected for one shared dispatcher, in ordinal order.
+    pub test_entry_selections: Vec<hew_types::DeclarationOccurrence>,
     /// Compile-time admission for entries run on the deterministic driver.
     pub deterministic_admission: hew_compile::DeterministicAdmission,
     /// Canonical `<stem>.hew` production peer for a selected test root.
@@ -64,6 +66,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
         entry_selection: options.entry_selection,
+        test_entry_selections: options.test_entry_selections.clone(),
         deterministic_admission: options.deterministic_admission.clone(),
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
@@ -87,6 +90,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
         entry_selection: options.entry_selection,
+        test_entry_selections: options.test_entry_selections.clone(),
         deterministic_admission: options.deterministic_admission.clone(),
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,

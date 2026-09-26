@@ -6,10 +6,9 @@
 //!
 //! One-process loopback round-trip, same shape as
 //! `http_server_client_roundtrip_test.hew`: the `Client` actor runs the
-//! blocking request on its own worker while the test thread accepts and
-//! responds with a 404 carrying a real body; mailbox ordering (`fetch`
-//! before the status/body asks) makes the readback race-free without a
-//! sleep.
+//! blocking request in a fork while the test thread accepts and responds
+//! with a 404 carrying a real body. The fork is joined before the status/body
+//! asks, so readback needs no sleep.
 
 import std.net.http.http_client;
 
@@ -45,11 +44,12 @@ fn test_non_2xx_response_body_round_trips() {
         .Ok(server) => {
             let port = http.server_port(server);
             let client = spawn Client(url: f"http://127.0.0.1:{port}/missing", status: 0, body: "");
-            let _ = client.fetch(0);
+            let request = fork client.fetch(0);
             let req = server.accept();
             let _ = req.respond_text(404, "not found: the resource does not exist");
             req.close();
             server.close();
+            assert((await request).is_ok());
             match client.status_result() {
                 .Ok(status) => assert(status == 404),
                 .Err(_e) => assert(false),

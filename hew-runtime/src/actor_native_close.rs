@@ -182,6 +182,7 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
                 unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) },
             ),
         );
+        #[cfg(not(target_arch = "wasm32"))]
         if !actor.supervisor.is_null() {
             if let Ok(child_index) = u32::try_from(actor.supervisor_child_index) {
                 // SAFETY: the supervisor remains the child's parent through
@@ -214,11 +215,16 @@ pub extern "C" fn hew_actor_stop_native(token: local_handles::HewLocalPidId) {
             // SAFETY: the guard pins the actor while admission closes.
             unsafe { crate::actor::hew_actor_request_stop(actor) };
         });
-    } else if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
-        live_actors::with_actor_send_by_identity(id, serial, |actor| {
-            // SAFETY: the identity pin protects the selected incarnation.
-            unsafe { crate::actor::hew_actor_request_stop(actor.as_ptr()) };
-        });
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
+            live_actors::with_actor_send_by_identity(id, serial, |actor| {
+                // SAFETY: the identity pin protects the selected incarnation.
+                unsafe { crate::actor::hew_actor_request_stop(actor.as_ptr()) };
+            });
+        }
     }
 }
 
@@ -230,11 +236,16 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
             // SAFETY: the guard pins the actor while cancellation is latched.
             unsafe { crate::actor::hew_actor_terminate(actor) };
         });
-    } else if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
-        live_actors::with_actor_send_by_identity(id, serial, |actor| {
-            // SAFETY: the identity pin protects the selected incarnation.
-            unsafe { crate::actor::hew_actor_terminate(actor.as_ptr()) };
-        });
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
+            live_actors::with_actor_send_by_identity(id, serial, |actor| {
+                // SAFETY: the identity pin protects the selected incarnation.
+                unsafe { crate::actor::hew_actor_terminate(actor.as_ptr()) };
+            });
+        }
     }
 }
 

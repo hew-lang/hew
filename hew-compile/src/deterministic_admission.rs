@@ -10,8 +10,10 @@ use std::path::PathBuf;
 use hew_parser::ast::{Item, Program, TypeBodyItem};
 use hew_types::check::dispatch::CallTarget;
 use hew_types::check::SpanKey;
+use hew_types::env::TypeBindingId;
 use hew_types::{
-    CallableCandidate, DeclarationKind, DeclarationOccurrence, DefId, Ty, TypeCheckOutput, TypeHead,
+    CallableCandidate, DeclarationKind, DeclarationOccurrence, DefId, IndirectCallCandidates, Ty,
+    TypeCheckOutput, TypeHead,
 };
 
 use crate::{
@@ -31,6 +33,74 @@ struct CallEdge {
 enum CallableNode {
     Declaration(DefId),
     Closure(SpanKey),
+}
+
+type CandidateEnv = HashMap<TypeBindingId, IndirectCallCandidates>;
+
+fn resolve_candidates(
+    candidates: &IndirectCallCandidates,
+    env: &CandidateEnv,
+) -> IndirectCallCandidates {
+    fn expand(
+        candidates: &IndirectCallCandidates,
+        env: &CandidateEnv,
+        seen: &mut HashSet<TypeBindingId>,
+        result: &mut IndirectCallCandidates,
+    ) {
+        result.may_be_unknown |= candidates.may_be_unknown;
+        for candidate in &candidates.known {
+            if let CallableCandidate::Formal(formal) = candidate {
+                if !seen.insert(*formal) {
+                    result.may_be_unknown = true;
+                } else if let Some(bound) = env.get(formal) {
+                    expand(bound, env, seen, result);
+                    seen.remove(formal);
+                } else {
+                    result.may_be_unknown = true;
+                    seen.remove(formal);
+                }
+            } else if !result.known.contains(candidate) {
+                result.known.push(candidate.clone());
+            }
+        }
+    }
+
+    let mut result = IndirectCallCandidates {
+        known: Vec::new(),
+        may_be_unknown: false,
+    };
+    expand(candidates, env, &mut HashSet::new(), &mut result);
+    result
+}
+
+fn callee_env(
+    output: &TypeCheckOutput,
+    span: &SpanKey,
+    callee: DefId,
+    caller_env: &CandidateEnv,
+) -> CandidateEnv {
+    output
+        .callable_argument_flows
+        .get(span)
+        .into_iter()
+        .flatten()
+        .filter(|flow| flow.callee == callee)
+        .map(|flow| {
+            (
+                flow.formal,
+                resolve_candidates(&flow.candidates, caller_env),
+            )
+        })
+        .collect()
+}
+
+fn env_key(env: &CandidateEnv) -> Vec<(TypeBindingId, Vec<CallableCandidate>, bool)> {
+    let mut key = env
+        .iter()
+        .map(|(formal, candidates)| (*formal, candidates.known.clone(), candidates.may_be_unknown))
+        .collect::<Vec<_>>();
+    key.sort_by_key(|(formal, _, _)| formal.0);
+    key
 }
 
 #[derive(Clone)]
@@ -286,6 +356,39 @@ fn target_operation(
     refused_endpoint(symbol)
 }
 
+fn opaque_extern_diagnostic(
+    output: &TypeCheckOutput,
+    root: DefId,
+    site: SourceSite,
+    source: &str,
+    filename: &str,
+    admission: &DeterministicAdmission,
+) -> FrontendDiagnostic {
+    let name = output.defs.name(root);
+    let mut diagnostic = FrontendDiagnostic::coded_message_at(
+        "E_DETERMINISTIC_HOST_OPERATION",
+        format!(
+            "`{name}` reaches user extern `{}`, whose host behaviour a deterministic entry cannot schedule",
+            site.spelling
+        ),
+        site.span,
+        source,
+        filename,
+    );
+    if let crate::FrontendDiagnosticKind::Message(detail) = &mut diagnostic.kind {
+        detail.help.push(match admission {
+            DeterministicAdmission::ProcessEntry => {
+                "run without `--deterministic` or remove the user extern call".to_string()
+            }
+            DeterministicAdmission::Tests(_) => {
+                format!("mark `{name}` `#[real_time]` or remove the user extern call")
+            }
+            DeterministicAdmission::Off => unreachable!("admission has no selected roots when off"),
+        });
+    }
+    diagnostic
+}
+
 fn selected_entries(output: &TypeCheckOutput, admission: &DeterministicAdmission) -> Vec<DefId> {
     match admission {
         DeterministicAdmission::Off => Vec::new(),
@@ -342,15 +445,17 @@ pub(super) fn check(
     let mut diagnostics = Vec::new();
     let mut reported = HashSet::new();
     let mut reported_indirect = HashSet::new();
+    let mut reported_extern = HashSet::new();
     for root in roots {
         let mut queue = VecDeque::from([(
             CallableNode::Declaration(root),
             None::<(SourceSite, String, String)>,
             Vec::<Ty>::new(),
+            CandidateEnv::new(),
         )]);
         let mut visited = HashSet::new();
-        while let Some((caller, user_site, type_args)) = queue.pop_front() {
-            if !visited.insert((caller.clone(), type_args.clone())) {
+        while let Some((caller, user_site, type_args, caller_env)) = queue.pop_front() {
+            if !visited.insert((caller.clone(), type_args.clone(), env_key(&caller_env))) {
                 continue;
             }
             let caller_source = match &caller {
@@ -377,7 +482,28 @@ pub(super) fn check(
                 } else {
                     current.or_else(|| user_site.clone())
                 };
-                if let Some(operation) = target_operation(output, &call.target, &stdlib_roots) {
+                if matches!(
+                    call.target,
+                    CallTarget::Extern {
+                        trusted_compiled_stdlib: false,
+                        ..
+                    }
+                ) {
+                    if let Some((site, source, filename)) = selected_site {
+                        if reported_extern.insert((root, filename.clone(), site.span.start)) {
+                            diagnostics.push(opaque_extern_diagnostic(
+                                output,
+                                root,
+                                site,
+                                &source,
+                                &filename,
+                                &options.deterministic_admission,
+                            ));
+                        }
+                    }
+                } else if let Some(operation) =
+                    target_operation(output, &call.target, &stdlib_roots)
+                {
                     if let Some((site, source, filename)) = selected_site {
                         if !reported.insert((
                             root,
@@ -413,8 +539,14 @@ pub(super) fn check(
                         diagnostics.push(diagnostic);
                     }
                 } else if matches!(call.target, CallTarget::IndirectFunctionValue) {
-                    let candidates = output.indirect_call_candidates.get(&call.span);
-                    if candidates.is_none_or(|candidates| candidates.may_be_unknown) {
+                    let candidates = output
+                        .indirect_call_candidates
+                        .get(&call.span)
+                        .map(|candidates| resolve_candidates(candidates, &caller_env));
+                    if candidates
+                        .as_ref()
+                        .is_none_or(|candidates| candidates.may_be_unknown)
+                    {
                         if let Some((site, source, filename)) = selected_site.clone() {
                             if reported_indirect.insert((root, filename.clone(), site.span.start)) {
                                 let name = output.defs.name(root);
@@ -442,7 +574,7 @@ pub(super) fn check(
                             }
                         }
                     }
-                    if let Some(candidates) = candidates {
+                    if let Some(candidates) = &candidates {
                         for candidate in &candidates.known {
                             let next = match candidate {
                                 CallableCandidate::Declaration(id) => {
@@ -451,8 +583,20 @@ pub(super) fn check(
                                 CallableCandidate::Closure(span) => {
                                     CallableNode::Closure(span.clone())
                                 }
+                                CallableCandidate::Formal(_) => {
+                                    unreachable!("formal candidates are resolved before traversal")
+                                }
                             };
-                            queue.push_back((next, selected_site.clone(), Vec::new()));
+                            let next_env = match candidate {
+                                CallableCandidate::Declaration(id) => {
+                                    callee_env(output, &call.span, *id, &caller_env)
+                                }
+                                CallableCandidate::Closure(_) => caller_env.clone(),
+                                CallableCandidate::Formal(_) => {
+                                    unreachable!("formal candidates are resolved before traversal")
+                                }
+                            };
+                            queue.push_back((next, selected_site.clone(), Vec::new(), next_env));
                         }
                     }
                 } else if let Some(next) = target_declaration(&call.target) {
@@ -461,7 +605,13 @@ pub(super) fn check(
                         .get(&call.span)
                         .cloned()
                         .unwrap_or_default();
-                    queue.push_back((CallableNode::Declaration(next), selected_site, next_args));
+                    let next_env = callee_env(output, &call.span, next, &caller_env);
+                    queue.push_back((
+                        CallableNode::Declaration(next),
+                        selected_site,
+                        next_args,
+                        next_env,
+                    ));
                 } else if let CallTarget::StaticTraitMethod {
                     declaring_trait,
                     method,
@@ -509,10 +659,13 @@ pub(super) fn check(
                                             *declaring_trait,
                                         ))
                             {
+                                let next_env =
+                                    callee_env(output, &call.span, candidate, &caller_env);
                                 queue.push_back((
                                     CallableNode::Declaration(candidate),
                                     selected_site.clone(),
                                     Vec::new(),
+                                    next_env,
                                 ));
                             }
                         }
@@ -528,10 +681,12 @@ pub(super) fn check(
                         .filter(|entry| entry.method == *method)
                         .filter_map(|entry| entry.impl_method);
                     for candidate in candidates {
+                        let next_env = callee_env(output, &call.span, candidate, &caller_env);
                         queue.push_back((
                             CallableNode::Declaration(candidate),
                             selected_site.clone(),
                             Vec::new(),
+                            next_env,
                         ));
                     }
                 }
@@ -752,8 +907,10 @@ mod tests {
 
     #[test]
     fn opaque_function_parameter_is_refused() {
-        let source = "fn call_reader(reader: fn() -> string) { println(reader()); }\nfn main() { call_reader(|| \"safe\"); }";
-        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        let source = "fn call_reader(reader: fn() -> string) { println(reader()); }";
+        let selection = selected_test(source, "call_reader");
+        let failure =
+            check_source(source, DeterministicAdmission::Tests(vec![selection])).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_INDIRECT_CALL"),
             "{failure}"
@@ -761,8 +918,31 @@ mod tests {
     }
 
     #[test]
+    fn known_function_parameter_is_admitted_from_its_call_site() {
+        let source = "fn call_reader(reader: fn() -> string) { println(reader()); }\nfn main() { call_reader(|| \"safe\"); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
     fn known_function_value_is_admitted() {
         let source = "fn answer() -> i64 { 7 }\nfn main() { let selected: fn() -> i64 = answer; println(selected()); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn user_extern_without_a_manifest_capability_is_refused() {
+        let source = "extern \"C\" { fn getpid() -> i64; }\nfn main() { let pid = unsafe { getpid() }; println(pid); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+        assert!(failure.contains("getpid"), "{failure}");
+    }
+
+    #[test]
+    fn imported_methods_use_their_checked_rewrite() {
+        let source = "import std.bench;\nfn main() { var s = bench.suite(\"suite\"); s.add(\"noop\", 1, || {}); s.report(); }";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 

@@ -462,27 +462,8 @@ pub fn lower_program_with_mono_cap(
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
                 let saved_module_idx = ctx.current_module_idx;
-                let private_fns = module
-                    .items
-                    .iter()
-                    .filter_map(|(item, _)| match item {
-                        Item::Function(function) if !function.visibility.is_pub() => {
-                            Some(function.name.to_string())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let private_closure = collect_imported_private_fn_closure(
-                    module,
-                    &private_fns,
-                    ctx.trait_defaults
-                        .values()
-                        .flatten()
-                        .filter(|default| {
-                            default.source_module.as_deref() == Some(module_full_path.as_str())
-                        })
-                        .filter_map(|default| default.method.body.as_ref()),
-                );
+                let private_closure =
+                    collect_imported_private_fn_closure(&ctx, module, &span_indices);
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                     ctx.current_item_ordinal = item_idx;
                     ctx.current_module_idx = span_indices
@@ -490,8 +471,7 @@ pub fn lower_program_with_mono_cap(
                         .unwrap_or_default();
                     match item {
                         Item::Function(func)
-                            if func.visibility.is_pub()
-                                || private_closure.contains(func.name.name.as_str()) =>
+                            if func.visibility.is_pub() || private_closure.contains(&item_idx) =>
                         {
                             // File imports are already flattened into the root
                             // item stream. Their source declaration was bound
@@ -2292,35 +2272,8 @@ pub fn lower_program_with_mono_cap(
                 ctx.current_module_name = Some(source_module.clone());
                 let diag_start = ctx.diagnostics.len();
                 let item_start = items.len();
-                // Per-module helper sets used by the imported-body scan in
-                // both the free-fn (Item::Function) and impl-method
-                // (Item::Impl) arms. Computed once per module so the two
-                // arms agree on which same-module callees count as
-                // private vs. pub and so iteration cost is linear in the
-                // module's item count rather than quadratic across arms.
-                let same_module_private_fns: HashSet<String> = module
-                    .items
-                    .iter()
-                    .filter_map(|(it, _)| {
-                        if let Item::Function(f) = it {
-                            if !f.visibility.is_pub() {
-                                return Some(f.name.to_string());
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                let imported_private_closure = collect_imported_private_fn_closure(
-                    module,
-                    &same_module_private_fns,
-                    ctx.trait_defaults
-                        .values()
-                        .flatten()
-                        .filter(|default| {
-                            default.source_module.as_deref() == Some(source_module.as_str())
-                        })
-                        .filter_map(|default| default.method.body.as_ref()),
-                );
+                let imported_private_closure =
+                    collect_imported_private_fn_closure(&ctx, module, &span_indices);
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
                     .iter()
@@ -2394,9 +2347,7 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Function(lowered));
                             }
                         }
-                        Item::Function(func)
-                            if imported_private_closure.contains(func.name.name.as_str()) =>
-                        {
+                        Item::Function(func) if imported_private_closure.contains(&item_idx) => {
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,

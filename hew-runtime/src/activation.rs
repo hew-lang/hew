@@ -1435,6 +1435,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // A producer admitted before close may still publish after
                 // the empty recheck. Keep the consumer alive until the shared
                 // admission state proves all such producers have exited.
+                // SAFETY: the actor retains its mailbox through dispatch.
                 if !unsafe { mailbox::mailbox_admissions_drained(mailbox) } {
                     if a.actor_state
                         .compare_exchange(
@@ -1975,6 +1976,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             // SAFETY: mailbox pointer is valid for the actor's lifetime.
             && unsafe { mailbox::mailbox_is_closed(mailbox) }
         {
+            // SAFETY: the actor retains its mailbox through activation.
             if !unsafe { mailbox::mailbox_admissions_drained(mailbox) } {
                 if a.actor_state
                     .compare_exchange(

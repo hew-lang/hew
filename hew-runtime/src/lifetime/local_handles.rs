@@ -146,6 +146,9 @@ pub(crate) struct SupervisorControl {
     runtime_id: RuntimeId,
     access_state: AtomicUsize,
     teardown_claimed: AtomicBool,
+    /// Forceful request remains reachable after the direct route closes so a
+    /// terminate can escalate an in-progress graceful supervisor stop.
+    terminate_requested: AtomicBool,
     completion: Arc<crate::actor_native::NativeActorCompletion>,
     parent_stop_notification: Mutex<Option<(HewLocalPidId, u32)>>,
     drain_mutex: Mutex<()>,
@@ -165,11 +168,20 @@ impl SupervisorControl {
             runtime_id,
             access_state: AtomicUsize::new(0),
             teardown_claimed: AtomicBool::new(false),
+            terminate_requested: AtomicBool::new(false),
             completion: Arc::default(),
             parent_stop_notification: Mutex::new(None),
             drain_mutex: Mutex::new(()),
             drained: Condvar::new(),
         }
+    }
+
+    pub(crate) fn request_terminate(&self) {
+        self.terminate_requested.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn terminating(&self) -> bool {
+        self.terminate_requested.load(Ordering::Acquire)
     }
 
     pub(crate) fn finish_terminal(&self) {
@@ -875,6 +887,20 @@ impl LocalHandles {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn actor_role_owner_slot(
+        &self,
+        runtime_id: RuntimeId,
+        token: HewLocalPidId,
+    ) -> Option<(HewLocalPidId, u32)> {
+        self.state.access(|state| {
+            let role = state.supervisor_roles.get(&token)?;
+            let control = state.controls.get(&role.root)?;
+            (control.runtime_id() == runtime_id && state.routes.contains_key(&role.root))
+                .then_some((role.owner, role.slot))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn supervisor_control_for_raw(
         &self,
         token: HewLocalPidId,
@@ -1144,6 +1170,14 @@ pub(crate) fn current_supervisor_role_owner(owner: HewLocalPidId, slot: u32) -> 
         .local_handles
         .supervisor_role_owner(runtime.runtime_id(), owner, slot)
         .unwrap_or(HewLocalPidId::INVALID)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_actor_role_owner_slot(token: HewLocalPidId) -> Option<(HewLocalPidId, u32)> {
+    let runtime = crate::runtime::rt_current_opt()?;
+    runtime
+        .local_handles
+        .actor_role_owner_slot(runtime.runtime_id(), token)
 }
 
 /// Observe the stable control even after close has retired the direct route.

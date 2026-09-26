@@ -4652,6 +4652,10 @@ fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one event-based oracle holds admission and completion barriers"
+)]
 fn native_graceful_stop_drains_accepted_turns_before_completion() {
     use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
@@ -4759,26 +4763,31 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
     let (ready, waker) = crate::wake::blocking::Readiness::new();
     // SAFETY: the waker remains live until the observer is freed.
     let wait = unsafe { crate::actor_native::hew_actor_wait_new(token, waker.descriptor()) };
+    // SAFETY: the wait descriptor remains live until this test frees it.
     assert_eq!(unsafe { crate::actor_native::hew_actor_wait_poll(wait) }, 0);
 
     // SAFETY: token names this live actor, and empty payloads are valid.
     assert_eq!(
+        // SAFETY: the actor retains its direct token and the payload is empty.
         unsafe { hew_local_pid_send(token, 1, ptr::null_mut(), 0) },
         0
     );
     entered.wait();
     // The second turn is already accepted when stop closes admission.
     assert_eq!(
+        // SAFETY: the actor is still live and the payload is empty.
         unsafe { hew_local_pid_send(token, 2, ptr::null_mut(), 0) },
         0
     );
     crate::actor_native::hew_actor_stop_native(token);
+    // SAFETY: the wait descriptor remains live until this test frees it.
     assert_eq!(unsafe { crate::actor_native::hew_actor_wait_poll(wait) }, 0);
     assert!(!ready.take_ready());
     assert_eq!(turns.load(Ordering::SeqCst), 1);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     // SAFETY: stop has closed admission for this stable token.
     assert_eq!(
+        // SAFETY: the token may be retired; the send API validates it before use.
         unsafe { hew_local_pid_send(token, 3, ptr::null_mut(), 0) },
         HewError::ErrActorStopped as i32
     );

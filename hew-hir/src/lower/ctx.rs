@@ -43,6 +43,7 @@ impl LowerCtx {
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
+            imported_impl_body_facts: tc_output.imported_impl_body_facts.clone(),
             impl_method_symbol_collisions: impl_method_symbol_collisions(&tc_output.defs),
             consuming_inherent_methods: tc_output.consuming_inherent_methods.clone(),
             impl_method_body_symbols: HashMap::new(),
@@ -183,8 +184,6 @@ impl LowerCtx {
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
             published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
-            import_fn_name_aliases: tc_output.import_fn_name_aliases.clone(),
-            root_value_bindings: tc_output.root_value_bindings.clone(),
             defs: std::sync::Arc::clone(&tc_output.defs),
         }
     }
@@ -651,23 +650,9 @@ impl LowerCtx {
             .any(|entry| entry.type_params.iter().any(|p| p == name))
     }
 
-    /// The symbol HIR emitted a published declaration under.
-    ///
-    /// A package module's declaration keeps its `{owner}.{name}` identity. A
-    /// file import's declaration was spliced into the root namespace by the
-    /// frontend, so the same declaration is emitted under its bare name.
-    pub(super) fn published_declaration_symbol(&self, source_identity: &str) -> String {
-        match source_identity.rsplit_once('.') {
-            Some((owner, name)) if self.file_import_module_names.contains(owner) => {
-                name.to_string()
-            }
-            _ => crate::mangle_dotted_name(source_identity),
-        }
-    }
-
     /// Read a source callable through its exact checker declaration. The
     /// linker symbol is only an index into the pre-collected signature table;
-    /// the ItemId seal catches a later same-spelled registration.
+    /// the `ItemId` seal catches a later same-spelled registration.
     pub(super) fn registered_source_function_symbol(
         &self,
         declaration: hew_types::DefId,
@@ -686,41 +671,6 @@ impl LowerCtx {
             .rsplit_once('.')
             .filter(|(owner, _)| self.file_import_module_names.contains(*owner))
             .map_or(source_identity, |(_, name)| name)
-    }
-
-    /// Resolve a bare function through the checker's declaration namespace and
-    /// exact importer/file binding. Registry membership concerns emission only;
-    /// it must not choose which source declaration an identifier names.
-    pub(super) fn resolved_bare_function_symbol(&self, name: &str) -> Option<String> {
-        if self.current_module_name.is_none() && self.root_value_bindings.contains(name) {
-            return None;
-        }
-        if let Some(module) = &self.current_module_name {
-            let declared = format!("{module}.{name}");
-            if self.defs.declaration_kind_by_path(&declared)
-                == Some(hew_types::DeclarationKind::Function)
-                && self.fn_sigs_by_path.contains_key(&declared)
-            {
-                return Some(self.published_declaration_symbol(&declared));
-            }
-        }
-        self.import_fn_name_aliases
-            .get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                name.to_string(),
-            ))
-            .or_else(|| {
-                // File-import binding keys carry the importing module's
-                // namespace; named imports use the bare source binding.
-                let module = self.current_module_name.as_ref()?;
-                self.import_fn_name_aliases.get(&(
-                    self.current_module_name.clone(),
-                    self.current_module_idx,
-                    format!("{module}.{name}"),
-                ))
-            })
-            .map(|owner| self.published_declaration_symbol(owner))
     }
 
     pub(super) fn checked_member_definition(

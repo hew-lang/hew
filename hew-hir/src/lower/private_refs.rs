@@ -2,14 +2,10 @@
 
 use super::*;
 
-/// Call-name accumulator for the private-refs scanner: `bare` receives
-/// bare-identifier call targets (`foo(...)`), `methods` receives method-call
-/// names (`recv.foo(...)`) regardless of receiver. Both lists are raw
-/// (unsorted, with duplicates) until a `collect_*` wrapper normalises them.
+/// Bare call names used only for private helper closure discovery.
 #[derive(Default)]
 pub(super) struct CallNames {
     pub(super) bare: Vec<String>,
-    pub(super) methods: Vec<String>,
 }
 
 /// Collect the names of private helper functions that are referenced by direct
@@ -27,46 +23,6 @@ pub(super) fn collect_bare_fn_call_refs(
     bare.sort_unstable();
     bare.dedup();
     bare
-}
-
-/// Collect every bare-identifier call target (`foo(...)` where `foo` is an
-/// identifier) reachable in `body`, regardless of any candidate filter.
-///
-/// Used to decide whether an imported impl-method body is safe to lower: a body
-/// that calls a bare name resolvable in neither `fn_registry`, the same-module
-/// rewrite map, a lexically-bound fn-typed parameter, the source builtin
-/// overload set, nor the runtime/stdlib catalog cannot be lowered cross-module
-/// (a checker-owned builtin method rewrite such as `hew_stream_next_layout`
-/// is not extern-declared in the module and never reaches the imported
-/// `fn_registry`). Such methods are skipped,
-/// matching the prior behaviour where every imported impl method was dropped.
-pub(super) fn collect_all_bare_call_names(body: &Block) -> Vec<String> {
-    let mut found = CallNames::default();
-    scan_block_for_private_refs(body, None, &mut found);
-    let mut bare = found.bare;
-    bare.sort_unstable();
-    bare.dedup();
-    bare
-}
-
-/// Collect every method-call name (`recv.foo(...)` → `foo`) reachable in
-/// `body`, regardless of the receiver's type.
-///
-/// Used by the imported-impl skip computation to make skip-listing transitive:
-/// an emitted method whose body method-calls a skip-listed sibling would fail
-/// the HIR callable-set gate at module level (the gate scans every emitted
-/// body, not just user call sites), so such methods must be skipped too. The
-/// receiver is not type-resolved at this pre-pass stage; matching by bare
-/// method name is conservative — over-skipping keeps the boundary fail-closed
-/// (a call to an over-skipped method still fails with
-/// `CallableUnsupportedInMir`), never fail-open.
-pub(super) fn collect_all_method_call_names(body: &Block) -> Vec<String> {
-    let mut found = CallNames::default();
-    scan_block_for_private_refs(body, None, &mut found);
-    let mut methods = found.methods;
-    methods.sort_unstable();
-    methods.dedup();
-    methods
 }
 
 /// Iterate the parameter and return `TypeExpr`s of an impl-block method.
@@ -132,183 +88,6 @@ pub(super) fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String
             collect_type_expr_named_leaves(&return_type.0, out);
         }
         TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
-    }
-}
-
-/// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
-/// to lower cross-module: it must reference only primitives/builtins, the impl's
-/// own self type, a generic type parameter in scope on the impl or method, or an
-/// imported public type whose backing declaration the imported-module pre-pass
-/// already registered at the MIR boundary. A user type or a user trait used as a
-/// generic argument is rejected, because lowering a method that names one trips
-/// `unknown type` / D10 at MIR time.
-///
-/// `is_known_registered_type` answers whether a type name resolves to a
-/// declaration the lowering context has registered (e.g. dotted `fs.IoError` or
-/// bare same-module records returned by stdlib receiver methods). This is the
-/// checker/lowering authority — the gate consults it rather than re-inferring
-/// safety from syntax alone.
-///
-/// `generic_params` are the type-parameter names in scope for this method (the
-/// impl-block params plus the method's own). A name matching one of them is a
-/// generic carrier resolved by substitution at monomorphisation time, not a
-/// concrete type the importer must already know — admitting it is what lets a
-/// generic adapter impl-method (`impl<I, A, B> Iterator for Map<I, A, B>`'s
-/// `next(var self) -> Option<B>`) lower as a per-instantiation origin.
-///
-/// Conservative by design for non-generic carriers: it admits the fluent-builder
-/// shape (scalar params + opaque self return) and ADT-returning methods
-/// (`Result<_, fs.IoError>`) while excluding signatures naming a type the
-/// importer cannot resolve. Composite forms recurse into their components.
-#[allow(
-    clippy::too_many_lines,
-    reason = "flat structural recursion over every composite TypeExpr variant; \
-              each arm is the same recursive call, splitting it obscures the shape"
-)]
-pub(super) fn imported_impl_signature_type_is_safe(
-    ty: &TypeExpr,
-    self_type_name: &str,
-    generic_params: &HashSet<String>,
-    is_known_registered_type: &impl Fn(&str) -> bool,
-) -> bool {
-    match ty {
-        TypeExpr::Named {
-            path: named_path,
-            type_args,
-        } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                // A generic type parameter in scope on the impl or method is a
-                                                // carrier resolved at monomorphisation time; admit it (and recurse
-                                                // into any args, e.g. `Vec<A>`). Checked before the registered-type
-                                                // gate because a type param never has a backing declaration.
-            if generic_params.contains(name) {
-                return type_args.as_ref().is_none_or(|args| {
-                    args.iter().all(|arg| {
-                        imported_impl_signature_type_is_safe(
-                            &arg.0,
-                            self_type_name,
-                            generic_params,
-                            is_known_registered_type,
-                        )
-                    })
-                });
-            }
-            // A user-type reference is resolvable only when its backing
-            // declaration was registered at the MIR boundary by the
-            // imported-module pre-pass. Otherwise it is rejected.
-            let known_registered_type = is_known_registered_type(name);
-            if name.contains('.') || known_registered_type {
-                if !known_registered_type {
-                    return false;
-                }
-                return type_args.as_ref().is_none_or(|args| {
-                    args.iter().all(|arg| {
-                        imported_impl_signature_type_is_safe(
-                            &arg.0,
-                            self_type_name,
-                            generic_params,
-                            is_known_registered_type,
-                        )
-                    })
-                });
-            }
-            // The impl's own self type is the opaque handle (already resolvable);
-            // a literal `Self` receiver/return normalises to that same self
-            // type, so it is admitted on identical grounds. Scalar primitives
-            // (`string`, `i64`, `bool`, …) and compound builtins (`Vec`,
-            // `Option`, `ActorHandle`, …) are resolvable by name.
-            let is_primitive = hew_types::ty::PRIMITIVE_ALIASES
-                .iter()
-                .any(|(canonical, aliases)| *canonical == name || aliases.contains(&name.as_str()));
-            let head_ok = name == self_type_name
-                || name == "Self"
-                || is_primitive
-                || hew_types::lookup_builtin_type(name).is_some();
-            if !head_ok {
-                return false;
-            }
-            type_args.as_ref().is_none_or(|args| {
-                args.iter().all(|arg| {
-                    imported_impl_signature_type_is_safe(
-                        &arg.0,
-                        self_type_name,
-                        generic_params,
-                        is_known_registered_type,
-                    )
-                })
-            })
-        }
-        TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
-            imported_impl_signature_type_is_safe(
-                &inner.0,
-                self_type_name,
-                generic_params,
-                is_known_registered_type,
-            )
-        }
-        TypeExpr::Array { element, .. } => imported_impl_signature_type_is_safe(
-            &element.0,
-            self_type_name,
-            generic_params,
-            is_known_registered_type,
-        ),
-        TypeExpr::Pointer { pointee, .. } => imported_impl_signature_type_is_safe(
-            &pointee.0,
-            self_type_name,
-            generic_params,
-            is_known_registered_type,
-        ),
-        TypeExpr::Result { ok, err }
-        | TypeExpr::Fallible {
-            success: ok,
-            error: err,
-        } => {
-            imported_impl_signature_type_is_safe(
-                &ok.0,
-                self_type_name,
-                generic_params,
-                is_known_registered_type,
-            ) && imported_impl_signature_type_is_safe(
-                &err.0,
-                self_type_name,
-                generic_params,
-                is_known_registered_type,
-            )
-        }
-        TypeExpr::Tuple(elems) => elems.iter().all(|elem| {
-            imported_impl_signature_type_is_safe(
-                &elem.0,
-                self_type_name,
-                generic_params,
-                is_known_registered_type,
-            )
-        }),
-        // A function-typed signature element (`fn(A) -> B`) is the closure the
-        // adapter stores and invokes; its components are safe iff each is. A
-        // generic adapter's field/param closure types name only the impl's
-        // generic params, which the carrier check above admits.
-        TypeExpr::Function {
-            params,
-            return_type,
-            ..
-        } => {
-            params.iter().all(|p| {
-                imported_impl_signature_type_is_safe(
-                    &p.0,
-                    self_type_name,
-                    generic_params,
-                    is_known_registered_type,
-                )
-            }) && imported_impl_signature_type_is_safe(
-                &return_type.0,
-                self_type_name,
-                generic_params,
-                is_known_registered_type,
-            )
-        }
-        // Trait objects and any other composite carry user-type identity that
-        // the importer cannot resolve — reject.
-        _ => false,
     }
 }
 
@@ -602,12 +381,7 @@ pub(super) fn scan_expr_for_private_refs(
         Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
             scan_expr_for_private_refs(&expr.0, pf, out);
         }
-        Expr::MethodCall {
-            receiver,
-            method,
-            args,
-        } => {
-            out.methods.push(method.0.to_string());
+        Expr::MethodCall { receiver, args, .. } => {
             scan_expr_for_private_refs(&receiver.0, pf, out);
             for arg in args {
                 scan_expr_for_private_refs(&arg.expr().0, pf, out);

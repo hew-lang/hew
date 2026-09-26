@@ -2461,6 +2461,7 @@ impl Checker {
         // Effect and transfer checks consume capture and actor-dispatch facts
         // before those facts are moved into the checked-program handoff.
         self.report_completion_call_cycles();
+        let checked_impl_body_callees = self.checked_impl_body_callees();
         let suspension_effects = self.finish_suspension_effects();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()
@@ -2586,8 +2587,7 @@ impl Checker {
         for sig in resolved_fn_sigs.values_mut() {
             *sig = self.resolve_fn_sig(sig);
         }
-        let imported_impl_body_facts = self
-            .checked_impl_body_callees()
+        let imported_impl_body_facts = checked_impl_body_callees
             .into_iter()
             .filter_map(|(declaration, callees)| {
                 let sig = resolved_fn_sigs.get(&declaration)?;

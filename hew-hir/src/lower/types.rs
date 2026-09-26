@@ -839,6 +839,18 @@ impl LowerCtx {
                     return format!("{owner}.{tail}");
                 }
             }
+            // A generated machine method spells its companion `Tank.Event`
+            // inside the defining module. The event is a declaration-owned
+            // member of `Tank`, so retain the complete source owner before
+            // its parameter crosses the SIR call boundary.
+            if let Some(module) = self.current_module_name.as_deref() {
+                let canonical = format!("{module}.{name}");
+                if self.defs.lookup_path(&canonical).is_some_and(|id| {
+                    self.defs.kind(id) == hew_types::DeclarationKind::MachineEventType
+                }) {
+                    return canonical;
+                }
+            }
             if let Some(canonical) = hew_types::current_module_qualified_type_candidate(
                 self.current_module_name.as_deref(),
                 name,

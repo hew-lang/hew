@@ -639,10 +639,6 @@ fn builtin_enum_variant_names() -> impl Iterator<Item = &'static str> {
         .flat_map(BuiltinEnumSpec::variant_names)
 }
 
-fn is_builtin_enum_variant_bare_name(name: &str) -> bool {
-    builtin_enum_variant_names().any(|candidate| candidate == name)
-}
-
 pub(crate) fn builtin_enum_hir_variants(spec: &BuiltinEnumSpec) -> Vec<HirVariant> {
     spec.variant_names()
         .enumerate()
@@ -829,12 +825,12 @@ struct RecordEntry {
 }
 
 /// Per-impl-block context threaded into `lower_impl_block` for imported
-/// modules. Carries the set of method names to skip because their bodies or signatures cannot
-/// be resolved safely across the module boundary. `symbol_self_name` is the
+/// modules. Carries exact checker declarations whose bodies cannot be lowered
+/// across the module boundary. `symbol_self_name` is the
 /// exact declaration-keyed owner selected by the pre-lowering body plan,
 /// including any concrete type-argument suffix.
 struct ImportedImplLowering<'a> {
-    skip_methods: &'a HashSet<String>,
+    skip_methods: &'a HashSet<hew_types::DefId>,
     symbol_self_name: Option<&'a str>,
 }
 
@@ -989,6 +985,7 @@ struct LowerCtx {
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
     impl_method_declaration_ids: HashMap<String, hew_types::DefId>,
+    imported_impl_body_facts: HashMap<hew_types::DefId, hew_types::check::ImportedImplBodyFact>,
     /// Checker declarations whose legacy physical method spelling collides.
     impl_method_symbol_collisions: HashSet<hew_types::DefId>,
     consuming_inherent_methods: HashSet<hew_types::DefId>,
@@ -1603,13 +1600,6 @@ struct LowerCtx {
     /// same scope the checker admitted it in.
     published_bare_const_owners:
         HashMap<(Option<String>, u32, String), std::collections::BTreeSet<String>>,
-    /// Exact owner identities for the bare function bindings an import
-    /// published, keyed by the file that wrote the import. The companion of
-    /// `published_bare_const_owners`; see `resolved_bare_function_symbol`.
-    import_fn_name_aliases: HashMap<(Option<String>, u32, String), String>,
-    /// Root-scope value bindings the program itself declares. A root
-    /// declaration outranks a name an import published into the root scope.
-    root_value_bindings: HashSet<String>,
 }
 
 /// Whether `ty` transitively carries a value whose SOLE ownership crosses an

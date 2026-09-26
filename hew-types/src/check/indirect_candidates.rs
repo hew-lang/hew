@@ -213,6 +213,7 @@ impl Checker {
                 _ => None,
             })
             .or_else(|| self.direct_call_targets.get(&key))
+            .or_else(|| self.resolved_calls.get(&key).map(|call| &call.target))
     }
 
     fn selected_callable_declaration(&self, span: &Span) -> Option<crate::DefId> {

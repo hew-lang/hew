@@ -146,6 +146,11 @@ pub(super) struct EffectGraph {
     /// The construct or call that first made each body suspend.
     witnesses: HashMap<EffectBody, String>,
     calls: HashMap<SpanKey, Invocation>,
+    /// Every authored call the body checker visited, including unresolved
+    /// calls. Imported-body eligibility refuses a body missing a selected
+    /// target instead of inferring one from the callee spelling.
+    seen_calls: HashMap<SpanKey, Option<EffectBody>>,
+    construct_calls: HashSet<SpanKey>,
     submission_effects: HashMap<SpanKey, bool>,
     bindings: HashMap<TypeBindingId, CallableOrigin>,
     fork_transfers: Vec<PendingForkTransfer>,
@@ -531,6 +536,11 @@ impl Checker {
 
     pub(super) fn record_expression_effect(&mut self, expr: &Expr, span: &Span) {
         let key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
+            self.effect_graph
+                .seen_calls
+                .insert(key.clone(), self.effect_graph.current_body.clone());
+        }
         let checked_invocation = self.direct_call_targets.contains_key(&key)
             || self.resolved_calls.contains_key(&key)
             || self.method_call_rewrites.contains_key(&key)
@@ -589,6 +599,15 @@ impl Checker {
         self.record_intrinsic_suspension(expr);
     }
 
+    /// A checked variant constructor is a call-form expression with no
+    /// executable callee. Mark it at the selection site so body eligibility
+    /// does not mistake it for an unresolved function call.
+    pub(super) fn record_construct_call(&mut self, span: &Span) {
+        self.effect_graph
+            .construct_calls
+            .insert(SpanKey::in_module(span, self.current_module_idx));
+    }
+
     /// Task joins and structured child teardown suspend independently of the
     /// child callable's own effect. Awaiting an ordinary call instead takes
     /// its effect from the invocation edge.
@@ -638,6 +657,16 @@ impl Checker {
                 if self.defs.kind(*id) == crate::DeclarationKind::ImplMethod {
                     result.entry(*id).or_default();
                 }
+            }
+        }
+        for (key, owner) in &self.effect_graph.seen_calls {
+            if self.effect_graph.calls.contains_key(key)
+                || self.effect_graph.construct_calls.contains(key)
+            {
+                continue;
+            }
+            if let Some(EffectBody::Declaration(declaration)) = owner {
+                result.remove(declaration);
             }
         }
         for (key, invocation) in &self.effect_graph.calls {

@@ -270,7 +270,7 @@ pub(super) fn plan_impl_block_symbols(
     ctx: &mut LowerCtx,
     impl_decl: &hew_parser::ast::ImplDecl,
     base_symbol_self_name: &str,
-    skip_methods: &HashSet<String>,
+    skip_methods: &HashSet<hew_types::DefId>,
 ) {
     if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
         return;
@@ -307,14 +307,14 @@ pub(super) fn plan_impl_block_symbols(
     };
     let mut planned: Vec<(hew_types::DefId, String)> = Vec::new();
     for method in &impl_decl.methods {
-        if skip_methods.contains(method.name.name.as_str()) {
-            continue;
-        }
         let Some(declaration) =
             ctx.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
         else {
             continue;
         };
+        if skip_methods.contains(&declaration) {
+            continue;
+        }
         let symbol = ctx.emitted_impl_method_symbol(
             declaration,
             &symbol_self_name,
@@ -495,7 +495,7 @@ pub(super) fn plan_imported_impl_bodies(
                 continue;
             };
             let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-            let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module);
+            let skip_methods = ctx.imported_impl_skip_methods(impl_decl);
             let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }

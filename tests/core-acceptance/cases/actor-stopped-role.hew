@@ -5,11 +5,13 @@ actor Worker {
     }
 
     #[on(stop)]
-    fn done() { println("hook"); }
+    fn done() {
+        println("hook");
+    }
 }
 
 supervisor App {
-    child worker: Worker restart: transient,
+    child worker: Worker restart: transient;
 }
 
 fn main() {

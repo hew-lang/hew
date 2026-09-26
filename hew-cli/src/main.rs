@@ -2507,11 +2507,19 @@ fn actor_parser_migration(
             let start = tokens[index].1.start;
             let mut end = tokens[index].1.end;
             index += 1;
+            let role_segment = |span: &hew_lexer::Span| {
+                source.get(span.start..span.end).is_some_and(|word| {
+                    let mut chars = word.chars();
+                    chars
+                        .next()
+                        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+                        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                })
+            };
             while index < tokens.len() {
                 match tokens[index].0 {
                     hew_lexer::Token::Dot
-                        if index + 1 < tokens.len()
-                            && matches!(tokens[index + 1].0, hew_lexer::Token::Identifier(_)) =>
+                        if index + 1 < tokens.len() && role_segment(&tokens[index + 1].1) =>
                     {
                         end = tokens[index + 1].1.end;
                         index += 2;

@@ -493,6 +493,14 @@ pub fn lower_program_with_mono_cap(
                             if func.visibility.is_pub()
                                 || private_closure.contains(func.name.name.as_str()) =>
                         {
+                            // File imports are already flattened into the root
+                            // item stream. Their source declaration was bound
+                            // to that emitted ItemId in the first pass; a
+                            // second qualified registration here would replace
+                            // it with an entry whose body is never emitted.
+                            if file_import_modules.contains(mod_id) {
+                                continue;
+                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,

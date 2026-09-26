@@ -203,6 +203,45 @@ fn selected_imported_free_function_call_resolves_to_qualified_symbol() {
 }
 
 #[test]
+fn module_call_uses_its_declaration_when_abi_spelling_disagrees() {
+    let program = build_program_with_imported_module(
+        "pub fn entry(n: i64) -> i64 { n + 1 }",
+        "import m; fn main() -> i64 { m.entry(41) }",
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut checked = checker.check_program(&program);
+    assert!(
+        checked.errors.is_empty(),
+        "type errors: {:#?}",
+        checked.errors
+    );
+    let rewrite = checked
+        .method_call_rewrites
+        .values_mut()
+        .find(|rewrite| {
+            matches!(
+                rewrite,
+                MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target: CallTarget::User(_),
+                    ..
+                }
+            )
+        })
+        .expect("checked module call");
+    let MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. } = rewrite else {
+        unreachable!()
+    };
+    *c_symbol = "wrong$entry".into();
+
+    let output = lower_program_host_target(&program, &checked, &ResolutionCtx);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "main")),
+        Some("m$entry")
+    );
+}
+
+#[test]
 fn module_qualified_call_without_checker_rewrite_fails_closed_before_mir() {
     let program = build_program_with_imported_module(
         "pub fn entry(n: i64) -> i64 { n + 1 }",

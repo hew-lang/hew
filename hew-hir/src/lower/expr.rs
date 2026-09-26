@@ -218,6 +218,50 @@ impl LowerCtx {
             return self.lower_expr_inner(&(compatibility, span), intent);
         }
         if let Expr::GenericApplySuffix { target, .. } = &expr.0 {
+            if let Expr::Ident(name) = &target.0 {
+                if let Some(Resolution::Def(declaration)) =
+                    self.resolutions.get(&self.mk_key(&target.1)).copied()
+                {
+                    if matches!(
+                        self.defs.kind(declaration),
+                        hew_types::DeclarationKind::Function
+                            | hew_types::DeclarationKind::ExternFunction
+                    ) {
+                        let site = self.ids.site();
+                        let (kind, ty) = if let Some(symbol) =
+                            self.registered_source_function_symbol(declaration)
+                        {
+                            // The selected declaration belongs to the inner
+                            // identifier, while instantiation facts belong to
+                            // the full `id<T>` expression.
+                            self.lower_function_value(&symbol, &span, site)
+                        } else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: name.to_string(),
+                                    reason: format!(
+                                        "generic function declaration {declaration:?} has no exact HIR entry"
+                                    ),
+                                },
+                                span.clone(),
+                                "checker-selected generic function has no lowered item",
+                            ));
+                            (
+                                HirExprKind::Unsupported("unbound checked generic function".into()),
+                                ResolvedTy::Unit,
+                            )
+                        };
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            ty,
+                            intent,
+                            kind,
+                            span,
+                        };
+                    }
+                }
+            }
             return self.lower_expr(&(target.0.clone(), span), intent);
         }
         // Pre-allocate the SiteId for this expression so call-site

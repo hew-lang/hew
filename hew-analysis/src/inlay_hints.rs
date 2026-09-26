@@ -46,9 +46,8 @@ fn collect_inlay_hints_from_item(
                 source,
                 &f.fn_span,
                 f.return_type.is_none(),
-                tc.sigs()
-                    .get(f.name.name.as_str())
-                    .cloned()
+                checked_decl_sig(tc, &f.fn_span, f.name.name.as_str())
+                    .or_else(|| tc.sigs().get(f.name.name.as_str()).cloned())
                     .or_else(|| find_fallback_fn_sig(f.name.name.as_str(), tc)),
                 hints,
             );
@@ -66,9 +65,13 @@ fn collect_inlay_hints_from_item(
                     source,
                     &method.fn_span,
                     method.return_type.is_none(),
-                    tc.sigs()
-                        .get(format!("{}::{}", a.name, method.name).as_str())
-                        .cloned(),
+                    checked_decl_sig(tc, &method.fn_span, method.name.name.as_str()).or_else(
+                        || {
+                            tc.sigs()
+                                .get(format!("{}::{}", a.name, method.name).as_str())
+                                .cloned()
+                        },
+                    ),
                     hints,
                 );
                 collect_inlay_hints_from_block(source, &method.body, tc, hints);
@@ -81,9 +84,13 @@ fn collect_inlay_hints_from_item(
                         source,
                         &method.fn_span,
                         method.return_type.is_none(),
-                        tc.sigs()
-                            .get(format!("{}::{}", td.name, method.name).as_str())
-                            .cloned(),
+                        checked_decl_sig(tc, &method.fn_span, method.name.name.as_str()).or_else(
+                            || {
+                                tc.sigs()
+                                    .get(format!("{}::{}", td.name, method.name).as_str())
+                                    .cloned()
+                            },
+                        ),
                         hints,
                     );
                     collect_inlay_hints_from_block(source, &method.body, tc, hints);
@@ -92,7 +99,7 @@ fn collect_inlay_hints_from_item(
         }
         Item::Impl(i) => {
             for method in &i.methods {
-                let sig = match &i.target_type.0 {
+                let fallback = match &i.target_type.0 {
                     TypeExpr::Named { path, .. } => tc
                         .sigs()
                         .get(format!("{path}::{}", method.name).as_str())
@@ -103,7 +110,7 @@ fn collect_inlay_hints_from_item(
                     source,
                     &method.fn_span,
                     method.return_type.is_none(),
-                    sig,
+                    checked_decl_sig(tc, &method.fn_span, method.name.name.as_str()).or(fallback),
                     hints,
                 );
                 collect_inlay_hints_from_block(source, &method.body, tc, hints);
@@ -117,9 +124,13 @@ fn collect_inlay_hints_from_item(
                             source,
                             &method.span,
                             method.return_type.is_none(),
-                            tc.sigs()
-                                .get(format!("{}::{}", t.name, method.name).as_str())
-                                .cloned(),
+                            checked_decl_sig(tc, &method.span, method.name.name.as_str()).or_else(
+                                || {
+                                    tc.sigs()
+                                        .get(format!("{}::{}", t.name, method.name).as_str())
+                                        .cloned()
+                                },
+                            ),
                             hints,
                         );
                         collect_inlay_hints_from_block(source, body, tc, hints);
@@ -144,6 +155,19 @@ fn collect_inlay_hints_from_item(
         }
         _ => {}
     }
+}
+
+/// Select a source-owned signature by its checker declaration occurrence.
+/// Imported declarations may share byte offsets, so only the root module is
+/// considered for hints in the current editor buffer.
+fn checked_decl_sig(tc: &TypeCheckOutput, span: &Span, name: &str) -> Option<FnSig> {
+    tc.fn_sigs.iter().find_map(|(id, sig)| {
+        let site = tc.defs.site(*id)?;
+        (site.module() == tc.defs.root_module()
+            && site.span() == *span
+            && tc.defs.name(*id).as_str() == name)
+            .then(|| sig.clone())
+    })
 }
 
 fn push_named_return_type_hint(
@@ -1105,6 +1129,45 @@ fn main() -> i64 { 0 }
             method_hints,
             vec![expected.as_str()],
             "impl method without an explicit return type should get a return hint"
+        );
+    }
+
+    #[test]
+    fn same_named_impl_methods_keep_their_own_return_hints() {
+        let source = "type A { value: i64 }\nimpl A { fn get(a: A) { a.value } }\ntype B { flag: bool }\nimpl B { fn get(b: B) { b.flag } }";
+        let parsed = parse(source);
+        let mut output = type_check(&parsed);
+        let method = |index: usize| match &parsed.program.items[index].0 {
+            Item::Impl(implementation) => &implementation.methods[0],
+            other => panic!("expected impl item, got {other:?}"),
+        };
+        // Signatures are checker-owned identities; the legacy spelling index
+        // is deliberately absent, as it will be after that mirror is deleted.
+        let mut selected = 0;
+        for (id, signature) in &mut output.fn_sigs {
+            let Some(site) = output.defs.site(*id) else {
+                continue;
+            };
+            if site.span() == method(1).fn_span {
+                signature.return_type = Ty::I64;
+                selected += 1;
+            } else if site.span() == method(3).fn_span {
+                signature.return_type = Ty::Bool;
+                selected += 1;
+            }
+        }
+        assert_eq!(selected, 2, "both impl methods need declaration identities");
+        output.fn_sig_keys.clear();
+        let hints = build_inlay_hints(source, &parsed, &output);
+        let a_offset = find_named_return_hint_offset(source, &method(1).fn_span).unwrap();
+        let b_offset = find_named_return_hint_offset(source, &method(3).fn_span).unwrap();
+        assert_eq!(
+            return_hint_labels_at_offsets(&hints, &[a_offset]),
+            vec!["-> i64 "]
+        );
+        assert_eq!(
+            return_hint_labels_at_offsets(&hints, &[b_offset]),
+            vec!["-> bool "]
         );
     }
 

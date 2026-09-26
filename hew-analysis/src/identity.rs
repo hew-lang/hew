@@ -63,6 +63,54 @@ pub fn reference_spans(
     spans
 }
 
+/// Resolved segments in every source file checked in this compilation.
+#[must_use]
+pub fn all_reference_spans(
+    output: &TypeCheckOutput,
+    resolution: Resolution,
+) -> Vec<(u32, OffsetSpan)> {
+    let mut spans: Vec<_> = output
+        .resolutions
+        .iter()
+        .filter(|(key, value)| key.start < key.end && **value == resolution)
+        .map(|(key, _)| (key.module_idx, span_of(key)))
+        .collect();
+    spans.sort_by_key(|(module, span)| (*module, span.start, span.end));
+    spans.dedup();
+    spans
+}
+
+/// Map a field declaration token to the same nominal/index identity used by
+/// checked projections and initializer labels. Field declarations are not
+/// expressions, so the checker need not duplicate these source tokens in its
+/// resolution table.
+#[must_use]
+pub fn field_declaration_at(
+    output: &TypeCheckOutput,
+    source: &str,
+    parsed: &ParseResult,
+    offset: usize,
+) -> Option<(OffsetSpan, Resolution)> {
+    for (owner, definition) in &output.type_defs {
+        for index in 0..definition.field_order.len() {
+            let resolution = Resolution::Field(*owner, u32::try_from(index).ok()?);
+            let Some(target) = declaration_target(output, resolution) else {
+                continue;
+            };
+            if target.source.is_some() && target.occurrence.module() != output.defs.root_module() {
+                continue;
+            }
+            let Some(span) = declaration_name_span(source, parsed, &target) else {
+                continue;
+            };
+            if span.start <= offset && offset < span.end {
+                return Some((span, resolution));
+            }
+        }
+    }
+    None
+}
+
 /// A checker-owned declaration, with its physical source when available.
 /// The caller supplies that source's current parsed text, so unsaved editor
 /// buffers take precedence over bytes on disk.
@@ -262,7 +310,7 @@ mod tests {
     use hew_types::BuiltinType;
     use hew_types::TypeCheckOutput;
 
-    use super::{reference_spans, resolution_at};
+    use super::{all_reference_spans, reference_spans, resolution_at};
 
     #[test]
     fn source_resolution_keeps_module_indices_distinct() {
@@ -302,5 +350,7 @@ mod tests {
         assert_eq!(resolution_at(&output, 1, 5).map(|(_, id)| id), Some(right));
         assert_eq!(reference_spans(&output, 0, left).len(), 2);
         assert_eq!(reference_spans(&output, 1, left).len(), 0);
+        assert_eq!(all_reference_spans(&output, left).len(), 2);
+        assert_eq!(all_reference_spans(&output, right)[0].0, 1);
     }
 }

@@ -42,6 +42,26 @@ pub fn is_builtin_name(name: &str) -> bool {
     hew_lexer::ALL_KEYWORDS.contains(&name)
 }
 
+/// Validate a proposed Hew identifier for a rename operation.
+///
+/// Prelude function names remain legal targets because they are lexical
+/// bindings; only syntax keywords are reserved.
+pub fn validate_new_name(name: &str) -> Result<(), RenameError> {
+    if !is_valid_identifier(name) {
+        return Err(RenameError::InvalidIdentifier {
+            name: name.to_string(),
+            message: format!("'{name}' is not a valid identifier"),
+        });
+    }
+    if is_builtin_name(name) {
+        return Err(RenameError::Builtin {
+            name: name.to_string(),
+            message: format!("cannot rename to '{name}': reserved keyword"),
+        });
+    }
+    Ok(())
+}
+
 /// Check whether rename is valid at `offset`. Returns the word span if yes.
 ///
 /// Returns `None` if the cursor is not on an identifier, the identifier contains
@@ -109,19 +129,7 @@ pub fn plan_rename(
     offset: usize,
     new_name: &str,
 ) -> Result<Vec<RenameEdit>, RenameError> {
-    if !is_valid_identifier(new_name) {
-        return Err(RenameError::InvalidIdentifier {
-            name: new_name.to_string(),
-            message: format!("'{new_name}' is not a valid identifier"),
-        });
-    }
-
-    if is_builtin_name(new_name) {
-        return Err(RenameError::Builtin {
-            name: new_name.to_string(),
-            message: format!("cannot rename to '{new_name}': reserved keyword"),
-        });
-    }
+    validate_new_name(new_name)?;
 
     let Some((name, def_word_span)) = simple_word_at_offset(source, offset) else {
         return Ok(Vec::new());

@@ -187,6 +187,8 @@ pub enum RenameConflictKind {
     ShadowsTopLevel,
     /// The new name is already brought into scope by an `import`.
     ShadowsImport,
+    /// The new name already belongs to another field of this type.
+    ShadowsField,
 }
 
 /// Failure modes for a rename request. Returned by

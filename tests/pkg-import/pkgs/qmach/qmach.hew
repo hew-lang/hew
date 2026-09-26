@@ -1,7 +1,7 @@
 //! A `pub machine` reached through a package import (#3153).
 //!
 //! The importer names both the machine (`qmach.Light`) and its synthesized
-//! event companion (`qmach.LightEvent`) under the module binding. The export
+//! event companion (`qmach.Light.Event`) under the module binding. The export
 //! ledger is keyed by the exact source owner (`hew.qmach`), so recording the
 //! machine's pair only under the lexical binding (`qmach`) left the qualified
 //! lookup with nothing to find.

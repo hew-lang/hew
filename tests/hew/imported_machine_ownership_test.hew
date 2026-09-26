@@ -53,7 +53,7 @@ fn imported_payload_machine_covers_construction_calls_returns_and_record_storage
 #[test]
 fn imported_machine_transitions_and_supports_dotted_unit_construction() {
     var value = machine_defs.PayloadLifecycle.Empty;
-    value.step(machine_defs.PayloadLifecycleEvent.Load);
+    value.step(machine_defs.PayloadLifecycle.Event.Load);
     assert(payload_label(value) == "TRANSITIONED");
 }
 

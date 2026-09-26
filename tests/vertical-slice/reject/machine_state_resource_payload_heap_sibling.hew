@@ -41,8 +41,8 @@ machine Plain {
 
 fn main() {
     var s = Mixed.Idle;
-    let _ = s.step(MixedEvent.Open { fd: 7 });
+    let _ = s.step(Mixed.Event.Open { fd: 7 });
     var p = Plain.Idle;
-    let _ = p.step(PlainEvent.Open { fd: 8 });
-    let _ = p.step(PlainEvent.Shut);
+    let _ = p.step(Plain.Event.Open { fd: 8 });
+    let _ = p.step(Plain.Event.Shut);
 }

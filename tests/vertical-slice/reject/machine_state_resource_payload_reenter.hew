@@ -26,8 +26,8 @@ machine Session {
 
 fn main() {
     var s = Session.Idle;
-    let _ = s.step(SessionEvent.Open);
+    let _ = s.step(Session.Event.Open);
     for i in 0 .. 3 {
-        let _ = s.step(SessionEvent.UseIt);
+        let _ = s.step(Session.Event.UseIt);
     }
 }

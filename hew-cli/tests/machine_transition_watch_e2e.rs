@@ -343,13 +343,13 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20   receive fn drive(consume tx: stream.Sink<Transition>) {\n\
          \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;\n\
          \x20       let before1 = lc.state_name();\n\
-         \x20       lc.step(lifecycle.LifecycleEvent.Initialise);\n\
+         \x20       lc.step(lifecycle.Lifecycle.Event.Initialise);\n\
          \x20       let after1 = lc.state_name();\n\
          \x20       if before1 != after1 {\n\
          \x20           tx.send(Transition { from_state: before1, to_state: after1 }).expect(\"send\");\n\
          \x20       }\n\
          \x20       let before2 = lc.state_name();\n\
-         \x20       lc.step(lifecycle.LifecycleEvent.Crashed { error: Error.Code(7) });\n\
+         \x20       lc.step(lifecycle.Lifecycle.Event.Crashed { error: Error.Code(7) });\n\
          \x20       let after2 = lc.state_name();\n\
          \x20       if before2 != after2 {\n\
          \x20           tx.send(Transition { from_state: before2, to_state: after2 }).expect(\"send\");\n\

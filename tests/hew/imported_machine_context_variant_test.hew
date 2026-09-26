@@ -15,9 +15,9 @@ import tests.hew.machine_context_variant_support.light_defs;
 fn contextual_transition_bodies_run_after_the_module_is_imported() {
     var light = light_defs.initial();
     assert(light.state_name() == "On");
-    light.step(light_defs.LightEvent.Toggle);
+    light.step(light_defs.Light.Event.Toggle);
     assert(light.state_name() == "Off");
-    light.step(light_defs.LightEvent.Toggle);
+    light.step(light_defs.Light.Event.Toggle);
     assert(light.state_name() == "On");
 }
 
@@ -26,7 +26,7 @@ fn contextual_transition_bodies_run_after_the_module_is_imported() {
 #[test]
 fn contextual_struct_payload_transition_carries_its_field_out() {
     var light = light_defs.Light.On;
-    light.step(light_defs.LightEvent.Label);
+    light.step(light_defs.Light.Event.Label);
     let label = match light {
         light_defs.Light.Named { label } => label,
         _ => "none",

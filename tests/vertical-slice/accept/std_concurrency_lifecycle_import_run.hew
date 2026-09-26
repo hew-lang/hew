@@ -5,7 +5,7 @@ fn main() {
     let created = service.state_name();
     service.step(.Initialise);
     let initialising = service.state_name();
-    service.step(lifecycle.LifecycleEvent.Started { handle: 42 });
+    service.step(lifecycle.Lifecycle.Event.Started { handle: 42 });
     let running = service.state_name();
     service.step(.Stop);
     let stopping = service.state_name();

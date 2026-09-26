@@ -917,17 +917,17 @@ fn machine_diagram_json_event_fields_present() {
 /// A file whose only machine arrives through an import: the machine lives in
 /// `std/machines/toggle.hew` and the root declares none of its own.
 fn imported_only_fixture() -> &'static str {
-    "import std.machines.toggle.{Toggle, ToggleEvent};\n\
+    "import std.machines.toggle.{Toggle};\n\
      fn main() {\n\
      \x20   var t: Toggle = .Off;\n\
-     \x20   t.step(ToggleEvent.Flip);\n\
+     \x20   t.step(Toggle.Event.Flip);\n\
      \x20   println(t.state_name());\n\
      }\n"
 }
 
 /// A root machine beside an imported one, so the command has to render both.
 fn local_and_imported_fixture() -> &'static str {
-    "import std.machines.toggle.{Toggle, ToggleEvent};\n\
+    "import std.machines.toggle.{Toggle};\n\
      machine Door {\n\
      \x20   events { Push, }\n\
      \x20   state Closed,\n\
@@ -939,7 +939,7 @@ fn local_and_imported_fixture() -> &'static str {
      \x20   var d: Door = .Closed;\n\
      \x20   d.step(.Push);\n\
      \x20   var t: Toggle = .Off;\n\
-     \x20   t.step(ToggleEvent.Flip);\n\
+     \x20   t.step(Toggle.Event.Flip);\n\
      \x20   println(f\"{d.state_name()} {t.state_name()}\");\n\
      }\n"
 }

@@ -10,7 +10,7 @@
 // transitions-after-subscribe; the owner sends the current state as a
 // self-transition at attach so a watcher joining an already-started
 // machine fires immediately.
-import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
+import std.concurrency.lifecycle.{Lifecycle};
 
 import std.stream;
 
@@ -28,12 +28,12 @@ actor Owner {
         let current = lc.state_name();
         tx.send(Transition { from_state: current, to_state: lc.state_name() }).expect("send");
         let before_init = lc.state_name();
-        lc.step(LifecycleEvent.Initialise);
+        lc.step(Lifecycle.Event.Initialise);
         if before_init != lc.state_name() {
             tx.send(Transition { from_state: before_init, to_state: lc.state_name() }).expect("send");
         }
         let before_start = lc.state_name();
-        lc.step(LifecycleEvent.Started { handle: 7 });
+        lc.step(Lifecycle.Event.Started { handle: 7 });
         if before_start != lc.state_name() {
             tx.send(Transition { from_state: before_start, to_state: lc.state_name() }).expect("send");
         }

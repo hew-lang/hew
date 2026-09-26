@@ -26,6 +26,6 @@ machine ConnSession {
 
 fn main() {
     var s = ConnSession.Idle;
-    let _ = s.step(ConnSessionEvent.Connect { fd: 1 });
-    let _ = s.step(ConnSessionEvent.Disconnect);
+    let _ = s.step(ConnSession.Event.Connect { fd: 1 });
+    let _ = s.step(ConnSession.Event.Disconnect);
 }

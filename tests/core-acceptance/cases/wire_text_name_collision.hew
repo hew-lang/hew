@@ -1,0 +1,3 @@
+#[wire]
+#[json("camelCase")]
+type Cfg { foo_bar: string @1, fooBar: string @2 }

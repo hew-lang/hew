@@ -44,7 +44,7 @@ fn test_server_impl_linked_in_dual_import_unit() {
 #[test]
 #[real_time]
 fn test_response_accessors_linked_in_dual_import_unit() {
-    http_client.set_timeout(100);
+    assert(http_client.set_timeout(100).is_ok());
     let resp = http_client.get("http://127.0.0.1:1");
     assert(resp.status() == -1);
     let _body = resp.body();

@@ -18,7 +18,7 @@ import std.net.http.http_client;
 #[test]
 #[real_time]
 fn test_headers_drop_without_consume_does_not_abort() {
-    http_client.set_timeout(100);
+    assert(http_client.set_timeout(100).is_ok());
     // A failed request (nothing listening on 19999) returns an empty headers vec.
     let resp = http_client.get("http://127.0.0.1:19999");
     // Bind to a local — this is the P0 path.
@@ -35,7 +35,7 @@ fn test_headers_drop_without_consume_does_not_abort() {
 #[test]
 #[real_time]
 fn test_headers_len_bind_does_not_abort() {
-    http_client.set_timeout(100);
+    assert(http_client.set_timeout(100).is_ok());
     let resp = http_client.get("http://127.0.0.1:19999");
     let h = resp.headers();
     let _n = h.len();

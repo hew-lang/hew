@@ -26,6 +26,7 @@ impl LowerCtx {
             resolutions: tc_output.resolutions.clone(),
             current_actor_nominal: None,
             fn_registry: HashMap::new(),
+            source_fn_entries: HashMap::new(),
             fn_symbol_overrides: HashMap::new(),
             extern_fn_names: HashSet::new(),
             imported_actor_rewrites: None,
@@ -662,6 +663,20 @@ impl LowerCtx {
             }
             _ => crate::mangle_dotted_name(source_identity),
         }
+    }
+
+    /// Read a source callable through its exact checker declaration. The
+    /// linker symbol is only an index into the pre-collected signature table;
+    /// the ItemId seal catches a later same-spelled registration.
+    pub(super) fn registered_source_function_symbol(
+        &self,
+        declaration: hew_types::DefId,
+    ) -> Option<String> {
+        let (symbol, id) = self.source_fn_entries.get(&declaration)?;
+        self.fn_registry
+            .get(symbol)
+            .filter(|entry| entry.id == *id)
+            .map(|_| symbol.clone())
     }
 
     /// The registry key HIR holds a published constant under: the bare name for

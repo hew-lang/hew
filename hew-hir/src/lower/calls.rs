@@ -312,13 +312,11 @@ impl LowerCtx {
     /// Both the dot-form method-call surface and the namespaced `Call` surface
     /// record the same `RewriteModuleQualifiedToFunction` on the call span and
     /// route here. The `c_symbol` from the checker uses dotted notation for
-    /// user-module calls (`module.fn`) and `hew_*` for stdlib calls. User-module
-    /// keys are stored in `fn_registry` under the mangled form (`module$fn`) so
-    /// they are safe as native object-file symbols on all targets. Apply
-    /// `mangle_dotted_name` before the registry lookup AND in the emitted
-    /// `BindingRef.name` so all three consumers (HIR verifier, MIR
-    /// `module_fn_names`, codegen `add_function`) see the same mangled key.
-    /// Stdlib `hew_*` symbols contain no dots, so mangling is identity.
+    /// user-module calls (`module.fn`) and `hew_*` for stdlib calls. A checked
+    /// source function uses its declaration's registered emission symbol;
+    /// runtime and builtin targets use their checker-selected ABI symbol.
+    /// The resulting `BindingRef.name` is shared by HIR verification, MIR and
+    /// code generation.
     ///
     /// A direct call to an imported GENERIC free fn needs the per-instantiation
     /// monomorphisation registered here — the same authority the bare-identifier
@@ -362,7 +360,23 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
-        let symbol = if let CallTarget::ImplMethod(declaration) = &target {
+        let symbol = if let CallTarget::User(declaration) = &target {
+            let Some(symbol) = self.registered_source_function_symbol(*declaration) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: self.defs.path(*declaration).to_string(),
+                        reason: "selected source function has no exact registered body".into(),
+                    },
+                    span.clone(),
+                    "module call cannot recover its callee from an ABI spelling",
+                ));
+                return (
+                    HirExprKind::Unsupported("unregistered checked module function".into()),
+                    ResolvedTy::Unit,
+                );
+            };
+            symbol
+        } else if let CallTarget::ImplMethod(declaration) = &target {
             let Some(symbol) = self.registered_impl_method_symbol(*declaration) else {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CallableUnsupportedInMir {
@@ -562,6 +576,33 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         };
+        if matches!(function.0, Expr::Ident(_)) {
+            let selected = match &target {
+                CallTarget::User(declaration)
+                | CallTarget::Extern { declaration, .. }
+                | CallTarget::DeclaredRuntime { declaration, .. } => Some(*declaration),
+                _ => None,
+            };
+            if let Some(selected) = selected {
+                let callee_key = self.mk_key(&function.1);
+                if self.resolutions.get(&callee_key).copied() != Some(Resolution::Def(selected)) {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: self.defs.path(selected).to_string(),
+                            reason: format!(
+                                "direct call target and callee resolution disagree at {callee_key:?}"
+                            ),
+                        },
+                        span.clone(),
+                        "checker selected different declarations for a call and its callee",
+                    ));
+                    return (
+                        HirExprKind::Unsupported("conflicting checked call identity".into()),
+                        ResolvedTy::Unit,
+                    );
+                }
+            }
+        }
         let target_name = self.call_target_presentation_name(&target);
         if !self.ensure_executable_target(&target, &target_name, span) {
             return (

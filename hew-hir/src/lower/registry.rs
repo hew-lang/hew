@@ -276,6 +276,26 @@ impl LowerCtx {
         id
     }
 
+    /// Register a source free function and bind its checker declaration to
+    /// the emitted entry. A symbol collision can overwrite `fn_registry`, but
+    /// a later value use will detect the changed ItemId rather than selecting
+    /// the wrong declaration.
+    pub(super) fn register_declared_fn_entry(
+        &mut self,
+        symbol: &str,
+        func: &FnDecl,
+        item_span: &Span,
+    ) -> ItemId {
+        let id = self.register_fn_entry(symbol, func);
+        if let Some(declaration) =
+            self.source_declaration(item_span, hew_types::DeclarationKind::Function, 0)
+        {
+            self.source_fn_entries
+                .insert(declaration, (symbol.to_string(), id));
+        }
+        id
+    }
+
     pub(super) fn register_impl_method_fn_entry(
         &mut self,
         self_type_name: &str,
@@ -326,7 +346,10 @@ impl LowerCtx {
     /// so call sites resolve the bare name to an item just like a regular
     /// `fn`. Extern fns are monomorphic (no type params) and have no body
     /// — codegen pre-declares the LLVM symbol with external linkage.
-    pub(super) fn register_extern_fn_entry(&mut self, decl: &hew_parser::ast::ExternFnDecl) {
+    pub(super) fn register_extern_fn_entry(
+        &mut self,
+        decl: &hew_parser::ast::ExternFnDecl,
+    ) -> ItemId {
         let id = self.ids.item();
         let return_ty = decl
             .return_type
@@ -345,5 +368,23 @@ impl LowerCtx {
             },
         );
         self.extern_fn_names.insert(decl.name.to_string());
+        id
+    }
+
+    pub(super) fn register_declared_extern_fn_entry(
+        &mut self,
+        decl: &hew_parser::ast::ExternFnDecl,
+        block_span: &Span,
+        ordinal: usize,
+    ) {
+        let id = self.register_extern_fn_entry(decl);
+        if let Some(declaration) = self.source_declaration(
+            block_span,
+            hew_types::DeclarationKind::ExternFunction,
+            ordinal,
+        ) {
+            self.source_fn_entries
+                .insert(declaration, (decl.name.to_string(), id));
+        }
     }
 }

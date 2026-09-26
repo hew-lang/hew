@@ -1566,30 +1566,44 @@ impl LowerCtx {
 
                 // Resolve a module function value through its lexical owner.
                 // A local record with the same name remains a field access.
-                if let Expr::Ident(module_name) = &object.0 {
-                    let key = self.imported_module_member_key(
-                        module_name.name.as_str(),
-                        field.0.name.as_str(),
-                    );
-                    let symbol = crate::mangle_dotted_name(&key);
-                    if matches!(
-                        self.resolutions.get(&self.mk_key(&object.1)),
-                        Some(Resolution::Module(_))
-                    ) && self.fn_registry.contains_key(&symbol)
-                        && matches!(
+                if matches!(&object.0, Expr::Ident(_)) {
+                    if let (Some(Resolution::Module(_)), Some(Resolution::Def(declaration))) = (
+                        self.resolutions.get(&self.mk_key(&object.1)).copied(),
+                        self.resolutions.get(&self.mk_key(&field.1)).copied(),
+                    ) {
+                        if matches!(
                             self.checker_expr_ty_if_present(&span),
                             Some(ResolvedTy::Function { .. })
-                        )
-                    {
-                        let (kind, ty) = self.lower_function_value(&symbol, &span, site);
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            ty,
-                            intent,
-                            kind,
-                            span,
-                        };
+                        ) {
+                            let (kind, ty) = if let Some(symbol) =
+                                self.registered_source_function_symbol(declaration)
+                            {
+                                self.lower_function_value(&symbol, &span, site)
+                            } else {
+                                self.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: field.0.to_string(),
+                                            reason: format!("module function declaration {declaration:?} has no exact HIR entry"),
+                                        },
+                                        span.clone(),
+                                        "checker-selected module function has no lowered item",
+                                    ));
+                                (
+                                    HirExprKind::Unsupported(
+                                        "unbound checked module function".into(),
+                                    ),
+                                    ResolvedTy::Unit,
+                                )
+                            };
+                            return HirExpr {
+                                node: self.ids.node(),
+                                site,
+                                ty,
+                                intent,
+                                kind,
+                                span,
+                            };
+                        }
                     }
                 }
 

@@ -39,6 +39,40 @@ fn missing_checked_closure_local_fails_closed_at_its_source_site() {
     );
 }
 
+#[test]
+fn direct_call_rejects_a_callee_row_for_another_declaration() {
+    let source = "fn first() -> i64 { 1 } fn second() -> i64 { 2 } fn main() -> i64 { first() }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let start = source.rfind("first()").expect("main call");
+    let key = SpanKey::in_module(&(start..start + "first".len()), 0);
+    let first = output.defs.lookup_path("first").expect("first declaration");
+    let second = output
+        .defs
+        .lookup_path("second")
+        .expect("second declaration");
+    assert_eq!(output.resolutions.get(&key), Some(&Resolution::Def(first)));
+    output
+        .resolutions
+        .insert(key.clone(), Resolution::Def(second));
+
+    let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(
+        lowered.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { reason, .. }
+                if reason.contains("direct call target and callee resolution disagree")
+                    && reason.contains(&format!("{key:?}"))
+        )),
+        "{:#?}",
+        lowered.diagnostics
+    );
+}
+
 fn assert_ordered_aggregate_groups(main: &HirFn) {
     let groups: Vec<_> = main
         .body

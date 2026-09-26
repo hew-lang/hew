@@ -161,6 +161,28 @@ impl LowerCtx {
             );
         }
         if let Some(Resolution::Def(declaration)) = self.resolutions.get(&key).copied() {
+            if matches!(
+                self.defs.kind(declaration),
+                hew_types::DeclarationKind::Function | hew_types::DeclarationKind::ExternFunction
+            ) {
+                if let Some(symbol) = self.registered_source_function_symbol(declaration) {
+                    return self.lower_function_value(&symbol, &span, site);
+                }
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.to_string(),
+                        reason: format!(
+                            "Function resolution at {key:?} has no exact HIR declaration entry"
+                        ),
+                    },
+                    span,
+                    "checker-selected function has no lowered item",
+                ));
+                return (
+                    HirExprKind::Unsupported("unbound checked function".into()),
+                    ResolvedTy::Unit,
+                );
+            }
             if self.defs.kind(declaration) == hew_types::DeclarationKind::Const {
                 if let Some(entry) = self.const_registry.get(self.defs.path(declaration)) {
                     return (
@@ -364,21 +386,6 @@ impl LowerCtx {
                 );
             }
         }
-        if let Some(symbol) = self.resolved_bare_function_symbol(name) {
-            if self.fn_registry.contains_key(&symbol) {
-                return self.lower_function_value(&symbol, &span, site);
-            }
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: name.to_string(),
-                    reason: format!(
-                        "checker-selected callee `{symbol}` missing from HIR fn registry"
-                    ),
-                },
-                span.clone(),
-                "checker-selected free-function declaration was not registered",
-            ));
-        }
         // Bare-name same-module const reference inside an imported module's
         // function body (e.g. `STATUS_OK` inside `tls.hew`).  The global
         // `const_registry` only carries the qualified key
@@ -444,7 +451,11 @@ impl LowerCtx {
                 ty,
             );
         }
-        if self.fn_registry.contains_key(name) {
+        if self
+            .fn_registry
+            .get(name)
+            .is_some_and(|entry| entry.linkage.is_some() || entry.builtin_family.is_some())
+        {
             self.lower_function_value(name, &span, site)
         } else {
             if let Some(module) = self.missing_stdlib_module_import(name, &span) {

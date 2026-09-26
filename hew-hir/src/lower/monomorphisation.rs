@@ -113,44 +113,56 @@ impl LowerCtx {
             // complex callee expressions are out of scope.
             return;
         };
-        let local = matches!(
-            self.resolutions.get(&self.mk_key(&callee_expr.1)),
-            Some(Resolution::Local(_) | Resolution::Field(_, _))
-        );
-        let registry_name = if !local {
-            self.resolved_bare_function_symbol(name.name.as_str())
-                .unwrap_or_else(|| name.to_string())
-        } else {
-            name.to_string()
+        let Some(Resolution::Def(declaration)) =
+            self.resolutions.get(&self.mk_key(&callee_expr.1)).copied()
+        else {
+            return;
         };
-        self.register_free_fn_monomorphisation(&registry_name, None, call_span, call_site);
+        let Some(registry_name) = self.registered_source_function_symbol(declaration) else {
+            return;
+        };
+        if let Some(selected) = self.direct_monomorph_declaration(call_span) {
+            if selected != declaration {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.to_string(),
+                        reason: "callee resolution differs from its checked call target".into(),
+                    },
+                    call_span.clone(),
+                    "generic direct call has conflicting checker declaration identities",
+                ));
+                return;
+            }
+        }
+        self.register_free_fn_monomorphisation(
+            &registry_name,
+            Some(&declaration),
+            call_span,
+            call_site,
+        );
     }
 
     /// Diagnose a poisoned checker `call_type_args` entry before the generic
     /// missing-target boundary can mask it.
     ///
-    /// This lookup is diagnostic-only: it uses the source spelling solely to
-    /// identify the generic declaration whose checker side-table entry is
-    /// corrupt. It never manufactures an executable [`CallTarget`]; the caller
-    /// still lowers the expression as unsupported when the canonical target is
-    /// absent. Valid entries continue through the ordinary strict target gate.
+    /// This diagnostic reads the exact callee declaration row even if the
+    /// executable call target was removed from a malformed checker output.
+    /// It never manufactures a replacement [`CallTarget`].
     pub(super) fn diagnose_poisoned_direct_call_type_args(
         &mut self,
         callee_expr: &Spanned<Expr>,
         call_span: &std::ops::Range<usize>,
     ) -> bool {
-        let Expr::Ident(name) = &callee_expr.0 else {
+        let Expr::Ident(_) = &callee_expr.0 else {
             return false;
         };
-        let local = matches!(
-            self.resolutions.get(&self.mk_key(&callee_expr.1)),
-            Some(Resolution::Local(_) | Resolution::Field(_, _))
-        );
-        let registry_name = if !local {
-            self.resolved_bare_function_symbol(name.name.as_str())
-                .unwrap_or_else(|| name.to_string())
-        } else {
-            name.to_string()
+        let Some(Resolution::Def(declaration)) =
+            self.resolutions.get(&self.mk_key(&callee_expr.1)).copied()
+        else {
+            return false;
+        };
+        let Some(registry_name) = self.registered_source_function_symbol(declaration) else {
+            return false;
         };
         let is_generic_user_fn = self
             .fn_registry

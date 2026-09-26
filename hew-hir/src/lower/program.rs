@@ -268,7 +268,7 @@ pub fn lower_program_with_mono_cap(
             .map(str::to_string);
         match item {
             Item::Function(func) => {
-                let item = ctx.register_fn_entry(func.name.name.as_str(), func);
+                let item = ctx.register_declared_fn_entry(func.name.name.as_str(), func, span);
                 if func.name == Ident::new("main") {
                     let declaration =
                         ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0);
@@ -288,8 +288,8 @@ pub fn lower_program_with_mono_cap(
                 // to a `BindingRef::Item` like any other top-level function.
                 // Codegen pre-declares the LLVM symbol with external linkage
                 // (see `predeclare_extern_decls` in hew-codegen-rs).
-                for extern_fn in &block.functions {
-                    ctx.register_extern_fn_entry(extern_fn);
+                for (ordinal, extern_fn) in block.functions.iter().enumerate() {
+                    ctx.register_declared_extern_fn_entry(extern_fn, span, ordinal);
                 }
             }
             Item::Impl(impl_decl) => {
@@ -506,7 +506,7 @@ pub fn lower_program_with_mono_cap(
                                 "{module_full_path}.{}",
                                 func.name
                             ));
-                            ctx.register_fn_entry(&qualified, func);
+                            ctx.register_declared_fn_entry(&qualified, func, item_span);
                         }
                         // Register public type declarations plus private
                         // struct records from imported modules into
@@ -613,8 +613,10 @@ pub fn lower_program_with_mono_cap(
                         // the std/io.hew `extern "C" { fn hew_io_write(...); }`
                         // block never reaches `fn_registry`.
                         Item::ExternBlock(block) => {
-                            for extern_fn in &block.functions {
-                                ctx.register_extern_fn_entry(extern_fn);
+                            for (ordinal, extern_fn) in block.functions.iter().enumerate() {
+                                ctx.register_declared_extern_fn_entry(
+                                    extern_fn, item_span, ordinal,
+                                );
                             }
                         }
                         // Register imported impl block methods in `fn_registry`
@@ -1727,7 +1729,14 @@ pub fn lower_program_with_mono_cap(
         for (item, _) in &program.items {
             if let Item::ExternBlock(block) = item {
                 for function in &block.functions {
-                    ctx.register_extern_fn_entry(function);
+                    let id = ctx.register_extern_fn_entry(function);
+                    let path = format!("std.builtins.{}", function.name);
+                    if let Some(declaration) = ctx.defs.lookup_path(&path).filter(|declaration| {
+                        ctx.defs.kind(*declaration) == hew_types::DeclarationKind::ExternFunction
+                    }) {
+                        ctx.source_fn_entries
+                            .insert(declaration, (function.name.to_string(), id));
+                    }
                 }
             }
             if let Item::Impl(impl_decl) = item {

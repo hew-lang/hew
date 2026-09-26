@@ -244,9 +244,6 @@ fn physical_target_for_parts<'a>(
         )?;
     }
     for ty in types {
-        if *ty == ResolvedTy::Never {
-            continue;
-        }
         realize_layout(
             &ctx,
             &data,
@@ -684,6 +681,7 @@ fn primitive_types() -> Vec<ResolvedTy> {
         ResolvedTy::CancellationToken,
         ResolvedTy::Duration,
         ResolvedTy::Unit,
+        ResolvedTy::Never,
     ]
 }
 
@@ -770,7 +768,10 @@ fn primitive_repr(
             integer_layout(ctx, target, 32)?,
             integer_layout(ctx, target, 32)?,
         ]),
-        ResolvedTy::Unit => PhysicalRepr::Unit,
+        // Uninhabited outputs still need empty storage metadata in containers
+        // such as Generator<Never, T> and Option<Never>. This does not create
+        // a value or a returning call edge for the semantic Never type.
+        ResolvedTy::Unit | ResolvedTy::Never => PhysicalRepr::Unit,
         callback if *callback == hew_mir::physical::ActorIngressAdapter::pointer_type() => {
             PhysicalRepr::Pointer
         }

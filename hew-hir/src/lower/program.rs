@@ -1707,6 +1707,26 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
+    let source_selected_impl_methods: HashSet<_> = ctx
+        .direct_call_targets
+        .values()
+        .chain(
+            ctx.method_call_rewrites
+                .values()
+                .filter_map(|rewrite| match rewrite {
+                    hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
+                    | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                        target,
+                        ..
+                    } => Some(target),
+                    _ => None,
+                }),
+        )
+        .filter_map(|target| match target {
+            hew_types::CallTarget::ImplMethod(declaration) => Some(*declaration),
+            _ => None,
+        })
+        .collect();
     // Register executable std builtins.hew impl methods only after all user
     // item IDs have been preallocated. This makes builtin bodies visible to
     // source-body lowering without perturbing stable user `ItemId`s. Ordinary
@@ -1776,7 +1796,7 @@ pub fn lower_program_with_mono_cap(
                                 })
                             });
                         let selected_by_checker = declaration.as_ref().is_some_and(|declaration| {
-                            ctx.direct_call_targets.values().any(|target| {
+                            source_selected_impl_methods.contains(declaration) || ctx.direct_call_targets.values().any(|target| {
                                 matches!(target, hew_types::CallTarget::ImplMethod(selected) if selected == declaration)
                             }) || ctx.method_call_rewrites.values().any(|rewrite| match rewrite {
                                 hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
@@ -2633,13 +2653,7 @@ pub fn lower_program_with_mono_cap(
                         // boundary unannotated — a drop-safety bypass. Mirror the
                         // root check here. A trait has no runtime artefact, so
                         // (like the root arm) this emits no HirItem.
-                        Item::Trait(trait_decl) => {
-                            for trait_item in &trait_decl.items {
-                                if let TraitItem::Method(method) = trait_item {
-                                    if method.body.is_none() {}
-                                }
-                            }
-                        }
+                        Item::Trait(_) => {}
                         Item::Record(decl) => {
                             if let Some(mut record) = ctx.lower_record_decl(decl, span.clone()) {
                                 record.defining_module = Some(source_module.clone());

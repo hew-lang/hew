@@ -816,6 +816,17 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
         return;
     }
 
+    // Forceful termination owns state release but never runs authored stop
+    // hooks. The mailbox flag is the same cancellation decision observed by
+    // the suspended-turn and dispatch paths.
+    // SAFETY: the actor retains its mailbox until terminal cleanup finishes.
+    if unsafe { mailbox::mailbox_terminate_requested(a.mailbox.cast::<HewMailbox>()) } {
+        a.terminate_finished.store(true, Ordering::Release);
+        // SAFETY: no lifecycle callback borrows this terminal state.
+        unsafe { crate::actor_native::finish_native_terminal(a) };
+        return;
+    }
+
     let Some(terminate_fn) = a.terminate_fn else {
         a.terminate_finished.store(true, Ordering::Release);
         // SAFETY: no lifecycle callback or handler borrows this terminal state.
@@ -3172,6 +3183,7 @@ fn publish_crash_fault_record(
 pub(crate) struct TerminalNotification {
     actor_id: u64,
     terminal: i32,
+    end_reason: crate::internal::types::ActorEndReason,
     error_code: i32,
     supervisor: *mut c_void,
     supervisor_child_index: i32,
@@ -3188,6 +3200,7 @@ impl TerminalNotification {
         let Self {
             actor_id,
             terminal,
+            end_reason,
             error_code,
             supervisor,
             supervisor_child_index,
@@ -3245,11 +3258,12 @@ impl TerminalNotification {
                 let record = fault_record;
                 // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
                 let notified = unsafe {
-                    crate::supervisor::hew_supervisor_notify_child_actor_event(
+                    crate::supervisor::notify_child_actor_end_event(
                         supervisor.cast(),
                         child_index,
                         actor_id,
                         terminal,
+                        end_reason,
                         error_code,
                         record.as_raw(),
                     )
@@ -3419,6 +3433,11 @@ pub(crate) unsafe fn hew_actor_trap_inner(
     let notice = TerminalNotification {
         actor_id,
         terminal,
+        end_reason: crate::internal::types::ActorEndReason::from_terminal(
+            terminal,
+            // SAFETY: the actor retains its mailbox through this terminal edge.
+            unsafe { mailbox::mailbox_terminate_requested(a.mailbox.cast()) },
+        ),
         error_code,
         supervisor,
         supervisor_child_index,
@@ -3754,11 +3773,10 @@ pub extern "C" fn hew_actor_self_stop() {
     if actor.is_null() {
         return;
     }
-    // SAFETY: The canonical context only installs valid actor pointers during dispatch.
+    // SAFETY: the installed actor context pins this actor for the turn.
     let a = unsafe { &*actor };
-
     if !a.checked_invocation.load(Ordering::Acquire).is_null() {
-        // Keep the checked turn runnable until its cancellation cleanup ends.
+        // Checked turns must cancel and release their scoped work first.
         // SAFETY: this is the current, exclusively owned actor activation.
         unsafe {
             hew_actor_stop(actor);
@@ -3766,16 +3784,11 @@ pub extern "C" fn hew_actor_self_stop() {
         }
         return;
     }
-
-    // Close the mailbox to reject new messages.
     let mb = a.mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
-        // SAFETY: mailbox is valid for actor's lifetime.
+        // SAFETY: the mailbox belongs to this live actor.
         unsafe { mailbox::mailbox_close(mb) };
     }
-
-    // CAS Running → Stopping. Only the dispatching worker can be in Running
-    // for this actor, so this CAS should succeed.
     let _ = a.actor_state.compare_exchange(
         HewActorState::Running as i32,
         HewActorState::Stopping as i32,

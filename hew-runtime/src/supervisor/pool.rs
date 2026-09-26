@@ -447,9 +447,17 @@ pub struct HewNativeChildSpec {
     /// The declared child name as a NUL-terminated string, or null. It labels
     /// the child in the profiler's restart series and tree dump.
     pub name: *const c_char,
+    /// Signed nanoseconds: `-1` for a nested supervisor, zero for immediate
+    /// termination, positive for an actor's graceful stop deadline.
+    pub stop_ns: i64,
 }
 
 fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -> Option<usize> {
+    if (child.role_kind == ROLE_KIND_SUPERVISOR && child.stop_ns != -1)
+        || (child.role_kind == ROLE_KIND_ACTOR && child.stop_ns < 0)
+    {
+        return None;
+    }
     // ROSTER-GUARDED-HELPER: construction holds the owning supervisor mutex
     // throughout registration; this helper invokes no callbacks or waits.
     let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
@@ -465,6 +473,7 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
             },
             identity: s.next_child_spec_identity,
             restart_policy: child.restart_policy,
+            stop_ns: child.stop_ns,
             spent: false,
         }));
         index
@@ -473,6 +482,7 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
         let mut spec = InternalChildSpec::default();
         spec.identity = s.next_child_spec_identity;
         spec.restart_policy = child.restart_policy;
+        spec.stop_ns = child.stop_ns;
         spec.native_spawn = Some(child.spawn);
         spec.config = s.config_buf;
         if !child.name.is_null() {
@@ -1337,6 +1347,7 @@ mod tests {
                 child_index: 0,
                 child_id: (*child).id,
                 exit_state: HewActorState::Crashed as i32,
+                end_reason: crate::internal::types::ActorEndReason::Crashed,
                 crash_code: 0,
                 fault_record: 0,
             };

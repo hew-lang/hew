@@ -176,6 +176,16 @@ fn role_resolve_current_child_id(
     Ok(unsafe { ((*child).id, (*child).spawn_serial) })
 }
 
+/// Resolve a stable actor role to its current exact incarnation. The caller
+/// must still pin and compare the full spawn serial before acting on it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_actor_role_identity(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> Option<(u64, u64)> {
+    let (owner, slot) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    role_resolve_current_child_id(owner, slot, false).ok()
+}
+
 /// The classified refusal for a resolution that succeeded but whose
 /// incarnation was retired before the ID-pinned submission could begin
 /// (`with_actor_send_by_id` found the ID no longer live). Fail-closed and

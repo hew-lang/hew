@@ -399,53 +399,125 @@ pub(crate) unsafe fn try_terminalize_idle_actor(
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     cabi_guard!(actor.is_null());
-    // SAFETY: Caller guarantees `actor` is valid.
+    // SAFETY: caller keeps this actor live during the legacy close request.
     let a = unsafe { &*actor };
-
-    // Close the mailbox so future sends are rejected.
     let mb = a.mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
-        // SAFETY: mailbox is valid for actor's lifetime.
+        // SAFETY: the mailbox belongs to the live actor.
         unsafe { mailbox::mailbox_close(mb) };
     }
-
-    // SAFETY: actor/a/mb are the same live allocation and the mailbox was
-    // closed immediately above.
+    // SAFETY: actor and mailbox are one live allocation.
     let _ = unsafe { try_terminalize_idle_actor(actor, a, mb, true) };
 }
 
-/// Stop an actor.
+/// Request a graceful actor stop without waiting for the actor's release.
 ///
-/// Closes the mailbox, transitions idle actors directly to `Stopped`, and for
-/// an actor that is already `Running` latches the mailbox's out-of-band stop
-/// flag so its dispatch loop observes the request at the top of its next
-/// iteration. A `Suspended` actor — one parked at an `await` with a live
-/// continuation — is latched and then WOKEN, so a scheduler activation reaches
-/// the resume path's latch check and cancels the park; otherwise a stop of an
-/// actor whose awaited operation never completes would never be observed at
-/// all. A queued continuation is also latched; a fresh queued dispatch can
-/// instead drain the closed mailbox naturally to `Stopped`.
-///
-/// The stop is a FLAG, not a queued message: latching it allocates nothing and
-/// cannot fail, so the request can never be lost under memory pressure.
+/// Closing admission preserves every queued message and the active turn. An
+/// idle actor is scheduled to observe the closed mailbox on a worker, so even
+/// a synchronous stop hook cannot hold the caller inside this request.
 ///
 /// # Safety
 ///
 /// `actor` must be a valid pointer returned by a spawn function.
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
+pub(crate) unsafe fn hew_actor_request_stop(actor: *mut HewActor) {
     cabi_guard!(actor.is_null());
-    // SAFETY: Caller guarantees `actor` is valid and remains valid throughout this function.
+    // SAFETY: Caller guarantees `actor` is live throughout this request.
     let a = unsafe { &*actor };
     let mb = a.mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
-        // SAFETY: Mailbox is valid for the actor's lifetime.
+        // SAFETY: the mailbox remains live with this actor.
         unsafe { mailbox::mailbox_close(mb) };
     }
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        crate::resume::sched_enqueue(actor);
+    }
+}
 
-    // SAFETY: actor/a/mb are the same live allocation and the mailbox was
-    // closed immediately above.
+/// Legacy forceful stop entry used by existing runtime teardown until native
+/// lifecycle lowering switches all callers to explicit stop or terminate.
+///
+/// # Safety
+/// `actor` must be a live actor pointer returned by a spawn function.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
+    cabi_guard!(actor.is_null());
+    // SAFETY: caller keeps the actor and its mailbox live.
+    let a = unsafe { &*actor };
+    let mb = a.mailbox.cast::<HewMailbox>();
+    if !mb.is_null() {
+        // SAFETY: the mailbox belongs to the actor.
+        unsafe { mailbox::mailbox_close(mb) };
+    }
+    // SAFETY: actor and mailbox are one live allocation.
     if unsafe { try_terminalize_idle_actor(actor, a, mb, true) } {
+        return;
+    }
+    let state = a.actor_state.load(Ordering::Acquire);
+    let queued_continuation =
+        state == HewActorState::Runnable as i32 && crate::coro_exec::has_live_parked_cont(a);
+    if state != HewActorState::Running as i32
+        && state != HewActorState::Suspended as i32
+        && !queued_continuation
+    {
+        return;
+    }
+    // SAFETY: a live actor owns this mailbox; the flag cancels its active turn.
+    unsafe { mailbox::mailbox_request_stop(mb) };
+    if a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32
+        && a.actor_state
+            .compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    {
+        crate::resume::sched_enqueue(actor);
+    }
+}
+
+/// Request forceful actor termination without waiting for release.
+///
+/// Admission closes immediately, queued messages are discarded by the next
+/// actor activation, and a parked turn is woken so its cancellation edges run.
+/// The request escalates a graceful stop that has not yet completed.
+///
+/// # Safety
+/// `actor` must be a live actor pointer returned by a spawn function.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_terminate(actor: *mut HewActor) {
+    cabi_guard!(actor.is_null());
+    // SAFETY: caller guarantees the actor is live for this request.
+    let a = unsafe { &*actor };
+    let mb = a.mailbox.cast::<HewMailbox>();
+    if !mb.is_null() {
+        // SAFETY: the mailbox remains live with this actor.
+        unsafe { mailbox::mailbox_close(mb) };
+        // SAFETY: termination is a distinct end reason from legacy stop.
+        unsafe { mailbox::mailbox_request_terminate(mb) };
+        // SAFETY: the flag is a nonallocating out-of-band cancellation request.
+        unsafe { mailbox::mailbox_request_stop(mb) };
+    }
+
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        crate::resume::sched_enqueue(actor);
         return;
     }
 
@@ -462,15 +534,7 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         return;
     }
 
-    // Running actors are already inside a dispatch; latch the stop request so
-    // the next loop iteration — or, for a resumed continuation, the resume
-    // path's own latch check — observes the close request. This is an atomic
-    // store — no node allocation, hence no failure mode on which the request is
-    // silently dropped.
-    // SAFETY: Mailbox is valid for the actor's lifetime (null-tolerant).
-    unsafe { mailbox::mailbox_request_stop(mb) };
-
-    // Latch-then-recheck. Between the load above and this store a `Running`
+    // Latch-then-recheck. Between the state load above and the flag store a `Running`
     // continuation can have hit another await and re-parked itself
     // `Suspended`, passing both latch checks on the resume path. Nothing
     // consults the flag again until something wakes the actor, so if the

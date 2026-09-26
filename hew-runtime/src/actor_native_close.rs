@@ -173,19 +173,67 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
         unsafe { notice.publish_terminal_notification() };
     } else if state == HewActorState::Stopped as i32 {
         crate::actor::notify_monitors_on_death(actor_id, state, 0);
+        if !actor.supervisor.is_null() {
+            if let Ok(child_index) = u32::try_from(actor.supervisor_child_index) {
+                // SAFETY: the supervisor remains the child's parent through
+                // terminal publication, and the zero record is a clean end.
+                unsafe {
+                    crate::supervisor::notify_child_actor_end_event(
+                        actor.supervisor.cast(),
+                        child_index,
+                        actor_id,
+                        state,
+                        crate::internal::types::ActorEndReason::from_terminal(
+                            state,
+                            crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()),
+                        ),
+                        0,
+                        0,
+                    );
+                }
+            }
+        }
     }
     completion.finish(code);
 }
 
 /// Request cooperative stop through a stable actor identity.
 #[no_mangle]
-pub extern "C" fn hew_actor_close_native(token: local_handles::HewLocalPidId) {
+pub extern "C" fn hew_actor_stop_native(token: local_handles::HewLocalPidId) {
     if let Some(id) = local_handles::resolve_current_actor(token) {
         live_actors::with_actor_send_by_id(id, |actor| {
-            // SAFETY: the guard pins the actor while the request is latched.
-            unsafe { crate::actor::hew_actor_stop(actor) };
+            // SAFETY: the guard pins the actor while admission closes.
+            unsafe { crate::actor::hew_actor_request_stop(actor) };
+        });
+    } else if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
+        live_actors::with_actor_send_by_identity(id, serial, |actor| {
+            // SAFETY: the identity pin protects the selected incarnation.
+            unsafe { crate::actor::hew_actor_request_stop(actor.as_ptr()) };
         });
     }
+}
+
+/// Request forceful termination through a stable actor identity.
+#[no_mangle]
+pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId) {
+    if let Some(id) = local_handles::resolve_current_actor(token) {
+        live_actors::with_actor_send_by_id(id, |actor| {
+            // SAFETY: the guard pins the actor while cancellation is latched.
+            unsafe { crate::actor::hew_actor_terminate(actor) };
+        });
+    } else if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
+        live_actors::with_actor_send_by_identity(id, serial, |actor| {
+            // SAFETY: the identity pin protects the selected incarnation.
+            unsafe { crate::actor::hew_actor_terminate(actor.as_ptr()) };
+        });
+    }
+}
+
+/// Legacy native close entry retained only until compiler lifecycle emission
+/// switches to `hew_actor_stop_native`.
+#[no_mangle]
+pub extern "C" fn hew_actor_close_native(token: local_handles::HewLocalPidId) {
+    hew_actor_stop_native(token);
 }
 
 #[derive(Debug)]
@@ -385,8 +433,8 @@ mod tests {
     }
 
     #[test]
-    fn supervisor_closed_observers_wait_through_config_cleanup() {
-        use crate::supervisor::{hew_local_pid_supervisor_stop, hew_supervisor_native_spawn};
+    fn supervisor_stop_request_observers_wait_through_config_cleanup() {
+        use crate::supervisor::{hew_supervisor_native_spawn, hew_supervisor_stop_native};
         use std::ffi::c_void;
 
         struct PausedConfigDrop {
@@ -441,7 +489,8 @@ mod tests {
             assert_eq!(hew_actor_wait_poll(early), 0);
             assert!(crate::lifetime::local_handles::pin_current_supervisor(token).is_some());
             hew_actor_wait_free(detached);
-            let stop = std::thread::spawn(move || hew_local_pid_supervisor_stop(token));
+            // The request must return before config cleanup reaches its gate.
+            hew_supervisor_stop_native(token);
             entered.wait();
             assert!(crate::lifetime::local_handles::pin_current_supervisor(token).is_none());
             let late = hew_actor_wait_new(token, late_wake.descriptor());
@@ -450,14 +499,13 @@ mod tests {
             assert!(!ready.take_ready());
             assert!(!late_ready.take_ready());
             // A concurrent close cannot publish completion ahead of the cleanup owner.
-            hew_local_pid_supervisor_stop(token);
+            hew_supervisor_stop_native(token);
             assert_eq!(hew_actor_wait_poll(late), 0);
             assert_eq!(drops.load(Ordering::SeqCst), 0);
             release.wait();
-            assert_eq!(stop.join().expect("supervisor close owner"), 0);
+            ready.wait();
+            late_ready.wait();
             assert_eq!(drops.load(Ordering::SeqCst), 1);
-            assert!(ready.take_ready());
-            assert!(late_ready.take_ready());
             assert!(!detached_ready.take_ready());
             assert_eq!(hew_actor_wait_poll(early), 1);
             assert_eq!(hew_actor_wait_poll(late), 1);
@@ -544,6 +592,7 @@ mod tests {
                 role_kind: 1,
                 spawn: adopt_child,
                 name: std::ptr::null(),
+                stop_ns: -1,
             }];
             let parent = hew_supervisor_native_spawn(
                 0,

@@ -1432,6 +1432,24 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // SAFETY: mailbox pointer is valid for the actor's lifetime.
                 && unsafe { mailbox::mailbox_is_closed(mailbox) }
             {
+                // A producer admitted before close may still publish after
+                // the empty recheck. Keep the consumer alive until the shared
+                // admission state proves all such producers have exited.
+                // SAFETY: the actor retains its mailbox through dispatch.
+                if !unsafe { mailbox::mailbox_admissions_drained(mailbox) } {
+                    if a.actor_state
+                        .compare_exchange(
+                            HewActorState::Idle as i32,
+                            HewActorState::Runnable as i32,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        sched_enqueue(actor);
+                    }
+                    return;
+                }
                 // Mailbox closed while draining → IDLE → STOPPED.
                 if a.actor_state
                     .compare_exchange(
@@ -1957,7 +1975,23 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
         } else if !mailbox.is_null()
             // SAFETY: mailbox pointer is valid for the actor's lifetime.
             && unsafe { mailbox::mailbox_is_closed(mailbox) }
-            && a.actor_state
+        {
+            // SAFETY: the actor retains its mailbox through activation.
+            if !unsafe { mailbox::mailbox_admissions_drained(mailbox) } {
+                if a.actor_state
+                    .compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    sched_enqueue(actor);
+                }
+                return;
+            }
+            if a.actor_state
                 .compare_exchange(
                     HewActorState::Idle as i32,
                     HewActorState::Stopped as i32,
@@ -1965,22 +1999,23 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
                     Ordering::Acquire,
                 )
                 .is_ok()
-        {
-            // A producer can have passed the mailbox's open check before close,
-            // then publish its node after our empty recheck but before its own
-            // wake CAS. Winning Idle -> Stopped makes that CAS fail, so this
-            // worker is the last consumer that can retire the node.
-            // SAFETY: this activation owns the mailbox consumer and the actor
-            // remains live until the activation returns.
-            unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
-            crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-            // Terminal, same reasoning as the `Stopping -> Stopped` settle
-            // above: a pump that stops here (mailbox closed while it sat idle
-            // between yields) owes its consumer the stream fault.
-            crate::actor::fault_close_registered_gen_sink(a);
-            crate::actor_group::notify_actor_death(a.id);
-            // SAFETY: actor just transitioned to Stopped; dispatch is finished.
-            unsafe { crate::actor::call_terminate_fn(actor) };
+            {
+                // A producer can have passed the mailbox's open check before close,
+                // then publish its node after our empty recheck but before its own
+                // wake CAS. Winning Idle -> Stopped makes that CAS fail, so this
+                // worker is the last consumer that can retire the node.
+                // SAFETY: this activation owns the mailbox consumer and the actor
+                // remains live until the activation returns.
+                unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
+                crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+                // Terminal, same reasoning as the `Stopping -> Stopped` settle
+                // above: a pump that stops here (mailbox closed while it sat idle
+                // between yields) owes its consumer the stream fault.
+                crate::actor::fault_close_registered_gen_sink(a);
+                crate::actor_group::notify_actor_death(a.id);
+                // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+                unsafe { crate::actor::call_terminate_fn(actor) };
+            }
         }
     }
 }

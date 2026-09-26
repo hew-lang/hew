@@ -217,6 +217,10 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             work.stop_started = true;
             let start = cleanup.stop_release.load(Ordering::Acquire);
             if terminal == HewActorState::Stopped as i32
+                // SAFETY: terminal cleanup retains the actor and its mailbox.
+                && !unsafe {
+                    crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast())
+                }
                 && !start.is_null()
                 && !actor.state.is_null()
             {

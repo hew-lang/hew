@@ -588,7 +588,7 @@ unsafe fn invoke_on_crash_handler(
 unsafe fn apply_restart(
     sup: *mut HewSupervisor,
     failed_identity: u64,
-    exit_state: c_int,
+    end_reason: crate::internal::types::ActorEndReason,
     crash_code: c_int,
     ctx: *mut crate::execution_context::HewExecutionContext,
     record: FaultRecord,
@@ -599,14 +599,14 @@ unsafe fn apply_restart(
         decide_child_failure(
             sup,
             failed_identity,
-            exit_state,
+            end_reason,
             crash_code,
             ctx,
             record,
             native_action,
         )
     };
-    if exit_state == HewActorState::Crashed as c_int {
+    if end_reason == crate::internal::types::ActorEndReason::Crashed {
         // ORDER: the ruling above has already published the slot state — a
         // restarted child, or a spent spec that classifies Dead. Settling
         // clears the role attribution, and only then are waiters released, so a
@@ -674,13 +674,13 @@ unsafe fn arm_backoff_restart(
 unsafe fn decide_child_failure(
     sup: *mut HewSupervisor,
     failed_identity: u64,
-    exit_state: c_int,
+    end_reason: crate::internal::types::ActorEndReason,
     crash_code: c_int,
     ctx: *mut crate::execution_context::HewExecutionContext,
     record: FaultRecord,
     native_action: Option<i32>,
 ) -> FaultRuling {
-    let crashed = exit_state == HewActorState::Crashed as c_int;
+    let crashed = end_reason == crate::internal::types::ActorEndReason::Crashed;
     let (spec_identity, template, on_crash, sup_actor_id) = {
         // SAFETY: caller keeps `sup` live; crash accounting and callback
         // snapshot are serialized with setters and dynamic removal.
@@ -773,7 +773,7 @@ unsafe fn decide_child_failure(
         }
         if spec.restart_policy == RESTART_TEMPORARY
             || (spec.restart_policy == RESTART_TRANSIENT
-                && exit_state == HewActorState::Stopped as c_int)
+                && end_reason == crate::internal::types::ActorEndReason::Stopped)
             || !circuit_breaker_should_restart(spec, sup_actor_id)
         {
             // Policy declines the restart: a `temporary` child, or a circuit
@@ -909,7 +909,7 @@ pub(crate) unsafe fn dispatch_child_lifecycle_event(
         apply_restart(
             sup,
             spec_identity,
-            event.exit_state,
+            event.end_reason,
             event.crash_code,
             ctx,
             FaultRecord::from_raw(event.fault_record),

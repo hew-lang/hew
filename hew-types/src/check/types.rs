@@ -3870,6 +3870,8 @@ pub struct Checker {
     pub(super) current_self_binding_ty: Option<Ty>,
     /// The actor type currently being checked (for `this` keyword resolution).
     pub(super) current_actor_type: Option<Ty>,
+    /// Handler-local checker bindings that name one authored actor field.
+    pub(super) actor_field_binding_ids: HashMap<TypeBindingId, (crate::NominalId, u32)>,
     /// State fields of the current actor: name, declared mutability, and
     /// declaration site. Drives the purity checks on bare field assignment
     /// and the immutable-field assignment diagnostic (a `let` or bare field
@@ -4439,6 +4441,7 @@ impl Checker {
             current_impl_surface_target: None,
             current_self_binding_ty: None,
             current_actor_type: None,
+            actor_field_binding_ids: HashMap::new(),
             current_actor_fields: Vec::new(),
             actor_consumed_state: HashMap::new(),
             crash_hook_consumed_fields: HashMap::new(),

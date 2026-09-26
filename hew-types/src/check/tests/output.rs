@@ -179,6 +179,38 @@ fn source_resolutions_publish_qualified_record_constructor_segments() {
 }
 
 #[test]
+fn source_resolutions_join_actor_field_uses_across_handlers() {
+    let source = "actor Counter { let count: i64, \
+        receive fn get() -> i64 { count } \
+        receive fn next() -> i64 { count + 1 } }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let (Item::Actor(actor), _) = &parsed.program.items[0] else {
+        panic!("expected actor");
+    };
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let declaration = output
+        .resolutions
+        .get(&SpanKey::in_module(&actor.fields[0].span, 0));
+    assert!(matches!(
+        declaration,
+        Some(crate::check::scope::Resolution::Field(_, 0))
+    ));
+    for written in [
+        source.find("{ count }").unwrap() + 2,
+        source.find("{ count +").unwrap() + 2,
+    ] {
+        assert_eq!(
+            output
+                .resolutions
+                .get(&SpanKey::in_module(&(written..written + "count".len()), 0)),
+            declaration
+        );
+    }
+}
+
+#[test]
 fn source_resolutions_publish_selected_function_and_method() {
     let source = "type A { x: i64 } \
         impl A { fn get(self) -> i64 { self.x } } \

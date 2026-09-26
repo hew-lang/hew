@@ -1547,10 +1547,35 @@ impl Checker {
     /// Handler, method, and lifecycle-hook bodies use this binding so that
     /// assignment to an immutable field is rejected at the assignment site.
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
-        for field in fields {
+        for (index, field) in fields.iter().enumerate() {
             let field_ty = self.resolve_type_expr(&field.ty);
             self.env
                 .define(field.name.to_string(), field_ty, field.is_mutable);
+            self.record_actor_field_binding(field, index);
+        }
+    }
+
+    fn record_actor_field_binding(&mut self, field: &FieldDecl, index: usize) {
+        let Some(crate::Ty::Named { head, .. }) = self.current_actor_type.as_ref() else {
+            return;
+        };
+        let Some(owner) = head.nominal() else {
+            return;
+        };
+        let Some(binding) = self.env.lookup_ref(field.name) else {
+            return;
+        };
+        let identity = (
+            owner,
+            u32::try_from(index).expect("more than u32::MAX actor fields"),
+        );
+        self.actor_field_binding_ids.insert(binding.id, identity);
+        if let Some(site) = self.scope_site() {
+            self.scopes.record_resolution(
+                site,
+                &field.span,
+                super::scope::Resolution::Field(identity.0, identity.1),
+            );
         }
     }
 
@@ -1658,7 +1683,7 @@ impl Checker {
     /// `let` fields their initial values, so the immutable-field rule does
     /// not apply inside the init body.
     pub(super) fn bind_actor_fields_for_init(&mut self, fields: &[FieldDecl]) {
-        for field in fields {
+        for (index, field) in fields.iter().enumerate() {
             let field_ty = self.resolve_type_expr(&field.ty);
             let deferred = self
                 .current_actor_fields
@@ -1670,6 +1695,7 @@ impl Checker {
             } else {
                 self.env.define(field.name.to_string(), field_ty, true);
             }
+            self.record_actor_field_binding(field, index);
         }
     }
 

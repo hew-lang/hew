@@ -428,6 +428,8 @@ pub struct TypeCheckOutput {
     /// (zero behaviour change). Phase 2 promotes this to the primary read path;
     /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    /// Resolved source annotations, keyed by their defining file and span.
+    pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
     /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
     /// [`TypeInstanceKey`].
@@ -1657,6 +1659,7 @@ impl Default for TypeCheckOutput {
             owning_take_vec_cursors: HashSet::new(),
             borrowed_element_option_reads: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            resolved_annotation_types: HashMap::new(),
             type_facts: BTreeMap::new(),
             type_fact_context: TypeFactContext::default(),
             is_type_patterns: HashMap::new(),
@@ -3132,6 +3135,7 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) annotation_types: HashMap<SpanKey, (Ty, Option<String>)>,
     pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
     pub(super) unrendered_assertion_operands: HashSet<SpanKey>,
     /// Checker-side accumulator for
@@ -4382,6 +4386,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            annotation_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             unrendered_assertion_operands: HashSet::new(),
             user_comparison_dispatch: HashMap::new(),

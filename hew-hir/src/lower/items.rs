@@ -81,16 +81,15 @@ impl LowerCtx {
             {
                 continue;
             }
-            for ty in method_signature_type_exprs(method) {
-                let mut names = Vec::new();
-                collect_type_expr_named_leaves(ty, &mut names);
-                for name in names {
-                    if let Some(module) = &self.current_module_name {
-                        self.extern_backed_record_names
-                            .insert(format!("{module}.{name}"));
-                    }
-                    self.extern_backed_record_names.insert(name);
-                }
+            for annotation in method
+                .params
+                .iter()
+                .map(|param| &param.ty)
+                .chain(method.return_type.as_ref())
+            {
+                let ty = self.lower_type(annotation);
+                self.extern_backed_record_names
+                    .extend(crate::value_class::named_type_names(&ty));
             }
         }
         // Outer type-parameter names (e.g. `T` in `impl<T> Iterator for VecIter<T>`).
@@ -164,7 +163,11 @@ impl LowerCtx {
         // compiler-reserved inherent-impl exception below. Source spellings
         // such as `Vec`, `Option`, and `Result` are ordinary user nominals
         // unless they carry the corresponding builtin discriminator.
-        let target_is_alias = self.type_alias_for_name(self_type_name).is_some();
+        let target_is_alias = named_path.segments.last().is_some_and(|(_, span)| {
+            matches!(self.resolutions.get(&self.mk_key(span)),
+                Some(Resolution::Nominal(id))
+                    if self.defs.kind(id.declaration()) == hew_types::DeclarationKind::TypeAlias)
+        });
         let previous_type_params = std::mem::replace(
             &mut self.current_fn_type_params,
             type_params.iter().cloned().collect(),

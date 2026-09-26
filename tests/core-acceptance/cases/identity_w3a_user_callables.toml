@@ -1,0 +1,10 @@
+[[case]]
+id = "identity_w3a_user_callables"
+intent = "Checker-selected user functions named like prelude overloads run their own bodies."
+source = "../vertical-slice/accept/identity_w3a.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "999\nuser-to-string\nuser assert\n"
+exit = 0

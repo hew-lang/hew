@@ -343,10 +343,6 @@ pub(super) fn admit_opaque_resource_lifecycles(
 /// This is declaration-keyed throughout.  In particular, a user `MonitorRef`
 /// or `Stream` can never inherit the standard-library lifecycle merely from
 /// its leaf spelling.
-#[expect(
-    clippy::too_many_lines,
-    reason = "validates one source-owned opaque lifecycle end-to-end: declaration, exact impl method, emitted body, and registry admission"
-)]
 pub(super) fn admit_declared_opaque_resource_lifecycles(
     items: &[HirItem],
     graph: &hew_types::OpaqueResourceCandidateGraph,

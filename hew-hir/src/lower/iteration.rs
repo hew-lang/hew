@@ -598,10 +598,6 @@ impl LowerCtx {
         (iter_init, iter_ty, elem_ty, ForIterNextCall::VarSelf)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "synthetic VecIter::next expansion must build the full caller-side state machine in HIR"
-    )]
     pub(super) fn lower_builtin_vec_iter_next(
         &mut self,
         receiver: &Spanned<Expr>,

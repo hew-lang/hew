@@ -53,10 +53,11 @@ impl LowerCtx {
         symbol_owner: &str,
         method_name: &str,
     ) -> String {
+        use std::fmt::Write as _;
+
         if !self.impl_method_symbol_collisions.contains(&declaration) {
             return crate::node::HirImplBlock::method_symbol(symbol_owner, method_name);
         }
-        use std::fmt::Write as _;
         let mut encoded = String::with_capacity(self.defs.path(declaration).len() * 2);
         for byte in self.defs.path(declaration).bytes() {
             write!(&mut encoded, "{byte:02x}").expect("writing a symbol to String cannot fail");

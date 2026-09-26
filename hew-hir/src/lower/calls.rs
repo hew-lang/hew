@@ -1056,6 +1056,13 @@ impl LowerCtx {
                         )
                 }
             } else if let Expr::Ident(name) = &function.0 {
+                let overload_endpoint = self.ordinary_call_target(&span).and_then(|target| {
+                    if let CallTarget::Builtin { endpoint } = target {
+                        stdlib_catalog::is_overloaded_builtin(&endpoint).then_some(endpoint)
+                    } else {
+                        None
+                    }
+                });
                 // Intercept payload-bearing variant constructors written
                 // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
                 // identifier path produces `MachineVariantCtor { payload:
@@ -1085,11 +1092,9 @@ impl LowerCtx {
                         &span,
                         site,
                     )
-                } else if stdlib_catalog::is_overloaded_builtin(name.name.as_str()) {
+                } else if let Some(endpoint) = overload_endpoint {
                     let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
-                    if let Some(entry) =
-                        stdlib_catalog::resolve_overload(name.name.as_str(), &arg_tys)
-                    {
+                    if let Some(entry) = stdlib_catalog::resolve_overload(&endpoint, &arg_tys) {
                         let result_ty = entry.return_ty.to_resolved();
                         let callee = self.lower_stdlib_callee(entry, function.1.clone());
                         (
@@ -1102,11 +1107,7 @@ impl LowerCtx {
                             result_ty,
                         )
                     } else {
-                        match self.try_lower_generic_display_builtin(
-                            name.name.as_str(),
-                            args,
-                            &span,
-                        ) {
+                        match self.try_lower_generic_display_builtin(&endpoint, args, &span) {
                             Ok(lowered) => lowered,
                             Err(args) => {
                                 let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);

@@ -2,7 +2,7 @@
 // #[resource] payload has no copy, so the transition that takes it is refused.
 #[resource]
 type Handle {
-    fd: i64,
+    fd: i64;
 }
 
 impl Handle {
@@ -11,12 +11,12 @@ impl Handle {
 
 machine Session {
     events {
-        Open,
-        UseIt,
+        Open;
+        UseIt;
     }
 
-    state Idle,
-    state Active { h: Handle, },
+    state Idle;
+    state Active { h: Handle; }
 
     on Open: Idle => Active { h: Handle { fd: 42 } }
     on UseIt: Active => Active reenter { h: state.h }

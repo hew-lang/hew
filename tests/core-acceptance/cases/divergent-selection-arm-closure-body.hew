@@ -9,7 +9,10 @@ fn probe(c: bool) -> i64 {
     let pick = |flag: bool| -> i64 {
         let a = make();
         let b = make();
-        let out = match flag { true => a, false => b };
+        let out = match flag {
+            true => a,
+            false => b,
+        };
         out.len()
     };
     pick(c)
@@ -17,7 +20,7 @@ fn probe(c: bool) -> i64 {
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for seed in 0..50 {
+    for seed in 0 .. 50 {
         total = total + probe(seed % 2 == 0);
         println("frame");
     }

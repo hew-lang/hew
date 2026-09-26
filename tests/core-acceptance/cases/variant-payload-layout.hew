@@ -1,11 +1,19 @@
-enum Payload { Small(bool), Wide(i64, string), Empty }
+enum Payload {
+    Small(bool);
+    Wide(i64, string);
+    Empty;
+}
 
 fn describe(value: Payload) -> string {
     match value {
         .Small(enabled) => {
-            let number = if enabled { 1 } else { 0 };
+            let number = if enabled {
+                1
+            } else {
+                0
+            };
             f"small:{number}"
-        },
+        }
         .Wide(number, text) => f"{number}:{text}",
         .Empty => "empty",
     }

@@ -1,4 +1,5 @@
 import std.encoding.json;
+
 fn build(n: i64) -> i64 {
     var arr = json.array();
     let _ = arr.push(json.from_int(n));
@@ -15,13 +16,21 @@ fn build(n: i64) -> i64 {
         .Err(_) => -1,
     }
 }
+
 fn run_loop(frames: i64) -> i64 {
     var total: i64 = 0;
-    for i in 0..frames { let got = build(i); println(got); total = total + got; }
+    for i in 0 .. frames {
+        let got = build(i);
+        println(got);
+        total = total + got;
+    }
     total
 }
+
 fn main() -> i64 {
     let total = run_loop(200);
-    if total != 19900 { return 70; }
+    if total != 19900 {
+        return 70;
+    }
     0
 }

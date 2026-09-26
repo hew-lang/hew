@@ -4,7 +4,9 @@
 //
 // Expected stdout:
 //   2
-type Counter { n: i64, }
+type Counter {
+    n: i64;
+}
 
 impl Counter {
     fn bump(var self) {

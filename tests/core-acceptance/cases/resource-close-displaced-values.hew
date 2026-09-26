@@ -8,13 +8,33 @@ actor Audit {
 }
 
 #[resource]
-type Ticket { audit: Audit, id: i64, key: i64, }
-impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("audit close"); }
+type Ticket {
+    audit: Audit;
+    id: i64;
+    key: i64;
 }
-impl Hash for Ticket { fn hash(self) -> i64 { self.key } }
-impl Eq for Ticket { fn eq(self, other: Ticket) -> bool { self.key == other.key } }
-fn ticket(audit: Audit, id: i64) -> Ticket { Ticket { audit: audit, id: id, key: 1 } }
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit close");
+    }
+}
+
+impl Hash for Ticket {
+    fn hash(self) -> i64 {
+        self.key
+    }
+}
+
+impl Eq for Ticket {
+    fn eq(self, other: Ticket) -> bool {
+        self.key == other.key
+    }
+}
+
+fn ticket(audit: Audit, id: i64) -> Ticket {
+    Ticket { audit: audit, id: id, key: 1 }
+}
 
 actor Worker {
     receive fn run(audit: Audit) {
@@ -25,19 +45,21 @@ actor Worker {
             values.set(0, ticket(audit, 3));
             values.clear();
             values.push(ticket(audit, 4));
-        }
+        };
         {
             let shared = Rc.new(ticket(audit, 5));
             shared.set(ticket(audit, 6));
-        }
+        };
         {
             var values: HashMap<i64, Ticket> = HashMap.new();
             values.insert(1, ticket(audit, 7));
             values.insert(1, ticket(audit, 8));
-            { let _removed = values.remove(1); }
+            {
+                let _removed = values.remove(1);
+            };
             values.insert(2, ticket(audit, 9));
             values.clear();
-        }
+        };
         {
             var values: HashSet<Ticket> = HashSet.new();
             assert(values.insert(ticket(audit, 10)));
@@ -45,20 +67,20 @@ actor Worker {
             assert(values.remove(ticket(audit, 12)));
             assert(values.insert(ticket(audit, 13)));
             values.clear();
-        }
+        };
         {
             let (output, input): (Sink<Ticket>, Stream<Ticket>) = stream.pipe(1).expect("pipe");
             output.try_send(ticket(audit, 14)).expect("first send");
             match output.try_send(ticket(audit, 15)) {
-                .Err(_) => {},
+                .Err(_) => {}
                 .Ok(_) => panic("full pipe accepted a value"),
             }
             input.close();
             match output.try_send(ticket(audit, 16)) {
-                .Err(_) => {},
+                .Err(_) => {}
                 .Ok(_) => panic("closed pipe accepted a value"),
             }
-        }
+        };
         println("mutations complete");
     }
 }

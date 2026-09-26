@@ -3,14 +3,18 @@
 // and asks another actor. No replacement starts while an incarnation it
 // replaces is still stopping.
 actor Audit {
-    receive fn note(text: string) -> string { text }
+    receive fn note(text: string) -> string {
+        text
+    }
 }
 
 actor Worker {
-    var name: string,
-    audit: Audit,
+    var name: string;
+    let audit: Audit;
     #[on(start)]
-    fn started() { println("start " + name); }
+    fn started() {
+        println("start " + name);
+    }
     #[on(stop)]
     fn stopping() {
         sleep(2ms);
@@ -19,15 +23,19 @@ actor Worker {
             .Err(_) => println("audit unavailable"),
         }
     }
-    receive fn boom() { panic("worker failed"); }
-    receive fn ping() -> i64 { 1 }
+    receive fn boom() {
+        panic("worker failed");
+    }
+    receive fn ping() -> i64 {
+        1
+    }
 }
 
 supervisor App(audit: Audit) {
-    strategy: one_for_all,
-    intensity: 3 within 60s,
-    child left: Worker(name: "left", audit: audit),
-    child right: Worker(name: "right", audit: audit),
+    strategy: one_for_all;
+    intensity: 3 within 60s;
+    child left: Worker(name: "left", audit: audit);
+    child right: Worker(name: "right", audit: audit);
 }
 
 fn main() {

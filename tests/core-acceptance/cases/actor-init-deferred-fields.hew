@@ -1,8 +1,8 @@
 actor Worker {
-    var label: string,
-    let count: i64,
-    var mode: string,
-    var attempts: i64 = 0,
+    var label: string;
+    let count: i64;
+    var mode: string;
+    var attempts: i64 = 0;
     init(name: string, size: i64, fast: bool) {
         label = name.to_upper();
         count = size + 1;
@@ -15,11 +15,21 @@ actor Worker {
         attempts = attempts + 1;
         println(describe());
     }
-    fn describe() -> string { label + "/" + mode }
-    receive fn label() -> string { label }
-    receive fn count() -> i64 { count }
-    receive fn mode() -> string { mode }
-    receive fn attempts() -> i64 { attempts }
+    fn describe() -> string {
+        label + "/" + mode
+    }
+    receive fn label() -> string {
+        label
+    }
+    receive fn count() -> i64 {
+        count
+    }
+    receive fn mode() -> string {
+        mode
+    }
+    receive fn attempts() -> i64 {
+        attempts
+    }
 }
 
 fn show(worker: Worker) {

@@ -1,14 +1,21 @@
 #[linear]
-type Tx { id: i64 }
-impl Tx {
-    fn commit(consume self) { println(f"commit {self.id}"); }
+type Tx {
+    id: i64;
 }
+
+impl Tx {
+    fn commit(consume self) {
+        println(f"commit {self.id}");
+    }
+}
+
 actor Holder {
-    var tx: Tx = Tx { id: 1 },
+    var tx: Tx = Tx { id: 1 };
     receive fn demo() {
         println(tx.id);
     }
 }
+
 fn main() {
     let h = spawn Holder();
     let _ = h.demo();

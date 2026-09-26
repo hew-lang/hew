@@ -1,18 +1,22 @@
 import std.stream;
 
 actor Loader {
-    var owner: string,
-    var label: string,
-    var input: Stream<string>,
+    var owner: string;
+    var label: string;
+    var input: Stream<string>;
     init(path: string) {
         label = path.to_upper();
-        if label.len() > 0 { panic("init failed after the first field"); }
+        if label.len() > 0 {
+            panic("init failed after the first field");
+        }
         input = match stream.open(path) {
             .Ok(opened) => opened.lines(),
             .Err(_) => panic("fixture open failed"),
         };
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {

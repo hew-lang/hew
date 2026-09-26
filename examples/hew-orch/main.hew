@@ -98,10 +98,10 @@ fn ingest_file(path: string, var index: HashMap<string, i32>) -> HashMap<string,
         match index.get(id) {
             .Some(prev) => {
                 index.insert(id, prev + 1);
-            },
+            }
             .None => {
                 index.insert(id, 1);
-            },
+            }
         }
     }
     index

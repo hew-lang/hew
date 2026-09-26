@@ -12,12 +12,12 @@
 // discipline every other malformed shape follows.
 #[wire]
 type Wide {
-    v: i64 @1,
+    v: i64 @1;
 }
 
 #[wire]
 type Narrow {
-    v: i8 @1,
+    v: i8 @1;
 }
 
 fn main() -> i64 {

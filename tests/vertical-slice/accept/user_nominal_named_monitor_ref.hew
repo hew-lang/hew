@@ -3,8 +3,8 @@
 // value class, and a monitor result inside a handler still closes through the
 // std declaration.
 type MonitorRef {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl MonitorRef {

@@ -3,12 +3,14 @@
 // discards a rejection deliberately. A call on the actor handle itself waits
 // for the handler instead.
 actor Worker {
-    var seen: i64 = 0,
+    var seen: i64 = 0;
     receive fn process(job: string) {
         seen = seen + 1;
         assert(job == "a" || job == "b");
     }
-    receive fn total() -> i64 { seen }
+    receive fn total() -> i64 {
+        seen
+    }
 }
 
 fn drive(w: Worker) -> Result<(), SendError> {
@@ -25,7 +27,7 @@ fn drive(w: Worker) -> Result<(), SendError> {
 fn main() {
     let w = spawn Worker();
     match drive(w) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("submission refused"),
     }
     match w.total() {

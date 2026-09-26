@@ -1,6 +1,9 @@
 import std.stream;
 
-type Reader { input: Stream<string>, label: string }
+type Reader {
+    input: Stream<string>;
+    label: string;
+}
 
 fn open() -> Stream<string> {
     match stream.open("resource-read.bin") {
@@ -11,8 +14,13 @@ fn open() -> Stream<string> {
 
 fn early(leave: bool) -> i64 {
     let input = open();
-    defer { input.close(); println("closed"); }
-    if leave { return 7; }
+    defer {
+        input.close();
+        println("closed");
+    }
+    if leave {
+        return 7;
+    }
     8
 }
 
@@ -21,12 +29,18 @@ fn main() {
     println(early(false));
     {
         let reader = Reader { input: open(), label: "record".to_upper() };
-        defer { println(reader.label); }
-        defer { reader.input.close(); }
-    }
-    for _ in 0..3 {
+        defer {
+            println(reader.label);
+        }
+        defer {
+            reader.input.close();
+        }
+    };
+    for _ in 0 .. 3 {
         let input = open();
-        defer { input.close(); }
+        defer {
+            input.close();
+        }
     }
     println("released");
 }

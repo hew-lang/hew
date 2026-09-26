@@ -3,7 +3,7 @@
 // trapping. Exhausting the root supervisor's restart budget still owns the
 // process exit status; the stdout sentinel proves the recoverable call results.
 actor Worker {
-    var value: i64 = 5,
+    var value: i64 = 5;
     receive fn get_value() -> i64 {
         value
     }
@@ -13,10 +13,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
 
-    child w1: Worker(value: 5),
+    child w1: Worker(value: 5);
 }
 
 fn main() -> i64 {
@@ -29,7 +29,6 @@ fn main() -> i64 {
     let _ = await_restart sup.w1;
     let _ = w.crash_me();
     let _ = await_restart sup.w1;
-
     // Single-shot ask to a permanently-dead child: recoverable Err, NOT a trap.
     let ask_code = match w.get_value() {
         .Ok(_) => 1,
@@ -41,7 +40,7 @@ fn main() -> i64 {
         reply from w.get_value() => match reply {
             .Ok(value) => value,
             .Err(_) => 25,
-        },
+        }
     };
     let sentinel = if ask_code == 20 && select_code == 25 {
         46

@@ -1,15 +1,19 @@
 actor Worker {
-    mailbox 8 overflow drop_new,
+    mailbox 8 overflow drop_new;
     #[on(start)]
-    fn started() { println("start"); }
-    receive fn boom() { panic("worker failed"); }
+    fn started() {
+        println("start");
+    }
+    receive fn boom() {
+        panic("worker failed");
+    }
     receive fn ping() {}
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
-    child worker: Worker,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child worker: Worker;
 }
 
 fn refused(reason: SendError) {
@@ -32,7 +36,7 @@ fn main() {
         .Ok(_) => println("accepted"),
         .Err(failure) => refused(failure.reason),
     }
-    for _ in 0..2 {
+    for _ in 0 .. 2 {
         let _ = app.worker.boom();
         let _ = await_restart app.worker;
     }

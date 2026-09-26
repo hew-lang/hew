@@ -266,7 +266,10 @@ mod tests {
         assert_eq!(classify("fn foo() {}"), InputKind::Item);
         assert_eq!(classify("const LIMIT: i64 = 10;"), InputKind::Item);
         assert_eq!(classify("type UserId = i64;"), InputKind::Item);
-        assert_eq!(classify("enum Colour { Red, Green, }"), InputKind::Item);
+        assert_eq!(
+            classify("enum Colour {\n    Red;\n    Green;\n}\n"),
+            InputKind::Item
+        );
         assert_eq!(
             classify("actor Counter { receive fn increment() {} }"),
             InputKind::Item
@@ -394,7 +397,7 @@ mod tests {
         );
         // Once the decorated item is appended, the buffer is complete.
         assert_eq!(
-            input_completeness("#[wire]\ntype UserMessage { name: string @1, }"),
+            input_completeness("#[wire]\ntype UserMessage {\n    name: string @1;\n}\n"),
             InputCompleteness::Complete
         );
     }

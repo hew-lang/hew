@@ -17,13 +17,13 @@
 //     or freed copy.
 
 type Profile {
-    region: string,
-    weight: i64,
+    region: string;
+    weight: i64;
 }
 
 actor Worker {
-    var label: string,
-    var profile: Profile,
+    var label: string;
+    var profile: Profile;
 
     // label.len() proves the owned string is a live, readable value in this
     // incarnation rather than a dangling or emptied copy.
@@ -41,55 +41,49 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child w: Worker(
-        label: "north",
-        profile: Profile { region: "north", weight: 7 },
-    ),
+    child w: Worker(label: "north", profile: Profile { region: "north", weight: 7 });
 }
 
 fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w;
-
     // First incarnation: the owned record field matches the owned string, and
     // "north".len() + 7 == 12.
     match w.region_matches() {
         .Err(_) => {
             return 0;
-        },
+        }
         .Ok(same) => {
             if !same {
                 return 0;
             }
-        },
+        }
     }
     match w.score() {
         .Err(_) => {
             return 0;
-        },
+        }
         .Ok(v) => {
             if v != 12 {
                 return 0;
             }
-        },
+        }
     }
-
     let _ = w.crash_me();
     let w2 = await_restart sup.w;
-
     // The second incarnation must carry the same owned values.
     match w2.region_matches() {
         .Err(_) => {
             return 0;
-        },
+        }
         .Ok(same) => {
             if !same {
                 return 0;
             }
-        },
+        }
     }
     match w2.score() {
         .Ok(v) => v,

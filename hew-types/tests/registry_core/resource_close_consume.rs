@@ -31,19 +31,20 @@ use common::typecheck as typecheck_inline;
 #[test]
 fn resource_inherent_close_records_per_call_site_flag() {
     let output = typecheck_inline(
-        r"
-        #[resource]
-        pub type Conn { id: i64, }
+        r"#[resource]
+pub type Conn {
+    id: i64;
+}
 
-        impl Conn {
-            fn close(consume self) {}
-        }
+impl Conn {
+    fn close(consume self) {}
+}
 
-        fn main() {
-            let c = Conn { id: 1 };
-            c.close();
-        }
-        ",
+fn main() {
+    let c = Conn { id: 1 };
+    c.close();
+}
+",
     );
     assert!(
         !output.method_call_consumes_receiver.is_empty(),
@@ -58,19 +59,20 @@ fn resource_inherent_close_records_per_call_site_flag() {
 #[test]
 fn resource_inherent_single_close_typechecks_cleanly() {
     let output = typecheck_inline(
-        r"
-        #[resource]
-        pub type Conn { id: i64, }
+        r"#[resource]
+pub type Conn {
+    id: i64;
+}
 
-        impl Conn {
-            fn close(consume self) {}
-        }
+impl Conn {
+    fn close(consume self) {}
+}
 
-        fn main() {
-            let c = Conn { id: 1 };
-            c.close();
-        }
-        ",
+fn main() {
+    let c = Conn { id: 1 };
+    c.close();
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -88,18 +90,19 @@ fn resource_inherent_single_close_typechecks_cleanly() {
 #[test]
 fn non_resource_inherent_close_not_in_resource_consume_set() {
     let output = typecheck_inline(
-        r"
-        pub type Plain { id: i64, }
+        r"pub type Plain {
+    id: i64;
+}
 
-        impl Plain {
-            fn close(self) {}
-        }
+impl Plain {
+    fn close(self) {}
+}
 
-        fn main() {
-            let p = Plain { id: 1 };
-            p.close();
-        }
-        ",
+fn main() {
+    let p = Plain { id: 1 };
+    p.close();
+}
+",
     );
     assert!(
         output.method_call_consumes_receiver.is_empty(),

@@ -48,7 +48,7 @@ fn print_field(obj: Value, key: string) -> Result<(), string> {
         .Ok(value) => {
             println(f"{key}:  {value}");
             .Ok(())
-        },
+        }
         .Err(error) => .Err(f"{key}: {error}"),
     }
 }
@@ -63,7 +63,7 @@ fn print_slideshow(root: Value) -> Result<(), string> {
         .Ok(count) => {
             println(f"slides: {count}");
             .Ok(())
-        },
+        }
         .Err(error) => .Err(f"slides: {error}"),
     }
 }
@@ -76,13 +76,13 @@ fn main() {
             match json.parse(body) {
                 .Ok(root) => {
                     match print_slideshow(root) {
-                        .Ok(()) => {},
+                        .Ok(()) => {}
                         .Err(message) => println(f"json data error: {message}"),
                     }
-                },
+                }
                 .Err(error) => println(f"json parse failed: {error}"),
             }
-        },
+        }
         .None => println("http request failed (no network or server unreachable)"),
     }
 }

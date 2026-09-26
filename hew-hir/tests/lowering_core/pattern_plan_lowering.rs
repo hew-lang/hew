@@ -133,17 +133,17 @@ fn classify(x: i64) -> i64 {
 
 #[test]
 fn record_let_rest_projects_omitted_fields_as_wildcards() {
-    let source = r"
-type Pair {
-    a: i64,
-    b: i64,
+    let source = r"type Pair {
+    a: i64;
+    b: i64;
 }
 
 fn main() -> i64 {
     let p = Pair { a: 1, b: 2 };
     let Pair { a, .. } = p;
     a
-}";
+}
+";
     let (parsed, output) = checked(source);
     let lowered = lower_program_host_target(&parsed.program, &output, &ResolutionCtx);
     assert!(
@@ -173,13 +173,17 @@ fn main() -> i64 {
 
 #[test]
 fn missing_record_pattern_plan_fails_closed() {
-    let source = r"
-type Pair { a: i64, b: i64, }
+    let source = r"type Pair {
+    a: i64;
+    b: i64;
+}
+
 fn main() -> i64 {
     let p = Pair { a: 1, b: 2 };
     let Pair { a, .. } = p;
     a
-}";
+}
+";
     let (parsed, mut output) = checked(source);
     output.pattern_plans.clear();
     let lowered = lower_program_host_target(&parsed.program, &output, &ResolutionCtx);
@@ -194,10 +198,9 @@ fn main() -> i64 {
 
 #[test]
 fn owned_record_literal_predicate_reads_pattern_plan() {
-    let source = r#"
-type Packet {
-    tag: string,
-    payload: string,
+    let source = r#"type Packet {
+    tag: string;
+    payload: string;
 }
 
 fn classify(packet: Packet) -> i64 {
@@ -205,7 +208,8 @@ fn classify(packet: Packet) -> i64 {
         Packet { tag: "ok", .. } => 1,
         _ => 0,
     }
-}"#;
+}
+"#;
     let (parsed, output) = checked(source);
     let lowered = lower_program_host_target(&parsed.program, &output, &ResolutionCtx);
     assert!(
@@ -231,10 +235,9 @@ fn or_pattern_struct_leaves_lower_through_the_single_producer() {
     // 2, .. }` lowers cleanly. Before the or-leaf reclassifier was deleted the
     // HIR fallback fail-closed these leaves; this pins the widening so an
     // accidental re-narrowing regresses visibly.
-    let source = r"
-type Point {
-    x: i64,
-    y: i64,
+    let source = r"type Point {
+    x: i64;
+    y: i64;
 }
 
 fn classify(p: Point) -> i64 {
@@ -242,7 +245,8 @@ fn classify(p: Point) -> i64 {
         Point { x: 1, .. } | Point { x: 2, .. } => 100,
         Point { x, .. } => x,
     }
-}";
+}
+";
     let (parsed, output) = checked(source);
     let lowered = lower_program_host_target(&parsed.program, &output, &ResolutionCtx);
     assert!(
@@ -283,22 +287,22 @@ fn nested_record_rest_projects_omitted_fields_as_wildcards() {
     // top-level record-let, so a nested rest (`Inner { a, .. }`) projects the
     // omitted field as a wildcard rather than dropping it from the field
     // list — one field-list source, no erasure-ordering divergence.
-    let source = r"
-type Inner {
-    a: i64,
-    b: i64,
+    let source = r"type Inner {
+    a: i64;
+    b: i64;
 }
 
 type Outer {
-    inner: Inner,
-    tag: i64,
+    inner: Inner;
+    tag: i64;
 }
 
 fn main() -> i64 {
     let o = Outer { inner: Inner { a: 1, b: 2 }, tag: 3 };
     let Outer { inner: Inner { a, .. }, tag } = o;
     a + tag
-}";
+}
+";
     let (parsed, output) = checked(source);
     let lowered = lower_program_host_target(&parsed.program, &output, &ResolutionCtx);
     assert!(
@@ -340,48 +344,82 @@ fn missing_enum_struct_plan_fails_closed_in_refutable_positions() {
     let cases = [
         (
             "if_let",
-            r#"
-enum Packet { Data { a: string, b: string }, Empty, }
-fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
+            r#"enum Packet {
+    Data { a: string; b: string;  }
+    Empty;
+}
+
+fn make() -> Packet {
+    Packet.Data { a: "a".to_upper(), b: "b".to_upper() }
+}
+
 fn main() -> i64 {
     let p = make();
-    if let Packet.Data { a, .. } = p { a.len() } else { 0 }
-}"#,
+    if let Packet.Data { a, .. } = p {
+        a.len()
+    } else {
+        0
+    }
+}
+"#,
         ),
         (
             "while_let",
-            r#"
-enum Packet { Data { a: string, b: string }, Empty, }
-fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
+            r#"enum Packet {
+    Data { a: string; b: string;  }
+    Empty;
+}
+
+fn make() -> Packet {
+    Packet.Data { a: "a".to_upper(), b: "b".to_upper() }
+}
+
 fn main() {
     var p = make();
     while let Packet.Data { a, .. } = p {
         let _ = a.len();
         p = Packet.Empty;
     }
-}"#,
+}
+"#,
         ),
         (
             "let_else",
-            r#"
-enum Packet { Data { a: string, b: string }, Empty, }
-fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
+            r#"enum Packet {
+    Data { a: string; b: string;  }
+    Empty;
+}
+
+fn make() -> Packet {
+    Packet.Data { a: "a".to_upper(), b: "b".to_upper() }
+}
+
 fn main() -> i64 {
-    let Packet.Data { a, .. } = make() else { return 0 };
+    let Packet.Data { a, .. } = make() else {
+        return 0;
+    };
     a.len()
-}"#,
+}
+"#,
         ),
         (
             "match",
-            r#"
-enum Packet { Data { a: string, b: string }, Empty, }
-fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
+            r#"enum Packet {
+    Data { a: string; b: string;  }
+    Empty;
+}
+
+fn make() -> Packet {
+    Packet.Data { a: "a".to_upper(), b: "b".to_upper() }
+}
+
 fn main() -> i64 {
     match make() {
         Packet.Data { a, .. } => a.len(),
         Packet.Empty => 0,
     }
-}"#,
+}
+"#,
         ),
     ];
     for (position, source) in cases {

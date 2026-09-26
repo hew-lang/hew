@@ -268,7 +268,7 @@ fn _expect_template_rejected(src: string, what: string) {
     let r = template.render(src, ctx);
     match r {
         .Ok(out) => panic(f"expected {what} to be rejected, rendered `{out}`"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
 }
 

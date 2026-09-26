@@ -3,7 +3,7 @@
 // shutdown.
 #[resource]
 type Ticket {
-    id: i64,
+    id: i64;
 }
 
 impl Ticket {
@@ -13,8 +13,8 @@ impl Ticket {
 }
 
 type Holder {
-    ticket: Ticket,
-    label: string,
+    ticket: Ticket;
+    label: string;
 }
 
 fn scope_exit() {
@@ -28,7 +28,7 @@ fn worker() {
 }
 
 actor Keeper {
-    var holder: Holder,
+    var holder: Holder;
     receive fn report() {
         println(f"kept {holder.label}");
     }
@@ -36,7 +36,10 @@ actor Keeper {
 
 fn main() {
     scope_exit();
-    scope { let t = fork worker(); await t; };
+    scope {
+        let t = fork worker();
+        await t;
+    };
     let keeper = spawn Keeper(holder: Holder { ticket: Ticket { id: 3 }, label: "actor" });
     let _ = keeper.report();
     println("done");

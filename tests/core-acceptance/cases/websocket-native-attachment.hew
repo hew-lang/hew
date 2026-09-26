@@ -1,8 +1,8 @@
 import std.net.websocket;
 
 actor Receiver {
-    var valid: bool = false,
-    var ended: bool = false,
+    var valid: bool = false;
+    var ended: bool = false;
 
     receive fn on_close() {
         ended = true;

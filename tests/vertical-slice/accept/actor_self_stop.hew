@@ -4,7 +4,7 @@
 // sends fail. From outside, `pid.stop()` makes the same request and is
 // idempotent.
 actor Worker {
-    var handled: i64 = 0,
+    var handled: i64 = 0;
     receive fn finish(n: i64) -> i64 {
         handled += 1;
         self.stop();

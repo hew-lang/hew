@@ -1,6 +1,6 @@
 type Counter {
-    n: i64,
-    label: string,
+    n: i64;
+    label: string;
 }
 
 impl Counter {
@@ -13,8 +13,8 @@ impl Counter {
 }
 
 type Outer {
-    inner: Counter,
-    tag: string,
+    inner: Counter;
+    tag: string;
 }
 
 actor Worker {

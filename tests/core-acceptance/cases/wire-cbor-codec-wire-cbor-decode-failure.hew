@@ -1,7 +1,14 @@
 #[wire]
-type TwoStr { a: string @1, b: string @2, }
+type TwoStr {
+    a: string @1;
+    b: string @2;
+}
+
 #[wire]
-type Pair { a: string @1, b: i64 @2, }
+type Pair {
+    a: string @1;
+    b: i64 @2;
+}
 
 fn main() -> i64 {
     let t = TwoStr { a: "owned-field-a-value", b: "owned-field-b-value" };

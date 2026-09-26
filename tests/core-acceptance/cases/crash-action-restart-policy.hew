@@ -1,7 +1,7 @@
 import std.failure;
 
 actor Worker {
-    let action: i64,
+    let action: i64;
 
     receive fn fail() {
         panic("policy failure");
@@ -23,17 +23,17 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child once: Worker(action: 0) restart: temporary,
-    child discarded: Worker(action: 2),
-    child escalated: Worker(action: 1),
+    child once: Worker(action: 0) restart: temporary;
+    child discarded: Worker(action: 2);
+    child escalated: Worker(action: 1);
 }
 
 fn expect_spent(child: ChildRef<Worker>) {
     match child.ping() {
-        .Err(_) => {},
+        .Err(_) => {}
         .Ok(_) => panic("child unexpectedly restarted"),
     }
 }

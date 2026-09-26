@@ -2,28 +2,36 @@
 // the notification it was handed is still intact when it resumes; the actor
 // serves later calls once each hook's continuation completes.
 import std.failure;
+
 import std.link_monitor;
 
 actor Audit {
-    var notes: i64 = 0,
-    receive fn note(kind: string) -> i64 { notes = notes + 1; notes }
+    var notes: i64 = 0;
+    receive fn note(kind: string) -> i64 {
+        notes = notes + 1;
+        notes
+    }
 }
 
 actor Target {
-    receive fn fail() { panic("linked target"); }
+    receive fn fail() {
+        panic("linked target");
+    }
 }
 
 actor Watcher {
-    audit: Audit,
-    var exits: i64 = 0,
-    var downs: i64 = 0,
+    let audit: Audit;
+    var exits: i64 = 0;
+    var downs: i64 = 0;
 
     receive fn watch(target: Target) -> link_monitor.MonitorRef {
         link(target).expect("link target");
         monitor(target).expect("monitor target")
     }
 
-    receive fn counts() -> i64 { exits * 10 + downs }
+    receive fn counts() -> i64 {
+        exits * 10 + downs
+    }
 
     #[on(exit)]
     fn exited(note: failure.CrashNotification) {

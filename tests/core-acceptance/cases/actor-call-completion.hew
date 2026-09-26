@@ -2,7 +2,7 @@
 // own output always precedes the caller's line after it. A one-way submission
 // would print "returned first" before "handler FIRST".
 actor Worker {
-    var count: i64 = 0,
+    var count: i64 = 0;
 
     receive fn work(label: string) {
         sleep(20ms);
@@ -10,7 +10,9 @@ actor Worker {
         println("handler " + label);
     }
 
-    receive fn count_now() -> i64 { count }
+    receive fn count_now() -> i64 {
+        count
+    }
 }
 
 fn main() {

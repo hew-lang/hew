@@ -2,9 +2,9 @@
 // f-string spine monomorphises the impl for each instantiation instead of
 // refusing the call for want of type arguments.
 enum Outcome<T, E> {
-    Done(T),
-    Failed(E),
-    Pending,
+    Done(T);
+    Failed(E);
+    Pending;
 }
 
 impl<T, E> Display for Outcome<T, E> {

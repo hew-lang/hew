@@ -22,7 +22,7 @@ fn main() {
             .Some(line) => println(f"line={line}"),
             .None => {
                 done = true;
-            },
+            }
         }
     }
 }

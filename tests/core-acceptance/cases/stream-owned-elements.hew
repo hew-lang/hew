@@ -1,17 +1,13 @@
 type Packet {
-    label: string,
-    data: bytes,
-    history: Vec<string>,
+    label: string;
+    data: bytes;
+    history: Vec<string>;
 }
 
 actor Producer {
     receive gen fn records(count: i64) -> Packet {
-        for index in 0..count {
-            yield Packet {
-                label: "packet".to_upper(),
-                data: "owned\0bytes".to_bytes(),
-                history: ["saved".to_upper()],
-            };
+        for index in 0 .. count {
+            yield Packet { label: "packet".to_upper(), data: "owned\0bytes".to_bytes(), history: ["saved".to_upper()] };
         }
     }
 }

@@ -17,10 +17,9 @@ fn check_source(name: &str, source: &str) -> Output {
         .expect("hew check must run")
 }
 
-const RESOURCE_DECL: &str = r"
-#[resource]
+const RESOURCE_DECL: &str = r"#[resource]
 type Conn {
-    fd: i64,
+    fd: i64;
 }
 
 impl Conn {

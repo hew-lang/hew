@@ -2,20 +2,30 @@
 // still reading live state; the second hook runs after it, and the resource
 // field closes only once both hooks finish, before `close` returns.
 actor Audit {
-    receive fn record(note: string) -> string { note.to_upper() }
+    receive fn record(note: string) -> string {
+        note.to_upper()
+    }
 }
 
 #[resource]
-type Ledger { name: string, }
+type Ledger {
+    name: string;
+}
+
 impl Ledger {
-    fn close(consume self) { println(f"{self.name} closed"); }
+    fn close(consume self) {
+        println(f"{self.name} closed");
+    }
 }
 
 actor Worker {
-    audit: Audit,
-    ledger: Ledger,
-    var count: i64 = 0,
-    receive fn bump() -> i64 { count = count + 1; count }
+    let audit: Audit;
+    let ledger: Ledger;
+    var count: i64 = 0;
+    receive fn bump() -> i64 {
+        count = count + 1;
+        count
+    }
     #[on(stop)]
     fn flush() {
         sleep(1ms);
@@ -25,7 +35,9 @@ actor Worker {
         }
     }
     #[on(stop)]
-    fn after() { println("second hook"); }
+    fn after() {
+        println("second hook");
+    }
 }
 
 fn main() {

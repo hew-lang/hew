@@ -217,9 +217,30 @@ fn ordinary_composite_equality_demands_selected_methods() {
     for source in [
         r#"fn main() -> i64 { let a = ["one".to_upper()]; let b = ["one".to_upper()]; if a == b { 1 } else { 0 } }"#,
         r#"fn main() -> i64 { let a = ("one".to_upper(), 1); let b = ("two".to_upper(), 1); if a != b { 1 } else { 0 } }"#,
-        r#"type Label { raw: string } type Outer { value: Label }
-        impl Eq for Label { fn eq(self, other: Label) -> bool { self.raw.len() == other.raw.len() } }
-        fn main() -> i64 { let a = Outer { value: Label { raw: "one".to_upper() } }; let b = Outer { value: Label { raw: "two".to_upper() } }; if a == b { 1 } else { 0 } }"#,
+        r#"type Label {
+    raw: string;
+}
+
+type Outer {
+    value: Label;
+}
+
+impl Eq for Label {
+    fn eq(self, other: Label) -> bool {
+        self.raw.len() == other.raw.len()
+    }
+}
+
+fn main() -> i64 {
+    let a = Outer { value: Label { raw: "one".to_upper() } };
+    let b = Outer { value: Label { raw: "two".to_upper() } };
+    if a == b {
+        1
+    } else {
+        0
+    }
+}
+"#,
         r#"fn main() -> i64 { let a: Option<string> = .Some("one".to_upper()); let b: Option<string> = .None; if a != b { 1 } else { 0 } }"#,
         r#"fn main() -> i64 { let a: Result<string, i64> = .Ok("one".to_upper()); let b: Result<string, i64> = .Err(1); if a != b { 1 } else { 0 } }"#,
     ] {
@@ -308,20 +329,28 @@ fn equality_snapshots_a_whole_binding_before_later_mutation() {
 #[test]
 fn selected_equality_keeps_user_method_fault_cleanup() {
     let module = lower_source(
-        r#"
-        type Key { label: string, divisor: i64 }
-        impl Eq for Key {
-            fn eq(self, other: Key) -> bool {
-                let local = other.label.to_upper();
-                local.len() / self.divisor == 1
-            }
-        }
-        fn main() -> i64 {
-            let left = [Key { label: "left".to_upper(), divisor: 0 }];
-            let right = [Key { label: "right".to_upper(), divisor: 1 }];
-            if left == right { 1 } else { 0 }
-        }
-    "#,
+        r#"type Key {
+    label: string;
+    divisor: i64;
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        let local = other.label.to_upper();
+        local.len() / self.divisor == 1
+    }
+}
+
+fn main() -> i64 {
+    let left = [Key { label: "left".to_upper(), divisor: 0 }];
+    let right = [Key { label: "right".to_upper(), divisor: 1 }];
+    if left == right {
+        1
+    } else {
+        0
+    }
+}
+"#,
     );
     assert!(module
         .value_capabilities
@@ -370,7 +399,7 @@ fn selected_equality_keeps_user_method_fault_cleanup() {
 
 #[test]
 fn scalar_float_comparison_preserves_its_numeric_operation() {
-    let module = lower_source("type Wrapped { value: f64 } fn main() -> i64 { let x = 0.0 / 0.0; let a = Wrapped { value: x }; let b = Wrapped { value: x }; if (x == x) == (a == b) { 1 } else { 0 } }");
+    let module = lower_source("type Wrapped {\n    value: f64;\n}\n\nfn main() -> i64 {\n    let x = 0.0 / 0.0;\n    let a = Wrapped { value: x };\n    let b = Wrapped { value: x };\n    if (x == x) == (a == b) {\n        1\n    } else {\n        0\n    }\n}\n");
     let mut scalar = false;
     let mut selected = false;
     for block in module.functions.iter().flat_map(|f| &f.blocks) {
@@ -391,14 +420,17 @@ fn scalar_float_comparison_preserves_its_numeric_operation() {
 #[test]
 fn collection_field_insertion_snapshots_its_own_parent_argument() {
     let module = lower_source(
-        r#"
-        type Tree { label: string, children: Vec<Tree> }
-        fn main() -> i64 {
-            var tree = Tree { label: "root".to_upper(), children: Vec.new() };
-            tree.children.push(tree);
-            tree.children[0].label.len()
-        }
-    "#,
+        r#"type Tree {
+    label: string;
+    children: Vec<Tree>;
+}
+
+fn main() -> i64 {
+    var tree = Tree { label: "root".to_upper(), children: Vec.new() };
+    tree.children.push(tree);
+    tree.children[0].label.len()
+}
+"#,
     );
     assert!(verify_module(&module).is_empty());
 }

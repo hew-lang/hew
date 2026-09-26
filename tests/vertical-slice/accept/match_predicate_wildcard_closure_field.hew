@@ -5,7 +5,11 @@
 //!
 //! Observable contract: prints the selected arm's result.
 
-type Holder { tag: i64, label: string, op: fn(i64) -> i64 }
+type Holder {
+    tag: i64;
+    label: string;
+    op: fn(i64) -> i64;
+}
 
 fn main() -> i64 {
     let k = 3;

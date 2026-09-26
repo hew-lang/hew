@@ -1,13 +1,13 @@
 import std.string;
 
 enum Choice<T> {
-    Present(T),
-    Empty,
+    Present(T);
+    Empty;
 }
 
 type EnumHolder<T> {
-    item: Choice<T>,
-    count: i64
+    item: Choice<T>;
+    count: i64;
 }
 
 fn replace_many(frames: i64) -> i64 {

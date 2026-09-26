@@ -14,10 +14,10 @@ actor Sleeper {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child sleeper: Sleeper,
+    child sleeper: Sleeper;
 }
 
 fn main() {

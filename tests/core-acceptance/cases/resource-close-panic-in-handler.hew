@@ -5,17 +5,21 @@
 // frame through the release-fault sink, and the frame releases the vector it
 // still owns before the crash leaves it.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {
         println(f"close {self.fd}");
-        if self.fd == 2 { panic("close failed"); }
+        if self.fd == 2 {
+            panic("close failed");
+        }
     }
 }
 
 actor Pool {
-    var drained: i64 = 0,
+    var drained: i64 = 0;
     receive fn drain() {
         var conns: Vec<Conn> = Vec.new();
         conns.push(Conn { fd: 1 });

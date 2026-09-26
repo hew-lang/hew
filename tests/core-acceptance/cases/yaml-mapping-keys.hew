@@ -8,7 +8,7 @@ fn reject_key(text: string, expected: yaml.Kind) {
             if actual != expected {
                 panic("unsupported key kind was not preserved");
             }
-        },
+        }
         _ => panic("unsupported key must return a typed error"),
     }
     if mapping != saved {
@@ -23,7 +23,7 @@ fn reject_receiver(text: string, expected: yaml.Kind) {
             if actual != expected {
                 panic("receiver kind was not preserved");
             }
-        },
+        }
         _ => panic("nonmapping must return a typed error"),
     }
 }

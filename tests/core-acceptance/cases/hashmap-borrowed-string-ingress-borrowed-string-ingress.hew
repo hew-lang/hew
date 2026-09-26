@@ -1,5 +1,8 @@
 fn bump(var counts: HashMap<string, i64>, category: string) -> HashMap<string, i64> {
-    let next = match counts.get(category) { .Some(old) => old + 1, .None => 1 };
+    let next = match counts.get(category) {
+        .Some(old) => old + 1,
+        .None => 1,
+    };
     counts.insert(category, next);
     counts
 }
@@ -25,7 +28,13 @@ fn main() {
     labels = store_value(labels, 1, "relabel".to_upper());
     members = add_member(members, "member".to_upper());
     members = add_member(members, "member".to_upper());
-    let coffee = match counts.get("coffee") { .Some(n) => n, .None => -1 };
-    let label = match labels.get(1) { .Some(s) => s, .None => "absent" };
+    let coffee = match counts.get("coffee") {
+        .Some(n) => n,
+        .None => -1,
+    };
+    let label = match labels.get(1) {
+        .Some(s) => s,
+        .None => "absent",
+    };
     print(f"{coffee}|{counts.len()}|{label}|{members.len()}");
 }

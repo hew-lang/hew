@@ -1,5 +1,7 @@
 import std.encoding.compress;
+
 import std.os;
+
 import std.process;
 
 fn one_frame() -> i64 {
@@ -33,9 +35,13 @@ fn one_frame() -> i64 {
 
 fn main() -> i64 {
     var total = 0;
-    for _ in 0..50 {
+    for _ in 0 .. 50 {
         total = total + one_frame();
         println("frame");
     }
-    if total > 0 { 0 } else { 91 }
+    if total > 0 {
+        0
+    } else {
+        91
+    }
 }

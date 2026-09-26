@@ -13,5 +13,9 @@ fn main() -> i64 {
         total = total + frame();
         i = i + 1;
     }
-    if total < 0 { 72 } else { 0 }
+    if total < 0 {
+        72
+    } else {
+        0
+    }
 }

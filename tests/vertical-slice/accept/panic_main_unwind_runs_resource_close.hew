@@ -13,7 +13,7 @@
 //   status: 101              (hew_panic's clean-exit contract, preserved)
 #[resource]
 type Conn {
-    fd: i64,
+    fd: i64;
 }
 
 impl Conn {

@@ -170,7 +170,7 @@ fn test_next_line_returns_some_for_real_empty_line_only() {
         .Some(line) => assert(line == "alpha"),
         .None => {
             panic("expected first line");
-        },
+        }
     }
     let (sc2, blank) = scanner.next_line(sc);
     sc = sc2;
@@ -178,7 +178,7 @@ fn test_next_line_returns_some_for_real_empty_line_only() {
         .Some(line) => assert(line == ""),
         .None => {
             panic("expected blank line");
-        },
+        }
     }
     let (sc3, third) = scanner.next_line(sc);
     sc = sc3;
@@ -186,13 +186,13 @@ fn test_next_line_returns_some_for_real_empty_line_only() {
         .Some(line) => assert(line == "omega"),
         .None => {
             panic("expected third line");
-        },
+        }
     }
     let (_sc4, eof) = scanner.next_line(sc);
     match eof {
         .Some(line) => {
             panic("unexpected EOF token: " + line);
-        },
+        }
         .None => assert(true),
     }
 }
@@ -206,7 +206,7 @@ fn test_next_line_uses_line_mode_without_changing_split() {
         .Some(value) => assert(value == "one two"),
         .None => {
             panic("expected line");
-        },
+        }
     }
     let after = scanner.scan(next);
     assert(scanner.has_next(after));
@@ -339,7 +339,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
                 .Some(line) => assert(line == "red"),
                 .None => {
                     panic("expected red");
-                },
+                }
             }
             let (sc2, blank) = scanner.next_line(sc);
             sc = sc2;
@@ -347,7 +347,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
                 .Some(line) => assert(line == ""),
                 .None => {
                     panic("expected blank line");
-                },
+                }
             }
             let (sc3, third) = scanner.next_line(sc);
             sc = sc3;
@@ -355,19 +355,19 @@ fn test_from_file_scans_real_empty_line_and_eof() {
                 .Some(line) => assert(line == "blue"),
                 .None => {
                     panic("expected blue");
-                },
+                }
             }
             let (_sc4, eof) = scanner.next_line(sc);
             match eof {
                 .Some(line) => {
                     panic("unexpected EOF token: " + line);
-                },
+                }
                 .None => assert(true),
             }
-        },
+        }
         .Err(e) => {
             panic(f"{e}");
-        },
+        }
     }
     let _ = fs.delete(path);
 }
@@ -378,12 +378,12 @@ fn test_from_file_missing_path_returns_io_error() {
     match scanner.from_file(".tmp/scanner-test-definitely-missing.txt") {
         .Ok(_) => {
             panic("expected missing-file error");
-        },
+        }
         .Err(e) => match e {
             IoError.NotFound(_) => assert(true),
             _ => {
                 panic("expected NotFound");
-            },
-        },
+            }
+        }
     }
 }

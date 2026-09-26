@@ -25,18 +25,19 @@ fn lower_two_module(program: &Program) -> hew_hir::LowerOutput {
 /// native arch so the test isolates the new gate.
 #[test]
 fn supervisor_spawn_no_args_accepted() {
-    let source = r"
-        supervisor Root {
-            strategy: one_for_one,
-            child worker: Worker(),
-        }
-        actor Worker {
-            receive fn work() {}
-        }
-        fn main() {
-            let s = spawn Root;
-        }
-    ";
+    let source = r"supervisor Root {
+    strategy: one_for_one;
+    child worker: Worker();
+}
+
+actor Worker {
+    receive fn work() {}
+}
+
+fn main() {
+    let s = spawn Root;
+}
+";
     let output = lower(source);
 
     let spawn_gate_hits: Vec<_> = output
@@ -60,21 +61,27 @@ fn supervisor_spawn_no_args_accepted() {
 /// no-config supervisor. This is the v0.6 init-closure surface.
 #[test]
 fn config_supervisor_spawn_with_config_arg_accepted() {
-    let source = r"
-        type AppConfig { size: i64 }
-        actor Cache {
-            var capacity: i64,
-            receive fn get_cap() -> i64 { capacity }
-        }
-        supervisor App(config: AppConfig) {
-            strategy: one_for_one,
-            child cache: Cache(capacity: config.size),
-        }
-        fn main() {
-            let cfg = AppConfig { size: 7 };
-            let s = spawn App(config: cfg);
-        }
-    ";
+    let source = r"type AppConfig {
+    size: i64;
+}
+
+actor Cache {
+    var capacity: i64;
+    receive fn get_cap() -> i64 {
+        capacity
+    }
+}
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    child cache: Cache(capacity: config.size);
+}
+
+fn main() {
+    let cfg = AppConfig { size: 7 };
+    let s = spawn App(config: cfg);
+}
+";
     let output = lower(source);
 
     let spawn_gate_hits: Vec<_> = output
@@ -97,18 +104,19 @@ fn config_supervisor_spawn_with_config_arg_accepted() {
 /// (surfaces through `into_result()` as `Err`).
 #[test]
 fn supervisor_spawn_with_args_rejected() {
-    let source = r"
-        supervisor Root {
-            strategy: one_for_one,
-            child worker: Worker(),
-        }
-        actor Worker {
-            receive fn work() {}
-        }
-        fn main() {
-            let s = spawn Root(value: 1);
-        }
-    ";
+    let source = r"supervisor Root {
+    strategy: one_for_one;
+    child worker: Worker();
+}
+
+actor Worker {
+    receive fn work() {}
+}
+
+fn main() {
+    let s = spawn Root(value: 1);
+}
+";
     let output = lower(source);
 
     let spawn_gate_hits: Vec<_> = output
@@ -140,15 +148,15 @@ fn supervisor_spawn_with_args_rejected() {
 /// actor spawn with init args is a separate, supported path.
 #[test]
 fn actor_spawn_with_args_accepted() {
-    let source = r"
-        actor Worker {
-            var value: int = 0,
-            receive fn work() {}
-        }
-        fn main() {
-            let w = spawn Worker(value: 1);
-        }
-    ";
+    let source = r"actor Worker {
+    var value: int = 0;
+    receive fn work() {}
+}
+
+fn main() {
+    let w = spawn Worker(value: 1);
+}
+";
     let output = lower(source);
 
     let spawn_gate_hits: Vec<_> = output
@@ -257,18 +265,19 @@ fn module_local_supervisor_spawn_with_args_rejected() {
     let root_src = r"
         fn main() {}
     ";
-    let module_src = r"
-        pub supervisor LocalSup {
-            strategy: one_for_one,
-            child worker: Worker(),
-        }
-        pub actor Worker {
-            receive fn work() {}
-        }
-        pub fn make() {
-            let s = spawn LocalSup(value: 1);
-        }
-    ";
+    let module_src = r"pub supervisor LocalSup {
+    strategy: one_for_one;
+    child worker: Worker();
+}
+
+pub actor Worker {
+    receive fn work() {}
+}
+
+pub fn make() {
+    let s = spawn LocalSup(value: 1);
+}
+";
     let program = build_two_module_program(root_src, "other", module_src);
     let output = lower_two_module(&program);
 
@@ -299,29 +308,30 @@ fn module_local_supervisor_spawn_with_args_rejected() {
 /// matched the root's `Root` supervisor, rejecting valid code.
 #[test]
 fn root_supervisor_name_does_not_false_positive_in_module() {
-    let root_src = r"
-        supervisor Root {
-            strategy: one_for_one,
-            child worker: Worker(),
-        }
-        actor Worker {
-            receive fn work() {}
-        }
-        fn main() {}
-    ";
-    let module_src = r"
-        // `Root` here is a regular actor that legitimately takes init args,
-        // NOT a supervisor. Module-local bare-name resolution selects this
-        // actor, so the supervisor-spawn gate must not match against the
-        // root program's `Root` supervisor.
-        pub actor Root {
-            var value: int = 0,
-            receive fn ping() {}
-        }
-        pub fn make() {
-            let r = spawn Root(value: 1);
-        }
-    ";
+    let root_src = r"supervisor Root {
+    strategy: one_for_one;
+    child worker: Worker();
+}
+
+actor Worker {
+    receive fn work() {}
+}
+
+fn main() {}
+";
+    let module_src = r"// `Root` here is a regular actor that legitimately takes init args,
+// NOT a supervisor. Module-local bare-name resolution selects this
+// actor, so the supervisor-spawn gate must not match against the
+// root program's `Root` supervisor.
+pub actor Root {
+    var value: int = 0;
+    receive fn ping() {}
+}
+
+pub fn make() {
+    let r = spawn Root(value: 1);
+}
+";
     let program = build_two_module_program(root_src, "other", module_src);
     let output = lower_two_module(&program);
 

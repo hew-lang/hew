@@ -8,7 +8,6 @@ fn main() {
     let _r1_copy = r1.clone();
     let r2: affineclone.ResourceToken = ResourceToken { id: 2 };
     let _r2_copy = clone r2;
-
     let l1: affineclone.LinearTicket = LinearTicket { id: 3 };
     let _l1_copy = l1.clone();
     let _ = l1.redeem();

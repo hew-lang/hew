@@ -4,7 +4,7 @@
 // demo_four_pillars.hew — Overview of Hew's four pillars
 // Demonstrates functions, actors, wire types, and supervision.
 actor Counter {
-    var count: i32,
+    var count: i32;
     receive fn increment(amount: i32) {
         count = count + amount;
     }
@@ -15,14 +15,14 @@ actor Counter {
 
 #[wire]
 type StatusUpdate {
-    actor_id: u32 @1,
-    count: i32 @2,
-    message: string @3,
+    actor_id: u32 @1;
+    count: i32 @2;
+    message: string @3;
 }
 
 supervisor CounterPool {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 }
 
 fn fibonacci(n: i32) -> i32 {

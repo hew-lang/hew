@@ -46,7 +46,7 @@ pub fn unwrap_int(opt: Option<i64>) -> i64 {
         .None => {
             panic("option: unwrap called on None");
             0
-        },
+        }
     }
 }
 
@@ -100,7 +100,7 @@ pub fn unwrap_str(opt: Option<string>) -> string {
         .None => {
             panic("option: unwrap called on None");
             ""
-        },
+        }
     }
 }
 
@@ -152,7 +152,7 @@ pub fn unwrap_f64(opt: Option<f64>) -> f64 {
         .None => {
             panic("option: unwrap called on None");
             0.0
-        },
+        }
     }
 }
 
@@ -222,7 +222,7 @@ impl<T> Option<T> {
             // does not yet parse a zero-argument call as a bare match-arm body.
             .None => {
                 f()
-            },
+            }
         }
     }
     /// Apply `f` to the contained value, or return `None` unchanged.
@@ -248,7 +248,7 @@ impl<T> Option<T> {
             .Some(v) => .Some(v),
             .None => {
                 f()
-            },
+            }
         }
     }
     /// Convert to a `Result`, using `err` as the `Err` value when `None`.

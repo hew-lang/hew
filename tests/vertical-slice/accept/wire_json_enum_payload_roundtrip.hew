@@ -4,21 +4,23 @@
 // fixture constructs `Rect(40, 2)`; the recovered fields sum to 42.
 #[wire]
 enum Shape {
-    Dot,
-    Circle(i64),
-    Rect(i64, i64),
+    Dot;
+    Circle(i64);
+    Rect(i64, i64);
 }
 
 fn main() -> i64 {
     let s = Shape.Rect(40, 2);
     let j = s.to_json();
-    if j != "{\"Rect\":[40,2]}" { return 1; }
+    if j != "{\"Rect\":[40,2]}" {
+        return 1;
+    }
     match Shape.from_json(j) {
         .Ok(back) => match back {
             Shape.Dot => 2,
             Shape.Circle(r) => r,
             Shape.Rect(w, h) => w + h,
-        },
+        }
         .Err(_) => 3,
     }
 }

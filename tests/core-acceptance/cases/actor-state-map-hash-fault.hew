@@ -1,6 +1,6 @@
 type Key {
-    label: string,
-    divisor: i64,
+    label: string;
+    divisor: i64;
 }
 
 impl Hash for Key {
@@ -12,16 +12,13 @@ impl Hash for Key {
 }
 
 actor Store {
-    var values: HashMap<Key, Vec<string>> = HashMap.new(),
+    var values: HashMap<Key, Vec<string>> = HashMap.new();
 
     receive fn put(divisor: i64) {
         // The seat leaves by take. A trapping key hash consumes the receiver
         // on the failure edge, so the handler unwinds with the seat empty and
         // the actor's release must close the field exactly once.
-        values.insert(
-            Key { label: "key".to_upper(), divisor: divisor },
-            ["payload".to_upper()],
-        );
+        values.insert(Key { label: "key".to_upper(), divisor: divisor }, ["payload".to_upper()]);
     }
 
     receive fn size() -> i64 {
@@ -31,11 +28,9 @@ actor Store {
 
 fn main() -> i64 {
     let store = spawn Store;
-
     // A sound key populates the seat first, so the trapping insert unwinds
     // with a live map behind it rather than an empty one.
     let _ = store.put(1);
-
     match store.put(0) {
         .Ok(_v) => {
             println("unexpected acceptance");

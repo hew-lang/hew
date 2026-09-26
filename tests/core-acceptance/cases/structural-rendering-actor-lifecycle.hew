@@ -7,9 +7,9 @@ actor Source {
 }
 
 type Reading {
-    source: Source,
-    label: string,
-    mode: i64,
+    source: Source;
+    label: string;
+    mode: i64;
 }
 
 impl Display for Reading {
@@ -24,8 +24,8 @@ impl Display for Reading {
 }
 
 type Waiting {
-    source: Source,
-    entered: stream.Sink<i64>,
+    source: Source;
+    entered: stream.Sink<i64>;
 }
 
 impl Display for Waiting {

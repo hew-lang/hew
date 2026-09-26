@@ -6,27 +6,27 @@
 // and the input through `event`.
 machine Session {
     events {
-        Open { user: string },
-        Touch { weight: i64 },
-        Close,
+        Open { user: string; }
+        Touch { weight: i64; }
+        Close;
     }
 
     emits {
-        Trace { text: string },
+        Trace { text: string; }
     }
 
-    state Idle,
+    state Idle;
     state Live {
-        user: string,
-        weight: i64,
+        user: string;
+        weight: i64;
         entry {
             emit Trace { text: "enter:" + state.user };
         }
         exit {
             emit Trace { text: "exit:" + state.user };
         }
-    },
-    state Spent,
+    }
+    state Spent;
 
     on Open(user): Idle => Live { user: user, weight: 0 }
     on Touch: Live => _ when state.weight + event.weight >= 3 {
@@ -34,16 +34,18 @@ machine Session {
         Spent
     }
     on Touch: Live => Live reenter { ..state, weight: state.weight + event.weight }
-    on Close: Live => Idle,
-    on Close: Spent => Idle,
-    on Open: Spent => Spent { state }
+    on Close: Live => Idle;
+    on Close: Spent => Idle;
+    on Open: Spent => Spent {
+        state
+    }
 
     default { state }
 }
 
 fn show(report: SessionStep) {
     match report.disposition {
-        .Taken => {},
+        .Taken => {}
         .Ignored => println("ignored"),
     }
     for output in report.outputs {

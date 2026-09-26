@@ -98,7 +98,6 @@ fn main() {
     assert(i8_max.saturating_mul(2) == i8_max);
     assert(i8_min.saturating_mul(-1) == i8_max);
     assert(i8_max.saturating_mul(-2) == i8_min);
-
     assert(i16_max.checked_add(1).is_none());
     assert(i16_min.checked_sub(1).is_none());
     assert(i16_min.checked_mul(-1).is_none());
@@ -106,7 +105,6 @@ fn main() {
     assert(i16_max.saturating_mul(2) == i16_max);
     assert(i16_min.saturating_mul(-1) == i16_max);
     assert(i16_max.saturating_mul(-2) == i16_min);
-
     assert(i32_max.checked_add(1).is_none());
     assert(i32_min.checked_sub(1).is_none());
     assert(i32_min.checked_mul(-1).is_none());
@@ -114,7 +112,6 @@ fn main() {
     assert(i32_max.saturating_mul(2) == i32_max);
     assert(i32_min.saturating_mul(-1) == i32_max);
     assert(i32_max.saturating_mul(-2) == i32_min);
-
     assert(i64_max.checked_add(1).is_none());
     assert(i64_min.checked_sub(1).is_none());
     assert(i64_min.checked_mul(-1).is_none());
@@ -122,7 +119,6 @@ fn main() {
     assert(i64_max.saturating_mul(2) == i64_max);
     assert(i64_min.saturating_mul(-1) == i64_max);
     assert(i64_max.saturating_mul(-2) == i64_min);
-
     assert(isize_max.checked_add(1).is_none());
     assert(isize_min.checked_sub(1).is_none());
     assert(isize_min.checked_mul(-1).is_none());
@@ -139,30 +135,25 @@ fn main() {
     assert(u8_max.checked_mul(2).is_none());
     assert(u8_max.checked_sub(5).unwrap_or(0) == 250);
     assert(u8_max.saturating_mul(2) == u8_max);
-
     assert(u16_max.checked_add(1).is_none());
     assert(u16_zero.checked_sub(1).is_none());
     assert(u16_max.checked_mul(2).is_none());
     assert(u16_max.checked_sub(5).unwrap_or(0) == 65530);
     assert(u16_max.saturating_mul(2) == u16_max);
-
     assert(u32_max.checked_add(1).is_none());
     assert(u32_zero.checked_sub(1).is_none());
     assert(u32_max.checked_mul(2).is_none());
     assert(u32_max.checked_sub(5).unwrap_or(0) == 4294967290);
     assert(u32_max.saturating_mul(2) == u32_max);
-
     assert(u64_max.checked_add(1).is_none());
     assert(u64_zero.checked_sub(1).is_none());
     assert(u64_max.checked_mul(2).is_none());
     assert(u64_max.checked_sub(5).unwrap_or(0) == 18446744073709551610);
     assert(u64_max.saturating_mul(2) == u64_max);
-
     assert(usize_max.checked_add(1).is_none());
     assert(usize_zero.checked_sub(1).is_none());
     assert(usize_max.checked_mul(2).is_none());
     assert(usize_max.checked_sub(5).unwrap_or(0) == 18446744073709551610);
     assert(usize_max.saturating_mul(2) == usize_max);
-
     println("wrapping, saturating and checked arithmetic hold at every boundary");
 }

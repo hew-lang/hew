@@ -705,19 +705,19 @@ mod non_root_module_inference_scope {
 
     #[test]
     fn trait_default_method_with_concrete_receiver_keeps_implicit_impl_arity() {
-        let source = r"
-            type Greeter {
-                id: i64,
-            }
+        let source = r"type Greeter {
+    id: i64;
+}
 
-            trait Answerer {
-                fn answer(g: Greeter) -> i64 {
-                    42
-                }
-            }
+trait Answerer {
+    fn answer(g: Greeter) -> i64 {
+        42
+    }
+}
 
-            impl Answerer for Greeter {}
-        ";
+impl Answerer for Greeter {
+}
+";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),

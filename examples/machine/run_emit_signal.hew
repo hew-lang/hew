@@ -18,27 +18,27 @@
 // end-to-end signal for this fixture.
 machine Signal {
     events {
-        Start,
-        Stop,
-        Ready,
+        Start;
+        Stop;
+        Ready;
     }
 
     emits {
-        Ready,
+        Ready;
     }
 
-    state Idle,
-    state Active,
+    state Idle;
+    state Active;
 
     on Start: Idle => Active {
         emit Ready {};
         Active
     }
-    on Stop: Active => Idle,
-    on Ready: Idle => Idle reenter,
-    on Ready: Active => Active reenter,
-    on Start: Active => Active reenter,
-    on Stop: Idle => Idle reenter,
+    on Stop: Active => Idle;
+    on Ready: Idle => Idle reenter;
+    on Ready: Active => Active reenter;
+    on Start: Active => Active reenter;
+    on Stop: Idle => Idle reenter;
 }
 
 fn main() {

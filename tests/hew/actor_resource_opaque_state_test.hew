@@ -18,11 +18,11 @@ extern "C" {
 }
 
 type Holder {
-    dq: Dq,
+    dq: Dq;
 }
 
 actor DirectKeeper {
-    let dq: Dq,
+    let dq: Dq;
 
     receive fn ping() -> i64 {
         1
@@ -30,7 +30,7 @@ actor DirectKeeper {
 }
 
 actor WrappedKeeper {
-    let holder: Holder,
+    let holder: Holder;
 
     receive fn ping() -> i64 {
         2
@@ -38,6 +38,7 @@ actor WrappedKeeper {
 }
 
 #[test]
+#[real_time]
 fn direct_resource_actor_field_compiles_and_runs() {
     let keeper = spawn DirectKeeper(dq: unsafe {
         hew_deque_new()
@@ -49,6 +50,7 @@ fn direct_resource_actor_field_compiles_and_runs() {
 }
 
 #[test]
+#[real_time]
 fn wrapped_resource_actor_field_still_compiles_and_runs() {
     let keeper = spawn WrappedKeeper(holder: Holder { dq: unsafe {
         hew_deque_new()

@@ -3,7 +3,7 @@ fn make_nested(k: i64) -> (((string, string), string), string) {
     let b = "esc-b-heap-payload".to_upper();
     let c = "esc-c-heap-payload".to_upper();
     let d = "esc-d-heap-payload".to_upper();
-    ((( a, b ), c ), d)
+    (((a, b), c), d)
 }
 
 fn deep(k: i64) -> (string, string) {
@@ -27,5 +27,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

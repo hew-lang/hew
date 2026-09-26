@@ -1,6 +1,6 @@
 enum Mixed {
-    Full(string, Vec<i64>),
-    Empty,
+    Full(string, Vec<i64>);
+    Empty;
 }
 
 fn main() {
@@ -11,7 +11,7 @@ fn main() {
             opt = Mixed.Empty;
             println(s);
             println(xs[1]);
-        },
-        .Empty => {},
+        }
+        .Empty => {}
     }
 }

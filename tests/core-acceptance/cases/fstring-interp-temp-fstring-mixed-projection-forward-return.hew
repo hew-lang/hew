@@ -1,7 +1,15 @@
-type Holder { value: string }
-fn choose(holder: Holder, fallback: string, project: bool) -> string {
-    if project { holder.value } else { fallback }
+type Holder {
+    value: string;
 }
+
+fn choose(holder: Holder, fallback: string, project: bool) -> string {
+    if project {
+        holder.value
+    } else {
+        fallback
+    }
+}
+
 fn main() -> i64 {
     var i: i64 = 0;
     var total: i64 = 0;
@@ -12,6 +20,8 @@ fn main() -> i64 {
         total = total + i;
         i = i + 1;
     }
-    if total != 19900 { return 81; }
+    if total != 19900 {
+        return 81;
+    }
     0
 }

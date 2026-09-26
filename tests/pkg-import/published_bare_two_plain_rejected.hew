@@ -7,6 +7,7 @@
 //
 // Harness verb: hew check (negative — see run.sh).
 import hew.widgetpub8;
+
 import hew.widgetpub64;
 
 fn main() {

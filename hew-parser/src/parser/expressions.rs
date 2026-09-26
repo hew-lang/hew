@@ -236,6 +236,15 @@ impl Parser<'_> {
         self.block_arm_body.replace(false)
     }
 
+    fn parse_nested_block_arm_expr(&mut self, block_arm_body: bool) -> Option<Spanned<Expr>> {
+        if block_arm_body {
+            let _guard = self.set_block_arm_body();
+            self.parse_expr()
+        } else {
+            self.parse_expr()
+        }
+    }
+
     /// Parse an `if`/`while` condition or `match` scrutinee. In this position a
     /// bare identifier directly followed by `{` opens the block, never a struct
     /// literal, so the `no_struct_literal` restriction is set for the duration
@@ -366,7 +375,7 @@ impl Parser<'_> {
                 _ => unreachable!("prefix parser dispatches only recognized unary operators"),
             }
         } else {
-            self.parse_primary()?
+            self.parse_primary(block_arm_body)?
         };
 
         // Infix + postfix
@@ -666,7 +675,7 @@ impl Parser<'_> {
         clippy::too_many_lines,
         reason = "expression parser with many branches"
     )]
-    pub(crate) fn parse_primary(&mut self) -> Option<Spanned<Expr>> {
+    pub(crate) fn parse_primary(&mut self, block_arm_body: bool) -> Option<Spanned<Expr>> {
         let start = self.peek_span().start;
 
         let expr = match self.peek()? {
@@ -1137,7 +1146,7 @@ impl Parser<'_> {
                     // The `else` arm is an expression, exactly as it is for a
                     // plain `if`: a block, another `if`, or another `if let`.
                     let else_body = if self.eat(&Token::Else) {
-                        Some(Box::new(self.parse_expr()?))
+                        Some(Box::new(self.parse_nested_block_arm_expr(block_arm_body)?))
                     } else {
                         None
                     };
@@ -1151,9 +1160,9 @@ impl Parser<'_> {
                         unreachable!("a condition with no `let` operand is one expression")
                     };
                     let condition = Box::new(condition);
-                    let then_block = Box::new(self.parse_expr()?);
+                    let then_block = Box::new(self.parse_nested_block_arm_expr(block_arm_body)?);
                     let else_block = if self.eat(&Token::Else) {
-                        Some(Box::new(self.parse_expr()?))
+                        Some(Box::new(self.parse_nested_block_arm_expr(block_arm_body)?))
                     } else {
                         None
                     };
@@ -1521,8 +1530,14 @@ impl Parser<'_> {
                         self.advance();
                         let duration = self.parse_expr()?;
                         self.expect(&Token::FatArrow)?;
-                        let body = self.parse_expr()?;
-                        self.eat(&Token::Comma);
+                        let body_looks_like_block = self.arm_body_opens_block();
+                        let body = if body_looks_like_block {
+                            let _guard = self.set_block_arm_body();
+                            self.parse_expr()?
+                        } else {
+                            self.parse_expr()?
+                        };
+                        self.expect_arm_separator(body_looks_like_block);
                         timeout = Some(Box::new(TimeoutClause {
                             duration: Box::new(duration),
                             body: Box::new(body),
@@ -1686,7 +1701,17 @@ impl Parser<'_> {
             let value = self.parse_expr()?;
             entries.push((key, value));
 
-            if !self.eat(&Token::Comma) {
+            if self.peek() == Some(&Token::Semicolon) {
+                let span = self.peek_span();
+                self.error_at_with_kind_and_hint(
+                    "list elements are separated by `,`; `;` ends a declaration or statement"
+                        .to_string(),
+                    span,
+                    "replace `;` with `,`",
+                    ParseDiagnosticKind::ListSeparator,
+                );
+                self.advance();
+            } else if !self.eat(&Token::Comma) {
                 break;
             }
             if self.peek() == Some(&Token::RightBrace) {
@@ -1871,7 +1896,17 @@ impl Parser<'_> {
             fields.push((field_name, value));
             field_name_spans.push(field_name_span);
 
-            if !self.eat(&Token::Comma) {
+            if self.peek() == Some(&Token::Semicolon) {
+                let span = self.peek_span();
+                self.error_at_with_kind_and_hint(
+                    "list elements are separated by `,`; `;` ends a declaration or statement"
+                        .to_string(),
+                    span,
+                    "replace `;` with `,`",
+                    ParseDiagnosticKind::ListSeparator,
+                );
+                self.advance();
+            } else if !self.eat(&Token::Comma) {
                 break;
             }
         }

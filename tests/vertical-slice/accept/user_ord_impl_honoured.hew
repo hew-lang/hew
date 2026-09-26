@@ -1,5 +1,10 @@
-type Reverse { rank: i64 }
-type PartialReverse { rank: i64 }
+type Reverse {
+    rank: i64;
+}
+
+type PartialReverse {
+    rank: i64;
+}
 
 impl Ord for Reverse {
     fn lt(self, other: Reverse) -> bool {

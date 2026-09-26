@@ -1,5 +1,5 @@
 type Rec {
-    name: string,
+    name: string;
 }
 
 fn make(i: i64) -> Rec {

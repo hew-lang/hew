@@ -1,12 +1,12 @@
-type ArrayHeapMoveCarrier { items: Vec<string>, sibling: string }
+type ArrayHeapMoveCarrier {
+    items: Vec<string>;
+    sibling: string;
+}
 
 fn project(i: i64) -> string {
     var values: Vec<string> = Vec.new();
     values.push(("array-" + "payload"));
-    let r = ArrayHeapMoveCarrier {
-        items: values,
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = ArrayHeapMoveCarrier { items: values, sibling: ("sibling-" + "payload") };
     let moved = r.items[0];
     let _ = i;
     moved
@@ -20,5 +20,9 @@ fn main() -> i64 {
         total = total + moved.len();
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

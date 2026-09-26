@@ -18,7 +18,7 @@ actor Worker {
                     .Some(n) => println(f"a:{n}"),
                     .None => println("a:none"),
                 }
-            },
+            }
             after 1s => println("timeout"),
         };
         txa.close();

@@ -9,19 +9,16 @@
 //! linearly; a double free would abort.
 
 type Inner {
-    value: string,
+    value: string;
 }
 
 type Outer {
-    name: string,
-    inner: Inner,
+    name: string;
+    inner: Inner;
 }
 
 fn make() -> Outer {
-    Outer {
-        name: ("name-" + "x"),
-        inner: Inner { value: ("v-" + "x") },
-    }
+    Outer { name: ("name-" + "x"), inner: Inner { value: ("v-" + "x") } }
 }
 
 fn main() -> i64 {

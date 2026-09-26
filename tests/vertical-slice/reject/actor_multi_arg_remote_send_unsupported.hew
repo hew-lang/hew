@@ -23,7 +23,7 @@ fn main() {
                 .Ok(_) => println("sent"),
                 .Err(_) => println("send failed"),
             }
-        },
+        }
         .Err(_) => println("lookup failed"),
     }
 }

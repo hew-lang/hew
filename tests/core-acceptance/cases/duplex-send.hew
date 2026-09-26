@@ -21,7 +21,7 @@ fn main() {
         println(f"hello {name}");
     };
     match greeter.send(f"world-{1}") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("rejected"),
     }
     greeter.close();

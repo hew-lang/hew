@@ -9,7 +9,7 @@ fn main() {
         println(x * 2);
     };
     match doubler.send(21) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("doubler actor rejected its input"),
     }
     doubler.close();
@@ -26,19 +26,19 @@ fn main() {
     };
     // Send to all concurrently
     match printer.send(100) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("printer actor rejected its first input"),
     }
     match multiplier.send(7) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("multiplier actor rejected its input"),
     }
     match adder.send(5) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("adder actor rejected its input"),
     }
     match printer.send(200) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("printer actor rejected its second input"),
     }
     printer.close();
@@ -51,7 +51,7 @@ fn main() {
             println(f"Scoped: {msg}");
         };
         match scoped_actor.send(42) {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => panic("scoped actor rejected its input"),
         }
         scoped_actor.close();
@@ -61,15 +61,15 @@ fn main() {
         println(f"Count: {x}");
     };
     match counter.send(1) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("counter actor rejected its first input"),
     }
     match counter.send(2) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("counter actor rejected its second input"),
     }
     match counter.send(3) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("counter actor rejected its third input"),
     }
     counter.close();
@@ -85,11 +85,11 @@ fn main() {
         println(f"Formula result: {result}");
     };
     match complex_actor.send(5) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("complex actor rejected its first input"),
     }
     match complex_actor.send(15) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("complex actor rejected its second input"),
     }
     complex_actor.close();
@@ -105,7 +105,7 @@ fn run_multiplier_actor(factor: i64, value: i64) {
         println(f"Multiplied by {factor}: {x * factor}");
     };
     match worker.send(value) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("multiplier actor rejected its input"),
     }
     worker.close();

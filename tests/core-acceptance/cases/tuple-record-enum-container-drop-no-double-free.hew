@@ -1,11 +1,11 @@
 type Holder {
-    items: Vec<string>,
-    tag: string,
+    items: Vec<string>;
+    tag: string;
 }
 
 enum Slot {
-    Filled(i64),
-    Empty,
+    Filled(i64);
+    Empty;
 }
 
 fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
@@ -21,7 +21,6 @@ fn main() {
     var owner = Holder { items: Vec.new(), tag: "seed" };
     owner.items.push("first");
     owner.items.push("second");
-
     var i = 0;
     var checksum = 0;
     var sibling = 0;
@@ -33,13 +32,12 @@ fn main() {
         match pair.1 {
             .Filled(v) => {
                 checksum = checksum + v;
-            },
+            }
             .Empty => {
                 done = true;
-            },
+            }
         }
         i = i + 1;
     }
-
     println(f"{owner.tag}|{owner.items[0]}|{owner.items[1]}|{checksum}|{sibling}");
 }

@@ -1,6 +1,6 @@
 #[resource]
 type Conn {
-    fd: i64,
+    fd: i64;
 }
 
 impl Conn {
@@ -11,7 +11,7 @@ impl Conn {
 
 #[resource]
 type Registry {
-    conns: HashMap<string, Conn>,
+    conns: HashMap<string, Conn>;
 }
 
 impl Registry {

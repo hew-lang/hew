@@ -6,7 +6,7 @@
 // reject/gen_block_borrowed_resource_capture.hew are the same bodies without it.
 #[resource]
 type Token {
-    id: i64,
+    id: i64;
 }
 
 impl Token {
@@ -38,7 +38,6 @@ fn main() {
     }
     // 0*2 + 1*2 + 2*2
     println(total);
-
     var ids_total = 0;
     for v in ids(Token { id: 7 }, 3) {
         ids_total = ids_total + v;

@@ -16,8 +16,10 @@ fn classify(n: i64) -> Result<i64, string> {
 fn frame() {
     for word in make_vec() {
         match classify(word.len()) {
-            .Ok(v) => { }
-            .Err(e) => { return; }
+            .Ok(v) => {}
+            .Err(e) => {
+                return;
+            }
         }
     }
 }

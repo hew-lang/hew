@@ -1,24 +1,43 @@
 actor Calculator {
-    var result: i64 = 0,
-    receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) { result = op(result, value); }
-    receive fn value() -> i64 { result }
+    var result: i64 = 0;
+    receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
+        result = op(result, value);
+    }
+    receive fn value() -> i64 {
+        result
+    }
 }
+
 actor Worker {
-    var current: string = "initial",
+    var current: string = "initial";
     receive fn apply(op: fn(string) -> string, value: string) {
         current = op(value);
     }
-    receive fn value() -> string { current }
+    receive fn value() -> string {
+        current
+    }
     receive gen fn labels(op: fn(i64) -> string, count: i64) -> string {
-        for index in 0..count { yield op(index); }
+        for index in 0 .. count {
+            yield op(index);
+        }
     }
 }
+
 actor Transform<T> {
-    var current: T,
-    receive fn apply(op: fn(T) -> T, value: T) { current = op(value); }
-    receive fn get() -> T { current }
+    var current: T;
+    receive fn apply(op: fn(T) -> T, value: T) {
+        current = op(value);
+    }
+    receive fn get() -> T {
+        current
+    }
 }
-fn argument() -> string { println("value first"); "ask" }
+
+fn argument() -> string {
+    println("value first");
+    "ask"
+}
+
 fn main() {
     let calc = spawn Calculator;
     calc.apply_operation(|a, b| a + b, 10).expect("add");
@@ -32,11 +51,15 @@ fn main() {
         |text| prefix + text
     }).expect("ask");
     assert(worker.value().expect("read ask") == "CAPTURED ask");
-    let callback = |text: string| -> string { prefix + text };
+    let callback = |text: string| -> string {
+        prefix + text
+    };
     mailbox(worker, on_full: .Wait).apply(callback, "mail").expect("submit");
     assert(worker.value().expect("read message") == "CAPTURED mail");
     assert(callback("caller") == "CAPTURED caller");
-    for text in worker.labels(|index| f"{prefix}{index}", 2) { println(text); }
+    for text in worker.labels(|index| f"{prefix}{index}", 2) {
+        println(text);
+    }
     let numbers = spawn Transform<i64>(current: 0);
     mailbox(numbers, on_full: .Wait).apply(|value| value + 1, 41).expect("generic number");
     assert(numbers.get().expect("number") == 42);

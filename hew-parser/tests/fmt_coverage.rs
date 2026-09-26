@@ -333,9 +333,9 @@ fn fmt_match_statement() {
 #[test]
 fn fmt_match_with_enum_patterns() {
     let src = r"enum Colour {
-    Red,
-    Green,
-    Blue,
+    Red;
+    Green;
+    Blue;
 }
 
 fn name(c: Colour) -> i32 {
@@ -344,7 +344,8 @@ fn name(c: Colour) -> i32 {
         Colour.Green => 2,
         Colour.Blue => 3,
     }
-}";
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("Colour.Red => 1,"), "output: {out}");
 }
@@ -383,21 +384,23 @@ fn fmt_match_with_guard() {
 #[test]
 fn fmt_struct_definition() {
     let src = r"type Point {
-    x: f64,
-    y: f64,
-}";
+    x: f64;
+    y: f64;
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("type Point {"), "output: {out}");
-    assert!(out.contains("    x: f64,"), "output: {out}");
-    assert!(out.contains("    y: f64,"), "output: {out}");
+    assert!(out.contains("    x: f64;"), "output: {out}");
+    assert!(out.contains("    y: f64;"), "output: {out}");
 }
 
 #[test]
 fn fmt_generic_struct() {
     let src = r"type Pair<A, B> {
-    first: A,
-    second: B,
-}";
+    first: A;
+    second: B;
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("type Pair<A, B> {"), "output: {out}");
 }
@@ -409,35 +412,38 @@ fn fmt_generic_struct() {
 #[test]
 fn fmt_enum_definition() {
     let src = r"enum Direction {
-    North,
-    South,
-    East,
-    West,
-}";
+    North;
+    South;
+    East;
+    West;
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("enum Direction {"), "output: {out}");
-    assert!(out.contains("    North,"), "output: {out}");
+    assert!(out.contains("    North;"), "output: {out}");
 }
 
 #[test]
 fn fmt_enum_with_tuple_variant() {
     let src = r"enum Shape {
-    Circle(f64),
-    Rectangle(f64, f64),
-}";
+    Circle(f64);
+    Rectangle(f64, f64);
+}
+";
     let out = roundtrip(src);
-    assert!(out.contains("Circle(f64),"), "output: {out}");
-    assert!(out.contains("Rectangle(f64, f64),"), "output: {out}");
+    assert!(out.contains("Circle(f64);"), "output: {out}");
+    assert!(out.contains("Rectangle(f64, f64);"), "output: {out}");
 }
 
 #[test]
 fn fmt_enum_with_struct_variant() {
     let src = r"enum Event {
-    Click { x: i32, y: i32 },
-    KeyPress { code: i32 },
-}";
+    Click { x: i32; y: i32;  }
+    KeyPress { code: i32;  }
+}
+";
     let out = roundtrip(src);
-    assert!(out.contains("Click { x: i32, y: i32 }"), "output: {out}");
+    assert!(out.contains("Click { x: i32; y: i32; }"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -482,7 +488,7 @@ fn fmt_trait_with_supertrait() {
 #[test]
 fn fmt_impl_block() {
     let src = r"type Counter {
-    value: i32,
+    value: i32;
 }
 
 impl Counter {
@@ -493,7 +499,8 @@ impl Counter {
     fn get(c: Counter) -> i32 {
         c.value
     }
-}";
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("impl Counter {"), "output: {out}");
     assert!(out.contains("fn new() -> Counter"), "output: {out}");
@@ -503,14 +510,15 @@ impl Counter {
 #[test]
 fn fmt_trait_impl() {
     let src = r#"type MyType {
-    val: i32,
+    val: i32;
 }
 
 impl Display for MyType {
     fn to_string(t: MyType) -> String {
         f"{t.val}"
     }
-}"#;
+}
+"#;
     let out = roundtrip(src);
     assert!(out.contains("impl Display for MyType"), "output: {out}");
 }
@@ -518,14 +526,15 @@ impl Display for MyType {
 #[test]
 fn fmt_generic_impl() {
     let src = r"type Wrapper<T> {
-    inner: T,
+    inner: T;
 }
 
 impl<T> Wrapper<T> {
     fn unwrap(w: Wrapper<T>) -> T {
         w.inner
     }
-}";
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("impl<T> Wrapper<T>"), "output: {out}");
 }
@@ -537,15 +546,16 @@ impl<T> Wrapper<T> {
 #[test]
 fn fmt_simple_actor() {
     let src = r"actor Counter {
-    let count: i32,
+    let count: i32;
 
     receive fn increment(n: i32) -> i32 {
         count + n
     }
-}";
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("actor Counter {"), "output: {out}");
-    assert!(out.contains("let count: i32,"), "output: {out}");
+    assert!(out.contains("let count: i32;"), "output: {out}");
     assert!(out.contains("receive fn increment"), "output: {out}");
 }
 
@@ -566,29 +576,30 @@ fn fmt_actor_receive_without_preamble() {
 #[test]
 fn fmt_receive_fn_every_attr_roundtrip() {
     roundtrip(
-        "actor Ticker {\n    let count: int,\n\n    #[every(50ms)]\n    receive fn tick() {\n        count = count + 1;\n    }\n}\n\nfn main() {\n}\n",
+        "actor Ticker {\n    let count: int;\n\n    #[every(50ms)]\n    receive fn tick() {\n        count = count + 1;\n    }\n}\n\nfn main() {}\n",
     );
 }
 
 #[test]
 fn fmt_actor_with_mailbox() {
     let src = r"actor Worker {
-    let id: i32,
+    let id: i32;
 
-    mailbox 16,
+    mailbox 16;
 
     receive fn process(value: i32) {
         println(value);
     }
-}";
+}
+";
     let out = roundtrip(src);
-    assert!(out.contains("mailbox 16,"), "output: {out}");
+    assert!(out.contains("mailbox 16;"), "output: {out}");
 }
 
 #[test]
 fn fmt_actor_on_stop_hook_roundtrip() {
     roundtrip(
-        "actor Logger {\n    let label: string,\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(stop)]\n    fn shutdown() {\n        println(f\"[{label}] shutting down\");\n    }\n}\n\nfn main() {\n}\n",
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(stop)]\n    fn shutdown() {\n        println(f\"[{label}] shutting down\");\n    }\n}\n\nfn main() {}\n",
     );
 }
 
@@ -995,11 +1006,15 @@ fn fmt_tuple_literal() {
 
 #[test]
 fn fmt_struct_init() {
-    let src = r"type Point { x: i32, y: i32, }
+    let src = r"type Point {
+    x: i32;
+    y: i32;
+}
 
 fn main() {
     let p = Point(x: 1, y: 2);
-}";
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("Point(x: 1, y: 2)"), "output: {out}");
 }
@@ -1007,7 +1022,7 @@ fn main() {
 #[test]
 fn fmt_struct_init_brace_form_roundtrip() {
     exact_roundtrip(
-        "type Point {\n    x: i32,\n    y: i32,\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n}\n",
+        "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n}\n",
     );
 }
 
@@ -1300,20 +1315,7 @@ fn internal() -> i32 {
 
 #[test]
 fn fmt_pub_method_in_impl_body() {
-    let src = "type Foo {
-    x: int,
-}
-
-impl Foo {
-    pub fn make(v: int) -> Foo {
-        Foo { x: v }
-    }
-
-    fn private_helper(f: Foo) -> int {
-        f.x
-    }
-}
-";
+    let src = "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    pub fn make(v: int) -> Foo {\n        Foo { x: v }\n    }\n\n    fn private_helper(f: Foo) -> int {\n        f.x\n    }\n}\n";
     let out = roundtrip(src);
     assert!(out.contains("pub fn make"), "output: {out}");
     assert!(out.contains("fn private_helper"), "output: {out}");
@@ -1391,7 +1393,7 @@ fn fmt_package_fn_roundtrip_preserves_visibility() {
 
 #[test]
 fn fmt_package_type_roundtrip_preserves_visibility() {
-    let src = "package type Point {\n    x: i64,\n    y: i64,\n}\n";
+    let src = "package type Point {\n    x: i64;\n    y: i64;\n}\n";
     let r1 = parse(src);
     assert!(
         r1.errors.is_empty(),
@@ -1493,11 +1495,15 @@ fn fmt_package_const_roundtrip_preserves_visibility() {
 
 #[test]
 fn fmt_named_arguments() {
-    let src = r"type Pt { x: i32, y: i32, }
+    let src = r"type Pt {
+    x: i32;
+    y: i32;
+}
 
 fn main() {
     let p = Pt(x: 10, y: 20);
-}";
+}
+";
     let out = roundtrip(src);
     assert!(out.contains("Pt(x: 10, y: 20)"), "output: {out}");
 }
@@ -1512,8 +1518,8 @@ fn fmt_full_program() {
     let src = r"const MAX: i32 = 100;
 
 type Point {
-    x: f64,
-    y: f64,
+    x: f64;
+    y: f64;
 }
 
 impl Point {
@@ -1524,7 +1530,7 @@ impl Point {
 
 fn main() {
     var p = Point.origin();
-    for i in 0..MAX {
+    for i in 0 .. MAX {
         println(i);
     }
 }
@@ -1539,9 +1545,9 @@ fn main() {
 #[test]
 fn fmt_enum_and_match_combined() {
     let src = r"enum Colour {
-    Red,
-    Green,
-    Blue,
+    Red;
+    Green;
+    Blue;
 }
 
 fn to_hex(c: Colour) -> i32 {
@@ -1932,7 +1938,7 @@ fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
 #[test]
 fn fmt_wire_declarations_roundtrip() {
     // Canonical wire type form (attribute-based).
-    exact_roundtrip("#[wire]\ntype Message {\n    id: i32 @1,\n}\n");
+    exact_roundtrip("#[wire]\ntype Message {\n    id: i32 @1;\n}\n");
 }
 
 #[test]
@@ -1941,20 +1947,20 @@ fn fmt_wire_attr_enum_roundtrip() {
     // enums; verify the formatter round-trips unit, tuple, and struct
     // variant payloads while preserving the `#[wire]` attribute.
     exact_roundtrip(
-        "#[wire]\nenum Command {\n    Start,\n    Push(i64),\n    Move { x: i32, y: i32 },\n}\n",
+        "#[wire]\nenum Command {\n    Start;\n    Push(i64);\n    Move { x: i32; y: i32; }\n}\n",
     );
 }
 
 #[test]
 fn fmt_wire_attr_enum_with_version_roundtrip() {
     // `#[wire(version = N, min_version = M)]` on an enum.
-    exact_roundtrip("#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1,\n    V2,\n}\n");
+    exact_roundtrip("#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1;\n    V2;\n}\n");
 }
 
 #[test]
 fn fmt_machine_decl_roundtrip() {
     exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle,\n    }\n\n    state Off,\n    state On,\n\n    on Toggle: Off => On,\n    on Toggle: On => Off,\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n",
     );
 }
 
@@ -1966,7 +1972,7 @@ fn fmt_machine_decl_roundtrip() {
 #[test]
 fn fmt_machine_contextual_transition_target_roundtrip() {
     exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle,\n    }\n\n    state Off,\n    state On,\n\n    on Toggle: Off => .On,\n    on Toggle: On => .Off,\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => .Off;\n}\n",
     );
 }
 
@@ -1975,7 +1981,7 @@ fn fmt_machine_mixed_transition_target_spellings_roundtrip() {
     // A half-migrated machine: the formatter neither adds a dot to the bare
     // target nor drops the one the author already wrote.
     exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle,\n    }\n\n    state Off,\n    state On,\n\n    on Toggle: Off => .On,\n    on Toggle: On => Off,\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => Off;\n}\n",
     );
 }
 
@@ -1983,7 +1989,7 @@ fn fmt_machine_mixed_transition_target_spellings_roundtrip() {
 fn fmt_machine_wildcard_source_contextual_target_roundtrip() {
     // `_` is a pattern, never `._`, even when the target is contextual.
     exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle,\n    }\n\n    state Off,\n    state On,\n\n    on Toggle: Off => .On,\n    on Toggle: _ => .Off,\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => .Off;\n}\n",
     );
 }
 
@@ -1992,63 +1998,63 @@ fn fmt_machine_wildcard_target_stays_bare_roundtrip() {
     // `_` is a wildcard on either side of the arrow, never `._`, even in a
     // machine whose other targets are contextual.
     exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle,\n    }\n\n    state Off,\n    state On,\n\n    on Toggle: Off => .On,\n    on Toggle: _ => _ {\n        state\n    }\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => _ {\n        state\n    }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_contextual_target_with_block_body_roundtrip() {
     exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle,\n    }\n\n    state Off,\n    state On,\n\n    on Toggle: Off => .On {\n        state\n    }\n    on Toggle: On => .Off {\n        state\n    }\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On {\n        state\n    }\n    on Toggle: On => .Off {\n        state\n    }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_contextual_target_with_payload_shorthand_roundtrip() {
     exact_roundtrip(
-        "machine Bank {\n    events {\n        Deposit { amount: Int, },\n    }\n\n    state Open { balance: Int, },\n\n    on Deposit: Open => .Open { balance: event.amount }\n}\n",
+        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open { balance: Int; }\n\n    on Deposit: Open => .Open { balance: event.amount }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_contextual_target_with_reenter_and_guard_roundtrip() {
     exact_roundtrip(
-        "machine Gate {\n    events {\n        Try,\n    }\n\n    state Locked,\n    state Open,\n\n    on Try: Locked => .Locked when flag,\n    on Try: Locked => .Open reenter,\n}\n",
+        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => .Locked when flag;\n    on Try: Locked => .Open reenter;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_state_with_fields_roundtrip() {
     exact_roundtrip(
-        "machine Bucket {\n    events {\n        Drain,\n    }\n\n    state Full { tokens: Int, },\n    state Empty,\n\n    on Drain: Full => Empty,\n    on Drain: Empty => Empty,\n}\n",
+        "machine Bucket {\n    events {\n        Drain;\n    }\n\n    state Full { tokens: Int; }\n    state Empty;\n\n    on Drain: Full => Empty;\n    on Drain: Empty => Empty;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_event_with_payload_roundtrip() {
     exact_roundtrip(
-        "machine Bank {\n    events {\n        Deposit { amount: Int, },\n    }\n\n    state Open,\n\n    on Deposit: Open => Open,\n}\n",
+        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open;\n\n    on Deposit: Open => Open;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_emits_manifest_roundtrip() {
     exact_roundtrip(
-        "machine Signal {\n    events {\n        Start,\n        Ready,\n    }\n\n    emits {\n        Ready,\n    }\n\n    state Idle,\n    state Active,\n\n    on Start: Idle => Active {\n        emit Ready {};\n        Active\n    }\n    on Ready: Idle => Idle reenter,\n    on Ready: Active => Active reenter,\n    on Start: Active => Active reenter,\n}\n",
+        "machine Signal {\n    events {\n        Start;\n        Ready;\n    }\n\n    emits {\n        Ready;\n    }\n\n    state Idle;\n    state Active;\n\n    on Start: Idle => Active {\n        emit Ready {};\n        Active\n    }\n    on Ready: Idle => Idle reenter;\n    on Ready: Active => Active reenter;\n    on Start: Active => Active reenter;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_guard_implicit_body_roundtrip() {
     exact_roundtrip(
-        "machine Gate {\n    events {\n        Try,\n    }\n\n    state Locked,\n    state Open,\n\n    on Try: Locked => Locked when flag,\n    on Try: Locked => Open,\n}\n",
+        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => Locked when flag;\n    on Try: Locked => Open;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_guard_and_body_roundtrip() {
     exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active when state.n < 10 { n: state.n + 1 }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when state.n < 10 { n: state.n + 1 }\n}\n",
     );
 }
 
@@ -2060,42 +2066,42 @@ fn fmt_machine_guard_ending_in_bare_identifier_then_fields_roundtrip() {
     // that leaves the transition with an implicit body the re-parse then
     // rejects (`exact_roundtrip` re-parses the formatted output).
     exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active when flag { n: state.n + 1 }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when flag { n: state.n + 1 }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_reenter_roundtrip() {
     exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active reenter { n: state.n + 1 }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active reenter { n: state.n + 1 }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_default_clause_roundtrip() {
     exact_roundtrip(
-        "machine Safe {\n    events {\n        Toggle,\n    }\n\n    state On,\n    state Off,\n\n    on Toggle: On => Off,\n\n    default { state }\n}\n",
+        "machine Safe {\n    events {\n        Toggle;\n    }\n\n    state On;\n    state Off;\n\n    on Toggle: On => Off;\n\n    default { state }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_single_generic_param_roundtrip() {
     exact_roundtrip(
-        "machine Lifecycle<T> {\n    events {\n        Start,\n    }\n\n    state Created,\n    state Running,\n\n    on Start: Created => Running,\n    on Start: Running => Running,\n}\n",
+        "machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_multiple_generic_params_roundtrip() {
     exact_roundtrip(
-        "machine Pair<K, V> {\n    events {\n        Insert,\n    }\n\n    state Empty,\n    state Filled,\n\n    on Insert: Empty => Filled,\n    on Insert: Filled => Filled,\n}\n",
+        "machine Pair<K, V> {\n    events {\n        Insert;\n    }\n\n    state Empty;\n    state Filled;\n\n    on Insert: Empty => Filled;\n    on Insert: Filled => Filled;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_pub_generic_param_roundtrip() {
     exact_roundtrip(
-        "pub machine Lifecycle<T> {\n    events {\n        Start,\n    }\n\n    state Created,\n    state Running,\n\n    on Start: Created => Running,\n    on Start: Running => Running,\n}\n",
+        "pub machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
     );
 }
 
@@ -2104,7 +2110,7 @@ fn fmt_supervisor_decl_roundtrip() {
     // Flat reliability fields: fused `intensity:`, named init args, and the
     // explicit `strategy:` the formatter always materializes.
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: one_for_one,\n    intensity: 5 within 30s,\n\n    child worker: Worker(id: 1),\n}\n",
+        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child worker: Worker(id: 1);\n}\n",
     );
 }
 
@@ -2114,7 +2120,7 @@ fn fmt_supervisor_omitted_strategy_stays_omitted() {
     // it omitted. Materializing the default here reparsed as a different AST
     // and broke the corpus round-trip.
     exact_roundtrip(
-        "supervisor Pool {\n    intensity: 5 within 30s,\n\n    child w: Worker(id: 1),\n}\n",
+        "supervisor Pool {\n    intensity: 5 within 30s;\n\n    child w: Worker(id: 1);\n}\n",
     );
 }
 
@@ -2123,14 +2129,14 @@ fn fmt_supervisor_pool_and_clauses_roundtrip() {
     // Exercises every previously-lossy field: `pool` vs `child`, `wired_to:`,
     // `restart:`, and `shutdown:` — all must round-trip exactly.
     exact_roundtrip(
-        "supervisor ServiceStack {\n    strategy: rest_for_one,\n    intensity: 5 within 60s,\n\n    child db: Database(connections: 4) restart: permanent shutdown: 10s,\n    child api: ApiHandler(port: 8080) restart: transient shutdown: brutal_kill wired_to: { backend: db },\n}\n",
+        "supervisor ServiceStack {\n    strategy: rest_for_one;\n    intensity: 5 within 60s;\n\n    child db: Database(connections: 4) restart: permanent shutdown: 10s;\n    child api: ApiHandler(port: 8080) restart: transient shutdown: brutal_kill wired_to: { backend: db };\n}\n",
     );
 }
 
 #[test]
 fn fmt_supervisor_pool_keyword_roundtrip() {
     exact_roundtrip(
-        "supervisor ConnectionPool {\n    strategy: simple_one_for_one,\n    intensity: 20 within 60s,\n\n    pool handler: ApiHandler(port: 8080),\n}\n",
+        "supervisor ConnectionPool {\n    strategy: simple_one_for_one;\n    intensity: 20 within 60s;\n\n    pool handler: ApiHandler(port: 8080);\n}\n",
     );
 }
 
@@ -2141,7 +2147,7 @@ fn fmt_supervisor_static_pool_count_roundtrip() {
     // formatter neither drops it nor folds it back into the parenthesised
     // field list (the C4/C5 B3 formatter-drops-new-syntax lesson).
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: simple_one_for_one,\n    intensity: 5 within 60s,\n\n    pool workers: Worker(value: 7) count: 3,\n}\n",
+        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker(value: 7) count: 3;\n}\n",
     );
 }
 
@@ -2287,7 +2293,7 @@ fn fmt_scope_fork_named_binding_roundtrip() {
 fn fmt_actor_on_start_hook_roundtrip() {
     // Canonical order: receive fn before lifecycle-hook fn (methods follow receive fns).
     exact_roundtrip(
-        "actor Logger {\n    let label: string,\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(start)]\n    fn init() {\n        println(f\"[{label}] started\");\n    }\n}\n\nfn main() {\n}\n",
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(start)]\n    fn init() {\n        println(f\"[{label}] started\");\n    }\n}\n\nfn main() {\n}\n",
     );
 }
 
@@ -2432,10 +2438,10 @@ fn fmt_method_chain_on_plain_binary_receiver_roundtrips() {
 fn fmt_actor_var_field_preserved_not_rewritten_to_let() {
     // Regression: formatter was silently rewriting `var` actor fields to `let`,
     // a semantic mutation — `var` fields are mutable in handlers, `let` are not.
-    let src = "actor Counter {\n    var count: i64 = 0,\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
+    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
     let out = roundtrip(src);
     assert!(
-        out.contains("var count: i64 = 0,"),
+        out.contains("var count: i64 = 0;"),
         "formatter must not rewrite `var` field to `let`; output:\n{out}"
     );
     assert!(
@@ -2447,10 +2453,10 @@ fn fmt_actor_var_field_preserved_not_rewritten_to_let() {
 #[test]
 fn fmt_actor_let_field_stays_let() {
     // A `let` field (immutable actor state) must stay `let` — not promoted to `var`.
-    let src = "actor Frozen {\n    let x: i64 = 0,\n\n    receive fn noop() {}\n}\n";
+    let src = "actor Frozen {\n    let x: i64 = 0;\n\n    receive fn noop() {}\n}\n";
     let out = roundtrip(src);
     assert!(
-        out.contains("let x: i64 = 0,"),
+        out.contains("let x: i64 = 0;"),
         "formatter must preserve `let` field; output:\n{out}"
     );
     assert!(
@@ -2463,7 +2469,7 @@ fn fmt_actor_let_field_stays_let() {
 fn fmt_actor_mixed_var_and_let_fields_roundtrip() {
     // Actor with both mutable and immutable fields — each must keep its keyword.
     exact_roundtrip(
-        "actor Mixed {\n    let id: i64 = 0,\n    var count: i64 = 0,\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n",
+        "actor Mixed {\n    let id: i64 = 0;\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n",
     );
 }
 
@@ -2472,7 +2478,7 @@ fn fmt_actor_var_field_ast_equality_after_format() {
     // AST-equality check: parse(format(parse(src))) must equal parse(src)
     // including the is_mutable flag on FieldDecl.
     use hew_parser::ast_eq::program_eq_ignoring_spans;
-    let src = "actor Counter {\n    var count: i64 = 0,\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
+    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
     let p1 = parse(src);
     assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
     let formatted = format_program(&p1.program);

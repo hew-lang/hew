@@ -16,7 +16,7 @@ fn parse_empty_struct_literal_with_call() {
 #[test]
 fn parse_non_empty_struct_literal() {
     let result = hew_parser::parse(
-        "type Point { x: i32, y: i32 } fn main() { let p = Point { x: 1, y: 2 }; }",
+        "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n}\n",
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
@@ -66,7 +66,7 @@ fn parse_if_parenthesised_struct_literal_in_condition() {
     // The no-struct-literal restriction is lifted inside `(...)`, so a struct
     // literal nested in a parenthesised condition still parses.
     let result = hew_parser::parse(
-        "type Foo { a: i64, b: bool } fn f() { if (Foo { a: 1, b: true }).b { } }",
+        "type Foo {\n    a: i64;\n    b: bool;\n}\n\nfn f() {\n    if (Foo { a: 1, b: true }).b {}\n}\n",
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
@@ -75,7 +75,7 @@ fn parse_if_parenthesised_struct_literal_in_condition() {
 fn parse_if_struct_literal_call_arg_in_condition() {
     // Restriction lifted inside call args: `if g(Foo { a: 1 }) { }`.
     let result = hew_parser::parse(
-        "type Foo { a: i64 } fn g(x: Foo) -> bool { true } fn f() { if g(Foo { a: 1 }) { } }",
+        "type Foo {\n    a: i64;\n}\n\nfn g(x: Foo) -> bool {\n    true\n}\n\nfn f() {\n    if g(Foo { a: 1 }) {}\n}\n",
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
@@ -84,7 +84,7 @@ fn parse_if_struct_literal_call_arg_in_condition() {
 fn parse_if_struct_literal_array_arg_in_condition() {
     // Restriction lifted inside `[...]`: `if h([Foo { a: 1 }]) { }`.
     let result = hew_parser::parse(
-        "type Foo { a: i64 } fn h(xs: [Foo; 1]) -> bool { true } fn f() { if h([Foo { a: 1 }]) { } }",
+        "type Foo {\n    a: i64;\n}\n\nfn h(xs: [Foo; 1]) -> bool {\n    true\n}\n\nfn f() {\n    if h([Foo { a: 1 }]) {}\n}\n",
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
@@ -184,17 +184,19 @@ fn roundtrip_parenthesised_struct_literal_if_condition() {
     // the direct condition: `if (Foo { a: true }) {}` re-parses correctly only
     // with the parens. Without them it formats to `if Foo { a: true } {}`, whose
     // `{ a: true }` is the struct body and the real block goes missing.
-    assert_roundtrips("type Foo { a: bool } fn f() { if (Foo { a: true }) { } }");
+    assert_roundtrips("type Foo {\n    a: bool;\n}\n\nfn f() {\n    if (Foo { a: true }) {}\n}\n");
 }
 
 #[test]
 fn roundtrip_parenthesised_struct_literal_match_scrutinee() {
-    assert_roundtrips("type Foo { a: i64 } fn f() { match (Foo { a: 1 }) { _ => { } } }");
+    assert_roundtrips("type Foo {\n    a: i64;\n}\n\nfn f() {\n    match (Foo { a: 1 }) {\n        _ => {}\n    }\n}\n");
 }
 
 #[test]
 fn roundtrip_parenthesised_struct_literal_while_condition() {
-    assert_roundtrips("type Foo { a: bool } fn f() { while (Foo { a: true }) { } }");
+    assert_roundtrips(
+        "type Foo {\n    a: bool;\n}\n\nfn f() {\n    while (Foo { a: true }) {}\n}\n",
+    );
 }
 
 #[test]
@@ -203,12 +205,12 @@ fn parse_if_block_expression_condition_with_inner_struct_literal() {
     // block, not a struct literal), so the `no_struct_literal` restriction must
     // be lifted inside it — a struct literal nested in the block still parses.
     let result = hew_parser::parse(
-        "type Foo { a: bool } fn f() { if { let x = Foo { a: true }; x.a } { } }",
+        "type Foo {\n    a: bool;\n}\n\nfn f() {\n    if {\n        let x = Foo { a: true };\n        x.a\n    } {}\n}\n",
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 #[test]
 fn roundtrip_if_block_expression_condition_with_inner_struct_literal() {
-    assert_roundtrips("type Foo { a: bool } fn f() { if { let x = Foo { a: true }; x.a } { } }");
+    assert_roundtrips("type Foo {\n    a: bool;\n}\n\nfn f() {\n    if {\n        let x = Foo { a: true };\n        x.a\n    } {}\n}\n");
 }

@@ -4,11 +4,11 @@
 //! monomorphizations are emitted.
 
 type Foo<T> {
-    value: T,
+    value: T;
 }
 
 type Foo_i64 {
-    value: i64,
+    value: i64;
 }
 
 fn through<T>(value: T) -> T {

@@ -12,12 +12,13 @@ fn lower(source: &str, target: TargetArch) -> hew_hir::LowerOutput {
 
 #[test]
 fn target_coroutine_unsupported_rejects_actor_decl() {
-    let source = r"
-        actor Counter {
-            var count: int = 0,
-            receive fn increment() { self.count += 1; }
-        }
-    ";
+    let source = r"actor Counter {
+    var count: int = 0;
+    receive fn increment() {
+        self.count += 1;
+    }
+}
+";
     let output = lower(source, TargetArch::Other);
 
     assert!(
@@ -44,15 +45,15 @@ fn target_coroutine_unsupported_rejects_actor_decl() {
 
 #[test]
 fn target_coroutine_unsupported_rejects_supervisor_decl() {
-    let source = r"
-        supervisor Root {
-            strategy: one_for_one,
-            child worker: WorkerActor(),
-        }
-        actor WorkerActor {
-            receive fn work() {}
-        }
-    ";
+    let source = r"supervisor Root {
+    strategy: one_for_one;
+    child worker: WorkerActor();
+}
+
+actor WorkerActor {
+    receive fn work() {}
+}
+";
     let output = lower(source, TargetArch::Wasm32);
 
     let coroutine_diagnostics: Vec<_> = output
@@ -75,14 +76,17 @@ fn target_coroutine_unsupported_rejects_supervisor_decl() {
 
 #[test]
 fn target_coroutine_unsupported_accepts_pure_data_program() {
-    let source = r"
-        pub type Point { x: int, y: int }
-        pub fn distance(p1: Point, p2: Point) -> int {
-            let dx = p2.x - p1.x;
-            let dy = p2.y - p1.y;
-            dx * dx + dy * dy
-        }
-    ";
+    let source = r"pub type Point {
+    x: int;
+    y: int;
+}
+
+pub fn distance(p1: Point, p2: Point) -> int {
+    let dx = p2.x - p1.x;
+    let dy = p2.y - p1.y;
+    dx * dx + dy * dy
+}
+";
     let output = lower(source, TargetArch::Other);
 
     let has_coroutine_unsupported = output
@@ -115,12 +119,13 @@ fn target_coroutine_unsupported_accepts_pure_data_program() {
 
 #[test]
 fn native_target_accepts_actors() {
-    let source = r"
-        actor Counter {
-            var count: int = 0,
-            receive fn increment() { self.count += 1; }
-        }
-    ";
+    let source = r"actor Counter {
+    var count: int = 0;
+    receive fn increment() {
+        self.count += 1;
+    }
+}
+";
     let output = lower(source, TargetArch::X86_64);
 
     let has_coroutine_unsupported = output
@@ -132,12 +137,13 @@ fn native_target_accepts_actors() {
 
 #[test]
 fn aarch64_target_accepts_actors() {
-    let source = r"
-        actor Counter {
-            var count: int = 0,
-            receive fn increment() { self.count += 1; }
-        }
-    ";
+    let source = r"actor Counter {
+    var count: int = 0;
+    receive fn increment() {
+        self.count += 1;
+    }
+}
+";
     let output = lower(source, TargetArch::Aarch64);
 
     let has_coroutine_unsupported = output

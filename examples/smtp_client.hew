@@ -25,7 +25,7 @@ fn send_plain(host: string, port: i64, username: string, password: string, from:
                 .Ok(()) => .Ok(0),
                 .Err(msg) => .Err(msg),
             }
-        },
+        }
         .Err(msg) => .Err(msg),
     }
 }
@@ -40,7 +40,7 @@ fn send_html(host: string, port: i64, username: string, password: string, from: 
                 .Ok(()) => .Ok(0),
                 .Err(msg) => .Err(msg),
             }
-        },
+        }
         .Err(msg) => .Err(msg),
     }
 }

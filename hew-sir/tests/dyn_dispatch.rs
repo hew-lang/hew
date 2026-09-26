@@ -6,16 +6,34 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-const TWO_BOUNDS: &str = r#"
-    trait Alpha { fn alpha(self) -> string; }
-    trait Beta { fn beta(self) -> string; }
-    type Both { n: i64 }
-    impl Alpha for Both { fn alpha(self) -> string { "alpha" } }
-    impl Beta for Both { fn beta(self) -> string { "beta" } }
-    fn main() {
-        let x: dyn (Alpha + Beta) = Both { n: 3 };
-        println(x.beta());
+const TWO_BOUNDS: &str = r#"trait Alpha {
+    fn alpha(self) -> string;
+}
+
+trait Beta {
+    fn beta(self) -> string;
+}
+
+type Both {
+    n: i64;
+}
+
+impl Alpha for Both {
+    fn alpha(self) -> string {
+        "alpha"
     }
+}
+
+impl Beta for Both {
+    fn beta(self) -> string {
+        "beta"
+    }
+}
+
+fn main() {
+    let x: dyn (Alpha + Beta) = Both { n: 3 };
+    println(x.beta());
+}
 "#;
 
 fn lower(source: &str) -> SemModule {

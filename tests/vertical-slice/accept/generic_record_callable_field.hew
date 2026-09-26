@@ -6,8 +6,8 @@
 // The predicate is moved into the record, so the constructor consumes it:
 // a written callable type carries no copy unless it says `fn[clone]`.
 type Gate<A> {
-    pred: fn(A) -> bool,
-    label: string,
+    pred: fn(A) -> bool;
+    label: string;
 }
 
 fn gate<A>(consume pred: fn(A) -> bool, label: string) -> Gate<A> {

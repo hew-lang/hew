@@ -1,9 +1,9 @@
-actor ByteStore { 
-    var buf: bytes,
+actor ByteStore {
+    var buf: bytes;
 
     receive fn store(packet: bytes) {
         buf = packet;
-  }
+    }
 
     receive fn get_len() -> i64 {
         buf.len()

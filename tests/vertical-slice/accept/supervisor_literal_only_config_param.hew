@@ -13,19 +13,21 @@
 // Teeth: exits 0.  Verified no-leak under `leaks --atExit` + the poisoned-
 // allocator triple by the paired e2e oracle
 // `supervisor_literal_only_config_param_no_leak`.
-type AppConfig { threshold: i64 }
+type AppConfig {
+    threshold: i64;
+}
 
 actor Ping {
     receive fn ping() {}
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
     // Stateless children with no init args — no config.field reads.
-    child a: Ping(),
-    child b: Ping(),
+    child a: Ping();
+    child b: Ping();
 }
 
 fn main() -> i64 {

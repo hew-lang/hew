@@ -5,7 +5,7 @@
 // initialized by init, so the child declaration names no arguments.
 
 actor Worker {
-    var value: i64,
+    var value: i64;
 
     init() {
         value = 10;
@@ -31,10 +31,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child worker: Worker,
+    child worker: Worker;
 }
 
 fn main() -> i64 {

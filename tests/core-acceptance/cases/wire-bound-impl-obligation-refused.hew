@@ -1,11 +1,11 @@
 // A Hash and Eq impl bounded by `T: Serializable` does not apply to a key
 // whose argument has no wire encoding, so the map has no key operations.
 type Plain {
-    a: i64,
+    a: i64;
 }
 
 type Key<T> {
-    id: T,
+    id: T;
 }
 
 impl<T: Serializable> Eq for Key<T> {

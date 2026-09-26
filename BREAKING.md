@@ -9,6 +9,15 @@ syntax and semantics, and the [language guide](docs/hew-language-guide.md)
 for examples. The release-labelled entries below preserve migration history;
 old spellings and ABI layouts in them are not current programming guidance.
 
+## Declaration separators in v0.6.0-rc4
+
+Bodyless members inside types, enums, actors, machines and supervisors end
+with `;`. A member with its own `{ }` body ends at `}`. Commas separate values
+and list elements. Actor state fields use `let` or `var`; bare fields are
+retired. Run `hew fmt --migrate` across a project before checking or building
+it. The command rewrites punctuation before checker-backed migrations, so
+imports using the old spelling can migrate together.
+
 ## Named arguments bind by name in v0.6.0
 
 - A named argument binds to the parameter it names. Earlier builds bound

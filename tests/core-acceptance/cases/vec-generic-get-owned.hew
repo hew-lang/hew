@@ -1,4 +1,6 @@
-type Name { label: string, }
+type Name {
+    label: string;
+}
 
 fn first<T: Clone>(v: Vec<T>) -> Option<T> {
     v.get(0)
@@ -9,15 +11,21 @@ fn run_cycle() -> i64 {
     vn.push(Name { label: "owned-ok".to_upper() });
     let got = match first(vn) {
         .Some(g) => g,
-        .None => { return 0; }
+        .None => {
+            return 0;
+        }
     };
     got.label.len()
 }
 
 fn run_loop(frames: i64) -> i64 {
     var total: i64 = 0;
-    for i in 0..frames { total = total + run_cycle(); }
+    for i in 0 .. frames {
+        total = total + run_cycle();
+    }
     total
 }
 
-fn main() -> i64 { run_loop(50) }
+fn main() -> i64 {
+    run_loop(50)
+}

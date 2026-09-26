@@ -17,25 +17,21 @@ fn main() -> i64 {
     if Node.identity_key().len() != 0 {
         return 1;
     }
-
     if !starts(configured_at("127.0.0.1:0")) {
         return 2;
     }
-
     // A pinned TCP node exports its 32-byte Noise static public key as
     // lowercase hex.
     let key = Node.identity_key();
     if key.len() != 64 {
         return 3;
     }
-
     // Each call hands back a fresh owned string with the same contents, so the
     // caller owning and dropping one export cannot disturb the next.
     let again = Node.identity_key();
     if again != key {
         return 4;
     }
-
     Node.shutdown();
     0
 }

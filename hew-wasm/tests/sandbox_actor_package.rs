@@ -24,15 +24,20 @@ fn semantics(source: &str) -> hew_sir::LoweredModule {
     .into_semantics()
 }
 
-const COUNTER: &str = r"
-actor Counter {
-    var count: i64,
-    receive fn bump(n: i64) -> i64 { count = count + n; count }
+const COUNTER: &str = r"actor Counter {
+    var count: i64;
+    receive fn bump(n: i64) -> i64 {
+        count = count + n;
+        count
+    }
 }
 
 fn main() {
     let c = spawn Counter(count: 0);
-    println(match c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });
+    println(match c.bump(3) {
+        .Ok(v) => v,
+        .Err(_e) => 0 - 1,
+    });
 }
 ";
 
@@ -148,15 +153,24 @@ fn stdout(trace: &serde_json::Value) -> String {
 #[test]
 fn actor_state_is_shared_between_completed_turns() {
     let trace = execute(
-        r"
-actor Counter {
-    var count: i64,
-    receive fn bump(n: i64) -> i64 { count = count + n; count }
+        r"actor Counter {
+    var count: i64;
+    receive fn bump(n: i64) -> i64 {
+        count = count + n;
+        count
+    }
 }
+
 fn main() {
     let counter = spawn Counter(count: 2);
-    println(match counter.bump(3) { .Ok(n) => n, .Err(_) => -1 });
-    println(match counter.bump(4) { .Ok(n) => n, .Err(_) => -1 });
+    println(match counter.bump(3) {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    });
+    println(match counter.bump(4) {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    });
 }
 ",
     );
@@ -166,24 +180,36 @@ fn main() {
 #[test]
 fn a_parked_handler_resumes_with_its_state_after_another_actor_replies() {
     let trace = execute(
-        r"
-actor Doubler {
-    receive fn twice(n: i64) -> i64 { n * 2 }
+        r"actor Doubler {
+    receive fn twice(n: i64) -> i64 {
+        n * 2
+    }
 }
+
 actor Relay {
-    let worker: Doubler,
-    var calls: i64,
+    let worker: Doubler;
+    var calls: i64;
     receive fn forward(n: i64) -> i64 {
         calls = calls + 1;
-        let result = match worker.twice(n) { .Ok(value) => value, .Err(_) => -1 };
+        let result = match worker.twice(n) {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
         result + calls
     }
 }
+
 fn main() {
     let worker = spawn Doubler;
     let relay = spawn Relay(worker: worker, calls: 0);
-    println(match relay.forward(5) { .Ok(n) => n, .Err(_) => -1 });
-    println(match relay.forward(7) { .Ok(n) => n, .Err(_) => -1 });
+    println(match relay.forward(5) {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    });
+    println(match relay.forward(7) {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    });
 }
 ",
     );
@@ -227,23 +253,35 @@ fn supervisor_children_execute_their_declared_spawn_functions() {
 #[test]
 fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
     let trace = execute(
-        r#"
-actor Worker {
-    var count: i64,
-    receive fn bump() -> i64 { count = count + 1; count }
-    receive fn fail() { panic("restart me"); }
+        r#"actor Worker {
+    var count: i64;
+    receive fn bump() -> i64 {
+        count = count + 1;
+        count
+    }
+    receive fn fail() {
+        panic("restart me");
+    }
 }
+
 supervisor Tree {
-    strategy: one_for_one,
-    intensity: 3 within 10s,
-    child worker: Worker(count: 10),
+    strategy: one_for_one;
+    intensity: 3 within 10s;
+    child worker: Worker(count: 10);
 }
+
 fn main() {
     let tree = spawn Tree;
     let role = tree.worker;
-    println(match role.bump() { .Ok(n) => n, .Err(_) => -1 });
+    println(match role.bump() {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    });
     let _ = role.fail();
-    println(match role.bump() { .Ok(n) => n, .Err(_) => -1 });
+    println(match role.bump() {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    });
 }
 "#,
     );
@@ -313,15 +351,21 @@ fn main() {
 #[test]
 fn select_keeps_a_losing_task_joinable() {
     let trace = execute(
-        r"
-fn delayed(n: i64, delay: duration) -> i64 { sleep(delay); n }
+        r"fn delayed(n: i64, delay: duration) -> i64 {
+    sleep(delay);
+    n
+}
+
 fn main() {
     scope {
         let slow = fork delayed(2, 20ms);
         let fast = fork delayed(1, 1ms);
         select {
             value from slow => println(value),
-            value from fast => { println(value); println(await slow); },
+            value from fast => {
+                println(value);
+                println(await slow);
+            }
         }
     }
 }
@@ -333,11 +377,14 @@ fn main() {
 #[test]
 fn select_waits_on_actor_completions() {
     let trace = execute(
-        r#"
-actor Worker {
-    let delay: duration,
-    receive fn work(n: i64) -> i64 { sleep(delay); n }
+        r#"actor Worker {
+    let delay: duration;
+    receive fn work(n: i64) -> i64 {
+        sleep(delay);
+        n
+    }
 }
+
 fn main() {
     let slow = spawn Worker(delay: 20ms);
     let fast = spawn Worker(delay: 1ms);
@@ -449,11 +496,13 @@ fn a_task_fault_reaches_scope_recovery_after_deferred_cleanup() {
 #[test]
 fn mailbox_submission_reports_acceptance_and_full_rejection() {
     let trace = execute(
-        r#"
-actor Worker {
-    mailbox 1 overflow block,
-    receive fn work(value: i64) { println(value); }
+        r#"actor Worker {
+    mailbox 1 overflow block;
+    receive fn work(value: i64) {
+        println(value);
+    }
 }
+
 actor Driver {
     receive fn run(worker: Worker) {
         let inbox = mailbox(worker, on_full: .Reject);
@@ -462,11 +511,15 @@ actor Driver {
             _ => "wrong first outcome",
         });
         println(match inbox.work(2) {
-            .Err(failure) => match failure.reason { .Full => "full", _ => "wrong reason" },
+            .Err(failure) => match failure.reason {
+                .Full => "full",
+                _ => "wrong reason",
+            }
             _ => "wrong second outcome",
         });
     }
 }
+
 fn main() {
     let worker = spawn Worker;
     let driver = spawn Driver;
@@ -480,11 +533,13 @@ fn main() {
 #[test]
 fn waiting_submission_resumes_when_a_mailbox_slot_opens() {
     let trace = execute(
-        r#"
-actor Worker {
-    mailbox 1 overflow block,
-    receive fn work(value: i64) { println(value); }
+        r#"actor Worker {
+    mailbox 1 overflow block;
+    receive fn work(value: i64) {
+        println(value);
+    }
 }
+
 actor Driver {
     receive fn run(worker: Worker) {
         let inbox = mailbox(worker, on_full: .Wait);
@@ -493,6 +548,7 @@ actor Driver {
         println("submitted");
     }
 }
+
 fn main() {
     let worker = spawn Worker;
     let driver = spawn Driver;
@@ -737,18 +793,24 @@ fn zero_restart_budget_settles_nested_roles_without_restarting() {
 
 #[test]
 fn simultaneous_sibling_faults_settle_after_effective_group_recovery() {
-    let source = r#"
-actor Worker {
-    var value: i64 = 7,
-    receive fn fail() { sleep(1ms); panic("group failure"); }
-    receive fn get() -> i64 { value }
+    let source = r#"actor Worker {
+    var value: i64 = 7;
+    receive fn fail() {
+        sleep(1ms);
+        panic("group failure");
+    }
+    receive fn get() -> i64 {
+        value
+    }
 }
+
 supervisor Group {
-    strategy: one_for_all,
-    intensity: 1 within 60s,
-    child first: Worker,
-    child second: Worker,
+    strategy: one_for_all;
+    intensity: 1 within 60s;
+    child first: Worker;
+    child second: Worker;
 }
+
 fn main() {
     let group = spawn Group;
     scope {
@@ -756,7 +818,7 @@ fn main() {
         let second = fork group.second.fail();
         let _ = await first;
         let _ = await second;
-    }
+    };
     let _ = await_restart group.first;
     println(group.first.get().expect("recovered first"));
     println(group.second.get().expect("recovered second"));
@@ -979,26 +1041,45 @@ fn main() {{
 #[test]
 fn trait_object_release_waits_for_its_resources_peer_call() {
     let trace = execute(
-        r#"
-actor Audit {
-    receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); }
+        r#"actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
 }
+
 #[resource]
-type Ticket { audit: Audit, id: i64, }
-impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("close ticket"); }
+type Ticket {
+    audit: Audit;
+    id: i64;
 }
-trait Identified { fn id(value: Self) -> i64; }
-impl Identified for Ticket { fn id(value: Ticket) -> i64 { value.id } }
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("close ticket");
+    }
+}
+
+trait Identified {
+    fn id(value: Self) -> i64;
+}
+
+impl Identified for Ticket {
+    fn id(value: Ticket) -> i64 {
+        value.id
+    }
+}
+
 actor Worker {
     receive fn run(audit: Audit) {
         {
             let ticket: dyn Identified = Ticket { audit: audit, id: 7 };
             println(ticket.id());
-        }
+        };
         println("released");
     }
 }
+
 fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
@@ -1015,11 +1096,21 @@ fn main() {
 #[test]
 fn task_results_transfer_or_close_their_owned_resources() {
     let trace = execute(
-        r#"
-#[resource]
-type Ticket { id: i64, }
-impl Ticket { fn close(consume self) { println(f"closed {self.id}"); } }
-fn ticket(id: i64) -> Ticket { Ticket { id: id } }
+        r#"#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+fn ticket(id: i64) -> Ticket {
+    Ticket { id: id }
+}
+
 fn main() {
     scope {
         let taken = fork ticket(1);
@@ -1028,7 +1119,7 @@ fn main() {
         value.close();
         let _unused = fork ticket(2);
         sleep(1ms);
-    }
+    };
     println("drained");
 }
 "#,
@@ -1039,11 +1130,19 @@ fn main() {
 #[test]
 fn closing_a_pipe_releases_buffered_and_rejected_owned_items() {
     let trace = execute(
-        r#"
-import std.stream;
+        r#"import std.stream;
+
 #[resource]
-type Ticket { id: i64, }
-impl Ticket { fn close(consume self) { println(f"closed {self.id}"); } }
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
 fn main() {
     let (output, input): (Sink<Ticket>, Stream<Ticket>) = stream.pipe(2).expect("pipe");
     let _ = output.send(Ticket { id: 1 });
@@ -1165,17 +1264,31 @@ fn map_removal_owns_its_result_before_retiring_the_query() {
 
 #[test]
 fn actor_close_drains_active_and_queued_resource_messages_before_its_barrier() {
-    let source = r#"
-import std.stream;
-actor Audit { receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); } }
+    let source = r#"import std.stream;
+
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
 #[resource]
-type Ticket { audit: Audit, id: i64, fail_close: bool, }
+type Ticket {
+    audit: Audit;
+    id: i64;
+    fail_close: bool;
+}
+
 impl Ticket {
     fn close(consume self) {
         self.audit.record(self.id).expect("audit");
-        if self.fail_close { panic("queued close failed"); }
+        if self.fail_close {
+            panic("queued close failed");
+        }
     }
 }
+
 actor Worker {
     receive fn hold(ticket: Ticket, started: Sink<i64>) {
         started.send(ticket.id).expect("started");
@@ -1183,6 +1296,7 @@ actor Worker {
         println("unreached");
     }
 }
+
 fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
@@ -1222,21 +1336,36 @@ fn main() {
 #[test]
 fn an_actor_state_close_fault_reaches_its_sibling_pipe_sink() {
     let trace = execute_expected(
-        r#"
-import std.stream;
+        r#"import std.stream;
+
 #[resource]
-type Ticket { id: i64, }
-impl Ticket { fn close(consume self) { println(self.id); panic("state close failed"); } }
-actor Owner {
-    var output: Sink<i64>,
-    var ticket: Ticket,
-    receive fn ready() { output.send(42).expect("queued item"); }
+type Ticket {
+    id: i64;
 }
+
+impl Ticket {
+    fn close(consume self) {
+        println(self.id);
+        panic("state close failed");
+    }
+}
+
+actor Owner {
+    var output: Sink<i64>;
+    var ticket: Ticket;
+    receive fn ready() {
+        output.send(42).expect("queued item");
+    }
+}
+
 fn main() {
     let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
     let owner = spawn Owner(output: output, ticket: Ticket { id: 7 });
     owner.ready().expect("ready");
-    scope { close(owner); println("incorrect clean close"); } handle failure {
+    scope {
+        close(owner);
+        println("incorrect clean close");
+    } handle failure {
         match failure {
             .Fault { message } => println("close fault"),
             .Deadline { message } => println("incorrect deadline"),
@@ -1258,11 +1387,22 @@ fn main() {
 #[test]
 fn a_main_fault_still_closes_idle_actor_resources() {
     let trace = execute_expected(
-        r#"
-#[resource]
-type Ticket { name: string, }
-impl Ticket { fn close(consume self) { println(self.name); } }
-actor Owner { var ticket: Ticket, receive fn ready() {} }
+        r#"#[resource]
+type Ticket {
+    name: string;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(self.name);
+    }
+}
+
+actor Owner {
+    var ticket: Ticket;
+    receive fn ready() {}
+}
+
 fn main() {
     let owner = spawn Owner(ticket: Ticket { name: "actor owner closed" });
     owner.ready().expect("ready");
@@ -1315,14 +1455,24 @@ fn main() {
 #[test]
 fn drop_newest_runs_the_discarded_messages_authored_close() {
     let trace = execute(
-        r#"
-#[resource]
-type Ticket { id: i64, }
-impl Ticket { fn close(consume self) { println(f"closed {self.id}"); } }
-actor Worker {
-    mailbox 1 overflow fail,
-    receive fn work(ticket: Ticket) { println(f"handled {ticket.id}"); }
+        r#"#[resource]
+type Ticket {
+    id: i64;
 }
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+actor Worker {
+    mailbox 1 overflow fail;
+    receive fn work(ticket: Ticket) {
+        println(f"handled {ticket.id}");
+    }
+}
+
 actor Driver {
     receive fn run(worker: Worker) {
         let inbox = mailbox(worker, on_full: .DropNewest);
@@ -1330,6 +1480,7 @@ actor Driver {
         inbox.work(Ticket { id: 2 }).expect("discarded");
     }
 }
+
 fn main() {
     let worker = spawn Worker;
     let driver = spawn Driver;

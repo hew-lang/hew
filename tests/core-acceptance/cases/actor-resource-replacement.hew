@@ -1,7 +1,7 @@
 #[resource]
 type Buffer {
-    id: i64,
-    label: string,
+    id: i64;
+    label: string;
 }
 
 impl Buffer {
@@ -11,7 +11,7 @@ impl Buffer {
 }
 
 actor Keeper {
-    var buffer: Buffer,
+    var buffer: Buffer;
 
     receive fn replace(next: i64) -> i64 {
         let previous = buffer.id;

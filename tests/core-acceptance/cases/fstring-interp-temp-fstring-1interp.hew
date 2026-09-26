@@ -6,6 +6,8 @@ fn main() -> i64 {
         total = total + i;
         i = i + 1;
     }
-    if total != 1225 { return 94; }
+    if total != 1225 {
+        return 94;
+    }
     0
 }

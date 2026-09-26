@@ -11,15 +11,15 @@ fn main() {
         .Err(error) => {
             println(error);
             return;
-        },
+        }
     };
     select {
         v from rx.recv() => match v {
             .Some(item) => println(f"early {item}"),
             .None => println("early closed"),
-        },
+        }
         after 20ms => println("timeout"),
-    }
+    };
     tx.send("late").expect("send");
     tx.close();
     match rx.recv() {

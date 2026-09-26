@@ -3,7 +3,7 @@
 // recovered field value (42), so a garbled round-trip changes the exit code.
 #[wire]
 type Packet {
-    id: i64 @1,
+    id: i64 @1;
 }
 
 fn main() -> i64 {

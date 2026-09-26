@@ -6,9 +6,9 @@
 //! arm, a struct-variant arm, a unit arm, and a `let`-position tag test.
 
 enum Choice {
-    Present(i64),
-    Absent,
-    Named { count: i64 }
+    Present(i64);
+    Absent;
+    Named { count: i64;  }
 }
 
 fn read(value: Choice) -> i64 {
@@ -20,7 +20,9 @@ fn read(value: Choice) -> i64 {
 }
 
 fn tag_test(value: Choice) -> i64 {
-    let .Absent = value else { return 1 };
+    let .Absent = value else {
+        return 1;
+    };
     0
 }
 

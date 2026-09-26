@@ -13,14 +13,13 @@ fn slow(gate: stream.Stream<i64>) -> i64 {
 }
 
 fn main() {
-    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) =
-        match stream.pipe(4) {
-            .Ok(pair) => pair,
-            .Err(error) => {
-                println(error);
-                return;
-            },
-        };
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => {
+            println(error);
+            return;
+        }
+    };
     tx.send("payload-with-owned-heap").expect("send");
     let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     scope {
@@ -30,10 +29,10 @@ fn main() {
             v from rx.recv() => match v {
                 .Some(item) => println(f"channel {item}"),
                 .None => println("channel closed"),
-            },
-        }
+            }
+        };
         release.send(1).expect("release");
-    }
+    };
     println("scope joined");
     // The losing arm never consumed the receiver, so it still drains.
     tx.send("second").expect("send");

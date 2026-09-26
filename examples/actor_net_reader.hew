@@ -15,9 +15,9 @@ import std.os;
 import std.stream.{Sink, Stream};
 
 actor ServerReader {
-    let input: Stream<bytes>,
-    let sink: Sink<bytes>,
-    let name: string,
+    let input: Stream<bytes>;
+    let sink: Sink<bytes>;
+    let name: string;
     receive fn start() {
         var reading = true;
         while reading {
@@ -28,10 +28,10 @@ actor ServerReader {
                         break;
                     };
                     println(f"[{name}] {msg}");
-                },
+                }
                 .None => {
                     reading = false;
-                },
+                }
             }
         }
         println(f"[{name}] closed");

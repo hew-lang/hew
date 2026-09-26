@@ -1,6 +1,8 @@
 // A copyable collection cursor observes the logical value at loop entry.
 // Mutating the source detaches it through COW and cannot alter that cursor.
-type Holder { items: Vec<i64> }
+type Holder {
+    items: Vec<i64>;
+}
 
 fn push_clear_snapshot() {
     var items: Vec<i64> = Vec.new();
@@ -12,8 +14,12 @@ fn push_clear_snapshot() {
     for value in holder.items {
         seen = seen + 1;
         total = total + value;
-        if seen == 1 { holder.items.push(7); }
-        if seen == 2 { holder.items.clear(); }
+        if seen == 1 {
+            holder.items.push(7);
+        }
+        if seen == 2 {
+            holder.items.clear();
+        }
     }
     println(f"push-clear {seen} {total} {holder.items.len()}");
 }
@@ -26,7 +32,9 @@ fn index_snapshot() {
     var seen = 0;
     var total = 0;
     for value in holder.items {
-        if seen == 0 { holder.items[1] = 9; }
+        if seen == 0 {
+            holder.items[1] = 9;
+        }
         seen = seen + 1;
         total = total + value;
     }

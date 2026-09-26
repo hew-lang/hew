@@ -21,14 +21,18 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 /// annotation must lower without any `NotYetImplemented` diagnostic.
 #[test]
 fn dyn_trait_parameter_annotation_lowers_without_nyi() {
-    let src = r"
-trait Shape {
+    let src = r"trait Shape {
     fn area(val: Self) -> i64;
 }
 
-type Circle { radius: i64, }
+type Circle {
+    radius: i64;
+}
+
 impl Shape for Circle {
-    fn area(c: Circle) -> i64 { c.radius * c.radius * 3 }
+    fn area(c: Circle) -> i64 {
+        c.radius * c.radius * 3
+    }
 }
 
 fn measure(s: dyn Shape) -> i64 {
@@ -105,19 +109,28 @@ fn first(idx: dyn Index<Output = i32>) -> i32 {
 /// call → no NYI diagnostics in the lowered HIR.
 #[test]
 fn dyn_trait_two_impl_dispatch_lowers_without_nyi() {
-    let src = r"
-trait Shape {
+    let src = r"trait Shape {
     fn area(val: Self) -> i64;
 }
 
-type Circle { radius: i64, }
-impl Shape for Circle {
-    fn area(c: Circle) -> i64 { c.radius * c.radius * 3 }
+type Circle {
+    radius: i64;
 }
 
-type Square { side: i64, }
+impl Shape for Circle {
+    fn area(c: Circle) -> i64 {
+        c.radius * c.radius * 3
+    }
+}
+
+type Square {
+    side: i64;
+}
+
 impl Shape for Square {
-    fn area(s: Square) -> i64 { s.side * s.side }
+    fn area(s: Square) -> i64 {
+        s.side * s.side
+    }
 }
 
 fn measure(s: dyn Shape) -> i64 {

@@ -89,9 +89,8 @@ fn assert_generator_handler_param_bound(handler: &hew_hir::HirActorReceiveFn, pa
 #[test]
 fn actor_body_params_are_bound_and_reachable() {
     let output = lower_checked(
-        r"
-actor Counter {
-    let count: i32,
+        r"actor Counter {
+    let count: i32;
 
     init(start: i32) {
         let seed: i32 = start;

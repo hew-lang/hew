@@ -5,8 +5,8 @@
 
 #[wire]
 pub type Env {
-    label: string @7,
-    port: i64 @9,
+    label: string @7;
+    port: i64 @9;
 }
 
 pub fn label_b(e: Env) -> string {

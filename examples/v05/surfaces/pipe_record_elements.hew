@@ -13,8 +13,8 @@
 import std.stream;
 
 type Tagged {
-    label: string,
-    value: i64,
+    label: string;
+    value: i64;
 }
 
 actor DrainRecords {
@@ -47,7 +47,7 @@ fn main() {
     let worker = spawn DrainRecords;
     let _ = worker.run(0);
     match worker.fence() {
-        .Ok(_v) => {},
+        .Ok(_v) => {}
         .Err(_) => println("fence failed"),
     }
     // Non-blocking sibling: try_recv moves one queued record out; the match

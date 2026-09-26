@@ -110,9 +110,8 @@ fn find_type<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirTypeDec
 #[test]
 fn imported_type_carries_defining_module_and_root_type_carries_none() {
     let program = build_program_with_imported_module(
-        "pub type Widget { count: i64 }\n",
-        "type Local { total: i64 }\n\
-         fn main() -> i64 { 0 }",
+        "pub type Widget {\n    count: i64;\n}\n",
+        "type Local {\n    total: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
@@ -138,9 +137,8 @@ fn imported_type_carries_defining_module_and_root_type_carries_none() {
 #[test]
 fn type_qualified_name_derives_dotted_for_module_and_bare_for_root() {
     let program = build_program_with_imported_module(
-        "pub type Widget { count: i64 }\n",
-        "type Local { total: i64 }\n\
-         fn main() -> i64 { 0 }",
+        "pub type Widget {\n    count: i64;\n}\n",
+        "type Local {\n    total: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
@@ -168,9 +166,8 @@ fn type_qualified_name_derives_dotted_for_module_and_bare_for_root() {
 #[test]
 fn hir_dump_shows_qualified_identity_only_for_imported_types() {
     let program = build_program_with_imported_module(
-        "pub type Widget { count: i64 }\n",
-        "type Local { total: i64 }\n\
-         fn main() -> i64 { 0 }",
+        "pub type Widget {\n    count: i64;\n}\n",
+        "type Local {\n    total: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
@@ -198,7 +195,7 @@ fn hir_dump_shows_qualified_identity_only_for_imported_types() {
 #[test]
 fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
     let program = build_program_with_imported_module(
-        "pub type Widget { v: i64 }\n",
+        "pub type Widget {\n    v: i64;\n}\n",
         "fn read(w: bank.Widget) -> i64 { w.v }\n\
          fn main() -> i64 { 0 }",
     );

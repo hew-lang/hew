@@ -7,11 +7,11 @@
 import std.stream;
 
 actor KindCoalescer {
-    var alpha_count: i64 = 0,
-    var beta_count: i64 = 0,
-    var alpha_latest: i64 = -1,
+    var alpha_count: i64 = 0;
+    var beta_count: i64 = 0;
+    var alpha_latest: i64 = -1;
 
-    mailbox 64 overflow coalesce(id) fallback drop_new,
+    mailbox 64 overflow coalesce(id) fallback drop_new;
 
     // Holds the actor: reports that it is running, then waits for its gate.
     receive fn hold(started: stream.Sink<i64>, gate: stream.Stream<i64>) {
@@ -63,13 +63,13 @@ fn coalesce_same_key_different_message_types_do_not_merge() {
     match worker.alpha_seen() {
         .Ok(value) => {
             alpha_count = value;
-        },
+        }
         .Err(_) => assert(false),
     }
     match worker.beta_seen() {
         .Ok(value) => {
             beta_count = value;
-        },
+        }
         .Err(_) => assert(false),
     }
     assert(beta_count == 64);

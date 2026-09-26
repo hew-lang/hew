@@ -1,7 +1,9 @@
 import std.stream;
 
 actor Worker {
-    receive fn combine(first: string, second: string) -> string { (first + " " + second).to_upper() }
+    receive fn combine(first: string, second: string) -> string {
+        (first + " " + second).to_upper()
+    }
 }
 
 fn wait_for_gate(consume gate: stream.Stream<string>) -> string {
@@ -17,10 +19,14 @@ fn receiver_source(consume receiver: stream.Stream<string>) -> stream.Stream<str
 
 fn main() {
     let worker = spawn Worker;
-    let (release, gate): (stream.Sink<string>, stream.Stream<string>) =
-        match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) =
-        match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (release, gate): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     scope {
         let task = fork wait_for_gate(gate);
         select {
@@ -30,22 +36,24 @@ fn main() {
                 // This branch knows that the task lost and still owns its handle.
                 release.send("task still joinable").expect("send");
                 println(await task);
-            },
+            }
             value from rx.recv() => println(value.expect("unexpected pipe")),
-        }
+        };
         release.close();
-    }
+    };
     // Losing observation did not consume or close the pipe's read half.
     tx.send("receiver still usable").expect("send");
     tx.close();
     println(rx.recv().expect("pipe value"));
     rx.close();
-    let (tx2, rx2): (stream.Sink<string>, stream.Stream<string>) =
-        match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx2, rx2): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     tx2.send("prepared receiver").expect("send");
     tx2.close();
     select {
         value from receiver_source(rx2).recv() => println(value.expect("prepared value")),
-    }
+    };
     close(worker);
 }

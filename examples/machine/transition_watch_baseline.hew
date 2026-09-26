@@ -32,7 +32,7 @@ actor Combined {
                     .Some(tr) => println(tr),
                     .None => println("watch closed"),
                 }
-            },
+            }
             after 2s => println("timeout"),
         };
         rx.close();

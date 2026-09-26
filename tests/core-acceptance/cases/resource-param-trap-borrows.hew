@@ -1,6 +1,9 @@
 import std.stream;
 
-type Bag { input: Stream<string>, label: string }
+type Bag {
+    input: Stream<string>;
+    label: string;
+}
 
 fn open() -> Stream<string> {
     match stream.open("resource-read.bin") {
@@ -20,7 +23,7 @@ fn drain(consume bag: Bag, divisor: i64) -> string {
 }
 
 actor Splitter {
-    var seen: i64 = 0,
+    var seen: i64 = 0;
     receive fn split(label: string, divisor: i64) -> string {
         seen = seen + 1;
         drain(Bag { input: open(), label: label }, divisor)

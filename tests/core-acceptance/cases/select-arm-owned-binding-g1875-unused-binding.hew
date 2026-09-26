@@ -9,6 +9,8 @@ fn main() -> i64 {
     let r = select {
         _reply from m.make() => 7,
     };
-    if r == 7 { print("k"); }
+    if r == 7 {
+        print("k");
+    }
     0
 }

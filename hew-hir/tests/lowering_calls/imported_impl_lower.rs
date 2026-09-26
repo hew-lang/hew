@@ -32,10 +32,14 @@ use crate::support;
 
 #[test]
 fn imported_associated_paths_lower_through_canonical_impl_owner() {
-    let imported_src = r"
-pub type Box<T> { value: T, }
+    let imported_src = r"pub type Box<T> {
+    value: T;
+}
+
 impl<T> Box<T> {
-    pub fn make(value: T) -> Box<T> { Box<T> { value: value } }
+    pub fn make(value: T) -> Box<T> {
+        Box<T> { value: value }
+    }
 }
 ";
     for root_src in [
@@ -69,8 +73,9 @@ fn main() -> i64 {
 
 #[test]
 fn imported_dotted_struct_variants_lower_through_canonical_owner() {
-    let imported_src = r"
-pub enum Choice { Named { value: i64 } }
+    let imported_src = r"pub enum Choice {
+    Named { value: i64;  }
+}
 ";
     for root_src in [
         r"
@@ -103,22 +108,29 @@ fn value() -> m.Choice { m.Choice.Named { value: 7 } } fn main() {}
 ///  - `impl Foo { pub fn bar(f: Foo) -> i64 { helper(f.n) } }`
 fn build_imported_impl_program(with_private_helper: bool) -> Program {
     build_imported_impl_program_src(if with_private_helper {
-        r"
-pub type Foo {
-    n: i64,
+        r"pub type Foo {
+    n: i64;
 }
-fn helper(n: i64) -> i64 { n }
+
+fn helper(n: i64) -> i64 {
+    n
+}
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { helper(f.n) }
+    pub fn bar(f: Foo) -> i64 {
+        helper(f.n)
+    }
 }
 "
     } else {
-        r"
-pub type Foo {
-    n: i64,
+        r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { f.n }
+    pub fn bar(f: Foo) -> i64 {
+        f.n
+    }
 }
 "
     })
@@ -201,13 +213,14 @@ fn imported_private_struct_typedecl_is_registered_and_emitted() {
     // records private, while their emitted private helpers still field-access
     // those records. The MIR boundary needs the private record TypeDecl so its
     // field order is available downstream.
-    let imported_src = r"
-type FfiResult {
-    status: i32,
+    let imported_src = r"type FfiResult {
+    status: i32;
 }
+
 fn lift(raw: FfiResult) -> i64 {
     raw.status as i64
 }
+
 pub fn status() -> i64 {
     lift(FfiResult { status: 7 })
 }
@@ -261,10 +274,10 @@ fn main() -> i64 {
 fn unused_imported_private_struct_typedecl_is_harmlessly_emitted() {
     // The chosen scope mirrors public imported records: all private imported
     // struct TypeDecls are emitted, even when no emitted body references them.
-    let imported_src = r"
-type UnusedPrivate {
-    status: i32,
+    let imported_src = r"type UnusedPrivate {
+    status: i32;
 }
+
 pub fn ping() -> i64 {
     1
 }
@@ -300,10 +313,10 @@ fn imported_private_generic_struct_typedecl_stays_unemitted() {
     // Generic private handles such as std::stream::Stream<T>/Sink<T> have
     // intrinsic codegen paths. Emitting them as ordinary record TypeDecls would
     // misclassify those handles at the MIR/codegen boundary.
-    let imported_src = r"
-type PrivateBox<T> {
-    value: T,
+    let imported_src = r"type PrivateBox<T> {
+    value: T;
 }
+
 pub fn ping() -> i64 {
     1
 }
@@ -455,20 +468,7 @@ fn imported_impl_body_using_ok_err_ctor_is_not_skipped() {
     // `fn_registry`, so they are not "unresolvable" bare calls. Regression for
     // the over-aggressive body-unresolvable gate that dropped every ADT-
     // returning imported impl method (e.g. `Conn::try_send`, `Url::port`).
-    let imported_src = "
-pub type Foo {
-    n: i64,
-}
-impl Foo {
-    pub fn try_get(f: Foo) -> Result<i64, string> {
-        if f.n < 0 {
-            .Err(\"negative\")
-        } else {
-            .Ok(f.n)
-        }
-    }
-}
-";
+    let imported_src = "pub type Foo {\n    n: i64;\n}\n\nimpl Foo {\n    pub fn try_get(f: Foo) -> Result<i64, string> {\n        if f.n < 0 {\n            .Err(\"negative\")\n        } else {\n            .Ok(f.n)\n        }\n    }\n}\n";
     let program = build_imported_impl_program_src(imported_src);
     let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
@@ -496,10 +496,10 @@ impl Foo {
 
 #[test]
 fn imported_impl_body_calling_fn_typed_parameter_is_emitted() {
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
     pub fn apply(f: Foo, callback: fn()) {
         callback();
@@ -530,10 +530,10 @@ impl Foo {
 
 #[test]
 fn imported_impl_body_calling_overloaded_source_builtin_is_emitted() {
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
     pub fn report(f: Foo) {
         println(f.n);
@@ -569,20 +569,18 @@ fn imported_impl_signature_returning_same_module_record_is_emitted() {
     // record declared in the same imported module (`CaptureMatches`). Once the
     // imported-module pre-pass has registered that record, the method signature
     // is resolvable at the MIR boundary and must not be skipped.
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 pub type CaptureMatches {
-    groups: Vec<string>,
-    group_count: i64,
+    groups: Vec<string>;
+    group_count: i64;
 }
+
 impl Foo {
     pub fn captures(f: Foo) -> CaptureMatches {
-        CaptureMatches {
-            groups: Vec<string>.new(),
-            group_count: f.n,
-        }
+        CaptureMatches { groups: Vec<string>.new(), group_count: f.n }
     }
 }
 ";
@@ -699,12 +697,14 @@ fn imported_impl_body_with_unresolvable_call_is_skipped_without_module_error() {
     // same-module fn, NOT in the rewrite map, and NOT a builtin variant ctor is
     // genuinely unresolvable cross-module and must still be skipped — not
     // emitted — and importing the module must not raise a module-level error.
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { nonexistent_fn(f.n) }
+    pub fn bar(f: Foo) -> i64 {
+        nonexistent_fn(f.n)
+    }
 }
 ";
     let program = build_imported_impl_program_src(imported_src);
@@ -740,12 +740,14 @@ impl Foo {
 
 #[test]
 fn called_imported_impl_body_with_unresolvable_call_fails_closed() {
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { nonexistent_fn(f.n) }
+    pub fn bar(f: Foo) -> i64 {
+        nonexistent_fn(f.n)
+    }
 }
 ";
     let root_src = r"

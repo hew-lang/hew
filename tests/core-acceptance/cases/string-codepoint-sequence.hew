@@ -5,7 +5,6 @@ fn main() -> i64 {
     println(ascii[4]);
     println(ascii[1..4]);
     println(ascii[2..]);
-
     let mixed = "Aé中🙂";
     println(mixed.len());
     println(mixed[0]);
@@ -20,7 +19,6 @@ fn main() -> i64 {
     println(nul.len());
     println(nul[1] as i64);
     println(nul[0..2] == "a\0");
-
     var total = 0;
     var i = 0;
     while i < mixed.len() {

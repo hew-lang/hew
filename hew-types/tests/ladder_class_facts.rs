@@ -520,10 +520,9 @@ fn the_pipe_handles_are_affine_resources_with_no_clone() {
 #[test]
 fn a_generic_indirect_enum_publishes_over_the_owning_edge() {
     let output = typecheck(
-        r"
-indirect enum Nest<T> {
-    Leaf(T),
-    More(Nest<T>),
+        r"indirect enum Nest<T> {
+    Leaf(T);
+    More(Nest<T>);
 }
 
 fn main() -> i64 {

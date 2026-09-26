@@ -1,4 +1,7 @@
-enum Shape { Dot, Label(string), }
+enum Shape {
+    Dot;
+    Label(string);
+}
 
 fn main() -> i64 {
     var total: i64 = 0;

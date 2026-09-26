@@ -256,30 +256,40 @@ fn callable_captures_compose_with_conditional_result_and_optional_payloads() {
 #[test]
 fn callable_values_coerce_in_records_and_explicit_clone_preserves_capabilities() {
     lower_source(
-        r"
-        type Holder { callback: fn[clone](i64) -> i64, }
-        fn increment(value: i64) -> i64 { value + 1 }
-        fn main() -> i64 {
-            let holder = Holder { callback: increment };
-            let copied = clone holder.callback;
-            copied(41)
-        }
-    ",
+        r"type Holder {
+    callback: fn[clone](i64) -> i64;
+}
+
+fn increment(value: i64) -> i64 {
+    value + 1
+}
+
+fn main() -> i64 {
+    let holder = Holder { callback: increment };
+    let copied = clone holder.callback;
+    copied(41)
+}
+",
     );
 }
 
 #[test]
 fn mutable_callable_field_invocation_borrows_the_stored_environment() {
     let module = lower_source(
-        r"
-        type Holder { next: fn[var, clone]() -> i64, }
-        fn main() -> i64 {
-            let count = 0;
-            var holder = Holder { next: capture(var count) || { count = count + 1; count } };
-            println(holder.next());
-            holder.next()
-        }
-    ",
+        r"type Holder {
+    next: fn[var, clone]() -> i64;
+}
+
+fn main() -> i64 {
+    let count = 0;
+    var holder = Holder { next: capture(var count) || {
+        count = count + 1;
+        count
+    } };
+    println(holder.next());
+    holder.next()
+}
+",
     );
     let main = module
         .functions
@@ -589,31 +599,40 @@ fn private_replacement_keeps_pre_assignment_reads_borrowed() {
 #[test]
 fn mutable_aggregate_parameters_keep_callable_fields_private_across_control_flow() {
     lower_source(
-        r#"
-        type Holder { next: fn[var, clone]() -> i64, label: string }
-        fn advance(var holder: Holder, flag: bool) -> i64 {
-            if flag { holder.next(); }
-            println(holder.label);
-            holder.next()
-        }
-        fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
-            for i in 0..2 { pair.0(); }
-            println(pair.1);
-            pair.0()
-        }
-        fn main() -> i64 {
-            let count = 10;
-            var holder = Holder {
-                next: capture(var count) || { count += 1; count },
-                label: "private record",
-            };
-            println(advance(holder, true));
-            println(holder.next());
-            var pair: (fn[var, clone]() -> i64, string) = (holder.next, "private tuple");
-            println(advance_pair(pair));
-            pair.0()
-        }
-        "#,
+        r#"type Holder {
+    next: fn[var, clone]() -> i64;
+    label: string;
+}
+
+fn advance(var holder: Holder, flag: bool) -> i64 {
+    if flag {
+        holder.next();
+    }
+    println(holder.label);
+    holder.next()
+}
+
+fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
+    for i in 0 .. 2 {
+        pair.0();
+    }
+    println(pair.1);
+    pair.0()
+}
+
+fn main() -> i64 {
+    let count = 10;
+    var holder = Holder { next: capture(var count) || {
+        count += 1;
+        count
+    }, label: "private record" };
+    println(advance(holder, true));
+    println(holder.next());
+    var pair: (fn[var, clone]() -> i64, string) = (holder.next, "private tuple");
+    println(advance_pair(pair));
+    pair.0()
+}
+"#,
     );
 }
 

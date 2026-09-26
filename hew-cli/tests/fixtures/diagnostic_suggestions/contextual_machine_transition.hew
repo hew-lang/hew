@@ -4,12 +4,12 @@
 // the docs teach.
 machine Switch {
     events {
-        Toggle,
+        Toggle;
     }
 
-    state Off,
-    state On,
+    state Off;
+    state On;
 
-    on Toggle: Off => .On,
-    on Toggle: On => .Off,
+    on Toggle: Off => .On;
+    on Toggle: On => .Off;
 }

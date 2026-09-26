@@ -3,7 +3,7 @@ trait Describable {
 }
 
 type Label {
-    text: string,
+    text: string;
 }
 
 impl Describable for Label {
@@ -20,4 +20,3 @@ fn trait_bounds_use() -> string {
     let label = Label { text: "ok" };
     trait_bounds_probe(label)
 }
-

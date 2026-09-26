@@ -8,8 +8,8 @@
 // handling of a's crash stops x, so a's crash always arrives while c is still
 // stopping.
 actor Gate {
-    var entered: bool,
-    var released: bool,
+    var entered: bool;
+    var released: bool;
     receive fn enter() {
         entered = true;
     }
@@ -35,10 +35,10 @@ fn wait_for(gate: Gate, released: bool) {
         match answer {
             .Ok(value) => {
                 ready = value;
-            },
+            }
             .Err(_) => {
                 ready = true;
-            },
+            }
         }
         if !ready {
             sleep(1ms);
@@ -47,8 +47,8 @@ fn wait_for(gate: Gate, released: bool) {
 }
 
 actor Worker {
-    var name: string,
-    let gate: Gate,
+    var name: string;
+    let gate: Gate;
     receive fn boom() {
         panic("worker failed");
     }
@@ -70,13 +70,13 @@ actor Worker {
 }
 
 supervisor App(gate: Gate) {
-    strategy: rest_for_one,
-    intensity: 10 within 60s,
+    strategy: rest_for_one;
+    intensity: 10 within 60s;
 
-    child a: Worker(name: "a", gate: gate),
-    child x: Worker(name: "x", gate: gate),
-    child b: Worker(name: "b", gate: gate),
-    child c: Worker(name: "c", gate: gate),
+    child a: Worker(name: "a", gate: gate);
+    child x: Worker(name: "x", gate: gate);
+    child b: Worker(name: "b", gate: gate);
+    child c: Worker(name: "c", gate: gate);
 }
 
 fn main() {

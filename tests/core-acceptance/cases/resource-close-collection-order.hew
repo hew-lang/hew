@@ -2,7 +2,7 @@
 // both close in index order. Each nested collection finishes before its sibling.
 #[resource]
 type Connection {
-    id: i64,
+    id: i64;
 }
 
 impl Connection {
@@ -12,8 +12,8 @@ impl Connection {
 }
 
 type Connections {
-    outgoing: Vec<Connection>,
-    incoming: [Connection; 2],
+    outgoing: Vec<Connection>;
+    incoming: [Connection; 2];
 }
 
 fn main() {

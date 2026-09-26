@@ -1,14 +1,17 @@
 import std.testing;
+
 import std.time.datetime;
 
 actor Worker {
-    receive fn crash_me() { panic("restart the child"); }
+    receive fn crash_me() {
+        panic("restart the child");
+    }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 20 within 60s,
-    child worker: Worker(),
+    strategy: one_for_one;
+    intensity: 20 within 60s;
+    child worker: Worker();
 }
 
 fn main() {

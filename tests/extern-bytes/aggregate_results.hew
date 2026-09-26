@@ -1,63 +1,63 @@
 type Small {
-    a: i32,
-    b: i32,
+    a: i32;
+    b: i32;
 }
 
 type IntThree {
-    a: i32,
-    b: i32,
-    c: i32,
+    a: i32;
+    b: i32;
+    c: i32;
 }
 
 type Tiny {
-    a: u8,
-    b: u8,
-    c: u8,
+    a: u8;
+    b: u8;
+    c: u8;
 }
 
 type Packed {
-    a: i64,
-    b: i32,
-    c: i32,
+    a: i64;
+    b: i32;
+    c: i32;
 }
 
 type Big {
-    a: i64,
-    b: i64,
-    c: i64,
+    a: i64;
+    b: i64;
+    c: i64;
 }
 
 type Mixed {
-    value: f64,
-    tag: i32,
+    value: f64;
+    tag: i32;
 }
 
 type Reversed {
-    tag: i32,
-    value: f64,
+    tag: i32;
+    value: f64;
 }
 
 type FloatPair {
-    a: f32,
-    b: f32,
+    a: f32;
+    b: f32;
 }
 
 type FloatThree {
-    a: f32,
-    b: f32,
-    c: f32,
+    a: f32;
+    b: f32;
+    c: f32;
 }
 
 type Nested {
-    first: FloatPair,
-    second: FloatPair,
+    first: FloatPair;
+    second: FloatPair;
 }
 
 type Hfa {
-    a: f64,
-    b: f64,
-    c: f64,
-    d: f64,
+    a: f64;
+    b: f64;
+    c: f64;
+    d: f64;
 }
 
 extern "C" {

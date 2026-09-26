@@ -1,24 +1,30 @@
 actor Worker {
-    var label: string = "",
-    var fail_start: bool = false,
+    var label: string = "";
+    var fail_start: bool = false;
     init(seed: string, refuse: bool) {
         label = seed;
         fail_start = refuse;
     }
     #[on(start)]
-    fn started() { if fail_start { panic("nested start failed"); } }
+    fn started() {
+        if fail_start {
+            panic("nested start failed");
+        }
+    }
     #[on(stop)]
-    fn stopped() { println(label); }
+    fn stopped() {
+        println(label);
+    }
     receive fn ping() {}
 }
 
 supervisor Branch(seed: string, refuse: bool) {
-    child worker: Worker(seed: seed, refuse: refuse),
+    child worker: Worker(seed: seed, refuse: refuse);
 }
 
 supervisor Root(seed: string) {
-    child ready: Branch(seed: seed, refuse: false),
-    child broken: Branch(seed: seed, refuse: true),
+    child ready: Branch(seed: seed, refuse: false);
+    child broken: Branch(seed: seed, refuse: true);
 }
 
 fn main() {

@@ -6,8 +6,8 @@
 // per-cancel leak of the frame's owned field. The actor stays healthy and
 // answers a later ask normally.
 type Item {
-    name: string,
-    value: i64,
+    name: string;
+    value: i64;
 }
 
 actor Maker {

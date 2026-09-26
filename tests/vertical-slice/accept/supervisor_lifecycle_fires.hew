@@ -26,7 +26,7 @@
 // A run where either hook is skipped reads a different number -- a distinct,
 // visible failure, never a false pass.
 actor Counter {
-    var value: i64,
+    var value: i64;
     init() {
         value = 100;
     }
@@ -43,10 +43,10 @@ actor Counter {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child counter: Counter,
+    child counter: Counter;
 }
 
 fn main() -> i64 {
@@ -56,7 +56,7 @@ fn main() -> i64 {
         .Ok(v) => v,
         .Err(_) => {
             return 1;
-        },
+        }
     };
     if initial != 110 {
         return initial;
@@ -68,7 +68,7 @@ fn main() -> i64 {
         .Ok(v) => v,
         .Err(_) => {
             return 3;
-        },
+        }
     };
     initial + after
 }

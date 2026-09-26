@@ -1,7 +1,14 @@
 import std.string;
 
-type Snap { label: string, n: i64, terminal: bool }
-enum Fail { Missing(i64) }
+type Snap {
+    label: string;
+    n: i64;
+    terminal: bool;
+}
+
+enum Fail {
+    Missing(i64);
+}
 
 // Direct-call carrier, payload binder returned directly, NO enclosing loop.
 // Narrows whether the loop or the binder-return is the discriminator.
@@ -22,8 +29,8 @@ fn once(k: i64) -> Snap {
             if s.terminal {
                 return s;
             }
-        },
-        .Err(_) => {},
+        }
+        .Err(_) => {}
     }
     empty_snap()
 }

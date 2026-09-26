@@ -252,32 +252,48 @@ fn partial_jobs_preserve_nested_siblings_reinitialization_and_fault_cleanup() {
 #[test]
 fn a_partial_captured_record_retains_its_remaining_fields() {
     assert_lowered(
-        r#"
-        type Job { run: fn[once]() -> i64, label: string }
-        fn answer() -> i64 { 42 }
-        fn main() -> i64 {
-            let job = Job { run: answer, label: "captured sibling" };
-            let callback = move || { println(job.run()); println(job.label); 0 };
-            callback()
-        }
-    "#,
+        r#"type Job {
+    run: fn[once]() -> i64;
+    label: string;
+}
+
+fn answer() -> i64 {
+    42
+}
+
+fn main() -> i64 {
+    let job = Job { run: answer, label: "captured sibling" };
+    let callback = move || {
+        println(job.run());
+        println(job.label);
+        0
+    };
+    callback()
+}
+"#,
     );
 }
 
 #[test]
 fn runtime_field_mutation_preserves_a_partially_consumed_container() {
     assert_lowered(
-        r#"
-        type Bag { run: fn[once]() -> i64, values: Vec<string> }
-        fn answer() -> i64 { 42 }
-        fn main() -> i64 {
-            var bag = Bag { run: answer, values: Vec.new() };
-            println(bag.run());
-            bag.values.push("remaining field");
-            println(bag.values.len());
-            0
-        }
-    "#,
+        r#"type Bag {
+    run: fn[once]() -> i64;
+    values: Vec<string>;
+}
+
+fn answer() -> i64 {
+    42
+}
+
+fn main() -> i64 {
+    var bag = Bag { run: answer, values: Vec.new() };
+    println(bag.run());
+    bag.values.push("remaining field");
+    println(bag.values.len());
+    0
+}
+"#,
     );
 }
 

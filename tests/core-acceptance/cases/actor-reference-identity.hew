@@ -1,11 +1,15 @@
-actor Worker { receive fn ping() {} }
-
-supervisor Group {
-    child first: Worker,
-    child second: Worker,
+actor Worker {
+    receive fn ping() {}
 }
 
-fn same(left: Worker, right: Worker) -> bool { left is right }
+supervisor Group {
+    child first: Worker;
+    child second: Worker;
+}
+
+fn same(left: Worker, right: Worker) -> bool {
+    left is right
+}
 
 fn main() {
     let first = spawn Worker;

@@ -6,15 +6,15 @@ fn main() {
         println(msg * 2);
     };
     match counter(5) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("lambda call failed for 5"),
     }
     match counter(10) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("lambda call failed for 10"),
     }
     match counter(15) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("lambda call failed for 15"),
     }
     close(counter);

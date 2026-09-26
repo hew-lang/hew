@@ -16,7 +16,7 @@ fn main() {
             let sum = r.total();
             println(f"total={sum}");
             r.free();
-        },
+        }
         .Err(_) => println("ask failed"),
     }
 }

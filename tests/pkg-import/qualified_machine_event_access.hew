@@ -9,7 +9,6 @@ fn main() {
     var light = qmach.initial();
     light.step(qmach.Light.Event.Toggle);
     println(light.state_name());
-
     var lit = qmach.Light.On;
     lit.step(qmach.Light.Event.Ping);
     println(lit.state_name());

@@ -13,11 +13,16 @@ pub(super) use super::*;
 #[test]
 fn bare_variant_pattern_in_if_let_is_refused() {
     let (errors, _) = parse_and_check(
-        r#"
-enum Slot { Present(i64), Absent }
+        r#"enum Slot {
+    Present(i64);
+    Absent;
+}
+
 fn main() {
     let slot: Slot = .Present(1);
-    if let Present(n) = slot { println(f"{n}"); }
+    if let Present(n) = slot {
+        println(f"{n}");
+    }
 }
 "#,
     );
@@ -34,17 +39,33 @@ fn every_match_pattern_is_admitted_in_if_let() {
     // The positive control for the refusals below: the shapes the old
     // payload-only gate rejected now type-check in `if let` and `while let`.
     let (errors, _) = parse_and_check(
-        r#"
-type Point { x: i64, y: i64 }
-enum Item { Text(string), Pair(string, i64), Blank }
+        r#"type Point {
+    x: i64;
+    y: i64;
+}
+
+enum Item {
+    Text(string);
+    Pair(string, i64);
+    Blank;
+}
+
 fn main() {
     let point = Point { x: 1, y: 2 };
-    if let Point { x, y } = point { println(f"{x} {y}"); }
+    if let Point { x, y } = point {
+        println(f"{x} {y}");
+    }
     let entry = ("a", 1);
-    if let (label, count) = entry { println(f"{label} {count}"); }
+    if let (label, count) = entry {
+        println(f"{label} {count}");
+    }
     let item: Item = .Blank;
-    if let .Text(owned) | .Pair(owned, _) = item { println(owned); }
-    if let .Blank = item { println("blank"); }
+    if let .Text(owned) | .Pair(owned, _) = item {
+        println(owned);
+    }
+    if let .Blank = item {
+        println("blank");
+    }
     var pending: Item = .Blank;
     while let .Text(owned) | .Pair(owned, _) = pending {
         println(owned);
@@ -147,8 +168,11 @@ fn main() {
 fn an_irrefutable_tuple_still_destructures_in_a_plain_let() {
     // The negative control for the check above: no refutable element, no error.
     let (errors, _) = parse_and_check(
-        r#"
-type Point { x: i64, y: i64 }
+        r#"type Point {
+    x: i64;
+    y: i64;
+}
+
 fn main() {
     let pair = (Point { x: 1, y: 2 }, 3);
     let (point, count) = pair;

@@ -15,7 +15,7 @@ fn check(source: &str) -> hew_types::TypeCheckOutput {
 
 #[test]
 fn checker_registers_pub_type_box_t_with_one_type_param() {
-    let tco = check("pub type Box<T> { value: T }");
+    let tco = check("pub type Box<T> {\n    value: T;\n}\n");
     assert!(
         tco.errors.is_empty(),
         "expected no checker errors: {:?}",
@@ -25,7 +25,7 @@ fn checker_registers_pub_type_box_t_with_one_type_param() {
 
 #[test]
 fn checker_registers_pub_type_pair_ab_with_two_type_params() {
-    let tco = check("pub type Pair<A, B> { first: A, second: B }");
+    let tco = check("pub type Pair<A, B> {\n    first: A;\n    second: B;\n}\n");
     assert!(
         tco.errors.is_empty(),
         "expected no checker errors: {:?}",
@@ -35,7 +35,7 @@ fn checker_registers_pub_type_pair_ab_with_two_type_params() {
 
 #[test]
 fn checker_registers_pub_enum_outcome_te_with_two_type_params() {
-    let tco = check("pub enum Outcome<T, E> { Ok(T), Err(E) }");
+    let tco = check("pub enum Outcome<T, E> {\n    Ok(T);\n    Err(E);\n}\n");
     assert!(
         tco.errors.is_empty(),
         "expected no checker errors: {:?}",
@@ -48,12 +48,14 @@ fn checker_registers_pub_enum_outcome_te_with_two_type_params() {
 #[test]
 fn checker_accepts_explicit_type_arg_at_struct_init() {
     let tco = check(
-        r"
-        pub type Box<T> { value: T }
-        fn main() {
-            let b = Box<i64> { value: 42 };
-        }
-    ",
+        r"pub type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let b = Box<i64> { value: 42 };
+}
+",
     );
     assert!(
         tco.errors.is_empty(),
@@ -66,12 +68,14 @@ fn checker_accepts_explicit_type_arg_at_struct_init() {
 fn checker_accepts_inferred_type_arg_at_struct_init() {
     // Type body: fields separated by `;`. Struct literal expressions: fields separated by `,`.
     let tco = check(
-        r#"
-        pub type Box<T> { value: T }
-        fn main() {
-            let b: Box<string> = Box { value: "hello" };
-        }
-    "#,
+        r#"pub type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let b: Box<string> = Box { value: "hello" };
+}
+"#,
     );
     assert!(
         tco.errors.is_empty(),
@@ -85,12 +89,15 @@ fn checker_accepts_two_param_type_at_init() {
     // Type body declarations use `;` to separate fields,
     // but struct literal expressions use `,` between fields.
     let tco = check(
-        r#"
-        pub type Pair<A, B> { first: A, second: B }
-        fn main() {
-            let p = Pair<i64, string> { first: 1, second: "hello" };
-        }
-    "#,
+        r#"pub type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn main() {
+    let p = Pair<i64, string> { first: 1, second: "hello" };
+}
+"#,
     );
     assert!(
         tco.errors.is_empty(),
@@ -102,12 +109,15 @@ fn checker_accepts_two_param_type_at_init() {
 #[test]
 fn checker_accepts_generic_enum_variant_construction() {
     let tco = check(
-        r"
-        pub enum Either<A, B> { Left(A), Right(B) }
-        fn main() {
-            let x: Either<i64, string> = Either.Left(42);
-        }
-    ",
+        r"pub enum Either<A, B> {
+    Left(A);
+    Right(B);
+}
+
+fn main() {
+    let x: Either<i64, string> = Either.Left(42);
+}
+",
     );
     assert!(
         tco.errors.is_empty(),
@@ -120,7 +130,7 @@ fn checker_accepts_generic_enum_variant_construction() {
 
 #[test]
 fn checker_accepts_monomorphic_type_without_type_params() {
-    let tco = check("pub type Point { x: i64, y: i64 }");
+    let tco = check("pub type Point {\n    x: i64;\n    y: i64;\n}\n");
     assert!(
         tco.errors.is_empty(),
         "monomorphic type should check cleanly: {:?}",
@@ -133,7 +143,7 @@ fn checker_accepts_monomorphic_type_without_type_params() {
 #[test]
 fn checker_rejects_duplicate_type_param_names() {
     // `pub type Box<T, T> { value: T }` — two params named `T` is invalid
-    let tco = check("pub type Box<T, T> { value: T }");
+    let tco = check("pub type Box<T, T> {\n    value: T;\n}\n");
     assert!(
         !tco.errors.is_empty(),
         "duplicate type param names should produce a checker error"
@@ -151,7 +161,7 @@ fn checker_rejects_duplicate_type_param_names() {
 
 #[test]
 fn checker_rejects_duplicate_type_params_in_enum() {
-    let tco = check("pub enum Either<T, T> { Left(T), Right(T) }");
+    let tco = check("pub enum Either<T, T> {\n    Left(T);\n    Right(T);\n}\n");
     assert!(
         !tco.errors.is_empty(),
         "duplicate type param names in enum should produce a checker error"
@@ -169,12 +179,14 @@ fn checker_rejects_duplicate_type_params_in_enum() {
 fn checker_rejects_wrong_type_arg_at_init_site() {
     // `Box<i64> { value: "hello" }` — explicit `i64` but field value is string
     let tco = check(
-        r#"
-        pub type Box<T> { value: T }
-        fn main() {
-            let b = Box<i64> { value: "hello" };
-        }
-    "#,
+        r#"pub type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let b = Box<i64> { value: "hello" };
+}
+"#,
     );
     assert!(
         !tco.errors.is_empty(),

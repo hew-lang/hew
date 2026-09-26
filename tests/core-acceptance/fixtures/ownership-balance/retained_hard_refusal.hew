@@ -6,7 +6,7 @@
 // fixture produces.
 #[resource]
 type Ticket {
-    id: i64,
+    id: i64;
 }
 
 impl Ticket {
@@ -16,8 +16,8 @@ impl Ticket {
 }
 
 type Booking {
-    ticket: Ticket,
-    label: string,
+    ticket: Ticket;
+    label: string;
 }
 
 fn redeem(consume ticket: Ticket) -> i64 {

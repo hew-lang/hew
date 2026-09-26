@@ -152,16 +152,21 @@ fn any_expr(output: &hew_hir::LowerOutput, mut pred: impl FnMut(&HirExpr) -> boo
 /// doesn't, the dispatch refuses to fabricate a symbol.
 #[test]
 fn fstring_dispatches_through_lang_item_registry() {
-    let source = r#"
-        type Point { x: i64 }
-        impl Display for Point {
-            fn fmt(p: Point) -> string { "P" }
-        }
-        fn main() {
-            let p = Point { x: 7 };
-            let s: string = f"got {p}";
-        }
-    "#;
+    let source = r#"type Point {
+    x: i64;
+}
+
+impl Display for Point {
+    fn fmt(p: Point) -> string {
+        "P"
+    }
+}
+
+fn main() {
+    let p = Point { x: 7 };
+    let s: string = f"got {p}";
+}
+"#;
     let output = lower_checked(source);
     assert!(
         output.diagnostics.is_empty(),
@@ -302,7 +307,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
     // from running.  We invoke `lower_program` directly with a hand-built
     // tc_output that has the Display lang-item plus the interpolant's
     // expr_types entry set to `Named("Widget")`.
-    let source = "type Widget { x: i64 } fn main(w: Widget) { let s: string = f\"got {w}\"; }";
+    let source = "type Widget {\n    x: i64;\n}\n\nfn main(w: Widget) {\n    let s: string = f\"got {w}\";\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
 
@@ -498,8 +503,7 @@ fn direct_display_surface_narrow_primitives_lower() {
 /// performs — instead of failing closed with `UnresolvedBuiltinOverload`.
 #[test]
 fn direct_display_surface_named_type_routes_to_impl() {
-    let prelude = "type Point { x: i64 } \
-                   impl Display for Point { fn fmt(p: Point) -> string { \"P\" } }";
+    let prelude = "type Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(p: Point) -> string {\n        \"P\"\n    }\n}\n";
     let surfaces = [
         ("println(p);", "println_str"),
         ("print(p);", "print_str"),

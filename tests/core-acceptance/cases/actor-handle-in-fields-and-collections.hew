@@ -3,13 +3,15 @@
 // function by that type and comes back out of one.
 
 actor Worker {
-    let id: i64,
-    receive fn work(n: i64) -> i64 { n * id }
+    let id: i64;
+    receive fn work(n: i64) -> i64 {
+        n * id
+    }
 }
 
 type Crew {
-    lead: Worker,
-    label: string,
+    lead: Worker;
+    label: string;
 }
 
 fn ask(worker: Worker, n: i64) -> i64 {
@@ -26,7 +28,6 @@ fn lead_of(crew: Crew) -> Worker {
 fn main() {
     let one = spawn Worker(id: 2);
     let two = spawn Worker(id: 5);
-
     // A record field holds the actor by its own type.
     let crew = Crew { lead: one, label: "alpha" };
     println(f"{crew.label} {ask(crew.lead, 3)}");
@@ -52,7 +53,6 @@ fn main() {
         .Some(found) => println(ask(found, 6)),
         .None => panic("roster lost its member"),
     }
-
     close(one);
     close(two);
 }

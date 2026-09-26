@@ -1,19 +1,26 @@
 actor Worker {
-    var label: string = "",
-    init(seed: string) { label = seed; }
-    #[on(start)] fn started() { println(label); }
-    receive fn fail() { panic("zero budget child failed"); }
+    var label: string = "";
+    init(seed: string) {
+        label = seed;
+    }
+    #[on(start)]
+    fn started() {
+        println(label);
+    }
+    receive fn fail() {
+        panic("zero budget child failed");
+    }
     receive fn ping() {}
 }
 
 supervisor Branch(seed: string) {
-    intensity: 0 within 60s,
-    child worker: Worker(seed: seed),
+    intensity: 0 within 60s;
+    child worker: Worker(seed: seed);
 }
 
 supervisor Root(seed: string) {
-    intensity: 0 within 60s,
-    child branch: Branch(seed: seed),
+    intensity: 0 within 60s;
+    child branch: Branch(seed: seed);
 }
 
 fn main() {

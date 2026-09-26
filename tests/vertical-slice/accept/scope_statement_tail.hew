@@ -10,7 +10,7 @@ fn nap() {
 }
 
 actor Worker {
-    var fired: i64 = 0,
+    var fired: i64 = 0;
 
     receive fn guarded() -> i64 {
         fired = 7;
@@ -18,7 +18,7 @@ actor Worker {
         // `return` below, not the scope.
         scope {
             fork nap();
-        }
+        };
         return fired;
     }
 

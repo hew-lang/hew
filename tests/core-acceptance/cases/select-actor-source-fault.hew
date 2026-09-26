@@ -18,17 +18,21 @@ fn fail_after_start(consume entered: stream.Stream<i64>) -> duration {
 
 fn main() {
     let worker = spawn Worker;
-    let (entered, waiting): (stream.Sink<i64>, stream.Stream<i64>) =
-        match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) =
-        match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (entered, waiting): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     defer println("caller cleanup");
     // The call starts before evaluating the later source. Its owned request
     // and reply sink must remain visible to the ordinary fault cleanup path.
     select {
         reply from worker.delayed("owned request and late reply", entered, gate) => println(reply.expect("unexpected reply")),
         after fail_after_start(waiting) => println("unexpected timer"),
-    }
+    };
     release.close();
     close(worker);
 }

@@ -1,10 +1,13 @@
 actor Slow {
-    var value: i64 = 1,
-    #[on(stop)] fn stopping() {
+    var value: i64 = 1;
+    #[on(stop)]
+    fn stopping() {
         sleep(1ms);
         println(f"stopped {value}");
     }
-    receive fn get() -> i64 { value }
+    receive fn get() -> i64 {
+        value
+    }
 }
 
 fn main() {

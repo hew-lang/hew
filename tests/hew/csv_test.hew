@@ -90,7 +90,7 @@ fn test_parse_file_missing_path_returns_err() {
         .Ok(tbl) => {
             tbl.free();
             panic("expected missing CSV path to return Err");
-        },
+        }
         .Err(reason) => assert(reason.contains("NotFound")),
     }
 }
@@ -389,7 +389,7 @@ fn test_parse_preserves_a_multiline_quoted_field() {
             assert(tbl.rows() == 1);
             assert(tbl.get(0, 0) == "line1\nline2");
             assert(tbl.get(0, 1) == "z");
-        },
+        }
         .Err(reason) => panic(f"a multiline quoted field must parse: {reason}"),
     }
 }
@@ -400,7 +400,7 @@ fn test_parse_preserves_an_escaped_quote() {
         .Ok(tbl) => {
             assert(tbl.get(0, 0) == "say \"hi\"");
             assert(tbl.get(0, 1) == "z");
-        },
+        }
         .Err(reason) => panic(f"an escaped quote must parse: {reason}"),
     }
 }
@@ -412,7 +412,7 @@ fn test_parse_accepts_an_empty_quoted_field_as_an_empty_value() {
             assert(tbl.rows() == 1);
             assert(tbl.get(0, 0) == "");
             assert(tbl.get(0, 1) == "z");
-        },
+        }
         .Err(reason) => panic(f"an empty quoted field must parse: {reason}"),
     }
 }
@@ -423,7 +423,7 @@ fn test_parse_accepts_an_empty_document_as_an_empty_table() {
         .Ok(tbl) => {
             assert(tbl.rows() == 0);
             assert(tbl.cols() == 0);
-        },
+        }
         .Err(reason) => panic(f"an empty document must parse: {reason}"),
     }
 }

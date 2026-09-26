@@ -5,7 +5,10 @@ import std.string;
 // regression: the
 // ownership obligation follows the yielded value's linear move chain to the
 // terminal local, whose generated drop discharges it exactly once.
-type Item { name: string, n: i64 }
+type Item {
+    name: string;
+    n: i64;
+}
 
 fn count_items(xs: Vec<Item>) -> i64 {
     let it = xs.iter();

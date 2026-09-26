@@ -1,5 +1,5 @@
 type Holder {
-    items: Vec<i64>,
+    items: Vec<i64>;
 }
 
 fn main() {

@@ -1,7 +1,7 @@
 import std.encoding.utf8;
 
 type Rec {
-    s: string,
+    s: string;
 }
 
 fn make_nested() -> ((string, i64), bool) {

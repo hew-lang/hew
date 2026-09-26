@@ -1,5 +1,7 @@
 #[resource]
-type Ticket { id: i64, }
+type Ticket {
+    id: i64;
+}
 
 impl Ticket {
     fn close(consume self) {
@@ -9,8 +11,8 @@ impl Ticket {
 }
 
 actor Worker {
-    let first: Ticket = Ticket { id: 1 },
-    let second: Ticket = Ticket { id: 2 },
+    let first: Ticket = Ticket { id: 1 };
+    let second: Ticket = Ticket { id: 2 };
     receive fn ready() {}
 }
 
@@ -26,7 +28,7 @@ fn main() {
                 assert(message.contains("close 2 failed"));
                 assert(message.contains("secondary failure: UserPanic (212): close 1 failed"));
                 println("recovered complete close fault");
-            },
+            }
             .Deadline { message } => panic("unexpected deadline"),
         }
     };

@@ -4,7 +4,9 @@
 // which must resolve to AppErr::NotFound (the user type), not to the builtin
 // LookupError::NotFound unit variant.
 
-pub enum AppErr { NotFound(string) }
+pub enum AppErr {
+    NotFound(string);
+}
 
 pub fn make_error(msg: string) -> AppErr {
     .NotFound(msg)

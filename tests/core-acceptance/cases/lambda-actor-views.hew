@@ -5,8 +5,8 @@
 // value throughout: it lives in a record field and in a `Vec`, is called from
 // both, and is released exactly once.
 type Job {
-    name: string,
-    run: actor(i64) -> i64,
+    name: string;
+    run: actor(i64) -> i64;
 }
 
 fn main() {
@@ -19,7 +19,7 @@ fn main() {
     // A completion call on the same lambda waits behind the submitted work.
     // Close waits for termination and may discard work still in the mailbox.
     match log("barrier") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("the logger completion call failed"),
     }
     close(log);
@@ -27,7 +27,6 @@ fn main() {
         .Ok(_) => println("accepted"),
         .Err(_) => panic("the submission was refused"),
     }
-
     // A completion view: the call waits for the handler exactly as a call on
     // the handle does, under the admission policy the view carries.
     let scale = actor |n: i64| -> i64 {
@@ -46,10 +45,9 @@ fn main() {
     close(scale);
 
     // A handle stored in a record field answers `job.run(..)` directly.
-    let job = Job {
-        name: "doubler",
-        run: actor |n: i64| -> i64 { n * 2 },
-    };
+    let job = Job { name: "doubler", run: actor |n: i64| -> i64 {
+        n * 2
+    } };
     match job.run(21) {
         .Ok(v) => println(f"{job.name} {v}"),
         .Err(_) => panic("the stored handle refused its call"),
@@ -58,13 +56,14 @@ fn main() {
 
     // A handle read out of a `Vec` is borrowed, not moved: the call addresses
     // the actor through the borrow and the vector keeps its element.
-    let workers = [actor |n: i64| -> i64 { n + 100 }];
+    let workers = [actor |n: i64| -> i64 {
+        n + 100
+    }];
     let worker = workers[0];
     match worker(5) {
         .Ok(v) => println(v),
         .Err(_) => panic("the borrowed handle refused its call"),
     }
-
     // A handle that is asked and never closed is released at the end of its
     // scope: the call borrowed the target and left its owner alone, so the
     // scope-exit release still has a live wrapper to free, exactly once.

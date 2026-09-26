@@ -6,12 +6,17 @@ actor Audit {
 }
 
 #[resource]
-type Ticket { audit: Audit, id: i64, }
+type Ticket {
+    audit: Audit;
+    id: i64;
+}
 
 impl Ticket {
     fn close(consume self) {
         self.audit.record(self.id).expect("displaced close");
-        if self.id == 1 { panic("displaced value failed"); }
+        if self.id == 1 {
+            panic("displaced value failed");
+        }
     }
 }
 
@@ -27,7 +32,7 @@ actor Worker {
                 .Fault { message } => {
                     assert(message.contains("displaced value failed"));
                     println("recovered");
-                },
+                }
                 .Deadline { message } => panic("unexpected deadline"),
             }
         };

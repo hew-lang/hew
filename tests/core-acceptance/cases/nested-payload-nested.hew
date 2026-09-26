@@ -1,8 +1,21 @@
-enum ParseError { Invalid(string), }
-enum Tri { A(string), B(string), C(string), }
-fn make(n: i64) -> Result<i64, ParseError> {
-    if n == 0 { .Ok(1) } else { .Err(ParseError.Invalid("bad-input".to_upper())) }
+enum ParseError {
+    Invalid(string);
 }
+
+enum Tri {
+    A(string);
+    B(string);
+    C(string);
+}
+
+fn make(n: i64) -> Result<i64, ParseError> {
+    if n == 0 {
+        .Ok(1)
+    } else {
+        .Err(ParseError.Invalid("bad-input".to_upper()))
+    }
+}
+
 fn pick(n: i64) -> Result<i64, Tri> {
     match n % 3 {
         0 => .Err(Tri.A("alpha".to_upper())),
@@ -10,14 +23,23 @@ fn pick(n: i64) -> Result<i64, Tri> {
         _ => .Err(Tri.C("gamma".to_upper())),
     }
 }
+
 fn wild(n: i64) -> i64 {
     let r = make(n);
-    match r { .Ok(v) => v, .Err(ParseError.Invalid(_)) => -1 }
+    match r {
+        .Ok(v) => v,
+        .Err(ParseError.Invalid(_)) => -1,
+    }
 }
+
 fn bound(n: i64) -> i64 {
     let r = make(n);
-    match r { .Ok(v) => v, .Err(ParseError.Invalid(m)) => m.len() }
+    match r {
+        .Ok(v) => v,
+        .Err(ParseError.Invalid(m)) => m.len(),
+    }
 }
+
 fn probe(n: i64) -> i64 {
     let r = pick(n);
     match r {
@@ -27,6 +49,7 @@ fn probe(n: i64) -> i64 {
         .Err(Tri.C(_)) => 3,
     }
 }
+
 fn main() {
     var total: i64 = 0;
     var i: i64 = 0;

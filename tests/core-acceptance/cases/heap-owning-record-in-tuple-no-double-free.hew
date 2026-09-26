@@ -1,4 +1,6 @@
-type Boxed { payload: Vec<i64> }
+type Boxed {
+    payload: Vec<i64>;
+}
 
 fn main() {
     var inner: Vec<i64> = Vec.new();

@@ -1,6 +1,6 @@
 type SetHolder {
-    s: HashSet<i64>,
-    tag: i64,
+    s: HashSet<i64>;
+    tag: i64;
 }
 
 fn main() -> i64 {
@@ -11,7 +11,7 @@ fn main() -> i64 {
     while i < 50 {
         var next: HashSet<i64> = HashSet<i64>.new();
         next.insert(i);
-        h = SetHolder { s: next, ..h };
+        h = SetHolder { ..h, s: next };
         i = i + 1;
     }
     h.tag

@@ -3,7 +3,6 @@
 
 import std.text.semver;
 
-
 // ── parse / accessors ─────────────────────────────────────────────────
 #[test]
 fn test_parse_simple_version_components() {
@@ -245,7 +244,6 @@ fn test_caret_respects_pre_one_compatibility_boundaries() {
     assert(minor.matches("^0.2.3"));
     assert(!semver.parse("0.3.0").expect("valid version").matches("^0.2.3"));
     assert(!semver.parse("0.2.2").expect("valid version").matches("^0.2.3"));
-
     let patch = semver.parse("0.0.3").expect("valid version");
     assert(patch.matches("^0.0.3"));
     assert(!semver.parse("0.0.4").expect("valid version").matches("^0.0.3"));
@@ -389,7 +387,7 @@ fn test_compare_prerelease_full_chain() {
 fn test_parse_rejects_missing_first_dot() {
     match semver.parse("1") {
         .Ok(_) => panic("version without a major separator unexpectedly parsed"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
 }
 
@@ -397,7 +395,7 @@ fn test_parse_rejects_missing_first_dot() {
 fn test_parse_rejects_missing_second_dot() {
     match semver.parse("1.2") {
         .Ok(_) => panic("version without a minor separator unexpectedly parsed"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
 }
 
@@ -405,13 +403,13 @@ fn test_parse_rejects_missing_second_dot() {
 fn expect_rejected(s: string) {
     match semver.parse(s) {
         .Ok(v) => panic(f"expected `{s}` to be rejected, got {v.to_string()}"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
 }
 
 fn expect_accepted(s: string) {
     match semver.parse(s) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(reason) => panic(f"expected `{s}` to parse: {reason}"),
     }
 }
@@ -515,6 +513,6 @@ fn test_longer_numeric_pre_release_identifiers_have_higher_precedence() {
 fn test_parse_rejects_a_leading_zero_at_the_public_boundary() {
     match semver.parse("01.2.3") {
         .Ok(_) => panic("version with a leading zero unexpectedly parsed"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
 }

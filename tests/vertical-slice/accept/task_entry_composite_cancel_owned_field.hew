@@ -5,8 +5,8 @@
 // fix does not disturb normal owned-field round-tripping for a
 // non-scalar-only record shape.
 type Wrapped {
-    s: string,
-    n: i64
+    s: string;
+    n: i64;
 }
 
 fn compute() -> Wrapped {

@@ -2,8 +2,8 @@
 // The HIR mono-pass must register both Maybe<i64> and Maybe<Maybe<i64>>
 // layouts. Exit code 5 proves the nested Some arm was reached.
 enum Maybe<T> {
-    Some(T),
-    None,
+    Some(T);
+    None;
 }
 
 fn main() -> i64 {
@@ -13,7 +13,7 @@ fn main() -> i64 {
         Maybe.Some(v) => match v {
             Maybe.Some(n) => n,
             Maybe.None => 0,
-        },
+        }
         Maybe.None => 0,
     }
 }

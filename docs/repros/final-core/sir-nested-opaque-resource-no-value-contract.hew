@@ -1,10 +1,13 @@
 #[resource]
 #[opaque]
-type Dq {}
+type Dq {
+}
 
 impl Dq {
     fn close(consume self) {
-        unsafe { hew_deque_free(self) };
+        unsafe {
+            hew_deque_free(self)
+        };
         println("closed");
     }
 }
@@ -15,12 +18,16 @@ extern "C" {
 }
 
 actor Keeper {
-    var dq: Dq,
-    receive fn ping() -> i64 { 1 }
+    var dq: Dq;
+    receive fn ping() -> i64 {
+        1
+    }
 }
 
 fn main() -> i64 {
-    let k = spawn Keeper(dq: unsafe { hew_deque_new() });
+    let k = spawn Keeper(dq: unsafe {
+        hew_deque_new()
+    });
     println("done");
     0
 }

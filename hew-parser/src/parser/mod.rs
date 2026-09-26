@@ -13,12 +13,11 @@ pub(crate) use crate::ast::{
     ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl,
     MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
     NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
-    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField,
-    RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireFieldMeta, WireMetadata,
+    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart,
+    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
+    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
@@ -747,6 +746,14 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum ParseDiagnosticKind {
+    /// A declaration member needs a semicolon.
+    MemberTerminator,
+    /// A mark follows a body that already ends its member or arm.
+    SeparatorAfterBody,
+    /// A list element needs a comma.
+    ListSeparator,
+    /// Actor state needs an explicit immutable or mutable binding.
+    ActorFieldBinding,
     /// A legacy `::` separator was used where dotted path syntax is required.
     LegacyPathSeparator,
     /// Rust-style `::<...>` generic application was used instead of Hew syntax.
@@ -793,6 +800,10 @@ impl ParseDiagnosticKind {
     #[must_use]
     pub fn as_kind_str(&self) -> &'static str {
         match self {
+            Self::MemberTerminator => "E_MEMBER_TERMINATOR",
+            Self::SeparatorAfterBody => "E_SEPARATOR_AFTER_BODY",
+            Self::ListSeparator => "E_LIST_SEPARATOR",
+            Self::ActorFieldBinding => "E_ACTOR_FIELD_BINDING",
             Self::LegacyPathSeparator => "E_PATH_LEGACY_SEPARATOR",
             Self::LegacyTurbofish => "E_LEGACY_TURBOFISH",
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",

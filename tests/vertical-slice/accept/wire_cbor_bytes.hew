@@ -3,7 +3,7 @@
 // 255). A mismatch returns a distinct code per assertion.
 #[wire]
 type Blob {
-    data: bytes @1,
+    data: bytes @1;
 }
 
 fn main() -> i64 {

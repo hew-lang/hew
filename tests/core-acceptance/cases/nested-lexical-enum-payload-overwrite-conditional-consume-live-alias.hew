@@ -1,6 +1,6 @@
 enum Box {
-    Full(string),
-    Empty,
+    Full(string);
+    Empty;
 }
 
 fn exercise(take: bool, i: i64) -> string {
@@ -12,14 +12,14 @@ fn exercise(take: bool, i: i64) -> string {
                 return s;
             }
             f"fallback-{i}"
-        },
+        }
         .Empty => f"empty-{i}",
     }
 }
 
 fn main() {
     var total = 0;
-    for i in 0..50 {
+    for i in 0 .. 50 {
         total = total + exercise(i % 2 == 0, i).len();
         println("frame");
     }

@@ -1,10 +1,13 @@
 #[resource]
 #[opaque]
-type Dq {}
+type Dq {
+}
 
 impl Dq {
     fn close(consume self) {
-        unsafe { hew_deque_free(self) };
+        unsafe {
+            hew_deque_free(self)
+        };
         println("closed");
     }
 }
@@ -15,19 +18,17 @@ extern "C" {
 }
 
 type Holder {
-    dq: Dq,
-    label: string,
-    values: Vec<i64>,
+    dq: Dq;
+    label: string;
+    values: Vec<i64>;
 }
 
 fn cycle() {
     var values: Vec<i64> = Vec.new();
     values.push(7);
-    let holder = Holder {
-        dq: unsafe { hew_deque_new() },
-        label: "held",
-        values: values,
-    };
+    let holder = Holder { dq: unsafe {
+        hew_deque_new()
+    }, label: "held", values: values };
     // Rendering borrows: both renders see the same live resource identity.
     let first = f"{holder:?}";
     let second = f"{holder:?}";
@@ -38,7 +39,7 @@ fn cycle() {
 }
 
 fn main() {
-    for _i in 0..32 {
+    for _i in 0 .. 32 {
         cycle();
     }
     println("done");

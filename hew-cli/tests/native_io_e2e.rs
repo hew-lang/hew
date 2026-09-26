@@ -41,8 +41,8 @@ fn file_requests_transfer_strings_and_bytes_and_restore_each_error() {
     for opt in ["0", "2"] {
         let directory = tempdir();
         let binary = build(
-            r#"
-import std.fs;
+            r#"import std.fs;
+
 fn main() {
     match fs.write("first.txt", "native io") {
         .Ok(_) => println("written"),
@@ -58,7 +58,7 @@ fn main() {
                 .Ok(_) => println("bytes copied"),
                 .Err(_) => println("copy failed"),
             }
-        },
+        }
         .Err(_) => println("stale error"),
     }
     match fs.read("second.txt") {

@@ -1,9 +1,18 @@
 #[linear]
-type Tx { label: string }
-impl Tx {
-    fn commit(consume self) { println(self.label); }
+type Tx {
+    label: string;
 }
-fn transfer(consume tx: Tx) -> Tx { tx }
+
+impl Tx {
+    fn commit(consume self) {
+        println(self.label);
+    }
+}
+
+fn transfer(consume tx: Tx) -> Tx {
+    tx
+}
+
 fn main() {
     let returned = transfer(Tx { label: "returned".to_upper() });
     println(returned.label);

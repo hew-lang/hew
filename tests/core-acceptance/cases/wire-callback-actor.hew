@@ -1,10 +1,16 @@
 actor Oracle {
-    receive fn hash() -> i64 { 7 }
-    receive fn equal(left: i64, right: i64) -> bool { left == right }
+    receive fn hash() -> i64 {
+        7
+    }
+    receive fn equal(left: i64, right: i64) -> bool {
+        left == right
+    }
 }
 
 #[wire]
-type Key { id: i64 @1 }
+type Key {
+    id: i64 @1;
+}
 
 impl Hash for Key {
     fn hash(self) -> i64 {
@@ -26,15 +32,15 @@ impl Eq for Key {
 
 #[wire]
 type Registry {
-    groups: Vec<HashMap<Key, Vec<string>>> @1,
-    keys: HashSet<Key> @2,
+    groups: Vec<HashMap<Key, Vec<string>>> @1;
+    keys: HashSet<Key> @2;
 }
 
 actor Decoder {
     receive fn exercise() -> string {
         var values: HashMap<Key, Vec<string>> = HashMap.new();
         var keys: HashSet<Key> = HashSet.new();
-        for id in 0..8 {
+        for id in 0 .. 8 {
             let key = Key { id: id };
             values.insert(key, [f"item {id}"]);
             keys.insert(key);

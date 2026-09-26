@@ -1,4 +1,6 @@
-type Holder { label: string }
+type Holder {
+    label: string;
+}
 
 fn make() -> Generator<fn() -> i64, ()> {
     let h = Holder { label: "first" + " value" };

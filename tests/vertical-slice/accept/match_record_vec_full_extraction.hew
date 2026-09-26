@@ -20,8 +20,8 @@
 //! no-double-free / no-abort behaviour across the back-edge drop path.)
 
 type Pair {
-    a: i64,
-    b: Vec<i64>,
+    a: i64;
+    b: Vec<i64>;
 }
 
 fn make_pair(n: i64) -> Pair {

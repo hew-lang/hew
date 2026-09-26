@@ -531,16 +531,30 @@ fn prelude_callables_are_admitted_only_where_the_program_calls_them() {
 #[test]
 fn a_demanded_header_publishes_nested_shapes_and_an_unreached_one_publishes_none() {
     let (hir, facts) = lower_hir(
-        r#"
-        type Payload { text: string }
-        type Unused { flag: bool }
-        fn unrelated<Payload>(value: Payload) -> Payload { value }
-        fn stranded(value: Result<Option<Option<Payload>>, string>) {
-            defer { println("selected"); }
-        }
-        fn uncalled(value: Unused) -> Unused { value }
-        fn main() {}
-        "#,
+        r#"type Payload {
+    text: string;
+}
+
+type Unused {
+    flag: bool;
+}
+
+fn unrelated<Payload>(value: Payload) -> Payload {
+    value
+}
+
+fn stranded(value: Result<Option<Option<Payload>>, string>) {
+    defer {
+        println("selected");
+    }
+}
+
+fn uncalled(value: Unused) -> Unused {
+    value
+}
+
+fn main() {}
+"#,
     );
     assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
     // `stranded` is selected as an export root, so its header is demanded

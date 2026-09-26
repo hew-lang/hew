@@ -16,8 +16,8 @@
 //! (separate lane). The wrapper shape is identical to `std/iter.hew`.
 
 pub type Counter {
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }
 
 impl Iterator for Counter {
@@ -32,14 +32,11 @@ impl Iterator for Counter {
 }
 
 pub type Map<I, A, B> {
-    iter: I,
-    f: fn(A) -> B,
+    iter: I;
+    f: fn(A) -> B;
 }
 
-impl<I, A, B> Iterator for Map<I, A, B>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
     fn next(var it: Map<I, A, B>) -> Option<B> {
         panic("Map::next deferred pending Q004 checker fix");
@@ -48,14 +45,11 @@ where
 }
 
 pub type Filter<I, A> {
-    iter: I,
-    pred: fn(A) -> bool,
+    iter: I;
+    pred: fn(A) -> bool;
 }
 
-impl<I, A> Iterator for Filter<I, A>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var it: Filter<I, A>) -> Option<A> {
         panic("Filter::next deferred pending Q004 checker fix");
@@ -64,14 +58,11 @@ where
 }
 
 pub type Take<I> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
-impl<I, A> Iterator for Take<I>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var it: Take<I>) -> Option<A> {
         panic("Take::next deferred pending Q004 checker fix");
@@ -80,14 +71,11 @@ where
 }
 
 pub type Skip<I> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
-impl<I, A> Iterator for Skip<I>
-where
-    I: Iterator<Item = A>,
-{
+impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var it: Skip<I>) -> Option<A> {
         panic("Skip::next deferred pending Q004 checker fix");

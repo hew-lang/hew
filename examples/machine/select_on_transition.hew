@@ -16,12 +16,12 @@ import std.stream;
 
 /// One observed transition, with the previous and next state names.
 type Transition {
-    from_state: string,
-    to_state: string,
+    from_state: string;
+    to_state: string;
 }
 
 actor Owner {
-    var lc: Lifecycle<i64> = .Created,
+    var lc: Lifecycle<i64> = .Created;
     receive fn drive(consume tx: stream.Sink<Transition>) {
 
         // Attach snapshot: a self-transition naming the current state.
@@ -53,19 +53,19 @@ actor Observer {
                             match tr.to_state {
                                 "Running" => println("observer: child is up"),
                                 "Faulted" => println("observer: child faulted"),
-                                _ => {},
+                                _ => {}
                             }
-                        },
+                        }
                         .None => {
                             println("watch closed");
                             waiting = false;
-                        },
+                        }
                     }
-                },
+                }
                 after 2s => {
                     println("observer: watch timed out");
                     waiting = false;
-                },
+                }
             };
         }
         rx.close();

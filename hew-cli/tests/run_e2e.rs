@@ -297,8 +297,10 @@ fn qualified_variant_tuple_payload_binds_nested_values() {
     let path = dir.path().join("qualified_variant_tuple_payload.hew");
     std::fs::write(
         &path,
-        r"
-enum Pair { Both((i64, i64)), None }
+        r"enum Pair {
+    Both((i64, i64));
+    None;
+}
 
 fn main() {
     let pair = Pair.Both((19, 23));
@@ -472,33 +474,27 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     let path = dir.path().join("node_peer_auth.hew");
     std::fs::write(
         &path,
-        r#"
-        actor Counter {
-            var count: i64,
-            receive fn increment(n: i64) { count = count + n; }
-        }
+        r#"actor Counter {
+    var count: i64;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+}
 
-        fn main() {
-            let config = NodeConfig {
-                bind: "127.0.0.1:0",
-                transport: "quic-mesh",
-                key: "node.key",
-                trust: "pinned",
-                peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"],
-                seeds: [],
-            };
-            match Node.start(config) {
-                .Ok(_) => {},
-                .Err(_) => panic("node start failed"),
-            }
-            let me = Node.identity_key();
-            let counter = spawn Counter(count: 0);
-            Node.register("counter", counter);
-            let _ = counter.increment(5);
-            Node.shutdown();
-            println(f"peer-auth ok id={me}");
-        }
-        "#,
+fn main() {
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: "quic-mesh", key: "node.key", trust: "pinned", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {}
+        .Err(_) => panic("node start failed"),
+    }
+    let me = Node.identity_key();
+    let counter = spawn Counter(count: 0);
+    Node.register("counter", counter);
+    let _ = counter.increment(5);
+    Node.shutdown();
+    println(f"peer-auth ok id={me}");
+}
+"#,
     )
     .expect("write peer-auth fixture");
 
@@ -1424,14 +1420,7 @@ fn run_fstring_rejects_type_without_display_impl() {
     let hew_src = dir.path().join("fstring_missing_display.hew");
     std::fs::write(
         &hew_src,
-        "type Foo {\n\
-         \x20   x: i64,\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let f = Foo { x: 1 };\n\
-         \x20   println(f\"foo is {f}\");\n\
-         }\n",
+        "type Foo {\n    x: i64;\n}\n\nfn main() {\n    let f = Foo { x: 1 };\n    println(f\"foo is {f}\");\n}\n",
     )
     .unwrap();
 
@@ -1472,18 +1461,7 @@ fn run_fstring_dispatches_user_defined_display() {
     let hew_src = dir.path().join("fstring_user_display.hew");
     std::fs::write(
         &hew_src,
-        "import std.io;\n\
-         \n\
-         type Point { x: i64, }\n\
-         \n\
-         impl Display for Point {\n\
-         \x20   fn fmt(p: Point) -> string { f\"Point({p.x})\" }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let p = Point { x: 7 };\n\
-         \x20   println(f\"got {p}\");\n\
-         }\n",
+        "import std.io;\n\ntype Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(p: Point) -> string {\n        f\"Point({p.x})\"\n    }\n}\n\nfn main() {\n    let p = Point { x: 7 };\n    println(f\"got {p}\");\n}\n",
     )
     .unwrap();
 
@@ -1703,22 +1681,21 @@ fn owned_record_string_field_by_value_round_trips() {
     let path = dir.path().join("owned_record_string.hew");
     std::fs::write(
         &path,
-        r#"
-        type CommandOutput {
-            stdout: string,
-            code: i64,
-        }
+        r#"type CommandOutput {
+    stdout: string;
+    code: i64;
+}
 
-        fn run() -> CommandOutput {
-            CommandOutput { stdout: "ok", code: 7 }
-        }
+fn run() -> CommandOutput {
+    CommandOutput { stdout: "ok", code: 7 }
+}
 
-        fn main() {
-            let o = run();
-            println(o.stdout);
-            println(f"{o.code}");
-        }
-        "#,
+fn main() {
+    let o = run();
+    println(o.stdout);
+    println(f"{o.code}");
+}
+"#,
     )
     .unwrap();
 
@@ -1743,25 +1720,24 @@ fn owned_record_vec_field_by_value_round_trips() {
     let path = dir.path().join("owned_record_vec.hew");
     std::fs::write(
         &path,
-        r"
-        type Histogram {
-            counts: Vec<i64>,
-            total: i64,
-        }
+        r"type Histogram {
+    counts: Vec<i64>;
+    total: i64;
+}
 
-        fn build() -> Histogram {
-            var v: Vec<i64> = Vec.new();
-            v.push(10);
-            v.push(20);
-            Histogram { counts: v, total: 30 }
-        }
+fn build() -> Histogram {
+    var v: Vec<i64> = Vec.new();
+    v.push(10);
+    v.push(20);
+    Histogram { counts: v, total: 30 }
+}
 
-        fn main() {
-            let h = build();
-            println(h.counts.len());
-            println(h.total);
-        }
-        ",
+fn main() {
+    let h = build();
+    println(h.counts.len());
+    println(h.total);
+}
+",
     )
     .unwrap();
 
@@ -1786,27 +1762,26 @@ fn owned_nested_record_by_value_round_trips() {
     let path = dir.path().join("owned_nested_record.hew");
     std::fs::write(
         &path,
-        r#"
-        type User {
-            name: string,
-        }
+        r#"type User {
+    name: string;
+}
 
-        type Boxed {
-            user: User,
-            tag: i64,
-        }
+type Boxed {
+    user: User;
+    tag: i64;
+}
 
-        fn wrap(n: i64) -> Boxed {
-            let u = User { name: "ada" };
-            Boxed { user: u, tag: n }
-        }
+fn wrap(n: i64) -> Boxed {
+    let u = User { name: "ada" };
+    Boxed { user: u, tag: n }
+}
 
-        fn main() {
-            let b = wrap(99);
-            println(b.user.name);
-            println(f"{b.tag}");
-        }
-        "#,
+fn main() {
+    let b = wrap(99);
+    println(b.user.name);
+    println(f"{b.tag}");
+}
+"#,
     )
     .unwrap();
 
@@ -1876,30 +1851,7 @@ fn run_imports_json_fluent_builders_round_trip() {
     let hew_src = dir.path().join("json_builders.hew");
     std::fs::write(
         &hew_src,
-        "import std.encoding.json;\n\
-         \n\
-         fn main() -> i32 {\n\
-         \x20   var obj = json.object();\n\
-         \x20   match obj.set(\"name\", json.from_string(\"Hew\")) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   match obj.set(\"version\", json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   let s = match obj.stringify() { .Ok(text) => text, .Err(_) => return 1, };\n\
-         \x20   println(s);\n\
-         \x20   let parsed = match json.parse(s) { .Ok(value) => value, .Err(_) => return 1, };\n\
-         \x20   let field = match parsed.get_field(\"version\") {\n\
-         \x20       .Ok(.Some(value)) => value,\n\
-         \x20       .Ok(.None) => return 1,\n\
-         \x20       .Err(_) => return 1,\n\
-         \x20   };\n\
-         \x20   let version = match field.get_int() { .Ok(value) => value, .Err(_) => return 1, };\n\
-         \x20   println(f\"version={version}\");\n\
-         \x20   var arr = json.array();\n\
-         \x20   match arr.push(json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   match arr.push(json.from_int(2)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   match arr.push(json.from_int(3)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   let len = match arr.array_len() { .Ok(value) => value, .Err(_) => return 1, };\n\
-         \x20   println(f\"len={len}\");\n\
-         \x20   0\n\
-         }\n",
+        "import std.encoding.json;\n\nfn main() -> i32 {\n    var obj = json.object();\n    match obj.set(\"name\", json.from_string(\"Hew\")) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    match obj.set(\"version\", json.from_int(1)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    let s = match obj.stringify() {\n        .Ok(text) => text,\n        .Err(_) => return 1,\n    };\n    println(s);\n    let parsed = match json.parse(s) {\n        .Ok(value) => value,\n        .Err(_) => return 1,\n    };\n    let field = match parsed.get_field(\"version\") {\n        .Ok(.Some(value)) => value,\n        .Ok(.None) => return 1,\n        .Err(_) => return 1,\n    };\n    let version = match field.get_int() {\n        .Ok(value) => value,\n        .Err(_) => return 1,\n    };\n    println(f\"version={version}\");\n    var arr = json.array();\n    match arr.push(json.from_int(1)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    match arr.push(json.from_int(2)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    match arr.push(json.from_int(3)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    let len = match arr.array_len() {\n        .Ok(value) => value,\n        .Err(_) => return 1,\n    };\n    println(f\"len={len}\");\n    0\n}\n",
     )
     .unwrap();
 
@@ -2083,20 +2035,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
     let hew_src = dir.path().join("record_handle_return.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream.{ Sink, Stream };\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
-         fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let p = Pipe { sink: s, input: r };\n\
-         \x20   p\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = make_pipe();\n\
-         \x20   p.sink.send(\"alpha\").expect(\"send\");\n\
-         \x20   p.sink.close();\n\
-         \x20   p.input.close();\n\
-         \x20   println(\"record-ok\");\n\
-         }\n",
+        "import std.stream.{Sink, Stream};\n\ntype Pipe {\n    sink: Sink<string>;\n    input: Stream<string>;\n}\n\nfn make_pipe() -> Pipe {\n    let (s, r) = match stream.pipe(8) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let p = Pipe { sink: s, input: r };\n    p\n}\n\nfn main() {\n    let p = make_pipe();\n    p.sink.send(\"alpha\").expect(\"send\");\n    p.sink.close();\n    p.input.close();\n    println(\"record-ok\");\n}\n",
     )
     .unwrap();
     let output = run_bounded_hew_run(&hew_src, repo_root());
@@ -2124,18 +2063,7 @@ fn run_record_of_handles_return_without_explicit_close_exits_clean() {
     let hew_src = dir.path().join("record_handle_return_noclose.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream.{ Sink, Stream };\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
-         fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let p = Pipe { sink: s, input: r };\n\
-         \x20   p\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = make_pipe();\n\
-         \x20   p.sink.send(\"alpha\").expect(\"send\");\n\
-         \x20   println(\"record-noclose-ok\");\n\
-         }\n",
+        "import std.stream.{Sink, Stream};\n\ntype Pipe {\n    sink: Sink<string>;\n    input: Stream<string>;\n}\n\nfn make_pipe() -> Pipe {\n    let (s, r) = match stream.pipe(8) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let p = Pipe { sink: s, input: r };\n    p\n}\n\nfn main() {\n    let p = make_pipe();\n    p.sink.send(\"alpha\").expect(\"send\");\n    println(\"record-noclose-ok\");\n}\n",
     )
     .unwrap();
     let output = run_bounded_hew_run(&hew_src, repo_root());
@@ -2205,17 +2133,36 @@ fn run_bound_tuple_field_close_drops_each_handle_once() {
 /// Shared prelude: a `#[resource]` record over a real `malloc` block, so a
 /// second close is a genuine double free rather than only an extra line.
 const RESOURCE_FIELD_PRELUDE: &str = "\
-extern \"C\" {\n\
-    fn malloc(size: i64) -> i64;\n\
-    fn free(addr: i64);\n\
-}\n\
-#[resource]\n\
-type Slot { addr: i64 }\n\
-impl Slot {\n\
-    fn close(consume self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
-}\n\
-fn acquire() -> Slot { Slot { addr: unsafe { malloc(64) } } }\n\
-type Two { a: Slot, b: Slot }\n";
+extern \"C\" {
+    fn malloc(size: i64) -> i64;
+    fn free(addr: i64);
+}
+
+#[resource]
+type Slot {
+    addr: i64;
+}
+
+impl Slot {
+    fn close(consume self) {
+        println(\"close\");
+        unsafe {
+            free(self.addr)
+        };
+    }
+}
+
+fn acquire() -> Slot {
+    Slot { addr: unsafe {
+        malloc(64)
+    } }
+}
+
+type Two {
+    a: Slot;
+    b: Slot;
+}
+";
 
 fn run_resource_field_program(name: &str, body: &str) -> std::process::Output {
     let dir = support::tempdir();
@@ -2318,14 +2265,25 @@ fn run_record_resource_field_partial_close_leaks_the_sibling() {
 /// Shared prelude: a `#[resource]` record whose `close` names the value it is
 /// closing, and a `Result`-returning producer.
 const RESOURCE_PAYLOAD_PRELUDE: &str = "\
-#[resource]\n\
-type Handle { id: i64 }\n\
-impl Handle {\n\
-    fn close(consume self) { println(f\"close {self.id}\"); }\n\
-}\n\
-fn acquire(ok: bool) -> Result<Handle, string> {\n\
-    if ok { .Ok(Handle { id: 7 }) } else { .Err(\"declined\") }\n\
-}\n";
+#[resource]
+type Handle {
+    id: i64;
+}
+
+impl Handle {
+    fn close(consume self) {
+        println(f\"close {self.id}\");
+    }
+}
+
+fn acquire(ok: bool) -> Result<Handle, string> {
+    if ok {
+        .Ok(Handle { id: 7 })
+    } else {
+        .Err(\"declined\")
+    }
+}
+";
 
 fn run_resource_payload_program(name: &str, body: &str) -> std::process::Output {
     let dir = support::tempdir();
@@ -2346,13 +2304,7 @@ fn run_result_resource_payload_field_read_closes_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_read.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(h) => { println(f\"id={h.id}\"); },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(h) => {\n            println(f\"id={h.id}\");\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -2376,13 +2328,7 @@ fn run_result_resource_payload_untouched_binder_closes_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_untouched.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(h) => { let _ = h; },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(h) => {\n            let _ = h;\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -2401,13 +2347,7 @@ fn run_result_resource_payload_explicit_close_stays_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_explicit.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(h) => { h.close(); },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(h) => {\n            h.close();\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -2429,13 +2369,7 @@ fn run_result_resource_payload_wildcard_arm_closes_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_wildcard.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(_) => { println(\"ok\"); },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(_) => {\n            println(\"ok\");\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -2457,13 +2391,7 @@ fn run_result_resource_payload_error_arm_closes_nothing() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_error.hew",
-        "fn main() {\n\
-         \x20   match acquire(false) {\n\
-         \x20       .Ok(h) => { let _ = h; },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(false) {\n        .Ok(h) => {\n            let _ = h;\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -2492,15 +2420,7 @@ fn clone_string_survives_consuming_send() {
     let path = dir.path().join("clone_string_send.hew");
     std::fs::write(
         &path,
-        "actor ProbeSink { let id: i64, receive fn take(s: string) -> i64 { s.len() } }\n\
-         fn main() {\n\
-         \x20   let s: string = \"hello\";\n\
-         \x20   let dup = clone s;\n\
-         \x20   let sink = spawn ProbeSink(id: 0);\n\
-         \x20   let n = sink.take(dup);\n\
-         \x20   match n { .Ok(len) => println(f\"len={len}\"), .Err(_) => println(\"ask failed\") }\n\
-         \x20   println(f\"original still usable: {s}\");\n\
-         }\n",
+        "actor ProbeSink {\n    let id: i64;\n    receive fn take(s: string) -> i64 {\n        s.len()\n    }\n}\n\nfn main() {\n    let s: string = \"hello\";\n    let dup = clone s;\n    let sink = spawn ProbeSink(id: 0);\n    let n = sink.take(dup);\n    match n {\n        .Ok(len) => println(f\"len={len}\"),\n        .Err(_) => println(\"ask failed\"),\n    }\n    println(f\"original still usable: {s}\");\n}\n",
     )
     .unwrap();
 
@@ -2702,13 +2622,7 @@ fn run_file_imported_actor_spawns_and_calls() {
     let dir = support::tempdir();
     std::fs::write(
         dir.path().join("counter.hew"),
-        "pub actor Counter {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn bump() -> i64 {\n\
-         \x20       n = n + 1;\n\
-         \x20       n\n\
-         \x20   }\n\
-         }\n",
+        "pub actor Counter {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -2797,13 +2711,7 @@ fn run_string_path_imported_record_annotated_param_field_access() {
     std::fs::create_dir_all(dir.path().join("src/workflow")).unwrap();
     std::fs::write(
         dir.path().join("src/workflow/machine.hew"),
-        "pub type WorkflowState {\n\
-         \x20   name: string,\n\
-         \x20   count: i64,\n\
-         }\n\
-         pub fn make_state(name: string, count: i64) -> WorkflowState {\n\
-         \x20   WorkflowState { name: name, count: count }\n\
-         }\n",
+        "pub type WorkflowState {\n    name: string;\n    count: i64;\n}\n\npub fn make_state(name: string, count: i64) -> WorkflowState {\n    WorkflowState { name: name, count: count }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -2859,18 +2767,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
     let dir = support::tempdir();
     std::fs::write(
         dir.path().join("summer.hew"),
-        "pub actor Summer {\n\
-         \x20   var total: i64 = 0,\n\
-         \x20   receive fn add_doubled(n: i64) -> i64 {\n\
-         \x20       let f = |x: i64| -> i64 { x * 2 };\n\
-         \x20       var sum: i64 = 0;\n\
-         \x20       for i in 0..n {\n\
-         \x20           sum = sum + f(i);\n\
-         \x20       }\n\
-         \x20       total = total + sum;\n\
-         \x20       total\n\
-         \x20   }\n\
-         }\n",
+        "pub actor Summer {\n    var total: i64 = 0;\n    receive fn add_doubled(n: i64) -> i64 {\n        let f = |x: i64| -> i64 {\n            x * 2\n        };\n        var sum: i64 = 0;\n        for i in 0 .. n {\n            sum = sum + f(i);\n        }\n        total = total + sum;\n        total\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -2926,31 +2823,7 @@ fn run_package_module_actor_spawns_and_calls() {
     .unwrap();
     std::fs::write(
         pkg_dir.join("bank.hew"),
-        "fn clamp_nonneg(x: i64) -> i64 {\n\
-         \x20   if x < 0 { 0 } else { x }\n\
-         }\n\
-         \n\
-         pub actor Account {\n\
-         \x20   var balance: i64 = 0,\n\
-         \x20   init(opening: i64) {\n\
-         \x20       balance = clamp_nonneg(opening);\n\
-         \x20   }\n\
-         \x20   receive fn deposit(amount: i64) -> i64 {\n\
-         \x20       balance = balance + clamp_nonneg(amount);\n\
-         \x20       balance\n\
-         \x20   }\n\
-         \x20   receive fn withdraw(amount: i64) -> i64 {\n\
-         \x20       let take = clamp_nonneg(amount);\n\
-         \x20       if take > balance {\n\
-         \x20           return balance;\n\
-         \x20       }\n\
-         \x20       balance = balance - take;\n\
-         \x20       balance\n\
-         \x20   }\n\
-         \x20   receive fn peek() -> i64 {\n\
-         \x20       balance\n\
-         \x20   }\n\
-         }\n",
+        "fn clamp_nonneg(x: i64) -> i64 {\n    if x < 0 {\n        0\n    } else {\n        x\n    }\n}\n\npub actor Account {\n    var balance: i64 = 0;\n    init(opening: i64) {\n        balance = clamp_nonneg(opening);\n    }\n    receive fn deposit(amount: i64) -> i64 {\n        balance = balance + clamp_nonneg(amount);\n        balance\n    }\n    receive fn withdraw(amount: i64) -> i64 {\n        let take = clamp_nonneg(amount);\n        if take > balance {\n            return balance;\n        }\n        balance = balance - take;\n        balance\n    }\n    receive fn peek() -> i64 {\n        balance\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -3005,19 +2878,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_the_actor_type() {
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(
         pkg_dir.join("conn.hew"),
-        "pub actor Inner {\n\
-         \x20   receive fn ping() -> i64 { 41 }\n\
-         }\n\
-         \n\
-         pub actor Outer {\n\
-         \x20   let inner: Inner,\n\
-         \x20   receive fn go() -> i64 {\n\
-         \x20       match inner.ping() {\n\
-         \x20           .Ok(v) => v + 1,\n\
-         \x20           .Err(_) => -1,\n\
-         \x20       }\n\
-         \x20   }\n\
-         }\n",
+        "pub actor Inner {\n    receive fn ping() -> i64 {\n        41\n    }\n}\n\npub actor Outer {\n    let inner: Inner;\n    receive fn go() -> i64 {\n        match inner.ping() {\n            .Ok(v) => v + 1,\n            .Err(_) => -1,\n        }\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -3074,22 +2935,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.m;\n\
-         \n\
-         type Inner { x: i64 }\n\
-         \n\
-         actor Holder {\n\
-         \x20   let inner: Inner,\n\
-         \x20   receive fn get() -> i64 { inner.x }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let h = spawn Holder(inner: Inner { x: 7 });\n\
-         \x20   match h.get() {\n\
-         \x20       .Ok(v) => println(f\"v={v}\"),\n\
-         \x20       .Err(_) => println(\"err\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.m;\n\ntype Inner {\n    x: i64;\n}\n\nactor Holder {\n    let inner: Inner;\n    receive fn get() -> i64 {\n        inner.x\n    }\n}\n\nfn main() {\n    let h = spawn Holder(inner: Inner { x: 7 });\n    match h.get() {\n        .Ok(v) => println(f\"v={v}\"),\n        .Err(_) => println(\"err\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3119,13 +2965,7 @@ fn run_non_pub_imported_actor_fails_closed() {
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(
         pkg_dir.join("secret.hew"),
-        "actor Hidden {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn bump() -> i64 {\n\
-         \x20       n = n + 1;\n\
-         \x20       n\n\
-         \x20   }\n\
-         }\n",
+        "actor Hidden {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -3234,32 +3074,13 @@ fn run_root_and_package_same_actor_name_route_independently() {
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(
         pkg_dir.join("bank.hew"),
-        "pub actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn who() -> i64 { 999 }\n\
-         }\n",
+        "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        999\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.bank;\n\
-         actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn who() -> i64 { 111 }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn bank.Account();\n\
-         \x20   let l = spawn Account();\n\
-         \x20   match a.who() {\n\
-         \x20       .Ok(v) => println(f\"a={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   match l.who() {\n\
-         \x20       .Ok(v) => println(f\"l={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.bank;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn bank.Account();\n    let l = spawn Account();\n    match a.who() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    match l.who() {\n        .Ok(v) => println(f\"l={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3307,41 +3128,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.bank;\n\
-         import hew.store;\n\
-         supervisor Pair {\n\
-         \x20   strategy: one_for_one,\n\
-         \x20   intensity: 5 within 60s,\n\
-         \n\
-         \x20   child b: bank.Account,\n\
-         \x20   child s: store.Account,\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = spawn Pair;\n\
-         \x20   sleep(50ms);\n\
-         \x20   let b = p.b;\n\
-         \x20   let s = p.s;\n\
-         \x20   match b.who() {\n\
-         \x20       .Ok(v) => println(f\"b={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   match s.who() {\n\
-         \x20       .Ok(v) => println(f\"s={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   let _ = b.boom();\n\
-         \x20   sleep(200ms);\n\
-         \x20   let b2 = p.b;\n\
-         \x20   match b2.who() {\n\
-         \x20       .Ok(v) => println(f\"b2={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   let s2 = p.s;\n\
-         \x20   match s2.who() {\n\
-         \x20       .Ok(v) => println(f\"s2={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.bank;\n\nimport hew.store;\n\nsupervisor Pair {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n\n    child b: bank.Account;\n    child s: store.Account;\n}\n\nfn main() {\n    let p = spawn Pair;\n    sleep(50ms);\n    let b = p.b;\n    let s = p.s;\n    match b.who() {\n        .Ok(v) => println(f\"b={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    match s.who() {\n        .Ok(v) => println(f\"s={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    let _ = b.boom();\n    sleep(200ms);\n    let b2 = p.b;\n    match b2.who() {\n        .Ok(v) => println(f\"b2={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    let s2 = p.s;\n    match s2.who() {\n        .Ok(v) => println(f\"s2={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3377,10 +3164,9 @@ fn run_fungible_child_binding_joins_after_observed_restart() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        r#"
-indirect enum Tree {
-    Leaf(i64),
-    Node(Tree, Tree),
+        r#"indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
 }
 
 fn tree_sum(tree: Tree) -> i64 {
@@ -3391,14 +3177,18 @@ fn tree_sum(tree: Tree) -> i64 {
 }
 
 actor Worker {
-    receive fn score(tag: i64, tree: Tree) -> i64 { tag + tree_sum(tree) }
-    receive fn boom() { panic("restart"); }
+    receive fn score(tag: i64, tree: Tree) -> i64 {
+        tag + tree_sum(tree)
+    }
+    receive fn boom() {
+        panic("restart");
+    }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child worker: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker;
 }
 
 fn main() -> i64 {
@@ -3409,18 +3199,24 @@ fn main() -> i64 {
     // which is the observable restart this test joins on.
     let _ = worker.boom();
     let _ = await_restart sup.worker;
-    let (a, b) = await fork (
-        worker.score(11, .Node(.Leaf(1), .Leaf(2))),
-        worker.score(22, .Node(.Leaf(3), .Leaf(4))),
-    );
-    let (c, d) = await fork (
-        worker.score(33, .Node(.Leaf(5), .Leaf(6))),
-        worker.score(44, .Node(.Leaf(7), .Leaf(8))),
-    );
-    let ra = match a { .Ok(v) => v, .Err(_) => -1, };
-    let rb = match b { .Ok(v) => v, .Err(_) => -1, };
-    let rc = match c { .Ok(v) => v, .Err(_) => -1, };
-    let rd = match d { .Ok(v) => v, .Err(_) => -1, };
+    let (a, b) = await fork (worker.score(11, .Node(.Leaf(1), .Leaf(2))), worker.score(22, .Node(.Leaf(3), .Leaf(4))));
+    let (c, d) = await fork (worker.score(33, .Node(.Leaf(5), .Leaf(6))), worker.score(44, .Node(.Leaf(7), .Leaf(8))));
+    let ra = match a {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    let rb = match b {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    let rc = match c {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    let rd = match d {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
     print(f"{ra},{rb},{rc},{rd}");
     supervisor_stop(sup);
     0
@@ -3462,27 +3258,13 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     // Note: no `pub` — the actor is private to its module.
     std::fs::write(
         pkg_dir.join("secret.hew"),
-        "actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn id() -> i64 { 999 }\n\
-         }\n",
+        "actor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        999\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.secret;\n\
-         actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn id() -> i64 { 111 }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn secret.Account();\n\
-         \x20   match a.id() {\n\
-         \x20       .Ok(v) => println(f\"a={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3528,26 +3310,13 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     // `secret` exports a public *non-actor* type named `Account`.
     std::fs::write(
         pkg_dir.join("secret.hew"),
-        "pub type Account {\n\
-         \x20   balance: i64,\n\
-         }\n",
+        "pub type Account {\n    balance: i64;\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.secret;\n\
-         actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn id() -> i64 { 111 }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn secret.Account();\n\
-         \x20   match a.id() {\n\
-         \x20       .Ok(v) => println(f\"a={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3583,42 +3352,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
     let source = dir.path().join("suspended_actor_state_handoff.hew");
     std::fs::write(
         &source,
-        "#[resource]\n\
-         #[opaque]\n\
-         type Marker {}\n\
-         impl Marker {\n\
-         \x20   fn close(consume self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
-         }\n\
-         extern \"C\" {\n\
-         \x20   fn hew_deque_new() -> Marker;\n\
-         \x20   fn hew_deque_free(consume marker: Marker);\n\
-         }\n\
-         actor Child {\n\
-         \x20   let label: string,\n\
-         \x20   let marker: Marker,\n\
-         \x20   receive fn ping() {}\n\
-         }\n\
-         actor Maker {\n\
-         \x20   receive fn go() {\n\
-         \x20       var i: i64 = 0;\n\
-         \x20       while i < 3 {\n\
-         \x20           sleep(1ms);\n\
-         \x20           let label = f\"child-{i}\";\n\
-         \x20           let child = spawn Child(\n\
-         \x20               label: label.clone(),\n\
-         \x20               marker: unsafe { hew_deque_new() },\n\
-         \x20           );\n\
-         \x20           child.stop();\n\
-         \x20           i = i + 1;\n\
-         \x20       }\n\
-         \x20       println(\"maker-done\");\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let maker = spawn Maker;\n\
-         \x20   let _ = maker.go();\n\
-         \x20   sleep(200ms);\n\
-         }\n",
+        "#[resource]\n#[opaque]\ntype Marker {\n}\n\nimpl Marker {\n    fn close(consume self) {\n        unsafe {\n            hew_deque_free(self)\n        };\n        println(\"closed\");\n    }\n}\n\nextern \"C\" {\n    fn hew_deque_new() -> Marker;\n    fn hew_deque_free(consume marker: Marker);\n}\n\nactor Child {\n    let label: string;\n    let marker: Marker;\n    receive fn ping() {}\n}\n\nactor Maker {\n    receive fn go() {\n        var i: i64 = 0;\n        while i < 3 {\n            sleep(1ms);\n            let label = f\"child-{i}\";\n            let child = spawn Child(label: label.clone(), marker: unsafe {\n                hew_deque_new()\n            });\n            child.stop();\n            i = i + 1;\n        }\n        println(\"maker-done\");\n    }\n}\n\nfn main() {\n    let maker = spawn Maker;\n    let _ = maker.go();\n    sleep(200ms);\n}\n",
     )
     .expect("write suspended actor state handoff fixture");
 

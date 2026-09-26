@@ -21,7 +21,7 @@
 //! 102 length, 103–105 element values) so a regression is legible.
 
 type Countdown {
-    n: i64,
+    n: i64;
 }
 
 impl Iterator for Countdown {
@@ -39,8 +39,8 @@ impl Iterator for Countdown {
 }
 
 type Map<I, A, B> {
-    iter: I,
-    f: fn(A) -> B,
+    iter: I;
+    f: fn(A) -> B;
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
@@ -70,10 +70,10 @@ fn count_i64<I>(consume it: I) -> i64 where I: Iterator<Item = i64> {
         match iter.next() {
             .Some(_) => {
                 n = n + 1;
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     n
@@ -87,10 +87,10 @@ fn collect_i64<I>(consume it: I) -> Vec<i64> where I: Iterator<Item = i64> {
         match iter.next() {
             .Some(x) => {
                 out.push(x);
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     out

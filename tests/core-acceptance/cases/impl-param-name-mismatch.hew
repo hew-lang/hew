@@ -4,10 +4,14 @@ trait Shape {
     fn scaled(self, factor: i64) -> i64;
 }
 
-type Square { side: i64 }
+type Square {
+    side: i64;
+}
 
 impl Shape for Square {
-    fn scaled(self, ratio: i64) -> i64 { self.side * ratio }
+    fn scaled(self, ratio: i64) -> i64 {
+        self.side * ratio
+    }
 }
 
 fn main() {

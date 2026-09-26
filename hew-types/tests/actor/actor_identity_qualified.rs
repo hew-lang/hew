@@ -48,25 +48,9 @@ fn typecheck_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> Typ
     checker.check_program(&program)
 }
 
-const BANK_SRC: &str = "
-pub actor Account {
-    var balance: i64 = 0,
-    receive fn deposit(n: i64) -> i64 {
-        balance = balance + n;
-        balance
-    }
-}
-";
+const BANK_SRC: &str = "pub actor Account {\n    var balance: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        balance = balance + n;\n        balance\n    }\n}\n";
 
-const STORE_SRC: &str = "
-pub actor Account {
-    var credit: i64 = 0,
-    receive fn deposit(n: i64) -> bool {
-        credit = credit + n;
-        true
-    }
-}
-";
+const STORE_SRC: &str = "pub actor Account {\n    var credit: i64 = 0;\n    receive fn deposit(n: i64) -> bool {\n        credit = credit + n;\n        true\n    }\n}\n";
 
 /// Collect the actor names of every actor-handle entry in `expr_types`,
 /// sorted and deduplicated.
@@ -154,16 +138,7 @@ fn main() {
 #[test]
 fn bare_spawn_resolves_local_actor_over_imported_same_name() {
     let output = typecheck_with_modules(
-        "
-actor Account {
-    var local_n: i64 = 0,
-    receive fn deposit(n: i64) -> i64 { n }
-}
-
-fn main() {
-    let a = spawn Account();
-}
-",
+        "actor Account {\n    var local_n: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        n\n    }\n}\n\nfn main() {\n    let a = spawn Account();\n}\n",
         &[(&["hew", "bank"], BANK_SRC)],
     );
     assert!(

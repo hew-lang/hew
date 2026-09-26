@@ -15,14 +15,18 @@
 import std.stream;
 
 actor Consumer {
-    var input: Stream<string>,
+    var input: Stream<string>;
 
     receive fn drain() {
         var draining = true;
         while draining {
             match self.input.recv() {
-                .Some(item) => { let _ = item; },
-                .None => { draining = false; },
+                .Some(item) => {
+                    let _ = item;
+                }
+                .None => {
+                    draining = false;
+                }
             }
         }
         println("drained");

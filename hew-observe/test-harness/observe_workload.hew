@@ -3,8 +3,8 @@
 // the observer's metrics, actor list, and message tracing views.
 
 actor Counter {
-    let name: string,
-    var count: Int,
+    let name: string;
+    var count: Int;
 
     receive fn tick() {
         count += 1;
@@ -16,8 +16,8 @@ actor Counter {
 }
 
 actor Relay {
-    let id: Int,
-    let target: Counter,
+    let id: Int;
+    let target: Counter;
 
     receive fn forward(n: Int) {
         var i = 0;
@@ -29,10 +29,10 @@ actor Relay {
 }
 
 actor Monitor {
-    let c1: Counter,
-    let c2: Counter,
-    let c3: Counter,
-    var checks: Int,
+    let c1: Counter;
+    let c2: Counter;
+    let c3: Counter;
+    var checks: Int;
 
     receive fn check() {
         let a = await c1.get_count();
@@ -48,17 +48,13 @@ fn main() {
     println("Unix (HEW_PPROF=auto):  hew-observe");
     println("TCP  (HEW_PPROF=:6060): hew-observe --addr localhost:6060");
     println("");
-
     let c1 = spawn Counter(name: "alpha", count: 0);
     let c2 = spawn Counter(name: "beta", count: 0);
     let c3 = spawn Counter(name: "gamma", count: 0);
-
     let r1 = spawn Relay(id: 1, target: c1);
     let r2 = spawn Relay(id: 2, target: c2);
     let r3 = spawn Relay(id: 3, target: c3);
-
     let monitor = spawn Monitor(c1: c1, c2: c2, c3: c3, checks: 0);
-
     // Run 60 rounds with varied message bursts (~30 seconds total)
     var round = 0;
     while round < 60 {
@@ -70,10 +66,8 @@ fn main() {
         // Check counts periodically
         monitor.check();
         sleep(300ms);
-
         round += 1;
     }
-
     let total1 = await c1.get_count();
     let total2 = await c2.get_count();
     let total3 = await c3.get_count();

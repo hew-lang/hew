@@ -1,10 +1,10 @@
 type Inner {
-    v: i64,
+    v: i64;
 }
 
 type Outer {
-    inner: Inner,
-    c: string,
+    inner: Inner;
+    c: string;
 }
 
 fn run_cycle(k: i64) -> i64 {
@@ -22,5 +22,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total >= 0 { 0 } else { 1 }
+    if total >= 0 {
+        0
+    } else {
+        1
+    }
 }

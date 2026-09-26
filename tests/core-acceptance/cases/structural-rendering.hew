@@ -1,15 +1,15 @@
 type Point {
-    x: i64,
-    label: string,
+    x: i64;
+    label: string;
 }
 
 type Override {
-    value: i64,
+    value: i64;
 }
 
 type Nested {
-    status: Option<Result<i64, i64>>,
-    pair: (i64, bool),
+    status: Option<Result<i64, i64>>;
+    pair: (i64, bool);
 }
 
 impl Display for Override {
@@ -39,11 +39,7 @@ fn main() {
     var map: HashMap<string, i64> = HashMap.new();
     map.insert("answer", 42);
     let named: NamedMap = HashMap.new();
-    let nested = Nested {
-        status: .Some(.Ok(8)),
-        pair: (9, true),
-    };
-
+    let nested = Nested { status: .Some(.Ok(8)), pair: (9, true) };
     println(f"{point:?}");
     println(f"{tuple:?}");
     println(f"{some:?} {none:?}");

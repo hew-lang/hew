@@ -1,6 +1,6 @@
 type HeapRow {
-    payload: [i64],
-    value: i64,
+    payload: [i64];
+    value: i64;
 }
 
 fn make_rows(value: i64) -> Vec<HeapRow> {
@@ -8,7 +8,7 @@ fn make_rows(value: i64) -> Vec<HeapRow> {
 }
 
 gen fn batches() -> Vec<HeapRow> {
-    for i in 0..50 {
+    for i in 0 .. 50 {
         yield make_rows(i);
     }
 }
@@ -18,6 +18,8 @@ fn main() -> i64 {
     for rows in batches() {
         total = total + 1;
     }
-    if total != 50 { return 81; }
+    if total != 50 {
+        return 81;
+    }
     0
 }

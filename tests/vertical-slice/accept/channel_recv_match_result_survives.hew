@@ -27,7 +27,6 @@ fn main() {
     };
     println(f"direct: [{direct}]");
     rx1.close();
-
     let (tx2, rx2): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(_) => return,

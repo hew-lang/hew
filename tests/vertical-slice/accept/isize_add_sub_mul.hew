@@ -4,10 +4,8 @@
 fn main() -> i64 {
     let m: isize = 6;
     assert(((m * 7) as i64) == 42);
-
     let s: isize = 50;
     assert(((s - 8) as i64) == 42);
-
     let a: isize = 40;
     assert(((a + 2) as i64) == 42);
     0

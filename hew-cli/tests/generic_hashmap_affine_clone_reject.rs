@@ -20,9 +20,11 @@ fn generic_hashmap_affine_clone_out_stops_before_codegen() {
     let emit_dir = temp.path().join("emit");
     std::fs::write(
         &source,
-        r#"
-#[resource]
-type Token { id: i64 }
+        r#"#[resource]
+type Token {
+    id: i64;
+}
+
 impl Token {
     fn close(consume self) {}
 }
@@ -39,7 +41,6 @@ fn main() {
     var cloned: HashMap<string, Token> = HashMap.new();
     cloned.insert("live", Token { id: 1 });
     let _copy = duplicate(cloned);
-
     var indexed: HashMap<string, Token> = HashMap.new();
     indexed.insert("live", Token { id: 3 });
     let _value = index(indexed);

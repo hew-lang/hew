@@ -1,6 +1,10 @@
 fn hold<T>(consume x: T) -> fn() -> i64 {
-    move || { let _h = x; 0 }
+    move || {
+        let _h = x;
+        0
+    }
 }
+
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 50 {

@@ -1,13 +1,17 @@
 actor Worker {
-    var value: i64,
-    receive fn get_value() -> i64 { value }
-    receive fn crash_me() { panic("worker failed"); }
+    var value: i64;
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("worker failed");
+    }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w1: Worker(value: 7),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w1: Worker(value: 7);
 }
 
 fn main() {

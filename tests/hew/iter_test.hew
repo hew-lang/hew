@@ -11,15 +11,14 @@
 
 import std.iter;
 
-
 type Claim {
-    run_id: string,
-    amount: i64
+    run_id: string;
+    amount: i64;
 }
 
 type ClaimsLedger {
-    claims: Vec<Claim>,
-    terminal_runs: Vec<string>
+    claims: Vec<Claim>;
+    terminal_runs: Vec<string>;
 }
 
 // ── map ────────────────────────────────────────────────────────────────────

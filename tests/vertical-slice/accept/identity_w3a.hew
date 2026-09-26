@@ -1,6 +1,15 @@
-fn len(s: string) -> i64 { 999 }
-fn to_string(x: i64) -> string { "user-to-string" }
-fn assert(condition: bool) { println("user assert"); }
+fn len(s: string) -> i64 {
+    999
+}
+
+fn to_string(x: i64) -> string {
+    "user-to-string"
+}
+
+fn assert(condition: bool) {
+    println("user assert");
+}
+
 fn main() {
     println(len("abc"));
     println(to_string(5));

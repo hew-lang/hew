@@ -1,5 +1,8 @@
 #[wire]
-type Packet { label: string @1, seq: i64 @2, }
+type Packet {
+    label: string @1;
+    seq: i64 @2;
+}
 
 fn mk(n: i64) -> bytes {
     let p = Packet { label: "payload-label-value", seq: n };

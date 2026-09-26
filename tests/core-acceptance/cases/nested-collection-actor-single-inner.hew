@@ -1,5 +1,5 @@
 actor Holder {
-    var rows: Vec<Vec<i64>>,
+    var rows: Vec<Vec<i64>>;
 
     receive fn count() -> i64 {
         rows.len()

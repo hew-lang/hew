@@ -7,7 +7,10 @@
 import std.stream;
 
 fn main() -> i64 {
-    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let _ = tx;
     let _ = rx;
     0

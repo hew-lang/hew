@@ -2,7 +2,9 @@ import std.stream;
 
 actor Worker {
     receive fn make_pipe() -> Stream<i64> {
-        scope { panic("handled before pipe"); } handle failure {
+        scope {
+            panic("handled before pipe");
+        } handle failure {
             match failure {
                 .Fault { message } => println("recovered"),
                 .Deadline { message } => panic("unexpected deadline"),

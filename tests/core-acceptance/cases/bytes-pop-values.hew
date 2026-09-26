@@ -11,18 +11,16 @@ fn expect_byte(value: Option<u8>, expected: u8) {
 fn expect_none(value: Option<u8>) {
     match value {
         .Some(_) => panic("popped a byte from an empty buffer"),
-        .None => {},
+        .None => {}
     }
 }
 
 fn main() {
     var value = bytes.new();
     expect_none(value.pop());
-
     value.push(0);
     value.push(255);
     let alias = value;
-
     expect_byte(value.pop(), 255);
     expect_byte(value.pop(), 0);
     expect_none(value.pop());
@@ -44,6 +42,5 @@ fn main() {
     expect_byte(tail.pop(), 255);
     expect_none(tail.pop());
     assert(alias.len() == 2);
-
     println("optional pop passed");
 }

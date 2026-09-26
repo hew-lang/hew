@@ -2,19 +2,27 @@
 
 /// Return the seed selected for this deterministic run.
 pub fn seed() -> u64 {
-    if !unsafe { hew_test_driver_active() } {
+    if !unsafe {
+        hew_test_driver_active()
+    } {
         panic("testing.seed requires deterministic execution");
     }
-    unsafe { hew_test_seed() }
+    unsafe {
+        hew_test_seed()
+    }
 }
 
 /// Run ready actors and tasks until nothing is ready or due at the current
 /// virtual time. The clock does not advance.
 pub fn settle() {
-    if !unsafe { hew_test_driver_active() } {
+    if !unsafe {
+        hew_test_driver_active()
+    } {
         panic("testing.settle requires deterministic execution");
     }
-    unsafe { hew_test_settle(); }
+    unsafe {
+        hew_test_settle();
+    }
 }
 
 extern "C" {

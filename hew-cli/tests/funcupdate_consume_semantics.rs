@@ -52,15 +52,21 @@ fn assert_runs(source: &str, expected_stdout: &str) {
 #[test]
 fn live_base_stays_usable_after_any_number_of_updates() {
     assert_runs(
-        r#"
-type VHolder { items: Vec<i64>, tag: string }
+        r#"type VHolder {
+    items: Vec<i64>;
+    tag: string;
+}
+
 fn main() {
-    var init: Vec<i64> = Vec.new(); init.push(1);
+    var init: Vec<i64> = Vec.new();
+    init.push(1);
     let base = VHolder { items: init, tag: "base" };
-    var next1: Vec<i64> = Vec.new(); next1.push(2); next1.push(3);
-    let updated1 = VHolder { items: next1, ..base };
-    let updated2 = VHolder { tag: "two", ..base };
-    let aliased = VHolder { items: base.items, ..base };
+    var next1: Vec<i64> = Vec.new();
+    next1.push(2);
+    next1.push(3);
+    let updated1 = VHolder { ..base, items: next1 };
+    let updated2 = VHolder { ..base, tag: "two" };
+    let aliased = VHolder { ..base, items: base.items };
     println(f"{updated1.items.len()} {updated1.tag}");
     println(f"{updated2.items.len()} {updated2.tag}");
     println(f"{aliased.items.len()} {aliased.tag}");
@@ -74,25 +80,33 @@ fn main() {
 #[test]
 fn projection_and_index_bases_copy_and_leave_their_owner_intact() {
     assert_runs(
-        r#"
-type Inner { label: string, n: i64 }
-type Mid { inner: Inner, k: i64 }
-type Outer { inner: Inner, pair: (Inner, i64), items: Vec<Mid>, tag: string }
+        r#"type Inner {
+    label: string;
+    n: i64;
+}
+
+type Mid {
+    inner: Inner;
+    k: i64;
+}
+
+type Outer {
+    inner: Inner;
+    pair: (Inner, i64);
+    items: Vec<Mid>;
+    tag: string;
+}
+
 fn main() {
     var v: Vec<Mid> = Vec.new();
     v.push(Mid { inner: Inner { label: "indexed", n: 7 }, k: 3 });
-    let o = Outer {
-        inner: Inner { label: "inner", n: 1 },
-        pair: (Inner { label: "paired", n: 2 }, 5),
-        items: v,
-        tag: "outer",
-    };
+    let o = Outer { inner: Inner { label: "inner", n: 1 }, pair: (Inner { label: "paired", n: 2 }, 5), items: v, tag: "outer" };
     let t = (Inner { label: "tuple", n: 3 }, 9);
-    let a = Inner { label: "a", ..o.inner };
-    let b = Inner { label: "b", ..t.0 };
-    let c = Inner { label: "c", ..o.pair.0 };
-    let d = Inner { label: "d", ..o.items[0].inner };
-    let e = Inner { n: 8, ..o.inner.clone() };
+    let a = Inner { ..o.inner, label: "a" };
+    let b = Inner { ..t.0, label: "b" };
+    let c = Inner { ..o.pair.0, label: "c" };
+    let d = Inner { ..o.items[0].inner, label: "d" };
+    let e = Inner { ..o.inner.clone(), n: 8 };
     println(f"{a.label}:{a.n} {b.label}:{b.n} {c.label}:{c.n} {d.label}:{d.n} {e.label}:{e.n}");
     println(f"{o.inner.label} {t.0.label} {o.pair.0.label} {o.items[0].inner.label} {o.tag}");
 }
@@ -104,28 +118,57 @@ fn main() {
 #[test]
 fn temporary_bases_are_consumed_in_every_value_position() {
     assert_runs(
-        r#"
-type Inner { label: string, n: i64 }
-type Outer { inner: Inner, tag: i64 }
-fn makeInner() -> Inner { Inner { label: "made", n: 1 } }
-fn makeOther() -> Inner { Inner { label: "other", n: 2 } }
-fn makeOuter() -> Outer { Outer { inner: Inner { label: "nested", n: 3 }, tag: 9 } }
-fn labelled(s: string) -> Inner { Inner { label: s, n: 4 } }
+        r#"type Inner {
+    label: string;
+    n: i64;
+}
+
+type Outer {
+    inner: Inner;
+    tag: i64;
+}
+
+fn makeInner() -> Inner {
+    Inner { label: "made", n: 1 }
+}
+
+fn makeOther() -> Inner {
+    Inner { label: "other", n: 2 }
+}
+
+fn makeOuter() -> Outer {
+    Outer { inner: Inner { label: "nested", n: 3 }, tag: 9 }
+}
+
+fn labelled(s: string) -> Inner {
+    Inner { label: s, n: 4 }
+}
+
 fn main() {
     let flag = true;
-    let a = Inner { label: "a", ..makeInner() };
-    let b = Inner { label: "b", ..makeOuter().inner };
-    let c = Inner { label: "c", ..if flag { makeInner() } else { makeOther() } };
-    let d = Inner { label: "d", ..match flag { true => makeOther(), false => makeInner() } };
-    let e = Inner { label: "e", ..{ println("seed"); makeInner() } };
+    let a = Inner { ..makeInner(), label: "a" };
+    let b = Inner { ..makeOuter().inner, label: "b" };
+    let c = Inner { ..if flag {
+        makeInner()
+    } else {
+        makeOther()
+    }, label: "c" };
+    let d = Inner { ..match flag {
+        true => makeOther(),
+        false => makeInner(),
+    }, label: "d" };
+    let e = Inner { ..{
+        println("seed");
+        makeInner()
+    }, label: "e" };
     let seed = "q";
-    let f = Inner { label: "f", ..labelled(seed) };
+    let f = Inner { ..labelled(seed), label: "f" };
     let base = makeInner();
     let moved = base;
-    let g = Inner { label: "g", ..moved };
+    let g = Inner { ..moved, label: "g" };
     let build = |s: string| -> Inner {
         let local = labelled(s);
-        Inner { label: "h", ..local }
+        Inner { ..local, label: "h" }
     };
     let h = build("z");
     println(f"{a.label}:{a.n} {b.label}:{b.n} {c.label}:{c.n} {d.label}:{d.n} {e.label}:{e.n}");
@@ -139,25 +182,45 @@ fn main() {
 #[test]
 fn carried_records_tuples_and_collections_arrive_whole() {
     assert_runs(
-        r#"
-type Inner { label: string, n: i64 }
-type Nested { inner: Inner, tag: string }
-type Pairs { pair: (string, (string, i64)), twice: ((string, i64), (string, i64)), tag: string }
-type Bag { items: (Vec<string>, i64), record: (Inner, i64), tag: string }
+        r#"type Inner {
+    label: string;
+    n: i64;
+}
+
+type Nested {
+    inner: Inner;
+    tag: string;
+}
+
+type Pairs {
+    pair: (string, (string, i64));
+    twice: ((string, i64), (string, i64));
+    tag: string;
+}
+
+type Bag {
+    items: (Vec<string>, i64);
+    record: (Inner, i64);
+    tag: string;
+}
+
 fn nested() -> Nested {
     let b = Nested { inner: Inner { label: "inner", n: 1 }, tag: "x" };
-    Nested { tag: "y", ..b }
+    Nested { ..b, tag: "y" }
 }
+
 fn pairs() -> Pairs {
     let b = Pairs { pair: ("k", ("m", 7)), twice: (("k1", 1), ("m2", 2)), tag: "x" };
-    Pairs { tag: "y", ..b }
+    Pairs { ..b, tag: "y" }
 }
+
 fn bag() -> Bag {
     var v: Vec<string> = Vec.new();
     v.push("vec");
     let b = Bag { items: (v, 7), record: (Inner { label: "rec", n: 1 }, 7), tag: "x" };
-    Bag { tag: "y", ..b }
+    Bag { ..b, tag: "y" }
 }
+
 fn main() {
     let n = nested();
     println(f"{n.tag} {n.inner.label} {n.inner.n}");
@@ -180,18 +243,23 @@ fn main() {
 #[test]
 fn reassign_loop_idiom_keeps_one_live_owner() {
     assert_runs(
-        r#"
-type VecHolder { items: Vec<i64>, tag: i64 }
+        r#"type VecHolder {
+    items: Vec<i64>;
+    tag: i64;
+}
+
 fn main() {
-    var init: Vec<i64> = Vec.new(); init.push(99);
+    var init: Vec<i64> = Vec.new();
+    init.push(99);
     var h = VecHolder { items: init, tag: 0 };
     var i: i64 = 0;
     while i < 8 {
-        var next: Vec<i64> = Vec.new(); next.push(i);
-        h = VecHolder { items: next, ..h };
+        var next: Vec<i64> = Vec.new();
+        next.push(i);
+        h = VecHolder { ..h, items: next };
         i = i + 1;
     }
-    let snapshot = VecHolder { items: h.items.clone(), ..h };
+    let snapshot = VecHolder { ..h, items: h.items.clone() };
     println(f"{h.items.len()} {snapshot.items.len()} {snapshot.tag}");
 }
 "#,
@@ -202,18 +270,26 @@ fn main() {
 #[test]
 fn non_copyable_field_consumes_its_binding_base() {
     assert_runs(
-        r#"
-type Job { name: string, run: fn() -> string, retries: i64 }
+        r#"type Job {
+    name: string;
+    run: fn() -> string;
+    retries: i64;
+}
+
 fn make(name: string, answer: string) -> Job {
-    Job { name: name, run: || -> string { answer }, retries: 0 }
+    Job { name: name, run: || -> string {
+        answer
+    }, retries: 0 }
 }
+
 fn renamed(consume job: Job) -> Job {
-    Job { name: "renamed", ..job }
+    Job { ..job, name: "renamed" }
 }
+
 fn main() {
-    let first = Job { retries: 3, ..make("first", "one") };
+    let first = Job { ..make("first", "one"), retries: 3 };
     let seed = make("seed", "two");
-    let second = Job { name: "second", ..seed };
+    let second = Job { ..seed, name: "second" };
     let third = renamed(make("third", "three"));
     let run_first = first.run;
     let run_second = second.run;
@@ -231,13 +307,19 @@ fn main() {
 fn borrowed_base_cannot_give_up_a_non_copyable_field() {
     let (ok, out) = hew(
         "check",
-        r#"
-type Job { name: string, run: fn() -> string }
-fn renamed(job: Job) -> Job {
-    Job { name: "renamed", ..job }
+        r#"type Job {
+    name: string;
+    run: fn() -> string;
 }
+
+fn renamed(job: Job) -> Job {
+    Job { ..job, name: "renamed" }
+}
+
 fn main() {
-    let job = Job { name: "job", run: || -> string { "answer" } };
+    let job = Job { name: "job", run: || -> string {
+        "answer"
+    } };
     let other = renamed(job);
     println(other.name);
 }

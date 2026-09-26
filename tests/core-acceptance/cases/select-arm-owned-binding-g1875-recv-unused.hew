@@ -1,7 +1,10 @@
 import std.stream;
 
 fn main() -> i64 {
-    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     var i: i64 = 0;
     var hits: i64 = 0;
     while i < 50 {
@@ -15,5 +18,9 @@ fn main() -> i64 {
     }
     tx.close();
     rx.close();
-    if hits == 50 { 0 } else { 1 }
+    if hits == 50 {
+        0
+    } else {
+        1
+    }
 }

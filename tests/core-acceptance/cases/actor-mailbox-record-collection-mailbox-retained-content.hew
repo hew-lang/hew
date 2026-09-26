@@ -1,11 +1,15 @@
-type Boxed { payload: Vec<i64> }
+type Boxed {
+    payload: Vec<i64>;
+}
 
 actor ProbeSink {
-    var store: Vec<i64>,
+    var store: Vec<i64>;
     receive fn take(b: Boxed) {
         store = b.payload;
     }
-    receive fn peek() -> i64 { store[0] }
+    receive fn peek() -> i64 {
+        store[0]
+    }
 }
 
 fn main() -> i64 {

@@ -2,7 +2,7 @@
 // aggregate, so cloning the aggregate is balanced: the count reflects every
 // live owner and nothing is released twice.
 type Node {
-    value: i64,
+    value: i64;
 }
 
 fn main() -> i64 {

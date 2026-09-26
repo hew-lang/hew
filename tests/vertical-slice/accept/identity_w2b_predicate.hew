@@ -1,3 +1,11 @@
-type Q { v: i64 }
-fn f<T: Clone>(x: T) -> T { x.clone() }
-fn main() { println(f(Q { v: 7 }).v); }
+type Q {
+    v: i64;
+}
+
+fn f<T: Clone>(x: T) -> T {
+    x.clone()
+}
+
+fn main() {
+    println(f(Q { v: 7 }).v);
+}

@@ -3,13 +3,13 @@
 // as a nested CBOR map. The recovered fields sum to 42.
 #[wire]
 type Inner {
-    v: i64 @1,
+    v: i64 @1;
 }
 
 #[wire]
 type Outer {
-    inner: Inner @1,
-    tag: i64 @2,
+    inner: Inner @1;
+    tag: i64 @2;
 }
 
 fn main() -> i64 {

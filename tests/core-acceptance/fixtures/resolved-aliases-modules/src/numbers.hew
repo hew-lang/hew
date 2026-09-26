@@ -1,8 +1,8 @@
 pub type Value = i64;
 
 pub type Envelope<T> {
-    value: T,
-    order: Value,
+    value: T;
+    order: Value;
 }
 
 pub fn answer() -> Value {

@@ -9,14 +9,14 @@ actor Watcher {
             v from src.recv() => match v {
                 .Some(chunk) => f"file won: {chunk.len()} bytes",
                 .None => "file won: empty",
-            },
+            }
             after 10s => "timer beat a file",
         };
         let second = select {
             v from src.recv() => match v {
                 .Some(chunk) => f"file won again: {chunk.len()} bytes",
                 .None => "file won: end of stream",
-            },
+            }
             after 10s => "timer beat a finished file",
         };
         f"{first}\n{second}"
@@ -36,9 +36,9 @@ fn main() {
         v from source.recv() => match v {
             .Some(chunk) => println(f"main: file won: {chunk.len()} bytes"),
             .None => println("main: file won: empty"),
-        },
+        }
         after 10s => println("main: timer beat a file"),
-    }
+    };
     source.close();
     let watcher = spawn Watcher();
     match watcher.watch(open()) {

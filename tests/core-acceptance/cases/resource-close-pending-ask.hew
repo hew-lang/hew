@@ -1,21 +1,36 @@
 import std.stream;
+
 actor Audit {
-    receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); }
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
 }
+
 #[resource]
-type Ticket { audit: Audit, id: i64, }
-impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("audit"); }
+type Ticket {
+    audit: Audit;
+    id: i64;
 }
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit");
+    }
+}
+
 actor Gate {
-    mailbox 1,
+    mailbox 1;
     receive fn hold(started: Sink<i64>) {
         started.send(1).expect("started");
         sleep(1h);
     }
-    receive fn take(ticket: Ticket) -> i64 { ticket.id }
+    receive fn take(ticket: Ticket) -> i64 {
+        ticket.id
+    }
     receive fn keep(ticket: Ticket) {}
 }
+
 fn main() {
     let audit = spawn Audit;
     let gate = spawn Gate;

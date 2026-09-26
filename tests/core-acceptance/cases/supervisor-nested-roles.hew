@@ -1,23 +1,32 @@
 actor Worker<T> {
-    var value: Option<T> = .None,
-    init(seed: T) { value = .Some(seed); }
-    receive fn put(next: T) { value = .Some(next); }
-    receive fn get() -> T { let snapshot = value; snapshot.expect("initialized worker") }
-    receive fn fail() { panic("restart nested child"); }
+    var value: Option<T> = .None;
+    init(seed: T) {
+        value = .Some(seed);
+    }
+    receive fn put(next: T) {
+        value = .Some(next);
+    }
+    receive fn get() -> T {
+        let snapshot = value;
+        snapshot.expect("initialized worker")
+    }
+    receive fn fail() {
+        panic("restart nested child");
+    }
 }
 
 supervisor Inner<T>(seed: T) {
-    intensity: 1 within 60s,
-    child leaf: Worker<T>(seed: seed),
+    intensity: 1 within 60s;
+    child leaf: Worker<T>(seed: seed);
 }
 
 supervisor Outer<T>(seed: T) {
-    intensity: 3 within 60s,
-    child inner: Inner<T>(seed: seed),
+    intensity: 3 within 60s;
+    child inner: Inner<T>(seed: seed);
 }
 
 supervisor Root<T>(seed: T) {
-    child outer: Outer<T>(seed: seed),
+    child outer: Outer<T>(seed: seed);
 }
 
 fn read_leaf(inner: ChildRef<Inner<string>>) -> string {

@@ -1,5 +1,5 @@
 type Wrapper<T> {
-    inner: T,
+    inner: T;
 }
 
 fn main() -> i64 {

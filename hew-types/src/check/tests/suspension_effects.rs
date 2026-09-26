@@ -267,7 +267,7 @@ fn main() {
 
 #[test]
 fn fork_task_boundary_moves_nominal_resources_and_rejects_borrowed_views() {
-    let source = "#[resource] type Socket { fd: i64 } fn read(socket: Socket) -> i64 { socket.fd } fn main() { let socket = Socket { fd: 1 }; let child = fork read(socket); let result = await child; }";
+    let source = "#[resource]\ntype Socket {\n    fd: i64;\n}\n\nfn read(socket: Socket) -> i64 {\n    socket.fd\n}\n\nfn main() {\n    let socket = Socket { fd: 1 };\n    let child = fork read(socket);\n    let result = await child;\n}\n";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
@@ -278,8 +278,8 @@ fn fork_task_boundary_moves_nominal_resources_and_rejects_borrowed_views() {
             && fact.acquisition == crate::ClosureCaptureAcquisition::Move
             && fact.is_send));
     for (source, expected) in [
-        ("#[resource] type Socket { fd: i64 } fn read(socket: Socket) -> i64 { socket.fd } fn launch(socket: Socket) { let child = fork read(socket); } fn main() {}", crate::error::TypeErrorKind::OwnConsumeBorrowed),
-        ("#[resource] type Socket { fd: i64 } fn read(socket: Socket) -> i64 { socket.fd } fn main() { let socket = Socket { fd: 1 }; let child = fork read(socket); println(socket.fd); }", crate::error::TypeErrorKind::UseAfterMove),
+        ("#[resource]\ntype Socket {\n    fd: i64;\n}\n\nfn read(socket: Socket) -> i64 {\n    socket.fd\n}\n\nfn launch(socket: Socket) {\n    let child = fork read(socket);\n}\n\nfn main() {}\n", crate::error::TypeErrorKind::OwnConsumeBorrowed),
+        ("#[resource]\ntype Socket {\n    fd: i64;\n}\n\nfn read(socket: Socket) -> i64 {\n    socket.fd\n}\n\nfn main() {\n    let socket = Socket { fd: 1 };\n    let child = fork read(socket);\n    println(socket.fd);\n}\n", crate::error::TypeErrorKind::UseAfterMove),
         ("extern \"C\" { fn get() -> &i64; fn read(value: &i64) -> i64; } fn main() { unsafe { let view = get(); let child = fork read(view); } }", crate::error::TypeErrorKind::InvalidSend),
     ] {
         let output = check_source(source);
@@ -289,10 +289,23 @@ fn fork_task_boundary_moves_nominal_resources_and_rejects_borrowed_views() {
 
 #[test]
 fn actor_ask_task_boundary_transfers_resources_once() {
-    let source = r"
-#[resource] type Socket { fd: i64 }
-impl Socket { fn detach(consume self) -> i64 { self.fd } }
-actor Worker { receive fn read(socket: Socket) -> i64 { socket.detach() } }
+    let source = r"#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn detach(consume self) -> i64 {
+        self.fd
+    }
+}
+
+actor Worker {
+    receive fn read(socket: Socket) -> i64 {
+        socket.detach()
+    }
+}
+
 fn main() {
     let worker = spawn Worker();
     let socket = Socket { fd: 1 };
@@ -465,10 +478,10 @@ fn fork_rejects_non_send_arguments_and_indirect_captures() {
     for source in [
         "fn use_value(value: Rc<i64>) -> i64 { 1 } fn main() { let value = Rc.new(1); let task = fork use_value(value); }",
         "fn main() { let value = Rc.new(1); let callback = || { let held = value; 1 }; let task = fork callback(); }",
-        "type Job { run: fn() -> i64 } fn main() { let value = Rc.new(1); let job = Job { run: || { let held = value; 1 } }; let task = fork job.run(); }",
-        "type Payload { value: Rc<i64> } fn use_value(value: Payload) -> i64 { 1 } fn main() { let value = Payload { value: Rc.new(1) }; let task = fork use_value(value); }",
+        "type Job {\n    run: fn() -> i64;\n}\n\nfn main() {\n    let value = Rc.new(1);\n    let job = Job { run: || {\n        let held = value;\n        1\n    } };\n    let task = fork job.run();\n}\n",
+        "type Payload {\n    value: Rc<i64>;\n}\n\nfn use_value(value: Payload) -> i64 {\n    1\n}\n\nfn main() {\n    let value = Payload { value: Rc.new(1) };\n    let task = fork use_value(value);\n}\n",
         "fn use_value(value: (fn() -> i64, Rc<i64>)) -> i64 { 1 } fn main() { let value = (|| 1, Rc.new(1)); let task = fork use_value(value); }",
-        "type Payload { value: Rc<i64> } impl Payload { fn run(self) -> i64 { 1 } } fn main() { let value = Payload { value: Rc.new(1) }; let task = fork value.run(); }",
+        "type Payload {\n    value: Rc<i64>;\n}\n\nimpl Payload {\n    fn run(self) -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let value = Payload { value: Rc.new(1) };\n    let task = fork value.run();\n}\n",
     ] {
         let output = check_source(source);
         assert!(output.errors.iter().any(|error| matches!(error.kind, crate::error::TypeErrorKind::InvalidSend)), "{source}: {:?}", output.errors);
@@ -496,7 +509,7 @@ fn fork_promotes_borrowed_value_parameters_into_owning_captures() {
         .flatten()
         .any(|capture| capture.name == "value"
             && capture.acquisition == crate::ClosureCaptureAcquisition::Snapshot));
-    let output = check_source("type Label { value: string } fn launch(data: bytes, label: Label) { let task = fork { println(label.value); data }; println(label.value); let retained = data; } fn main() {}");
+    let output = check_source("type Label {\n    value: string;\n}\n\nfn launch(data: bytes, label: Label) {\n    let task = fork {\n        println(label.value);\n        data\n    };\n    println(label.value);\n    let retained = data;\n}\n\nfn main() {}\n");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
@@ -551,7 +564,7 @@ fn fork_accepts_owning_arguments_and_send_callable_values() {
     for source in [
         "fn echo(value: string) -> string { value } fn main() { let task = fork echo(\"hello\"); let result = await task; }",
         "fn main() { let value = \"hello\"; let callback = || value; let task = fork callback(); let result = await task; }",
-        "type Job { run: fn() -> i64 } fn main() { let job = Job { run: || 1 }; let task = fork job.run(); let result = await task; }",
+        "type Job {\n    run: fn() -> i64;\n}\n\nfn main() {\n    let job = Job { run: || 1 };\n    let task = fork job.run();\n    let result = await task;\n}\n",
         "fn work() -> i64 { 1 } fn main() { let callback = work; let task = fork callback(); let result = await task; }",
         "fn work(value: i64) -> i64 { value } fn main() { let tasks = fork [work(1), work(2)]; let result = await tasks; }",
     ] {
@@ -704,7 +717,7 @@ fn scope_deadline_requires_duration_and_preserves_value() {
 
 #[test]
 fn callable_fields_carry_their_written_effect() {
-    let source = "type Job { run: fn[suspends]() -> i64, describe: fn() -> i64 } fn invoke(job: Job) -> i64 { job.describe() } fn work() -> i64 { let task = fork { 1 }; await task } fn main() { let job = Job { run: work, describe: || 2 }; let value = invoke(job); }";
+    let source = "type Job {\n    run: fn[suspends]() -> i64;\n    describe: fn() -> i64;\n}\n\nfn invoke(job: Job) -> i64 {\n    job.describe()\n}\n\nfn work() -> i64 {\n    let task = fork {\n        1\n    };\n    await task\n}\n\nfn main() {\n    let job = Job { run: work, describe: || 2 };\n    let value = invoke(job);\n}\n";
     assert_call_effect(source, "invoke(job)", SuspensionEffect::Never);
     assert_call_effect(
         &source.replace("job.describe()", "job.run()"),
@@ -721,7 +734,7 @@ fn callable_fields_carry_their_written_effect() {
 }
 #[test]
 fn pure_callable_record_and_tuple_projections_are_synchronous() {
-    let output = check_source("type Job { run: fn() -> i64 } fn main() { let job = Job { run: || 2 }; let a = job.run(); let pair = (|| 3, || 4); let b = (pair.0)(); }");
+    let output = check_source("type Job {\n    run: fn() -> i64;\n}\n\nfn main() {\n    let job = Job { run: || 2 };\n    let a = job.run();\n    let pair = (|| 3, || 4);\n    let b = (pair.0)();\n}\n");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
@@ -770,7 +783,7 @@ fn method_callback_parameters_take_the_written_effect() {
 }
 #[test]
 fn assigning_a_suspending_function_to_a_plain_callable_field_is_rejected() {
-    let source = "type Job { run: fn() -> i64 } fn work() -> i64 { let task = fork { 1 }; await task } fn main() { var job = Job { run: || 2 }; job.run = work; let value = job.run(); }";
+    let source = "type Job {\n    run: fn() -> i64;\n}\n\nfn work() -> i64 {\n    let task = fork {\n        1\n    };\n    await task\n}\n\nfn main() {\n    var job = Job { run: || 2 };\n    job.run = work;\n    let value = job.run();\n}\n";
     let output = check_source(source);
     let start = source.rfind("= work").unwrap() + 2;
     assert_eq!(
@@ -844,7 +857,7 @@ fn reassigning_a_closure_binding_joins_it_to_the_shape_both_hold() {
 
 #[test]
 fn generic_instantiation_keeps_closure_effects() {
-    let source = "type Holder<T> { value: T } fn main() { let holder = Holder { value: || { sleep(1ms); 1 } }; let value = holder.value(); }";
+    let source = "type Holder<T> {\n    value: T;\n}\n\nfn main() {\n    let holder = Holder { value: || {\n        sleep(1ms);\n        1\n    } };\n    let value = holder.value();\n}\n";
     assert_call_effect(source, "holder.value()", SuspensionEffect::MaySuspend);
     assert_call_effect(
         &source.replace("|| { sleep(1ms); 1 }", "|| 1"),
@@ -918,9 +931,9 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
 
 #[test]
 fn fork_bodies_prove_send_through_captured_record_fields() {
-    let output = check_source("type Job { run: fn() -> i64 } fn main() { let job = Job { run: || 1 }; let task = fork { job.run(); }; }");
+    let output = check_source("type Job {\n    run: fn() -> i64;\n}\n\nfn main() {\n    let job = Job { run: || 1 };\n    let task = fork {\n        job.run();\n    };\n}\n");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let output = check_source("type Job { run: fn() -> i64 } fn main() { let value = Rc.new(1); let job = Job { run: move || { let held = value; 1 } }; let task = fork { job.run(); }; }");
+    let output = check_source("type Job {\n    run: fn() -> i64;\n}\n\nfn main() {\n    let value = Rc.new(1);\n    let job = Job { run: move || {\n        let held = value;\n        1\n    } };\n    let task = fork {\n        job.run();\n    };\n}\n");
     assert!(
         output
             .errors

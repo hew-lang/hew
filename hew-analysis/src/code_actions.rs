@@ -25,6 +25,51 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
     for diag in diagnostics {
         let kind = diag.kind.as_deref();
         match kind {
+            Some("E_MEMBER_TERMINATOR" | "E_LIST_SEPARATOR") => {
+                let replacement = if kind == Some("E_MEMBER_TERMINATOR") {
+                    ";"
+                } else {
+                    ","
+                };
+                if diag.span.start == diag.span.end
+                    || source
+                        .get(diag.span.start..diag.span.end)
+                        .is_some_and(|text| text == "," || text == ";")
+                {
+                    actions.push(CodeAction {
+                        title: format!("Insert `{replacement}` separator"),
+                        edits: vec![RenameEdit {
+                            span: diag.span,
+                            new_text: replacement.to_string(),
+                        }],
+                    });
+                }
+            }
+            Some("E_SEPARATOR_AFTER_BODY") => {
+                if source
+                    .get(diag.span.start..diag.span.end)
+                    .is_some_and(|text| text == "," || text == ";")
+                {
+                    actions.push(CodeAction {
+                        title: "Remove extra separator".to_string(),
+                        edits: vec![RenameEdit {
+                            span: diag.span,
+                            new_text: String::new(),
+                        }],
+                    });
+                }
+            }
+            Some("E_ACTOR_FIELD_BINDING") => {
+                if diag.span.start == diag.span.end && source.is_char_boundary(diag.span.start) {
+                    actions.push(CodeAction {
+                        title: "Declare immutable actor state".to_string(),
+                        edits: vec![RenameEdit {
+                            span: diag.span,
+                            new_text: "let ".to_string(),
+                        }],
+                    });
+                }
+            }
             // UndefinedFunction: the type checker spans the entire call expression
             // (e.g. `fooo()`).  Trim to the callee identifier only so the edit
             // rewrites the name and leaves the argument list intact.
@@ -788,7 +833,7 @@ mod tests {
 
     #[test]
     fn style_suggestion_without_loop_rewrite_has_no_action() {
-        let source = "type User { id: i64 }";
+        let source = "type User {\n    id: i64;\n}\n";
         let d = diag(
             "StyleSuggestion",
             "wire `User.id`: field has `since 2` but struct has no version",
@@ -951,5 +996,41 @@ mod tests {
         let source = "var abcde = 1\nabc = 2";
         let span = find_keyword(source, 14, "var", Some("abc"));
         assert!(span.is_none(), "prefix 'abcde' should not match name 'abc'");
+    }
+
+    #[test]
+    fn separator_quick_fixes_repair_the_parser_reported_span() {
+        for source in [
+            "type P {\n    x: i64;\n}\n",
+            "type P {\n    x: i64;\n}\n",
+            "enum E {\n    V { x: i64;  }\n}\n",
+            "actor A {\n    let name: string;\n}\n",
+        ] {
+            let parsed = hew_parser::parse(source);
+            let error = parsed
+                .errors
+                .iter()
+                .find(|error| {
+                    matches!(
+                        error.kind,
+                        hew_parser::ParseDiagnosticKind::MemberTerminator
+                            | hew_parser::ParseDiagnosticKind::SeparatorAfterBody
+                            | hew_parser::ParseDiagnosticKind::ActorFieldBinding
+                    )
+                })
+                .unwrap();
+            let diagnostic = DiagnosticInfo {
+                kind: Some(error.kind.as_kind_str().to_string()),
+                message: error.message.clone(),
+                span: OffsetSpan::from(error.span.clone()),
+                suggestions: Vec::new(),
+            };
+            let actions = build_code_actions(source, &[diagnostic]);
+            assert_eq!(actions.len(), 1, "{source}: {actions:?}");
+            let edit = &actions[0].edits[0];
+            let mut repaired = source.to_string();
+            repaired.replace_range(edit.span.start..edit.span.end, &edit.new_text);
+            assert!(hew_parser::parse(&repaired).errors.is_empty(), "{repaired}");
+        }
     }
 }

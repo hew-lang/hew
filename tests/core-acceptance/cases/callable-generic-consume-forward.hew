@@ -1,4 +1,6 @@
-fn forward<T>(consume value: T) -> T { value }
+fn forward<T>(consume value: T) -> T {
+    value
+}
 
 fn main() -> i64 {
     let count = 10;
@@ -13,7 +15,6 @@ fn main() -> i64 {
     println(moved());
     println(moved());
     println(copied());
-
     let text = forward("generic owner".to_upper());
     let once: fn[once, clone]() -> string = move || text;
     let returned = forward(once);

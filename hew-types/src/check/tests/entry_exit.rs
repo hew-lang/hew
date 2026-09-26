@@ -223,19 +223,22 @@ fn result_main_carries_resolved_display_declaration() {
 #[test]
 fn result_main_without_error_conformance_is_rejected() {
     let output = check_source(
-        r#"
-        enum NonError { Failed(string), }
+        r#"enum NonError {
+    Failed(string);
+}
 
-        impl Display for NonError {
-            fn fmt(self) -> string {
-                match self { .Failed(message) => message }
-            }
+impl Display for NonError {
+    fn fmt(self) -> string {
+        match self {
+            .Failed(message) => message,
         }
+    }
+}
 
-        fn main() -> Result<(), NonError> {
-            .Err(NonError.Failed("not an Error"))
-        }
-        "#,
+fn main() -> Result<(), NonError> {
+    .Err(NonError.Failed("not an Error"))
+}
+"#,
     );
 
     assert!(

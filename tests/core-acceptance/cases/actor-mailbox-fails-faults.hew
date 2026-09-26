@@ -7,8 +7,8 @@
 // the error is already its text, and a declared error type whose `Display`
 // body renders it.
 enum VaultError {
-    Overdrawn(i64),
-    Closed,
+    Overdrawn(i64);
+    Closed;
 }
 
 impl Display for VaultError {
@@ -21,10 +21,12 @@ impl Display for VaultError {
 }
 
 actor Ledger {
-    var balance: i64 = 100,
+    var balance: i64 = 100;
 
     #[on(start)]
-    fn started() { println("open"); }
+    fn started() {
+        println("open");
+    }
 
     receive fn withdraw(amount: i64) -> () fails string {
         if amount > balance {
@@ -33,14 +35,18 @@ actor Ledger {
         balance = balance - amount;
     }
 
-    receive fn balance_now() -> i64 { balance }
+    receive fn balance_now() -> i64 {
+        balance
+    }
 }
 
 actor Vault {
-    var balance: i64 = 50,
+    var balance: i64 = 50;
 
     #[on(start)]
-    fn opened() { println("vault"); }
+    fn opened() {
+        println("vault");
+    }
 
     receive fn take(amount: i64) -> () fails VaultError {
         if amount > balance {
@@ -49,14 +55,16 @@ actor Vault {
         balance = balance - amount;
     }
 
-    receive fn balance_now() -> i64 { balance }
+    receive fn balance_now() -> i64 {
+        balance
+    }
 }
 
 supervisor Bank {
-    strategy: one_for_one,
-    intensity: 4 within 60s,
-    child ledger: Ledger,
-    child vault: Vault,
+    strategy: one_for_one;
+    intensity: 4 within 60s;
+    child ledger: Ledger;
+    child vault: Vault;
 }
 
 fn main() {
@@ -64,7 +72,7 @@ fn main() {
     let inbox = mailbox(bank.ledger, on_full: .Wait);
     // A submission the handler can serve: the view reports acceptance only.
     match inbox.withdraw(40) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => println("refused"),
     }
     // A completion call waits for its own turn, so it also flushes the queue.
@@ -74,7 +82,7 @@ fn main() {
     }
     // Nothing waits on this one, so the declared failure faults the actor.
     match inbox.withdraw(500) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => println("refused"),
     }
     // A one-way submission reports acceptance, not the fault it goes on to
@@ -87,12 +95,11 @@ fn main() {
         .Ok(left) => println(left),
         .Err(_) => println("unavailable"),
     }
-
     // The same path with a declared error type: the fault text comes from the
     // error's own `Display` body.
     let drawer = mailbox(bank.vault, on_full: .Wait);
     match drawer.take(80) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => println("refused"),
     }
     let _ = bank.vault.balance_now();

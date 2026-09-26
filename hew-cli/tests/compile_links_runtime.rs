@@ -162,14 +162,7 @@ fn compiled_binary_carries_the_host_executable_extension() {
 fn wire_decode_valid_bytes_round_trips() {
     require_codegen();
     let (_emit_dir, binary_path) = compile_to_native(
-        "#[wire]\n\
-         type Point { x: i64 @1, y: i64 @2 }\n\
-         fn main() -> i64 {\n\
-         \x20   let p = Point { x: 7, y: 35 };\n\
-         \x20   let b = p.encode();\n\
-         \x20   let p2 = Point.decode(b);\n\
-         \x20   return p2.x + p2.y;\n\
-         }\n",
+        "#[wire]\ntype Point {\n    x: i64 @1;\n    y: i64 @2;\n}\n\nfn main() -> i64 {\n    let p = Point { x: 7, y: 35 };\n    let b = p.encode();\n    let p2 = Point.decode(b);\n    return p2.x + p2.y;\n}\n",
     );
     let run_output = Command::new(&binary_path)
         .output()
@@ -198,13 +191,7 @@ fn wire_decode_malformed_bytes_fails_closed_not_segfault() {
 
     require_codegen();
     let (_emit_dir, binary_path) = compile_to_native(
-        "#[wire]\n\
-         type Point { x: i64 @1, y: i64 @2 }\n\
-         fn main() -> i64 {\n\
-         \x20   let b: bytes = bytes.new();\n\
-         \x20   let p = Point.decode(b);\n\
-         \x20   return p.x + p.y;\n\
-         }\n",
+        "#[wire]\ntype Point {\n    x: i64 @1;\n    y: i64 @2;\n}\n\nfn main() -> i64 {\n    let b: bytes = bytes.new();\n    let p = Point.decode(b);\n    return p.x + p.y;\n}\n",
     );
     let run_output = Command::new(&binary_path)
         .output()

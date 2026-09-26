@@ -1,7 +1,7 @@
 //! Generic Vec<T>::contains must re-resolve through the concrete element ABI.
 
 type VecContainsName {
-    label: string,
+    label: string;
 }
 
 fn generic_contains<T>(xs: Vec<T>, needle: T) -> bool {

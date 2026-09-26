@@ -1,5 +1,7 @@
 actor Worker {
-    receive fn value() -> i64 { 7 }
+    receive fn value() -> i64 {
+        7
+    }
 
     receive fn choose(target: Worker, timed: bool) -> i64 {
         if timed {

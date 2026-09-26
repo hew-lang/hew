@@ -1,8 +1,8 @@
 actor Oracle {
-    var capability: i64 = -1,
-    var action: i64 = 0,
-    var old_only: bool = false,
-    var entered: bool = false,
+    var capability: i64 = -1;
+    var action: i64 = 0;
+    var old_only: bool = false;
+    var entered: bool = false;
 
     receive fn arm(next_capability: i64, next_action: i64, require_old: bool) {
         self.capability = next_capability;
@@ -18,13 +18,20 @@ actor Oracle {
         0
     }
 
-    receive fn ready() { self.entered = true; }
+    receive fn ready() {
+        self.entered = true;
+    }
 
-    receive fn started() -> bool { self.entered }
+    receive fn started() -> bool {
+        self.entered
+    }
 }
 
 #[resource]
-type Payload { id: i64, label: string }
+type Payload {
+    id: i64;
+    label: string;
+}
 
 impl Payload {
     fn close(consume self) {
@@ -48,10 +55,17 @@ fn probe(oracle: Oracle, id: i64, capability: i64) {
     }
 }
 
-type Key { oracle: Oracle, id: i64, label: string }
+type Key {
+    oracle: Oracle;
+    id: i64;
+    label: string;
+}
 
 impl Hash for Key {
-    fn hash(self) -> i64 { probe(self.oracle, self.id, 0); 7 }
+    fn hash(self) -> i64 {
+        probe(self.oracle, self.id, 0);
+        7
+    }
 }
 
 impl Eq for Key {
@@ -62,20 +76,28 @@ impl Eq for Key {
 }
 
 #[resource]
-type Element { key: Key }
+type Element {
+    key: Key;
+}
 
 impl Element {
     fn close(consume self) {
-        if self.key.id == 0 || self.key.id == 99 { println(self.key.label); }
+        if self.key.id == 0 || self.key.id == 99 {
+            println(self.key.label);
+        }
     }
 }
 
 impl Hash for Element {
-    fn hash(self) -> i64 { self.key.hash() }
+    fn hash(self) -> i64 {
+        self.key.hash()
+    }
 }
 
 impl Eq for Element {
-    fn eq(self, other: Element) -> bool { self.key == other.key }
+    fn eq(self, other: Element) -> bool {
+        self.key == other.key
+    }
 }
 
 fn key(oracle: Oracle, id: i64) -> Key {
@@ -85,21 +107,39 @@ fn key(oracle: Oracle, id: i64) -> Key {
 actor Store {
     receive fn map(oracle: Oracle, phase: i64, action: i64) {
         var values: HashMap<Key, Payload> = HashMap.new();
-        let count = if phase == 2 { 11 } else { 1 };
-        for id in 0..count {
+        let count = if phase == 2 {
+            11
+        } else {
+            1
+        };
+        for id in 0 .. count {
             values.insert(key(oracle, id), Payload { id: id, label: f"owner {id} closed" });
         }
         // The twelfth insertion rehashes existing slots before probing its key.
-        oracle.arm(if phase == 1 { 1 } else { 0 }, action, phase == 2).expect("arm callback");
+        oracle.arm(if phase == 1 {
+            1
+        } else {
+            0
+        }, action, phase == 2).expect("arm callback");
         values.insert(key(oracle, 99), Payload { id: 99, label: "owner 99 closed".to_lower() });
         panic("callback did not interrupt insertion");
     }
 
     receive fn set(oracle: Oracle, phase: i64, action: i64) {
         var values: HashSet<Element> = HashSet.new();
-        let count = if phase == 2 { 11 } else { 1 };
-        for id in 0..count { values.insert(Element { key: key(oracle, id) }); }
-        oracle.arm(if phase == 1 { 1 } else { 0 }, action, phase == 2).expect("arm callback");
+        let count = if phase == 2 {
+            11
+        } else {
+            1
+        };
+        for id in 0 .. count {
+            values.insert(Element { key: key(oracle, id) });
+        }
+        oracle.arm(if phase == 1 {
+            1
+        } else {
+            0
+        }, action, phase == 2).expect("arm callback");
         values.insert(Element { key: key(oracle, 99) });
         panic("callback did not interrupt insertion");
     }
@@ -107,20 +147,23 @@ actor Store {
 
 fn main() {
     let oracle = spawn Oracle;
-    for phase in 0..3 {
+    for phase in 0 .. 3 {
         println(f"cancel map phase {phase}");
         let store = spawn Store;
         oracle.arm(-1, 0, false).expect("reset callback");
         mailbox(store).map(oracle, phase, 2).expect("submit map");
-        while !oracle.started().expect("wait for map callback") { sleep(1ms); }
+        while !oracle.started().expect("wait for map callback") {
+            sleep(1ms);
+        }
         close(store);
         println("map closed");
-
         println(f"cancel set phase {phase}");
         let set_store = spawn Store;
         oracle.arm(-1, 0, false).expect("reset callback");
         mailbox(set_store).set(oracle, phase, 2).expect("submit set");
-        while !oracle.started().expect("wait for set callback") { sleep(1ms); }
+        while !oracle.started().expect("wait for set callback") {
+            sleep(1ms);
+        }
         close(set_store);
         println("set closed");
     }

@@ -5,8 +5,7 @@ use std::process::{Command, Output};
 
 use support::{hew_binary, repo_root, require_codegen, run_bounded_command, tempdir};
 
-const CRASHING_CHAT_ROOM: &str = r#"
-actor Client {
+const CRASHING_CHAT_ROOM: &str = r#"actor Client {
     receive fn crash() -> i64 {
         panic("client crash")
     }
@@ -17,9 +16,9 @@ actor Client {
 }
 
 actor ChatRoom {
-    let first: Client,
-    let second: Client,
-    let third: Client,
+    let first: Client;
+    let second: Client;
+    let third: Client;
 
     receive fn broadcast(message: string) {
         let _ = first.deliver(message);
@@ -37,12 +36,10 @@ fn main() {
     let crashed = spawn Client;
     let second = spawn Client;
     let third = spawn Client;
-
     match crashed.crash() {
         .Ok(_) => println("CRASH_UNEXPECTEDLY_REPLIED"),
         .Err(_) => println("CLIENT_CRASHED"),
     }
-
     let room = spawn ChatRoom(first: crashed, second: second, third: third);
     let _ = room.broadcast("after-crash");
     match room.fence() {
@@ -52,17 +49,16 @@ fn main() {
 }
 "#;
 
-const CLEAN_CHAT_ROOM: &str = r#"
-actor Client {
+const CLEAN_CHAT_ROOM: &str = r#"actor Client {
     receive fn deliver(message: string) {
         println(f"DELIVERED:{message}");
     }
 }
 
 actor ChatRoom {
-    let first: Client,
-    let second: Client,
-    let third: Client,
+    let first: Client;
+    let second: Client;
+    let third: Client;
 
     receive fn broadcast(message: string) {
         let _ = first.deliver(message);
@@ -89,8 +85,7 @@ fn main() {
 }
 "#;
 
-const CRASHING_PIPELINE: &str = r#"
-import std.pipeline;
+const CRASHING_PIPELINE: &str = r#"import std.pipeline;
 
 fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
     pipeline.PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
@@ -101,19 +96,19 @@ fn main() {
     match source.push(item(9, "crash-owned", true)) {
         .Ok(admitted) => if admitted {
             panic("crashing item was admitted")
-        },
+        }
         .Err(_) => panic("crashing push did not settle"),
     }
     match source.count() {
         .Ok(value) => if value != 0 {
             panic("crashing item reached the sink")
-        },
+        }
         .Err(_) => panic("pipeline count did not settle"),
     }
     match source.push(item(10, "after-crash", false)) {
         .Ok(admitted) => if admitted {
             panic("post-crash item was admitted")
-        },
+        }
         .Err(_) => panic("post-crash push did not settle"),
     }
     println("PIPELINE_CRASH_SETTLED");
@@ -126,9 +121,8 @@ fn main() {
 /// while the crash flag was only read on the implicit-drain shutdown path: a
 /// program containing a supervisor takes the immediate `hew_sched_shutdown`
 /// epilogue instead, and never consulted the flag.
-const SUPERVISOR_PLUS_UNSUPERVISED_CRASHER: &str = r#"
-actor Worker {
-    let id: i64,
+const SUPERVISOR_PLUS_UNSUPERVISED_CRASHER: &str = r#"actor Worker {
+    let id: i64;
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -142,17 +136,16 @@ actor Loner {
 }
 
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child w1: Worker(id: 1),
+    child w1: Worker(id: 1);
 }
 
 fn main() {
     let sup = spawn Pool;
     let w1 = sup.w1;
     let _ = w1.work();
-
     let loner = spawn Loner;
     match loner.boom() {
         .Ok(_) => println("LONER_REPLIED"),
@@ -165,9 +158,8 @@ fn main() {
 /// A supervisor that restarts its OWN child. The fault is handled by the
 /// authority that owns it, so the run is successful — the one thing that keeps
 /// a crashed actor out of the exit status.
-const SUPERVISOR_RESTARTS_ITS_CHILD: &str = r#"
-actor Flaky {
-    let id: i64,
+const SUPERVISOR_RESTARTS_ITS_CHILD: &str = r#"actor Flaky {
+    let id: i64;
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -179,10 +171,10 @@ actor Flaky {
 }
 
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child f1: Flaky(id: 1),
+    child f1: Flaky(id: 1);
 }
 
 fn main() {
@@ -199,18 +191,17 @@ fn main() {
 /// A supervisor whose restart budget is exhausted: the child keeps failing, the
 /// supervisor gives up, and it has no parent to escalate to. The fault reached
 /// the top of the supervision tree unrecovered, so it owns the exit status.
-const SUPERVISOR_EXHAUSTS_ITS_BUDGET: &str = r#"
-actor Fragile {
+const SUPERVISOR_EXHAUSTS_ITS_BUDGET: &str = r#"actor Fragile {
     receive fn boom() {
         panic("persistent child failure")
     }
 }
 
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
 
-    child f1: Fragile,
+    child f1: Fragile;
 }
 
 fn main() {
@@ -229,8 +220,7 @@ fn main() {
 /// root supervisor has no supervisor of its own, so that crash is unrecovered.
 /// The independent probe must still answer — the fault is reported, not
 /// cascaded.
-const CRASH_IN_SUPERVISOR_ITSELF: &str = r#"
-import std.failure;
+const CRASH_IN_SUPERVISOR_ITSELF: &str = r#"import std.failure;
 
 actor Worker {
     #[on(crash)]
@@ -250,10 +240,10 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child w: Worker,
+    child w: Worker;
 }
 
 fn main() {
@@ -291,8 +281,7 @@ fn main() {
 /// Crash DURING suspend: the waiter parks on an `ask` and crashes on the resume
 /// edge, so the fault is raised from a resumed coroutine frame rather than a
 /// first dispatch. The probe must still answer.
-const CRASH_ON_SUSPEND_RESUME: &str = r#"
-actor Slow {
+const CRASH_ON_SUSPEND_RESUME: &str = r#"actor Slow {
     receive fn fetch() -> i64 {
         sleep(80ms);
         42
@@ -300,7 +289,7 @@ actor Slow {
 }
 
 actor Waiter {
-    let slow: Slow,
+    let slow: Slow;
 
     receive fn drive() -> i64 {
         match slow.fetch() {
@@ -336,8 +325,7 @@ fn main() {
 /// recovery happens: declining is not recovering, and the crash owns the exit
 /// status. The supervisor itself keeps running — the fault is reported, not
 /// cascaded.
-const TEMPORARY_CHILD_CRASH: &str = r#"
-actor OneShot {
+const TEMPORARY_CHILD_CRASH: &str = r#"actor OneShot {
     receive fn boom() {
         panic("temporary child crash")
     }
@@ -350,10 +338,10 @@ actor Probe {
 }
 
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child t1: OneShot restart: temporary,
+    child t1: OneShot restart: temporary;
 }
 
 fn main() {
@@ -373,8 +361,7 @@ fn main() {
 /// An `#[on(crash)]` hook answering `Escalate` on a ROOT supervisor. There is
 /// no parent to escalate to, so the fault reached the top of the supervision
 /// tree with no authority left.
-const ESCALATE_AT_ROOT: &str = r#"
-import std.failure;
+const ESCALATE_AT_ROOT: &str = r#"import std.failure;
 
 actor Worker {
     #[on(crash)]
@@ -394,10 +381,10 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child w: Worker,
+    child w: Worker;
 }
 
 fn main() {
@@ -418,18 +405,17 @@ fn main() {
 /// the immediate shutdown path, so the crash and its supervisor's ruling both
 /// race the worker join. The exit status must be the ruling's — a restart, so
 /// success — not whichever side of the join the scheduler happened to land on.
-const SUPERVISED_CRASH_RACING_SHUTDOWN: &str = r#"
-actor Flaky {
+const SUPERVISED_CRASH_RACING_SHUTDOWN: &str = r#"actor Flaky {
     receive fn boom() {
         panic("supervised crash racing the exit path")
     }
 }
 
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child f1: Flaky,
+    child f1: Flaky;
 }
 
 fn main() {
@@ -502,8 +488,7 @@ fn main() {
 /// ESCALATES to the outer one, which restarts the whole subtree. The escalated
 /// record is provisional until the outer supervisor rules, and its restart
 /// CLEARS it — a tree that recovered a subtree did what a tree is for.
-const NESTED_ESCALATION_RECOVERED_BY_PARENT: &str = r#"
-actor Flaky {
+const NESTED_ESCALATION_RECOVERED_BY_PARENT: &str = r#"actor Flaky {
     receive fn work() {
         println("WORKED");
     }
@@ -514,17 +499,17 @@ actor Flaky {
 }
 
 supervisor Inner {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
 
-    child f1: Flaky,
+    child f1: Flaky;
 }
 
 supervisor Outer {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child inner: Inner,
+    child inner: Inner;
 }
 
 fn main() {
@@ -532,7 +517,6 @@ fn main() {
     var inner = outer.inner;
     var f1 = inner.f1;
     let _ = f1.work();
-
     let _ = f1.boom();
     f1 = await_restart inner.f1;
     let _ = f1.boom();
@@ -548,9 +532,8 @@ fn main() {
 /// Two unrelated supervisors: one recovers its child, the other exhausts its
 /// budget. Settling the recovered record must not settle the other one — a
 /// ruling settles exactly the record it is about.
-const TWO_SUPERVISORS_ONE_HANDLED_ONE_NOT: &str = r#"
-actor Flaky {
-    let id: i64,
+const TWO_SUPERVISORS_ONE_HANDLED_ONE_NOT: &str = r#"actor Flaky {
+    let id: i64;
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -562,28 +545,26 @@ actor Flaky {
 }
 
 supervisor Recovering {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child r1: Flaky(id: 1),
+    child r1: Flaky(id: 1);
 }
 
 supervisor GivingUp {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
 
-    child g1: Flaky(id: 2),
+    child g1: Flaky(id: 2);
 }
 
 fn main() {
     let good = spawn Recovering;
     let bad = spawn GivingUp;
-
     var r1 = good.r1;
     let _ = r1.boom();
     r1 = await_restart good.r1;
     let _ = r1.work();
-
     var g1 = bad.g1;
     let _ = g1.boom();
     g1 = await_restart bad.g1;

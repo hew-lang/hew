@@ -3,8 +3,8 @@
 // and each resource closes once with its final contents.
 #[resource]
 type Conn {
-    fd: i64,
-    name: string,
+    fd: i64;
+    name: string;
 }
 
 impl Conn {
@@ -22,8 +22,8 @@ impl Conn {
 }
 
 type Pair {
-    conn: Conn,
-    uses: i64,
+    conn: Conn;
+    uses: i64;
 }
 
 fn main() {
@@ -31,13 +31,11 @@ fn main() {
     local.fd = local.fd + 5;
     local.name = "renamed".to_upper();
     println(f"local {local.name} {local.fd}");
-
     var method = Conn { fd: 20, name: "method".to_upper() };
     method.bump();
     method.bump();
     method.rename("moved".to_upper());
     println(f"method {method.name} {method.fd}");
-
     var pair = Pair { conn: Conn { fd: 30, name: "pair".to_upper() }, uses: 0 };
     pair.conn.fd = 31;
     pair.uses = pair.uses + 1;

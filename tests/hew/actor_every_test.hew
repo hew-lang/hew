@@ -10,7 +10,7 @@
 //! time to pass, so scheduler load delays it but cannot fail it.
 
 actor Pulse {
-    var count: i64 = 0,
+    var count: i64 = 0;
     #[every(50ms)]
     receive fn tick() {
         count += 1;

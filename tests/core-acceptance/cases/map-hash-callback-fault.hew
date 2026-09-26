@@ -1,6 +1,6 @@
 type Key {
-    label: string,
-    divisor: i64,
+    label: string;
+    divisor: i64;
 }
 
 impl Hash for Key {

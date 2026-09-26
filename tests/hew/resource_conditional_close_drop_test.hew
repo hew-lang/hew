@@ -17,7 +17,7 @@
 
 #[resource]
 type Buf {
-    data: Vec<i64>,
+    data: Vec<i64>;
 }
 
 impl Buf {

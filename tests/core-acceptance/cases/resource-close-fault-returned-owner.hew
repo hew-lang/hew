@@ -2,7 +2,9 @@
 // the fault it raises are the caller's: `acquire` owns nothing at its own exit
 // and has no release to fail.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {

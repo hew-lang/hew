@@ -3,6 +3,7 @@
 // reaches its own module's child rather than whichever declaration was
 // registered last.
 import alpha.rack as first_rack;
+
 import beta.rack as second_rack;
 
 fn main() {
@@ -12,7 +13,6 @@ fn main() {
         .Err(_) => println("alpha unreachable"),
     }
     close(first);
-
     let second = spawn second_rack.Rack;
     match second.worker.identify() {
         .Ok(id) => println(id),

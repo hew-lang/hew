@@ -1,6 +1,6 @@
 actor Store {
-    var data: HashMap<string, string>,
-    let prefix: string,
+    var data: HashMap<string, string>;
+    let prefix: string;
 
     receive fn set(key: string, value: string) {
         data.insert(key, value);
@@ -14,7 +14,9 @@ actor Store {
     receive fn remove(key: string) {
         data.remove(key);
     }
-    receive fn count() -> i64 { data.len() }
+    receive fn count() -> i64 {
+        data.len()
+    }
 }
 
 fn main() {

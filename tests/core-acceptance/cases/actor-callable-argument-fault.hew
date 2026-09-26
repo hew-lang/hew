@@ -3,7 +3,11 @@ actor Worker {
         println(op(value));
     }
 }
-fn fail() -> i64 { panic("later actor argument"); }
+
+fn fail() -> i64 {
+    panic("later actor argument");
+}
+
 fn main() {
     let worker = spawn Worker;
     let captured = ["captured".to_upper(), "owner".to_upper()];

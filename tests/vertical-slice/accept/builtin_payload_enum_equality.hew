@@ -2,7 +2,6 @@ fn main() {
     let a: Option<i64> = .Some(1);
     let b: Option<i64> = .Some(2);
     let c: Option<i64> = .Some(1);
-
     println(a == c);
     println(a == b);
 }

@@ -9,7 +9,7 @@ fn test_try_parse_valid_returns_ok() {
     match r {
         .Ok(val) => {
             val.free();
-        },
+        }
         .Err(_) => panic("expected Ok, got Err"),
     }
 }
@@ -21,8 +21,8 @@ fn test_try_parse_invalid_returns_err() {
         .Ok(val) => {
             val.free();
             panic("expected Err, got Ok");
-        },
-        .Err(ParseError.Invalid(_)) => {},
+        }
+        .Err(ParseError.Invalid(_)) => {}
     }
 }
 
@@ -65,7 +65,7 @@ fn test_stringify_produces_valid_toml() {
             assert(field.get_int() == 5);
             field.free();
             reparsed.free();
-        },
+        }
         .Err(_) => panic("stringify produced unparseable TOML"),
     }
     tbl.free();
@@ -83,7 +83,7 @@ fn test_try_parse_empty_string_is_empty_table() {
             assert(missing.array_len() == -1);
             missing.free(); // null-safe no-op
             val.free();
-        },
+        }
         .Err(_) => panic("expected Ok for empty TOML"),
     }
 }
@@ -98,7 +98,7 @@ fn test_try_parse_simple_key_value() {
             assert(f.get_int() == 1);
             f.free();
             val.free();
-        },
+        }
         .Err(_) => panic("expected Ok for simple TOML key-value"),
     }
 }
@@ -123,7 +123,7 @@ fn test_parse_array_of_integers() {
             v2.free();
             a.free();
             root.free();
-        },
+        }
         .Err(_) => panic("expected Ok for TOML integer array"),
     }
 }
@@ -144,7 +144,7 @@ fn test_nested_table_dotted_key() {
             inner.free();
             outer.free();
             root.free();
-        },
+        }
         .Err(_) => panic("expected Ok for nested TOML table"),
     }
 }
@@ -170,7 +170,7 @@ fn test_array_of_tables_walk() {
             item1.free();
             items.free();
             root.free();
-        },
+        }
         .Err(_) => panic("expected Ok for TOML array of tables"),
     }
 }
@@ -187,7 +187,7 @@ fn test_missing_field_handle_is_invalid() {
             assert(missing.array_len() == -1);
             missing.free(); // null-safe no-op; call to document discipline
             root.free();
-        },
+        }
         .Err(_) => panic("expected Ok"),
     }
 }
@@ -231,7 +231,7 @@ fn test_from_float_round_trip_via_table_field() {
             assert(f.get_float() == 1.5);
             f.free();
             reparsed.free();
-        },
+        }
         .Err(_) => panic("stringify + reparse of float table failed"),
     }
     tbl.free();
@@ -299,7 +299,7 @@ fn test_stringify_failure_does_not_leak_into_the_next_call() {
     let bad = toml.from_float(1.5);
     match toml.stringify(bad) {
         .Ok(_) => panic("expected a bare float root to be rejected"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
     bad.free();
     let tbl = toml.table();
@@ -349,7 +349,7 @@ fn test_nested_builder_stringify_reparse() {
             v_f.free();
             inner_f.free();
             reparsed.free();
-        },
+        }
         .Err(_) => panic("stringify + reparse of nested TOML table failed"),
     }
     outer.free();
@@ -364,8 +364,8 @@ fn test_try_parse_duplicate_key_returns_err() {
         .Ok(val) => {
             val.free();
             panic("expected Err for duplicate TOML key");
-        },
-        .Err(ParseError.Invalid(_)) => {},
+        }
+        .Err(ParseError.Invalid(_)) => {}
     }
 }
 

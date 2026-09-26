@@ -6,8 +6,8 @@
 // mutability, or lowering between `self.count` and `count` shows up as a
 // stdout difference rather than passing unnoticed.
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 impl Point {
@@ -17,10 +17,10 @@ impl Point {
 }
 
 actor Ledger {
-    var count: i64,
-    var label: string,
-    var items: Vec<i64>,
-    var origin: Point,
+    var count: i64;
+    var label: string;
+    var items: Vec<i64>;
+    var origin: Point;
 
     receive fn record(n: i64) {
         count = count + n;

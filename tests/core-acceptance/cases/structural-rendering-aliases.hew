@@ -9,19 +9,19 @@ impl<T> Display for Readings<T> {
 type Archived<T> = Option<Readings<T>>;
 
 type Report<T> {
-    readings: Readings<T>,
-    archived: Archived<T>,
-    plain: Vec<T>,
-    pair: (Readings<T>, string),
+    readings: Readings<T>;
+    archived: Archived<T>;
+    plain: Vec<T>;
+    pair: (Readings<T>, string);
 }
 
 enum Event {
-    Update { readings: Readings<i64> },
-    History(Archived<i64>),
+    Update { readings: Readings<i64>;  }
+    History(Archived<i64>);
 }
 
 type Stations {
-    values: HashMap<string, Readings<i64>>,
+    values: HashMap<string, Readings<i64>>;
 }
 
 fn show<T>(report: Report<T>) -> string {

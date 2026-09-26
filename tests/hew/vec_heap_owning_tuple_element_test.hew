@@ -11,7 +11,7 @@
 //! record-aware authority, so getter/constructor/free agree.
 
 type Rec {
-    s: string,
+    s: string;
 }
 
 #[test]

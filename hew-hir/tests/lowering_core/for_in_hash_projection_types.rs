@@ -226,30 +226,50 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
 #[test]
 fn hashset_for_in_preserves_receiver_and_projection_types_across_place_shapes() {
     let output = lower(
-        r"
-type SetBox { s: HashSet<i64>, }
-type Outer { inner: SetBox, }
-type OwnedBox { s: HashSet<string>, }
-type MapBox { m: HashMap<i64, i64>, }
+        r"type SetBox {
+    s: HashSet<i64>;
+}
+
+type Outer {
+    inner: SetBox;
+}
+
+type OwnedBox {
+    s: HashSet<string>;
+}
+
+type MapBox {
+    m: HashMap<i64, i64>;
+}
 
 fn direct(s: HashSet<i64>) {
-    for x in s { let _ = x; }
+    for x in s {
+        let _ = x;
+    }
 }
 
 fn field(b: SetBox) {
-    for x in b.s { let _ = x; }
+    for x in b.s {
+        let _ = x;
+    }
 }
 
 fn nested(o: Outer) {
-    for x in o.inner.s { let _ = x; }
+    for x in o.inner.s {
+        let _ = x;
+    }
 }
 
 fn tuple_field(pair: (HashSet<i64>, i64)) {
-    for x in pair.0 { let _ = x; }
+    for x in pair.0 {
+        let _ = x;
+    }
 }
 
 fn owned_field(b: OwnedBox) {
-    for x in b.s { let _ = x.len(); }
+    for x in b.s {
+        let _ = x.len();
+    }
 }
 
 fn map_into_iter_field(b: MapBox) {

@@ -32,7 +32,7 @@
 //   - a fresh sup.w1 lookup returned Live (not Transient).
 //   - The restarted actor's state was deep-cloned correctly.
 actor Worker {
-    var value: i64,
+    var value: i64;
     receive fn get_value() -> i64 {
         value
     }
@@ -42,10 +42,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child w1: Worker(value: 7),
+    child w1: Worker(value: 7);
 }
 
 fn main() -> i64 {
@@ -55,12 +55,12 @@ fn main() -> i64 {
     match w.get_value() {
         .Err(_) => {
             return 0;
-        },
+        }
         .Ok(v) => {
             if v != 7 {
                 return 0;
             }
-        },
+        }
     }
     // Crash the worker (fire-and-forget tell).
     let _ = w.crash_me();

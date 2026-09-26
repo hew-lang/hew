@@ -1,4 +1,7 @@
-type Wrap { name: string }
+type Wrap {
+    name: string;
+}
+
 fn main() -> i64 {
     var current = Wrap { name: "old".to_upper() };
     var seen: i64 = 0;
@@ -12,5 +15,9 @@ fn main() -> i64 {
         seen = seen + current.name.len();
         i = i + 1;
     }
-    if seen == 298 { 0 } else { 104 }
+    if seen == 298 {
+        0
+    } else {
+        104
+    }
 }

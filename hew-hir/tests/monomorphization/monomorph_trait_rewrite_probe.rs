@@ -18,30 +18,29 @@ use hew_types::{Checker, SpanKey};
 
 #[test]
 fn probe_trait_method_inside_generic_free_fn_rewrite() {
-    let source = r#"
-        pub trait Describable {
-            fn describe(val: Self) -> string;
-        }
+    let source = r#"pub trait Describable {
+    fn describe(val: Self) -> string;
+}
 
-        pub type Label {
-            text: string,
-        }
+pub type Label {
+    text: string;
+}
 
-        impl Describable for Label {
-            fn describe(label: Label) -> string {
-                label.text
-            }
-        }
+impl Describable for Label {
+    fn describe(label: Label) -> string {
+        label.text
+    }
+}
 
-        pub fn describe<T: Describable>(item: T) -> string {
-            item.describe()
-        }
+pub fn describe<T: Describable>(item: T) -> string {
+    item.describe()
+}
 
-        fn main() -> i64 {
-            let s: string = describe(Label { text: "hello" });
-            0
-        }
-    "#;
+fn main() -> i64 {
+    let s: string = describe(Label { text: "hello" });
+    0
+}
+"#;
 
     let parsed = hew_parser::parse(source);
     assert!(

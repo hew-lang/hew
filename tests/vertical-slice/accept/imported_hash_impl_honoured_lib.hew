@@ -1,5 +1,5 @@
 type ImportedHashKey {
-    id: i64,
+    id: i64;
 }
 
 impl Eq for ImportedHashKey {

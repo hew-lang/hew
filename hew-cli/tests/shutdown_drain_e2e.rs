@@ -181,17 +181,25 @@ fn finish_fixture(mut fixture: RunningFixture) -> (ExitStatus, Vec<String>, Stri
 #[test]
 fn signal_shutdown_stops_root_admission_and_drains_accepted_peer_calls() {
     require_codegen();
-    let source = r#"
-#[resource]
-type Ticket { id: i64 }
+    let source = r#"#[resource]
+type Ticket {
+    id: i64;
+}
+
 impl Ticket {
-    fn close(consume self) { println(f"CLOSED:{self.id}"); }
+    fn close(consume self) {
+        println(f"CLOSED:{self.id}");
+    }
 }
+
 actor Peer {
-    receive fn answer() -> i64 { 42 }
+    receive fn answer() -> i64 {
+        42
+    }
 }
+
 actor Service {
-    var held: Ticket,
+    var held: Ticket;
     receive fn poll(peer: Peer) -> i64 {
         println("REQUEST_ACCEPTED");
         sleep(200ms);
@@ -200,6 +208,7 @@ actor Service {
         value
     }
 }
+
 fn main() {
     let root = Ticket { id: 1 };
     let peer = spawn Peer;

@@ -4,8 +4,8 @@
 // actor. A call on the handle is the completion call, so it waits for the
 // handler and yields the same envelope a named actor's call does.
 type Job {
-    name: string,
-    run: actor(i64) -> i64,
+    name: string;
+    run: actor(i64) -> i64;
 }
 
 fn main() {
@@ -29,10 +29,9 @@ fn main() {
 
     // A lambda handle is an ordinary value: it lives in a record field and is
     // read back out to be called and closed, and it is released once.
-    let job = Job {
-        name: "doubler",
-        run: actor |n: i64| -> i64 { n * 2 },
-    };
+    let job = Job { name: "doubler", run: actor |n: i64| -> i64 {
+        n * 2
+    } };
     let handle = job.run;
     match handle(21) {
         .Ok(v) => println(f"{job.name} {v}"),

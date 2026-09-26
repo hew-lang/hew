@@ -1,9 +1,14 @@
 actor Keeper {
-    var name: string,
-    var count: i64 = 0,
+    var name: string;
+    var count: i64 = 0;
     #[on(stop)]
-    fn stopping() { println("stopped " + name); }
-    receive fn bump() -> i64 { count = count + 1; count }
+    fn stopping() {
+        println("stopped " + name);
+    }
+    receive fn bump() -> i64 {
+        count = count + 1;
+        count
+    }
 }
 
 fn main() {

@@ -9,7 +9,7 @@ fn half(n: i64) -> i64 fails string {
 }
 
 actor Ledger {
-    var balance: i64 = 100,
+    var balance: i64 = 100;
 
     receive fn withdraw(amount: i64) -> i64 fails string {
         if amount > balance {
@@ -32,7 +32,6 @@ actor Ledger {
         balance = balance + amount;
     }
 }
-
 
 fn main() {
     let ledger = spawn Ledger();
@@ -59,7 +58,7 @@ fn main() {
             ActorError.EncodeFailed => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
-        },
+        }
     }
     match ledger.note(5) {
         .Ok(_) => println("noted"),

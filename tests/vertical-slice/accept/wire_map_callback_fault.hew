@@ -1,8 +1,8 @@
 // A codec parse error is an Err; a selected key callback fault still unwinds.
 #[wire]
 type Key {
-    label: string @1,
-    divisor: i64 @2,
+    label: string @1;
+    divisor: i64 @2;
 }
 
 impl Hash for Key {
@@ -14,7 +14,7 @@ impl Hash for Key {
 
 #[wire]
 type Registry {
-    entries: HashMap<Key, Vec<string>> @1,
+    entries: HashMap<Key, Vec<string>> @1;
 }
 
 fn main() -> i64 {

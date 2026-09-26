@@ -1,7 +1,7 @@
 // A transaction is committed on each normal branch.
 #[linear]
 type Txn {
-    id: i64,
+    id: i64;
 }
 
 impl Txn {

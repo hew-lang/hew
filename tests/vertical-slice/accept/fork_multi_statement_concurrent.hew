@@ -21,7 +21,6 @@ actor Driver {
         };
         let first_addr = f"127.0.0.1:{first_listener.local_port()}";
         let second_addr = f"127.0.0.1:{second_listener.local_port()}";
-
         scope {
             fork {
                 let conn = first_listener.accept();
@@ -37,7 +36,6 @@ actor Driver {
                 println("second-end");
                 let _ = conn.send("done".to_bytes());
             };
-
             let first_client = match net.connect(first_addr) {
                 .Ok(conn) => conn,
                 .Err(_) => return 1,
@@ -62,7 +60,7 @@ actor Driver {
 fn main() {
     let driver = spawn Driver;
     match driver.run() {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("driver failed"),
     }
 }

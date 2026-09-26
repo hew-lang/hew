@@ -1,7 +1,9 @@
 import std.encoding.utf8;
 
 fn describe(data: bytes) -> string {
-    utf8.decode(data) handle error { return error.fmt(); }
+    utf8.decode(data) handle error {
+        return error.fmt();
+    }
 }
 
 fn main() {

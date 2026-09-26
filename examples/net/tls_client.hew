@@ -41,7 +41,7 @@ fn main() {
                     .None => text,
                 };
                 println(f"response: {status_line}");
-            },
+            }
             .Err(_) => println(f"read error: {tls.last_error()}"),
         }
     } else {

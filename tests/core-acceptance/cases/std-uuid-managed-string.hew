@@ -1,7 +1,11 @@
 import std.misc.uuid;
+
 import std.net.ipnet;
+
 import std.net.url;
+
 import std.time.datetime;
+
 import std.encoding.markdown;
 
 fn main() {
@@ -10,11 +14,9 @@ fn main() {
     let id = uuid.v4();
     println(id.len());
     println(uuid.is_valid(id));
-
     let tagged = "id=" + uuid.v4();
     println(tagged.len());
     println(tagged.starts_with("id="));
-
     let seven = uuid.v7();
     println(seven.len());
     println(uuid.is_valid(seven));
@@ -42,7 +44,7 @@ fn main() {
 
     // Repeated production and release inside a loop leaves the producer usable.
     var total = 0;
-    for i in 0..4 {
+    for i in 0 .. 4 {
         total = total + uuid.v4().len();
     }
     println(total);

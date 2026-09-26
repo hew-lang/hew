@@ -4,7 +4,7 @@
 // (42) is the exit code, so a garbled round-trip changes it.
 #[wire]
 type Holder {
-    maybe: Option<i64> @1,
+    maybe: Option<i64> @1;
 }
 
 fn main() -> i64 {

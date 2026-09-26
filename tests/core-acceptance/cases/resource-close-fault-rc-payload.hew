@@ -3,7 +3,9 @@
 // in the frame's own code, and the failing close still reaches the frame that
 // dropped the handle rather than leaving through the trap path.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {

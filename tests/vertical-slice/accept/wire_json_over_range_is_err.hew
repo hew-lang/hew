@@ -4,7 +4,7 @@
 // fail-closed gate; the bridge surfaces its failure as `Err`. Exits 42 via Err.
 #[wire]
 type Narrow {
-    v: i8 @1,
+    v: i8 @1;
 }
 
 fn main() -> i64 {

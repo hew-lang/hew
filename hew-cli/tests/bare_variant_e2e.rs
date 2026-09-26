@@ -14,8 +14,8 @@ use std::path::Path;
 use support::{hew_command, repo_root, run_hew_in, strip_ansi, tempdir};
 
 const BARE: &str = r"enum Choice {
-    Present(i64),
-    Absent,
+    Present(i64);
+    Absent;
 }
 
 fn make() -> Choice {
@@ -31,8 +31,8 @@ fn main() {
 ";
 
 const CONTEXTUAL: &str = r"enum Choice {
-    Present(i64),
-    Absent,
+    Present(i64);
+    Absent;
 }
 
 fn make() -> Choice {
@@ -48,8 +48,8 @@ fn main() {
 ";
 
 const QUALIFIED: &str = r"enum Choice {
-    Present(i64),
-    Absent,
+    Present(i64);
+    Absent;
 }
 
 fn make() -> Choice {
@@ -68,8 +68,8 @@ fn main() {
 /// qualified, so a run that reports `E_BARE_VARIANT_EXPR` here would mean the
 /// two rules had been wired to the same site.
 const BARE_PATTERN: &str = r"enum Choice {
-    Present(i64),
-    Absent,
+    Present(i64);
+    Absent;
 }
 
 fn main() {
@@ -85,9 +85,9 @@ fn main() {
 /// pattern, a struct-variant pattern, a unit pattern, and a `let`-position tag
 /// test.
 const MIXED: &str = r"enum Choice {
-    Present(i64),
-    Absent,
-    Named { count: i64 }
+    Present(i64);
+    Absent;
+    Named { count: i64;  }
 }
 
 fn make() -> Choice {
@@ -103,7 +103,9 @@ fn read(value: Choice) -> i64 {
 }
 
 fn tag_test(value: Choice) -> i64 {
-    let Absent = value else { return 1 };
+    let Absent = value else {
+        return 1;
+    };
     0
 }
 
@@ -120,8 +122,8 @@ fn main() {
 /// falls inside `{...}` here. Before #3243 that token-lookup miss produced a
 /// hard refusal that aborted the whole migration.
 const FSTRING_INTERPOLATION: &str = r#"enum Choice {
-    Present(i64),
-    Absent,
+    Present(i64);
+    Absent;
 }
 
 fn accept(c: Choice) -> i64 {
@@ -142,8 +144,8 @@ fn main() {
 /// value with no expected type. The match arm values stay dotted so each
 /// refusal below has one owner.
 const BARE_BUILTINS: &str = r#"enum Colour {
-    Red,
-    Green,
+    Red;
+    Green;
 }
 
 fn half(n: i64) -> Result<i64, string> {
@@ -165,7 +167,9 @@ fn main() {
         .Some(n) => n,
         .None => 0,
     };
-    let wrap = |n: i64| -> Option<i64> { Some(n) };
+    let wrap = |n: i64| -> Option<i64> {
+        Some(n)
+    };
     let colour = Red;
     println(f"{show(inferred)} {show(annotated)} {passed} {arm} {show(wrap(3))} {half(4).is_ok()}");
     match colour {
@@ -180,15 +184,15 @@ fn main() {
 /// assignment, a spawn argument and a machine state selected by its type.
 const DOTTED_BUILTINS: &str = r#"machine Door {
     events {
-        Open,
-        Close,
+        Open;
+        Close;
     }
 
-    state Shut,
-    state Ajar,
+    state Shut;
+    state Ajar;
 
-    on Open: Shut => Ajar,
-    on Close: Ajar => Shut,
+    on Open: Shut => Ajar;
+    on Close: Ajar => Shut;
 
     default { state }
 }
@@ -206,7 +210,7 @@ fn half(n: i64) -> Result<i64, string> {
 fn first(values: Vec<i64>) -> Option<i64> {
     {
         println("looking");
-    }
+    };
     if values.is_empty() {
         return Option.None;
     }
@@ -218,7 +222,7 @@ fn show(value: Option<i64>) -> i64 {
 }
 
 actor Keeper {
-    var held: Option<i64>,
+    var held: Option<i64>;
 
     receive fn keep(n: i64) {
         held = .Some(n);
@@ -234,7 +238,9 @@ fn main() {
         .Some(n) => .Some(n + 1),
         .None => .None,
     };
-    let wrap = |n: i64| -> Option<i64> { .Some(n) };
+    let wrap = |n: i64| -> Option<i64> {
+        .Some(n)
+    };
     let result: Result<i64, string> = Result.Ok(5);
     var door: Door = .Shut;
     let _ = door.step(.Open);
@@ -600,13 +606,13 @@ fn prelude_impl_diagnostics_name_the_selected_std_file() {
 fn bare_machine_state_outside_its_machine_is_rejected() {
     const MACHINE: &str = r"machine Door {
     events {
-        Open,
+        Open;
     }
 
-    state Shut,
-    state Ajar,
+    state Shut;
+    state Ajar;
 
-    on Open: Shut => Ajar,
+    on Open: Shut => Ajar;
 
     default { state }
 }

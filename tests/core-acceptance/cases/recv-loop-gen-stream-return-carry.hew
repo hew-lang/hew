@@ -4,12 +4,14 @@ actor Maker {
         yield "rest";
     }
 }
+
 fn first(m: Maker) -> string {
     for v in m.items() {
         return v;
     }
     "none"
 }
+
 fn main() {
     println("before");
     let m = spawn Maker;

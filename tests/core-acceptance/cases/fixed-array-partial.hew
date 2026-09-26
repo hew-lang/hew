@@ -1,8 +1,12 @@
 #[resource]
-type Token { id: i64 }
+type Token {
+    id: i64;
+}
 
 impl Token {
-    fn close(consume self) { println(f"close {self.id}"); }
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
 }
 
 fn fail() -> Token {

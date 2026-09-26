@@ -1,12 +1,21 @@
 actor Oracle {
-    receive fn hash() -> i64 { 7 }
-    receive fn equal(left: i64, right: i64) -> bool { left == right }
+    receive fn hash() -> i64 {
+        7
+    }
+    receive fn equal(left: i64, right: i64) -> bool {
+        left == right
+    }
 }
 
-type Key { oracle: Oracle, id: i64 }
+type Key {
+    oracle: Oracle;
+    id: i64;
+}
 
 impl Hash for Key {
-    fn hash(self) -> i64 { self.oracle.hash().expect("hash reply") }
+    fn hash(self) -> i64 {
+        self.oracle.hash().expect("hash reply")
+    }
 }
 
 impl Eq for Key {
@@ -26,7 +35,7 @@ actor Store {
     receive fn exercise(oracle: Oracle) -> string {
         var values: HashMap<Key, string> = HashMap.new();
         var keys: HashSet<Key> = HashSet.new();
-        for id in 0..24 {
+        for id in 0 .. 24 {
             let key = Key { oracle: oracle, id: id };
             values.insert(key, f"item {id}");
             keys.insert(key);

@@ -1,24 +1,20 @@
 type Mid {
-    a: string,
-    b: string,
+    a: string;
+    b: string;
 }
 
 type Outer {
-    mid: Mid,
-    c: string,
+    mid: Mid;
+    c: string;
 }
 
 fn make_outer(k: i64) -> Outer {
-    Outer {
-        mid: Mid {
-            a: "oc-a-heap-payload".to_upper(),
-            b: "oc-b-heap-payload".to_upper(),
-        },
-        c: "oc-c-heap-payload".to_upper(),
-    }
+    Outer { mid: Mid { a: "oc-a-heap-payload".to_upper(), b: "oc-b-heap-payload".to_upper() }, c: "oc-c-heap-payload".to_upper() }
 }
 
-fn sink(o: Outer) -> i64 { o.c.len() }
+fn sink(o: Outer) -> i64 {
+    o.c.len()
+}
 
 fn run_cycle(k: i64) -> i64 {
     let o = make_outer(k);
@@ -34,5 +30,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

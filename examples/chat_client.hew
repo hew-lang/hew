@@ -21,8 +21,8 @@ import std.os;
 import std.stream;
 
 actor ChatReader {
-    let input: stream.Stream<bytes>,
-    let done: stream.Sink<string>,
+    let input: stream.Stream<bytes>;
+    let done: stream.Sink<string>;
     /// The terminal path publishes completion and returns. `main` remains in
     /// its stdin loop until `/quit`, then closes the sink, waits for this
     /// status, and exits; runtime teardown closes both handles exactly once.
@@ -41,14 +41,14 @@ actor ChatReader {
                     } else {
                         println(msg);
                     }
-                },
+                }
                 .None => {
                     // The pipe surface reports one terminal `None` for peer
                     // EOF; a transport failure traps instead, so this arm is
                     // the clean end of the server's stream.
                     done.send("[client] server stream ended").expect("send");
                     reading = false;
-                },
+                }
             }
         }
     }
@@ -76,14 +76,14 @@ fn main() {
         .Ok(conn) => conn,
         .Err(_) => {
             panic(f"[client] connect to {addr} failed");
-        },
+        }
     };
     match conn.set_read_timeout(-1) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => {
             let err = f"[client] failed to set read timeout on connection to {addr}";
             panic(err);
-        },
+        }
     }
     println("=== Hew TCP Chat Client ===");
     println(f"Connected to {addr}");

@@ -12,7 +12,7 @@
 //! heap-owning `W<string>` rides the owned family.
 
 type W<T> {
-    v: T,
+    v: T;
 }
 
 fn store_and_read<T: Clone>(x: T) -> T {

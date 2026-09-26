@@ -2,8 +2,8 @@
 // is written where a binding, a field or a parameter needs it, and it infers
 // everywhere else.
 type Job {
-    name: string,
-    run: actor(i64) -> i64,
+    name: string;
+    run: actor(i64) -> i64;
 }
 
 fn apply(step: actor(i64) -> i64, n: i64) -> i64 {
@@ -16,21 +16,23 @@ fn apply(step: actor(i64) -> i64, n: i64) -> i64 {
 fn main() {
     // Annotated.
     let factor = 4;
-    let scale: actor(i64) -> i64 = actor |n: i64| -> i64 { n * factor };
+    let scale: actor(i64) -> i64 = actor |n: i64| -> i64 {
+        n * factor
+    };
     println(apply(scale, 5));
 
     // Inferred, and stored in a record field of the written type.
-    let job = Job {
-        name: "doubler",
-        run: actor |n: i64| -> i64 { n * 2 },
-    };
+    let job = Job { name: "doubler", run: actor |n: i64| -> i64 {
+        n * 2
+    } };
     let stored = job.run;
     println(f"{job.name} {apply(stored, 21)}");
 
     // A unit reply is written by leaving the arrow off.
-    let announce: actor(string) = actor |line: string| { println(line); };
+    let announce: actor(string) = actor |line: string| {
+        println(line);
+    };
     let _ = announce("announced");
-
     close(scale);
     close(job.run);
     close(announce);

@@ -1,7 +1,7 @@
-actor Cache { 
-    var items: Vec<string>,
-    var index: HashMap<string, i64>,
-    var seen: HashSet<i64>,
+actor Cache {
+    var items: Vec<string>;
+    var index: HashMap<string, i64>;
+    var seen: HashSet<i64>;
 
     receive fn refresh(round: i64) {
         var next: Vec<string> = Vec.new();

@@ -2,7 +2,6 @@
 
 import std.result;
 
-
 // ── Predicates ─────────────────────────────────────────────────────────
 #[test]
 fn test_is_ok_int() {
@@ -206,7 +205,11 @@ fn test_map_err_leaves_ok_unchanged() {
 #[test]
 fn test_and_then_chains_on_ok() {
     let x: Result<i64, string> = .Ok(4);
-    let halved = x.and_then(|v: i64| if v % 2 == 0 { .Ok(v / 2) } else { .Err("odd") });
+    let halved = x.and_then(|v: i64| if v % 2 == 0 {
+        .Ok(v / 2)
+    } else {
+        .Err("odd")
+    });
     assert(halved.unwrap_or(-1) == 2);
 }
 
@@ -214,7 +217,11 @@ fn test_and_then_chains_on_ok() {
 fn test_and_then_stops_at_err() {
     let x: Result<i64, string> = .Ok(3);
     // Negative control: `f` returns `Err`, which must surface unchanged.
-    let halved = x.and_then(|v: i64| if v % 2 == 0 { .Ok(v / 2) } else { .Err("odd") });
+    let halved = x.and_then(|v: i64| if v % 2 == 0 {
+        .Ok(v / 2)
+    } else {
+        .Err("odd")
+    });
     assert(halved.is_err());
 }
 

@@ -1,11 +1,11 @@
 enum Status {
-    Idle,
-    Working(string),
-    Done(string, i64),
+    Idle;
+    Working(string);
+    Done(string, i64);
 }
 
 actor Tracker {
-    var status: Status,
+    var status: Status;
 
     receive fn advance(n: i64) {
         status = match n % 3 {

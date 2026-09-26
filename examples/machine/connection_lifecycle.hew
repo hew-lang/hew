@@ -11,26 +11,26 @@
 // `composites` array names `Connected`, its members and its initial substate.
 machine ConnectionLifecycle {
     events {
-        Connect,
-        AuthOk,
-        DrainStart,
-        DrainDone,
-        Disconnect,
+        Connect;
+        AuthOk;
+        DrainStart;
+        DrainDone;
+        Disconnect;
     }
 
-    state Disconnected,
+    state Disconnected;
 
     state Connected {
-        initial state Authenticating,
-        state Active,
-        state Draining,
-        on Disconnect: _ => Disconnected,
-    },
+        initial state Authenticating;
+        state Active;
+        state Draining;
+        on Disconnect: _ => Disconnected;
+    }
 
-    on Connect: Disconnected => Connected,
-    on AuthOk: Authenticating => Active,
-    on DrainStart: Active => Draining,
-    on DrainDone: Draining => Disconnected,
+    on Connect: Disconnected => Connected;
+    on AuthOk: Authenticating => Active;
+    on DrainStart: Active => Draining;
+    on DrainDone: Draining => Disconnected;
 
     default { state }
 }

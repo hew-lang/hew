@@ -1,9 +1,9 @@
 import std.string;
 
 type Multi {
-    label: string,
-    items: Vec<i64>,
-    id: i64,
+    label: string;
+    items: Vec<i64>;
+    id: i64;
 }
 
 fn main() -> i64 {
@@ -14,7 +14,7 @@ fn main() -> i64 {
     while i < 50 {
         var next: Vec<i64> = Vec.new();
         next.push(i);
-        m = Multi { label: string.repeat("y", 16), items: next, ..m };
+        m = Multi { ..m, label: string.repeat("y", 16), items: next };
         i = i + 1;
     }
     m.id

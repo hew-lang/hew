@@ -1,5 +1,5 @@
 pub type Config {
-    host: string,
+    host: string;
 }
 
 pub fn endpoint(host: string) -> Config {

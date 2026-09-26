@@ -1,12 +1,28 @@
 actor Audit {
-    receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); }
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
 }
+
 #[resource]
-type Ticket { audit: Audit, id: i64, }
-impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("audit"); }
+type Ticket {
+    audit: Audit;
+    id: i64;
 }
-actor Worker { receive fn take(ticket: Ticket) -> i64 { ticket.id } }
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit");
+    }
+}
+
+actor Worker {
+    receive fn take(ticket: Ticket) -> i64 {
+        ticket.id
+    }
+}
+
 fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;

@@ -1,4 +1,7 @@
-enum Choice { Text(string), Empty }
+enum Choice {
+    Text(string);
+    Empty;
+}
 
 fn choose(value: Choice) -> string {
     match value {
@@ -7,7 +10,9 @@ fn choose(value: Choice) -> string {
     }
 }
 
-fn make() -> Choice { Choice.Text("payload".to_upper()) }
+fn make() -> Choice {
+    Choice.Text("payload".to_upper())
+}
 
 fn main() -> i64 {
     let original = make();

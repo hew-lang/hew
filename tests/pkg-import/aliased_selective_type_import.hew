@@ -1,5 +1,6 @@
-import ambiguity.type_left.{ ClashType as LeftType };
-import ambiguity.type_right.{ ClashType as RightType };
+import ambiguity.type_left.{ClashType as LeftType};
+
+import ambiguity.type_right.{ClashType as RightType};
 
 fn main() {
     let left: LeftType = LeftType { value: 1 };

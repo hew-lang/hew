@@ -12,41 +12,41 @@ extern "C" {
 
 #[wire]
 type Entry {
-    key: string @1,
-    val: string @2,
+    key: string @1;
+    val: string @2;
 }
 
 #[wire]
 enum StoreReq {
-    Put(Entry),
-    Get(string),
-    Stop,
+    Put(Entry);
+    Get(string);
+    Stop;
 }
 
 #[wire]
 enum StoreResp {
-    Ack,
-    Value(string),
+    Ack;
+    Value(string);
 }
 
 actor Store {
-    var entries: HashMap<string, string>,
+    var entries: HashMap<string, string>;
     receive fn handle(req: StoreReq) -> StoreResp {
         match req {
             StoreReq.Put(entry) => {
                 entries.insert(entry.key, entry.val);
                 StoreResp.Ack
-            },
+            }
             StoreReq.Get(key) => match entries.get(key) {
                 .Some(val) => StoreResp.Value(val),
                 .None => StoreResp.Value(""),
-            },
+            }
             StoreReq.Stop => {
                 unsafe {
                     hew_actor_self_stop()
                 };
                 StoreResp.Ack
-            },
+            }
         }
     }
 }
@@ -66,8 +66,8 @@ fn setup_code(setup: Result<MonitorRef, MonitorError>) -> i64 {
 }
 
 actor Watcher {
-    var active: Result<MonitorRef, MonitorError>,
-    var outcome: i64 = 0,
+    var active: Result<MonitorRef, MonitorError>;
+    var outcome: i64 = 0;
     // 0 = registered, 1 = stale, 2 = refused otherwise.
     receive fn arm(target: RemotePid<Store>) -> i64 {
         active = monitor(target);
@@ -83,7 +83,7 @@ actor Watcher {
             DownTarget.Remote(_) => match note.reason {
                 DownReason.Exited => 1,
                 _ => 2,
-            },
+            }
             DownTarget.Local(_) => 3,
         };
     }
@@ -105,14 +105,7 @@ actor Linker {
 }
 
 fn config() -> NodeConfig {
-    NodeConfig {
-        bind: "127.0.0.1:0",
-        transport: "tcp",
-        key: f"{os.temp_dir()}/hew-remote-pid-local-route-{os.pid()}.key",
-        trust: "pinned",
-        peers: Vec.new(),
-        seeds: Vec.new(),
-    }
+    NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: f"{os.temp_dir()}/hew-remote-pid-local-route-{os.pid()}.key", trust: "pinned", peers: Vec.new(), seeds: Vec.new() }
 }
 
 fn lookup(name: string) -> Option<RemotePid<Store>> {
@@ -134,7 +127,7 @@ fn get(target: RemotePid<Store>, key: string) -> string {
 
 fn main() -> i64 {
     match Node.start(config()) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => return 1,
     }
     let store = spawn Store(entries: HashMap.new());
@@ -145,10 +138,9 @@ fn main() -> i64 {
         .Some(pid) => pid,
         .None => return 3,
     };
-
     // The message's owned fields move into the local actor.
     match target.send(StoreReq.Put(Entry { key: "colour", val: "teal" })) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => return 4,
     }
     println(get(target, "colour"));
@@ -156,12 +148,12 @@ fn main() -> i64 {
     // A clean exit reaches a monitor as the DOWN of a remote location.
     let watcher = spawn Watcher(active: .Err(MonitorError.NodeNotRunning));
     match watcher.arm(target) {
-        .Ok(0) => {},
+        .Ok(0) => {}
         .Ok(_) => return 5,
         .Err(_) => return 6,
     }
     match target.ask(StoreReq.Stop, 2000) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => return 7,
     }
     var outcome: i64 = 0;
@@ -182,7 +174,6 @@ fn main() -> i64 {
         .Err(_) => println("send to stopped error"),
         .Ok(_) => println("send to stopped delivered"),
     }
-
     // A MonitorLost link to a local target leaves the linker running when
     // the target exits.
     let partner = spawn Store(entries: HashMap.new());
@@ -199,7 +190,7 @@ fn main() -> i64 {
         .Err(_) => return 10,
     }
     match partner_pid.ask(StoreReq.Stop, 2000) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => return 11,
     }
     sleep(100ms);
@@ -207,7 +198,6 @@ fn main() -> i64 {
         .Ok(_) => println("linker alive"),
         .Err(_) => println("linker gone"),
     }
-
     // A new session makes every pid from the earlier one stale.
     let live = spawn Store(entries: HashMap.new());
     if Node.register("live", live) != 0 {
@@ -219,7 +209,7 @@ fn main() -> i64 {
     };
     Node.shutdown();
     match Node.start(config()) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => return 14,
     }
     match old.send(StoreReq.Get("colour")) {

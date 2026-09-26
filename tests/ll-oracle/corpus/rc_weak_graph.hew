@@ -1,6 +1,6 @@
 type Node {
-    label: string,
-    parent: Option<Weak<Node>>,
+    label: string;
+    parent: Option<Weak<Node>>;
 }
 
 fn build() -> Weak<Node> {

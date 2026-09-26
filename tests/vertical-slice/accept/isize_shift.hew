@@ -4,7 +4,6 @@ fn main() -> i64 {
     let one: isize = 1;
     let four: isize = 4;
     assert(((one << four) as i64) == 16);
-
     let v: isize = 256;
     let three: isize = 3;
     assert(((v >> three) as i64) == 32);

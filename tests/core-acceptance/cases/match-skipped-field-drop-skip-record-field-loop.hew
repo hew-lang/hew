@@ -1,17 +1,14 @@
 type Inner {
-    value: string,
+    value: string;
 }
 
 type Holder {
-    n: i64,
-    inner: Inner,
+    n: i64;
+    inner: Inner;
 }
 
 fn run_cycle(k: i64) -> i64 {
-    let h = Holder {
-        n: k,
-        inner: Inner { value: "skip-record-heap-payload".to_upper() },
-    };
+    let h = Holder { n: k, inner: Inner { value: "skip-record-heap-payload".to_upper() } };
     let x = match h {
         Holder { n: x, inner: _ } => x,
     };
@@ -25,5 +22,9 @@ fn main() -> i64 {
         total = total + run_cycle(i);
         i = i + 1;
     }
-    if total >= 0 { 0 } else { 1 }
+    if total >= 0 {
+        0
+    } else {
+        1
+    }
 }

@@ -8,7 +8,7 @@
 // a string/Option field is refcount-shared and would not expose the leak.
 // Pre-fix, the per-iteration `set` temp leaked its inner Vec under COPY-IN.
 type Holder {
-    items: Vec<string>
+    items: Vec<string>;
 }
 
 fn mkItems(i: i64) -> Vec<string> {

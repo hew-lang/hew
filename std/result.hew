@@ -46,7 +46,7 @@ pub fn unwrap_int(r: Result<i64, i64>) -> i64 {
         .Err(e) => {
             panic(f"result: unwrap called on Err({e})");
             0
-        },
+        }
     }
 }
 
@@ -56,7 +56,7 @@ pub fn unwrap_err_int(r: Result<i64, i64>) -> i64 {
         .Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
             0
-        },
+        }
         .Err(e) => e,
     }
 }
@@ -119,7 +119,7 @@ pub fn unwrap_str(r: Result<string, string>) -> string {
         .Err(e) => {
             panic(f"result: unwrap called on Err({e})");
             ""
-        },
+        }
     }
 }
 
@@ -129,7 +129,7 @@ pub fn unwrap_err_str(r: Result<string, string>) -> string {
         .Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
             ""
-        },
+        }
         .Err(e) => e,
     }
 }
@@ -174,7 +174,7 @@ pub fn unwrap_f64(r: Result<f64, string>) -> f64 {
         .Err(e) => {
             panic(f"result: unwrap called on Err({e})");
             0.0
-        },
+        }
     }
 }
 

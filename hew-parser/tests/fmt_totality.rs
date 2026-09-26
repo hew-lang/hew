@@ -281,13 +281,13 @@ fn fmt_totality_item_const() {
 /// `Item::TypeDecl` — struct form.
 #[test]
 fn fmt_totality_item_type_decl_struct() {
-    assert_roundtrip("type Point {\n    x: i64,\n    y: i64,\n}\n");
+    assert_roundtrip("type Point {\n    x: i64;\n    y: i64;\n}\n");
 }
 
 /// `Item::TypeDecl` — enum form.
 #[test]
 fn fmt_totality_item_type_decl_enum() {
-    assert_roundtrip("enum Colour {\n    Red,\n    Green,\n    Blue,\n}\n");
+    assert_roundtrip("enum Colour {\n    Red;\n    Green;\n    Blue;\n}\n");
 }
 
 /// `Item::TypeAlias`
@@ -306,7 +306,7 @@ fn fmt_totality_item_trait() {
 #[test]
 fn fmt_totality_item_impl() {
     assert_roundtrip(
-        "type Counter {\n    val: i64,\n}\n\nimpl Counter {\n    fn get(c: Counter) -> i64 {\n        c.val\n    }\n}\n",
+        "type Counter {\n    val: i64;\n}\n\nimpl Counter {\n    fn get(c: Counter) -> i64 {\n        c.val\n    }\n}\n",
     );
 }
 
@@ -326,7 +326,7 @@ fn fmt_totality_item_extern_block() {
 #[test]
 fn fmt_totality_item_actor() {
     assert_roundtrip(
-        "actor Counter {\n    let count: i64,\n\n    receive fn inc(n: i64) -> i64 {\n        count + n\n    }\n}\n",
+        "actor Counter {\n    let count: i64;\n\n    receive fn inc(n: i64) -> i64 {\n        count + n\n    }\n}\n",
     );
 }
 
@@ -334,7 +334,7 @@ fn fmt_totality_item_actor() {
 #[test]
 fn fmt_totality_item_supervisor() {
     assert_roundtrip(
-        "supervisor App(config: string) {\n    strategy: one_for_one,\n\n    child worker: Counter(id: 1),\n}\n",
+        "supervisor App(config: string) {\n    strategy: one_for_one;\n\n    child worker: Counter(id: 1);\n}\n",
     );
 }
 
@@ -342,7 +342,7 @@ fn fmt_totality_item_supervisor() {
 #[test]
 fn fmt_totality_item_supervisor_no_params() {
     assert_roundtrip(
-        "supervisor App {\n    strategy: one_for_one,\n\n    child worker: Counter(id: 1),\n}\n",
+        "supervisor App {\n    strategy: one_for_one;\n\n    child worker: Counter(id: 1);\n}\n",
     );
 }
 
@@ -350,7 +350,7 @@ fn fmt_totality_item_supervisor_no_params() {
 #[test]
 fn fmt_totality_item_machine() {
     assert_roundtrip(
-        "machine Light {\n    events {\n        Toggle\n    }\n\n    state Off,\n    state On,\n\n    on Toggle: Off => On {\n        On\n    }\n    on Toggle: On => Off {\n        Off\n    }\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => On {\n        On\n    }\n    on Toggle: On => Off {\n        Off\n    }\n}\n",
     );
 }
 
@@ -516,7 +516,7 @@ fn fmt_totality_expr_method_call() {
 #[test]
 fn fmt_totality_expr_struct_init() {
     assert_roundtrip(
-        "type Point {\n    x: i64,\n    y: i64,\n}\n\nfn f() -> Point {\n    Point { x: 1, y: 2 }\n}\n",
+        "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn f() -> Point {\n    Point { x: 1, y: 2 }\n}\n",
     );
 }
 
@@ -553,7 +553,7 @@ fn fmt_totality_expr_actor_self() {
 /// `Expr::FieldAccess`
 #[test]
 fn fmt_totality_expr_field_access() {
-    assert_roundtrip("type Point {\n    x: i64,\n}\n\nfn f(p: Point) -> i64 {\n    p.x\n}\n");
+    assert_roundtrip("type Point {\n    x: i64;\n}\n\nfn f(p: Point) -> i64 {\n    p.x\n}\n");
 }
 
 /// `Expr::Index`
@@ -622,16 +622,16 @@ fn fmt_totality_expr_machine_emit() {
     assert_roundtrip(concat!(
         "machine Signal {\n",
         "    events {\n",
-        "        Start,\n",
-        "        Ready { code: i64 },\n",
+        "        Start;\n",
+        "        Ready { code: i64; }\n",
         "    }\n",
         "\n",
         "    emits {\n",
-        "        Ready,\n",
+        "        Ready;\n",
         "    }\n",
         "\n",
-        "    state Idle,\n",
-        "    state Active,\n",
+        "    state Idle;\n",
+        "    state Active;\n",
         "\n",
         "    on Start: Idle => Active {\n",
         "        emit Ready { code: 0 };\n",
@@ -786,7 +786,7 @@ fn fmt_totality_pattern_constructor() {
 #[test]
 fn fmt_totality_pattern_struct() {
     assert_roundtrip(
-        "type Point {\n    x: i64,\n    y: i64,\n}\n\nfn f(p: Point) {\n    match p {\n        Point { x, y } => println(x),\n    }\n}\n",
+        "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn f(p: Point) {\n    match p {\n        Point { x, y } => println(x),\n    }\n}\n",
     );
 }
 
@@ -794,7 +794,7 @@ fn fmt_totality_pattern_struct() {
 #[test]
 fn fmt_totality_pattern_record_shorthand() {
     assert_roundtrip(
-        "type Point {\n    x: i64,\n    y: i64,\n}\n\nfn f(p: Point) {\n    let { x, y } = p;\n    println(x);\n}\n",
+        "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn f(p: Point) {\n    let { x, y } = p;\n    println(x);\n}\n",
     );
 }
 
@@ -906,7 +906,7 @@ fn fmt_totality_type_expr_infer() {
 /// will fail.
 #[test]
 fn fmt_supervisor_config_param_is_not_dropped() {
-    let src = "supervisor App(cfg: string, port: i64) {\n    strategy: one_for_one,\n\n    child worker: Counter(id: 1),\n}\n";
+    let src = "supervisor App(cfg: string, port: i64) {\n    strategy: one_for_one;\n\n    child worker: Counter(id: 1);\n}\n";
 
     let r1 = parse(src);
     assert!(r1.errors.is_empty(), "parse failed: {:?}", r1.errors);

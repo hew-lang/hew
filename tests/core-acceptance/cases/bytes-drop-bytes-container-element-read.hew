@@ -8,7 +8,9 @@ fn main() -> i64 {
         let item = values[0];
         let (inner, flag) = item;
         let (payload, number) = inner;
-        if flag { total = total + payload.len() + number; }
+        if flag {
+            total = total + payload.len() + number;
+        }
         i = i + 1;
     }
     total

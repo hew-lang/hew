@@ -1,7 +1,7 @@
 // Popping an actor's `bytes` state shrinks the state field, hands the byte to
 // the caller and leaves the buffer the actor was seeded from untouched.
 actor Buffer {
-    var data: bytes,
+    var data: bytes;
 
     receive fn fill() {
         data.push(10);
@@ -13,15 +13,18 @@ actor Buffer {
             .None => -1,
         }
     }
-    receive fn scalars(text: string) -> i64 { text.chars().len() }
-    receive fn size() -> i64 { data.len() }
+    receive fn scalars(text: string) -> i64 {
+        text.chars().len()
+    }
+    receive fn size() -> i64 {
+        data.len()
+    }
 }
 
 fn main() {
     var seed: bytes = bytes.new();
     seed.push(99);
     let buffer = spawn Buffer(data: seed);
-
     buffer.fill().expect("fill");
     assert(buffer.size().expect("size") == 3);
     assert(buffer.drain().expect("drain 20") == 20);

@@ -1,7 +1,7 @@
 indirect enum Frame {
-    Label(string),
-    Depth(i64),
-    Wrap(Frame),
+    Label(string);
+    Depth(i64);
+    Wrap(Frame);
 }
 
 fn render(consume frame: Frame) -> string {
@@ -14,7 +14,7 @@ fn render(consume frame: Frame) -> string {
 
 gen fn frames(count: i64) -> Frame {
     defer println("generator cleaned");
-    for step in 0..count {
+    for step in 0 .. count {
         yield Frame.Wrap(Frame.Label(f"step{step}"));
         yield Frame.Wrap(Frame.Wrap(Frame.Depth(step)));
     }
@@ -22,7 +22,7 @@ gen fn frames(count: i64) -> Frame {
 
 gen fn batches(count: i64) -> Vec<Frame> {
     defer println("batches cleaned");
-    for step in 0..count {
+    for step in 0 .. count {
         var batch: Vec<Frame> = Vec.new();
         batch.push(Frame.Label(f"b{step}"));
         batch.push(Frame.Wrap(Frame.Depth(step)));

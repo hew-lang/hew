@@ -2024,6 +2024,54 @@ fn cmd_fmt(a: &args::FmtArgs) {
         }
     };
 
+    if a.migrate {
+        let mut punctuation = Vec::with_capacity(files.len());
+        let mut refused = false;
+        for path in &files {
+            let file = path.display().to_string();
+            match std::fs::read_to_string(path) {
+                Ok(source) => match hew_parser::fmt::migrate_punctuation(&source) {
+                    Ok(formatted) => punctuation.push((path, source, formatted)),
+                    Err(error) => {
+                        refused = true;
+                        for site in error.refusals {
+                            eprintln!(
+                                "Error: migration refused {file}:{}-{}: {}",
+                                site.span.start, site.span.end, site.reason
+                            );
+                        }
+                    }
+                },
+                Err(error) => {
+                    refused = true;
+                    eprintln!("Error: cannot read {file}: {error}");
+                }
+            }
+        }
+        if refused {
+            std::process::exit(1);
+        }
+        let punctuation_changed = punctuation.iter().any(|(_, before, after)| before != after);
+        if a.check && punctuation_changed {
+            for (path, before, after) in &punctuation {
+                if before != after {
+                    eprintln!("{}: needs formatting", path.display());
+                }
+            }
+            std::process::exit(1);
+        }
+        if !a.check {
+            for (path, before, after) in punctuation {
+                if before != after {
+                    if let Err(error) = std::fs::write(path, after) {
+                        eprintln!("Error: cannot write {}: {error}", path.display());
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+    }
+
     if checked_migration_in_snapshot(a, &files) {
         return;
     }
@@ -2175,6 +2223,12 @@ fn insert_format_file(
     Ok(())
 }
 
+fn skip_format_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') || matches!(name, "target" | "node_modules"))
+}
+
 fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|error| format!("cannot read format directory `{}`: {error}", dir.display()))?;
@@ -2192,10 +2246,7 @@ fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), 
             .map_err(|error| format!("cannot inspect format path `{}`: {error}", path.display()))?;
 
         if file_type.is_dir() {
-            if !matches!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".git" | "target" | ".hew")
-            ) {
+            if !skip_format_directory(&path) {
                 collect_format_directory(&path, files)?;
             }
         } else if file_type.is_file()
@@ -2239,10 +2290,7 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
             let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
             let path = entry.path();
             if path.is_dir() {
-                if !matches!(
-                    path.file_name().and_then(|name| name.to_str()),
-                    Some(".git" | "target")
-                ) {
+                if !skip_format_directory(&path) {
                     pending.push(path);
                 }
             } else if path.extension().is_some_and(|extension| extension == "hew") {
@@ -2381,10 +2429,7 @@ fn copy_migration_snapshot_tree(
             {
                 continue;
             }
-            if !matches!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".git" | "target")
-            ) {
+            if !skip_format_directory(&path) {
                 copy_migration_snapshot_tree(&path, &target, snapshot_root)?;
             }
             continue;

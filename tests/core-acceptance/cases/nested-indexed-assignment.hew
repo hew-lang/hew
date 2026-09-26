@@ -1,8 +1,28 @@
-type Row { count: i64, label: string, values: HashMap<string, Vec<string>> }
-type Counter { count: i64 }
-fn outer() -> i64 { println("outer"); 0 }
-fn key() -> string { println("key"); "MAIN" }
-fn rhs() -> string { println("rhs"); "!" }
+type Row {
+    count: i64;
+    label: string;
+    values: HashMap<string, Vec<string>>;
+}
+
+type Counter {
+    count: i64;
+}
+
+fn outer() -> i64 {
+    println("outer");
+    0
+}
+
+fn key() -> string {
+    println("key");
+    "MAIN"
+}
+
+fn rhs() -> string {
+    println("rhs");
+    "!"
+}
+
 fn main() {
     var words: HashMap<string, string> = HashMap.new();
     words["MAIN"] = "old".to_upper();

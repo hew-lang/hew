@@ -1,4 +1,7 @@
-fn mk() -> bytes { "unnamed-usercall-transient-payload".to_bytes() }
+fn mk() -> bytes {
+    "unnamed-usercall-transient-payload".to_bytes()
+}
+
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;

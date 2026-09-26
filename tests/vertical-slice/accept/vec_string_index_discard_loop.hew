@@ -28,13 +28,11 @@ fn main() -> i64 {
     for k in 0 .. 4 {
         xs.push(f"item{k}"); // heap strings: interpolation allocates a fresh buffer
     }
-
     for _r in 0 .. 1000 {
         for j in 0 .. 4 {
             xs[j]; // discarded retained owner — balanced by an inline per-iteration drop
         }
     }
-
     // The Vec must still be intact and usable after the discard loop: a
     // double-free or move-out would corrupt these reads.
     let a = xs[0];

@@ -10,7 +10,7 @@ fn wire_optional_field_without_option_fails_before_lowering() {
     let source = fixture.path().join("wire_optional_scalar.hew");
     std::fs::write(
         &source,
-        "#[wire]\ntype Message { body: string @1 optional }\n",
+        "#[wire]\ntype Message {\n    body: string @1 optional;\n}\n",
     )
     .expect("write wire fixture");
 
@@ -43,7 +43,7 @@ fn wire_optional_field_without_option_leaves_no_codegen_artifact() {
     let emit_dir = fixture.path().join("emit");
     std::fs::write(
         &source,
-        "#[wire]\ntype Message { body: string @1 optional }\n",
+        "#[wire]\ntype Message {\n    body: string @1 optional;\n}\n",
     )
     .expect("write wire fixture");
 
@@ -83,15 +83,7 @@ fn wire_optional_option_counterfactual_controls_check_cleanly() {
     let source = fixture.path().join("wire_optional_controls.hew");
     std::fs::write(
         &source,
-        "#[wire]\ntype RequiredValue { body: string @1 }\n\
-         #[wire]\ntype RequiredOption { body: Option<string> @1 }\n\
-         #[wire]\ntype OptionalOption { body: Option<string> @1 optional }\n\
-         fn main() -> i64 {\n\
-             let _value = RequiredValue { body: \"required\" };\n\
-             let _required_option = RequiredOption { body: .Some(\"present\") };\n\
-             let _optional_option = OptionalOption { body: .None };\n\
-             0\n\
-         }\n",
+        "#[wire]\ntype RequiredValue {\n    body: string @1;\n}\n\n#[wire]\ntype RequiredOption {\n    body: Option<string> @1;\n}\n\n#[wire]\ntype OptionalOption {\n    body: Option<string> @1 optional;\n}\n\nfn main() -> i64 {\n    let _value = RequiredValue { body: \"required\" };\n    let _required_option = RequiredOption { body: .Some(\"present\") };\n    let _optional_option = OptionalOption { body: .None };\n    0\n}\n",
     )
     .expect("write wire control fixture");
 
@@ -115,7 +107,7 @@ fn wire_optional_option_declaration_checks_without_value_use() {
     let source = fixture.path().join("wire_optional_declaration.hew");
     std::fs::write(
         &source,
-        "#[wire]\ntype Message { body: Option<string> @1 optional }\n",
+        "#[wire]\ntype Message {\n    body: Option<string> @1 optional;\n}\n",
     )
     .expect("write declaration-only wire fixture");
 

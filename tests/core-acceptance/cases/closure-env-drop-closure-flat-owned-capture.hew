@@ -1,6 +1,7 @@
 fn make_holder(label: string) -> fn() -> i64 {
     || label.len()
 }
+
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;

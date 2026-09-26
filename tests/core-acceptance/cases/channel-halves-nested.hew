@@ -6,8 +6,8 @@
 import std.stream;
 
 type Halves {
-    tx: stream.Sink<string>,
-    rx: stream.Stream<string>,
+    tx: stream.Sink<string>;
+    rx: stream.Stream<string>;
 }
 
 fn main() {
@@ -16,7 +16,7 @@ fn main() {
         .Err(error) => {
             println(error);
             return;
-        },
+        }
     };
     let pair = Halves { tx: tx, rx: rx };
     pair.tx.send("through a record").expect("send");
@@ -30,13 +30,12 @@ fn main() {
         .None => println("record closed"),
     }
     pair.rx.close();
-
     let (producer, consumer) = match stream.pipe(2) {
         .Ok(pair) => pair,
         .Err(error) => {
             println(error);
             return;
-        },
+        }
     };
     var senders: Vec<stream.Sink<string>> = [];
     senders.push(producer);

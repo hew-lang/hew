@@ -10,7 +10,7 @@
 import std.stream;
 
 actor Countdown {
-    var done: stream.Sink<i64>,
+    var done: stream.Sink<i64>;
 
     receive fn tick(n: i64, me: Countdown) {
         if n == 1 {

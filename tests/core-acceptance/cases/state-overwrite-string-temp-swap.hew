@@ -1,6 +1,6 @@
 actor TwoStrings {
-    var x: string,
-    var y: string,
+    var x: string;
+    var y: string;
 
     receive fn flip() {
         let t = x;

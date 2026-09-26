@@ -4,7 +4,7 @@ import std.stream;
 // Closing the gate afterwards lets the replier produce its owned reply for a
 // cancelled ask, which the runtime must release rather than deliver.
 actor SlowReplier {
-    var gate: stream.Stream<i64>,
+    var gate: stream.Stream<i64>;
     receive fn fetch() -> string {
         gate.recv();
         "owned-reply-heap-payload".to_upper()
@@ -15,12 +15,14 @@ fn main() -> i64 {
     let (open, gate) = stream.pipe(1).expect("gate");
     let slow = spawn SlowReplier(gate: gate);
     var timeouts: i64 = 0;
-    for _ in 0..1000 {
+    for _ in 0 .. 1000 {
         let r = select {
             reply from slow.fetch() => 1,
             after 1ms => 0,
         };
-        if r == 0 { timeouts = timeouts + 1; }
+        if r == 0 {
+            timeouts = timeouts + 1;
+        }
     }
     open.close();
     println(f"{timeouts}");

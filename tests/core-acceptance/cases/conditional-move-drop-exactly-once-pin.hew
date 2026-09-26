@@ -38,7 +38,7 @@ fn nested(a: bool, b: bool) -> i64 {
 fn loop_move(limit: i64) -> i64 {
     let xs = make_vec();
     var hits: i64 = 0;
-    for i in 0..4 {
+    for i in 0 .. 4 {
         if i == limit {
             let ys = xs;
             hits = hits + ys.len();
@@ -81,7 +81,7 @@ fn strs_move(take: bool) -> i64 {
 }
 
 type Crate {
-    items: Vec<i64>,
+    items: Vec<i64>;
 }
 
 fn double_dest(a: bool, b: bool) -> i64 {

@@ -7,8 +7,8 @@
 import std.stream;
 
 actor Gate {
-    mailbox 1,
-    var done: i64 = 0,
+    mailbox 1;
+    var done: i64 = 0;
 
     // A one-way handler the mailbox view can submit to, and a value-returning
     // one the completion views call. `occupy` runs until its gate opens.
@@ -17,12 +17,18 @@ actor Gate {
         done = done + 1;
     }
 
-    receive fn tally() -> i64 { done }
-    receive fn echo(value: string) -> string { value }
+    receive fn tally() -> i64 {
+        done
+    }
+    receive fn echo(value: string) -> string {
+        value
+    }
 }
 
 actor Spare {
-    receive fn echo(value: string) -> string { value }
+    receive fn echo(value: string) -> string {
+        value
+    }
 }
 
 fn describe<Req>(problem: ActorError<Never, Req>) -> string {
@@ -48,7 +54,7 @@ fn main() {
         .Err(_) => panic("the first submission was refused"),
     }
     match inbox.occupy(open) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("the queued submission was refused"),
     }
     // No seat left while the long turn runs, so the refusing view refuses.
@@ -67,7 +73,7 @@ fn main() {
                 .Ok(value) => println(value == "DÉJÀ\0VU"),
                 .Err(_) => panic("redirection failed"),
             }
-        },
+        }
         _ => panic("the full mailbox accepted a request"),
     }
     // Dropping another rejection must release its original owned string.

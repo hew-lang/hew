@@ -193,19 +193,21 @@ fn self_receiver_position_i64_no_regression() {
 #[test]
 fn self_non_receiver_param_struct_no_regression() {
     let output = typecheck(
-        r"
-        trait Compare {
-            fn eq_to(a: Self, b: Self) -> bool;
-        }
+        r"trait Compare {
+    fn eq_to(a: Self, b: Self) -> bool;
+}
 
-        type Point { x: i64, y: i64 }
+type Point {
+    x: i64;
+    y: i64;
+}
 
-        impl Compare for Point {
-            fn eq_to(a: Point, b: Point) -> bool {
-                a.x == b.x
-            }
-        }
-        ",
+impl Compare for Point {
+    fn eq_to(a: Point, b: Point) -> bool {
+        a.x == b.x
+    }
+}
+",
     );
     assert!(
         output.errors.is_empty(),

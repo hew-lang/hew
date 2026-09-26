@@ -10,8 +10,8 @@ fn keep_big(rows: Vec<i64>, var keep: HashMap<string, Vec<i64>>) -> HashMap<stri
         match probe {
             .Some(found) => {
                 println(f"n={found.len()}");
-            },
-            .None => {},
+            }
+            .None => {}
         }
     }
     keep

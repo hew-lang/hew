@@ -1,11 +1,11 @@
 enum Source {
-    Cli(string, string),
-    Env(string),
+    Cli(string, string);
+    Env(string);
 }
 
 enum Config {
-    Absent,
-    Configured(string, Source),
+    Absent;
+    Configured(string, Source);
 }
 
 fn describe(source: Source) -> string {

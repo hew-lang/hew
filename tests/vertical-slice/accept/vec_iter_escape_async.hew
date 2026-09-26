@@ -9,7 +9,9 @@
 // scribbled buffer). 40 + 2 = 42.
 
 actor Echo {
-    receive fn ping() -> i64 { 0 }
+    receive fn ping() -> i64 {
+        0
+    }
 }
 
 pub fn main() -> i64 {

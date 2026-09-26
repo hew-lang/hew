@@ -14,15 +14,15 @@
 import std.string;
 
 enum Action {
-    Move,
-    Left,
-    Right,
-    Wait,
+    Move;
+    Left;
+    Right;
+    Wait;
 }
 
 type Pt {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 // ── string return from an all-diverging tail match ────────────────────────
@@ -30,16 +30,16 @@ fn action_name(a: Action) -> string {
     match a {
         Action.Move => {
             return "MOVE";
-        },
+        }
         Action.Left => {
             return "LEFT";
-        },
+        }
         Action.Right => {
             return "RIGHT";
-        },
+        }
         Action.Wait => {
             return "WAIT";
-        },
+        }
     }
 }
 
@@ -59,23 +59,23 @@ fn action_codes(a: Action) -> Vec<i64> {
             v.push(10);
             v.push(11);
             return v;
-        },
+        }
         Action.Left => {
             var v: Vec<i64> = Vec.new();
             v.push(20);
             return v;
-        },
+        }
         Action.Right => {
             var v: Vec<i64> = Vec.new();
             v.push(30);
             v.push(31);
             v.push(32);
             return v;
-        },
+        }
         Action.Wait => {
             let v: Vec<i64> = Vec.new();
             return v;
-        },
+        }
     }
 }
 
@@ -99,16 +99,16 @@ fn action_point(a: Action) -> Pt {
     match a {
         Action.Move => {
             return Pt { x: 1, y: 2 };
-        },
+        }
         Action.Left => {
             return Pt { x: 3, y: 4 };
-        },
+        }
         Action.Right => {
             return Pt { x: 5, y: 6 };
-        },
+        }
         Action.Wait => {
             return Pt { x: 7, y: 8 };
-        },
+        }
     }
 }
 
@@ -154,20 +154,20 @@ fn routed(a: Action, c: bool) -> string {
             } else {
                 return "MOVE-NC";
             }
-        },
+        }
         Action.Left => {
             if c {
                 return "LEFT-C";
             } else {
                 return "LEFT-NC";
             }
-        },
+        }
         Action.Right => {
             return "RIGHT";
-        },
+        }
         Action.Wait => {
             return "WAIT";
-        },
+        }
     }
 }
 
@@ -196,16 +196,16 @@ fn routed_codes(a: Action, c: bool) -> Vec<i64> {
                 v.push(9);
                 return v;
             }
-        },
+        }
         Action.Left => {
             return Vec.new();
-        },
+        }
         Action.Right => {
             return Vec.new();
-        },
+        }
         Action.Wait => {
             return Vec.new();
-        },
+        }
     }
 }
 

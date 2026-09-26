@@ -1504,12 +1504,14 @@ impl Checker {
                 // identical path the bare spelling runs, rather than each of
                 // those steps learning about the receiver separately.
                 let receiver_target;
+                let mut receiver_field = None;
                 let target = match &target.0 {
                     Expr::FieldAccess { object, field } => {
                         match self.actor_self_state_field(&object.0, field.0.name.as_str()) {
                             Some(state_field) => {
                                 let state_field = state_field.to_string();
                                 self.record_actor_self_state_field(&target.1);
+                                receiver_field = Some(field.clone());
                                 receiver_target =
                                     (Expr::Ident(Ident::new(&state_field)), target.1.clone());
                                 &receiver_target
@@ -1650,6 +1652,9 @@ impl Checker {
                     _ => self.synthesize(&target.0, &target.1),
                 };
                 self.place_write_depth -= 1;
+                if let Some(field) = receiver_field.as_ref() {
+                    self.record_actor_state_projection_resolution(&target.1, field);
+                }
                 self.reject_indexed_writable_borrow(target);
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen

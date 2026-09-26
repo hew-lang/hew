@@ -77,6 +77,33 @@ fn actor_self_projection_publishes_the_state_member() {
 }
 
 #[test]
+fn actor_self_assignment_publishes_the_state_member() {
+    let source = "actor Counter { var value: i64 = 0, \
+        receive fn set(next: i64) { self.value = next; } }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let owner = output
+        .defs
+        .lookup_path("Counter")
+        .expect("actor declaration");
+    let field =
+        crate::check::scope::Resolution::Field(crate::NominalId::from_minted_declaration(owner), 0);
+    let start = source.find("self.value").unwrap();
+    let projection = output
+        .actor_self_state_fields
+        .iter()
+        .find(|site| site.start == start)
+        .expect("checked actor assignment target");
+    for span in [projection.start..projection.end, start + 5..start + 10] {
+        assert_eq!(
+            output.resolutions.get(&SpanKey::in_module(&span, 0)),
+            Some(&field),
+            "actor state write at {span:?}"
+        );
+    }
+}
+
+#[test]
 fn imported_generic_function_value_publishes_module_and_member_segments() {
     for (source, surface) in [
         (
@@ -85,6 +112,10 @@ fn imported_generic_function_value_publishes_module_and_member_segments() {
         ),
         (
             "import m as alias; fn main() { let f: fn(i64) -> i64 = alias.id; let _ = f(4); }",
+            "alias",
+        ),
+        (
+            "import m as alias; fn main() { let f = alias.id<i64>; let _ = f(4); }",
             "alias",
         ),
     ] {

@@ -173,12 +173,18 @@ impl Checker {
                     Some(type_args),
                     span,
                 ),
-                Expr::FieldAccess { object, field } => self.check_field_access_with_type_args(
-                    object,
-                    field.0.name.as_str(),
-                    Some(type_args),
-                    span,
-                ),
+                Expr::FieldAccess { object, field } => {
+                    let ty = self.check_field_access_with_type_args(
+                        object,
+                        field.0.name.as_str(),
+                        Some(type_args),
+                        span,
+                    );
+                    if !matches!(ty, Ty::Error) {
+                        self.record_value_path_resolution(&target.0, &target.1);
+                    }
+                    ty
+                }
                 _ => {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

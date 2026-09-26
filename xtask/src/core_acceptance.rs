@@ -864,7 +864,7 @@ struct Runner<'a> {
 
 impl Runner<'_> {
     fn run_case(&self, case: &Case, log: &mut String) -> bool {
-        match case.kind {
+        let passed = match case.kind {
             CaseKind::Run => {
                 if !case.expected.diagnostics.is_empty() && !self.run_check(case, false, log) {
                     return false;
@@ -879,6 +879,22 @@ impl Runner<'_> {
             }
             CaseKind::Check | CaseKind::Reject => self.run_check(case, false, log),
             CaseKind::Doc => self.run_check(case, true, log),
+        };
+        if case.kind != CaseKind::Run {
+            return passed;
+        }
+        let case_dir = self.run_dir.join(&case.id);
+        match fs::remove_dir_all(&case_dir) {
+            Ok(()) => passed,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => passed,
+            Err(error) => {
+                let _ = writeln!(
+                    log,
+                    "FAIL {} profile=cleanup class=environment-failure detail=remove case artefacts: {error}",
+                    case.id
+                );
+                false
+            }
         }
     }
 

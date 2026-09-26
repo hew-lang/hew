@@ -27,6 +27,11 @@ specifications.
 
 - Resolve source names in the checker. Later stages consume declaration,
   binding and type identities; rendered names describe those identities.
+- Before resolution, source scopes, import catalogues and external symbol
+  tables may index spellings. Publishing a semantic fact ends that boundary:
+  later consumers must use its declaration or binding identity. Structural
+  rules should protect those published facts, not reject every string map
+  used to read source, render diagnostics or select an external ABI symbol.
 - Source annotations cross the checker boundary as resolved types keyed by
   their source file and span. HIR must reject a missing annotation fact rather
   than resolve its spelling again.

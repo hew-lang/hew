@@ -75,6 +75,15 @@ pub(crate) fn prepare_call_hierarchy(
     let doc = server.documents.get(uri)?;
 
     let offset = position_to_offset(&doc.source, &doc.line_offsets, pos);
+    if let Some(item) = super::super::hierarchy::find_callable_at_offset(
+        uri,
+        &doc.source,
+        &doc.line_offsets,
+        &doc.parse_result,
+        offset,
+    ) {
+        return Some(vec![item]);
+    }
     let word = word_at_offset(&doc.source, offset)?;
 
     let item = find_callable_at(
@@ -100,6 +109,8 @@ pub(crate) fn incoming_calls(
         &doc.line_offsets,
         &doc.parse_result,
         &item.name,
+        Some(item),
+        doc.type_output.as_ref(),
     );
     non_empty(calls)
 }
@@ -117,6 +128,8 @@ pub(crate) fn outgoing_calls(
         &doc.line_offsets,
         &doc.parse_result,
         &item.name,
+        Some(item),
+        doc.type_output.as_ref(),
     );
     non_empty(calls)
 }

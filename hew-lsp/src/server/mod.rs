@@ -1690,6 +1690,49 @@ impl Worker {
     }
 
     #[test]
+    fn checked_var_navigation_uses_only_the_name_token() {
+        let source = "fn main() { var value = 1; println(value); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-var.hew");
+        let declared = source.find("var value").unwrap() + 4;
+        let used = source.rfind("value").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, declared, declared + 5);
+        for offset in [declared, used] {
+            let location = super::navigation::identity_definition_location(
+                &uri,
+                &doc,
+                offset,
+                &DashMap::new(),
+            )
+            .expect("var binding should resolve to its name token");
+            assert_eq!(location.range, expected);
+            let refs = super::navigation::identity_reference_locations(
+                &uri,
+                &doc,
+                offset,
+                true,
+                &DashMap::new(),
+            )
+            .expect("var references should use token spans");
+            assert_eq!(refs.len(), 2);
+            assert!(refs.iter().all(|reference| reference.range.end.character
+                - reference.range.start.character
+                == 5));
+        }
+        let initializer = source.find("= 1").unwrap() + 2;
+        assert!(
+            super::navigation::identity_definition_location(
+                &uri,
+                &doc,
+                initializer,
+                &DashMap::new(),
+            )
+            .is_none(),
+            "initializer is not the var binder"
+        );
+    }
+
+    #[test]
     fn checked_field_rename_edits_only_the_selected_owner() {
         let source = "type A { x: i64 }\ntype B { x: i64 }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.x); println(b.x); }";
         let doc = make_typed_doc(source);
@@ -1750,6 +1793,60 @@ impl Worker {
             location.range,
             offset_range_to_lsp(source, &doc.line_offsets, expected, expected + 3)
         );
+    }
+
+    #[test]
+    fn checked_call_hierarchy_incoming_keeps_same_named_methods_separate() {
+        let source = "type A { x: i64 }\nimpl A { fn get(self) -> i64 { self.x } }\ntype B { x: i64 }\nimpl B { fn get(self) -> i64 { self.x } }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.get()); println(b.get()); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-call-hierarchy.hew");
+        let declaration = source.rfind("fn get").unwrap() + 3;
+        let item = super::hierarchy::find_callable_at_offset(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            declaration,
+        )
+        .expect("B.get callable item");
+        let calls = find_incoming_calls(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            "get",
+            Some(&item),
+            doc.type_output.as_ref(),
+        );
+        let from_ranges: Vec<_> = calls.iter().flat_map(|call| &call.from_ranges).collect();
+        let b_call = source.rfind("b.get()").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, b_call, b_call + 7);
+        assert_eq!(from_ranges, vec![&expected]);
+
+        let main_declaration = source.find("fn main").unwrap() + 3;
+        let main_item = super::hierarchy::find_callable_at_offset(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            main_declaration,
+        )
+        .expect("main callable item");
+        let outgoing = find_outgoing_calls(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            "main",
+            Some(&main_item),
+            doc.type_output.as_ref(),
+        );
+        let gets: Vec<_> = outgoing
+            .iter()
+            .filter(|call| call.to.name == "get")
+            .collect();
+        assert_eq!(gets.len(), 2, "A.get and B.get are separate targets");
+        assert_ne!(gets[0].to.selection_range, gets[1].to.selection_range);
     }
 
     #[test]
@@ -1849,6 +1946,24 @@ impl Worker {
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert!(labels.contains(&"width"), "{labels:?}");
         assert!(!labels.contains(&"colour"), "{labels:?}");
+    }
+
+    #[test]
+    fn user_stream_completion_excludes_builtin_stream_methods() {
+        let source = "type Stream { value: i64 }\nimpl Stream { fn own(self) -> i64 { self.value } }\nfn main() { let stream = Stream { value: 1 }; println(stream.own()); }";
+        let doc = make_typed_doc(source);
+        let offset = source.find("stream.own").unwrap() + "stream.".len();
+        let items = hew_analysis::completions::complete(
+            source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"own"), "{labels:?}");
+        assert!(labels.contains(&"value"), "{labels:?}");
+        assert!(!labels.contains(&"recv"), "{labels:?}");
+        assert!(!labels.contains(&"try_recv"), "{labels:?}");
     }
 
     #[test]
@@ -2287,7 +2402,7 @@ impl Worker {
         );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_incoming_calls(&uri, source, &lo, &parse_result, "helper");
+        let calls = find_incoming_calls(&uri, source, &lo, &parse_result, "helper", None, None);
         assert_eq!(
             calls.len(),
             1,
@@ -2308,7 +2423,7 @@ impl Worker {
         );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "main");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "main", None, None);
         assert_eq!(
             calls.len(),
             1,
@@ -2324,7 +2439,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "leaf");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "leaf", None, None);
         assert!(
             calls.is_empty(),
             "leaf function should have no outgoing calls"
@@ -2348,7 +2463,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "on_msg");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "on_msg", None, None);
         let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
         assert!(
             callee_names.contains(&"target_a"),
@@ -2375,7 +2490,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "alpha");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "alpha", None, None);
         let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
         assert!(
             callee_names.contains(&"alpha_target"),

@@ -41,9 +41,30 @@ fn checked_resolution_at(
     hew_types::check::scope::Resolution,
 )> {
     let output = doc.type_output.as_ref()?;
-    hew_analysis::identity::resolution_at(output, 0, offset).or_else(|| {
-        hew_analysis::identity::field_declaration_at(output, &doc.source, &doc.parse_result, offset)
-    })
+    hew_analysis::identity::resolution_at(output, 0, offset)
+        .filter(|(span, resolution)| {
+            !matches!(resolution, hew_types::check::scope::Resolution::Local(_))
+                || is_identifier_token(&doc.source, *span)
+        })
+        .or_else(|| {
+            hew_analysis::identity::field_declaration_at(
+                output,
+                &doc.source,
+                &doc.parse_result,
+                offset,
+            )
+        })
+}
+
+fn is_identifier_token(source: &str, span: hew_analysis::OffsetSpan) -> bool {
+    let Some(token) = source.get(span.start..span.end) else {
+        return false;
+    };
+    let mut chars = token.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
 /// Resolve a checked source segment to its declaration. The checker carries
@@ -56,9 +77,12 @@ pub(super) fn identity_definition_location(
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<Location> {
     let output = doc.type_output.as_ref()?;
-    let (_, resolution) = checked_resolution_at(doc, offset)?;
+    let (selected_span, resolution) = checked_resolution_at(doc, offset)?;
     if let hew_types::check::scope::Resolution::Local(_) = resolution {
-        let span = *hew_analysis::identity::reference_spans(output, 0, resolution).first()?;
+        let spelling = doc.source.get(selected_span.start..selected_span.end)?;
+        let span = hew_analysis::identity::reference_spans(output, 0, resolution)
+            .into_iter()
+            .find(|span| doc.source.get(span.start..span.end) == Some(spelling))?;
         return Some(Location {
             uri: uri.clone(),
             range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
@@ -115,7 +139,7 @@ pub(super) fn identity_reference_locations(
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<Vec<Location>> {
     let output = doc.type_output.as_ref()?;
-    let (_, resolution) = checked_resolution_at(doc, offset)?;
+    let (selected_span, resolution) = checked_resolution_at(doc, offset)?;
     if !matches!(
         resolution,
         hew_types::check::scope::Resolution::Field(_, _)
@@ -125,6 +149,9 @@ pub(super) fn identity_reference_locations(
     }
     let declaration = identity_definition_location(uri, doc, offset, documents);
     let mut locations = Vec::new();
+    let local_spelling = matches!(resolution, hew_types::check::scope::Resolution::Local(_))
+        .then(|| doc.source.get(selected_span.start..selected_span.end))
+        .flatten();
     for (module_idx, span) in hew_analysis::identity::all_reference_spans(output, resolution) {
         let Some(source_uri) = source_uri_for_module_idx(uri, doc, module_idx) else {
             continue;
@@ -140,6 +167,10 @@ pub(super) fn identity_reference_locations(
             };
             source
         };
+        if local_spelling.is_some_and(|spelling| source.get(span.start..span.end) != Some(spelling))
+        {
+            continue;
+        }
         let line_offsets = hew_analysis::util::compute_line_offsets(&source);
         let location = Location {
             uri: source_uri,

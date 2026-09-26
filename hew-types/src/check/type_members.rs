@@ -425,12 +425,14 @@ impl Checker {
             crate::BuiltinType::Vec,
             "from",
         );
-        // A source impl may deliberately use a name also registered by the
-        // runtime (for example `Node::shutdown`). Its declaration owns the
-        // call; only a head without an authored impl uses the builtin route.
-        let checker_member = (!self
-            .impl_method_declaration_ids
-            .contains_key(&internal_member)
+        // A declared user type may use a runtime spelling such as
+        // `Node::shutdown`; its impl owns the call. Compiler builtin types
+        // retain their runtime methods even when std/builtins provides source
+        // signatures for those operations.
+        let checker_member = ((head.builtin.is_some()
+            || !self
+                .impl_method_declaration_ids
+                .contains_key(&internal_member))
             && (self.has_fn_sig(&internal_member) || is_vec_from))
             .then_some(internal_member.clone());
         if let Some(checker_member) = checker_member {

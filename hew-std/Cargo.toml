@@ -34,15 +34,15 @@ toml.workspace = true
 # Native-only module deps (union of the former per-module crates). Gated off the
 # wasm build, where their crates do not compile.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-argon2 = { version = "0.5", features = ["std"] }
+argon2 = "0.6"
 chrono = { version = "0.4.45", default-features = false, features = [
   "clock",
   "std",
 ] }
-cron = "0.16"
+cron = "0.17"
 flate2 = "1"
 ipnet = "2"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = [
+jsonwebtoken = { version = "11.1.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
 lettre = { version = "0.11.22", default-features = false, features = [
@@ -52,7 +52,7 @@ lettre = { version = "0.11.22", default-features = false, features = [
 ] }
 parking_lot = "0.12"
 pulldown-cmark = "0.13.4"
-quick-xml = "0.41.0"
+quick-xml = "0.42.0"
 quinn = "0.11"
 rcgen = "0.14.8"
 ring = "0.17"
@@ -67,7 +67,7 @@ tokio = { version = "1", default-features = false, features = [
   "sync",
   "macros",
 ] }
-tungstenite = "0.29"
+tungstenite = "0.30"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 url = "2"
 uuid = { version = "1.23.3", features = ["v4", "v7"] }

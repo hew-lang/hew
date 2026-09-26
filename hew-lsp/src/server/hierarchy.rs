@@ -8,7 +8,7 @@ use hew_parser::ast::{Item, TraitItem, TypeBodyItem, TypeDeclKind};
 use hew_parser::ParseResult;
 use hew_types::check::scope::Resolution;
 use hew_types::{DeclarationKind, DefId, TypeCheckOutput};
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Range, SymbolKind,
     TypeHierarchyItem, Uri as Url,
 };

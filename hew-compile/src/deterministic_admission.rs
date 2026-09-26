@@ -1,0 +1,554 @@
+//! Compile-time admission of host operations for selected deterministic roots.
+//!
+//! The capability manifest owns the operation set. Checker call targets and
+//! declaration identities own edges; spellings are used only for diagnostics.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ops::Range;
+use std::path::PathBuf;
+
+use hew_parser::ast::{Item, Program, TypeBodyItem};
+use hew_types::check::dispatch::CallTarget;
+use hew_types::check::scope::Resolution;
+use hew_types::check::SpanKey;
+use hew_types::{DeclarationKind, DeclarationOccurrence, DefId, TypeCheckOutput};
+
+use crate::{
+    configured_stdlib_roots, path_is_below, read_source, DeterministicAdmission, DocumentSet,
+    FrontendDiagnostic, FrontendOptions,
+};
+
+type Operation = hew_types::DeterministicOperation;
+
+#[derive(Clone)]
+struct CallEdge {
+    span: SpanKey,
+    target: CallTarget,
+}
+
+#[derive(Clone)]
+struct SourceSite {
+    span: Range<usize>,
+    spelling: String,
+}
+
+fn refused_function(path: &str) -> Option<&'static Operation> {
+    hew_types::DETERMINISTIC_FUNCTION_REJECTIONS
+        .iter()
+        .find(|entry| entry.identity == path)
+}
+
+fn refused_endpoint(symbol: &str) -> Option<&'static Operation> {
+    hew_types::DETERMINISTIC_ENDPOINT_REJECTIONS
+        .iter()
+        .find(|entry| entry.identity == symbol)
+}
+
+fn source_item<'a>(
+    program: &'a Program,
+    module_idx: u32,
+    item_span: &Range<usize>,
+) -> Option<&'a Item> {
+    if let Some(graph) = &program.module_graph {
+        let indices = graph.file_span_indices();
+        for (module_path, module) in &graph.modules {
+            for (item_index, (item, span)) in module.items.iter().enumerate() {
+                if indices.item_index(module_path, item_index) == Some(module_idx)
+                    && span.start <= item_span.start
+                    && item_span.end <= span.end
+                {
+                    return Some(item);
+                }
+            }
+        }
+    }
+    (module_idx == 0)
+        .then(|| {
+            program
+                .items
+                .iter()
+                .find(|(_, span)| span.start <= item_span.start && item_span.end <= span.end)
+                .map(|(item, _)| item)
+        })
+        .flatten()
+}
+
+fn body_span(item: &Item, site: DeclarationOccurrence) -> Option<Range<usize>> {
+    let ordinal = usize::try_from(site.ordinal()).ok()?;
+    let span = match (site.kind(), item) {
+        (DeclarationKind::Function, Item::Function(function)) => &function.fn_span,
+        (DeclarationKind::ImplMethod, Item::Impl(block)) => &block.methods.get(ordinal)?.fn_span,
+        (DeclarationKind::TypeMethod, Item::TypeDecl(decl)) => {
+            &decl
+                .body
+                .iter()
+                .filter_map(|part| match part {
+                    TypeBodyItem::Method(method) => Some(method),
+                    _ => None,
+                })
+                .nth(ordinal)?
+                .fn_span
+        }
+        (DeclarationKind::ActorMethod, Item::Actor(actor)) => &actor.methods.get(ordinal)?.fn_span,
+        (DeclarationKind::ActorReceive, Item::Actor(actor)) => {
+            &actor.receive_fns.get(ordinal)?.span
+        }
+        _ => return None,
+    };
+    (!span.is_empty()).then(|| span.clone())
+}
+
+fn module_index(program: &Program, output: &TypeCheckOutput, id: DefId) -> Option<u32> {
+    let module = output.defs.site(id)?.module()?;
+    if Some(module) == output.defs.root_module() {
+        return Some(0);
+    }
+    let path = output.defs.module_source(module)?;
+    program
+        .module_graph
+        .as_ref()?
+        .file_span_indices()
+        .path_index(path)
+}
+
+fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<DefId, Vec<CallEdge>> {
+    let bodies: Vec<_> = output
+        .defs
+        .declarations()
+        .filter_map(|(site, id)| {
+            let index = module_index(program, output, id)?;
+            let item = source_item(program, index, &site.span())?;
+            Some((id, index, body_span(item, site)?))
+        })
+        .collect();
+    let owner_for = |span: &SpanKey| {
+        bodies
+            .iter()
+            .filter(|(_, index, body)| {
+                *index == span.module_idx && body.start <= span.start && span.end <= body.end
+            })
+            .min_by_key(|(_, _, body)| body.end - body.start)
+            .map(|(id, _, _)| *id)
+    };
+    let mut edges: HashMap<DefId, Vec<CallEdge>> = HashMap::new();
+    for (span, target) in &output.direct_call_targets {
+        let owner = owner_for(span);
+        if let Some(owner) = owner {
+            edges.entry(owner).or_default().push(CallEdge {
+                span: span.clone(),
+                target: target.clone(),
+            });
+        }
+    }
+    for (span, rewrite) in &output.method_call_rewrites {
+        let target = match rewrite {
+            hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
+            | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. } => {
+                target.clone()
+            }
+            _ => continue,
+        };
+        if let Some(owner) = owner_for(span) {
+            edges.entry(owner).or_default().push(CallEdge {
+                span: span.clone(),
+                target,
+            });
+        }
+    }
+    for (span, call) in &output.dyn_trait_method_calls {
+        if let Some(owner) = owner_for(span) {
+            edges.entry(owner).or_default().push(CallEdge {
+                span: span.clone(),
+                target: call.target.clone(),
+            });
+        }
+    }
+    // Several checked module and method calls publish their selected callee
+    // only as a source-segment resolution. Treating a resolved callable value
+    // as a possible edge is conservative and preserves its checker identity.
+    for (span, resolution) in &output.resolutions {
+        let target = match resolution {
+            Resolution::Def(id) => CallTarget::User(*id),
+            Resolution::Member(id) => CallTarget::ImplMethod(*id),
+            _ => continue,
+        };
+        let Some(declaration) = target_declaration(&target) else {
+            continue;
+        };
+        if !matches!(
+            output.defs.kind(declaration),
+            DeclarationKind::Function
+                | DeclarationKind::ExternFunction
+                | DeclarationKind::ImplMethod
+                | DeclarationKind::TypeMethod
+                | DeclarationKind::ActorMethod
+                | DeclarationKind::ActorReceive
+                | DeclarationKind::TraitMethod
+        ) {
+            continue;
+        }
+        if let Some(owner) = owner_for(span) {
+            edges.entry(owner).or_default().push(CallEdge {
+                span: span.clone(),
+                target,
+            });
+        }
+    }
+    for calls in edges.values_mut() {
+        calls.sort_by_key(|call| (call.span.module_idx, call.span.start, call.span.end));
+        calls.dedup_by(|left, right| left.span == right.span && left.target == right.target);
+    }
+    edges
+}
+
+fn source_path(program: &Program, index: u32) -> Option<PathBuf> {
+    let graph = program.module_graph.as_ref()?;
+    let indices = graph.file_span_indices();
+    graph
+        .modules
+        .values()
+        .flat_map(|module| &module.source_paths)
+        .find(|path| indices.path_index(path) == Some(index))
+        .cloned()
+}
+
+fn site_for_call(
+    program: &Program,
+    root_source: &str,
+    root_label: &str,
+    documents: &DocumentSet,
+    span: &SpanKey,
+) -> Option<(SourceSite, String, String)> {
+    let path = (span.module_idx != 0)
+        .then(|| source_path(program, span.module_idx))
+        .flatten();
+    let (source, filename) = if let Some(path) = path {
+        (
+            read_source(documents, &path).ok()?,
+            path.display().to_string(),
+        )
+    } else {
+        (root_source.to_string(), root_label.to_string())
+    };
+    source.get(span.start..span.end)?;
+    let mut display_start = span.start;
+    while display_start > 0
+        && (source.as_bytes()[display_start - 1].is_ascii_alphanumeric()
+            || matches!(source.as_bytes()[display_start - 1], b'_' | b'.'))
+    {
+        display_start -= 1;
+    }
+    let text = source.get(display_start..span.end)?;
+    let spelling = text.split('(').next().unwrap_or(text).trim().to_string();
+    Some((
+        SourceSite {
+            span: span.start..span.end,
+            spelling,
+        },
+        source,
+        filename,
+    ))
+}
+
+fn target_declaration(target: &CallTarget) -> Option<DefId> {
+    match target {
+        CallTarget::User(id) | CallTarget::ImplMethod(id) => Some(*id),
+        CallTarget::StaticTraitMethod { method, .. } => Some(*method),
+        CallTarget::DeclaredRuntime { declaration, .. } => Some(*declaration),
+        _ => None,
+    }
+}
+
+fn target_operation(
+    output: &TypeCheckOutput,
+    target: &CallTarget,
+    stdlib_roots: &[PathBuf],
+) -> Option<&'static Operation> {
+    if let Some(declaration) = target_declaration(target) {
+        if output
+            .defs
+            .module(declaration)
+            .and_then(|module| output.defs.module_source(module))
+            .is_some_and(|source| stdlib_roots.iter().any(|root| path_is_below(source, root)))
+        {
+            if let Some(operation) = refused_function(output.defs.path(declaration)) {
+                return Some(operation);
+            }
+        }
+    }
+    let symbol = match target {
+        CallTarget::Extern { endpoint, .. } | CallTarget::Builtin { endpoint } => endpoint.as_str(),
+        CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
+            family.c_symbol()
+        }
+        _ => return None,
+    };
+    refused_endpoint(symbol)
+}
+
+fn selected_entries(output: &TypeCheckOutput, admission: &DeterministicAdmission) -> Vec<DefId> {
+    match admission {
+        DeterministicAdmission::Off => Vec::new(),
+        DeterministicAdmission::Tests(selections) => selections
+            .iter()
+            .filter_map(|selection| {
+                output
+                    .defs
+                    .declaration(selection.with_module(output.defs.root_module()))
+            })
+            .collect(),
+        DeterministicAdmission::ProcessEntry => output
+            .defs
+            .declarations()
+            .find(|(site, id)| {
+                site.module() == output.defs.root_module()
+                    && site.kind() == DeclarationKind::Function
+                    && output.defs.name(*id).as_str() == "main"
+            })
+            .map(|(_, id)| vec![id])
+            .unwrap_or_default(),
+    }
+}
+
+/// Check each selected root independently using checker-owned call edges.
+pub(super) fn check(
+    program: &Program,
+    output: &TypeCheckOutput,
+    root_source: &str,
+    root_label: &str,
+    options: &FrontendOptions,
+) -> Vec<FrontendDiagnostic> {
+    let roots = selected_entries(output, &options.deterministic_admission);
+    let requested = match &options.deterministic_admission {
+        DeterministicAdmission::Off => 0,
+        DeterministicAdmission::ProcessEntry => 1,
+        DeterministicAdmission::Tests(entries) => entries.len(),
+    };
+    if roots.len() != requested {
+        return vec![FrontendDiagnostic::coded_message(
+            "E_DETERMINISTIC_ENTRY",
+            "a selected deterministic entry has no checked declaration identity",
+        )];
+    }
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let graph = call_graph(program, output);
+    let stdlib_roots = configured_stdlib_roots(options);
+    let mut diagnostics = Vec::new();
+    for root in roots {
+        let mut queue = VecDeque::from([(root, None::<(SourceSite, String, String)>)]);
+        let mut visited = HashSet::new();
+        while let Some((caller, user_site)) = queue.pop_front() {
+            if !visited.insert(caller) {
+                continue;
+            }
+            let caller_is_std = output
+                .defs
+                .module(caller)
+                .and_then(|module| output.defs.module_source(module))
+                .is_some_and(|path| stdlib_roots.iter().any(|root| path_is_below(path, root)));
+            for call in graph.get(&caller).into_iter().flatten() {
+                let current = site_for_call(
+                    program,
+                    root_source,
+                    root_label,
+                    &options.documents,
+                    &call.span,
+                );
+                let selected_site = if caller_is_std {
+                    user_site.clone().or(current)
+                } else {
+                    current.or_else(|| user_site.clone())
+                };
+                if let Some(operation) = target_operation(output, &call.target, &stdlib_roots) {
+                    if let Some((site, source, filename)) = selected_site {
+                        let name = output.defs.name(root);
+                        let message = format!(
+                            "`{}` reaches host operation `{}` ({}), which a deterministic entry cannot schedule",
+                            name,
+                            site.spelling,
+                            operation.capability
+                        );
+                        let mut diagnostic = FrontendDiagnostic::coded_message_at(
+                            "E_DETERMINISTIC_HOST_OPERATION",
+                            message,
+                            site.span,
+                            &source,
+                            &filename,
+                        );
+                        if let crate::FrontendDiagnosticKind::Message(detail) = &mut diagnostic.kind
+                        {
+                            detail.help.push(format!(
+                                "mark `{name}` `#[real_time]` or remove the host operation from its reachable calls"
+                            ));
+                        }
+                        diagnostics.push(diagnostic);
+                    }
+                } else if let Some(next) = target_declaration(&call.target) {
+                    queue.push_back((next, selected_site));
+                } else if let CallTarget::DynamicVtable { method, .. } = &call.target {
+                    // Every concrete-to-dyn coercion publishes its executable
+                    // vtable entries by declaration identity. A dyn call can
+                    // reach any implementation filed for this trait method.
+                    let candidates = output
+                        .dyn_trait_coercions
+                        .values()
+                        .flat_map(|coercion| &coercion.vtable_entries)
+                        .filter(|entry| entry.method == *method)
+                        .filter_map(|entry| entry.impl_method);
+                    for candidate in candidates {
+                        queue.push_back((candidate, selected_site.clone()));
+                    }
+                }
+            }
+        }
+    }
+    diagnostics
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{check_file, FrontendDiagnosticKind};
+
+    fn check_source(source: &str, admission: DeterministicAdmission) -> Result<(), String> {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join("admission.hew");
+        std::fs::write(&path, source).expect("write source");
+        let options = FrontendOptions {
+            deterministic_admission: admission,
+            ..FrontendOptions::default()
+        };
+        match check_file(path.to_str().expect("UTF-8 path"), &options) {
+            Ok(_) => Ok(()),
+            Err(failure) => {
+                let messages = failure
+                    .diagnostics
+                    .iter()
+                    .filter_map(|diagnostic| match &diagnostic.kind {
+                        FrontendDiagnosticKind::Message(message) => {
+                            Some(format!("{}: {}", message.code, message.message))
+                        }
+                        FrontendDiagnosticKind::Type(error) => Some(format!("{error:?}")),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                Err(format!("{}: {messages:?}", failure.message))
+            }
+        }
+    }
+
+    fn selected_test(source: &str, name: &str) -> DeclarationOccurrence {
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let (_, span) = parsed
+            .program
+            .items
+            .iter()
+            .find(|(item, _)| matches!(item, Item::Function(function) if function.name.name.as_str() == name))
+            .expect("selected test declaration");
+        DeclarationOccurrence::new(None, span, DeclarationKind::Function, 0)
+    }
+
+    #[test]
+    fn process_entry_refuses_reachable_tcp_listen() {
+        let source = "import std.net;\nfn helper() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }\nfn main() { helper(); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+        assert!(failure.contains("net.listen"), "{failure}");
+    }
+
+    #[test]
+    fn unreachable_host_helper_does_not_block_process_entry() {
+        let source = "import std.net;\nfn unused() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }\nfn main() { println(\"safe\"); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn aliased_std_module_keeps_its_host_identity() {
+        let source = "import std.net as wire;\nfn main() { match wire.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+        assert!(failure.contains("wire.listen"), "{failure}");
+    }
+
+    #[test]
+    fn a_user_function_with_a_host_like_name_is_admitted() {
+        let source = "fn listen() -> i64 { 7 }\nfn main() { println(listen()); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn selected_test_does_not_inherit_real_time_siblings_operation() {
+        let source = "import std.net;\n#[test] fn safe() { println(\"safe\"); }\n#[test] #[real_time] fn socket() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }";
+        let selection = selected_test(source, "safe");
+        check_source(source, DeterministicAdmission::Tests(vec![selection])).unwrap();
+    }
+
+    #[test]
+    fn selected_test_refuses_stdin_read() {
+        let source =
+            "import std.io;\n#[test] fn input() { let line = io.read_line(); println(line); }";
+        let selection = selected_test(source, "input");
+        let failure =
+            check_source(source, DeterministicAdmission::Tests(vec![selection])).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+        assert!(failure.contains("io.read_line"), "{failure}");
+    }
+
+    #[test]
+    fn dynamic_trait_call_includes_checked_implementer() {
+        let source = "import std.io;\ntrait Reader { fn read(value: Self) -> string; }\ntype Host { n: i64 }\nimpl Host { fn read(value: Host) -> string { io.read_line() } }\nfn inspect(value: dyn Reader) -> string { value.read() }\nfn main() { let erased: dyn Reader = Host { n: 1 }; println(inspect(erased)); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn invoked_closure_cannot_hide_stdin_read() {
+        let source =
+            "import std.io;\nfn main() { let reader = || io.read_line(); println(reader()); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn deterministic_entry_requires_checked_identity() {
+        let failure =
+            check_source("fn helper() {}", DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(failure.contains("E_DETERMINISTIC_ENTRY"), "{failure}");
+    }
+
+    #[test]
+    fn deterministic_admission_cannot_be_bypassed_with_no_typecheck() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unchecked.hew");
+        std::fs::write(&path, "fn main() {}").unwrap();
+        let options = FrontendOptions {
+            no_typecheck: true,
+            deterministic_admission: DeterministicAdmission::ProcessEntry,
+            ..FrontendOptions::default()
+        };
+        let failure = check_file(path.to_str().unwrap(), &options).unwrap_err();
+        assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            FrontendDiagnosticKind::Message(message)
+                if message.code == "E_DETERMINISTIC_TYPECHECK_REQUIRED"
+        )));
+    }
+}

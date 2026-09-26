@@ -8,7 +8,31 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_parser::module::ModulePath;
 use serde::{de::DeserializeOwned, Deserialize};
 
+mod deterministic_admission;
 mod host;
+
+/// Source entries checked for operations the deterministic driver cannot
+/// schedule. A dispatcher supplies each deterministic test separately so a
+/// real-time sibling does not affect its admission verdict.
+#[derive(Debug, Clone, Default)]
+pub enum DeterministicAdmission {
+    #[default]
+    Off,
+    ProcessEntry,
+    Tests(Vec<hew_types::DeclarationOccurrence>),
+}
+
+fn require_deterministic_typecheck(options: &FrontendOptions) -> Result<(), FrontendFailure> {
+    if options.no_typecheck
+        && !matches!(options.deterministic_admission, DeterministicAdmission::Off)
+    {
+        return Err(FrontendFailure::coded_message(
+            "E_DETERMINISTIC_TYPECHECK_REQUIRED",
+            "deterministic host-operation admission requires type checking",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Default)]
 #[allow(
@@ -61,6 +85,8 @@ pub struct FrontendOptions {
     /// Exact root declaration selected as the process entry. File test
     /// discovery records this occurrence before checker identities exist.
     pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// Compile-time host-operation admission for selected deterministic roots.
+    pub deterministic_admission: DeterministicAdmission,
     /// The sole deterministic production peer for a selected `_test.hew`
     /// root. Arbitrary sibling discovery is intentionally not supported.
     pub companion: Option<PathBuf>,
@@ -1766,7 +1792,8 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
-    let (result, diagnostics) = typecheck_program_with_diagnostics(
+    require_deterministic_typecheck(options)?;
+    let (result, mut diagnostics) = typecheck_program_with_diagnostics(
         program,
         source,
         input,
@@ -1776,6 +1803,16 @@ pub fn typecheck_program(
     );
     if type_check_failed(&result) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
+    }
+    if let Some(output) = result.tco.as_ref() {
+        let refused = deterministic_admission::check(program, output, source, input, options);
+        if !refused.is_empty() {
+            diagnostics.extend(refused);
+            return Err(FrontendFailure::new(
+                "deterministic host operations found",
+                diagnostics,
+            ));
+        }
     }
     Ok(result)
 }
@@ -1808,6 +1845,7 @@ pub fn check_program(
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<CheckOutput, FrontendFailure> {
+    require_deterministic_typecheck(options)?;
     let project = project_context_for_program(source, options)?;
     let mut diagnostics = Vec::new();
 
@@ -1834,6 +1872,17 @@ pub fn check_program(
     diagnostics.extend(type_diagnostics);
     if type_check_failed(&tcr) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
+    }
+    if let Some(output) = tcr.tco.as_ref() {
+        let refused =
+            deterministic_admission::check(&program, output, source, source_label, options);
+        if !refused.is_empty() {
+            diagnostics.extend(refused);
+            return Err(FrontendFailure::new(
+                "deterministic host operations found",
+                diagnostics,
+            ));
+        }
     }
     let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
     let stack_hints = tcr
@@ -3463,6 +3512,9 @@ fn run_frontend_after_parse(
     mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> DocumentFrontendState {
+    if let Err(failure) = require_deterministic_typecheck(options) {
+        return state.stop(failure);
+    }
     if let Err(failure) = resolve_imports_internal(
         &mut state.program,
         &project.source,
@@ -3495,6 +3547,21 @@ fn run_frontend_after_parse(
                 || !is_stdlib_owned_diagnostic(input, &stdlib_roots, diagnostic)
         });
         return state.stop(FrontendFailure::message_only("type errors found"));
+    }
+
+    if let Some(output) = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+    {
+        let refused =
+            deterministic_admission::check(&state.program, output, &project.source, input, options);
+        if !refused.is_empty() {
+            state.diagnostics.extend(refused);
+            return state.stop(FrontendFailure::message_only(
+                "deterministic host operations found",
+            ));
+        }
     }
 
     if let Some(normalized) = state

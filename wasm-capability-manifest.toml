@@ -395,6 +395,15 @@ native_only_modules = ["http"]
 [[feature]]
 id = "tcp-networking"
 deterministic = "refuse"
+deterministic_functions = [
+  "std.net.listen",
+  "std.net.connect",
+  "std.net.connect_timeout",
+  "std.net.Listener.accept",
+  "std.net.Connection.read",
+  "std.net.Connection.write",
+  "std.net.broadcast_except",
+]
 deterministic_endpoints = [
   "hew_tcp_listen",
   "hew_tcp_accept",
@@ -419,6 +428,14 @@ native_only_modules = ["net"]
 [[feature]]
 id = "process-execution"
 deterministic = "refuse"
+deterministic_functions = [
+  "std.process.run",
+  "std.process.run_argv",
+  "std.process.run_args",
+  "std.process.start",
+  "std.process.start_argv",
+  "std.process.Child.wait",
+]
 deterministic_endpoints = [
   "hew_process_run",
   "hew_process_run_argv",
@@ -490,6 +507,12 @@ native_only_modules = ["quic"]
 [[feature]]
 id = "dns"
 deterministic = "refuse"
+deterministic_functions = [
+  "std.net.dns.resolve",
+  "std.net.dns.lookup_host",
+  "std.net.dns.resolve_timed",
+  "std.net.dns.lookup_host_timed",
+]
 deterministic_endpoints = [
   "hew_dns_resolve",
   "hew_dns_lookup_host",
@@ -528,9 +551,17 @@ deterministic = "refuse"
 deterministic_endpoints = [
   "hew_node_api_start_config",
   "hew_node_api_connect",
+  "hew_node_api_connect_string",
+  "hew_node_set_transport",
   "hew_node_api_register_by_pid_string",
+  "hew_node_api_lookup_location_string",
+  "hew_node_api_send_location",
+  "hew_node_api_shutdown",
   "hew_node_monitor_location",
   "hew_node_link_remote_location",
+  "hew_remote_call_new",
+  "hew_remote_call_poll",
+  "hew_remote_call_take",
 ]
 enum_variant = "Distributed"
 label = "Distributed node and remote-actor operations"
@@ -551,6 +582,11 @@ runtime = "implemented"
 runtime_status = "Native and WASI standard input is host-provided"
 categories = ["stdlib", "io"]
 deterministic = "refuse"
+deterministic_functions = [
+  "std.io.read_line",
+  "std.io.read_all",
+  "std.io.scanner.from_stdin",
+]
 deterministic_endpoints = ["hew_io_read_line", "hew_io_read_all"]
 
 [[feature]]

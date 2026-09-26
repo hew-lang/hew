@@ -322,6 +322,26 @@ pub struct DeterministicOperation {
 
 /// Source declaration paths refused by the deterministic driver.
 pub const DETERMINISTIC_FUNCTION_REJECTIONS: &[DeterministicOperation] = &[
+    DeterministicOperation { identity: "std.net.listen", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "std.net.connect", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "std.net.connect_timeout", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "std.net.Listener.accept", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "std.net.Connection.read", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "std.net.Connection.write", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "std.net.broadcast_except", capability: WasmCapabilityId("tcp-networking") },
+    DeterministicOperation { identity: "std.process.run", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "std.process.run_argv", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "std.process.run_args", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "std.process.start", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "std.process.start_argv", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "std.process.Child.wait", capability: WasmCapabilityId("process-execution") },
+    DeterministicOperation { identity: "std.net.dns.resolve", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "std.net.dns.lookup_host", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "std.net.dns.resolve_timed", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "std.net.dns.lookup_host_timed", capability: WasmCapabilityId("dns") },
+    DeterministicOperation { identity: "std.io.read_line", capability: WasmCapabilityId("stdin-input") },
+    DeterministicOperation { identity: "std.io.read_all", capability: WasmCapabilityId("stdin-input") },
+    DeterministicOperation { identity: "std.io.scanner.from_stdin", capability: WasmCapabilityId("stdin-input") },
 ];
 
 /// Trusted compiler and runtime endpoints refused by the deterministic driver.
@@ -377,9 +397,17 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[DeterministicOperation] = &[
     DeterministicOperation { identity: "hew_dns_lookup_host_timed", capability: WasmCapabilityId("dns") },
     DeterministicOperation { identity: "hew_node_api_start_config", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_node_api_connect", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_api_connect_string", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_set_transport", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_node_api_register_by_pid_string", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_api_lookup_location_string", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_api_send_location", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_node_api_shutdown", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_node_monitor_location", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_node_link_remote_location", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_remote_call_new", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_remote_call_poll", capability: WasmCapabilityId("distributed") },
+    DeterministicOperation { identity: "hew_remote_call_take", capability: WasmCapabilityId("distributed") },
     DeterministicOperation { identity: "hew_io_read_line", capability: WasmCapabilityId("stdin-input") },
     DeterministicOperation { identity: "hew_io_read_all", capability: WasmCapabilityId("stdin-input") },
 ];

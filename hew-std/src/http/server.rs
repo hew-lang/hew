@@ -2043,7 +2043,7 @@ mod tests {
         }
 
         // All response threads tracked.
-        while !(tracker.active_response_count() == STREAM_COUNT) {
+        while tracker.active_response_count() != STREAM_COUNT {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(
@@ -2057,7 +2057,7 @@ mod tests {
         drop(unsafe { Box::from_raw(completed_sink) });
 
         // One stream completes before reap.
-        while !(tracker.active_response_count() == STREAM_COUNT - 1) {
+        while tracker.active_response_count() != STREAM_COUNT - 1 {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(
@@ -2079,7 +2079,7 @@ mod tests {
         unsafe { hew_http_server_close(srv) };
 
         // Remaining response threads cancel.
-        while !(tracker.active_response_count() == 0) {
+        while tracker.active_response_count() != 0 {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(

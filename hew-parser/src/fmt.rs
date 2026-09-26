@@ -3490,7 +3490,9 @@ impl<'a> Formatter<'a> {
                 }
                 self.write(";");
             }
-            Stmt::Var { name, ty, value } => {
+            Stmt::Var {
+                name, ty, value, ..
+            } => {
                 self.write("var ");
                 self.write_ident(*name);
                 if let Some(ty) = ty {
@@ -3590,7 +3592,9 @@ impl<'a> Formatter<'a> {
                 }
                 self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
-            Stmt::Var { name, ty, value } => {
+            Stmt::Var {
+                name, ty, value, ..
+            } => {
                 self.write_indent();
                 self.write("var ");
                 self.write_ident(*name);

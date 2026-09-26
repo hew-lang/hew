@@ -630,7 +630,9 @@ fn hover_binding_in_stmt(
                 span: Some(word_span),
             })
         }
-        Stmt::Var { name, ty, value } => {
+        Stmt::Var {
+            name, ty, value, ..
+        } => {
             if !is_var_name_span(
                 stmt_span,
                 word,

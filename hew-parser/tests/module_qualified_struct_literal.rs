@@ -66,6 +66,7 @@ fn module_qualified_struct_literal_with_field_parses() {
         fields,
         type_args,
         base,
+        ..
     } = expr
     else {
         panic!("expected StructInit, got: {expr:?}");

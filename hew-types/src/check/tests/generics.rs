@@ -2324,6 +2324,7 @@ fn mutable_var_initializer_keeps_integer_literal_inferable() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let var_stmt = Stmt::Var {
         name: Ident::new("n"),
+        name_span: 0..0,
         ty: None,
         value: Some(make_int_literal(5, 8..9)),
     };

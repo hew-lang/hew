@@ -567,7 +567,7 @@ impl Parser<'_> {
                         hint,
                     );
 
-                    let name = self.expect_ident()?;
+                    let (name, name_span) = self.expect_ident_spanned()?;
 
                     let ty = if self.eat(&Token::Colon) {
                         Some(self.parse_type()?)
@@ -584,7 +584,15 @@ impl Parser<'_> {
                     self.expect(&Token::Semicolon)?;
 
                     let end = self.peek_span().start;
-                    return Some((Stmt::Var { name, ty, value }, start..end));
+                    return Some((
+                        Stmt::Var {
+                            name,
+                            name_span,
+                            ty,
+                            value,
+                        },
+                        start..end,
+                    ));
                 }
 
                 let pattern = self.parse_pattern()?;
@@ -646,7 +654,7 @@ impl Parser<'_> {
             }
             Some(Token::Var) => {
                 self.advance();
-                let name = self.expect_ident()?;
+                let (name, name_span) = self.expect_ident_spanned()?;
 
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
@@ -662,7 +670,12 @@ impl Parser<'_> {
 
                 self.expect(&Token::Semicolon)?;
 
-                Stmt::Var { name, ty, value }
+                Stmt::Var {
+                    name,
+                    name_span,
+                    ty,
+                    value,
+                }
             }
             // These don't need semicolons (they have blocks)
             Some(Token::If) => {

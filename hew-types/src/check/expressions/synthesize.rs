@@ -143,7 +143,11 @@ impl Checker {
                 self.report_bare_variant_expr(name.name.as_str(), "Option.None", span);
                 Ty::option(Ty::Var(TypeVar::fresh()))
             }
-            Expr::Ident(name) => self.synthesize_identifier(name.name.as_str(), span),
+            Expr::Ident(name) => {
+                let ty = self.synthesize_identifier(name.name.as_str(), span);
+                self.record_local_resolution(*name, span);
+                ty
+            }
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
                     for (_, value) in &record.fields {
@@ -223,6 +227,13 @@ impl Checker {
                 is_tail_call: _,
             } => {
                 let ty = self.check_call(function, type_args.as_deref(), args, span);
+                if !matches!(&ty, Ty::Error) {
+                    let (callee_span, method_like) = match &function.0 {
+                        Expr::FieldAccess { field, .. } => (&field.1, true),
+                        _ => (&function.1, false),
+                    };
+                    self.record_call_resolution(span, callee_span, method_like);
+                }
                 self.finish_named_arguments(args, || Self::callee_label(function), &ty, span);
                 ty
             }
@@ -234,13 +245,20 @@ impl Checker {
                 args,
             } => {
                 let ty = self.check_method_call(receiver, method.0.name.as_str(), args, span);
+                if !matches!(&ty, Ty::Error) {
+                    self.record_call_resolution(span, &method.1, true);
+                }
                 self.finish_named_arguments(args, || format!("method `{}`", method.0), &ty, span);
                 ty
             }
 
             // Field access
             Expr::FieldAccess { object, field } => {
-                self.check_field_access(object, field.0.name.as_str(), span)
+                let ty = self.check_field_access(object, field.0.name.as_str(), span);
+                if !matches!(&ty, Ty::Error) {
+                    self.record_field_resolution(object, field);
+                }
+                ty
             }
 
             // Block

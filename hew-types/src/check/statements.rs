@@ -1183,12 +1183,9 @@ impl Checker {
                         });
                     }
                     self.check_shadowing(name.name.as_str(), &pattern.1);
-                    self.env.define_with_span(
-                        name.to_string(),
-                        val_ty.clone(),
-                        false,
-                        pattern.1.clone(),
-                    );
+                    self.env
+                        .define_with_span(*name, val_ty.clone(), false, pattern.1.clone());
+                    self.record_local_resolution(*name, &pattern.1);
                     self.env
                         .set_collection_borrow(name.name.as_str(), collection_borrow.clone());
                     // Register generic lambda binding for call-site inference.

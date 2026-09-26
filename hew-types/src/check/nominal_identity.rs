@@ -310,6 +310,114 @@ impl Checker {
         })
     }
 
+    /// Publish the exact lexical binding at a declaration or use site.
+    pub(super) fn record_local_resolution(
+        &mut self,
+        name: hew_parser::ast::Ident,
+        span: &hew_parser::ast::Span,
+    ) {
+        let Some(binding) = self.env.lookup_ref(name) else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        self.scopes
+            .record_resolution(site, span, super::scope::Resolution::Local(binding.id));
+    }
+
+    /// Publish a record field chosen from the receiver's resolved nominal.
+    /// The field index is declaration order, not hash-map iteration order.
+    pub(super) fn record_field_resolution(
+        &mut self,
+        object: &hew_parser::ast::Spanned<hew_parser::ast::Expr>,
+        field: &hew_parser::ast::Spanned<hew_parser::ast::Ident>,
+    ) {
+        let key = super::types::SpanKey::in_module(&object.1, self.current_module_idx);
+        let Some(receiver) = self.expr_types.get(&key) else {
+            return;
+        };
+        let crate::Ty::Named { head, .. } = self.subst.resolve(receiver) else {
+            return;
+        };
+        let Some(nominal) = head.nominal() else {
+            return;
+        };
+        let Some(definition) = self.type_defs.get(&nominal) else {
+            return;
+        };
+        let Some(index) = definition
+            .field_order
+            .iter()
+            .position(|name| name == field.0.name.as_str())
+        else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        self.scopes.record_resolution(
+            site,
+            &field.1,
+            super::scope::Resolution::Field(
+                nominal,
+                u32::try_from(index).expect("more than u32::MAX record fields"),
+            ),
+        );
+    }
+
+    /// Publish the declaration the completed call checker selected for its
+    /// written callee segment. Runtime and indirect calls have no source
+    /// declaration to publish here.
+    pub(super) fn record_call_resolution(
+        &mut self,
+        call_span: &hew_parser::ast::Span,
+        callee_span: &hew_parser::ast::Span,
+        method_like: bool,
+    ) {
+        let key = super::types::SpanKey::in_module(call_span, self.current_module_idx);
+        let target = self
+            .method_call_rewrites
+            .get(&key)
+            .and_then(|rewrite| match rewrite {
+                MethodCallRewrite::RewriteToFunction { target, .. }
+                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. } => {
+                    Some(target)
+                }
+                _ => None,
+            })
+            .or_else(|| self.direct_call_targets.get(&key));
+        let Some(target) = target else {
+            return;
+        };
+        let resolution = match target {
+            CallTarget::User(id)
+            | CallTarget::RecordConstructor(id)
+            | CallTarget::Extern {
+                declaration: id, ..
+            }
+            | CallTarget::DeclaredRuntime {
+                declaration: id, ..
+            } => {
+                if method_like {
+                    super::scope::Resolution::Member(*id)
+                } else {
+                    super::scope::Resolution::Def(*id)
+                }
+            }
+            CallTarget::ImplMethod(id)
+            | CallTarget::DynamicVtable { method: id, .. }
+            | CallTarget::StaticTraitMethod { method: id, .. } => {
+                super::scope::Resolution::Member(*id)
+            }
+            _ => return,
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        self.scopes.record_resolution(site, callee_span, resolution);
+    }
+
     /// The head a written type path names, resolved through `Scope`.
     pub(super) fn resolve_type_path_head(
         &mut self,

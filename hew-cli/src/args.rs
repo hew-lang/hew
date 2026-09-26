@@ -383,6 +383,11 @@ impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
+            deterministic_admission: if self.deterministic {
+                hew_compile::DeterministicAdmission::ProcessEntry
+            } else {
+                hew_compile::DeterministicAdmission::Off
+            },
             ..self.common.base_compile_options()
         }
     }

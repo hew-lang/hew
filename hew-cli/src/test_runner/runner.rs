@@ -1,6 +1,6 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
-use super::discovery::TestCase;
+use super::discovery::{TestCase, TestClock};
 use serde::Deserialize;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
@@ -532,6 +532,11 @@ fn compile_test(
         project_dir: Some(compile_paths.paths.project_dir.clone()),
         module_search_paths: Some(compile_paths.paths.module_search_paths.clone()),
         entry_selection: Some(test.occurrence),
+        deterministic_admission: if test.clock == TestClock::Deterministic {
+            hew_compile::DeterministicAdmission::Tests(vec![test.occurrence])
+        } else {
+            hew_compile::DeterministicAdmission::Off
+        },
         companion: test.companion.as_deref().map(PathBuf::from),
         ..crate::compile::CompileOptions::default()
     };

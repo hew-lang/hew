@@ -9,9 +9,10 @@ use std::path::PathBuf;
 
 use hew_parser::ast::{Item, Program, TypeBodyItem};
 use hew_types::check::dispatch::CallTarget;
-use hew_types::check::scope::Resolution;
 use hew_types::check::SpanKey;
-use hew_types::{DeclarationKind, DeclarationOccurrence, DefId, Ty, TypeCheckOutput, TypeHead};
+use hew_types::{
+    CallableCandidate, DeclarationKind, DeclarationOccurrence, DefId, Ty, TypeCheckOutput, TypeHead,
+};
 
 use crate::{
     configured_stdlib_roots, path_is_below, read_source, DeterministicAdmission, DocumentSet,
@@ -24,6 +25,12 @@ type Operation = hew_types::DeterministicOperation;
 struct CallEdge {
     span: SpanKey,
     target: CallTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum CallableNode {
+    Declaration(DefId),
+    Closure(SpanKey),
 }
 
 #[derive(Clone)]
@@ -115,7 +122,7 @@ fn module_index(program: &Program, output: &TypeCheckOutput, id: DefId) -> Optio
     clippy::too_many_lines,
     reason = "call graph construction joins the checker's complementary call ledgers"
 )]
-fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<DefId, Vec<CallEdge>> {
+fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<CallableNode, Vec<CallEdge>> {
     let bodies: Vec<_> = output
         .defs
         .declarations()
@@ -126,15 +133,28 @@ fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<DefId, Vec
         })
         .collect();
     let owner_for = |span: &SpanKey| {
+        if let Some(closure) = output
+            .closure_escape_facts
+            .keys()
+            .filter(|closure| {
+                closure.module_idx == span.module_idx
+                    && closure.start <= span.start
+                    && span.end <= closure.end
+                    && (closure.start != span.start || closure.end != span.end)
+            })
+            .min_by_key(|closure| closure.end - closure.start)
+        {
+            return Some(CallableNode::Closure(closure.clone()));
+        }
         bodies
             .iter()
             .filter(|(_, index, body)| {
                 *index == span.module_idx && body.start <= span.start && span.end <= body.end
             })
             .min_by_key(|(_, _, body)| body.end - body.start)
-            .map(|(id, _, _)| *id)
+            .map(|(id, _, _)| CallableNode::Declaration(*id))
     };
-    let mut edges: HashMap<DefId, Vec<CallEdge>> = HashMap::new();
+    let mut edges: HashMap<CallableNode, Vec<CallEdge>> = HashMap::new();
     for (span, target) in &output.direct_call_targets {
         let owner = owner_for(span);
         if let Some(owner) = owner {
@@ -172,49 +192,6 @@ fn call_graph(program: &Program, output: &TypeCheckOutput) -> HashMap<DefId, Vec
             edges.entry(owner).or_default().push(CallEdge {
                 span: span.clone(),
                 target: call.target.clone(),
-            });
-        }
-    }
-    // Several checked module and method calls publish their selected callee
-    // only as a source-segment resolution. Treating a resolved callable value
-    // as a possible edge is conservative and preserves its checker identity.
-    for (span, resolution) in &output.resolutions {
-        let target = match resolution {
-            Resolution::Def(id) => CallTarget::User(*id),
-            Resolution::Member(id) => CallTarget::ImplMethod(*id),
-            _ => continue,
-        };
-        let Some(declaration) = target_declaration(&target) else {
-            continue;
-        };
-        if !matches!(
-            output.defs.kind(declaration),
-            DeclarationKind::Function
-                | DeclarationKind::ExternFunction
-                | DeclarationKind::ImplMethod
-                | DeclarationKind::TypeMethod
-                | DeclarationKind::ActorMethod
-                | DeclarationKind::ActorReceive
-                | DeclarationKind::TraitMethod
-        ) {
-            continue;
-        }
-        if output
-            .direct_call_targets
-            .iter()
-            .any(|(call_span, direct)| {
-                call_span.module_idx == span.module_idx
-                    && call_span.start <= span.start
-                    && span.end <= call_span.end
-                    && target_declaration(direct) == Some(declaration)
-            })
-        {
-            continue;
-        }
-        if let Some(owner) = owner_for(span) {
-            edges.entry(owner).or_default().push(CallEdge {
-                span: span.clone(),
-                target,
             });
         }
     }
@@ -364,18 +341,28 @@ pub(super) fn check(
     let stdlib_roots = configured_stdlib_roots(options);
     let mut diagnostics = Vec::new();
     let mut reported = HashSet::new();
+    let mut reported_indirect = HashSet::new();
     for root in roots {
-        let mut queue =
-            VecDeque::from([(root, None::<(SourceSite, String, String)>, Vec::<Ty>::new())]);
+        let mut queue = VecDeque::from([(
+            CallableNode::Declaration(root),
+            None::<(SourceSite, String, String)>,
+            Vec::<Ty>::new(),
+        )]);
         let mut visited = HashSet::new();
         while let Some((caller, user_site, type_args)) = queue.pop_front() {
-            if !visited.insert((caller, type_args.clone())) {
+            if !visited.insert((caller.clone(), type_args.clone())) {
                 continue;
             }
-            let caller_is_std = output
-                .defs
-                .module(caller)
-                .and_then(|module| output.defs.module_source(module))
+            let caller_source = match &caller {
+                CallableNode::Declaration(id) => output
+                    .defs
+                    .module(*id)
+                    .and_then(|module| output.defs.module_source(module))
+                    .map(std::path::Path::to_path_buf),
+                CallableNode::Closure(span) => source_path(program, span.module_idx),
+            };
+            let caller_is_std = caller_source
+                .as_deref()
                 .is_some_and(|path| stdlib_roots.iter().any(|root| path_is_below(path, root)));
             for call in graph.get(&caller).into_iter().flatten() {
                 let current = site_for_call(
@@ -425,13 +412,56 @@ pub(super) fn check(
                         }
                         diagnostics.push(diagnostic);
                     }
+                } else if matches!(call.target, CallTarget::IndirectFunctionValue) {
+                    let candidates = output.indirect_call_candidates.get(&call.span);
+                    if candidates.is_none_or(|candidates| candidates.may_be_unknown) {
+                        if let Some((site, source, filename)) = selected_site.clone() {
+                            if reported_indirect.insert((root, filename.clone(), site.span.start)) {
+                                let name = output.defs.name(root);
+                                let mut diagnostic = FrontendDiagnostic::coded_message_at(
+                                    "E_DETERMINISTIC_INDIRECT_CALL",
+                                    format!(
+                                        "`{name}` reaches indirect call `{}` whose callable target is not fully known",
+                                        site.spelling
+                                    ),
+                                    site.span,
+                                    &source,
+                                    &filename,
+                                );
+                                if let crate::FrontendDiagnosticKind::Message(detail) =
+                                    &mut diagnostic.kind
+                                {
+                                    let help = match options.deterministic_admission {
+                                        DeterministicAdmission::ProcessEntry => "run without `--deterministic` or call a locally known function".to_string(),
+                                        DeterministicAdmission::Tests(_) => format!("mark `{name}` `#[real_time]` or call a locally known function"),
+                                        DeterministicAdmission::Off => unreachable!("admission has no selected roots when off"),
+                                    };
+                                    detail.help.push(help);
+                                }
+                                diagnostics.push(diagnostic);
+                            }
+                        }
+                    }
+                    if let Some(candidates) = candidates {
+                        for candidate in &candidates.known {
+                            let next = match candidate {
+                                CallableCandidate::Declaration(id) => {
+                                    CallableNode::Declaration(*id)
+                                }
+                                CallableCandidate::Closure(span) => {
+                                    CallableNode::Closure(span.clone())
+                                }
+                            };
+                            queue.push_back((next, selected_site.clone(), Vec::new()));
+                        }
+                    }
                 } else if let Some(next) = target_declaration(&call.target) {
                     let next_args = output
                         .call_type_args
                         .get(&call.span)
                         .cloned()
                         .unwrap_or_default();
-                    queue.push_back((next, selected_site, next_args));
+                    queue.push_back((CallableNode::Declaration(next), selected_site, next_args));
                 } else if let CallTarget::StaticTraitMethod {
                     declaring_trait,
                     method,
@@ -451,7 +481,10 @@ pub(super) fn check(
                         .and_then(|param| {
                             output
                                 .fn_sigs
-                                .get(&caller)?
+                                .get(match &caller {
+                                    CallableNode::Declaration(id) => id,
+                                    CallableNode::Closure(_) => return None,
+                                })?
                                 .type_params
                                 .iter()
                                 .position(|name| name == param)
@@ -476,7 +509,11 @@ pub(super) fn check(
                                             *declaring_trait,
                                         ))
                             {
-                                queue.push_back((candidate, selected_site.clone(), Vec::new()));
+                                queue.push_back((
+                                    CallableNode::Declaration(candidate),
+                                    selected_site.clone(),
+                                    Vec::new(),
+                                ));
                             }
                         }
                     }
@@ -491,7 +528,11 @@ pub(super) fn check(
                         .filter(|entry| entry.method == *method)
                         .filter_map(|entry| entry.impl_method);
                     for candidate in candidates {
-                        queue.push_back((candidate, selected_site.clone(), Vec::new()));
+                        queue.push_back((
+                            CallableNode::Declaration(candidate),
+                            selected_site.clone(),
+                            Vec::new(),
+                        ));
                     }
                 }
             }
@@ -689,6 +730,76 @@ mod tests {
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
             "{failure}"
+        );
+    }
+
+    #[test]
+    fn unused_closure_does_not_admit_its_host_operation() {
+        let source =
+            "import std.io;\nfn main() { let unused = || io.read_line(); println(\"safe\"); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn selected_branch_closure_reaches_host_operation() {
+        let source = "import std.io;\nfn main() { let reader = if true { || \"safe\" } else { || io.read_line() }; println(reader()); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn opaque_function_parameter_is_refused() {
+        let source = "fn call_reader(reader: fn() -> string) { println(reader()); }\nfn main() { call_reader(|| \"safe\"); }";
+        let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
+        assert!(
+            failure.contains("E_DETERMINISTIC_INDIRECT_CALL"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn known_function_value_is_admitted() {
+        let source = "fn answer() -> i64 { 7 }\nfn main() { let selected: fn() -> i64 = answer; println(selected()); }";
+        check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
+    }
+
+    #[test]
+    fn imported_function_value_uses_checked_declaration() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join("admission.hew");
+        std::fs::write(
+            directory.path().join("host.hew"),
+            "import std.io;\npub fn read() -> string { io.read_line() }",
+        )
+        .expect("write imported source");
+        std::fs::write(
+            &path,
+            "import host;\nfn main() { let f: fn() -> string = host.read; println(f()); }",
+        )
+        .expect("write entry source");
+        let options = FrontendOptions {
+            deterministic_admission: DeterministicAdmission::ProcessEntry,
+            ..FrontendOptions::default()
+        };
+        let failure = check_file(path.to_str().unwrap(), &options).unwrap_err();
+        assert!(
+            failure.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Message(message)
+                    if message.code == "E_DETERMINISTIC_HOST_OPERATION"
+            )),
+            "{failure:?}"
+        );
+        assert!(
+            !failure.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Message(message)
+                    if message.code == "E_DETERMINISTIC_INDIRECT_CALL"
+            )),
+            "{failure:?}"
         );
     }
 

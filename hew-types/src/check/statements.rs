@@ -1186,6 +1186,12 @@ impl Checker {
                     self.env
                         .define_with_span(*name, val_ty.clone(), false, pattern.1.clone());
                     self.record_local_resolution(*name, &pattern.1);
+                    // A plain identifier pattern begins at its name token;
+                    // its AST span can also include the space before `=`.
+                    let name_end = pattern.1.start.saturating_add(name.name.as_str().len());
+                    if name_end <= pattern.1.end {
+                        self.record_local_resolution(*name, &(pattern.1.start..name_end));
+                    }
                     self.env
                         .set_collection_borrow(name.name.as_str(), collection_borrow.clone());
                     // Register generic lambda binding for call-site inference.

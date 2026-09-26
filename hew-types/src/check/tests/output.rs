@@ -37,6 +37,29 @@ fn source_resolutions_join_unannotated_local_token_and_use() {
 }
 
 #[test]
+fn source_resolutions_join_numeric_local_uses_in_short_circuit_comparisons() {
+    let source = "fn probe(result: i64, d: i64, max_last_digit: i64) -> bool { \
+        let cutoff = -922337203685477580; \
+        result < cutoff || result == cutoff && d > max_last_digit }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let positions: Vec<_> = source
+        .match_indices("cutoff")
+        .map(|(start, _)| start)
+        .collect();
+    assert_eq!(positions.len(), 3);
+    let at = |start| SpanKey::in_module(&(start..start + "cutoff".len()), 0);
+    let declared = output.resolutions.get(&at(positions[0]));
+    assert!(matches!(
+        declared,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    for start in positions.into_iter().skip(1) {
+        assert_eq!(output.resolutions.get(&at(start)), declared);
+    }
+}
+
+#[test]
 fn source_resolutions_publish_return_annotation_nominal() {
     let source = "type Point { x: i64 } fn origin() -> Point { Point { x: 1 } }";
     let output = check_source(source);
@@ -120,6 +143,17 @@ fn source_resolutions_join_var_statement_and_use() {
         Some(crate::check::scope::Resolution::Local(_))
     ));
     let name = source.find("var x").unwrap() + "var ".len();
+    let statement_start = source.find("var x").unwrap();
+    assert!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(
+                &(statement_start..statement_start + 1),
+                0
+            ))
+            .is_none(),
+        "the `var` keyword must not become an identifier token row"
+    );
     assert_eq!(
         output
             .resolutions
@@ -131,6 +165,27 @@ fn source_resolutions_join_var_statement_and_use() {
             .resolutions
             .get(&SpanKey::in_module(&(use_site..use_site + 1), 0)),
         binding
+    );
+}
+
+#[test]
+fn source_resolutions_do_not_publish_var_keyword_as_a_name() {
+    let source = "fn main() { var value = 1; println(value); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let statement = source.find("var value").unwrap();
+    let name = statement + "var ".len();
+    let use_site = source.rfind("value)").unwrap();
+    let at = |start| SpanKey::in_module(&(start..start + "value".len()), 0);
+    let declared = output.resolutions.get(&at(name));
+    assert!(matches!(
+        declared,
+        Some(crate::check::scope::Resolution::Local(_))
+    ));
+    assert_eq!(output.resolutions.get(&at(use_site)), declared);
+    assert!(
+        output.resolutions.get(&at(statement)).is_none(),
+        "`var v` must not overlap the authored name token"
     );
 }
 

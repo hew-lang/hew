@@ -1199,6 +1199,7 @@ impl Checker {
                                 span,
                             );
                             let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
@@ -1209,6 +1210,7 @@ impl Checker {
                                 span,
                             );
                             let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
@@ -1231,6 +1233,7 @@ impl Checker {
                                 span,
                             );
                             let _ = self.synthesize_identifier(name.name.as_str(), span);
+                            self.record_value_path_resolution(expr, span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }

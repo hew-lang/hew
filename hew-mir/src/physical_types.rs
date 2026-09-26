@@ -1233,6 +1233,8 @@ pub struct PhysicalModule {
     pub functions: Vec<PhysicalFunction>,
     pub entry_callable: Option<CallableId>,
     pub entry_exit_plan: Option<EntryExitPlan>,
+    /// Ordered checker-selected test entries and their typed exit actions.
+    pub test_entries: Vec<hew_sir::SemTestEntry>,
     pub string_literals: BTreeMap<hew_sir::StringLiteralId, String>,
     pub bytes_literals: BTreeMap<hew_sir::BytesLiteralId, Vec<u8>>,
     /// Regex-literal patterns in slot order; each is compiled once into the

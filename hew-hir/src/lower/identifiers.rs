@@ -74,7 +74,35 @@ impl LowerCtx {
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         let entry = self.fn_registry[symbol].clone();
-        self.register_free_fn_monomorphisation(symbol, None, span, site);
+        self.lower_function_value_entry(symbol, entry, span, site)
+    }
+
+    /// Select an authored callable by the checker's exact declaration. An
+    /// extern may share its linker spelling with declarations in other modules.
+    pub(super) fn lower_source_function_value(
+        &mut self,
+        declaration: hew_types::DefId,
+        span: &std::ops::Range<usize>,
+        site: SiteId,
+    ) -> Option<(HirExprKind, ResolvedTy)> {
+        let symbol = self.registered_source_function_symbol(declaration)?;
+        let entry = self
+            .source_fn_entries
+            .get(&declaration)
+            .map(|(_, entry)| entry.clone())?;
+        Some(self.lower_function_value_entry(&symbol, entry, span, site))
+    }
+
+    fn lower_function_value_entry(
+        &mut self,
+        symbol: &str,
+        entry: FnEntry,
+        span: &std::ops::Range<usize>,
+        site: SiteId,
+    ) -> (HirExprKind, ResolvedTy) {
+        if !entry.type_params.is_empty() {
+            self.register_free_fn_monomorphisation(symbol, None, span, site);
+        }
         let key = self.mk_key(span);
         if !entry.type_params.is_empty()
             && (self.expr_types.contains_key(&key) || self.call_type_args.contains_key(&key))
@@ -165,8 +193,8 @@ impl LowerCtx {
                 self.defs.kind(declaration),
                 hew_types::DeclarationKind::Function | hew_types::DeclarationKind::ExternFunction
             ) {
-                if let Some(symbol) = self.registered_source_function_symbol(declaration) {
-                    return self.lower_function_value(&symbol, &span, site);
+                if let Some(value) = self.lower_source_function_value(declaration, &span, site) {
+                    return value;
                 }
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

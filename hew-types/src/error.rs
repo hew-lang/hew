@@ -729,6 +729,8 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// A selected test root cannot be invoked by the test dispatcher.
+    TestSignature,
     /// An actor spawn omitted a required state field or `init` parameter.
     MissingActorSpawnArgument,
     /// An ordering operator (`<`/`<=`/`>`/`>=`) on a record, enum, tuple, or
@@ -1506,6 +1508,7 @@ impl TypeErrorKind {
             Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::TestSignature => "E_TEST_SIGNATURE",
             Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",
             Self::DerivedOrdUnavailable { .. } => "E_LIMIT_DERIVED_ORD",
             Self::ConstInitializer => "E_CONST_INITIALIZER",

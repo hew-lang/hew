@@ -174,6 +174,7 @@ pub(super) fn decode_module() -> SemModule {
         root_unit_callables: vec![CallableId(0)],
         entry_exit_plan: None,
         entry_callable: None,
+        test_entries: Vec::new(),
         functions: vec![function],
         aggregate_shapes: vec![SemAggregateShape {
             id: AggregateShapeId(0),

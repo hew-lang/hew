@@ -253,6 +253,7 @@ pub fn module(case: Case) -> sir::SemModule {
         root_unit_callables: vec![],
         entry_exit_plan: None,
         entry_callable: None,
+        test_entries: Vec::new(),
         functions: vec![function],
         aggregate_shapes: vec![],
         variant_shapes: vec![],

@@ -228,13 +228,13 @@ impl LowerCtx {
                             | hew_types::DeclarationKind::ExternFunction
                     ) {
                         let site = self.ids.site();
-                        let (kind, ty) = if let Some(symbol) =
-                            self.registered_source_function_symbol(declaration)
+                        let (kind, ty) = if let Some(value) =
+                            self.lower_source_function_value(declaration, &span, site)
                         {
                             // The selected declaration belongs to the inner
                             // identifier, while instantiation facts belong to
                             // the full `id<T>` expression.
-                            self.lower_function_value(&symbol, &span, site)
+                            value
                         } else {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -1619,10 +1619,10 @@ impl LowerCtx {
                             self.checker_expr_ty_if_present(&span),
                             Some(ResolvedTy::Function { .. })
                         ) {
-                            let (kind, ty) = if let Some(symbol) =
-                                self.registered_source_function_symbol(declaration)
+                            let (kind, ty) = if let Some(value) =
+                                self.lower_source_function_value(declaration, &span, site)
                             {
-                                self.lower_function_value(&symbol, &span, site)
+                                value
                             } else {
                                 self.diagnostics.push(HirDiagnostic::new(
                                         HirDiagnosticKind::CheckerBoundaryViolation {

@@ -10,11 +10,9 @@
 //! visits first, the maximal superset survives and one definition serves both
 //! import paths.
 //!
-//! Shape: `main`/the test fn binds the listener synchronously (kernel backlog
-//! then holds the client connection), a `Client` actor runs the blocking
-//! `http_client.get` on a worker while the test thread `accept`s and responds,
-//! and mailbox ordering (`fetch` before `status_result`) makes the readback
-//! race-free without any sleep. The `Client` holds only `string`/`i64` state —
+//! Shape: the test binds the listener synchronously, forks the `Client` ask,
+//! then accepts and responds before joining that ask. The `Client` holds only
+//! `string`/`i64` state —
 //! no opaque handle crosses the actor boundary (the supervisor-restart clone
 //! gate rejects opaque handles in actor state).
 
@@ -59,12 +57,13 @@ fn test_server_client_roundtrip_returns_200_and_echoes_path() {
         .Ok(server) => {
             let port = http.server_port(server);
             let client = spawn Client(url: f"http://127.0.0.1:{port}/ping", status: 0, body: "");
-            let _ = client.fetch(0);
+            let request = fork client.fetch(0);
             let req = server.accept();
             let path = req.path();
             let _ = req.respond_text(200, "pong:" + path);
             req.close();
             server.close();
+            assert((await request).is_ok());
             match client.status_result() {
                 .Ok(status) => assert(status == 200),
                 .Err(_e) => assert(false),

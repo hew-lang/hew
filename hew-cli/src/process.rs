@@ -351,6 +351,7 @@ pub(crate) fn run_binary_with_driver(
     binary: &Path,
     timeout: Duration,
     deterministic: Option<&str>,
+    selected_test: Option<u32>,
     test_report: &Path,
     scratch_dir: &Path,
 ) -> Result<BinaryRunOutcome, String> {
@@ -363,6 +364,10 @@ pub(crate) fn run_binary_with_driver(
     match deterministic {
         Some(config) => command.env("HEW_DETERMINISTIC", config),
         None => command.env_remove("HEW_DETERMINISTIC"),
+    };
+    match selected_test {
+        Some(ordinal) => command.env("HEW_TEST", ordinal.to_string()),
+        None => command.env_remove("HEW_TEST"),
     };
     run_command_captured(&mut command, timeout)
 }

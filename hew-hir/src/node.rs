@@ -43,6 +43,9 @@ pub struct HirModule {
     /// Downstream layers join on the plan's declaration identity and execute
     /// its action without rediscovering either fact.
     pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
+    /// Checker-selected test entries in dispatcher ordinal order. Each entry
+    /// retains its own typed process-exit action.
+    pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
     /// Checker-authored wire layout metadata keyed by canonical type name.
     pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from

@@ -38,7 +38,10 @@ impl<'a> HostExport<'a> {
         {
             return Err(fail("C export requires a non-reserved ASCII C identifier"));
         }
-        if module.entry_callable.is_some() || module.target.triple.starts_with("wasm") {
+        if module.entry_callable.is_some()
+            || !module.test_entries.is_empty()
+            || module.target.triple.starts_with("wasm")
+        {
             return Err(fail(
                 "C host exports require a native library without a process entry",
             ));

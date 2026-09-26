@@ -36,6 +36,15 @@ pub struct FaultParkId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallableId(pub u32);
 
+/// One selected process entry in a compiled test file. Vector position is the
+/// runtime selection ordinal; a Result action is realized by a SIR adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemTestEntry {
+    pub callable: CallableId,
+    pub declaration: DefId,
+    pub action: hew_types::EntryExitAction,
+}
+
 /// Stable semantic identity for one generic HIR template.
 ///
 /// This deliberately contains the resolver-minted declaration identity only.
@@ -824,6 +833,8 @@ pub struct SemModule {
     /// Neither lowering nor the verifier rediscovers an entry from a
     /// declaration path or emitted symbol.
     pub entry_callable: Option<CallableId>,
+    /// Ordered entry points of a compile-once test dispatcher.
+    pub test_entries: Vec<SemTestEntry>,
     pub functions: Vec<SemFunction>,
     /// Demanded trait-object dispatch tables in module-local ID order.
     pub vtables: Vec<SemVtable>,

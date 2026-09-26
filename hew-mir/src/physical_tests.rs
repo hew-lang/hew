@@ -621,6 +621,7 @@ fn module_with_return() -> SemModule {
         root_unit_callables: vec![CallableId(0)],
         entry_exit_plan: None,
         entry_callable: Some(CallableId(0)),
+        test_entries: Vec::new(),
         functions: vec![function],
         aggregate_shapes: vec![],
         variant_shapes: vec![],
@@ -2176,6 +2177,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         callables: vec![callable],
         functions: vec![function],
         entry_callable: None,
+        test_entries: Vec::new(),
         entry_exit_plan: None,
         string_literals: BTreeMap::from([
             (hew_sir::StringLiteralId(0), "left".to_string()),

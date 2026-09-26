@@ -575,6 +575,13 @@ impl Checker {
     /// Select one exact root declaration for the process entry plan.
     pub fn set_entry_selection(&mut self, selection: crate::DeclarationOccurrence) {
         self.entry_selection = Some(selection);
+        self.test_entry_selections = None;
+    }
+
+    /// Select exact root declarations for one compiled test module.
+    pub fn set_test_entry_selections(&mut self, selections: Vec<crate::DeclarationOccurrence>) {
+        self.test_entry_selections = Some(selections);
+        self.entry_selection = None;
     }
 
     /// Build the §6.3 fact table over every concrete accepted expression type.
@@ -1203,8 +1210,13 @@ impl Checker {
     fn selected_entry_item<'a>(
         &mut self,
         program: &'a Program,
-    ) -> Option<(crate::DeclarationOccurrence, &'a std::ops::Range<usize>)> {
-        let selected_entry = self.entry_selection?;
+        selected_entry: crate::DeclarationOccurrence,
+        test_mode: bool,
+    ) -> Option<(
+        crate::DeclarationOccurrence,
+        &'a FnDecl,
+        &'a std::ops::Range<usize>,
+    )> {
         let selected_entry = if selected_entry.module().is_none() {
             selected_entry.with_module(self.defs.root_module())
         } else {
@@ -1215,7 +1227,7 @@ impl Checker {
             .iter()
             .enumerate()
             .find_map(|(item_index, (item, span))| {
-                let Item::Function(_) = item else {
+                let Item::Function(declaration) = item else {
                     return None;
                 };
                 let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
@@ -1225,13 +1237,21 @@ impl Checker {
                     crate::DeclarationKind::Function,
                     0,
                 );
-                (selected_entry == occurrence).then_some((occurrence, span))
+                (selected_entry == occurrence).then_some((occurrence, declaration, span))
             });
         if matched.is_none() {
             self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                if test_mode {
+                    TypeErrorKind::TestSignature
+                } else {
+                    TypeErrorKind::InvalidOperation
+                },
                 selected_entry.span(),
-                "selected process entry occurrence is not a root function in this compilation",
+                if test_mode {
+                    "selected test occurrence is not a root function in this compilation"
+                } else {
+                    "selected process entry occurrence is not a root function in this compilation"
+                },
             ));
         }
         matched
@@ -1412,8 +1432,9 @@ impl Checker {
         resolved_fn_sigs: crate::check::FnSigView<'_>,
     ) -> Option<EntryExitPlan> {
         let (occurrence, span) =
-            if self.entry_selection.is_some() {
-                self.selected_entry_item(program)?
+            if let Some(selection) = self.entry_selection {
+                let (occurrence, _, span) = self.selected_entry_item(program, selection, false)?;
+                (occurrence, span)
             } else {
                 program.items.iter().enumerate().find_map(
                     |(item_index, (item, span))| match item {
@@ -1454,6 +1475,107 @@ impl Checker {
         let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs)?;
 
         Some(EntryExitPlan { entry, action })
+    }
+
+    /// Publish every selected test root in discovery order. A bad selection
+    /// invalidates the whole batch so a downstream dispatcher cannot execute
+    /// a partial set after checking reported a signature error.
+    fn classify_test_entry_plans(
+        &mut self,
+        program: &Program,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
+    ) -> Vec<EntryExitPlan> {
+        let Some(selections) = self.test_entry_selections.clone() else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::new();
+        let mut plans = Vec::with_capacity(selections.len());
+        let mut invalid = false;
+        for selection in selections {
+            let normalized = if selection.module().is_none() {
+                selection.with_module(self.defs.root_module())
+            } else {
+                selection
+            };
+            if !seen.insert(normalized) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    normalized.span(),
+                    "the same test root was selected more than once",
+                ));
+                invalid = true;
+                continue;
+            }
+            let Some((occurrence, declaration, span)) =
+                self.selected_entry_item(program, normalized, true)
+            else {
+                invalid = true;
+                continue;
+            };
+            if !declaration.params.is_empty()
+                || declaration
+                    .type_params
+                    .as_ref()
+                    .is_some_and(|params| !params.is_empty())
+                || declaration.where_clause.is_some()
+                || declaration.is_generator
+            {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    format!(
+                        "test `{}` must have no parameters or type parameters and cannot be a generator",
+                        declaration.name
+                    ),
+                ));
+                invalid = true;
+                continue;
+            }
+            let Some(entry) = self.defs.declaration(occurrence) else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    "selected test has no checker declaration identity",
+                ));
+                invalid = true;
+                continue;
+            };
+            let Some(return_type) = resolved_fn_sigs
+                .get(self.defs.path(entry))
+                .map(|signature| signature.return_type.clone())
+            else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    "selected test has no resolved signature",
+                ));
+                invalid = true;
+                continue;
+            };
+            let error_mark = self.errors.len();
+            let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs);
+            let Some(action) = action else {
+                for error in &mut self.errors[error_mark..] {
+                    error.kind = TypeErrorKind::TestSignature;
+                    error.message = error.message.replace("process entry", "test");
+                }
+                if self.errors.len() == error_mark {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::TestSignature,
+                        span.clone(),
+                        "test return type has no executable exit conversion",
+                    ));
+                }
+                invalid = true;
+                continue;
+            };
+            plans.push(EntryExitPlan { entry, action });
+        }
+        if invalid {
+            Vec::new()
+        } else {
+            plans
+        }
     }
 
     #[expect(
@@ -2618,7 +2740,12 @@ impl Checker {
         let fn_sig_keys = self.fn_sig_keys.clone();
         let resolved_sigs =
             FnSigView::new(&resolved_fn_sigs, &fn_sig_keys, &resolved_builtin_fn_sigs);
-        let entry_exit_plan = self.classify_entry_exit_plan(program, resolved_sigs);
+        let test_entry_plans = self.classify_test_entry_plans(program, resolved_sigs);
+        let entry_exit_plan = if self.test_entry_selections.is_some() {
+            None
+        } else {
+            self.classify_entry_exit_plan(program, resolved_sigs)
+        };
         self.attach_receive_failure_displays(resolved_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
@@ -2897,6 +3024,7 @@ impl Checker {
             resolutions,
             contexts,
             entry_exit_plan,
+            test_entry_plans,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             dispatch: self.dispatch.clone(),
@@ -3049,6 +3177,7 @@ impl Checker {
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
         let entry_selection = self.entry_selection;
+        let test_entry_selections = self.test_entry_selections.clone();
 
         *self = Self::new(module_registry);
         self.wasm_target = wasm_target;
@@ -3060,6 +3189,7 @@ impl Checker {
         self.lint_levels = lint_levels;
         self.lint_sources = lint_sources;
         self.entry_selection = entry_selection;
+        self.test_entry_selections = test_entry_selections;
     }
 
     /// The canonical prelude is an import-only authority manifest: its imports

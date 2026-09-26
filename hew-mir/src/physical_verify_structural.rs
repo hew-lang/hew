@@ -225,6 +225,34 @@ pub(crate) fn verify_physical_module(module: &PhysicalModule) -> Result<(), Phys
             )));
         }
     }
+    if !module.test_entries.is_empty()
+        && (module.entry_callable.is_some() || module.entry_exit_plan.is_some())
+    {
+        return Err(PhysicalError::new(
+            "test dispatcher conflicts with a process entry",
+        ));
+    }
+    let mut selected_tests = BTreeSet::new();
+    for test in &module.test_entries {
+        if !selected_tests.insert(test.declaration) {
+            return Err(PhysicalError::new("duplicate test dispatcher declaration"));
+        }
+        let callable = module
+            .callables
+            .get(test.callable.0 as usize)
+            .filter(|callable| callable.id == test.callable)
+            .ok_or_else(|| PhysicalError::new("test dispatcher callable is absent"))?;
+        if callable.declaration != test.declaration || !callable.params.is_empty() {
+            return Err(PhysicalError::new(
+                "test dispatcher callable disagrees with its checked declaration",
+            ));
+        }
+        if matches!(test.action, hew_types::EntryExitAction::Result { .. }) {
+            return Err(PhysicalError::new(
+                "test Result exit action lacks a semantic adapter",
+            ));
+        }
+    }
     let mut function_ids = BTreeSet::new();
     for function in &module.functions {
         if !function_ids.insert(function.callable) {
@@ -234,6 +262,13 @@ pub(crate) fn verify_physical_module(module: &PhysicalModule) -> Result<(), Phys
             )));
         }
         verify_physical_function(module, function)?;
+    }
+    if module
+        .test_entries
+        .iter()
+        .any(|test| !function_ids.contains(&test.callable))
+    {
+        return Err(PhysicalError::new("test dispatcher callable has no body"));
     }
     suspend::verify_callables(module)?;
     Ok(())

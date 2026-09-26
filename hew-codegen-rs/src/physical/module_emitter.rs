@@ -696,12 +696,39 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 
     fn emit_entry(&self) -> CodegenResult<()> {
+        if !self.module.test_entries.is_empty() {
+            return self.emit_test_dispatcher();
+        }
         let Some(entry_id) = self.module.entry_callable else {
             return Ok(());
         };
         let plan = self.module.entry_exit_plan.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("physical executable entry has no typed exit plan".into())
         })?;
+        let wrapper = self.llvm.add_function(
+            "main",
+            self.ctx.i32_type().fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let entry = self.ctx.append_basic_block(wrapper, "entry");
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(entry);
+        self.emit_process_runtime_start(&builder, wrapper)?;
+        self.emit_actor_observe_registration(&builder)?;
+        self.emit_selected_entry_body(&builder, wrapper, entry_id, plan.action.clone())?;
+        if self.module.target.triple.starts_with("wasm32") {
+            self.emit_wasi_entry_adapter(wrapper)?;
+        }
+        Ok(())
+    }
+
+    fn emit_selected_entry_body(
+        &self,
+        builder: &Builder<'ctx>,
+        wrapper: FunctionValue<'ctx>,
+        entry_id: CallableId,
+        action: EntryExitAction,
+    ) -> CodegenResult<()> {
         let callable = callable(self.module, entry_id)?;
         if !callable.params.is_empty() {
             return Err(CodegenError::FailClosed(
@@ -711,18 +738,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let body = *self.functions.get(&entry_id).ok_or_else(|| {
             CodegenError::FailClosed("physical process entry has no LLVM body".into())
         })?;
-        let wrapper = self.llvm.add_function(
-            "main",
-            self.ctx.i32_type().fn_type(&[], false),
-            Some(Linkage::External),
-        );
-        let entry = self.ctx.append_basic_block(wrapper, "entry");
         let success = self.ctx.append_basic_block(wrapper, "success");
         let failure = self.ctx.append_basic_block(wrapper, "failure");
-        let builder = self.ctx.create_builder();
-        builder.position_at_end(entry);
-        self.emit_process_runtime_start(&builder, wrapper)?;
-        self.emit_actor_observe_registration(&builder)?;
         let result = if let Some(layout) = &callable.return_layout {
             Some(
                 builder
@@ -794,14 +811,80 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("return physical failure status")?;
 
         builder.position_at_end(success);
-        let exit = emit_entry_success(self.ctx, &builder, result, plan.action.clone(), callable)?;
+        let exit = emit_entry_success(self.ctx, &builder, result, action, callable)?;
         let exit = self.emit_process_runtime_finish(&builder, exit)?;
         builder
             .build_return(Some(&exit))
             .llvm_ctx("return physical process status")?;
-        if self.module.target.triple.starts_with("wasm32") {
-            self.emit_wasi_entry_adapter(wrapper)?;
+        Ok(())
+    }
+
+    /// One native executable contains every selected test body, but enters
+    /// exactly one of them per child process. An invalid ordinal never calls a
+    /// source function.
+    fn emit_test_dispatcher(&self) -> CodegenResult<()> {
+        if self.module.entry_callable.is_some() || self.module.entry_exit_plan.is_some() {
+            return Err(CodegenError::FailClosed(
+                "test dispatcher conflicts with a process entry".into(),
+            ));
         }
+        if self.module.target.triple.starts_with("wasm32") {
+            return Err(CodegenError::FailClosed(
+                "native test dispatcher cannot target WASI".into(),
+            ));
+        }
+        let wrapper = self.llvm.add_function(
+            "main",
+            self.ctx.i32_type().fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let entry = self.ctx.append_basic_block(wrapper, "entry");
+        let invalid = self
+            .ctx
+            .append_basic_block(wrapper, "invalid.test.selection");
+        let cases = self
+            .module
+            .test_entries
+            .iter()
+            .enumerate()
+            .map(|(ordinal, _)| {
+                (
+                    self.ctx.i64_type().const_int(ordinal as u64, false),
+                    self.ctx
+                        .append_basic_block(wrapper, &format!("test.{ordinal}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(entry);
+        self.emit_process_runtime_start(&builder, wrapper)?;
+        self.emit_actor_observe_registration(&builder)?;
+        let selected = self.llvm.add_function(
+            "hew_test_selected",
+            self.ctx.i64_type().fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let ordinal = builder
+            .build_call(selected, &[], "test.ordinal")
+            .llvm_ctx("read selected test ordinal")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("test selector returned no ordinal".into()))?
+            .into_int_value();
+        builder
+            .build_switch(ordinal, invalid, &cases)
+            .llvm_ctx("dispatch selected test")?;
+
+        for ((_, block), test) in cases.iter().zip(&self.module.test_entries) {
+            builder.position_at_end(*block);
+            self.emit_selected_entry_body(&builder, wrapper, test.callable, test.action.clone())?;
+        }
+        builder.position_at_end(invalid);
+        let failure =
+            self.emit_process_runtime_finish(&builder, self.ctx.i32_type().const_int(1, false))?;
+        builder
+            .build_return(Some(&failure))
+            .llvm_ctx("return invalid test selection")?;
         Ok(())
     }
 

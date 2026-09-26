@@ -650,17 +650,20 @@ impl LowerCtx {
             .any(|entry| entry.type_params.iter().any(|p| p == name))
     }
 
-    /// Read a source callable through its exact checker declaration. The
-    /// linker symbol is only an index into the pre-collected signature table;
-    /// the `ItemId` seal catches a later same-spelled registration.
+    /// Read a source callable through its exact checker declaration. Ordinary
+    /// functions retain an `ItemId` seal against same-spelled registration;
+    /// externs retain their own entry even when the C symbol is shared.
     pub(super) fn registered_source_function_symbol(
         &self,
         declaration: hew_types::DefId,
     ) -> Option<String> {
-        let (symbol, id) = self.source_fn_entries.get(&declaration)?;
+        let (symbol, entry) = self.source_fn_entries.get(&declaration)?;
+        if self.defs.kind(declaration) == hew_types::DeclarationKind::ExternFunction {
+            return Some(symbol.clone());
+        }
         self.fn_registry
             .get(symbol)
-            .filter(|entry| entry.id == *id)
+            .filter(|registered| registered.id == entry.id)
             .map(|_| symbol.clone())
     }
 

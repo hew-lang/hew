@@ -1636,7 +1636,12 @@ fn cmd_run_wasi(
     let artifact = compile_temp_wasi_module(input, options, target)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
 
-    match wasi_runner::run_module(artifact.path(), &a.program_args, timeout) {
+    match wasi_runner::run_module(
+        artifact.path(),
+        &a.program_args,
+        timeout,
+        a.deterministic_env().as_deref(),
+    ) {
         Ok(wasi_runner::WasiRunOutcome::Exited(status)) => {
             drop(artifact);
             std::process::exit(status.code().unwrap_or(1));
@@ -1669,6 +1674,10 @@ fn cmd_run_native(
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);
+    match a.deterministic_env() {
+        Some(config) => command.env("HEW_DETERMINISTIC", config),
+        None => command.env_remove("HEW_DETERMINISTIC"),
+    };
     if a.profile && std::env::var_os("HEW_PPROF").is_none() {
         command.env("HEW_PPROF", default_profile_endpoint());
     }

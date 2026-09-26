@@ -351,6 +351,15 @@ pub struct RunArgs {
     /// Execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
+    /// Run on the single-thread driver with a virtual clock.
+    #[arg(long)]
+    pub deterministic: bool,
+    /// Choose how the deterministic driver picks ready work.
+    #[arg(long, value_enum, requires = "deterministic")]
+    pub schedule: Option<TestSchedule>,
+    /// Seed for a random deterministic schedule (hex `0x..` or decimal).
+    #[arg(long, value_name = "N", value_parser = parse_seed, requires = "deterministic")]
+    pub seed: Option<u64>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Surface diagnostic-only stack-allocation hints from the type checker.
@@ -376,6 +385,17 @@ impl RunArgs {
             target: self.target.clone(),
             ..self.common.base_compile_options()
         }
+    }
+
+    /// Runtime driver configuration for this run, if deterministic mode was requested.
+    pub fn deterministic_env(&self) -> Option<String> {
+        self.deterministic.then(|| {
+            let schedule = match self.schedule.unwrap_or(TestSchedule::Fifo) {
+                TestSchedule::Fifo => "fifo",
+                TestSchedule::Random => "random",
+            };
+            format!("schedule={schedule},seed={:#x}", self.seed.unwrap_or(0))
+        })
     }
 }
 

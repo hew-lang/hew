@@ -140,7 +140,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     /// Load the compiled `*HewRegex` for the literal slot named by `index`.
     /// Every regex action addresses the module's handle array this way; the
-    /// patterns are compiled once in the process entry's prologue.
+    /// patterns are compiled once when the native module loads.
     pub(super) fn load_regex_handle(
         &self,
         index: StorageId,

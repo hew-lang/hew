@@ -589,9 +589,9 @@ impl Builder<'_, '_> {
                 }
                 .ok_or_else(|| "range slice must produce a SIR value".to_string())
             }
-            // `re"..."` in value position. The module compiles every literal
-            // once at process entry; this materializes an owned pattern from
-            // the slot the match arms already read.
+            // `re"..."` in value position. Native module initialization owns
+            // the checked literal; this call clones its handle into a value
+            // whose ordinary lifetime ends independently of the module.
             HirExprKind::RegexLiteralRef { literal_id, .. } => {
                 let pattern_ty = self.ty(&expr.ty);
                 let shape = self.service.require_aggregate_shape(&pattern_ty)?;

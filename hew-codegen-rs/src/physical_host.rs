@@ -175,7 +175,8 @@ fn host_value(ty: &ResolvedTy) -> bool {
 fn host_runtime(action: PhysicalRuntimeAction) -> bool {
     matches!(
         action.family,
-        RuntimeCallFamily::StringConcat
+        RuntimeCallFamily::RegexMatch
+            | RuntimeCallFamily::StringConcat
             | RuntimeCallFamily::StringEquals
             | RuntimeCallFamily::StringCompare
             | RuntimeCallFamily::StringContains

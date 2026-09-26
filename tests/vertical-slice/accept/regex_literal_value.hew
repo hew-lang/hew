@@ -1,7 +1,7 @@
 // End-to-end fixture: a `re"..."` literal bound in value position is a
 // first-class `regex.Pattern` handle — usable through the stdlib regex API
 // and passable to a function. The compiled handle is loaded from the
-// module-init regex-handle global array into the binding's local.
+// module-owned regex-handle array into the binding's local.
 import std.text.regex;
 
 fn count_digit_runs(re: regex.Pattern, text: string) -> i64 {

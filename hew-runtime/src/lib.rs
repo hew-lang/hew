@@ -214,6 +214,7 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         std::process::abort();
     }
 
+    crate::test_report::finish(code);
     terminate(code);
 }
 
@@ -680,6 +681,7 @@ pub mod runtime_id;
 pub mod scheduler;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown;
+mod test_report;
 // One authority for "what exit status must this program report": read on every
 // native shutdown path, not just the implicit actor-drain one.
 pub mod exit_status;

@@ -585,7 +585,9 @@ pub(crate) fn to_process_exit_byte(code: i64) -> i32 {
 /// this symbol on that return value unconditionally, on every target.
 #[no_mangle]
 pub extern "C" fn hew_process_exit_byte(code: i32) -> i32 {
-    to_process_exit_byte_impl(i64::from(code))
+    let status = to_process_exit_byte_impl(i64::from(code));
+    crate::test_report::finish(status);
+    status
 }
 
 fn to_process_exit_byte_impl(code: i64) -> i32 {

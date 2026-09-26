@@ -126,7 +126,7 @@ pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool
 #[no_mangle]
 pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
     let shutdown_status = drain_to_quiescence();
-    if source_status != 0 {
+    let status = if source_status != 0 {
         // A native `main` return is the process exit code directly (unlike
         // the `exit()` builtin, it never passes through `hew_exit`), so it
         // needs the same portable byte truncation applied here.
@@ -142,7 +142,9 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
         1
     } else {
         crate::exit_status::hew_runtime_exit_status()
-    }
+    };
+    crate::test_report::finish(status);
+    status
 }
 
 /// Run every actor to a stop and reclaim the runtime, returning a non-zero

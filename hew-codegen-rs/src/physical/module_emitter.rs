@@ -566,7 +566,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             )
             .llvm_ctx("load physical entry fault")?
             .into_pointer_value();
-        let report = external_fault_report(self.ctx, &self.llvm)?;
+        let report = external_fault_report_entry(self.ctx, &self.llvm)?;
         builder
             .build_call(report, &[fault_value.into()], "entry.fault.report")
             .llvm_ctx("report physical entry fault")?;

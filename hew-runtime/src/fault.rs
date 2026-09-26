@@ -7,6 +7,7 @@
 //! The handle is opaque to generated code and is not a public embedding API.
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::util::MutexExt;
@@ -34,8 +35,12 @@ pub struct HewFault {
 struct FaultDiagnostic {
     code: i32,
     message: Option<Box<str>>,
+    /// Root-source byte offset, when codegen can attribute the fault.
+    site: AtomicU32,
     reported: Mutex<bool>,
 }
+
+const NO_SITE: u32 = u32::MAX;
 
 impl HewFault {
     fn new(code: i32, message: Option<Box<str>>) -> Self {
@@ -43,6 +48,7 @@ impl HewFault {
             primary: Arc::new(FaultDiagnostic {
                 code,
                 message,
+                site: AtomicU32::new(NO_SITE),
                 reported: Mutex::new(false),
             }),
             secondary: Vec::new(),
@@ -363,6 +369,29 @@ pub unsafe extern "C" fn hew_fault_code(fault: *const HewFault) -> i32 {
     unsafe { fault.as_ref() }.map_or(0, HewFault::code)
 }
 
+/// Attach the source site that raised a newly created fault.
+///
+/// # Safety
+/// `fault` must be a live uniquely owned fault without concurrent readers.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_set_site(fault: *mut HewFault, offset: u32) {
+    // SAFETY: the caller retains a unique live owner for this operation.
+    if let Some(fault) = unsafe { fault.as_ref() } {
+        fault.primary.site.store(offset, Ordering::Relaxed);
+    }
+}
+
+fn note_test_fault(fault: &HewFault) {
+    let primary = fault.primary.as_ref();
+    let site = primary.site.load(Ordering::Relaxed);
+    crate::test_report::note_fault(
+        fault_reason(primary.code),
+        primary.code,
+        primary.message.as_deref(),
+        (site != NO_SITE).then_some(site),
+    );
+}
+
 /// Report each diagnostic to stderr once across all observers. Return 0 on
 /// success, 1 on I/O failure or an absent fault. Reporting does not consume
 /// the owner or remove any text available to scope recovery and host errors.
@@ -378,6 +407,22 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     };
     // Unlike eprintln!, an output error must not panic across this C boundary.
     i32::from(write_unreported(fault, &mut io::stderr().lock()).is_err())
+}
+
+/// Report the process entry's terminal fault, including its test record.
+/// Actor faults use [`hew_fault_report`] and cannot satisfy `#[should_panic]`
+/// merely because a test later exits non-zero with crash debt.
+///
+/// # Safety
+/// `fault` is a live borrow for this call, without concurrent release.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_report_entry(fault: *const HewFault) -> i32 {
+    // SAFETY: the caller retains a live immutable fault through this report.
+    if let Some(fault) = unsafe { fault.as_ref() } {
+        note_test_fault(fault);
+    }
+    // SAFETY: forwarded unchanged from the caller.
+    unsafe { hew_fault_report(fault) }
 }
 
 /// Raise a fault that generated drop glue has no owner to carry.
@@ -414,6 +459,9 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
     // SAFETY: the caller transfers one live, unique fault owner.
     let fault = unsafe { Box::from_raw(fault) };
     let code = fault.code();
+    if crate::actor::hew_actor_self().is_null() {
+        note_test_fault(&fault);
+    }
     let _ = write_report(&fault, &mut io::stderr().lock());
     drop(fault);
     // SAFETY: the bridge accepts any context; the typed line is already out.
@@ -428,6 +476,7 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 /// from this one formatter, so the text does not depend on which path failed.
 pub(crate) fn report_trap_code(code: i32) {
     let fault = HewFault::new(code, None);
+    note_test_fault(&fault);
     let _ = write_report(&fault, &mut io::stderr().lock());
 }
 

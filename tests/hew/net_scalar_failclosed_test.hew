@@ -128,6 +128,7 @@ fn test_valid_endpoints_are_preserved_exactly() {
 }
 
 #[test]
+#[real_time]
 fn test_connect_timeout_deadline_overflow_is_rejected() {
     match net.connect_timeout("127.0.0.1:9", 4294967, 0) {
         .Ok(_) => panic("expected an out-of-range deadline to be rejected"),
@@ -144,6 +145,7 @@ fn test_connect_timeout_deadline_overflow_is_rejected() {
 }
 
 #[test]
+#[real_time]
 fn test_connect_timeout_rejects_a_malformed_address_before_connecting() {
     match net.connect_timeout("::1:9000", 1, 0) {
         .Ok(_) => panic("expected an unbracketed IPv6 address to be rejected"),
@@ -162,10 +164,4 @@ fn test_http_client_timeout_above_abi_range_is_rejected() {
         .Err(_) => panic("expected a 1000 ms HTTP timeout to be accepted"),
     }
     http_client.set_timeout(0);
-}
-
-#[test]
-#[should_panic]
-fn test_http_client_set_timeout_panics_at_legacy_boundary() {
-    http_client.set_timeout(4294967796);
 }

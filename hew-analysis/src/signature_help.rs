@@ -8,6 +8,8 @@ use crate::{ParameterInfo, SignatureHelpResult, SignatureInfo};
 
 struct CallContext {
     callee: String,
+    callee_start: usize,
+    callee_end: usize,
     receiver_end: Option<usize>,
     /// Source text of each argument up to the cursor; the last is the one
     /// the cursor is in.
@@ -121,6 +123,21 @@ pub fn build_signature_help(
 }
 
 fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
+    // A checked callee is already overload-selected. Its identity takes
+    // precedence over every spelling-based compatibility path below.
+    if let Some((span, resolution)) =
+        crate::identity::resolution_at(tc, 0, context.callee_end.saturating_sub(1))
+    {
+        if span.start >= context.callee_start && span.end <= context.callee_end {
+            if let hew_types::check::scope::Resolution::Def(id)
+            | hew_types::check::scope::Resolution::Member(id) = resolution
+            {
+                if let Some(sig) = tc.fn_sigs.get(&id) {
+                    return Some(sig.clone());
+                }
+            }
+        }
+    }
     if let Some(sig) = find_exact_fn_sig(&context.callee, tc) {
         return Some(sig);
     }
@@ -181,7 +198,8 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
             b')' | b']' | b'}' => depth += 1,
             b'(' => {
                 if depth == 0 {
-                    let (callee, receiver_end) = extract_fn_name_before(source, i)?;
+                    let (callee, receiver_end, callee_start, callee_end) =
+                        extract_fn_name_before(source, i)?;
                     let bounds: Vec<usize> = std::iter::once(i)
                         .chain(commas.into_iter().rev())
                         .chain(std::iter::once(offset))
@@ -192,6 +210,8 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
                         .collect();
                     return Some(CallContext {
                         callee,
+                        callee_start,
+                        callee_end,
                         receiver_end,
                         args,
                     });
@@ -212,7 +232,10 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
 }
 
 /// Extract the function/method name immediately before the `(` at `paren_pos`.
-fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Option<usize>)> {
+fn extract_fn_name_before(
+    source: &str,
+    paren_pos: usize,
+) -> Option<(String, Option<usize>, usize, usize)> {
     let before = source[..paren_pos].trim_end();
     if before.is_empty() {
         return None;
@@ -237,7 +260,7 @@ fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Opt
     let callee = before[start..end].to_string();
     let receiver_end = callee.rfind('.').map(|dot_pos| start + dot_pos);
 
-    Some((callee, receiver_end))
+    Some((callee, receiver_end, start, end))
 }
 
 fn find_receiver_method_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {

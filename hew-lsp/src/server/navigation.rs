@@ -33,6 +33,146 @@ fn read_source_or_io_error(uri: &Url) -> Result<String, hew_analysis::RenameErro
 
 // ── Go-to-definition ─────────────────────────────────────────────────
 
+fn checked_resolution_at(
+    doc: &DocumentState,
+    offset: usize,
+) -> Option<(
+    hew_analysis::OffsetSpan,
+    hew_types::check::scope::Resolution,
+)> {
+    let output = doc.type_output.as_ref()?;
+    hew_analysis::identity::resolution_at(output, 0, offset).or_else(|| {
+        hew_analysis::identity::field_declaration_at(output, &doc.source, &doc.parse_result, offset)
+    })
+}
+
+/// Resolve a checked source segment to its declaration. The checker carries
+/// both the declaration identity and source module, so equal spellings and
+/// equal byte offsets in imported files cannot redirect this lookup.
+pub(super) fn identity_definition_location(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<Location> {
+    let output = doc.type_output.as_ref()?;
+    let (_, resolution) = checked_resolution_at(doc, offset)?;
+    if let hew_types::check::scope::Resolution::Local(_) = resolution {
+        let span = *hew_analysis::identity::reference_spans(output, 0, resolution).first()?;
+        return Some(Location {
+            uri: uri.clone(),
+            range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
+        });
+    }
+    let target = hew_analysis::identity::declaration_target(output, resolution)?;
+    let target_uri = target
+        .source
+        .as_deref()
+        .and_then(Url::from_file_path)
+        .unwrap_or_else(|| uri.clone());
+    if target_uri == *uri {
+        let span =
+            hew_analysis::identity::declaration_name_span(&doc.source, &doc.parse_result, &target)?;
+        return Some(Location {
+            uri: target_uri,
+            range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
+        });
+    }
+    if let Some(target_doc) = documents.get(&target_uri) {
+        let span = hew_analysis::identity::declaration_name_span(
+            &target_doc.source,
+            &target_doc.parse_result,
+            &target,
+        )?;
+        return Some(Location {
+            uri: target_uri,
+            range: offset_range_to_lsp(
+                &target_doc.source,
+                &target_doc.line_offsets,
+                span.start,
+                span.end,
+            ),
+        });
+    }
+    let source = std::fs::read_to_string(target.source.as_ref()?).ok()?;
+    let parsed = hew_parser::parse(&source);
+    let span = hew_analysis::identity::declaration_name_span(&source, &parsed, &target)?;
+    let offsets = hew_analysis::util::compute_line_offsets(&source);
+    Some(Location {
+        uri: target_uri,
+        range: offset_range_to_lsp(&source, &offsets, span.start, span.end),
+    })
+}
+
+/// Use the checker's identity for occurrences in the current source unit.
+/// Other files retain the import-aware workspace path until their checker
+/// module indices and unsaved buffers are joined by one project analysis.
+pub(super) fn identity_reference_locations(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    include_declaration: bool,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<Vec<Location>> {
+    let output = doc.type_output.as_ref()?;
+    let (_, resolution) = checked_resolution_at(doc, offset)?;
+    if !matches!(
+        resolution,
+        hew_types::check::scope::Resolution::Field(_, _)
+            | hew_types::check::scope::Resolution::Local(_)
+    ) {
+        return None;
+    }
+    let declaration = identity_definition_location(uri, doc, offset, documents);
+    let mut locations = Vec::new();
+    for (module_idx, span) in hew_analysis::identity::all_reference_spans(output, resolution) {
+        let Some(source_uri) = source_uri_for_module_idx(uri, doc, module_idx) else {
+            continue;
+        };
+        let source = if source_uri == *uri {
+            doc.source.clone()
+        } else {
+            let Some(path) = source_uri.to_file_path() else {
+                continue;
+            };
+            let Some(source) = super::analysis::source_for_path(&path, documents) else {
+                continue;
+            };
+            source
+        };
+        let line_offsets = hew_analysis::util::compute_line_offsets(&source);
+        let location = Location {
+            uri: source_uri,
+            range: offset_range_to_lsp(&source, &line_offsets, span.start, span.end),
+        };
+        if !include_declaration && declaration.as_ref() == Some(&location) {
+            continue;
+        }
+        locations.push(location);
+    }
+    if include_declaration {
+        if let Some(location) = declaration {
+            locations.push(location);
+        }
+    }
+    sort_and_dedup_locations(&mut locations);
+    Some(locations)
+}
+
+fn source_uri_for_module_idx(uri: &Url, doc: &DocumentState, module_idx: u32) -> Option<Url> {
+    if module_idx == 0 {
+        return Some(uri.clone());
+    }
+    let graph = doc.parse_result.program.module_graph.as_ref()?;
+    let indices = graph.file_span_indices();
+    graph
+        .modules
+        .values()
+        .flat_map(|module| &module.source_paths)
+        .find(|path| indices.path_index(path) == Some(module_idx))
+        .and_then(Url::from_file_path)
+}
+
 /// Search for a definition matching `word` in the AST, returning an LSP `Range`.
 pub(super) fn find_definition_in_ast(
     source: &str,
@@ -412,6 +552,14 @@ pub(super) fn build_prepare_rename_response(
     offset: usize,
     documents: &DashMap<Url, DocumentState>,
 ) -> Option<PrepareRenameResponse> {
+    if doc.type_output.is_some() {
+        if let Some((span, hew_types::check::scope::Resolution::Field(_, _))) =
+            checked_resolution_at(doc, offset)
+        {
+            let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
+            return Some(PrepareRenameResponse::Range(range));
+        }
+    }
     let span = if let Some((name, span)) =
         hew_analysis::util::simple_word_at_offset(&doc.source, offset)
     {
@@ -535,6 +683,11 @@ pub(super) fn build_reference_locations(
     include_declaration: bool,
     documents: &DashMap<Url, DocumentState>,
 ) -> Vec<Location> {
+    if let Some(locations) =
+        identity_reference_locations(uri, doc, offset, include_declaration, documents)
+    {
+        return locations;
+    }
     let importer_index = build_named_importer_index(documents);
     let Some((name, _)) = hew_analysis::util::simple_word_at_offset(&doc.source, offset) else {
         return Vec::new();
@@ -1025,7 +1178,7 @@ fn dedup_cross_file_conflicts(
 ///   same `WorkspaceEdit` [`build_workspace_edit`] would produce.
 /// - `Ok(None)` when the cursor is not on a valid rename target.
 /// - `Err(RenameError)` when the rename is refused — the new name is
-///   a keyword / builtin, is not a valid identifier, or would clash
+///   a keyword, is not a valid identifier, or would clash
 ///   with an existing binding in any file that would be edited.
 ///
 /// Unlike [`hew_analysis::rename::plan_rename`] (which validates a
@@ -1041,6 +1194,9 @@ pub(super) fn plan_workspace_rename(
     new_name: &str,
     documents: &DashMap<Url, DocumentState>,
 ) -> Result<Option<WorkspaceEdit>, hew_analysis::RenameError> {
+    if let Some(result) = plan_checked_field_rename(uri, doc, offset, new_name, documents) {
+        return result;
+    }
     let importer_index = build_named_importer_index(documents);
 
     match hew_analysis::rename::plan_rename(&doc.source, &doc.parse_result, offset, new_name) {
@@ -1088,6 +1244,118 @@ pub(super) fn plan_workspace_rename(
     }
 
     build_workspace_edit(uri, doc, offset, new_name, documents)
+}
+
+/// Rename a checked field through its nominal owner and declaration index.
+/// The current compilation supplies exact uses in the root source. A request
+/// involving other source modules is refused until the workspace can prove a
+/// complete identity index for every consumer of that field.
+fn plan_checked_field_rename(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    new_name: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<Result<Option<WorkspaceEdit>, hew_analysis::RenameError>> {
+    use hew_types::check::scope::Resolution;
+
+    let output = doc.type_output.as_ref()?;
+    let (_, resolution @ Resolution::Field(owner, index)) = checked_resolution_at(doc, offset)?
+    else {
+        return None;
+    };
+    Some((|| {
+        hew_analysis::rename::validate_new_name(new_name)?;
+        let definition =
+            output
+                .type_defs
+                .get(&owner)
+                .ok_or_else(|| hew_analysis::RenameError::Io {
+                    path: uri.as_str().to_string(),
+                    message: "checked field owner is missing".to_string(),
+                })?;
+        let old_name = definition.field_order.get(index as usize).ok_or_else(|| {
+            hew_analysis::RenameError::Io {
+                path: uri.as_str().to_string(),
+                message: "checked field index is missing".to_string(),
+            }
+        })?;
+        if old_name == new_name {
+            return Ok(None);
+        }
+        let target =
+            hew_analysis::identity::declaration_target(output, resolution).ok_or_else(|| {
+                hew_analysis::RenameError::Io {
+                    path: uri.as_str().to_string(),
+                    message: "checked field has no source declaration".to_string(),
+                }
+            })?;
+        if target
+            .source
+            .as_deref()
+            .and_then(Url::from_file_path)
+            .is_some_and(|source_uri| source_uri != *uri)
+            || hew_analysis::identity::all_reference_spans(output, resolution)
+                .iter()
+                .any(|(module_idx, _)| *module_idx != 0)
+        {
+            return Err(hew_analysis::RenameError::Io {
+                path: uri.as_str().to_string(),
+                message: "field rename across source modules requires a complete workspace identity index".to_string(),
+            });
+        }
+        let declaration =
+            hew_analysis::identity::declaration_name_span(&doc.source, &doc.parse_result, &target)
+                .ok_or_else(|| hew_analysis::RenameError::Io {
+                    path: uri.as_str().to_string(),
+                    message: "checked field declaration has no name span".to_string(),
+                })?;
+        if let Some(other_index) = definition
+            .field_order
+            .iter()
+            .position(|field| field == new_name)
+        {
+            let mut other = target.clone();
+            other.field_index = Some(other_index as u32);
+            other.name = new_name.to_string();
+            let existing = hew_analysis::identity::declaration_name_span(
+                &doc.source,
+                &doc.parse_result,
+                &other,
+            )
+            .unwrap_or(declaration);
+            return Err(hew_analysis::RenameError::Conflicts {
+                conflicts: vec![hew_analysis::RenameConflict {
+                    kind: hew_analysis::RenameConflictKind::ShadowsField,
+                    existing_span: existing,
+                    offending_span: declaration,
+                    message: format!(
+                        "renaming would clash with existing field '{new_name}' in this type"
+                    ),
+                }],
+            });
+        }
+        let mut spans = hew_analysis::identity::reference_spans(output, 0, resolution);
+        spans.push(declaration);
+        spans.sort_by_key(|span| (span.start, span.end));
+        spans.dedup();
+        for span in &spans {
+            if doc.source.get(span.start..span.end) != Some(old_name.as_str()) {
+                return Err(hew_analysis::RenameError::Io {
+                    path: uri.as_str().to_string(),
+                    message: "checked field source span does not match its declaration".to_string(),
+                });
+            }
+        }
+        let edits = spans
+            .into_iter()
+            .map(|span| hew_analysis::RenameEdit {
+                span,
+                new_text: new_name.to_string(),
+            })
+            .collect();
+        workspace_edit_from_changes(uri, doc, documents, HashMap::from([(uri.clone(), edits)]))
+    })())
 }
 
 /// Inspect another file's document for a pre-existing top-level item,

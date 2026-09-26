@@ -1647,6 +1647,211 @@ impl Worker {
     }
 
     #[test]
+    fn checked_field_navigation_and_references_keep_nominal_owners_distinct() {
+        let source = "type A { x: i64 }\ntype B { x: i64 }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.x); println(b.x); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-fields.hew");
+        let a_use = source.find("a.x").unwrap() + 2;
+        let b_use = source.find("b.x").unwrap() + 2;
+        let expected_b = source.find("type B { x:").unwrap() + "type B { ".len();
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, b_use, &DashMap::new())
+                .expect("B.x must resolve through checker identity");
+        assert_eq!(location.uri, uri);
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(source, &doc.line_offsets, expected_b, expected_b + 1)
+        );
+        let at_declaration = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
+            expected_b,
+            &DashMap::new(),
+        )
+        .expect("B.x declaration keeps its checker owner");
+        assert_eq!(at_declaration, location);
+        let refs = super::navigation::identity_reference_locations(
+            &uri,
+            &doc,
+            b_use,
+            true,
+            &DashMap::new(),
+        )
+        .expect("checked B.x references");
+        assert!(refs.iter().any(|site| site.range == location.range));
+        assert!(refs
+            .iter()
+            .any(|site| site.range
+                == offset_range_to_lsp(source, &doc.line_offsets, b_use, b_use + 1)));
+        assert!(!refs
+            .iter()
+            .any(|site| site.range
+                == offset_range_to_lsp(source, &doc.line_offsets, a_use, a_use + 1)));
+    }
+
+    #[test]
+    fn checked_field_rename_edits_only_the_selected_owner() {
+        let source = "type A { x: i64 }\ntype B { x: i64 }\nfn main() { let a = A { x: 1 }; let b = B { x: 2 }; println(a.x); println(b.x); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-rename.hew");
+        let offset = source.find("b.x").unwrap() + 2;
+        let prepared =
+            super::navigation::build_prepare_rename_response(&uri, &doc, offset, &DashMap::new())
+                .expect("checked field should be preparable for rename");
+        assert!(matches!(prepared, PrepareRenameResponse::Range(range)
+            if range == offset_range_to_lsp(source, &doc.line_offsets, offset, offset + 1)));
+        let edit =
+            super::navigation::plan_workspace_rename(&uri, &doc, offset, "value", &DashMap::new())
+                .expect("field rename should be safe")
+                .expect("field rename should produce edits");
+        let changes = edit.changes.unwrap();
+        let edits = &changes[&uri];
+        let positions: Vec<_> = edits.iter().map(|edit| edit.range.start).collect();
+        let expected = [
+            source.find("type B { x:").unwrap() + "type B { ".len(),
+            source.find("B { x: 2 }").unwrap() + "B { ".len(),
+            offset,
+        ];
+        assert_eq!(edits.len(), expected.len(), "{edits:?}");
+        for start in expected {
+            assert!(positions
+                .contains(&offset_range_to_lsp(source, &doc.line_offsets, start, start + 1).start));
+        }
+        assert!(edits.iter().all(|edit| edit.new_text == "value"));
+    }
+
+    #[test]
+    fn checked_field_rename_rejects_an_existing_field() {
+        let source =
+            "type B { x: i64, y: i64 }\nfn main() { let b = B { x: 1, y: 2 }; println(b.x); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-field-conflict.hew");
+        let offset = source.find("b.x").unwrap() + 2;
+        let error =
+            super::navigation::plan_workspace_rename(&uri, &doc, offset, "y", &DashMap::new())
+                .expect_err("renaming x to existing y must be refused");
+        assert!(
+            matches!(error, hew_analysis::RenameError::Conflicts { conflicts }
+            if conflicts.iter().any(|conflict| conflict.kind == hew_analysis::RenameConflictKind::ShadowsField))
+        );
+    }
+
+    #[test]
+    fn checked_method_navigation_selects_second_impl() {
+        let source = "type A { x: i64 }\nimpl A { fn get(self) -> i64 { self.x } }\ntype B { x: i64 }\nimpl B { fn get(self) -> i64 { self.x } }\nfn main() { let b = B { x: 2 }; println(b.get()); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-methods.hew");
+        let call = source.rfind("b.get").unwrap() + 2;
+        let expected = source.rfind("fn get").unwrap() + 3;
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
+                .expect("B.get must resolve through checker identity");
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(source, &doc.line_offsets, expected, expected + 3)
+        );
+    }
+
+    #[test]
+    fn checked_signature_help_selects_overloaded_method_identity() {
+        let source = "type A { x: i64 }\nimpl A { fn pick(self, first: i64) -> i64 { first } }\ntype B { x: i64 }\nimpl B { fn pick(self, second: bool) -> bool { second } }\nfn main() { let b = B { x: 2 }; println(b.pick(true)); }";
+        let doc = make_typed_doc(source);
+        let offset = source.find("b.pick(true)").unwrap() + "b.pick(".len();
+        let help = hew_analysis::signature_help::build_signature_help(
+            source,
+            doc.type_output.as_ref().unwrap(),
+            offset,
+        )
+        .expect("checked B.pick signature help");
+        let label = &help.signatures[0].label;
+        assert!(label.contains("second: bool"), "{label}");
+        assert!(!label.contains("first: i64"), "{label}");
+    }
+
+    #[test]
+    fn checked_imported_type_navigation_uses_its_source_module() {
+        let main_source =
+            "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { x: 1 }; println(shape.x); }";
+        let imported_source = "pub type Shape { x: i64 }";
+        let other_source = "pub type Shape { x: bool }";
+        let main_uri = make_test_uri("/fake/identity/main.hew");
+        let imported_uri = make_test_uri("/fake/identity/ma.hew");
+        let other_uri = make_test_uri("/fake/identity/mb.hew");
+        let documents = DashMap::new();
+        documents.insert(imported_uri.clone(), make_doc(imported_source));
+        documents.insert(other_uri.clone(), make_doc(other_source));
+        let doc = analyze_document(&main_uri, main_source, &documents, &[]);
+        let errors = published_errors(&doc, &main_uri);
+        assert!(errors.is_empty(), "imported type should check: {errors:?}");
+        let offset = main_source.find("ma.Shape").unwrap() + 3;
+        let location =
+            super::navigation::identity_definition_location(&main_uri, &doc, offset, &documents)
+                .expect("ma.Shape must resolve through checker identity");
+        let expected = imported_source.find("Shape").unwrap();
+        assert_eq!(location.uri, imported_uri);
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(
+                imported_source,
+                &compute_line_offsets(imported_source),
+                expected,
+                expected + 5
+            )
+        );
+        let field_use = main_source.find("shape.x").unwrap() + "shape.".len();
+        let refs = super::navigation::identity_reference_locations(
+            &main_uri, &doc, field_use, true, &documents,
+        )
+        .expect("imported field references should be checker-owned");
+        let field_decl = imported_source.find("x:").unwrap();
+        assert!(refs.iter().any(|reference| reference.uri == imported_uri
+            && reference.range
+                == offset_range_to_lsp(
+                    imported_source,
+                    &compute_line_offsets(imported_source),
+                    field_decl,
+                    field_decl + 1
+                )));
+        assert!(refs.iter().any(|reference| reference.uri == main_uri
+            && reference.range
+                == offset_range_to_lsp(main_source, &doc.line_offsets, field_use, field_use + 1)));
+        assert!(!refs.iter().any(|reference| reference.uri == other_uri));
+    }
+
+    #[test]
+    fn checked_imported_record_completion_uses_the_selected_module() {
+        let main_source = "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { width: 1 }; println(shape.width); }";
+        let ma_source = "pub type Shape { width: i64 }";
+        let mb_source = "pub type Shape { colour: i64 }";
+        let main_uri = make_test_uri("/fake/identity-completion/main.hew");
+        let documents = DashMap::new();
+        documents.insert(
+            make_test_uri("/fake/identity-completion/ma.hew"),
+            make_doc(ma_source),
+        );
+        documents.insert(
+            make_test_uri("/fake/identity-completion/mb.hew"),
+            make_doc(mb_source),
+        );
+        let doc = analyze_document(&main_uri, main_source, &documents, &[]);
+        let errors = published_errors(&doc, &main_uri);
+        assert!(
+            errors.is_empty(),
+            "qualified record should check: {errors:?}"
+        );
+        let offset = main_source.find("ma.Shape {").unwrap() + "ma.Shape {".len();
+        let items = hew_analysis::completions::complete(
+            main_source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"width"), "{labels:?}");
+        assert!(!labels.contains(&"colour"), "{labels:?}");
+    }
+
+    #[test]
     fn goto_def_resolves_nominal_type_name_to_declaration_span() {
         let source =
             "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
@@ -3955,7 +4160,7 @@ machine Traffic {
     }
 
     #[test]
-    fn plan_workspace_rename_rejects_rename_to_builtin() {
+    fn plan_workspace_rename_allows_prelude_shadowing() {
         let source = "fn main() { let x = 1; }";
         let uri = make_test_uri("/project/main.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();
@@ -3963,12 +4168,13 @@ machine Traffic {
 
         let doc = documents.get(&uri).unwrap();
         let offset = source.find("let x").unwrap() + 4;
-        let err = plan_workspace_rename(&uri, &doc, offset, "println", &documents)
-            .expect_err("renaming to println must fail");
-        match err {
-            hew_analysis::RenameError::Builtin { ref name, .. } => assert_eq!(name, "println"),
-            other => panic!("expected Builtin, got {other:?}"),
-        }
+        let edit = plan_workspace_rename(&uri, &doc, offset, "println", &documents)
+            .expect("prelude names are lexical and may be shadowed")
+            .expect("local rename should produce an edit");
+        let changes = edit.changes.expect("workspace edit should contain changes");
+        let edits = &changes[&uri];
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "println");
     }
 
     #[test]

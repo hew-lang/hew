@@ -51,6 +51,11 @@ pub fn hover(
     // Fall back to narrowest expression type that covers this offset.
     let mut best: Option<(&SpanKey, &Ty)> = None;
     for (span_key, ty) in &type_output.expr_types {
+        // The source passed to hover is the root editor buffer. An imported
+        // module may have the same offsets with an unrelated type.
+        if span_key.module_idx != 0 {
+            continue;
+        }
         if span_key.start <= offset && offset <= span_key.end {
             match best {
                 Some((prev, _)) if (span_key.end - span_key.start) < (prev.end - prev.start) => {
@@ -301,6 +306,18 @@ fn hover_field_access_at_offset(
     offset: usize,
 ) -> Option<HoverResult> {
     let (field_name, field_span) = crate::util::simple_word_at_offset(source, offset)?;
+    if let Some((_, hew_types::check::scope::Resolution::Field(owner, index))) =
+        crate::identity::resolution_at(type_output, 0, offset)
+    {
+        let type_def = type_output.type_defs.get(&owner)?;
+        let declared_name = type_def.field_order.get(index as usize)?;
+        let field_ty = type_def.fields.get(declared_name)?;
+        return Some(field_hover_result(
+            declared_name,
+            &field_ty.user_facing().to_string(),
+            field_span,
+        ));
+    }
     let receiver_end = crate::definition::find_field_receiver_end(source, field_span.start)?;
     let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
     let receiver_type_name = receiver_ty.type_name()?;
@@ -1882,6 +1899,45 @@ mod tests {
         assert!(result.is_some(), "should find hover via expr_types");
         let hr = result.unwrap();
         assert!(hr.contents.contains("i32"), "should show expression type");
+    }
+
+    #[test]
+    fn hover_uses_root_type_when_imported_file_has_same_span() {
+        let source = "fn main() { 42; }";
+        let pr = hew_parser::parse(source);
+        let offset = source.find("42").unwrap();
+        let root_key = SpanKey {
+            start: offset,
+            end: offset + 2,
+            module_idx: 0,
+        };
+        let imported_key = SpanKey {
+            module_idx: 1,
+            ..root_key.clone()
+        };
+        let tc = TypeCheckOutput {
+            expr_types: HashMap::from([(root_key, Ty::I64), (imported_key, Ty::Bool)]),
+            ..TypeCheckOutput::default()
+        };
+
+        let result = hover(source, &pr, Some(&tc), offset).expect("root literal hover");
+        assert!(result.contents.contains("i64"), "{result:?}");
+        assert!(!result.contents.contains("bool"), "{result:?}");
+    }
+
+    #[test]
+    fn hover_same_named_fields_is_stable_by_declaring_type() {
+        let source = "type A { w: i64 }\ntype B { w: bool }\nfn main() { let a = A { w: 1 }; let b = B { w: true }; println(a.w); println(b.w); }";
+        let parsed = hew_parser::parse(source);
+        let output = type_check(&parsed);
+        let a_offset = source.find("a.w").unwrap() + 2;
+        let b_offset = source.find("b.w").unwrap() + 2;
+        for _ in 0..20 {
+            let a = hover(source, &parsed, Some(&output), a_offset).expect("A.w hover");
+            let b = hover(source, &parsed, Some(&output), b_offset).expect("B.w hover");
+            assert!(a.contents.contains("w: i64"), "{a:?}");
+            assert!(b.contents.contains("w: bool"), "{b:?}");
+        }
     }
 
     #[test]

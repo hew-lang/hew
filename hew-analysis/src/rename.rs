@@ -3,7 +3,7 @@
 //! The headline entry point is [`plan_rename`], which returns either a
 //! batch of [`RenameEdit`]s or a [`RenameError`] describing why the
 //! rename was refused before any text edit was produced. Failure modes
-//! are intentionally kept small — a keyword / builtin clash, an invalid
+//! are intentionally kept small — a keyword, an invalid
 //! identifier, or a conflict with an existing binding in scope at one
 //! of the rename sites.
 //!
@@ -20,13 +20,6 @@ use crate::resolver::find_matching_import;
 use crate::util::{simple_word_at_offset, word_at_offset};
 use crate::{OffsetSpan, RenameConflict, RenameConflictKind, RenameEdit, RenameError};
 
-/// Identifier names that are resolved by the compiler independent of
-/// user code. Renaming to one of these would shadow a global reachable
-/// anywhere; the heuristic rejects it pre-emptively.
-///
-/// Excluded intentionally: names containing `::` or `.` such as
-/// `Vec::new`, `HashMap::new`, `Node::start`, `math.*`, `random.*`.
-/// Those are module-qualified and can't be introduced by a bare rename.
 /// Return `true` if `name` is a syntactically valid Hew identifier.
 ///
 /// Must start with `_` or an alphabetic character and continue with
@@ -42,15 +35,31 @@ pub(crate) fn is_valid_identifier(name: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-/// Return `true` if `name` clashes with a language keyword or a
-/// compiler-intrinsic name. Used by [`plan_rename`] to refuse renames
-/// to names that would shadow builtins.
+/// Return `true` if `name` is a language keyword. Prelude functions are
+/// ordinary lexical bindings and may be shadowed by user code (D554).
 #[must_use]
 pub fn is_builtin_name(name: &str) -> bool {
-    if hew_lexer::ALL_KEYWORDS.contains(&name) {
-        return true;
+    hew_lexer::ALL_KEYWORDS.contains(&name)
+}
+
+/// Validate a proposed Hew identifier for a rename operation.
+///
+/// Prelude function names remain legal targets because they are lexical
+/// bindings; only syntax keywords are reserved.
+pub fn validate_new_name(name: &str) -> Result<(), RenameError> {
+    if !is_valid_identifier(name) {
+        return Err(RenameError::InvalidIdentifier {
+            name: name.to_string(),
+            message: format!("'{name}' is not a valid identifier"),
+        });
     }
-    hew_types::builtin_function_names().contains(name)
+    if is_builtin_name(name) {
+        return Err(RenameError::Builtin {
+            name: name.to_string(),
+            message: format!("cannot rename to '{name}': reserved keyword"),
+        });
+    }
+    Ok(())
 }
 
 /// Check whether rename is valid at `offset`. Returns the word span if yes.
@@ -110,9 +119,7 @@ pub fn rename(
 /// Returns a [`RenameError`] describing why the rename was refused:
 /// - [`RenameError::InvalidIdentifier`] — `new_name` is not a valid
 ///   Hew identifier.
-/// - [`RenameError::Builtin`] — `new_name` is a language keyword or a
-///   compiler-intrinsic name (e.g. `println`, `if`). These would
-///   shadow a global.
+/// - [`RenameError::Builtin`] — `new_name` is a language keyword (e.g. `if`).
 /// - [`RenameError::Conflicts`] — `new_name` already refers to a
 ///   binding in scope at one or more of the rename sites; applying
 ///   the rename would introduce a shadow.
@@ -122,19 +129,7 @@ pub fn plan_rename(
     offset: usize,
     new_name: &str,
 ) -> Result<Vec<RenameEdit>, RenameError> {
-    if !is_valid_identifier(new_name) {
-        return Err(RenameError::InvalidIdentifier {
-            name: new_name.to_string(),
-            message: format!("'{new_name}' is not a valid identifier"),
-        });
-    }
-
-    if is_builtin_name(new_name) {
-        return Err(RenameError::Builtin {
-            name: new_name.to_string(),
-            message: format!("cannot rename to '{new_name}': reserved keyword or builtin name"),
-        });
-    }
+    validate_new_name(new_name)?;
 
     let Some((name, def_word_span)) = simple_word_at_offset(source, offset) else {
         return Ok(Vec::new());
@@ -454,87 +449,22 @@ mod tests {
     }
 
     #[test]
-    fn plan_rename_rejects_builtin_function_name() {
-        let source = "fn main() { let x = 1; }";
+    fn plan_rename_allows_prelude_shadow_without_capturing_a_call() {
+        let source = "fn main() { let value = 1; value; }";
         let pr = parse(source);
-        let offset = source.find("let x").unwrap() + 4;
-        let err = plan_rename(source, &pr, offset, "println").unwrap_err();
-        assert!(
-            matches!(err, RenameError::Builtin { ref name, .. } if name == "println"),
-            "expected Builtin for println, got {err:?}"
-        );
+        let offset = source.find("let value").unwrap() + 4;
+        let edits = plan_rename(source, &pr, offset, "println").unwrap();
+        assert_eq!(edits.len(), 2);
+        assert!(edits.iter().all(|edit| edit.new_text == "println"));
     }
 
     #[test]
-    fn plan_rename_rejects_newly_added_builtin_names() {
-        // Regression guard for builtin names derived from checker registration in
-        // the fix for issue #1277.  Each must be rejected with Builtin.
-        let source = "fn main() { let x = 1; }";
+    fn plan_rename_allows_an_internal_endpoint_spelling() {
+        let source = "fn main() { let value = 1; value; }";
         let pr = parse(source);
-        let offset = source.find("let x").unwrap() + 4;
-
-        let newly_added = [
-            // Math free functions are gone (A409: one module-qualified
-            // spelling) and `to_float` was a dead builtin; a rename onto any
-            // of them is allowed.
-            // String conversions. The legacy string free functions
-            // (string_concat, substring, string_split and the rest) were
-            // retired in favour of `string` methods, so they are no longer
-            // builtin names and a rename onto them is allowed.
-            "int_to_string",
-            "float_to_string",
-            "char_to_string",
-            "bool_to_string",
-            // Typed print variants
-            "println_int",
-            "println_str",
-            "print_int",
-            "print_str",
-            "println_float",
-            "println_bool",
-            "print_float",
-            "print_bool",
-            "println_f64",
-            "print_f64",
-            "println_i64",
-            "println_char",
-            // Supervisor
-            "supervisor_child",
-            "supervisor_stop",
-            // Channel/stream layout-witness builtins (issue #1277 lineage;
-            // the table-driven method symbols from builtin_named_types —
-            // hew_stream_send_layout is checker-hardcoded, not table-driven,
-            // so it does not enter builtin_function_names)
-            "hew_stream_next_layout",
-            "hew_stream_try_next_layout",
-            "hew_stream_send_layout",
-            "hew_stream_try_send_layout",
-        ];
-
-        // Note: `string_to_int` and `string_char_at` were deleted as dead
-        // free-function builtin registrations by the collection reshape
-        // (`char_at`/`to_int` now live only as dispatch-only Vec/String
-        // methods returning Option, never registered in `fn_sigs`), so they
-        // are intentionally absent from `newly_added` above. Likewise the
-        // `hew_vec_remove_at_*` family introduced by that same reshape is
-        // VecMethod-dispatch-only (like `hew_stream_send_layout`) and never
-        // enters `builtin_function_names`, so it does not belong in this
-        // list either.
-
-        let not_refused: Vec<&str> = newly_added
-            .iter()
-            .copied()
-            .filter(|name| {
-                !matches!(
-                    plan_rename(source, &pr, offset, name),
-                    Err(RenameError::Builtin { .. })
-                )
-            })
-            .collect();
-        assert!(
-            not_refused.is_empty(),
-            "these names are no longer refused as builtins: {not_refused:?}"
-        );
+        let offset = source.find("let value").unwrap() + 4;
+        let edits = plan_rename(source, &pr, offset, "hew_stream_next_layout").unwrap();
+        assert_eq!(edits.len(), 2);
     }
 
     #[test]

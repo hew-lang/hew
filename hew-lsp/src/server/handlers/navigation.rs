@@ -48,6 +48,30 @@ pub(crate) fn goto_definition(
     let doc = server.documents.get(uri)?;
 
     let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
+    if let Some(location) =
+        super::super::navigation::identity_definition_location(uri, &doc, offset, &server.documents)
+    {
+        return Some(GotoDefinitionResponse::Scalar(location));
+    }
+    if let Some(output) = &doc.type_output {
+        if let Some((_, resolution)) = hew_analysis::identity::resolution_at(output, 0, offset) {
+            use hew_types::check::scope::Resolution;
+            let authored_declaration = match resolution {
+                Resolution::Def(id) | Resolution::Member(id) => output.defs.site(id).is_some(),
+                Resolution::Nominal(id) => output.defs.site(id.declaration()).is_some(),
+                Resolution::Local(_) | Resolution::Field(_, _) => true,
+                Resolution::Param(_)
+                | Resolution::Module(_)
+                | Resolution::Builtin(_)
+                | Resolution::Variant(_, _) => false,
+            };
+            if authored_declaration {
+                // The checker made a positive identity claim. A missing source
+                // location is a mapping gap, not permission to pick a namesake.
+                return None;
+            }
+        }
+    }
     let word = word_at_offset(&doc.source, offset)?;
 
     if let Some(resolution) = hew_analysis::resolver::resolve_symbol_at_raw(

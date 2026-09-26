@@ -304,6 +304,103 @@ fn imported_method_callback_flows_to_its_exact_formal() {
 }
 
 #[test]
+fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
+    let source = "type Map { f: fn(i64) -> i64 } \
+        impl Map { fn next(self, value: i64) -> i64 { (self.f)(value) } } \
+        fn map(consume f: fn(i64) -> i64) -> Map { Map { f: f } } \
+        fn collect(consume it: Map) -> i64 { it.next(1) } \
+        fn main() { println(collect(map(|x: i64| x + 1))); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let map_decl = output.defs.lookup_path("map").expect("map declaration");
+    let f_start = source.find("consume f:").unwrap() + "consume ".len();
+    let Some(crate::check::scope::Resolution::Local(f_formal)) = output
+        .resolutions
+        .get(&SpanKey::in_module(&(f_start..f_start + 1), 0))
+    else {
+        panic!("map callback formal has no identity");
+    };
+    let aggregate_start = source.find("Map { f: f }").unwrap();
+    let aggregate = output
+        .aggregate_field_candidates
+        .keys()
+        .find(|key| key.start == aggregate_start)
+        .expect("checked Map constructor");
+    assert_eq!(
+        output.callable_return_candidates.get(&map_decl),
+        Some(&IndirectCallCandidates {
+            known: vec![CallableCandidate::Aggregate(aggregate.clone())],
+            may_be_unknown: false,
+        })
+    );
+    assert_eq!(
+        output.aggregate_field_candidates.get(aggregate),
+        Some(&vec![CallableFieldFlow {
+            owner: output.defs.lookup_nominal("Map").expect("Map nominal"),
+            index: 0,
+            candidates: IndirectCallCandidates {
+                known: vec![CallableCandidate::Formal(*f_formal)],
+                may_be_unknown: false,
+            },
+        }])
+    );
+    let map_call_start = source.rfind("map(|x:").unwrap();
+    let map_call = output
+        .direct_call_targets
+        .keys()
+        .find(|key| key.start == map_call_start)
+        .expect("selected map call");
+    let collect_start = source.rfind("collect(map(").unwrap();
+    let collect_flow = output
+        .callable_argument_flows
+        .iter()
+        .find(|(key, _)| key.start == collect_start)
+        .map(|(_, flows)| flows)
+        .expect("collect actual-to-formal flow");
+    assert_eq!(
+        collect_flow[0].candidates,
+        IndirectCallCandidates {
+            known: vec![CallableCandidate::CallResult(map_call.clone())],
+            may_be_unknown: false,
+        }
+    );
+    let it_start = source.find("consume it:").unwrap() + "consume ".len();
+    let Some(crate::check::scope::Resolution::Local(it_formal)) = output
+        .resolutions
+        .get(&SpanKey::in_module(&(it_start..it_start + 2), 0))
+    else {
+        panic!("collect iterator formal has no identity");
+    };
+    let next_start = source.find("it.next(1)").unwrap();
+    let next_flow = output
+        .callable_argument_flows
+        .iter()
+        .find(|(key, _)| key.start == next_start)
+        .map(|(_, flows)| flows)
+        .expect("Map.next receiver flow");
+    assert_eq!(
+        next_flow[0].candidates,
+        IndirectCallCandidates {
+            known: vec![CallableCandidate::Formal(*it_formal)],
+            may_be_unknown: false,
+        }
+    );
+    let field_start = source.find("self.f").unwrap();
+    let field_candidates = output
+        .indirect_call_candidates
+        .iter()
+        .find(|(key, _)| key.start <= field_start && field_start < key.end)
+        .map(|(_, candidates)| candidates)
+        .expect("Map.next field invocation");
+    assert!(matches!(
+        field_candidates.known.as_slice(),
+        [CallableCandidate::Field { owner, index: 0, .. }]
+            if *owner == output.defs.lookup_nominal("Map").unwrap()
+    ));
+    assert!(!field_candidates.may_be_unknown);
+}
+
+#[test]
 fn reassigned_function_value_keeps_every_possible_closure() {
     let source = "fn main() { \
         var f: fn() -> i64 = || 1; \

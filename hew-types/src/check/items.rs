@@ -1008,6 +1008,7 @@ impl Checker {
         }
         self.check_function_body_as(fd, fn_name);
         if let Some(declaration) = declaration {
+            self.record_callable_body_return(declaration, &fd.body);
             let formals = fd
                 .params
                 .iter()

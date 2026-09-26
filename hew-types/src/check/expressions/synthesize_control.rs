@@ -2316,6 +2316,7 @@ impl Checker {
             .or_insert_with(|| self.current_module.clone());
         self.expr_types.entry(key).or_insert_with(|| result.clone());
         self.record_expression_effect(expr, span);
+        self.record_aggregate_field_sources(expr, span);
         self.record_call_argument_sources(expr, span);
         self.check_receiver_whole_at_expr(expr, span, &result);
         result

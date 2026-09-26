@@ -236,6 +236,7 @@ fn choice_variant_shape(choice: &ResolvedTy) -> SemVariantShape {
                 fields: Vec::new(),
             },
         ],
+        runtime_tags: Vec::new(),
     }
 }
 

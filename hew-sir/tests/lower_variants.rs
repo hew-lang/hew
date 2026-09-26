@@ -1,7 +1,7 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
-    lower_module, verify_module, BoundaryDecision, SemOpKind, SemParamPassing, SemTerminator,
-    SirDiagnosticKind, SirLoweringStatus,
+    lower_module, verify_module, BoundaryDecision, RuntimeVariantRole, SemOpKind, SemParamPassing,
+    SemTerminator, SirDiagnosticKind, SirLoweringStatus,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -231,6 +231,14 @@ fn result_constructor_return_and_exhaustive_match_transfer_owned_payloads() {
         .find(|shape| shape.enum_ty.user_facing().to_string() == "Result<string, string>")
         .expect("Result<string, string> must have one exact descriptor");
     assert_eq!(result_shape.variants.len(), 2);
+    assert_eq!(
+        result_shape.runtime_tag(RuntimeVariantRole::ResultOk),
+        Some(0)
+    );
+    assert_eq!(
+        result_shape.runtime_tag(RuntimeVariantRole::ResultErr),
+        Some(1)
+    );
     assert!(result_shape
         .variants
         .iter()
@@ -339,6 +347,26 @@ fn bitcopy_record_and_option_use_exact_descriptors_without_owner_glue() {
         .iter()
         .find(|shape| shape.enum_ty.user_facing().to_string() == "Option<i64>")
         .expect("Option<i64> must retain its exact variant descriptor");
+    assert_eq!(
+        optional.runtime_tag(RuntimeVariantRole::OptionSome),
+        Some(0)
+    );
+    assert_eq!(
+        optional.runtime_tag(RuntimeVariantRole::OptionNone),
+        Some(1)
+    );
+    let mut forged = lowered.module.clone();
+    let forged_option = forged
+        .variant_shapes
+        .iter_mut()
+        .find(|shape| shape.id == optional.id)
+        .expect("the cloned module retains the Option descriptor");
+    forged_option.runtime_tags.swap(0, 1);
+    assert!(verify_module(&forged).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidVariantShape { reason, .. }
+            if reason.contains("runtime role tags differ")
+    )));
     for ty in [&point.aggregate_ty, &optional.enum_ty] {
         let facts = lowered
             .module

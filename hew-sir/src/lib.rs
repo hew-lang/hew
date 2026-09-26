@@ -52,12 +52,12 @@ pub use model::{
     runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,
     BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, DeferId,
     DeferScopeId, Edge, EffectSet, FaultParkId, FunctionSourceOrigin, GenericTemplateId, OpId,
-    Operand, OperandSlot, Provenance, RuntimeVariantShapeRefs, SemAbiParam, SemAggregateField,
-    SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
-    SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemStructuralRender, SemTerminator, SemVariant, SemVariantArm, SemVariantField,
-    SemVariantKind, SemVariantShape, SemVtable, SemVtableId, SemVtableSlot, SirInstanceKey,
-    StructuralType, SuccessorSlot, UseSite, ValueDef, ValueId, VariantShapeId,
+    Operand, OperandSlot, Provenance, RuntimeVariantRole, RuntimeVariantShapeRefs, SemAbiParam,
+    SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind,
+    SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind,
+    SemParamPassing, SemSignature, SemStructuralRender, SemTerminator, SemVariant, SemVariantArm,
+    SemVariantField, SemVariantKind, SemVariantShape, SemVtable, SemVtableId, SemVtableSlot,
+    SirInstanceKey, StructuralType, SuccessorSlot, UseSite, ValueDef, ValueId, VariantShapeId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, transfer_module_dead_local_reads, CfgCanonicalizationReport,

@@ -216,6 +216,10 @@ pub(super) fn decode_module() -> SemModule {
                         }],
                     },
                 ],
+                runtime_tags: vec![
+                    (hew_sir::RuntimeVariantRole::ResultOk, 0),
+                    (hew_sir::RuntimeVariantRole::ResultErr, 1),
+                ],
             },
             SemVariantShape {
                 id: VariantShapeId(1),
@@ -235,6 +239,10 @@ pub(super) fn decode_module() -> SemModule {
                         kind: SemVariantKind::Unit,
                         fields: Vec::new(),
                     },
+                ],
+                runtime_tags: vec![
+                    (hew_sir::RuntimeVariantRole::OptionSome, 0),
+                    (hew_sir::RuntimeVariantRole::OptionNone, 1),
                 ],
             },
         ],

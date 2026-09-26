@@ -75,11 +75,11 @@ use crate::ownership::{
 use crate::{
     AggregateShapeId, AggregateShapeRef, BindingTarget, BlockArg, BlockId, CallResult, CallUnwind,
     CallableId, CallableInstance, CheckedFailure, Edge, FunctionSourceOrigin, GenericTemplateId,
-    OpId, Operand, PlaceId, PlaceOrigin, Provenance, SemAbiParam, SemAggregateField,
-    SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
-    SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    SemVariant, SemVariantArm, SemVariantField, SemVariantKind, SemVariantShape, SirInstanceKey,
-    ValueDef, ValueId, VariantShapeId,
+    OpId, Operand, PlaceId, PlaceOrigin, Provenance, RuntimeVariantRole, SemAbiParam,
+    SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind,
+    SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature,
+    SemTerminator, SemVariant, SemVariantArm, SemVariantField, SemVariantKind, SemVariantShape,
+    SirInstanceKey, ValueDef, ValueId, VariantShapeId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -959,6 +959,7 @@ fn require_variant_shape(
     }
     require_type_facts(facts, enum_ty)?;
     let (is_indirect, variants) = concrete_variant_shape(module, enum_ty)?;
+    let runtime_tags = runtime_variant_tags(enum_ty, &variants)?;
     for variant in &variants {
         for field in &variant.fields {
             require_type_facts(facts, &field.ty)?;
@@ -973,9 +974,82 @@ fn require_variant_shape(
         enum_ty: enum_ty.clone(),
         is_indirect,
         variants,
+        runtime_tags,
     });
     shapes_by_type.insert(enum_ty.clone(), id);
     Ok(id)
+}
+
+/// Freeze the runtime's closed variant roles at the same boundary that admits
+/// the exact SIR shape. No sandbox or native consumer needs to search cases by
+/// their display names after this point.
+pub(crate) fn runtime_variant_tags(
+    enum_ty: &ResolvedTy,
+    variants: &[SemVariant],
+) -> Result<Vec<(RuntimeVariantRole, u32)>, String> {
+    use hew_types::{BuiltinType, KnownDecl, TypeHead};
+    use RuntimeVariantRole as Role;
+
+    let ResolvedTy::Named { head, .. } = enum_ty else {
+        return Ok(Vec::new());
+    };
+    let roles: &[(Role, &str)] = match head {
+        TypeHead::Builtin(BuiltinType::Option) => {
+            &[(Role::OptionSome, "Some"), (Role::OptionNone, "None")]
+        }
+        TypeHead::Builtin(BuiltinType::Result) => {
+            &[(Role::ResultOk, "Ok"), (Role::ResultErr, "Err")]
+        }
+        TypeHead::Builtin(BuiltinType::SendError) => &[
+            (Role::SendErrorFull, "Full"),
+            (Role::SendErrorClosed, "Closed"),
+            (Role::SendErrorNodeRoutingNotWired, "NodeRoutingNotWired"),
+            (Role::SendErrorPartition, "Partition"),
+            (Role::SendErrorStaleRef, "StaleRef"),
+            (Role::SendErrorLocalShutdown, "LocalShutdown"),
+            (Role::SendErrorCancelled, "Cancelled"),
+            (Role::SendErrorVersionMismatch, "VersionMismatch"),
+            (Role::SendErrorUnauthorized, "Unauthorized"),
+            (Role::SendErrorBackpressure, "Backpressure"),
+            (Role::SendErrorDead, "Dead"),
+        ],
+        head if *head == KnownDecl::ActorError.head() => &[
+            (Role::ActorErrorRejected, "Rejected"),
+            (Role::ActorErrorFailed, "Failed"),
+            (Role::ActorErrorTrapped, "Trapped"),
+            (Role::ActorErrorDead, "Dead"),
+            (Role::ActorErrorTimeout, "Timeout"),
+            (Role::ActorErrorNodeNotRunning, "NodeNotRunning"),
+            (Role::ActorErrorRoutingFailed, "RoutingFailed"),
+            (Role::ActorErrorEncodeFailed, "EncodeFailed"),
+            (Role::ActorErrorConnectionDropped, "ConnectionDropped"),
+            (Role::ActorErrorPartition, "Partition"),
+        ],
+        head if *head == KnownDecl::Delivery.head() => &[
+            (Role::DeliveryAccepted, "Accepted"),
+            (Role::DeliveryDiscarded, "Discarded"),
+        ],
+        _ => return Ok(Vec::new()),
+    };
+    roles
+        .iter()
+        .map(|(role, name)| {
+            variants
+                .iter()
+                .position(|variant| variant.name == *name)
+                .ok_or_else(|| {
+                    format!(
+                        "runtime enum `{}` has no required `{name}` variant",
+                        enum_ty.user_facing()
+                    )
+                })
+                .and_then(|index| {
+                    u32::try_from(index)
+                        .map(|tag| (*role, tag))
+                        .map_err(|_| "runtime variant tag exceeds u32".to_string())
+                })
+        })
+        .collect()
 }
 
 fn require_signature_shapes(

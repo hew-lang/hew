@@ -10,6 +10,31 @@ use hew_hir::IntentKind;
 use hew_types::{ResolvedTy, TypeFactContext, TypeFactService};
 
 #[test]
+fn runtime_variant_roles_follow_exact_enum_identity_and_declaration_order() {
+    use crate::{RuntimeVariantRole as Role, SemVariant, SemVariantKind};
+
+    let variants = ["None", "Some"]
+        .into_iter()
+        .map(|name| SemVariant {
+            name: name.to_string(),
+            kind: SemVariantKind::Unit,
+            fields: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let builtin = ResolvedTy::named_for_test("Option", vec![ResolvedTy::I64]);
+    let tags = super::runtime_variant_tags(&builtin, &variants).expect("builtin roles");
+    assert_eq!(tags, vec![(Role::OptionSome, 1), (Role::OptionNone, 0)]);
+
+    let user = ResolvedTy::user_for_test("user.Option", vec![ResolvedTy::I64]);
+    assert!(super::runtime_variant_tags(&user, &variants)
+        .expect("user enum has no runtime roles")
+        .is_empty());
+
+    let missing = super::runtime_variant_tags(&builtin, &variants[..1]);
+    assert!(missing.is_err_and(|reason| reason.contains("required `Some` variant")));
+}
+
+#[test]
 fn only_a_read_intent_reaches_an_initial_scalar_operand() {
     assert_eq!(Ok(()), require_initial_scalar_read(IntentKind::Read));
 

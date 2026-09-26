@@ -565,6 +565,53 @@ pub struct SemVariantShape {
     pub enum_ty: ResolvedTy,
     pub is_indirect: bool,
     pub variants: Vec<SemVariant>,
+    /// Closed runtime roles paired with their declaration-order tags.
+    /// Source names are joined once when SIR admits the exact enum shape.
+    pub runtime_tags: Vec<(RuntimeVariantRole, u32)>,
+}
+
+/// Roles for variants the runtime can construct without executing a Hew body.
+/// The role is qualified by its owning enum, so a user's same-named variant
+/// cannot become a runtime result through a spelling collision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeVariantRole {
+    OptionSome,
+    OptionNone,
+    ResultOk,
+    ResultErr,
+    ActorErrorRejected,
+    ActorErrorFailed,
+    ActorErrorTrapped,
+    ActorErrorDead,
+    ActorErrorTimeout,
+    ActorErrorNodeNotRunning,
+    ActorErrorRoutingFailed,
+    ActorErrorEncodeFailed,
+    ActorErrorConnectionDropped,
+    ActorErrorPartition,
+    SendErrorFull,
+    SendErrorClosed,
+    SendErrorNodeRoutingNotWired,
+    SendErrorPartition,
+    SendErrorStaleRef,
+    SendErrorLocalShutdown,
+    SendErrorCancelled,
+    SendErrorVersionMismatch,
+    SendErrorUnauthorized,
+    SendErrorBackpressure,
+    SendErrorDead,
+    DeliveryAccepted,
+    DeliveryDiscarded,
+}
+
+impl SemVariantShape {
+    /// Numeric tag selected from this exact shape for a closed runtime role.
+    #[must_use]
+    pub fn runtime_tag(&self, role: RuntimeVariantRole) -> Option<u32> {
+        self.runtime_tags
+            .iter()
+            .find_map(|(candidate, tag)| (*candidate == role).then_some(*tag))
+    }
 }
 
 /// Module-local descriptor references proven to implement one closed runtime
@@ -573,8 +620,12 @@ pub struct SemVariantShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeVariantShapeRefs {
     pub result: VariantShapeId,
+    pub result_ok: u32,
+    pub result_err: u32,
     pub error: AggregateShapeId,
     pub error_len: VariantShapeId,
+    pub error_len_some: u32,
+    pub error_len_none: u32,
 }
 
 /// Validate the demanded descriptors used by a runtime-produced enum value.
@@ -694,8 +745,20 @@ pub fn runtime_variant_shape_refs(
 
     Ok(RuntimeVariantShapeRefs {
         result: result.id,
+        result_ok: result
+            .runtime_tag(RuntimeVariantRole::ResultOk)
+            .ok_or_else(|| "runtime Result descriptor has no checked Ok role".to_string())?,
+        result_err: result
+            .runtime_tag(RuntimeVariantRole::ResultErr)
+            .ok_or_else(|| "runtime Result descriptor has no checked Err role".to_string())?,
         error: error.id,
         error_len: error_len_shape.id,
+        error_len_some: error_len_shape
+            .runtime_tag(RuntimeVariantRole::OptionSome)
+            .ok_or_else(|| "runtime error_len descriptor has no checked Some role".to_string())?,
+        error_len_none: error_len_shape
+            .runtime_tag(RuntimeVariantRole::OptionNone)
+            .ok_or_else(|| "runtime error_len descriptor has no checked None role".to_string())?,
     })
 }
 

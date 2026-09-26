@@ -406,6 +406,13 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
                 shape.enum_ty.user_facing()
             ));
         }
+        match crate::lower::runtime_variant_tags(&shape.enum_ty, &shape.variants) {
+            Ok(expected_tags) if shape.runtime_tags != expected_tags => {
+                refuse("runtime role tags differ from the exact enum descriptor".to_string());
+            }
+            Err(reason) => refuse(reason),
+            Ok(_) => {}
+        }
         let mut variant_names = HashSet::new();
         for variant in &shape.variants {
             if variant.kind == crate::SemVariantKind::Unit && !variant.fields.is_empty() {

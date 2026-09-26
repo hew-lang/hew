@@ -559,6 +559,44 @@ fn compile_test(
     })
 }
 
+fn execute_test_run(
+    binary: &Path,
+    timeout: Duration,
+    execution: &Execution,
+) -> (
+    Result<crate::process::BinaryRunOutcome, String>,
+    Option<TestReport>,
+    Option<tempfile::TempDir>,
+) {
+    let dir = match tempfile::Builder::new().prefix("hew_test_run_").tempdir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            return (
+                Err(format!("cannot create test report directory: {error}")),
+                None,
+                None,
+            );
+        }
+    };
+    let path = dir.path().join("report.json");
+    let scratch = dir.path().join("tmp");
+    let run = std::fs::create_dir(&scratch)
+        .map_err(|error| format!("cannot create test scratch directory: {error}"))
+        .and_then(|()| {
+            crate::process::run_binary_with_driver(
+                binary,
+                timeout,
+                execution.environment().as_deref(),
+                &path,
+                &scratch,
+            )
+        });
+    let report = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<TestReport>(&bytes).ok());
+    (run, report, Some(dir))
+}
+
 fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -587,38 +625,14 @@ fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult 
     let mut first_failure: Option<(Execution, TestFailure, String)> = None;
     let mut failed_runs = 0usize;
     for execution in &runs {
-        let report_dir = tempfile::Builder::new().prefix("hew_test_run_").tempdir();
-        let (run_result, report) = match report_dir.as_ref() {
-            Ok(dir) => {
-                let path = dir.path().join("report.json");
-                let scratch = dir.path().join("tmp");
-                let run = std::fs::create_dir(&scratch)
-                    .map_err(|error| format!("cannot create test scratch directory: {error}"))
-                    .and_then(|()| {
-                        crate::process::run_binary_with_driver(
-                            &artifact.binary_path,
-                            options.timeout,
-                            execution.environment().as_deref(),
-                            &path,
-                            &scratch,
-                        )
-                    });
-                let report = std::fs::read(&path)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<TestReport>(&bytes).ok());
-                (run, report)
-            }
-            Err(error) => (
-                Err(format!("cannot create test report directory: {error}")),
-                None,
-            ),
-        };
+        let (run_result, report, report_dir) =
+            execute_test_run(&artifact.binary_path, options.timeout, execution);
         let (outcome, output) = judge_run(test, run_result, options.timeout, report.as_ref());
         match outcome {
             TestOutcome::Failed(mut failure) => {
                 failed_runs += 1;
                 if first_failure.is_none() {
-                    if let Ok(dir) = report_dir {
+                    if let Some(dir) = report_dir {
                         if dir.path().join("tmp").is_dir() {
                             let scratch = dir.keep().join("tmp");
                             let _ =

@@ -32,40 +32,6 @@ pub(crate) fn find_receiver_type(tc: &TypeCheckOutput, end_offset: usize) -> Opt
     best.map(|(_, ty)| ty)
 }
 
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-
-    #[test]
-    fn receiver_type_uses_the_editor_buffer_module() {
-        let tc = TypeCheckOutput {
-            expr_types: HashMap::from([
-                (
-                    SpanKey {
-                        start: 12,
-                        end: 13,
-                        module_idx: 0,
-                    },
-                    Ty::I64,
-                ),
-                (
-                    SpanKey {
-                        start: 12,
-                        end: 13,
-                        module_idx: 1,
-                    },
-                    Ty::Bool,
-                ),
-            ]),
-            ..TypeCheckOutput::default()
-        };
-
-        assert_eq!(find_receiver_type(&tc, 14), Some(&Ty::I64));
-    }
-}
-
 pub(crate) fn collect_method_sigs_for_receiver(
     tc: &TypeCheckOutput,
     receiver_ty: &Ty,
@@ -134,4 +100,38 @@ pub(crate) fn lookup_type_def_for_receiver(
         return tc.type_defs.get(&nominal.id).cloned();
     }
     method_resolution::lookup_type_def_for_receiver(&tc.defs, &tc.type_defs, receiver_ty)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[test]
+    fn receiver_type_uses_the_editor_buffer_module() {
+        let tc = TypeCheckOutput {
+            expr_types: HashMap::from([
+                (
+                    SpanKey {
+                        start: 12,
+                        end: 13,
+                        module_idx: 0,
+                    },
+                    Ty::I64,
+                ),
+                (
+                    SpanKey {
+                        start: 12,
+                        end: 13,
+                        module_idx: 1,
+                    },
+                    Ty::Bool,
+                ),
+            ]),
+            ..TypeCheckOutput::default()
+        };
+
+        assert_eq!(find_receiver_type(&tc, 14), Some(&Ty::I64));
+    }
 }

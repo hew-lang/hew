@@ -14,9 +14,9 @@
 
 use hew_parser::ParseResult;
 
+use crate::definition::find_matching_import;
 use crate::definition::{find_definition, find_local_binding_definition, find_param_definition};
 use crate::references::{find_all_references, is_top_level_name};
-use crate::resolver::find_matching_import;
 use crate::util::{simple_word_at_offset, word_at_offset};
 use crate::{OffsetSpan, RenameConflict, RenameConflictKind, RenameEdit, RenameError};
 
@@ -46,6 +46,10 @@ pub fn is_builtin_name(name: &str) -> bool {
 ///
 /// Prelude function names remain legal targets because they are lexical
 /// bindings; only syntax keywords are reserved.
+///
+/// # Errors
+///
+/// Returns an error when `name` is not a Hew identifier or is a reserved keyword.
 pub fn validate_new_name(name: &str) -> Result<(), RenameError> {
     if !is_valid_identifier(name) {
         return Err(RenameError::InvalidIdentifier {

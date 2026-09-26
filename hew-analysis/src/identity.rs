@@ -245,7 +245,7 @@ pub fn declaration_name_span(
             .iter()
             .filter_map(|part| match part {
                 TraitItem::Method(method) => Some(method),
-                _ => None,
+                TraitItem::AssociatedType { .. } => None,
             })
             .nth(ordinal)?
             .span

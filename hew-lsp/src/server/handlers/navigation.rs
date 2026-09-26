@@ -1,7 +1,7 @@
 use tower_lsp_server::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp_server::lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, ReferenceParams,
-    RenameParams, Uri as Url, WorkspaceEdit,
+    RenameParams, WorkspaceEdit,
 };
 
 use super::super::{
@@ -74,23 +74,27 @@ pub(crate) fn goto_definition(
     }
     let word = word_at_offset(&doc.source, offset)?;
 
-    if let Some(resolution) = hew_analysis::resolver::resolve_symbol_at_raw(
+    if let Some(span) = hew_analysis::definition::find_local_binding_definition(
         &doc.source,
         &doc.parse_result,
-        doc.type_output.as_ref(),
-        uri.as_str(),
+        &word,
         offset,
-    ) {
-        if let Some((res_uri, span)) = resolution.def_location() {
-            // Use the resolver's URI, not the caller's URI: the definition may
-            // live in a stdlib or imported file, not the document being queried.
-            let def_uri = res_uri.parse::<Url>().unwrap_or_else(|_| uri.clone());
-            let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
-            return Some(GotoDefinitionResponse::Scalar(Location {
-                uri: def_uri,
-                range,
-            }));
-        }
+    )
+    .or_else(|| hew_analysis::definition::find_param_definition(&doc.parse_result, &word, offset))
+    {
+        let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
+        return Some(GotoDefinitionResponse::Scalar(Location {
+            uri: uri.clone(),
+            range,
+        }));
+    }
+    if let Some(range) =
+        find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word)
+    {
+        return Some(GotoDefinitionResponse::Scalar(Location {
+            uri: uri.clone(),
+            range,
+        }));
     }
 
     if let Some(method) = word.rsplit('.').next() {

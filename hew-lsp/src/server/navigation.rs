@@ -1439,7 +1439,7 @@ fn collect_cross_file_conflict_raw(
             });
         }
     } else if let Some(existing) =
-        hew_analysis::resolver::find_matching_import(parse_result, new_name)
+        hew_analysis::definition::find_matching_import(parse_result, new_name)
     {
         let offending =
             hew_analysis::definition::find_definition(source, parse_result, offending_visible_name)

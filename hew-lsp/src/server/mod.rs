@@ -1579,9 +1579,9 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_local_binding_fallback() {
+    fn goto_def_resolves_checked_local_binding() {
         let source = "fn main() {\n    let result = 41;\n    result + 1\n}";
-        let doc = make_doc(source);
+        let doc = make_typed_doc(source);
         let offset = source.rfind("result + 1").unwrap();
         let word = word_at_offset(source, offset).unwrap();
 
@@ -1589,18 +1589,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify local binding");
-        let (_, span) = resolution
-            .def_location()
-            .expect("local binding should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-local.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve local binding")
+                .range;
         let expected_start = source.find("let result").unwrap() + 4;
         let expected = offset_range_to_lsp(
             source,
@@ -1612,7 +1605,7 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_struct_field_access_fallback() {
+    fn goto_def_resolves_checked_struct_field_access() {
         let source =
             "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let doc = make_typed_doc(source);
@@ -1624,18 +1617,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify field access");
-        let (_, span) = resolution
-            .def_location()
-            .expect("field access should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-field.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve field access")
+                .range;
         let expected_start = source.find("x: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,
@@ -1792,6 +1778,27 @@ impl Worker {
         assert_eq!(
             location.range,
             offset_range_to_lsp(source, &doc.line_offsets, expected, expected + 3)
+        );
+    }
+
+    #[test]
+    fn checked_trait_bound_call_navigates_to_trait_method() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-trait-bound.hew");
+        let call = source.find("item.describe()").unwrap() + "item.".len();
+        let declared = source.find("fn describe(value").unwrap() + "fn ".len();
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
+                .expect("bounded call should resolve to its trait method");
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "describe".len()
+            )
         );
     }
 
@@ -1973,37 +1980,20 @@ impl Worker {
         let doc = make_typed_doc(source);
         let offset = source.find("-> Point").unwrap() + "-> ".len();
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify nominal type use");
-        match resolution {
-            hew_analysis::resolver::Resolution::TypeDef { name, def_span, .. } => {
-                assert_eq!(name, "Point");
-                assert_eq!(&source[def_span.start..def_span.end], "Point");
-                assert_eq!(def_span.start, source.find("Point").unwrap());
-                let range =
-                    offset_range_to_lsp(source, &doc.line_offsets, def_span.start, def_span.end);
-                let expected = offset_range_to_lsp(
-                    source,
-                    &doc.line_offsets,
-                    source.find("Point").unwrap(),
-                    source.find("Point").unwrap() + "Point".len(),
-                );
-                assert_eq!(range, expected);
-            }
-            other => panic!("expected nominal TypeDef, got {other:?}"),
-        }
+        let uri = make_test_uri("/identity-nominal.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve nominal type use")
+                .range;
+        let start = source.find("Point").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, start, start + "Point".len());
+        assert_eq!(range, expected);
     }
 
     #[test]
-    fn goto_def_resolves_param_fallback() {
+    fn goto_def_resolves_checked_param() {
         let source = "fn add(value: i32) -> i32 {\n    value + 1\n}";
-        let doc = make_doc(source);
+        let doc = make_typed_doc(source);
         let offset = source.rfind("value + 1").unwrap();
         let word = word_at_offset(source, offset).unwrap();
 
@@ -2011,18 +2001,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify param");
-        let (_, span) = resolution
-            .def_location()
-            .expect("param should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-param.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve parameter")
+                .range;
         let expected_start = source.find("value: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,
@@ -6642,8 +6625,8 @@ machine Traffic {
     /// Check the `gotoDefinition` LSP surface for a v0.5 fixture probe.
     ///
     /// Uses the last occurrence of `probe_name` in `source` as the request
-    /// offset.  Asserts that either the resolver or the AST-walk fallback
-    /// returns a definition location.
+    /// offset and checks either the checker identity or a source declaration
+    /// that predates its remaining generated/builtin rows.
     ///
     /// Failure messages identify: surface, fixture name, probe name, and byte
     /// offset.
@@ -6653,16 +6636,14 @@ machine Traffic {
         let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
             panic!("surface=gotoDefinition fixture={fixture_name}: missing probe {probe_name:?}")
         });
-        let resolver_has_definition = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
+        let checked_location = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             probe_offset,
-        )
-        .is_some_and(|resolution| resolution.def_location().is_some());
+            &DashMap::new(),
+        );
         assert!(
-            resolver_has_definition
+            checked_location.is_some()
                 || find_definition_in_ast(
                     &doc.source,
                     &doc.line_offsets,
@@ -6671,7 +6652,7 @@ machine Traffic {
                 )
                 .is_some(),
             "surface=gotoDefinition fixture={fixture_name} probe={probe_name:?} \
-             offset={probe_offset}: no definition found via resolver or AST walk"
+             offset={probe_offset}: no checked or source declaration found"
         );
     }
 
@@ -7083,20 +7064,24 @@ machine Traffic {
         );
 
         let rhs_offset = source.find("is Payload").expect("is type pattern") + "is ".len();
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
+        let definition = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             rhs_offset,
+            &DashMap::new(),
         )
-        .expect("RHS type pattern should resolve");
-        let def = resolution
-            .def_location()
-            .expect("RHS type pattern should jump to type declaration");
-        assert!(
-            def.1.start < source.find("fn is_probe").expect("probe fn"),
-            "`is` RHS definition should point at Payload type declaration, got {def:?}"
+        .map(|location| location.range)
+        .or_else(|| find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, "Payload"))
+        .expect("RHS type pattern should jump to its source declaration");
+        let declared = source.find("Payload").unwrap();
+        assert_eq!(
+            definition,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "Payload".len()
+            )
         );
 
         assert_v05_semantic_token_at(
@@ -7150,20 +7135,27 @@ machine Traffic {
         let doc = make_typed_doc(source);
         assert_no_hard_type_errors("v05_extern_unsafe", &doc);
         let call_offset = source.rfind("raw_number").expect("raw_number call");
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            &v05_fixture_path("v05_extern_unsafe"),
+        let uri = Url::parse(&v05_fixture_path("v05_extern_unsafe")).unwrap();
+        let definition = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             call_offset,
+            &DashMap::new(),
         )
-        .expect("extern raw_number call should resolve");
-        let def = resolution
-            .def_location()
-            .expect("extern raw_number should have a definition");
-        assert!(
-            def.1.start < source.find("fn extern_unsafe_probe").expect("probe fn"),
-            "extern definition should point at the extern declaration, got {def:?}"
+        .map(|location| location.range)
+        .or_else(|| {
+            find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, "raw_number")
+        })
+        .expect("extern raw_number should have a source definition");
+        let declared = source.find("raw_number").unwrap();
+        assert_eq!(
+            definition,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "raw_number".len()
+            )
         );
     }
 

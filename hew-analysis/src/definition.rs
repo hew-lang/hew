@@ -8,6 +8,30 @@ use hew_types::{Ty, TypeCheckOutput};
 use crate::ast_visit::{self, BindingKind};
 use crate::OffsetSpan;
 
+/// The source span of a named import binding visible in this module.
+/// Import bindings are syntax sites, so this lookup does not assign them a
+/// declaration identity or guess which imported declaration they name.
+#[must_use]
+pub fn find_matching_import(parse_result: &ParseResult, word: &str) -> Option<OffsetSpan> {
+    for (item, span) in &parse_result.program.items {
+        let Item::Import(import) = item else { continue };
+        if let Some(hew_parser::ast::ImportSpec::Names(names)) = &import.spec {
+            for name in names {
+                let visible = name
+                    .alias
+                    .map_or(name.name.name.as_str(), |alias| alias.name.as_str());
+                if visible == word {
+                    return Some(OffsetSpan {
+                        start: span.start,
+                        end: span.end,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Search for a definition matching `word` in the AST, including nested items.
 ///
 /// Returns the byte-offset span of the **name identifier** within the defining

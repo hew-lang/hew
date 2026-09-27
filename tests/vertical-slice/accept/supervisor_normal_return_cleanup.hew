@@ -4,7 +4,7 @@
 // The runtime-owned copies (including strdup'd names) must be released through
 // InternalChildSpec::drop, while codegen's caller-owned literal state templates
 // must be freed after hew_supervisor_add_child_spec deep-copies them. No explicit
-// supervisor_stop is present; returning 42 proves cleanup preserves the program
+// stop request is present; returning 42 proves cleanup preserves the program
 // result and does not wait for supervisor actors to become idle.
 actor Worker {
     var value: i64;

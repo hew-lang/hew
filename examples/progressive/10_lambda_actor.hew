@@ -17,5 +17,6 @@ fn main() {
         .Ok(_) => {}
         .Err(_) => panic("lambda call failed for 15"),
     }
-    close(counter);
+    stop(counter);
+    stopped(counter);
 }

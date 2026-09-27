@@ -28,7 +28,8 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let sink = sup.sink;
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     var sender_ok: i64 = 0;
     var i: i64 = 0;
     while i < 50 {

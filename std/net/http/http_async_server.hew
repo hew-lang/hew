@@ -14,7 +14,7 @@
 //! import std.encoding.utf8;
 //!
 //! actor Server {
-//!     let addr: string,   // "127.0.0.1:8080"
+//!     let addr: string;   // "127.0.0.1:8080"
 //!     receive fn serve(unused: i64) {
 //!         let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 //!         let conn = listener.accept();               // suspends on readiness

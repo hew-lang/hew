@@ -6,7 +6,7 @@
 //!
 //! ```hew
 //! actor Counter {
-//!     var count: i64 = 0,
+//!     var count: i64 = 0;
 //!     receive fn increment(n: i64) { count = count + n; }
 //!     receive fn total() -> i64 { count }
 //! }
@@ -20,7 +20,8 @@
 //!         .Ok(value) => println(value),
 //!         .Err(error) => println(f"query failed: {error}"),
 //!     }
-//!     close(counter);
+//!     stop(counter);
+//!     stopped(counter);
 //! }
 //! ```
 //!
@@ -38,7 +39,7 @@
 //! A `fails` handler returns `Failed(E)` to a completion caller. When submitted
 //! through a mailbox view, its error faults the actor with its Display text.
 //!
-//! `close(actor)` requests stop and waits for cleanup; `closed(actor)` observes
-//! termination. `fork close(actor)` performs the close concurrently. Inside an
-//! actor, `self` is its handle and `self.field` accesses state. Local handles are
-//! currently spelled `T`; unified `T` remains planned work.
+//! `stop(actor)` requests a graceful stop; `stopped(actor)` waits for terminal
+//! cleanup. `terminate(actor)` requests cancellation. Inside an
+//! actor, `self` is its handle and `self.field` accesses state. An actor's
+//! handle has that actor's type `T`.

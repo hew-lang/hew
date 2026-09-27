@@ -28,7 +28,7 @@
 //!                 NetError.TimedOut(_)          => println("timed out"),
 //!                 _                              => println("network error"),
 //!             }
-//!         },
+//!         }
 //!     }
 //! }
 //! ```
@@ -477,7 +477,7 @@ trait ConnectionMethods {
 ///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 ///     let handler: InboundLogger = spawn InboundLogger;
 ///     match conn.attach(handler) {
-///         .Ok(()) => {},
+///         .Ok(()) => {}
 ///         .Err(net.AttachError.Refused) => println("attach refused"),
 ///     }
 /// }
@@ -617,7 +617,7 @@ impl Connection {
 ///
 /// fn main() {
 ///     match net.listen(":9000") {
-///         .Ok(ln) => { /* accept connections */ },
+///         .Ok(ln) => { /* accept connections */ }
 ///         .Err(net.NetError.AddressInUse(_)) => println("port already taken"),
 ///         .Err(e) => println("bind failed"),
 ///     }
@@ -647,7 +647,7 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
 ///
 /// fn main() {
 ///     match net.connect("localhost:9000") {
-///         .Ok(conn) => { /* use conn */ },
+///         .Ok(conn) => { /* use conn */ }
 ///         .Err(net.NetError.ConnectionRefused(_)) => println("nothing listening"),
 ///         .Err(e) => println("connect failed"),
 ///     }

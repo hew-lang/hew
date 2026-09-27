@@ -9,7 +9,7 @@ actor Worker {
 }
 
 supervisor App {
-    child worker: Worker restart: transient,
+    child worker: Worker restart: transient;
 }
 
 fn main() {

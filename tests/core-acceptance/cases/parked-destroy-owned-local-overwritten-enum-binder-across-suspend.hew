@@ -37,6 +37,7 @@ fn main() {
     // supervisor stops it.
     mailbox(s, on_full: .Wait).work(ready_tx, gate).expect("send");
     ready.recv();
-    supervisor_stop(sup);
+    terminate(sup);
+    stopped(sup);
     println("stopped");
 }

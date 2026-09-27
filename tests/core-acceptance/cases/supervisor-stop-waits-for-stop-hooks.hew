@@ -1,4 +1,4 @@
-// supervisor_stop waits for each child's stop hooks, including one that
+// stopped waits for each child's stop hooks, including one that
 // suspends, within its bounded quiescence window. A hook that outlasts the
 // window leaves the supervisor to runtime cleanup, which reclaims it once the
 // hook finishes.
@@ -36,9 +36,11 @@ supervisor Outlasted {
 fn main() {
     let waits = spawn Waits;
     let outlasted = spawn Outlasted;
-    supervisor_stop(waits);
+    stop(waits);
+    stopped(waits);
     println("stopped waits");
-    supervisor_stop(outlasted);
+    stop(outlasted);
+    stopped(outlasted);
     println("stopped outlasted");
     // Exit only once the outlasting hook has finished, so the exit drain has
     // no hook left to wait on and cleanup meets the handed-back supervisor.

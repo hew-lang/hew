@@ -114,7 +114,7 @@ actor KeyValue {
             // terminal state, which the cross-node monitor reports as a DOWN
             // carrying the clean-exit reason.
             KvReq.StopSelf => {
-                self.stop();
+                stop(self);
                 KvResp.Ack
             }
             // Crash: a deliberate panic transitions the actor to the Crashed

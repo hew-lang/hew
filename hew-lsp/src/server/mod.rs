@@ -611,6 +611,21 @@ impl HewLanguageServer {
         }
     }
 
+    fn record_test_failures(&self, events: &[Value], affected: &mut HashSet<Url>) {
+        for event in events {
+            if let Some(failure) = failure_from_event(event, &self.documents) {
+                affected.insert(failure.uri.clone());
+                self.test_diagnostics
+                    .entry(failure.uri)
+                    .or_default()
+                    .push(failure.diagnostic);
+                if let Some(seed) = failure.seed {
+                    self.test_seeds.insert(failure.selector, seed);
+                }
+            }
+        }
+    }
+
     async fn run_test_command(&self, test_name: &str, seed: Option<&str>) -> Result<Option<Value>> {
         let Some(workspace_root) = self.workspace_root() else {
             self.client
@@ -675,18 +690,7 @@ impl HewLanguageServer {
                         return Ok(None);
                     }
                 }
-                for event in &events {
-                    if let Some(failure) = failure_from_event(event, &self.documents) {
-                        affected.insert(failure.uri.clone());
-                        self.test_diagnostics
-                            .entry(failure.uri)
-                            .or_default()
-                            .push(failure.diagnostic);
-                        if let Some(seed) = failure.seed {
-                            self.test_seeds.insert(failure.selector, seed);
-                        }
-                    }
-                }
+                self.record_test_failures(&events, &mut affected);
                 self.publish_test_diagnostics_for(&affected).await;
                 let client = self.client.clone();
                 tokio::spawn(async move {

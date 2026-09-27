@@ -1754,21 +1754,21 @@ fn generic_machine_holds_handles_and_refuses_an_unstageable_payload() {
         format!(
             "
         actor Worker {{
-            let id: i64,
+            let id: i64;
 
             receive fn ping() -> i64 {{
                 return self.id;
             }}
         }}
         #[resource]
-        type Conn {{ fd: i64 }}
+        type Conn {{ fd: i64; }}
         impl Conn {{ fn close(consume self) {{}} }}
         machine Slot<T> {{
-            events {{ Put {{ value: T }}, Clear }}
-            state Empty,
-            state Full {{ value: T }},
+            events {{ Put {{ value: T; }} Clear; }}
+            state Empty;
+            state Full {{ value: T; }}
             on Put: Empty => Full {{ value: event.value }}
-            on Clear: Full => Empty,
+            on Clear: Full => Empty;
             default {{ state }}
         }}
         fn main() {{
@@ -1837,7 +1837,7 @@ fn machine_release_proves_the_resource_close() {
         format!(
             "
         #[resource]
-        type Tag {{ id: i64 }}
+        type Tag {{ id: i64; }}
         impl Tag {{ fn close(consume self) {{ {close} }} }}
         {rest}
         "

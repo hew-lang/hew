@@ -59,7 +59,11 @@ fn std_iter_output(root_body: &str) -> hew_hir::LowerOutput {
         module_graph: Some(graph),
         ..root.program
     };
-    support::checker_pipeline::lower_through_checker_from_program(&program)
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    hew_hir::lower_program_host_target(&program, &output, &hew_hir::ResolutionCtx)
 }
 
 #[test]

@@ -944,21 +944,6 @@ impl Checker {
                         .collect::<Vec<_>>();
                     self.known_types.extend(canonical_known_types);
 
-                    // Populate TraitRegistry with handle/drop types
-                    for ht in &handle_types {
-                        self.registry.register_handle_type(ht.clone());
-                    }
-                    for dt in &drop_types {
-                        self.registry.register_drop_type(dt.clone());
-                    }
-                    for resource in &resource_wrapper_types {
-                        self.registry.register_resource_type(resource.clone());
-                        if let Some((_, leaf)) = resource.rsplit_once('.') {
-                            self.registry
-                                .register_resource_type(format!("{canonical_owner}.{leaf}"));
-                        }
-                    }
-
                     // An import needs the Hew declaration, not just the
                     // registry ABI summary: the declaration is the authority
                     // for a bare binding's original source identity and it is
@@ -983,6 +968,29 @@ impl Checker {
                             resolved_items,
                             StdlibBarePublication::Import(&decl.spec),
                         );
+                    }
+                    // Registry signatures are lexical input. Publish their
+                    // metadata against the declarations just registered.
+                    for (names, is_drop) in [(&handle_types, false), (&drop_types, true)] {
+                        for name in names {
+                            let canonical = self
+                                .resolve_nominal_declaration(
+                                    NominalOrigin::RegistrySignature {
+                                        canonical_owner: &canonical_owner,
+                                    },
+                                    name,
+                                )
+                                .unwrap_or_else(|| name.clone());
+                            let nominal = self
+                                .nominal_head_for_key(&canonical)
+                                .expect("imported handle has a source declaration");
+                            let head = self.head_of_declaration(nominal.id);
+                            if is_drop {
+                                self.registry.register_drop_type(head);
+                            } else {
+                                self.registry.register_handle_type(head);
+                            }
+                        }
                     }
 
                     self.handle_bearing_dirty = true;
@@ -1916,7 +1924,6 @@ impl Checker {
                 continue;
             }
             self.type_def_spans.remove(key);
-            self.registry.remove_type_marker_key(key);
         }
     }
 }

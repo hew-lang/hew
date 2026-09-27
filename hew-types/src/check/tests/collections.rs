@@ -41,7 +41,7 @@ fn value_mutation_requires_a_mutable_root_for_runtime_and_declared_methods() {
             ] {
                 let source = format!(
                     "import std.encoding.json;\n\
-                     type Box {{ value: {value_type} }}\n\
+                     type Box {{ value: {value_type}; }}\n\
                      fn main() {{ {declaration} {receiver}.{operation}; }}"
                 );
                 let output = check_source_with_stdlib(&source);
@@ -740,7 +740,11 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
     );
     let span = Span::from(0..0);
     assert!(matches!(
-        checker.record_clone_admissibility("Pair", &[Ty::I64, Ty::I64], &span),
+        checker.record_clone_admissibility(
+            checker.test_named("Pair", vec![]).head().unwrap(),
+            &[Ty::I64, Ty::I64],
+            &span
+        ),
         RecordCloneAdmissibility::Admissible
     ));
 }
@@ -1014,23 +1018,35 @@ fn record_type_def_with_field(name: &str, field_name: &str, field_ty: Ty) -> Typ
 #[test]
 fn record_clone_affine_veto_recognizes_qualified_markers() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .registry
-        .register_resource_type("owner.ResourceToken".to_string());
-    checker
-        .registry
-        .register_linear_type("owner.LinearTicket".to_string());
+    let declaration = checker.test_declaration("owner.ResourceToken");
+    checker.registry.register_resource_type(declaration);
+    let declaration = checker.test_declaration("owner.LinearTicket");
+    checker.registry.register_linear_type(declaration);
 
     let span = Span::from(0..0);
     assert!(matches!(
-        checker.record_clone_admissibility("owner.ResourceToken", &[], &span),
+        checker.record_clone_admissibility(
+            checker
+                .test_named("owner.ResourceToken", vec![])
+                .head()
+                .unwrap(),
+            &[],
+            &span
+        ),
         RecordCloneAdmissibility::AffineValue {
             marker: hew_parser::ast::ResourceMarker::Resource,
             ..
         }
     ));
     assert!(matches!(
-        checker.record_clone_admissibility("owner.LinearTicket", &[], &span),
+        checker.record_clone_admissibility(
+            checker
+                .test_named("owner.LinearTicket", vec![])
+                .head()
+                .unwrap(),
+            &[],
+            &span
+        ),
         RecordCloneAdmissibility::AffineValue {
             marker: hew_parser::ast::ResourceMarker::Linear,
             ..
@@ -1041,12 +1057,10 @@ fn record_clone_affine_veto_recognizes_qualified_markers() {
 #[test]
 fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .registry
-        .register_resource_type("owner.ResourceToken".to_string());
-    checker
-        .registry
-        .register_linear_type("owner.LinearTicket".to_string());
+    let declaration = checker.test_declaration("owner.ResourceToken");
+    checker.registry.register_resource_type(declaration);
+    let declaration = checker.test_declaration("owner.LinearTicket");
+    checker.registry.register_linear_type(declaration);
     let __id = checker.test_declaration("ResourceWrapper");
     checker.type_defs.insert(
         __id,
@@ -1077,7 +1091,7 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
 
     let span = Span::from(0..0);
     assert!(matches!(
-        checker.record_clone_admissibility("ResourceWrapper", &[], &span),
+        checker.record_clone_admissibility(checker.test_named("ResourceWrapper", vec![]).head().unwrap(), &[], &span),
         RecordCloneAdmissibility::AffineValue {
             type_name,
             marker: hew_parser::ast::ResourceMarker::Resource,
@@ -1085,7 +1099,7 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
         } if type_name == "owner.ResourceToken" && member == "resource"
     ));
     assert!(matches!(
-        checker.record_clone_admissibility("LinearWrapper", &[], &span),
+        checker.record_clone_admissibility(checker.test_named("LinearWrapper", vec![]).head().unwrap(), &[], &span),
         RecordCloneAdmissibility::AffineValue {
             type_name,
             marker: hew_parser::ast::ResourceMarker::Linear,
@@ -1095,7 +1109,11 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
     // The AFFINE veto still stops at `Rc`: a shared handle to a resource is not
     // itself affine, and cloning it retains, so the wrapper is admissible.
     assert!(matches!(
-        checker.record_clone_admissibility("SharedWrapper", &[], &span),
+        checker.record_clone_admissibility(
+            checker.test_named("SharedWrapper", vec![]).head().unwrap(),
+            &[],
+            &span
+        ),
         RecordCloneAdmissibility::Admissible
     ));
 }
@@ -1103,12 +1121,10 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
 #[test]
 fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .registry
-        .register_resource_type("ResourceToken".to_string());
-    checker
-        .registry
-        .register_linear_type("LinearTicket".to_string());
+    let declaration = checker.test_declaration("ResourceToken");
+    checker.registry.register_resource_type(declaration);
+    let declaration = checker.test_declaration("LinearTicket");
+    checker.registry.register_linear_type(declaration);
     let __id = checker.test_declaration("Envelope");
     checker.type_defs.insert(
         __id,
@@ -1151,7 +1167,11 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
     for name in ["Envelope", "TupleWrapper", "ArrayWrapper"] {
         assert!(
             matches!(
-                checker.record_clone_admissibility(name, &[], &span),
+                checker.record_clone_admissibility(
+                    checker.test_named(name, vec![]).head().unwrap(),
+                    &[],
+                    &span
+                ),
                 RecordCloneAdmissibility::AffineValue { .. }
             ),
             "{name} must expose its transitively stored affine value"
@@ -1162,9 +1182,8 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
 #[test]
 fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .registry
-        .register_resource_type("ResourceToken".to_string());
+    let declaration = checker.test_declaration("ResourceToken");
+    checker.registry.register_resource_type(declaration);
     let resource = checker.test_named("ResourceToken", vec![]);
     let __id = checker.test_declaration("HandleWrapper");
     checker.type_defs.insert(
@@ -1226,11 +1245,19 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
     // Semantic-handle fields are not affine-clone blockers: cloning an `Rc`
     // field retains the shared allocation.
     assert!(matches!(
-        checker.record_clone_admissibility("HandleWrapper", &[], &span),
+        checker.record_clone_admissibility(
+            checker.test_named("HandleWrapper", vec![]).head().unwrap(),
+            &[],
+            &span
+        ),
         RecordCloneAdmissibility::Admissible
     ));
     assert!(matches!(
-        checker.record_clone_admissibility("PhantomKey", &[resource], &span),
+        checker.record_clone_admissibility(
+            checker.test_named("PhantomKey", vec![]).head().unwrap(),
+            &[resource],
+            &span
+        ),
         RecordCloneAdmissibility::Admissible
     ));
 }
@@ -1242,9 +1269,8 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
 #[test]
 fn record_clone_refuses_either_pipe_half_by_the_endpoint() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .registry
-        .register_resource_type("ResourceToken".to_string());
+    let declaration = checker.test_declaration("ResourceToken");
+    checker.registry.register_resource_type(declaration);
     let resource = checker.test_named("ResourceToken", vec![]);
     for (name, builtin) in [
         ("SinkWrapper", BuiltinType::Sink),
@@ -1261,7 +1287,7 @@ fn record_clone_refuses_either_pipe_half_by_the_endpoint() {
         );
         assert!(
             matches!(
-                checker.record_clone_admissibility(name, &[], &Span::from(0..0)),
+                checker.record_clone_admissibility(checker.test_named(name, vec![]).head().unwrap(), &[], &Span::from(0..0)),
                 RecordCloneAdmissibility::MissingClone { ref member, .. } if member == "half"
             ),
             "{name} must refuse the clone at its pipe-half member, not at the payload"
@@ -1276,7 +1302,9 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
     // transitive opaque leaf is detected even though the declared field type
     // is the abstract param `T`.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.user_opaque_type_names.insert("Handle".to_string());
+    checker
+        .opaque_type_ids
+        .insert(crate::NominalId::for_test("Handle"));
     let __id = checker.test_declaration("Handle");
     checker.type_defs.insert(
         __id,
@@ -1315,7 +1343,11 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
     let span = Span::from(0..0);
     let handle = checker.test_named("Handle", vec![]);
     assert!(matches!(
-        checker.record_clone_admissibility("Box", std::slice::from_ref(&handle), &span),
+        checker.record_clone_admissibility(
+            checker.test_named("Box", vec![]).head().unwrap(),
+            std::slice::from_ref(&handle),
+            &span
+        ),
         RecordCloneAdmissibility::OpaqueField { .. }
     ));
 }
@@ -1351,7 +1383,11 @@ fn generic_record_clone_unresolved_var_is_nyi() {
     let span = Span::from(0..0);
     let args = [Ty::Var(crate::ty::TypeVar(0)), Ty::I64];
     assert!(matches!(
-        checker.record_clone_admissibility("Pair", &args, &span),
+        checker.record_clone_admissibility(
+            checker.test_named("Pair", vec![]).head().unwrap(),
+            &args,
+            &span
+        ),
         RecordCloneAdmissibility::GenericRecord
     ));
 }
@@ -2422,9 +2458,9 @@ fn vec_iter_drains_a_function_inside_a_positional_record() {
 fn vec_iter_cursor_takes_a_qualified_opaque_element() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker
-        .user_opaque_type_names
-        .insert("pkg.Handle".to_string());
-    let ty = Ty::named_for_test("pkg.Handle", vec![]);
+        .opaque_type_ids
+        .insert(crate::NominalId::for_test("pkg.Handle"));
+    let ty = checker.test_named("pkg.Handle", vec![]);
 
     assert_eq!(
         checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
@@ -3199,111 +3235,32 @@ fn main() {
 
 #[test]
 fn register_type_decl_marks_transitive_handle_bearing_structs() {
-    let mut registry = ModuleRegistry::new(vec![]);
-    registry.insert_handle_type_for_test("regex.Pattern".to_string());
-    let mut checker = Checker::new(registry);
-
-    let inner = TypeDecl {
-        origin: hew_parser::ast::DeclarationOrigin::Authored,
-        visibility: Visibility::Private,
-        kind: TypeDeclKind::Struct,
-        name: Ident::new("Inner"),
-        type_params: None,
-        where_clause: None,
-        body: vec![TypeBodyItem::Field {
-            name: Ident::new("pattern"),
-            ty: (
-                TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(
-                        hew_parser::ast::Ident::new("regex.Pattern"),
-                        0..0,
-                    ),
-                    type_args: None,
-                },
-                0..0,
-            ),
-            attributes: vec![],
-            doc_comment: None,
-            span: 0..0,
-        }],
-        doc_comment: None,
-        wire: None,
-        is_indirect: false,
-        resource_marker: hew_parser::ast::ResourceMarker::None,
-        is_opaque: false,
-        consuming_methods: Vec::new(),
-        lang_item: None,
-    };
-    let outer = TypeDecl {
-        origin: hew_parser::ast::DeclarationOrigin::Authored,
-        visibility: Visibility::Private,
-        kind: TypeDeclKind::Struct,
-        name: Ident::new("Outer"),
-        type_params: None,
-        where_clause: None,
-        body: vec![TypeBodyItem::Field {
-            name: Ident::new("inner"),
-            ty: (
-                TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Inner"), 0..0),
-                    type_args: None,
-                },
-                0..0,
-            ),
-            attributes: vec![],
-            doc_comment: None,
-            span: 0..0,
-        }],
-        doc_comment: None,
-        wire: None,
-        is_indirect: false,
-        resource_marker: hew_parser::ast::ResourceMarker::None,
-        is_opaque: false,
-        consuming_methods: Vec::new(),
-        lang_item: None,
-    };
-    let plain = TypeDecl {
-        origin: hew_parser::ast::DeclarationOrigin::Authored,
-        visibility: Visibility::Private,
-        kind: TypeDeclKind::Struct,
-        name: Ident::new("Plain"),
-        type_params: None,
-        where_clause: None,
-        body: vec![TypeBodyItem::Field {
-            name: Ident::new("count"),
-            ty: (
-                TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
-                    type_args: None,
-                },
-                0..0,
-            ),
-            attributes: vec![],
-            doc_comment: None,
-            span: 0..0,
-        }],
-        doc_comment: None,
-        wire: None,
-        is_indirect: false,
-        resource_marker: hew_parser::ast::ResourceMarker::None,
-        is_opaque: false,
-        consuming_methods: Vec::new(),
-        lang_item: None,
-    };
-
-    for name in ["Inner", "Outer", "Plain"] {
-        checker.test_declaration(name);
+    let parsed = hew_parser::parse(
+        r"
+        import std.text.regex;
+        type Inner { pattern: regex.Pattern; }
+        type Outer { inner: Inner; }
+        type Plain { count: i64; }
+    ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let output = Checker::new(ModuleRegistry::new(vec![root])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for (name, expected) in [("Inner", true), ("Outer", true), ("Plain", false)] {
+        let id = output
+            .defs
+            .lookup_nominal(name)
+            .expect("source declaration");
+        assert_eq!(
+            output.handle_bearing_structs.contains(&id),
+            expected,
+            "{name}"
+        );
     }
-    checker.register_type_decl(&inner);
-    checker.register_type_decl(&outer);
-    checker.register_type_decl(&plain);
-
-    // Registrations set handle_bearing_dirty; flush before reading the set.
-    checker.ensure_handle_bearing_fresh();
-
-    assert!(checker.handle_bearing_structs.contains("Inner"));
-    assert!(checker.handle_bearing_structs.contains("Outer"));
-    assert!(!checker.handle_bearing_structs.contains("Plain"));
 }
 
 #[test]

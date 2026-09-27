@@ -257,16 +257,16 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
     ] {
         let source = format!(
             r"{definition}
-            type Value {{ count: i64 }}
+            type Value {{ count: i64; }}
             type Envelope {{
-                value: {name},
-                nested: (Option<{name}>, Vec<{name}>),
-                callback: fn({name}) -> {name},
-                ordinary: Value
+                value: {name};
+                nested: (Option<{name}>, Vec<{name}>);
+                callback: fn({name}) -> {name};
+                ordinary: Value;
             }}
             enum Payload {{
-                Direct({name}),
-                Nested {{ value: Option<Vec<{name}>> }}
+                Direct({name});
+                Nested {{ value: Option<Vec<{name}>>; }}
             }}
             fn main() -> i64 {{ 0 }}"
         );
@@ -281,7 +281,9 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
         let fields = &find_type(&hir, "Envelope").fields;
-        let published = &checked.type_fact_context.declarations()["Envelope"].members;
+        let published = &checked.type_fact_context.declarations()
+            [&checked.defs.lookup_nominal("Envelope").unwrap()]
+            .members;
         assert_eq!(
             published,
             &fields
@@ -312,7 +314,9 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             .flat_map(hew_hir::HirVariant::field_tys)
             .collect();
         assert_eq!(
-            checked.type_fact_context.declarations()["Payload"].members,
+            checked.type_fact_context.declarations()
+                [&checked.defs.lookup_nominal("Payload").unwrap()]
+                .members,
             payloads
         );
         assert_eq!(payloads, vec![expected.clone(), option(vector(expected))]);

@@ -351,7 +351,7 @@ impl LowerCtx {
             .expr_types
             .get(&key)
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .map(|ty| self.qualify_current_module_record_ty(ty));
+            .map(|ty| self.restore_type_declaration_facts(ty));
         let registry_hit = self
             .lookup_variant_ctor(name, checker_owner.as_ref())
             .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
@@ -383,7 +383,7 @@ impl LowerCtx {
                 // always populate accepted unit-ctor reference sites.
                 let result_ty = if let Some(ty) = self.expr_types.get(&key).cloned() {
                     match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => self.qualify_current_module_record_ty(resolved),
+                        Ok(resolved) => self.restore_type_declaration_facts(resolved),
                         Err(err) => {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {

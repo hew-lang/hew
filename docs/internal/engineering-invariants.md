@@ -37,6 +37,9 @@ specifications.
   An impl receiver is instantiated from its resolved parameter pattern; the
   nominal type's parameter list does not identify an impl's binders. Trait
   default bodies substitute the declaring trait's receiver binder explicitly.
+- Ownership markers, opacity and recursive value classification use nominal
+  IDs. Structural marker derivation uses resolved type heads; changing a
+  head's display spelling cannot change its fields, bounds or capabilities.
 - HIR registers callable and constant bodies under checker declaration IDs.
   Import aliases and repeated inventory visits must reuse those body entries.
 - Source annotations cross the checker boundary as resolved types keyed by

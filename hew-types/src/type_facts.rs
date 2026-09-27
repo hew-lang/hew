@@ -290,7 +290,7 @@ pub(crate) fn selected_impl_method(
 /// rules in an IR crate.
 #[derive(Debug, Clone, Default)]
 pub struct TypeFactContext {
-    declarations: BTreeMap<String, DeclaredType>,
+    declarations: BTreeMap<crate::NominalId, DeclaredType>,
     registry: TraitRegistry,
     type_defs: HashMap<crate::NominalId, TypeDef>,
     method_ids: HashMap<(String, String, String), crate::DefId>,
@@ -355,7 +355,7 @@ impl TypeFactContext {
 
     #[must_use]
     pub fn new(
-        declarations: BTreeMap<String, DeclaredType>,
+        declarations: BTreeMap<crate::NominalId, DeclaredType>,
         registry: TraitRegistry,
         type_defs: HashMap<crate::NominalId, TypeDef>,
     ) -> Self {
@@ -384,7 +384,7 @@ impl TypeFactContext {
     }
 
     #[must_use]
-    pub fn declarations(&self) -> &BTreeMap<String, DeclaredType> {
+    pub fn declarations(&self) -> &BTreeMap<crate::NominalId, DeclaredType> {
         &self.declarations
     }
 
@@ -479,17 +479,21 @@ impl TypeFactService {
                 ty.user_facing()
             )
         })?;
-        let name = self.context.defs.path(instance.nominal.declaration());
-        let definition = self.context.types().at_path(name).ok_or_else(|| {
-            format!(
-                "aggregate `{}` has no exact checker declaration",
-                ty.user_facing()
-            )
-        })?;
-        let declaration =
-            self.context.declarations.get(name).ok_or_else(|| {
-                format!("aggregate `{}` has no declaration facts", ty.user_facing())
+        let definition = self
+            .context
+            .type_defs
+            .get(&instance.nominal)
+            .ok_or_else(|| {
+                format!(
+                    "aggregate `{}` has no exact checker declaration",
+                    ty.user_facing()
+                )
             })?;
+        let declaration = self
+            .context
+            .declarations
+            .get(&instance.nominal)
+            .ok_or_else(|| format!("aggregate `{}` has no declaration facts", ty.user_facing()))?;
         let positional =
             definition.kind == crate::check::TypeDefKind::Record && definition.fields.is_empty();
         if !matches!(
@@ -544,7 +548,7 @@ impl TypeFactService {
         let declaration = self
             .context
             .declarations
-            .get(self.context.defs.path(instance.nominal.declaration()))
+            .get(&instance.nominal)
             .ok_or_else(|| format!("`{}` has no declaration facts", ty.user_facing()))?;
         if declaration.type_params.len() != instance.args.len() {
             return Err(format!(
@@ -889,10 +893,14 @@ impl TypeFactService {
                             .to_string()
                     },
                 );
-                let Some(definition) = self.context.types().at_path(&owner) else {
+                let Some(definition) = self.context.types().of(*head) else {
                     // A builtin, or a memberless declaration such as a
                     // supervisor, derives nothing.
-                    if builtin.is_some() || self.context.declarations.contains_key(&owner) {
+                    if builtin.is_some()
+                        || head
+                            .declaration(&self.context.defs)
+                            .is_some_and(|id| self.context.declarations.contains_key(&id))
+                    {
                         return Ok(false);
                     }
                     return Err(ClassError::UnknownDeclaration { name: owner });
@@ -1017,10 +1025,9 @@ impl TypeFactService {
                 if !args.is_empty()
                     || !self.context.wire_types.contains(name)
                     || visiting.iter().any(|visited| visited == name)
-                    || self
-                        .context
-                        .declarations
-                        .get(name)
+                    || head
+                        .declaration(&self.context.defs)
+                        .and_then(|id| self.context.declarations.get(&id))
                         .is_none_or(|declaration| {
                             declaration.marker != crate::DeclarationMarker::None
                         })
@@ -1078,14 +1085,16 @@ impl TypeFactService {
                 name: ty.user_facing().to_string(),
             });
         };
-        let nominal = ty.nominal_instance(&self.context.defs);
-        let name = nominal.as_ref().map_or(head.registry_key(), |instance| {
-            self.context.defs.path(instance.nominal.declaration())
-        });
+        let id =
+            head.declaration(&self.context.defs)
+                .ok_or_else(|| ClassError::UnknownDeclaration {
+                    name: ty.user_facing().to_string(),
+                })?;
+        let name = head.registry_key();
         let declaration =
             self.context
                 .declarations
-                .get(name)
+                .get(&id)
                 .ok_or_else(|| ClassError::UnknownDeclaration {
                     name: name.to_string(),
                 })?;
@@ -1109,7 +1118,7 @@ impl TypeFactService {
         let definition =
             self.context
                 .types()
-                .at_path(name)
+                .of(*head)
                 .ok_or_else(|| ClassError::UnknownDeclaration {
                     name: name.to_string(),
                 })?;
@@ -1137,7 +1146,7 @@ impl TypeFactService {
                 let member = crate::check::restore_member_opacity(member, &|name| {
                     self.context
                         .declarations
-                        .get(name)
+                        .get(&name)
                         .is_some_and(|decl| decl.is_opaque)
                 });
                 Ok(crate::value_class::substitute(
@@ -1167,9 +1176,12 @@ impl TypeFactService {
             )),
             ResolvedTy::Named { head, args, .. } => {
                 let name = head.registry_key();
-                let Some(definition) = self.context.types().at_path(name) else {
+                let Some(definition) = self.context.types().of(*head) else {
                     // A memberless declaration such as a supervisor derives nothing.
-                    if self.context.declarations.contains_key(name) {
+                    if head
+                        .declaration(&self.context.defs)
+                        .is_some_and(|id| self.context.declarations.contains_key(&id))
+                    {
                         return Ok(false);
                     }
                     return Err(ClassError::UnknownDeclaration {
@@ -1181,17 +1193,18 @@ impl TypeFactService {
                         name: ty.user_facing().to_string(),
                     });
                 }
-                if self
-                    .context
-                    .declarations
-                    .get(name)
+                if head
+                    .declaration(&self.context.defs)
+                    .and_then(|id| self.context.declarations.get(&id))
                     .is_some_and(|decl| decl.is_opaque)
                     || definition.is_indirect
                     || !matches!(
                         definition.kind,
                         crate::check::TypeDefKind::Struct | crate::check::TypeDefKind::Record
                     )
-                    || self.context.registry.resource_type_names().contains(name)
+                    || head
+                        .nominal()
+                        .is_some_and(|id| self.context.registry.is_resource(id))
                 {
                     return Ok(false);
                 }
@@ -1205,7 +1218,7 @@ impl TypeFactService {
                 crate::hash_eligibility::ty_is_hash_eligible_with_resources(
                     &ty.to_ty(),
                     self.context.types(),
-                    self.context.registry.resource_type_names(),
+                    self.context.registry.resource_type_ids(),
                 ),
                 crate::hash_eligibility::HashEligibility::Eligible
             )),
@@ -1411,10 +1424,10 @@ mod tests {
     }
 
     /// Declarations the §1.1 Aggregate rule needs for the cases below.
-    fn declarations() -> BTreeMap<String, DeclaredType> {
+    fn declarations() -> BTreeMap<crate::NominalId, DeclaredType> {
         let mut decls = BTreeMap::new();
         decls.insert(
-            "Conn".to_string(),
+            crate::NominalId::for_test("Conn"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -1424,7 +1437,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Ticket".to_string(),
+            crate::NominalId::for_test("Ticket"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -1434,7 +1447,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Point".to_string(),
+            crate::NominalId::for_test("Point"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -1444,7 +1457,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Label".to_string(),
+            crate::NominalId::for_test("Label"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -1455,9 +1468,9 @@ mod tests {
         );
         // `std/failure.hew::CrashInfo { code: i64, message: string }`.
         decls.insert(
-            "std.failure.CrashInfo".to_string(),
+            crate::NominalId::for_test("std.failure.CrashInfo"),
             DeclaredType {
-                builtin: None,
+                builtin: Some(BuiltinType::CrashInfo),
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -1466,9 +1479,9 @@ mod tests {
         );
         // `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`.
         decls.insert(
-            "std.failure.CrashNotification".to_string(),
+            crate::NominalId::for_test("std.failure.CrashNotification"),
             DeclaredType {
-                builtin: None,
+                builtin: Some(BuiltinType::CrashNotification),
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -1479,9 +1492,9 @@ mod tests {
             },
         );
         decls.insert(
-            "std.builtins.VecIter".to_string(),
+            crate::NominalId::for_test("std.builtins.VecIter"),
             DeclaredType {
-                builtin: None,
+                builtin: Some(BuiltinType::VecIter),
                 type_params: vec![crate::ParamHead::for_test("T")],
                 members: vec![
                     ResolvedTy::named_builtin(
@@ -1496,7 +1509,7 @@ mod tests {
             },
         );
         decls.insert(
-            "std.builtins.HashMapIter".to_string(),
+            crate::NominalId::for_test("std.builtins.HashMapIter"),
             hashmap_iter_declared_type(),
         );
         decls
@@ -1514,7 +1527,7 @@ mod tests {
             )
         };
         DeclaredType {
-            builtin: None,
+            builtin: Some(BuiltinType::HashMapIter),
             type_params: vec![
                 crate::ParamHead::for_test("K"),
                 crate::ParamHead::for_test("V"),
@@ -1529,6 +1542,43 @@ mod tests {
         let context = ClassContext::new(&decls);
         crate::value_class::classify_ty(ty, &context)
             .unwrap_or_else(|error| panic!("§1.1 refused `{ty:?}`: {error}"))
+    }
+
+    #[test]
+    fn nominal_ownership_ignores_display_spelling() {
+        let owned = crate::NominalId::for_test("owned.Ticket");
+        let plain = crate::NominalId::for_test("plain.Ticket");
+        let declarations = BTreeMap::from([
+            (
+                owned,
+                DeclaredType {
+                    marker: DeclarationMarker::Resource,
+                    ..DeclaredType::default()
+                },
+            ),
+            (
+                plain,
+                DeclaredType {
+                    members: vec![ResolvedTy::I64],
+                    ..DeclaredType::default()
+                },
+            ),
+        ]);
+        let context = ClassContext::new(&declarations);
+        let value =
+            |id, spelling| ResolvedTy::named_user(crate::NominalHead::new(id, spelling), vec![]);
+        assert_eq!(
+            crate::value_class::classify_ty(&value(owned, "Ticket"), &context),
+            Ok((ValueClass::AffineResource, CloneKind::None))
+        );
+        assert_eq!(
+            crate::value_class::classify_ty(&value(plain, "Ticket"), &context),
+            Ok((ValueClass::BitCopy, CloneKind::Bits))
+        );
+        assert_eq!(
+            crate::value_class::classify_ty(&value(owned, "another.alias"), &context),
+            Ok((ValueClass::AffineResource, CloneKind::None))
+        );
     }
 
     fn conn() -> ResolvedTy {
@@ -2131,10 +2181,10 @@ mod tests {
     /// is the same shape over a resource payload. `Pair<T>` mentions one fixed
     /// instantiation of itself, so the walk reaches the declaration at an
     /// instantiation it did not enter.
-    fn recursive_declarations() -> BTreeMap<String, DeclaredType> {
+    fn recursive_declarations() -> BTreeMap<crate::NominalId, DeclaredType> {
         let mut decls = declarations();
         decls.insert(
-            "Tree".to_string(),
+            crate::NominalId::for_test("Tree"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2148,7 +2198,7 @@ mod tests {
             },
         );
         decls.insert(
-            "ResTree".to_string(),
+            crate::NominalId::for_test("ResTree"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2158,7 +2208,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Pair".to_string(),
+            crate::NominalId::for_test("Pair"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2173,7 +2223,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Wrapper".to_string(),
+            crate::NominalId::for_test("Wrapper"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2185,7 +2235,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Outer".to_string(),
+            crate::NominalId::for_test("Outer"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2287,7 +2337,7 @@ mod tests {
     fn a_cycle_through_a_constant_instantiation_of_another_declaration_classes() {
         let mut decls = recursive_declarations();
         decls.insert(
-            "Holder".to_string(),
+            crate::NominalId::for_test("Holder"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2297,7 +2347,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Expr".to_string(),
+            crate::NominalId::for_test("Expr"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2327,7 +2377,7 @@ mod tests {
     fn a_cycle_that_wraps_its_own_parameter_still_refuses() {
         let mut decls = recursive_declarations();
         decls.insert(
-            "Deep".to_string(),
+            crate::NominalId::for_test("Deep"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2393,7 +2443,7 @@ mod tests {
     fn mutual_recursion_that_grows_its_argument_refuses() {
         let mut decls = recursive_declarations();
         decls.insert(
-            "Grow".to_string(),
+            crate::NominalId::for_test("Grow"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,
@@ -2413,7 +2463,7 @@ mod tests {
             },
         );
         decls.insert(
-            "Relay".to_string(),
+            crate::NominalId::for_test("Relay"),
             DeclaredType {
                 builtin: None,
                 is_opaque: false,

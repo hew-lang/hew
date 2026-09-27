@@ -39,7 +39,7 @@ impl LowerCtx {
             for ty in &raw_call_args {
                 match ResolvedTy::from_ty(ty) {
                     Ok(resolved) => {
-                        call_args.push(self.qualify_current_module_record_ty(resolved));
+                        call_args.push(self.restore_type_declaration_facts(resolved));
                     }
                     Err(err) => {
                         self.diagnostics.push(HirDiagnostic::new(
@@ -273,7 +273,7 @@ impl LowerCtx {
         let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
         for ty in &type_args_raw {
             match ResolvedTy::from_ty(ty) {
-                Ok(resolved) => type_args.push(self.qualify_current_module_record_ty(resolved)),
+                Ok(resolved) => type_args.push(self.restore_type_declaration_facts(resolved)),
                 Err(err) => {
                     // Fail-closed: poisoned side-table for this call.
                     // Emit a diagnostic; skip the registry entry so the
@@ -433,7 +433,7 @@ impl LowerCtx {
         let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
         for ty in &type_args_raw {
             match ResolvedTy::from_ty(ty) {
-                Ok(resolved) => type_args.push(self.qualify_current_module_record_ty(resolved)),
+                Ok(resolved) => type_args.push(self.restore_type_declaration_facts(resolved)),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::RecordLayoutTypeArgsViolation {

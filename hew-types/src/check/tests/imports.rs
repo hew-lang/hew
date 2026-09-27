@@ -747,7 +747,7 @@ fn supervisor_actor_named_and_aliased_imports_publish_exact_identity() {
             "pub actor Worker { receive fn identify() -> i64 { 17 } }",
         );
         let supervisor = hew_parser::parse(&format!(
-            "supervisor App {{ child worker: {binding} restart: temporary, }}"
+            "supervisor App {{ child worker: {binding} restart: temporary; }}"
         ));
         assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
         let mut items = vec![(Item::Import(import), 0..1)];
@@ -938,7 +938,7 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
 
     let result_ty = Ty::named_in(&output.defs, "hew.testffi.TestResult", vec![]);
     assert!(
-        checker.registry.has_type_markers("hew.testffi.TestResult"),
+        checker.registry.has_type_markers(result_ty.head().unwrap()),
         "canonical record marker metadata must be published"
     );
     assert!(
@@ -1974,15 +1974,13 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
             !checker.type_def_spans.contains_key(alias),
             "declaration-span alias survived: {alias}"
         );
-        assert!(
-            !checker.registry.has_type_markers(alias),
-            "marker-registry alias survived: {alias}"
-        );
     }
     for canonical in ["pkg.left.Shared", "pkg.right.Shared"] {
         assert!(output.type_def_at_path(canonical).is_some());
         assert!(checker.type_def_spans.contains_key(canonical));
-        assert!(checker.registry.has_type_markers(canonical));
+        assert!(checker
+            .registry
+            .has_type_markers(checker.test_named(canonical, vec![]).head().unwrap()));
     }
 }
 

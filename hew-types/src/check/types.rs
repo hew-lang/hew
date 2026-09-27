@@ -687,7 +687,7 @@ pub struct TypeCheckOutput {
     /// Struct type names whose fields directly or transitively contain opaque
     /// handle values. Used to enforce owned-handle accessor restrictions and
     /// to thread proven-safe field-drop metadata into codegen.
-    pub handle_bearing_structs: HashSet<String>,
+    pub handle_bearing_structs: HashSet<crate::NominalId>,
     /// Actor type names that participate in reference cycles.
     pub cycle_capable_actors: HashSet<String>,
     /// Module short names for user (non-stdlib) imports that have resolved items.
@@ -2416,7 +2416,18 @@ impl ImplAssociatedType {
         let pattern = self.receiver.substitute_type_params_parallel(&fresh);
         let mut inference = crate::ty::Substitution::new();
         crate::unify::unify_exact(&mut inference, &pattern, receiver).ok()?;
-        Some(inference.resolve(&self.ty.substitute_type_params_parallel(&fresh)))
+        let instantiated = inference.resolve(&self.ty.substitute_type_params_parallel(&fresh));
+        // Receiver-independent binders remain abstract until the impl's
+        // associated-type constraints determine them. Never publish the
+        // temporary inference variables used to match the receiver.
+        Some(
+            variables
+                .into_iter()
+                .zip(&self.parameters)
+                .fold(instantiated, |ty, (variable, parameter)| {
+                    ty.substitute(variable, &Ty::param(*parameter))
+                }),
+        )
     }
 }
 
@@ -2843,6 +2854,8 @@ pub struct FnSig {
     pub impl_method: Option<ImplMethodProvenance>,
     pub type_params: Vec<crate::ParamHead>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
+    /// Associated-type constraints owned by this selected callable signature.
+    pub type_param_assoc_bindings: HashMap<(String, String, String), Ty>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
     /// Ownership explicitly declared for each parameter, aligned with `params`.
@@ -2924,6 +2937,7 @@ impl Default for FnSig {
             impl_method: None,
             type_params: vec![],
             type_param_bounds: HashMap::new(),
+            type_param_assoc_bindings: HashMap::new(),
             param_names: vec![],
             params: vec![],
             param_ownership: vec![],
@@ -3331,14 +3345,13 @@ pub struct Checker {
     pub(super) impl_method_declaration_ids: HashMap<String, crate::DefId>,
     pub(super) consuming_inherent_methods: HashSet<crate::DefId>,
     pub(super) root_value_bindings: HashSet<String>,
-    pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
-    pub(super) handle_bearing_structs: HashSet<String>,
+    pub(super) handle_bearing_structs: HashSet<crate::NominalId>,
     /// Names of every user-declared `#[opaque]` type in this module.
     /// Populated by `register_type_decl` whenever `td.is_opaque` is true.
     /// Consumed by `record_clone_admissibility` to detect opaque fields in
     /// record types the user attempts to clone — these are ALWAYS non-cloneable
     /// because a shallow copy aliases the runtime handle.
-    pub(super) user_opaque_type_names: HashSet<String>,
+    pub(super) opaque_type_ids: HashSet<crate::NominalId>,
     /// `#[wire]` struct type names that carry the binary CBOR codec methods
     /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
     /// — which lower to the `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*`
@@ -4409,9 +4422,8 @@ impl Checker {
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
-            fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
-            user_opaque_type_names: HashSet::new(),
+            opaque_type_ids: HashSet::new(),
             wire_struct_types: HashSet::new(),
             wire_enum_types: HashSet::new(),
             handle_bearing_dirty: false,

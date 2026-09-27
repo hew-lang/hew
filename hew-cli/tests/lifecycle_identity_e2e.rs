@@ -88,7 +88,7 @@ fn whole_module_alias_exit_hook_compiles_and_runs_with_scalar_abi() {
 import std.failure as f;
 
 actor Watcher {
-    #[on(exit)]
+    #[on(link)]
     fn on_peer_exit(note: f.CrashNotification) {
         let _id = note.actor_id;
         let _kind = note.kind;
@@ -138,7 +138,8 @@ actor Watcher {
             DownTarget.Remote(_) => 0,
         };
         let _reason = match note.reason {
-            DownReason.Exited => 1,
+            DownReason.Stopped => 1,
+            DownReason.Terminated => 5,
             DownReason.Crashed(_) => 2,
             DownReason.MonitorLost => 3,
             DownReason.LocalShutdown => 4,

@@ -6,7 +6,7 @@ use hew_parser::ast::{Ident, Path};
 impl LowerCtx {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
-        let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
+        let normalized_ty = self.restore_type_declaration_facts(lowered.ty.clone());
         lowered.ty = normalized_ty;
 
         if let Some(target) = self.numeric_operand_coercions.get(&self.mk_key(&expr.1)) {
@@ -762,7 +762,7 @@ impl LowerCtx {
                     let checker_key = self.mk_key(&span);
                     let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                         match ResolvedTy::from_ty(&ty) {
-                            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
+                            Ok(resolved) => self.restore_type_declaration_facts(resolved),
                             Err(err) => {
                                 self.diagnostics.push(HirDiagnostic::new(
                                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -1682,7 +1682,7 @@ impl LowerCtx {
                                 // `regex.Pattern.handle` must remain
                                 // `regex.PatternHandle`, not a bare user
                                 // `PatternHandle` that reaches D10.
-                                Ok(resolved) => self.qualify_current_module_record_ty(resolved),
+                                Ok(resolved) => self.restore_type_declaration_facts(resolved),
                                 Err(err) => {
                                     let diagnostic = HirDiagnostic::new(
                                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -1888,7 +1888,7 @@ impl LowerCtx {
                 return self.unsupported_expr(span, "dyn-to-dyn trait adaptation");
             }
             let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
-                Ok(r) => self.qualify_current_module_record_ty(r),
+                Ok(r) => self.restore_type_declaration_facts(r),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {

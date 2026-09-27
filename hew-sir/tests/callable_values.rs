@@ -245,7 +245,7 @@ fn callable_captures_compose_with_conditional_result_and_optional_payloads() {
             }}
             fn main() -> i64 {{
                 match choose(true) {{
-                    .Ok(.Some(callback)) => {{ var counter = callback; counter() }},
+                    .Ok(.Some(callback)) => {{ var counter = callback; counter() }}
                     _ => 0,
                 }}
             }}

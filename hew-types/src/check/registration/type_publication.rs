@@ -18,29 +18,30 @@ use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
-    pub(super) fn type_name_contains_owned_handle(
+    pub(super) fn type_contains_owned_handle(
         &self,
-        type_name: &str,
-        visiting: &mut HashSet<String>,
+        id: crate::NominalId,
+        visiting: &mut HashSet<crate::NominalId>,
     ) -> bool {
-        let Some(lookup_name) = self.registered_type_def_name(type_name) else {
-            return false;
-        };
-        if !visiting.insert(lookup_name.clone()) {
+        if !visiting.insert(id) {
             return false;
         }
-        let contains_owned_handle = self.type_def_at(&lookup_name).is_some_and(|type_def| {
-            type_def.kind == TypeDefKind::Struct
-                && type_def
+        let found = self.type_defs.get(&id).is_some_and(|definition| {
+            definition.kind == TypeDefKind::Struct
+                && definition
                     .fields
                     .values()
-                    .any(|field_ty| self.ty_contains_owned_handle(field_ty, visiting))
+                    .any(|ty| self.ty_contains_owned_handle(ty, visiting))
         });
-        visiting.remove(&lookup_name);
-        contains_owned_handle
+        visiting.remove(&id);
+        found
     }
 
-    pub(super) fn ty_contains_owned_handle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+    pub(super) fn ty_contains_owned_handle(
+        &self,
+        ty: &Ty,
+        visiting: &mut HashSet<crate::NominalId>,
+    ) -> bool {
         match ty {
             Ty::Tuple(items) => items
                 .iter()
@@ -48,12 +49,12 @@ impl Checker {
             Ty::Array(element_ty, _) | Ty::Slice(element_ty) => {
                 self.ty_contains_owned_handle(element_ty, visiting)
             }
-            Ty::Named { head, args } => { let name = head.registry_key();
-                self.canonical_owned_handle_type_name(name).is_some()
+            Ty::Named { head, args } => {
+                self.registry.is_owned_handle(*head)
                     || args
                         .iter()
                         .any(|arg_ty| self.ty_contains_owned_handle(arg_ty, visiting))
-                    || self.type_name_contains_owned_handle(name, visiting)
+                    || head.nominal().is_some_and(|id| self.type_contains_owned_handle(id, visiting))
             }
             Ty::I8
             | Ty::I16
@@ -829,7 +830,7 @@ impl Checker {
                     // whether a registry slot already exists.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
-                    let (mut sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                    let mut sig = self.build_fn_sig_from_decl(fd);
                     self.current_module = saved_importer_module;
                     sig.params = sig
                         .params
@@ -850,8 +851,6 @@ impl Checker {
                     if fd.visibility == hew_parser::ast::Visibility::Pub {
                         self.module_fn_exports.insert(qualified.clone());
                     }
-                    self.fn_type_param_assoc_bindings
-                        .insert(qualified.clone(), assoc_bindings);
                     self.insert_fn_sig_at(&qualified, sig);
                     // Mirror user-module named/glob import publication. The
                     // parser has already selected `fd.name`; an alias only
@@ -1164,14 +1163,6 @@ impl Checker {
         } else {
             // Implicit language-floor bindings are ambient; explicit imports
             // only publish a lexical binding to the canonical signature.
-            if let Some(assoc_bindings) = self
-                .fn_type_param_assoc_bindings
-                .get(source_identity)
-                .cloned()
-            {
-                self.fn_type_param_assoc_bindings
-                    .insert(binding.clone(), assoc_bindings);
-            }
             self.alias_fn_sig(&binding, source_identity);
         }
         self.record_published_bare_function(&binding, source_identity);
@@ -1309,7 +1300,7 @@ impl Checker {
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
-                    let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                    let sig = self.build_fn_sig_from_decl(fd);
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
                     // Only `Pub` functions are module exports: `package fn` must
@@ -1323,16 +1314,9 @@ impl Checker {
                             self.module_fn_exports.insert(surface_qualified.clone());
                         }
                     }
-                    self.fn_type_param_assoc_bindings
-                        .insert(qualified.clone(), assoc_bindings.clone());
                     self.insert_fn_sig_at(&qualified, sig);
-                    if spec.is_none() {
-                        self.fn_type_param_assoc_bindings
-                            .entry(surface_qualified.clone())
-                            .or_insert_with(|| assoc_bindings.clone());
-                        if !self.has_fn_sig(&surface_qualified) {
-                            self.alias_fn_sig(&surface_qualified, &qualified);
-                        }
+                    if spec.is_none() && !self.has_fn_sig(&surface_qualified) {
+                        self.alias_fn_sig(&surface_qualified, &qualified);
                     }
 
                     // Direct resolved-item publication is a second module
@@ -2280,30 +2264,6 @@ impl Checker {
         self.exit_primary_sig_scope(actor_sig_scope);
     }
 
-    /// Seed the module-qualified marker-derivation alias for a type declared
-    /// in a non-root module, immediately after its bare registration.
-    ///
-    /// The trait registry keys marker derivation by name; the bare key is
-    /// last-write-wins across modules. Two imported packages that each export a
-    /// type named `Reply` collide on the single bare `"Reply"` key, so a Send
-    /// lookup at the ask-reply gate can read the wrong module's fields. The
-    /// importer qualifies the dispatched actor's reply type as
-    /// `{module_short}.{name}` (matching `actor_identity`), so the qualified
-    /// registry alias gives the gate a collision-free identity to look up.
-    ///
-    /// Unlike `register_qualified_type_alias` (pub-only, import-surface), this
-    /// runs for EVERY type a non-root module declares — including the non-pub
-    /// records reachable only as an actor's `receive fn` reply type (the
-    /// `testffi` fixture's `type Result` is one such non-pub reply). Bare
-    /// lookups are unchanged; root / flat-file types (no `current_module`) are a
-    /// no-op.
-    pub(super) fn seed_qualified_type_markers_for_current_module(&mut self, name: &str) {
-        if let Some(module_short) = self.current_module_identity() {
-            let qualified = format!("{module_short}.{name}");
-            self.registry.alias_type_markers(name, &qualified);
-        }
-    }
-
     /// Insert a qualified alias (`module_short.Name`) for a type that has
     /// already been registered under its bare name.
     ///
@@ -2316,23 +2276,13 @@ impl Checker {
         name: &str,
     ) {
         let qualified = format!("{module_short}.{name}");
-        // A definition is filed under its declaration, so the qualified
-        // spelling already reaches it; only the string-keyed span and marker
-        // tables need the alias, and only when both spellings name one
-        // declaration (TRANSITION(A2): those tables take the id).
+        // Both source spellings must select the same declaration before its
+        // source-span index can acquire an alias. Semantic tables use the ID.
         let declaration = self.type_def_key(name);
         if declaration.is_some() && declaration == self.type_def_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
             }
-            // Mirror the marker-derivation tables under the qualified key. The
-            // bare `type_fields` (and sibling member maps) are last-write-wins
-            // across modules — two packages each exporting `Reply` collide on
-            // the single bare key, so a same-bare-name reply derives `Send`
-            // from whichever module won the race. The qualified alias gives the
-            // Send gate a collision-free identity to look up.
-            self.registry.alias_type_markers(name, &qualified);
-            self.handle_bearing_dirty = true;
         }
     }
 
@@ -2394,9 +2344,22 @@ impl Checker {
             published.fields.values().cloned().collect()
         };
         let members = self.expand_for_marker_registration(&members);
-        self.registry.register_type(qualified.clone(), members);
-        self.registry
-            .register_type_params(qualified.clone(), published.type_params.clone());
+        self.registry.register_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&qualified)
+                    .expect("published type has a declaration")
+                    .id,
+            ),
+            members,
+        );
+        self.registry.register_type_params(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&qualified)
+                    .expect("published type has a declaration")
+                    .id,
+            ),
+            published.type_params.clone(),
+        );
         self.handle_bearing_dirty = true;
     }
 

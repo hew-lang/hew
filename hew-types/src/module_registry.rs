@@ -896,22 +896,6 @@ impl ModuleRegistry {
         Some(format!("{}.{leaf}", module_id.dotted()))
     }
 
-    /// Resolve an owned registry receiver to its exact loaded source identity.
-    ///
-    /// Ownership metadata is extracted under the registry spelling
-    /// (`regex.Pattern`), while source annotations carry the complete owner
-    /// (`std.text.regex.Pattern`). This joins only those two representations of
-    /// the same loaded declaration; it never recovers an owner from a leaf.
-    #[must_use]
-    pub fn canonical_owned_type_identity(&self, name: &str) -> Option<String> {
-        let (module_id, info, spelling) = self.registry_receiver_declaration(name, true)?;
-        (info.handle_types.contains(&spelling)
-            || info.resource_wrapper_types.contains(&spelling)
-            || info.drop_types.contains(&spelling)
-            || info.drop_funcs.iter().any(|(ty, _)| ty == &spelling))
-        .then(|| format!("{}.{}", module_id.dotted(), crate::short_name(&spelling)))
-    }
-
     /// Project a legacy registry signature type into its exact source owner.
     ///
     /// Extracted ABI signatures historically use the loaded module's final
@@ -2002,11 +1986,7 @@ mod tests {
             None,
             "an ambiguous legacy receiver must fail closed"
         );
-        assert_eq!(
-            reg.canonical_owned_type_identity("regex.Pattern"),
-            None,
-            "ambiguous ownership metadata must fail closed too"
-        );
+
         assert!(!reg.handle_method_dispatches_through_impl("regex.Pattern", "clone_for_test"));
     }
 

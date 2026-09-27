@@ -7,7 +7,7 @@ use hew_types::Checker;
 fn source_annotations_keep_user_nominals_with_builtin_spellings() {
     for name in ["Task", "Unit", "Stream", "Sink", "Connection"] {
         let source = format!(
-            "type {name}<T> {{ value: T }} fn keep(consume value: {name}<i64>) -> {name}<i64> {{ value }}"
+            "type {name}<T> {{ value: T; }} fn keep(consume value: {name}<i64>) -> {name}<i64> {{ value }}"
         );
         let (_, output, lowered) = parse_typecheck_and_lower(&source);
         assert!(
@@ -49,7 +49,7 @@ fn source_annotations_keep_user_nominals_with_builtin_spellings() {
 
 #[test]
 fn annotation_lowering_requires_the_checked_type_at_its_source_site() {
-    let source = "type Value { number: i64 } fn main() { let value: Value = Value { number: 7 }; println(value.number); }";
+    let source = "type Value { number: i64; } fn main() { let value: Value = Value { number: 7 }; println(value.number); }";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -624,7 +624,7 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
         ],
     );
     assert_eq!(
-        ctx.qualify_current_module_record_ty(checker_result),
+        ctx.restore_type_declaration_facts(checker_result),
         ResolvedTy::named_builtin(
             BuiltinType::Result,
             vec![
@@ -656,7 +656,7 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
         ],
     );
     assert_eq!(
-        ctx.qualify_current_module_record_ty(exact_nested),
+        ctx.restore_type_declaration_facts(exact_nested),
         ResolvedTy::named_builtin(
             BuiltinType::Result,
             vec![
@@ -672,7 +672,7 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
 
     ctx.current_module_name = Some("acme.http".to_string());
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_for_test(
+        ctx.restore_type_declaration_facts(ResolvedTy::named_for_test(
             "stream.Sink",
             vec![ResolvedTy::String],
         )),
@@ -680,7 +680,7 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
         "a user `stream.Sink` collision must not inherit std carrier identity"
     );
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::Named {
+        ctx.restore_type_declaration_facts(ResolvedTy::Named {
             args: vec![ResolvedTy::String],
             head: hew_types::TypeHead::Builtin(BuiltinType::Sink),
             is_opaque: false
@@ -706,7 +706,7 @@ fn checker_import_binding_nominal_facts_use_the_declaring_std_owner() {
         .insert("std.net.NetError".to_string());
 
     assert_eq!(
-            ctx.qualify_current_module_record_ty(ResolvedTy::named_path(&ctx.defs, "net.NetError", Vec::new(),
+            ctx.restore_type_declaration_facts(ResolvedTy::named_path(&ctx.defs, "net.NetError", Vec::new(),
             )),
             ResolvedTy::named_path(&ctx.defs, "std.net.NetError", Vec::new()),
             "a checker-produced lexical module binding must agree with the exact std declaration identity"
@@ -740,12 +740,12 @@ fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
     );
     let args = vec![ResolvedTy::user_for_test("Echo", Vec::new())];
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
+        ctx.restore_type_declaration_facts(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
         ResolvedTy::user_for_test("RemotePid", args.clone()),
         "a bare spelling cannot manufacture the compiler actor-carrier discriminator"
     );
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_builtin(
+        ctx.restore_type_declaration_facts(ResolvedTy::named_builtin(
             BuiltinType::RemotePid,
             args.clone()
         )),
@@ -756,7 +756,7 @@ fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
     ctx.root_visible_source_type_short_names
         .insert("RemotePid".to_string());
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
+        ctx.restore_type_declaration_facts(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
         ResolvedTy::user_for_test("RemotePid", args.clone()),
         "a root source declaration wins over the compiler carrier spelling"
     );
@@ -773,7 +773,7 @@ fn checker_result_type_uses_flat_file_import_identity() {
         .insert("Box".to_string(), "support.file_render.Box".to_string());
 
     assert_eq!(
-        ctx.qualify_current_module_record_ty(ResolvedTy::named_path(&ctx.defs, "Box", Vec::new())),
+        ctx.restore_type_declaration_facts(ResolvedTy::named_path(&ctx.defs, "Box", Vec::new())),
         ResolvedTy::named_path(&ctx.defs, "support.file_render.Box", Vec::new())
     );
 }
@@ -1707,7 +1707,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         .expr_types
         .get(&SpanKey::in_module(&(0..0), 0))
         .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-        .map(|ty| user_vec_ctx.qualify_current_module_record_ty(ty));
+        .map(|ty| user_vec_ctx.restore_type_declaration_facts(ty));
     assert!(
         matches!(
             stored_user_vec_ty,
@@ -2852,7 +2852,7 @@ fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() 
     for builtin in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
         let name = builtin.canonical_name();
         ctx.type_declarations.insert(
-            name.to_string(),
+            hew_types::NominalId::for_test(name),
             hew_types::value_class::DeclaredType {
                 is_opaque: true,
                 ..Default::default()
@@ -2861,7 +2861,7 @@ fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() 
         ctx.canonical_std_source_type_identities
             .insert(name.to_string());
         let opaque = ResolvedTy::named_opaque_path(&ctx.defs, name, vec![]);
-        assert_eq!(ctx.qualify_current_module_record_ty(opaque.clone()), opaque);
+        assert_eq!(ctx.restore_type_declaration_facts(opaque.clone()), opaque);
     }
 }
 
@@ -3172,11 +3172,10 @@ fn main() -> i64 {
 // recursion — exhaustivity catches a *missing* arm, but not an arm that
 // exists yet skips sub-expressions.
 
-/// A lambda actor's `close()` releases the handle and is an ordinary call:
-/// it needs no `await` in either position (U383).
+/// A lambda actor's graceful stop is an ordinary unit-valued call in either position.
 #[test]
-fn lambda_actor_close_produces_unit_in_value_and_statement_positions() {
-    for operation in ["a.close();", "let value: () = a.close();"] {
+fn lambda_actor_stop_produces_unit_in_value_and_statement_positions() {
+    for operation in ["stop(a);", "let value: () = stop(a);"] {
         let source = format!("fn main() {{ let a = actor |x: i64| {{}}; {operation} }}");
         let (_, checked, lowered) = parse_typecheck_and_lower(&source);
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
@@ -3395,49 +3394,6 @@ fn user_kind() -> UserCrashKind {
             ),
             "{function_name} retained non-user type identity: {:?}",
             tail.ty
-        );
-    }
-}
-
-#[test]
-fn canonical_builtin_enum_owners_round_trip_exactly() {
-    let output = TypeCheckOutput::default();
-    let ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
-    for expected_type in [
-        "std.builtins.LinkError",
-        "std.builtins.LookupError",
-        "std.link_monitor.MonitorError",
-        "std.failure.CrashAction",
-        "std.failure.CrashKind",
-    ] {
-        assert_eq!(
-            ctx.canonical_monomorphic_builtin_enum_name(expected_type, None, false),
-            Some(expected_type)
-        );
-    }
-}
-
-#[test]
-fn unrelated_qualified_same_leaf_is_not_a_builtin_alias() {
-    let output = TypeCheckOutput::default();
-    let ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
-    assert_eq!(
-        ctx.canonical_monomorphic_builtin_enum_name("std.other.LinkError", None, false),
-        None
-    );
-    assert_eq!(
-        ctx.canonical_monomorphic_builtin_enum_name("app.failure.CrashKind", None, false),
-        None
-    );
-    for false_owner in [
-        "std.lookup_error.LookupError",
-        "std.link_monitor.LinkError",
-        "std.link_monitor.CrashKind",
-    ] {
-        assert_eq!(
-            ctx.canonical_monomorphic_builtin_enum_name(false_owner, None, false),
-            None,
-            "false checker/bootstrap owner must not be accepted: {false_owner}"
         );
     }
 }
@@ -3821,7 +3777,7 @@ fn conn_holder_module(
 ) -> hew_parser::module::Module {
     let source = format!(
         "pub actor Conn {{ receive fn ping() -> i64 {{ {ping_result} }} }}\n\
-             pub actor {holder_name} {{ let conn: Conn, receive fn get() -> i64 {{ 0 }} }}\n"
+             pub actor {holder_name} {{ let conn: Conn; receive fn get() -> i64 {{ 0 }} }}\n"
     );
     let parsed = hew_parser::parse(&source);
     assert!(

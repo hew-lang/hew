@@ -260,7 +260,7 @@ impl LowerCtx {
         result_ty: ResolvedTy,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let error_ty = self.qualify_current_module_record_ty(ResolvedTy::named_path(
+        let error_ty = self.restore_type_declaration_facts(ResolvedTy::named_path(
             &self.defs,
             &error.type_name,
             Vec::new(),
@@ -387,7 +387,7 @@ impl LowerCtx {
         let checker_key = self.mk_key(span);
         let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => self.qualify_current_module_record_ty(resolved),
+                Ok(resolved) => self.restore_type_declaration_facts(resolved),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {

@@ -128,7 +128,7 @@ fn collection_reads_do_not_count_as_binding_writes() {
 fn collection_field_mutation_tracks_the_containing_binding() {
     for (ty, constructor, mutation) in MUTATIONS {
         let source = format!(
-            "type Holder {{ values: {ty} }} fn main() -> i64 {{ var holder = Holder {{ values: {constructor} }}; holder.values.{mutation}; holder.values.len() }}"
+            "type Holder {{ values: {ty}; }} fn main() -> i64 {{ var holder = Holder {{ values: {constructor} }}; holder.values.{mutation}; holder.values.len() }}"
         );
         let output = check_ok(&source);
         assert!(
@@ -212,8 +212,8 @@ fn map_snapshots_admit_nested_ordinary_values_and_owned_keys() {
     ] {
         let source = format!(
             r"
-            type Key {{ name: string, rank: i64 }}
-            enum Payload {{ Empty, Text(string), Children(Vec<Payload>), }}
+            type Key {{ name: string; rank: i64; }}
+            enum Payload {{ Empty; Text(string); Children(Vec<Payload>); }}
             fn main() -> i64 {{
                 let values: HashMap<Key, {value}> = HashMap.new();
                 let keys: Vec<Key> = values.keys();
@@ -298,7 +298,7 @@ fn generic_key_uses_its_substituted_semantic_capabilities() {
             ("HashSet", "values.insert(Key { value: 7 });")
         };
         check_ok(&format!(
-            "type Key<T> {{ value: T }}
+            "type Key<T> {{ value: T; }}
              impl<T> Hash for Key<T> {{ fn hash(self) -> i64 {{ 1 }} }}
              fn main() -> i64 {{
                  var values: {collection} = {constructor}.new();

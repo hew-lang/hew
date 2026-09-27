@@ -113,12 +113,20 @@ pub trait ClassDeclarations {
     /// [`ClassError::UnknownDeclaration`] and the caller fails closed. A
     /// lookup that cannot render one of a declaration's member types must
     /// answer `None` rather than an aggregate over the members it managed.
-    fn declared_type(&self, name: &str) -> Option<DeclaredType>;
+    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType>;
+
+    /// The exact source declaration implementing a compiler-owned aggregate.
+    fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId>;
 }
 
-impl ClassDeclarations for BTreeMap<String, DeclaredType> {
-    fn declared_type(&self, name: &str) -> Option<DeclaredType> {
-        self.get(name).cloned()
+impl ClassDeclarations for BTreeMap<crate::NominalId, DeclaredType> {
+    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType> {
+        self.get(&id).cloned()
+    }
+
+    fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId> {
+        self.iter()
+            .find_map(|(id, declaration)| (declaration.builtin == Some(builtin)).then_some(*id))
     }
 }
 
@@ -127,7 +135,11 @@ impl ClassDeclarations for BTreeMap<String, DeclaredType> {
 pub struct NoDeclarations;
 
 impl ClassDeclarations for NoDeclarations {
-    fn declared_type(&self, _name: &str) -> Option<DeclaredType> {
+    fn declared_type(&self, _id: crate::NominalId) -> Option<DeclaredType> {
+        None
+    }
+
+    fn builtin_declaration(&self, _builtin: BuiltinType) -> Option<crate::NominalId> {
         None
     }
 }
@@ -142,15 +154,8 @@ static NO_DECLARATIONS: NoDeclarations = NoDeclarations;
 /// `is_linear` and `Checker.type_defs`). Both live in `hew-types`, so this is
 /// not a cross-crate join.
 ///
-/// MARKED SHORTCUT — declaration lookup is keyed by the declaration's canonical
-/// path spelling, inherited from `main`.
-/// WHY: `ResolvedTy::Named` carries no `DefId`, so a name is the only key a
-/// resolved type offers.
-/// WHEN: `IdentityTable::declare` (#3210) gives declarations an identity that a
-/// later lane threads onto the type.
-/// WHAT: this context keys on that `DefId` and the name map is deleted.
-/// This is not a fact-table join: `type_facts` is keyed structurally by
-/// [`crate::type_facts::TypeInstanceKey`], never by a name.
+/// Declaration and recursive-instance lookup use nominal identity. Display
+/// spelling cannot change the ownership facts selected for a type.
 ///
 /// Deliberately not `Copy`: every §1.1 entry point takes it by reference, so
 /// the class rule reads one context rather than silently duplicating it.
@@ -185,8 +190,8 @@ impl<'a> ClassContext<'a> {
     }
 
     #[must_use]
-    pub fn declaration(&self, name: &str) -> Option<DeclaredType> {
-        self.declarations.declared_type(name)
+    pub fn declaration(&self, id: crate::NominalId) -> Option<DeclaredType> {
+        self.declarations.declared_type(id)
     }
 }
 
@@ -280,17 +285,17 @@ pub fn classify_ty(
 /// per declaration rather than once per member occurrence.
 #[derive(Default)]
 struct Walk {
-    on_path: Vec<(String, Vec<ResolvedTy>)>,
-    polymorphic: BTreeMap<String, bool>,
+    on_path: Vec<(crate::NominalId, Vec<ResolvedTy>)>,
+    polymorphic: BTreeMap<crate::NominalId, bool>,
 }
 
 impl Walk {
-    fn is_polymorphic(&mut self, name: &str, decls: &ClassContext<'_>) -> bool {
-        if let Some(answer) = self.polymorphic.get(name) {
+    fn is_polymorphic(&mut self, id: crate::NominalId, decls: &ClassContext<'_>) -> bool {
+        if let Some(answer) = self.polymorphic.get(&id) {
             return *answer;
         }
-        let answer = is_polymorphically_recursive(name, decls);
-        self.polymorphic.insert(name.to_string(), answer);
+        let answer = is_polymorphically_recursive(id, decls);
+        self.polymorphic.insert(id, answer);
         answer
     }
 }
@@ -367,7 +372,7 @@ fn is_own_parameter(arg: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
 fn collect_mentions(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
-    out: &mut Vec<(String, Vec<ResolvedTy>)>,
+    out: &mut Vec<(crate::NominalId, Vec<ResolvedTy>)>,
 ) {
     match ty {
         ResolvedTy::Tuple(elements) => {
@@ -382,14 +387,17 @@ fn collect_mentions(
             }
         }
         ResolvedTy::Named { head, args, .. } => {
-            let name = head.registry_key();
+            let identity = head.nominal().or_else(|| {
+                head.builtin()
+                    .and_then(|builtin| decls.declarations.builtin_declaration(builtin))
+            });
             let builtin = head.builtin();
             match builtin {
                 // The two builtins whose class is the Aggregate rule over a
                 // declaration, so they are declaration mentions like any other.
                 Some(BuiltinType::CrashInfo | BuiltinType::CrashNotification) | None => {
-                    if decls.declaration(name).is_some() {
-                        out.push((name.to_string(), args.clone()));
+                    if let Some(id) = identity.filter(|id| decls.declaration(*id).is_some()) {
+                        out.push((id, args.clone()));
                     }
                     for arg in args {
                         collect_mentions(arg, decls, out);
@@ -434,14 +442,14 @@ fn collect_mentions(
 /// argument on every turn, so it has no finite fixpoint to join. A declaration
 /// that never reaches itself refuses nothing, whatever arguments a caller
 /// supplies: a nested `Wrapper<Wrapper<i64>>` is an ordinary aggregate.
-fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
-    let mut seen: BTreeSet<(String, bool)> = BTreeSet::new();
-    let mut stack = vec![(name.to_string(), false)];
+fn is_polymorphically_recursive(id: crate::NominalId, decls: &ClassContext<'_>) -> bool {
+    let mut seen: BTreeSet<(crate::NominalId, bool)> = BTreeSet::new();
+    let mut stack = vec![(id, false)];
     while let Some((current, grew)) = stack.pop() {
-        if !seen.insert((current.clone(), grew)) {
+        if !seen.insert((current, grew)) {
             continue;
         }
-        let Some(declared) = decls.declaration(&current) else {
+        let Some(declared) = decls.declaration(current) else {
             continue;
         };
         let mut mentions = Vec::new();
@@ -473,7 +481,7 @@ fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
                     && !is_own_parameter(arg, &declared.type_params)
             });
             let grew = grew || grows;
-            if grew && mentioned == name {
+            if grew && mentioned == id {
                 return true;
             }
             stack.push((mentioned, grew));
@@ -772,15 +780,9 @@ fn classify(
             // one gives `HashMapIter<i64, i64>` a `DeepCopy` clone that physical
             // MIR cannot realize, because the record's heap fields must be
             // cloned field-wise however cheap their elements are.
-            BuiltinType::VecIter => {
-                classify_declaration("std.builtins.VecIter", args, decls, walk)?
-            }
-            BuiltinType::HashMapIter => {
-                classify_declaration("std.builtins.HashMapIter", args, decls, walk)?
-            }
-            // Aggregate rule over the std declaration's fields.
-            BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
-                classify_declaration(head.registry_key(), args, decls, walk)?
+            BuiltinType::VecIter | BuiltinType::HashMapIter
+            | BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
+                classify_declaration(head, args, decls, walk)?
             }
             BuiltinType::JsonValue | BuiltinType::YamlValue => {
                 (ValueClass::CowValue, CloneKind::DeepCopy)
@@ -811,7 +813,7 @@ fn classify(
             // that the context holds no declaration for is refused in every
             // context, the empty one included: reading the name against the
             // builtin table here would be a second identity authority.
-            let Some(declared) = decls.declaration(name) else {
+            let Some(declared) = head.nominal().and_then(|id| decls.declaration(id)) else {
                 return Err(ClassError::UnknownDeclaration {
                     name: name.to_string(),
                 });
@@ -830,7 +832,7 @@ fn classify(
                 // marker, whether or not its name happens to collide with a
                 // compiler builtin (`Location`, `Handle`).
                 DeclarationMarker::None if *is_opaque || declared.is_opaque => bits,
-                DeclarationMarker::None => classify_declaration(name, args, decls, walk)?,
+                DeclarationMarker::None => classify_declaration(head, args, decls, walk)?,
             }
         }
     })
@@ -838,13 +840,23 @@ fn classify(
 
 /// Aggregate rule over one declaration's substituted member types.
 fn classify_declaration(
-    name: &str,
+    head: &crate::TypeHead,
     args: &[ResolvedTy],
     decls: &ClassContext<'_>,
     walk: &mut Walk,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
+    let name = head.registry_key();
+    let id = head
+        .nominal()
+        .or_else(|| {
+            head.builtin()
+                .and_then(|builtin| decls.declarations.builtin_declaration(builtin))
+        })
+        .ok_or_else(|| ClassError::UnknownDeclaration {
+            name: name.to_string(),
+        })?;
     let declared = decls
-        .declaration(name)
+        .declaration(id)
         .ok_or_else(|| ClassError::UnknownDeclaration {
             name: name.to_string(),
         })?;
@@ -879,12 +891,12 @@ fn classify_declaration(
     // and the box's own class row lands (P2, §5.3).
     // WHAT: the recursive occurrence reads the box's row instead of the
     // collection floor.
-    if walk.is_polymorphic(name, decls) {
+    if walk.is_polymorphic(id, decls) {
         return Err(ClassError::RecursiveInstantiation {
             name: name.to_string(),
         });
     }
-    let instance = (name.to_string(), args.to_vec());
+    let instance = (id, args.to_vec());
     if walk.on_path.contains(&instance) {
         return Ok((ValueClass::CowValue, CloneKind::FieldWise));
     }

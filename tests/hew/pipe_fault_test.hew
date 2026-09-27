@@ -19,7 +19,7 @@ actor StateProducer {
     }
 
     receive fn quit() {
-        self.stop();
+        stop(self);
     }
 }
 

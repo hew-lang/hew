@@ -316,6 +316,8 @@ impl Checker {
         match declaration {
             Some(declaration) => {
                 self.trait_def_keys.insert(key.to_string(), declaration);
+                self.trait_def_keys
+                    .insert(self.defs.path(declaration).to_string(), declaration);
                 self.trait_defs.insert(declaration, info);
             }
             None => self.errors.push(crate::error::TypeError::new(

@@ -96,7 +96,7 @@ fn actor_delivery_rejects_reuse_and_incompatible_destination() {
              actor Other {{ receive fn process(value: i64) {{}} }} \
              fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
              match worker.process(1) {{ \
-                 .Ok(_) => {{}}, \
+                 .Ok(_) => {{}} \
                  .Err(rejected) => {{ let m = rejected.message; {body} }} \
              }} }}"
         );
@@ -164,9 +164,9 @@ fn handled_delivery_outcomes_are_accepted() {
         "let _ = d.tell(1);",
         "let r = d.tell(1); let _ = r;",
         "d.tell(1) handle failure { };",
-        "match d.tell(1) { .Ok(_) => {}, .Err(_) => {} }",
+        "match d.tell(1) { .Ok(_) => {} .Err(_) => {} }",
         "_ = d.process(5);",
-        "match d.process(5) { .Ok(_) => {}, .Err(_) => {} }",
+        "match d.process(5) { .Ok(_) => {} .Err(_) => {} }",
         "let _ = mailbox(d, on_full: .Reject).tell(1);",
     ] {
         let source = format!("{ACTOR} fn main() {{ let d = spawn Doubler; {body} }}");
@@ -223,7 +223,7 @@ fn actor_delivery_seals_message_destructuring_and_construction() {
             "actor Worker {{ receive fn process(value: i64) {{}} }} \
              fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
              match worker.process(1) {{ \
-                 .Ok(_) => {{}}, \
+                 .Ok(_) => {{}} \
                  .Err(rejected) => {{ let m = rejected.message; {body} }} \
              }} }}"
         );
@@ -503,8 +503,8 @@ fn stored_completion_request_preserves_reply_and_rejects_incompatible_redirect()
                     .Err(ActorError.Rejected(failure)) => {{
                         let reply = failure.message.to(spawn {destination}());
                         match reply {{ .Ok(text) => println(text), .Err(_) => {{}} }}
-                    }},
-                    _ => {{}},
+                    }}
+                    _ => {{}}
                 }}
             }}
         "#
@@ -544,8 +544,8 @@ fn completion_recovery_consumes_the_stored_rejection() {
                     .Err(ActorError.Rejected(failure)) => {{
                         let _ = failure.retry();
                         {again}
-                    }},
-                    _ => {{}},
+                    }}
+                    _ => {{}}
                 }}
             }}
         "#
@@ -586,8 +586,8 @@ fn sealed_request_keeps_the_declared_callable_protocol_after_coercion() {
                 match result {{
                     .Err(ActorError.Rejected(failure)) => {{
                         let _ = failure.message.to(spawn {destination}());
-                    }},
-                    _ => {{}},
+                    }}
+                    _ => {{}}
                 }}
             }}
         "
@@ -632,9 +632,9 @@ fn a_bare_handle_completion_waits_for_admission() {
 fn a_policy_view_refuses_the_discarding_policies() {
     for option in [".DropNewest", ".ReplaceLatest"] {
         let output = check_source(&format!(
-            "actor Worker {{ mailbox 1, receive fn total() -> i64 {{ 1 }} }} \
+            "actor Worker {{ mailbox 1; receive fn total() -> i64 {{ 1 }} }} \
              fn main() {{ let w = policy(spawn Worker(), on_full: {option}); \
-               match w.total() {{ .Ok(_) => {{}}, .Err(_) => {{}} }} }}"
+               match w.total() {{ .Ok(_) => {{}} .Err(_) => {{}} }} }}"
         ));
         assert!(
             output

@@ -1036,10 +1036,10 @@ actor Greeter {
 fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
     let source = concat!(
         "actor Alpha {\n",
-        "    let beta: Beta,\n",
+        "    let beta: Beta;\n",
         "}\n",
         "actor Beta {\n",
-        "    let alpha: Alpha,\n",
+        "    let alpha: Alpha;\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1283,7 +1283,7 @@ fn main() {}
 }
 
 #[test]
-fn typecheck_closed_actor_handle_waits_for_termination() {
+fn typecheck_stopped_actor_handle_waits_for_termination() {
     let output = check_source(
         r#"
         actor Greeter {
@@ -1294,8 +1294,9 @@ fn typecheck_closed_actor_handle_waits_for_termination() {
         fn main() {
             let g = spawn Greeter;
             let _ = g.greet("hi");
-            fork close(g);
-            closed(g);
+            stop(g);
+            let waiter = fork stopped(g);
+            await waiter;
         }
         "#,
     );
@@ -1372,10 +1373,9 @@ fn named_actor_receive_dispatch_reports_bad_arg_once() {
     );
 }
 
-/// `close(actor)` is a plain call that waits for terminal cleanup: it has type
-/// `()`, and `await` on it is refused as it is on any other call (U383).
+/// `stopped(actor)` is a plain unit-valued call; `await` on it is refused.
 #[test]
-fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
+fn stopped_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
     let output = check_source(
         r"
         actor Greeter {
@@ -1385,7 +1385,8 @@ fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
         }
         fn main() {
             let g = spawn Greeter;
-            close(g);
+            stop(g);
+            stopped(g);
         }
         ",
     );
@@ -1404,7 +1405,7 @@ fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
         }
         fn main() {
             let g = spawn Greeter;
-            await close(g);
+            await stopped(g);
         }
         ",
     );
@@ -2691,52 +2692,45 @@ fn main() -> i64 {
     }
 }
 
-#[test]
-fn in_scope_type_param_not_false_flagged_in_any_item_signature_path() {
-    // The complement of the reject sweep: a type-param name that IS in scope —
-    // declared by the enclosing actor / trait / type / impl, or by the method
-    // itself — must NOT be reported as unknown. Scope-local resolution pushes
-    // the enclosing container's generics (and the method pushes its own), so
-    // every legitimate `T` resolves. Guards the boundary against over-firing.
-    let cases = [
-        (
-            "actor-level generic, used in method",
-            r"
+const SCOPED_PARAM_SIGNATURE_CASES: &[(&str, &str)] = &[
+    (
+        "actor-level generic, used in method",
+        r"
 actor Worker<T> { fn m(x: T) -> T { x }  receive fn run() {} }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "actor-level generic, used in receive fn",
-            r"
+    ),
+    (
+        "actor-level generic, used in receive fn",
+        r"
 actor Worker<T> { receive fn handle(x: T) {} }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "actor method's own generic",
-            r"
+    ),
+    (
+        "actor method's own generic",
+        r"
 actor Worker { fn idm<T>(x: T) -> T { x }  receive fn run() {} }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "trait-level generic",
-            r"
+    ),
+    (
+        "trait-level generic",
+        r"
 trait Foo<T> { fn take(self, x: T) -> i64; }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "trait method's own generic",
-            r"
+    ),
+    (
+        "trait method's own generic",
+        r"
 trait Foo { fn idm<T>(self, x: T) -> T; }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "inline type-body method, type-level generic",
-            r"type Holder<T> {
+    ),
+    (
+        "inline type-body method, type-level generic",
+        r"type Holder<T> {
     value: T;
     fn first(h: Holder<T>) -> T {
         h.value
@@ -2747,10 +2741,10 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-        (
-            "inline type-body method's own generic",
-            r"type Box {
+    ),
+    (
+        "inline type-body method's own generic",
+        r"type Box {
     v: i64;
     fn idm<T>(b: Box, x: T) -> T {
         x
@@ -2761,10 +2755,10 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-        (
-            "impl method's own generic",
-            r"type Box {
+    ),
+    (
+        "impl method's own generic",
+        r"type Box {
     v: i64;
 }
 
@@ -2778,10 +2772,10 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-        (
-            "impl-level generic",
-            r"type Holder<T> {
+    ),
+    (
+        "impl-level generic",
+        r"type Holder<T> {
     value: T;
 }
 
@@ -2795,9 +2789,17 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-    ];
-    for (label, source) in cases {
+    ),
+];
+
+#[test]
+fn in_scope_type_param_not_false_flagged_in_any_item_signature_path() {
+    // The complement of the reject sweep: a type-param name that IS in scope —
+    // declared by the enclosing actor / trait / type / impl, or by the method
+    // itself — must NOT be reported as unknown. Scope-local resolution pushes
+    // the enclosing container's generics (and the method pushes its own), so
+    // every legitimate `T` resolves. Guards the boundary against over-firing.
+    for &(label, source) in SCOPED_PARAM_SIGNATURE_CASES {
         let output = check_source(source);
         assert!(
             !output.errors.iter().any(|error| {
@@ -4552,7 +4554,7 @@ fn main() -> i64 {{
     let right: Option<i64> = Some(1);
     let out = await store.keep(left, right);
     match out {{
-        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Ok(v) => match v {{ true => 0, false => 1 }}
         .Err(_) => 2,
     }}
 }}
@@ -4582,7 +4584,7 @@ fn main() -> i64 {{
     let right: Option<HashMap<string, i64>> = Some(b);
     let out = await store.keep(left, right);
     match out {{
-        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Ok(v) => match v {{ true => 0, false => 1 }}
         .Err(_) => 2,
     }}
 }}

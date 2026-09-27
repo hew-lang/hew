@@ -47,11 +47,7 @@ impl Checker {
             return Ty::Error;
         }
         let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
-        let assoc_bindings = self
-            .fn_type_param_assoc_bindings
-            .get(signature_key)
-            .cloned()
-            .unwrap_or_default();
+        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         self.enforce_type_param_bounds_with_assoc(&sig, &assoc_bindings, &arguments, span);
         self.record_concrete_call_type_args(span, &arguments);
         let target = self.call_target_for_signature(signature_key);

@@ -2198,11 +2198,11 @@ impl Checker {
                 return Some(binding.clone());
             }
         }
-        if let Some(fn_name) = self.current_function.as_ref() {
+        if let Some(declaration) = self.checking_declaration {
             return self
-                .fn_type_param_assoc_bindings
-                .get(fn_name)
-                .and_then(|bindings| bindings.get(&key))
+                .fn_sigs
+                .get(&declaration)
+                .and_then(|sig| sig.type_param_assoc_bindings.get(&key))
                 .cloned();
         }
         None

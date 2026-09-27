@@ -187,7 +187,13 @@ impl Checker {
         };
 
         // Actors are always Send
-        self.registry.register_actor(identity.to_string());
+        self.registry.register_actor(
+            self.head_of_declaration(
+                self.nominal_head_for_key(identity)
+                    .expect("actor has a declaration")
+                    .id,
+            ),
+        );
 
         self.insert_type_def(identity, type_def);
         // A new handle-bearing candidate entered `type_defs`; invalidate the
@@ -496,17 +502,7 @@ impl Checker {
                         .collect()
                 })
                 .unwrap_or_default();
-            let target_owned = self
-                .canonical_primitive_or_builtin_key_for_impl_name(target_name)
-                .unwrap_or_else(|| {
-                    self.current_module
-                        .as_ref()
-                        .filter(|_| !target_name.contains('.'))
-                        .map_or_else(
-                            || target_name.to_string(),
-                            |module| format!("{module}.{target_name}"),
-                        )
-                });
+            let target_owned = self.trait_impl_type_identity(target_name);
             for assoc_name in assoc_names {
                 let key = (target_owned.clone(), tb_key.clone(), assoc_name.clone());
                 if self.impl_assoc_type_bindings.contains_key(&key) {
@@ -1478,7 +1474,7 @@ impl Checker {
     /// through the super chain keys on the supertrait's own name (`Base`), never
     /// the sub-trait's (`Sub`).
     pub(super) fn trait_defs_key_for_identity(&self, identity: &ResolvedTraitIdentity) -> String {
-        identity
+        let key = identity
             .owner
             .as_ref()
             .map(|owner| {
@@ -1493,7 +1489,9 @@ impl Checker {
                 format!("{canonical_owner}.{}", identity.source_trait_name)
             })
             .filter(|q| self.has_trait_def(q))
-            .unwrap_or_else(|| identity.source_trait_name.clone())
+            .unwrap_or_else(|| identity.source_trait_name.clone());
+        self.trait_key_id(&key)
+            .map_or(key, |declaration| self.defs.path(declaration).to_string())
     }
 
     /// The owner-qualified `trait_defs` key for a bare trait-bound name spelled in
@@ -2165,8 +2163,10 @@ impl Checker {
                 if crate::lookup_builtin_type(type_name).is_some() {
                     return type_name.to_string();
                 }
-                self.current_module
-                    .as_ref()
+                if let Some(canonical) = self.canonical_nominal_name(type_name) {
+                    return canonical;
+                }
+                self.current_module_identity()
                     .filter(|_| !type_name.contains('.'))
                     .map_or_else(
                         || type_name.to_string(),

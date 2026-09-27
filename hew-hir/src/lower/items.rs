@@ -678,7 +678,7 @@ impl LowerCtx {
         // bare identity — its layout stays bare too, so qualifying here would
         // instead CREATE a mismatch.
         for handler in &mut lowered.receive_handlers {
-            handler.return_ty = self.qualify_current_module_record_ty(handler.return_ty.clone());
+            handler.return_ty = self.restore_type_declaration_facts(handler.return_ty.clone());
             handler.return_ty =
                 self.qualify_colliding_module_record_ty(&handler.return_ty, module_full_path);
         }

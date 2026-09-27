@@ -19,7 +19,7 @@ fn lower(source: &str) -> LoweredModule {
 
 fn declarations(clone: bool) -> String {
     let capabilities = if clone { "once, clone" } else { "once" };
-    format!("type Two {{ a: fn[{capabilities}]() -> i64, b: fn() -> i64 }} fn answer() -> i64 {{ 41 }} fn sibling() -> i64 {{ 1 }}")
+    format!("type Two {{ a: fn[{capabilities}]() -> i64; b: fn() -> i64; }} fn answer() -> i64 {{ 41 }} fn sibling() -> i64 {{ 1 }}")
 }
 
 fn assert_lowered(source: &str) -> LoweredModule {
@@ -104,7 +104,7 @@ fn temporary_record_and_tuple_fields_transfer_without_copying_siblings() {
     for value in ["42", "100 / 0"] {
         let source = format!(
             r#"
-            type Job {{ run: fn[once](i64) -> i64, label: string }}
+            type Job {{ run: fn[once](i64) -> i64; label: string; }}
             fn make_job() -> Job {{
                 let text = "owned callback";
                 Job {{ run: move |value: i64| {{ println(text); value }}, label: "sibling owner" }}

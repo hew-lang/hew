@@ -648,10 +648,10 @@ impl Checker {
         let Ty::Named { head, .. } = ty else {
             return false;
         };
-        let name = head.registry_key();
-        self.registry.is_resource(name)
-            || self.registry.is_linear(name)
-            || self.canonical_owned_handle_type_name(name).is_some()
+        head.nominal()
+            .is_some_and(|id| self.registry.is_resource(id))
+            || head.nominal().is_some_and(|id| self.registry.is_linear(id))
+            || self.registry.is_owned_handle(*head)
     }
 
     /// A variant carrying an uninhabited payload has no values, so no `match`

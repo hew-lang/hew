@@ -93,7 +93,10 @@ fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // IN
 /// actor TlsEcho {
 ///     let stream: tls.TlsStream;
 ///     receive fn on_data(data: bytes) {
-///         stream.write(data);
+///         match stream.write(data) {
+///             .Ok(_) => {}
+///             .Err(err) => panic(to_string(err)),
+///         }
 ///     }
 ///     receive fn on_close() {
 ///         println("tls connection closed");

@@ -3,8 +3,8 @@
 //! These tests exercise `TraitRegistry::implements_marker` across all
 //! type variants, plus trait/impl registration and method lookup.
 
-use hew_types::traits::{MarkerTrait, MethodSig, TraitDef, TraitRegistry};
-use hew_types::ty::{TraitObjectBound, Ty};
+use hew_types::traits::{MarkerTrait, TraitRegistry};
+use hew_types::ty::Ty;
 
 // ---------------------------------------------------------------------------
 // Helper: shorthand for a Named type with no generic args
@@ -83,30 +83,60 @@ fn hashmap_is_not_copy() {
 #[test]
 fn struct_all_copy_fields_is_copy() {
     let mut reg = TraitRegistry::new();
-    reg.register_type("Colour".to_string(), vec![Ty::U8, Ty::U8, Ty::U8]);
+    reg.register_type(
+        hew_types::Ty::user_for_test("Colour", vec![])
+            .head()
+            .unwrap(),
+        vec![Ty::U8, Ty::U8, Ty::U8],
+    );
     assert!(reg.implements_marker(&named("Colour"), MarkerTrait::Copy));
 }
 
 #[test]
 fn struct_with_string_field_not_copy() {
     let mut reg = TraitRegistry::new();
-    reg.register_type("Person".to_string(), vec![Ty::String, Ty::I32]);
+    reg.register_type(
+        hew_types::Ty::user_for_test("Person", vec![])
+            .head()
+            .unwrap(),
+        vec![Ty::String, Ty::I32],
+    );
     assert!(!reg.implements_marker(&named("Person"), MarkerTrait::Copy));
 }
 
 #[test]
 fn struct_with_nested_copy_struct_is_copy() {
     let mut reg = TraitRegistry::new();
-    reg.register_type("Inner".to_string(), vec![Ty::I32]);
-    reg.register_type("Outer".to_string(), vec![named("Inner"), Ty::Bool]);
+    reg.register_type(
+        hew_types::Ty::user_for_test("Inner", vec![])
+            .head()
+            .unwrap(),
+        vec![Ty::I32],
+    );
+    reg.register_type(
+        hew_types::Ty::user_for_test("Outer", vec![])
+            .head()
+            .unwrap(),
+        vec![named("Inner"), Ty::Bool],
+    );
     assert!(reg.implements_marker(&named("Outer"), MarkerTrait::Copy));
 }
 
 #[test]
 fn struct_with_nested_non_copy_is_not_copy() {
     let mut reg = TraitRegistry::new();
-    reg.register_type("Inner".to_string(), vec![Ty::String]);
-    reg.register_type("Outer".to_string(), vec![named("Inner"), Ty::I32]);
+    reg.register_type(
+        hew_types::Ty::user_for_test("Inner", vec![])
+            .head()
+            .unwrap(),
+        vec![Ty::String],
+    );
+    reg.register_type(
+        hew_types::Ty::user_for_test("Outer", vec![])
+            .head()
+            .unwrap(),
+        vec![named("Inner"), Ty::I32],
+    );
     assert!(!reg.implements_marker(&named("Outer"), MarkerTrait::Copy));
 }
 
@@ -327,7 +357,11 @@ fn sink_not_copy() {
 #[test]
 fn receiver_is_send_when_registered_as_handle_type() {
     let mut reg = TraitRegistry::new();
-    reg.register_handle_type("channel.Receiver".to_string());
+    reg.register_handle_type(
+        hew_types::Ty::user_for_test("channel.Receiver", vec![])
+            .head()
+            .unwrap(),
+    );
     // Receiver<T> with args — the canonical nominal drives the trait; args are
     // opaque.
     let rx = named_with("channel.Receiver", vec![Ty::String]);
@@ -422,7 +456,11 @@ fn closure_is_clone_but_not_copy() {
 #[test]
 fn registered_actor_is_send_and_sync() {
     let mut reg = TraitRegistry::new();
-    reg.register_actor("ChatRoom".to_string());
+    reg.register_actor(
+        hew_types::Ty::user_for_test("ChatRoom", vec![])
+            .head()
+            .unwrap(),
+    );
     let actor = named("ChatRoom");
     assert!(reg.implements_marker(&actor, MarkerTrait::Send));
     assert!(reg.implements_marker(&actor, MarkerTrait::Sync));
@@ -435,7 +473,11 @@ fn registered_actor_is_send_and_sync() {
 #[test]
 fn handle_type_is_send_copy_clone_debug() {
     let mut reg = TraitRegistry::new();
-    reg.register_handle_type("net.Connection".to_string());
+    reg.register_handle_type(
+        hew_types::Ty::user_for_test("net.Connection", vec![])
+            .head()
+            .unwrap(),
+    );
     let conn = named("net.Connection");
     assert!(reg.implements_marker(&conn, MarkerTrait::Send));
     assert!(reg.implements_marker(&conn, MarkerTrait::Sync));
@@ -449,7 +491,11 @@ fn handle_type_is_send_copy_clone_debug() {
 fn handle_type_unqualified_lookup_is_rejected() {
     // A bare leaf cannot select the qualified handle declaration.
     let mut reg = TraitRegistry::new();
-    reg.register_handle_type("json.Value".to_string());
+    reg.register_handle_type(
+        hew_types::Ty::user_for_test("json.Value", vec![])
+            .head()
+            .unwrap(),
+    );
     let val = named("Value");
     assert!(!reg.implements_marker(&val, MarkerTrait::Copy));
     assert!(!reg.implements_marker(&val, MarkerTrait::Send));
@@ -462,7 +508,11 @@ fn handle_type_unqualified_lookup_is_rejected() {
 #[test]
 fn drop_type_is_send_clone_debug_drop_not_copy() {
     let mut reg = TraitRegistry::new();
-    reg.register_drop_type("http.Request".to_string());
+    reg.register_drop_type(
+        hew_types::Ty::user_for_test("http.Request", vec![])
+            .head()
+            .unwrap(),
+    );
     let req = named("http.Request");
     assert!(reg.implements_marker(&req, MarkerTrait::Send));
     assert!(reg.implements_marker(&req, MarkerTrait::Sync));
@@ -476,7 +526,11 @@ fn drop_type_is_send_clone_debug_drop_not_copy() {
 #[test]
 fn drop_type_unqualified_lookup_is_rejected() {
     let mut reg = TraitRegistry::new();
-    reg.register_drop_type("http.Request".to_string());
+    reg.register_drop_type(
+        hew_types::Ty::user_for_test("http.Request", vec![])
+            .head()
+            .unwrap(),
+    );
     let req = named("Request");
     assert!(!reg.implements_marker(&req, MarkerTrait::Drop));
     assert!(!reg.implements_marker(&req, MarkerTrait::Copy));
@@ -490,10 +544,20 @@ fn drop_type_unqualified_lookup_is_rejected() {
 fn negative_impl_overrides_auto_derivation() {
     let mut reg = TraitRegistry::new();
     // Register a struct with all-Copy fields
-    reg.register_type("Token".to_string(), vec![Ty::I32]);
+    reg.register_type(
+        hew_types::Ty::user_for_test("Token", vec![])
+            .head()
+            .unwrap(),
+        vec![Ty::I32],
+    );
     assert!(reg.implements_marker(&named("Token"), MarkerTrait::Copy));
     // Now add a negative impl
-    reg.register_negative_impl("Token".to_string(), MarkerTrait::Copy);
+    reg.register_negative_impl(
+        hew_types::Ty::user_for_test("Token", vec![])
+            .head()
+            .unwrap(),
+        MarkerTrait::Copy,
+    );
     assert!(!reg.implements_marker(&named("Token"), MarkerTrait::Copy));
 }
 
@@ -504,196 +568,15 @@ fn negative_impl_overrides_auto_derivation() {
 #[test]
 fn machine_type_derives_from_fields() {
     let mut reg = TraitRegistry::new();
-    reg.register_type("CounterMachine".to_string(), vec![Ty::I32, Ty::Bool]);
+    reg.register_type(
+        hew_types::Ty::user_for_test("CounterMachine", vec![])
+            .head()
+            .unwrap(),
+        vec![Ty::I32, Ty::Bool],
+    );
     let machine = Ty::named_for_test("CounterMachine", vec![]);
     assert!(reg.implements_marker(&machine, MarkerTrait::Copy));
     assert!(reg.implements_marker(&machine, MarkerTrait::Send));
-}
-
-// ===========================================================================
-// TraitObject
-// ===========================================================================
-
-#[test]
-fn trait_object_checks_super_traits() {
-    let mut reg = TraitRegistry::new();
-    reg.register_trait(TraitDef {
-        name: "Drawable".to_string(),
-        type_params: vec![],
-        super_traits: vec!["Send".to_string()],
-        methods: vec![],
-        associated_types: vec![],
-    });
-    let obj = Ty::TraitObject {
-        traits: vec![TraitObjectBound {
-            trait_name: "Drawable".to_string(),
-            trait_id: None,
-            args: vec![],
-            assoc_bindings: vec![],
-        }],
-    };
-    assert!(reg.implements_marker(&obj, MarkerTrait::Send));
-    assert!(!reg.implements_marker(&obj, MarkerTrait::Copy));
-}
-
-// ===========================================================================
-// Trait registration and lookup
-// ===========================================================================
-
-#[test]
-fn register_and_lookup_trait() {
-    let mut reg = TraitRegistry::new();
-    reg.register_trait(TraitDef {
-        name: "Printable".to_string(),
-        type_params: vec![hew_types::ParamHead::for_test("T")],
-        super_traits: vec![],
-        methods: vec![MethodSig {
-            name: "print".to_string(),
-            params: vec![],
-            return_type: Ty::Unit,
-            takes_self: true,
-            self_mutable: false,
-            consumes_receiver: false,
-        }],
-        associated_types: vec!["Output".to_string()],
-    });
-
-    let def = reg
-        .lookup_trait("Printable")
-        .expect("trait should be found");
-    assert_eq!(def.name, "Printable");
-    assert_eq!(def.type_params, vec![hew_types::ParamHead::for_test("T")]);
-    assert_eq!(def.methods.len(), 1);
-    assert_eq!(def.methods[0].name, "print");
-    assert!(def.methods[0].takes_self);
-    assert!(!def.methods[0].self_mutable);
-    assert_eq!(def.associated_types, vec!["Output"]);
-}
-
-// ===========================================================================
-// Trait impl registration and method lookup
-// ===========================================================================
-
-#[test]
-fn register_and_lookup_impl() {
-    let mut reg = TraitRegistry::new();
-    let methods = vec![
-        MethodSig {
-            name: "to_string".to_string(),
-            params: vec![],
-            return_type: Ty::String,
-            takes_self: true,
-            self_mutable: false,
-            consumes_receiver: false,
-        },
-        MethodSig {
-            name: "format".to_string(),
-            params: vec![Ty::String],
-            return_type: Ty::String,
-            takes_self: true,
-            self_mutable: false,
-            consumes_receiver: false,
-        },
-    ];
-    reg.register_impl("Dog".to_string(), "Display".to_string(), methods);
-
-    let found = reg
-        .lookup_impl("Dog", "Display")
-        .expect("impl should exist");
-    assert_eq!(found.len(), 2);
-    assert_eq!(found[0].name, "to_string");
-    assert_eq!(found[1].name, "format");
-    assert_eq!(found[1].params, vec![Ty::String]);
-}
-
-#[test]
-fn lookup_impl_wrong_type_returns_none() {
-    let mut reg = TraitRegistry::new();
-    reg.register_impl(
-        "Dog".to_string(),
-        "Display".to_string(),
-        vec![MethodSig {
-            name: "show".to_string(),
-            params: vec![],
-            return_type: Ty::String,
-            takes_self: true,
-            self_mutable: false,
-            consumes_receiver: false,
-        }],
-    );
-    assert!(reg.lookup_impl("Cat", "Display").is_none());
-    assert!(reg.lookup_impl("Dog", "Clone").is_none());
-}
-
-// ===========================================================================
-// Empty trait
-// ===========================================================================
-
-#[test]
-fn empty_trait_can_be_registered_and_looked_up() {
-    let mut reg = TraitRegistry::new();
-    reg.register_trait(TraitDef {
-        name: "Marker".to_string(),
-        type_params: vec![],
-        super_traits: vec![],
-        methods: vec![],
-        associated_types: vec![],
-    });
-    let def = reg.lookup_trait("Marker").unwrap();
-    assert!(def.methods.is_empty());
-    assert!(def.super_traits.is_empty());
-    assert!(def.associated_types.is_empty());
-}
-
-// ===========================================================================
-// Trait inheritance (super_traits)
-// ===========================================================================
-
-#[test]
-fn trait_with_super_traits() {
-    let mut reg = TraitRegistry::new();
-    reg.register_trait(TraitDef {
-        name: "Sortable".to_string(),
-        type_params: vec![],
-        super_traits: vec!["Eq".to_string(), "Ord".to_string()],
-        methods: vec![MethodSig {
-            name: "sort_key".to_string(),
-            params: vec![],
-            return_type: Ty::I64,
-            takes_self: true,
-            self_mutable: false,
-            consumes_receiver: false,
-        }],
-        associated_types: vec![],
-    });
-    let def = reg.lookup_trait("Sortable").unwrap();
-    assert_eq!(def.super_traits, vec!["Eq", "Ord"]);
-}
-
-// ===========================================================================
-// Trait with associated types
-// ===========================================================================
-
-#[test]
-fn trait_with_associated_types() {
-    let mut reg = TraitRegistry::new();
-    reg.register_trait(TraitDef {
-        name: "Iterator".to_string(),
-        type_params: vec![],
-        super_traits: vec![],
-        methods: vec![MethodSig {
-            name: "next".to_string(),
-            params: vec![],
-            return_type: Ty::option(Ty::I32),
-            takes_self: true,
-            self_mutable: true,
-            consumes_receiver: false,
-        }],
-        associated_types: vec!["Item".to_string()],
-    });
-    let def = reg.lookup_trait("Iterator").unwrap();
-    assert_eq!(def.associated_types, vec!["Item"]);
-    assert!(def.methods[0].self_mutable);
 }
 
 // ===========================================================================
@@ -721,27 +604,6 @@ fn vec_of_float_is_eq() {
     // F64 is Eq under bitwise/total semantics, so Vec<F64> is Eq too.
     let vec_f64 = Ty::named_for_test("Vec", vec![Ty::F64]);
     assert!(reg.implements_marker(&vec_f64, MarkerTrait::Eq));
-}
-
-// ===========================================================================
-// Method signature fields
-// ===========================================================================
-
-#[test]
-fn method_sig_mutable_self() {
-    let mut reg = TraitRegistry::new();
-    let methods = vec![MethodSig {
-        name: "push".to_string(),
-        params: vec![Ty::I32],
-        return_type: Ty::Unit,
-        takes_self: true,
-        self_mutable: true,
-        consumes_receiver: false,
-    }];
-    reg.register_impl("Buffer".to_string(), "Collection".to_string(), methods);
-    let found = reg.lookup_impl("Buffer", "Collection").unwrap();
-    assert!(found[0].self_mutable);
-    assert_eq!(found[0].return_type, Ty::Unit);
 }
 
 // ===========================================================================

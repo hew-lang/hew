@@ -1229,7 +1229,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![repo_root]);
         let source = concat!(
             "actor Counter {\n",
-            "    count: i64,\n",
+            "    var count: i64;\n",
             "    receive fn increment(n: i64) { count = count + n; }\n",
             "}\n",
             "fn main() {\n",
@@ -1665,7 +1665,7 @@ impl Worker {
         let uri = make_test_uri("/identity-fields.hew");
         let a_use = source.find("a.x").unwrap() + 2;
         let b_use = source.find("b.x").unwrap() + 2;
-        let expected_b = source.find("type B { x:").unwrap() + "type B { ".len();
+        let expected_b = source.find("type B {\n    x:").unwrap() + "type B {\n    ".len();
         let location =
             super::navigation::identity_definition_location(&uri, &doc, b_use, &DashMap::new())
                 .expect("B.x must resolve through checker identity");
@@ -1763,7 +1763,7 @@ impl Worker {
         let edits = &changes[&uri];
         let positions: Vec<_> = edits.iter().map(|edit| edit.range.start).collect();
         let expected = [
-            source.find("type B { x:").unwrap() + "type B { ".len(),
+            source.find("type B {\n    x:").unwrap() + "type B {\n    ".len(),
             source.find("B { x: 2 }").unwrap() + "B { ".len(),
             offset,
         ];

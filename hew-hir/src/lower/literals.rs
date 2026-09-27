@@ -153,7 +153,7 @@ impl LowerCtx {
             return None;
         };
         match ResolvedTy::from_ty(&ty) {
-            Ok(resolved) => Some(self.qualify_current_module_record_ty(resolved)),
+            Ok(resolved) => Some(self.restore_type_declaration_facts(resolved)),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

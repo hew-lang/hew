@@ -317,7 +317,6 @@ impl Checker {
             return;
         };
         let name = head.registry_key();
-        let builtin = head.builtin();
         let canonical_name = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| name.to_string());
@@ -329,12 +328,7 @@ impl Checker {
         };
         let consumes_receiver = sig.consumes_receiver
             || self.named_type_method_consumes_receiver(&canonical_name, method)
-            || self.named_type_inherent_close_consumes_receiver(
-                &canonical_name,
-                builtin,
-                method,
-                sig,
-            );
+            || self.named_type_inherent_close_consumes_receiver(*head, method, sig);
         if consumes_receiver {
             self.method_call_consumes_receiver
                 .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -367,18 +361,12 @@ impl Checker {
             return;
         };
         let name = head.registry_key();
-        let builtin = head.builtin();
         let canonical_name = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| name.to_string());
         let consumes_receiver = sig.consumes_receiver
             || self.named_type_method_consumes_receiver(&canonical_name, method)
-            || self.named_type_inherent_close_consumes_receiver(
-                &canonical_name,
-                builtin,
-                method,
-                sig,
-            );
+            || self.named_type_inherent_close_consumes_receiver(*head, method, sig);
         if consumes_receiver {
             self.method_call_consumes_receiver
                 .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -553,7 +541,7 @@ impl Checker {
             } = receiver_ty
             {
                 let name = head.registry_key();
-                match self.record_clone_admissibility(name, type_args, span) {
+                match self.record_clone_admissibility(*head, type_args, span) {
                     RecordCloneAdmissibility::Admissible => {
                         let record_ty = receiver_ty.clone();
                         self.record_method_call_rewrite(

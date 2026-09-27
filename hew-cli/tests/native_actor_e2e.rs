@@ -725,13 +725,13 @@ fn main() {
 }
 
 #[test]
-fn actor_close_waits_for_handler_cleanup() {
+fn actor_termination_drains_handler_cleanup() {
     run_actor(
         r#"import std.stream;
 
 actor Holder {
     let label: string;
-    // Parks on a pipe nothing feeds, so only close can end the turn.
+    // Parks on a pipe nothing feeds, so termination must end the turn.
     receive fn slow(me: Holder, closer: Closer) {
         defer println(label);
         let (_keep, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
@@ -744,7 +744,7 @@ actor Holder {
 actor Closer {
     receive fn started(holder: Holder) {
         let result = scope within 1ms {
-            closed(holder);
+            stopped(holder);
             "unexpected clean wait"
         } handle failure {
             match failure {
@@ -753,8 +753,9 @@ actor Closer {
             }
         };
         println(result);
-        close(holder);
-        println("closed");
+        terminate(holder);
+        stopped(holder);
+        println("terminated");
     }
 }
 
@@ -764,7 +765,7 @@ fn main() {
     let _ = mailbox(holder, on_full: .Reject).slow(holder, closer);
 }
 "#,
-        "waiter-deadline\nCLEANED\nclosed\n",
+        "waiter-deadline\nCLEANED\nterminated\n",
         0,
         "",
     );
@@ -777,7 +778,7 @@ fn actor_termination_fault_reaches_waiter_recovery() {
 fn main() {
     let broken = spawn Broken();
     let _ = mailbox(broken, on_full: .Reject).fail();
-    let result = scope { closed(broken); "unexpected clean termination" } handle failure {
+    let result = scope { stopped(broken); "unexpected clean termination" } handle failure {
         match failure { .Fault { message } => "observed fault", .Deadline { message } => "unexpected deadline", }
     };
     println(result);

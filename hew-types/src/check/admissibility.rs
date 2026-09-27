@@ -825,8 +825,9 @@ impl Checker {
 
     /// Opaque declarations are nominal. Imported uses must carry the exact
     /// owner, so a same-leaf foreign type cannot inherit opacity.
-    fn is_user_opaque_type_name(&self, name: &str) -> bool {
-        self.user_opaque_type_names.contains(name)
+    fn is_user_opaque_type(&self, head: crate::TypeHead) -> bool {
+        head.nominal()
+            .is_some_and(|id| self.opaque_type_ids.contains(&id))
     }
 
     /// Tuple-record payloads deliberately leave `TypeDef::fields` empty
@@ -834,22 +835,21 @@ impl Checker {
     /// nevertheless the authoritative positional layout.
     pub(super) fn tuple_record_constructor_fields(
         &self,
-        name: &str,
+        head: crate::TypeHead,
         type_def: &TypeDef,
     ) -> Vec<Ty> {
         if !matches!(type_def.kind, TypeDefKind::Struct | TypeDefKind::Record)
             || !type_def.fields.is_empty()
-            || self.registry.is_resource(name)
+            || head
+                .nominal()
+                .is_some_and(|id| self.registry.is_resource(id))
         {
             return Vec::new();
         }
-        self.fn_sig(name)
-            .and_then(|sig| {
-                let Ty::Named { head, .. } = &sig.return_type else {
-                    return None;
-                };
-                (head.registry_key() == name).then(|| sig.params.clone())
-            })
+        head.nominal()
+            .and_then(|id| self.fn_sigs.get(&id.declaration()))
+            .filter(|sig| sig.return_type.head() == Some(head))
+            .map(|sig| sig.params.clone())
             .unwrap_or_default()
     }
 
@@ -1633,9 +1633,8 @@ impl Checker {
                         && self.rc_payload_clone_drop_supported(&args[1], visiting, true)
                 }
                 _ => {
-                    self.canonical_owned_handle_type_name(head.registry_key())
-                        .is_none()
-                        && !self.is_user_opaque_type_name(head.registry_key())
+                    !self.registry.is_owned_handle(*head)
+                        && !self.is_user_opaque_type(*head)
                         && self
                             .registry
                             .implements_marker(&resolved, MarkerTrait::Copy)
@@ -1650,9 +1649,9 @@ impl Checker {
             } => {
                 // TRANSITION(A1 commit 3): registry lookups by key.
                 let name = head.registry_key();
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.is_user_opaque_type_name(name)
-                    || self.registry.is_linear(name)
+                if self.registry.is_owned_handle(*head)
+                    || self.is_user_opaque_type(*head)
+                    || head.nominal().is_some_and(|id| self.registry.is_linear(id))
                 {
                     return false;
                 }
@@ -1661,7 +1660,10 @@ impl Checker {
                 // fields belong to that close, not to this walk. `#[linear]`
                 // stays refused: a shared handle can outlive every path that
                 // would consume it.
-                if self.registry.is_resource(name) {
+                if head
+                    .nominal()
+                    .is_some_and(|id| self.registry.is_resource(id))
+                {
                     return true;
                 }
                 let Some(type_def) = self.lookup_type_def(name) else {
@@ -2320,6 +2322,7 @@ mod tests {
                 impl_method: None,
                 type_params: vec![crate::ParamHead::for_test("T")],
                 type_param_bounds: HashMap::new(),
+                type_param_assoc_bindings: HashMap::new(),
                 param_names: vec!["item".to_string()],
                 params: vec![Ty::param(crate::ParamHead::for_test("T"))],
                 return_type: Ty::Unit,
@@ -2979,13 +2982,19 @@ mod tests {
             },
         );
         assert_eq!(
-            checker.tuple_record_constructor_fields("left.Pair", &pair),
+            checker.tuple_record_constructor_fields(
+                checker.test_named("left.Pair", vec![]).head().unwrap(),
+                &pair
+            ),
             vec![Ty::I64],
             "the owning package's tuple constructor remains discoverable"
         );
         assert!(
             checker
-                .tuple_record_constructor_fields("right.Pair", &pair)
+                .tuple_record_constructor_fields(
+                    checker.test_named("right.Pair", vec![]).head().unwrap(),
+                    &pair
+                )
                 .is_empty(),
             "a same-leaf foreign constructor cannot supply left.Pair's layout"
         );

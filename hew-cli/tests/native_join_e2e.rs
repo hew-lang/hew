@@ -287,8 +287,10 @@ fn main() {
             .Fault { message } => panic(message),
         }
     };
-    close(first);
-    close(second);
+    stop(first);
+    stopped(first);
+    stop(second);
+    stopped(second);
     println("actors closed");
 }
 "#,

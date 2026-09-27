@@ -63,12 +63,10 @@ fn unresolved_symbol_rejects_before_mir() {
 }
 
 #[test]
-fn inferred_type_annotation_rejects_at_hir_boundary() {
+fn inferred_type_annotation_consumes_checker_inference() {
     let output = lower("fn main() { let x: _ = 1; }");
-    assert!(output
-        .diagnostics
-        .iter()
-        .any(|diag| matches!(diag.kind, HirDiagnosticKind::UnresolvedInferenceVar)));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(verify_hir(&output.module).is_empty());
 }
 
 #[test]
@@ -729,14 +727,15 @@ fn scope_deadline_carries_budget_and_child_body() {
 
 #[test]
 fn task_annotation_remains_not_nameable() {
-    let output = lower("fn f() { let t: Task<i64> = 0; }");
+    let (_, checked) =
+        support::checker_pipeline::typecheck_source("fn f() { let t: Task<i64> = 0; }");
     assert!(
-        output
-            .diagnostics
+        checked
+            .errors
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::TaskNotNameable)),
+            .any(|error| matches!(error.kind, hew_types::error::TypeErrorKind::TaskNotNameable)),
         "{:?}",
-        output.diagnostics
+        checked.errors
     );
 }
 

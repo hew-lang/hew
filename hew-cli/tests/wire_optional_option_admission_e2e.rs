@@ -31,7 +31,7 @@ fn wire_optional_field_without_option_fails_before_lowering() {
         stderr.contains("E_WIRE_OPTIONAL_REQUIRES_OPTION")
             && stderr
                 .contains("wire field `body` is marked `optional` but must have type `Option<T>`")
-            && stderr.contains("wire_optional_scalar.hew:2:22"),
+            && stderr.contains("wire_optional_scalar.hew:3:11"),
         "CLI must render the semantic wire admission error at the field type:\n{stderr}"
     );
 }

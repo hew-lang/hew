@@ -35,16 +35,16 @@ impl Checker {
         // deferred-refresh fix (see `ensure_handle_bearing_fresh`).
         self.refresh_call_count += 1;
 
-        let struct_names: Vec<String> = self
+        let struct_ids: Vec<crate::NominalId> = self
             .type_defs
             .iter()
             .filter(|&(_id, type_def)| type_def.kind == TypeDefKind::Struct)
-            .map(|(id, _type_def)| self.defs.path(id.declaration()).to_string())
+            .map(|(id, _type_def)| *id)
             .collect();
 
-        self.handle_bearing_structs = struct_names
+        self.handle_bearing_structs = struct_ids
             .into_iter()
-            .filter(|name| self.type_name_contains_owned_handle(name, &mut HashSet::new()))
+            .filter(|name| self.type_contains_owned_handle(*name, &mut HashSet::new()))
             .collect();
     }
 
@@ -56,23 +56,6 @@ impl Checker {
             self.handle_bearing_dirty = false;
             self.refresh_handle_bearing_structs();
         }
-    }
-
-    pub(in crate::check) fn canonical_owned_handle_type_name(
-        &self,
-        type_name: &str,
-    ) -> Option<String> {
-        self.module_registry
-            .canonical_owned_type_identity(type_name)
-    }
-
-    pub(in crate::check) fn registered_type_def_name(&self, name: &str) -> Option<String> {
-        if self.type_def_at(name).is_some() {
-            return Some(name.to_string());
-        }
-        self.strip_module_prefix(name)
-            .filter(|unqualified| self.type_def_at(unqualified).is_some())
-            .map(str::to_string)
     }
 
     pub(in crate::check) fn structural_member_types_for_type(type_def: &TypeDef) -> Vec<Ty> {
@@ -775,9 +758,14 @@ impl Checker {
             type_def.fields.values().cloned().collect()
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry
-            .register_type(td.name.to_string(), field_types);
-        self.seed_qualified_type_markers_for_current_module(td.name.name.as_str());
+        self.registry.register_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            field_types,
+        );
         self.commit_reresolved_type_def(td.name.name.as_str(), type_def);
 
         if let Some(ref wire) = td.wire {
@@ -843,7 +831,14 @@ impl Checker {
                 };
                 let field_types: Vec<Ty> = type_def.fields.values().cloned().collect();
                 let field_types = self.expand_for_marker_registration(&field_types);
-                self.registry.register_type(stored_key, field_types);
+                self.registry.register_type(
+                    self.head_of_declaration(
+                        self.nominal_head_for_key(&stored_key.clone())
+                            .expect("registered type has a declaration")
+                            .id,
+                    ),
+                    field_types,
+                );
                 self.commit_reresolved_type_def(rd.name.name.as_str(), type_def);
             }
             RecordKind::Tuple(positional_types) => {
@@ -865,7 +860,14 @@ impl Checker {
                     return;
                 }
                 let expanded_param_tys = self.expand_for_marker_registration(&param_tys);
-                self.registry.register_type(canonical, expanded_param_tys);
+                self.registry.register_type(
+                    self.head_of_declaration(
+                        self.nominal_head_for_key(&canonical.clone())
+                            .expect("registered type has a declaration")
+                            .id,
+                    ),
+                    expanded_param_tys,
+                );
                 self.handle_bearing_dirty = true;
             }
         }
@@ -921,17 +923,13 @@ impl Checker {
                     doc_comment: stored.doc_comment.clone(),
                     is_indirect: stored.is_indirect,
                 };
-                // Register field types for Send/Frozen derivation (mirrors the
-                // `resolve_type_expr` flatten at the registration site).
-                let mut all_field_types = Vec::new();
-                for state in &md.states {
-                    for (_, spanned_te) in &state.fields {
-                        all_field_types.push(self.resolve_type_expr(spanned_te));
-                    }
-                }
-                let all_field_types = self.expand_for_marker_registration(&all_field_types);
+                let members = Self::structural_member_types_for_type(&type_def);
+                let members = self.expand_for_marker_registration(&members);
+                let id = self
+                    .type_def_key(&machine_key)
+                    .expect("selected machine has a declaration");
                 self.registry
-                    .register_type(md.name.to_string(), all_field_types);
+                    .register_type(self.head_of_declaration(id), members);
                 self.commit_reresolved_type_def(md.name.name.as_str(), type_def);
             }
         }
@@ -979,12 +977,13 @@ impl Checker {
                 // a resource type) is invisible to `TraitRegistry`.
                 let event_field_types = Self::structural_member_types_for_type(&event_type_def);
                 let event_field_types = self.expand_for_marker_registration(&event_field_types);
+                let id = self
+                    .type_def_key(&event_key)
+                    .expect("selected machine event has a declaration");
+                let head = self.head_of_declaration(id);
+                self.registry.register_type(head, event_field_types);
                 self.registry
-                    .register_type(event_type_name.clone(), event_field_types);
-                self.registry.register_type_params(
-                    event_type_name.clone(),
-                    event_type_def.type_params.clone(),
-                );
+                    .register_type_params(head, event_type_def.type_params.clone());
                 self.commit_reresolved_type_def(&event_type_name, event_type_def);
             }
         }
@@ -1026,17 +1025,21 @@ impl Checker {
         if self.type_def_at(guard_key.as_str()).is_some() {
             return;
         }
+        let declaration = self
+            .nominal_head_for_key(&guard_key)
+            .expect("pre-registered type has a minted declaration")
+            .id;
         // #1295: record `#[resource]` types from pre-registered (imported)
         // modules too, so an imported handle type's inherent `close(self)`
         // consumes its receiver at the call site (mirrors `register_type_decl`).
         if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
-            self.registry.register_resource_type(guard_key.clone());
+            self.registry.register_resource_type(declaration);
         }
         if td.resource_marker == hew_parser::ast::ResourceMarker::Linear {
-            self.registry.register_linear_type(guard_key.clone());
+            self.registry.register_linear_type(declaration);
         }
         if td.is_opaque {
-            self.user_opaque_type_names.insert(guard_key.clone());
+            self.opaque_type_ids.insert(declaration);
         }
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
@@ -1053,8 +1056,9 @@ impl Checker {
         // Reject duplicate type parameter names — same check as `register_type_decl`.
         {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            for name in &type_param_names {
-                if !seen.insert(name.spelling.as_str()) {
+            for parameter in td.type_params.as_deref().unwrap_or_default() {
+                let name = parameter.name;
+                if !seen.insert(name.name.as_str()) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::DuplicateDefinition,
                         0..0,
@@ -1196,14 +1200,25 @@ impl Checker {
             type_def.fields.values().cloned().collect()
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry
-            .register_type(td.name.to_string(), field_types);
-        self.registry
-            .register_type_params(td.name.to_string(), type_def.type_params.clone());
+        self.registry.register_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            field_types,
+        );
+        self.registry.register_type_params(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            type_def.type_params.clone(),
+        );
         // Mirror the markers under the module-qualified key so a same-bare-name
         // reply from another package cannot clobber this type's Send derivation
         // at the ask-reply gate.
-        self.seed_qualified_type_markers_for_current_module(td.name.name.as_str());
 
         // Keep the bare row as registration-local assembly state. A non-root
         // declaration is published through the canonical constructor so every
@@ -1315,37 +1330,25 @@ impl Checker {
                 self.must_use_types.insert(declaration);
             }
         }
-        // #1295: record `#[resource]` types so their inherent `close(self)`
-        // dispatch can mark the receiver moved + consume it (suppressing the
-        // duplicate scope-exit implicit drop). HIR owns the close-discipline
-        // diagnostics (W3.030); the checker only needs the marker fact here.
-        if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
-            let canonical_name = self.current_module_identity().map_or_else(
-                || td.name.to_string(),
-                |module| format!("{module}.{}", td.name),
-            );
-            self.registry.register_resource_type(canonical_name.clone());
+        let canonical_name = self.current_module_identity().map_or_else(
+            || td.name.to_string(),
+            |module| format!("{module}.{}", td.name),
+        );
+        let declaration = self
+            .nominal_head_for_key(&canonical_name)
+            .expect("registered type has a minted declaration")
+            .id;
+        match td.resource_marker {
+            hew_parser::ast::ResourceMarker::Resource => {
+                self.registry.register_resource_type(declaration);
+            }
+            hew_parser::ast::ResourceMarker::Linear => {
+                self.registry.register_linear_type(declaration);
+            }
+            hew_parser::ast::ResourceMarker::None => {}
         }
-        if td.resource_marker == hew_parser::ast::ResourceMarker::Linear {
-            let canonical_name = self.current_module_identity().map_or_else(
-                || td.name.to_string(),
-                |module| format!("{module}.{}", td.name),
-            );
-            self.registry.register_linear_type(canonical_name.clone());
-        }
-        // Track user-declared `#[opaque]` types so `record_clone_admissibility`
-        // can detect opaque fields transitively. The module_registry only
-        // carries opaque types imported via `use module::*`; user-declared
-        // opaques in the same file are NOT registered there.
         if td.is_opaque {
-            let canonical_name = self.current_module_identity().map_or_else(
-                || td.name.to_string(),
-                |module| format!("{module}.{}", td.name),
-            );
-            // Imported declarations keep their exact owner. Publishing their
-            // bare spelling would mark an unrelated root type with the same
-            // name opaque when declaration facts are collected.
-            self.user_opaque_type_names.insert(canonical_name.clone());
+            self.opaque_type_ids.insert(declaration);
         }
 
         let kind = match td.kind {
@@ -1369,8 +1372,9 @@ impl Checker {
         // seen-name accumulator; the checker is the authoritative gatekeeper.
         {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            for name in &type_param_names {
-                if !seen.insert(name.spelling.as_str()) {
+            for parameter in td.type_params.as_deref().unwrap_or_default() {
+                let name = parameter.name;
+                if !seen.insert(name.name.as_str()) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::DuplicateDefinition,
                         0..0,
@@ -1515,16 +1519,27 @@ impl Checker {
         };
         let field_types = self.expand_for_marker_registration(&field_types);
 
-        self.registry
-            .register_type(td.name.to_string(), field_types);
-        self.registry
-            .register_type_params(td.name.to_string(), type_param_names.clone());
+        self.registry.register_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            field_types,
+        );
+        self.registry.register_type_params(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(td.name.name.as_str()))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            type_param_names.clone(),
+        );
         // Mirror the markers under the module-qualified key (when this type is
         // declared in a non-root module) so a same-bare-name reply from another
         // package cannot clobber this type's Send derivation at the ask-reply
         // gate. `register_qualified_type_alias` repeats this for the pub import
         // surface; this covers the registration call itself.
-        self.seed_qualified_type_markers_for_current_module(td.name.name.as_str());
 
         self.insert_type_def(td.name.name.as_str(), type_def);
         self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
@@ -1642,13 +1657,31 @@ impl Checker {
             tuple_field_types
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry
-            .register_type(declaration_name.clone(), field_types);
-        self.registry
-            .register_type_params(declaration_name.clone(), type_param_names.clone());
+        self.registry.register_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&declaration_name.clone())
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            field_types,
+        );
+        self.registry.register_type_params(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&declaration_name.clone())
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            type_param_names.clone(),
+        );
         // Mark this as a record type so implements_marker applies the correct
         // value-type semantics (Resource always false; all other markers field-driven).
-        self.registry.register_record_type(declaration_name.clone());
+        self.registry.register_record_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&declaration_name.clone())
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+        );
 
         self.insert_type_def(&declaration_name, type_def);
         self.record_type_def_inference_holes(declaration_name.as_str(), hole_vars);
@@ -2178,10 +2211,22 @@ impl Checker {
             }
         }
         let all_field_types = self.expand_for_marker_registration(&all_field_types);
-        self.registry
-            .register_type(md.name.to_string(), all_field_types);
-        self.registry
-            .register_type_params(md.name.to_string(), type_param_names.clone());
+        self.registry.register_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(md.name.name.as_str()))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            all_field_types,
+        );
+        self.registry.register_type_params(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(md.name.name.as_str()))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            type_param_names.clone(),
+        );
 
         self.commit_reresolved_type_def(md.name.name.as_str(), type_def);
         self.record_type_def_inference_holes(&machine_identity, machine_hole_vars);
@@ -2230,10 +2275,22 @@ impl Checker {
         // companion enum to a `receive fn`, could not compile).
         let event_field_types = Self::structural_member_types_for_type(&event_type_def);
         let event_field_types = self.expand_for_marker_registration(&event_field_types);
-        self.registry
-            .register_type(event_type_name.clone(), event_field_types);
-        self.registry
-            .register_type_params(event_type_name.clone(), type_param_names.clone());
+        self.registry.register_type(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(&event_type_name))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            event_field_types,
+        );
+        self.registry.register_type_params(
+            self.head_of_declaration(
+                self.nominal_head_for_key(&self.declaration_identity(&event_type_name))
+                    .expect("registered type has a declaration")
+                    .id,
+            ),
+            type_param_names.clone(),
+        );
         self.commit_reresolved_type_def(&event_type_name, event_type_def);
         self.record_type_def_inference_holes(&event_identity, event_hole_vars);
         self.known_types.insert(event_type_name.clone());

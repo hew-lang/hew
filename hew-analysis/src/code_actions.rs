@@ -1001,10 +1001,10 @@ mod tests {
     #[test]
     fn separator_quick_fixes_repair_the_parser_reported_span() {
         for source in [
-            "type P {\n    x: i64;\n}\n",
-            "type P {\n    x: i64;\n}\n",
-            "enum E {\n    V { x: i64;  }\n}\n",
-            "actor A {\n    let name: string;\n}\n",
+            "type P {\n    x: i64,\n}\n",
+            "type P {\n    x: i64\n}\n",
+            "enum E {\n    V { x: i64; },\n}\n",
+            "actor A {\n    name: string;\n}\n",
         ] {
             let parsed = hew_parser::parse(source);
             let error = parsed

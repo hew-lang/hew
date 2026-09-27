@@ -6,8 +6,8 @@
 //! ```
 //! #[wire]
 //! type UserCreated {
-//!     id: u64 @1,
-//!     name: string @2,
+//!     id: u64 @1;
+//!     name: string @2;
 //! }
 //!
 //! fn main() {

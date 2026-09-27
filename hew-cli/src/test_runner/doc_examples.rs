@@ -146,6 +146,15 @@ fn extract_fences(source: &str, hew_source: bool) -> Vec<Fence> {
             "hew,no_run" => (false, true),
             _ => {
                 index += 1;
+                while index < lines.len() {
+                    let Some(content) = doc_line(lines[index], hew_source) else {
+                        break;
+                    };
+                    index += 1;
+                    if content.trim() == "```" {
+                        break;
+                    }
+                }
                 continue;
             }
         };
@@ -244,23 +253,32 @@ fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) ->
     if fence.ignored {
         return format!("#[test]\nfn {entry_name}() {{}}\n");
     }
-    let standalone = path.extension().is_some_and(|ext| ext == "md")
-        || fence.code.contains("fn main(")
-        || fence
-            .code
-            .lines()
-            .any(|line| line.trim_start().starts_with("import "));
+    let entry_attributes = if fence.no_run {
+        "#[test]\n#[real_time]"
+    } else {
+        "#[test]"
+    };
+    let standalone =
+        path.extension().is_some_and(|ext| ext == "md") || fence.code.contains("fn main(");
     let base = if standalone { "" } else { module };
     if fence.code.contains("fn main(") {
         format!(
-            "{base}\n{}\n#[test]\nfn {entry_name}() {{ main(); }}\n",
+            "{base}\n{}\n{entry_attributes}\nfn {entry_name}() {{ main(); }}\n",
             fence.code
         )
     } else {
-        format!(
-            "{base}\n#[test]\nfn {entry_name}() {{\n{}\n}}\n",
-            fence.code
-        )
+        let mut imports = String::new();
+        let mut statements = String::new();
+        for line in fence.code.lines() {
+            let target = if line.trim_start().starts_with("import ") {
+                &mut imports
+            } else {
+                &mut statements
+            };
+            target.push_str(line);
+            target.push('\n');
+        }
+        format!("{base}\n{imports}\n{entry_attributes}\nfn {entry_name}() {{\n{statements}\n}}\n")
     }
 }
 
@@ -288,5 +306,14 @@ mod tests {
         assert_eq!(examples.len(), 3);
         assert!(examples[1].no_run);
         assert!(examples[2].ignored);
+    }
+
+    #[test]
+    fn non_hew_fence_does_not_open_a_bare_hew_fence() {
+        let source =
+            "//! ```text\n//! diagram\n//! ``` \n//! prose\n//! ```\n//! println(7);\n//! ```\n";
+        let examples = extract_fences(source, true);
+        assert_eq!(examples.len(), 1);
+        assert_eq!(examples[0].code, "println(7);\n");
     }
 }

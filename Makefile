@@ -1285,20 +1285,9 @@ stdlib-user-build-clean: hew-native
 # timed, and the slowest runs for minutes, well past a core-acceptance case's
 # per-source deadline.
 
-# Check ```hew fenced blocks in docs/ and std/ against hew check.
-#
-# A transitional alias for the doc kind of the one acceptance runner. Each
-# fence in the guide, the spec, the docs/language modules and every
-# std/**/*.hew doc comment is a `kind = "doc"` case named by its own content,
-# and its known failures live in tests/expected-failures.tsv (suite doc-fence)
-# with every other ratcheted failure. Skip-annotated fences
-# (<!-- doctest: skip --> or a preceding NYI callout) are never checked; the
-# default is fail-closed.
-#
-# Run `make test-doc-examples` after any docs/ or std/ change to confirm no
-# fence regressions were introduced.
+# Compile and run documentation examples in docs/ and std/.
 test-doc-examples: hew-native
-	cargo run -p xtask -- core-acceptance --suite acceptance --kind doc --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
+	"$(DEBUG_HEW)" test --doc docs std
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 #

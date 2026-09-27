@@ -152,7 +152,8 @@ fn requested_test_paths(args: &crate::args::TestArgs) -> (Vec<String>, Vec<Optio
         .map(|path| {
             let value = path.to_string_lossy();
             if let Some((file, name)) = value.rsplit_once("::") {
-                if (file.ends_with(".hew") || (args.doc && file.ends_with(".md")))
+                if (Path::new(file).extension().is_some_and(|ext| ext == "hew")
+                    || (args.doc && Path::new(file).extension().is_some_and(|ext| ext == "md")))
                     && !name.is_empty()
                 {
                     return (PathBuf::from(file), Some(name.to_string()));
@@ -210,7 +211,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     let mut had_parse_errors = false;
     let mut seen_files = HashSet::new();
     for path in &paths {
-        if args.doc {
+        if Path::new(path).extension().is_some_and(|ext| ext == "md") {
             continue;
         }
         let p = Path::new(path);
@@ -255,7 +256,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     }
 
     if let Some(doc_sources) = &doc_sources {
-        discovered_files = doc_sources.tests.len();
+        discovered_files += doc_sources.tests.len();
         all_tests.extend(doc_sources.tests.iter().cloned());
     }
 
@@ -386,10 +387,8 @@ fn save_failed_tests(
     let mut failures = summary
         .results
         .iter()
-        .filter_map(|result| {
-            matches!(result.outcome, runner::TestOutcome::Failed(_))
-                .then(|| test_identity(&result.test, root))
-        })
+        .filter(|result| matches!(result.outcome, runner::TestOutcome::Failed(_)))
+        .map(|result| test_identity(&result.test, root))
         .collect::<Vec<_>>();
     for failure in &summary.compile_failures {
         let doc_failures = tests
@@ -401,7 +400,7 @@ fn save_failed_tests(
             })
             .collect::<Vec<_>>();
         if !doc_failures.is_empty() {
-            failures.extend(doc_failures.into_iter().map(|test| test_selector(test)));
+            failures.extend(doc_failures.into_iter().map(test_selector));
             continue;
         }
         let relative = Path::new(&failure.file)

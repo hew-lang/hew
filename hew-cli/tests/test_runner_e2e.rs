@@ -69,6 +69,29 @@ fn doc_no_run_still_rejects_a_type_error() {
 }
 
 #[test]
+fn doc_no_run_compiles_host_operations_without_running_them() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "guide.md",
+        "```hew,no_run\nimport std.fs;\nlet _ = fs.read(\"missing-file\");\n```\n",
+    );
+    let output = run_hew_in(
+        dir.path(),
+        &["test", "--doc", "guide.md", "--format", "json"],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("\"passed\":1"), "{events}");
+}
+
+#[test]
 fn doc_fence_selects_generated_entry_after_existing_test() {
     require_codegen();
     let dir = support::tempdir();
@@ -79,7 +102,13 @@ fn doc_fence_selects_generated_entry_after_existing_test() {
     );
     let output = run_hew_in(
         dir.path(),
-        &["test", "--doc", "module.hew", "--format", "json"],
+        &[
+            "test",
+            "--doc",
+            "module.hew::doc(example)#1",
+            "--format",
+            "json",
+        ],
     );
     assert!(
         output.status.success(),
@@ -91,6 +120,34 @@ fn doc_fence_selects_generated_entry_after_existing_test() {
     assert!(events.contains("module.hew::doc(example)#1"), "{events}");
     assert!(events.contains("\"output\":\"doc fence\\n\""), "{events}");
     assert!(!events.contains("earlier test"), "{events}");
+}
+
+#[test]
+fn doc_imports_keep_source_items_in_scope() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "module.hew",
+        "#[test]\nfn ordinary() { println(\"ordinary\"); }\n/// Example.\n/// ```hew\n/// import std.math;\n/// println(math.abs(-value()));\n/// // Output:\n/// // 7\n/// ```\npub fn value() -> i64 { 7 }\n",
+    );
+    write_file(
+        dir.path(),
+        "guide.md",
+        "```hew\nimport std.math;\nprintln(math.abs(-7 as i64));\n// Output:\n// 7\n```\n",
+    );
+    let output = run_hew_in(dir.path(), &["test", "--doc", ".", "--format", "json"]);
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("module.hew::doc(value)#1"), "{events}");
+    assert!(events.contains("guide.md::doc(module)#1"), "{events}");
+    assert!(events.contains("module.hew::ordinary"), "{events}");
+    assert!(events.contains("\"passed\":3"), "{events}");
 }
 
 #[test]

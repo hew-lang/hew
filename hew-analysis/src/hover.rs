@@ -1829,7 +1829,7 @@ mod tests {
         let offset = source.find("x: i32").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\n(field) x: i32\n```");
+        assert_eq!(result.contents, "```hew\n(field) x: i32;\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1848,7 +1848,7 @@ mod tests {
         let offset = source.rfind("p.x").unwrap() + 2;
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\n(field) x: i32\n```");
+        assert_eq!(result.contents, "```hew\n(field) x: i32;\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {

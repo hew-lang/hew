@@ -173,14 +173,14 @@ fn main() {
                         .Ok(text) => println(text),
                         .Err(_) => panic("read failed"),
                     }
-                },
+                }
                 .None => panic("read failed"),
             }
             match conn.send("native reply".to_bytes()) {
                 .Ok(()) => println("written"),
                 .Err(_) => panic("write failed"),
             }
-        },
+        }
         .Err(_) => panic("listen failed"),
     }
 }

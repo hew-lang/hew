@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 21
+line = 25
 column = 32
 message = "machine evaluator is not demonstrably pure: call to `weigh`: releasing `Tag` runs its `close`: `println(...)` is not admitted in a machine transition"

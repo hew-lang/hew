@@ -141,7 +141,7 @@ fn object_emission_skips_linking_and_selected_test_ignores_main() {
     assert!(std::fs::metadata(object).unwrap().len() > 0);
     assert!(!hew_testutil::compiled_binary_path(dir.path(), "selected_test").exists());
     let mut command = Command::new(hew_binary());
-    command.arg("test").arg(&source).arg("--no-color");
+    command.arg("test").arg(&source).arg("--color").arg("never");
     let result = run_bounded_command(command, "run selected owned test");
     assert!(result.status.success(), "{}", describe_output(&result));
     assert!(String::from_utf8_lossy(&result.stdout).contains("test selected ... ok"));

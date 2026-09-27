@@ -712,6 +712,7 @@ actor MonitorProbe {
         }
         down_reason = match note.reason {
             DownReason.Stopped => 6,
+            DownReason.Terminated => 7,
             DownReason.Crashed(_) => 5,
             DownReason.MonitorLost => -1,
             DownReason.LocalShutdown => -3,
@@ -793,6 +794,7 @@ actor LinkSetupRaceProbe {
         down_reason = match note.reason {
             DownReason.Crashed(_) => 5,
             DownReason.Stopped => 6,
+            DownReason.Terminated => 7,
             DownReason.MonitorLost => -1,
             DownReason.LocalShutdown => -3,
         };

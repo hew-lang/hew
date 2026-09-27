@@ -257,16 +257,16 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
     ] {
         let source = format!(
             r"{definition}
-            type Value {{ count: i64 }}
+            type Value {{ count: i64; }}
             type Envelope {{
-                value: {name},
-                nested: (Option<{name}>, Vec<{name}>),
-                callback: fn({name}) -> {name},
-                ordinary: Value
+                value: {name};
+                nested: (Option<{name}>, Vec<{name}>);
+                callback: fn({name}) -> {name};
+                ordinary: Value;
             }}
             enum Payload {{
-                Direct({name}),
-                Nested {{ value: Option<Vec<{name}>> }}
+                Direct({name});
+                Nested {{ value: Option<Vec<{name}>>; }}
             }}
             fn main() -> i64 {{ 0 }}"
         );

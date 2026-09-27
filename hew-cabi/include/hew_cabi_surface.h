@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1621u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1622u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1622] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -607,6 +607,14 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1621] = {
      "local_handles::HewLocalPidId, i32, ) -> *const HewActorWaitEdge\", "
      "\"wasm32-wasip1\": \"fn hew_actor_wait_edge_new( *const HewCoroState, "
      "local_handles::HewLocalPidId, i32, ) -> *const HewActorWaitEdge\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_wait_edge_new_for_wait",
+     "{\"native\": \"fn hew_actor_wait_edge_new_for_wait( *const HewCoroState, "
+     "*const HewNativeActorWait, i32, ) -> *const HewActorWaitEdge\", "
+     "\"wasm32-wasip1\": \"fn hew_actor_wait_edge_new_for_wait( *const "
+     "HewCoroState, *const HewNativeActorWait, i32, ) -> *const "
+     "HewActorWaitEdge\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_wait_edge_pending",

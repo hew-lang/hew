@@ -924,7 +924,7 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
             .collect::<Vec<_>>(),
         vec!["`await` joins a task; `i64` is not one"]
     );
-    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); close(worker); }");
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); stop(worker); stopped(worker); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.warnings.is_empty(), "{:?}", output.warnings);
 }

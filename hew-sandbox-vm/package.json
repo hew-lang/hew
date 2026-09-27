@@ -12,7 +12,8 @@
     }
   },
   "files": [
-    "dist/"
+    "dist/",
+    "cli/"
   ],
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc --project src/tsconfig.json && node scaffolding/scripts/validate-sandbox-vm.mjs",

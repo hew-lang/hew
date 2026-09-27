@@ -394,7 +394,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
 fn heap_payload_machine_actor_field_steps_clean() {
     run_inline_scribbled(
         "heap_machine_field",
-        "machine Conn {\n    events {\n        Connect;\n        Fail { reason: string; }\n        Reset;\n    }\n\n    state Idle;\n    state Open;\n    state Failed { reason: string; }\n    on Connect: Idle => Open;\n    on Fail: Open => Failed { reason: event.reason }\n    on Reset: Failed => Idle;\n    on Connect: _ => _ {\n        state\n    }\n    on Fail: _ => _ {\n        state\n    }\n    on Reset: _ => _ {\n        state\n    }\n}\n\nactor Holder {\n    var c: Conn = Conn.Idle;\n\n    receive fn drive() {\n        c.step(ConnEvent.Connect);\n        println(c.state_name());\n        c.step(ConnEvent.Fail { reason: \"boom\" });\n        println(c.state_name());\n        c.step(ConnEvent.Reset);\n        println(c.state_name());\n    }\n}\n\nfn main() {\n    let h = spawn Holder;\n    let _ = h.drive();\n    sleep(150ms);\n}\n",
+        "machine Conn {\n    events {\n        Connect;\n        Fail { reason: string; }\n        Reset;\n    }\n\n    state Idle;\n    state Open;\n    state Failed { reason: string; }\n    on Connect: Idle => Open;\n    on Fail: Open => Failed { reason: event.reason }\n    on Reset: Failed => Idle;\n    on Connect: _ => _ {\n        state\n    }\n    on Fail: _ => _ {\n        state\n    }\n    on Reset: _ => _ {\n        state\n    }\n}\n\nactor Holder {\n    var c: Conn = Conn.Idle;\n\n    receive fn drive() {\n        c.step(Conn.Event.Connect);\n        println(c.state_name());\n        c.step(Conn.Event.Fail { reason: \"boom\" });\n        println(c.state_name());\n        c.step(Conn.Event.Reset);\n        println(c.state_name());\n    }\n}\n\nfn main() {\n    let h = spawn Holder;\n    let _ = h.drive();\n    sleep(150ms);\n}\n",
         "Open\nFailed\nIdle\n",
     );
 }
@@ -443,11 +443,12 @@ fn main() {
     role.flip().expect("flip state");
     assert(role.is_on().expect("changed state"));
     let _ = role.fail();
-    let _ = await_restart pool.worker;
+    let _ = restarted(pool.worker);
     assert(!role.is_on().expect("restarted state"));
     role.flip().expect("flip restarted child");
     assert(role.is_on().expect("live restarted child"));
-    close(pool);
+    stop(pool);
+    stopped(pool);
     println("machine state resets after restart");
 }
 "#,
@@ -499,9 +500,9 @@ actor Owner {
             .Err(error) => panic(error),
         };
         var c: Conn = Conn.Idle;
-        c.step(ConnEvent.Connect);
+        c.step(Conn.Event.Connect);
         tx.send(c).expect(\"send\");
-        c.step(ConnEvent.Fail { reason: \"peer reset\" });
+        c.step(Conn.Event.Fail { reason: \"peer reset\" });
         tx.send(c).expect(\"send\");
         tx.close();
         var waiting = true;
@@ -692,7 +693,7 @@ fn nested_pipe_handle_in_tuple_transfers_correctly() {
 /// stdout — a single corrupted decode anywhere in the batch fails the test.
 #[test]
 fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
-    const SOURCE: &str = "import std.stream;\n\nmachine Conn {\n    events {\n        Connect;\n        Fail { reason: string; }\n    }\n\n    state Idle;\n    state Open;\n    state Failed { reason: string; }\n    on Connect: Idle => Open;\n    on Fail: Open => Failed { reason: event.reason }\n    on Connect: _ => _ {\n        state\n    }\n    on Fail: _ => _ {\n        state\n    }\n}\n\nactor Owner {\n    receive fn run() -> i64 {\n        let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) {\n            .Ok(pair) => pair,\n            .Err(error) => panic(error),\n        };\n        var c: Conn = Conn.Idle;\n        c.step(ConnEvent.Connect);\n        c.step(ConnEvent.Fail { reason: \"peer reset\" });\n        tx.send(c).expect(\"send\");\n        tx.close();\n        select {\n            snap from rx.recv() => {\n                match snap {\n                    .Some(s) => {\n                        match s {\n                            Conn.Failed { reason } => println(f\"failed: {reason}\"),\n                            Conn.Open => println(\"open\"),\n                            Conn.Idle => println(\"idle\"),\n                        }\n                    }\n                    .None => println(\"watch closed\"),\n                }\n            }\n            after 2s => println(\"timeout\"),\n        };\n        rx.close();\n        42\n    }\n}\n\nfn main() {\n    let o = spawn Owner;\n    match o.run() {\n        .Ok(r) => println(f\"r={r}\"),\n        .Err(_) => println(\"ask failed\"),\n    }\n}\n";
+    const SOURCE: &str = "import std.stream;\n\nmachine Conn {\n    events {\n        Connect;\n        Fail { reason: string; }\n    }\n\n    state Idle;\n    state Open;\n    state Failed { reason: string; }\n    on Connect: Idle => Open;\n    on Fail: Open => Failed { reason: event.reason }\n    on Connect: _ => _ {\n        state\n    }\n    on Fail: _ => _ {\n        state\n    }\n}\n\nactor Owner {\n    receive fn run() -> i64 {\n        let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) {\n            .Ok(pair) => pair,\n            .Err(error) => panic(error),\n        };\n        var c: Conn = Conn.Idle;\n        c.step(Conn.Event.Connect);\n        c.step(Conn.Event.Fail { reason: \"peer reset\" });\n        tx.send(c).expect(\"send\");\n        tx.close();\n        select {\n            snap from rx.recv() => {\n                match snap {\n                    .Some(s) => {\n                        match s {\n                            Conn.Failed { reason } => println(f\"failed: {reason}\"),\n                            Conn.Open => println(\"open\"),\n                            Conn.Idle => println(\"idle\"),\n                        }\n                    }\n                    .None => println(\"watch closed\"),\n                }\n            }\n            after 2s => println(\"timeout\"),\n        };\n        rx.close();\n        42\n    }\n}\n\nfn main() {\n    let o = spawn Owner;\n    match o.run() {\n        .Ok(r) => println(f\"r={r}\"),\n        .Err(_) => println(\"ask failed\"),\n    }\n}\n";
 
     require_codegen();
 

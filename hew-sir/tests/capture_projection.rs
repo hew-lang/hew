@@ -7,7 +7,7 @@ use hew_types::{module_registry::ModuleRegistry, Checker};
 fn capture_module(body: &str) -> SemModule {
     let source = format!(
         r#"
-        type Failure {{ message: string, retained: Vec<string> }}
+        type Failure {{ message: string; retained: Vec<string>; }}
         fn main() -> i64 {{
             let failure = Failure {{ message: "message".to_upper(), retained: ["retained".to_upper()] }};
             let callback = || -> i64 {{ {body} }};

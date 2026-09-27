@@ -3818,7 +3818,7 @@ fn fixed_arrays_compose_with_collection_element_types() {
         "Result<[i64; 2], string>",
     ] {
         assert_inline_typechecks_cleanly(&format!(
-            "type Box<T> {{ value: T }} fn main() {{ let values: Vec<{element}> = Vec.new(); println(values.len()); }}"
+            "type Box<T> {{ value: T; }} fn main() {{ let values: Vec<{element}> = Vec.new(); println(values.len()); }}"
         ), element);
     }
 }

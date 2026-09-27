@@ -8,12 +8,12 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 14
+line = 19
 column = 40
 message = "machine `Mixed` state `Active` field `h` holds `Handle`"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 25
+line = 33
 column = 22
 message = "machine `Plain` state `Live` field `h` holds `Handle`"

@@ -34,7 +34,7 @@ impl Dq {{
     fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
-            .Ok(_) => {{}},
+            .Ok(_) => {{}}
             .Err(_) => panic("append close marker"),
         }}
     }}
@@ -46,12 +46,13 @@ extern "C" {{
 }}
 
 type Holder {{
-    dq: Dq
+    dq: Dq;
 }}
 
 {actor_decl}
 
 #[test]
+#[real_time]
 fn actor_resource_state_closes_once() {{
     let keeper = {spawn_expr};
     match keeper.ping() {{
@@ -66,7 +67,8 @@ fn actor_resource_state_closes_once() {{
     let output = Command::new(hew_binary())
         .args([
             "test",
-            "--no-color",
+            "--color",
+            "never",
             source_path.to_str().expect("source path utf-8"),
         ])
         .current_dir(repo_root())
@@ -110,7 +112,7 @@ impl {type_name} {{
     fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
-            .Ok(_) => {{}},
+            .Ok(_) => {{}}
             .Err(_) => panic("append close marker"),
         }}
     }}
@@ -122,11 +124,12 @@ extern "C" {{
 }}
 
 actor Keeper {{
-    let handle: {type_name},
+    let handle: {type_name};
     receive fn ping() -> i64 {{ 1 }}
 }}
 
 #[test]
+#[real_time]
 fn colliding_resource_closes_once() {{
     let keeper = spawn Keeper(handle: unsafe {{ hew_deque_new() }});
     match keeper.ping() {{
@@ -141,7 +144,8 @@ fn colliding_resource_closes_once() {{
     let output = Command::new(hew_binary())
         .args([
             "test",
-            "--no-color",
+            "--color",
+            "never",
             source_path.to_str().expect("source path utf-8"),
         ])
         .current_dir(repo_root())
@@ -185,14 +189,14 @@ impl UserReceiver {{
     fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
-            .Ok(_) => {{}},
+            .Ok(_) => {{}}
             .Err(_) => panic("append close marker"),
         }}
     }}
 }}
 
 pub actor Keeper {{
-    let handle: UserReceiver = unsafe {{ hew_deque_new() }},
+    let handle: UserReceiver = unsafe {{ hew_deque_new() }};
     receive fn ping() -> i64 {{ 1 }}
 }}
 

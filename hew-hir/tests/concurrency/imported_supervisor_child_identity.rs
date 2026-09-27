@@ -293,7 +293,7 @@ fn file_imported_actor_cycle_capability_uses_full_checker_identity() {
 fn named_and_aliased_supervisor_children_use_the_imported_actor_identity() {
     for (alias, binding) in [(None, "Worker"), (Some("Renamed"), "Renamed")] {
         let source =
-            format!("supervisor App {{ child worker: {binding}(id: 17) restart: temporary, }}");
+            format!("supervisor App {{ child worker: {binding}(id: 17) restart: temporary; }}");
         let (output, checked) = lower_named_import(alias, &source);
         assert!(
             checked.errors.is_empty(),

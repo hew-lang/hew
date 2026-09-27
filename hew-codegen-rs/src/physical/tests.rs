@@ -937,7 +937,7 @@ fn tuple_layout_is_measured_by_the_active_target_data() {
 fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
     let semantic = lower_source(
         r#"
-            type Packet { label: string, payload: bytes }
+            type Packet { label: string; payload: bytes; }
 
             fn duplicate(packet: Packet) -> Packet { packet }
 

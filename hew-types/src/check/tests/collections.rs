@@ -41,7 +41,7 @@ fn value_mutation_requires_a_mutable_root_for_runtime_and_declared_methods() {
             ] {
                 let source = format!(
                     "import std.encoding.json;\n\
-                     type Box {{ value: {value_type} }}\n\
+                     type Box {{ value: {value_type}; }}\n\
                      fn main() {{ {declaration} {receiver}.{operation}; }}"
                 );
                 let output = check_source_with_stdlib(&source);

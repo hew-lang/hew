@@ -13,6 +13,12 @@ fn write_file(root: &Path, relative_path: &str, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
+fn has_test_line(output: &str, name: &str, status: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.starts_with(&format!("{status}  ")) && line.contains(&format!("::{name}")))
+}
+
 fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Output {
     let dir = support::tempdir();
     for (path, contents) in files {
@@ -51,7 +57,7 @@ fn package_native_ffi_is_built_and_linked() {
     }
 
     let output = Command::new(hew_binary())
-        .args(["test", "ffi_test.hew", "--no-color", "--jobs", "1"])
+        .args(["test", "ffi_test.hew", "--color=never", "--jobs", "1"])
         .env("CARGO_TARGET_DIR", dir.path().join("target"))
         .current_dir(dir.path())
         .output()
@@ -64,8 +70,8 @@ fn package_native_ffi_is_built_and_linked() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test native_ffi_is_linked ... ok"));
-    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+    assert!(has_test_line(&stdout, "native_ffi_is_linked", "ok"));
+    assert!(stdout.contains("1 passed, 0 failed, 0 ignored"));
     assert!(dir.path().join("target/release-lib").is_dir());
     let archive = if cfg!(target_os = "windows") {
         dir.path()
@@ -90,7 +96,7 @@ fn passing_suite_exits_zero() {
             "passing_test.hew",
             "#[test]\nfn passes() {\n    assert(true);\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(output.status.success());
@@ -100,8 +106,8 @@ fn passing_suite_exits_zero() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test passes ... ok"));
-    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+    assert!(has_test_line(&stdout, "passes", "ok"));
+    assert!(stdout.contains("1 passed, 0 failed, 0 ignored"));
 }
 
 /// Selected test declarations retain their direct helper calls.
@@ -117,7 +123,7 @@ fn selected_unit_test_calls_its_helper() {
     );
     let mut command = Command::new(hew_binary());
     command
-        .args(["test", ".", "--no-color", "--jobs", "1"])
+        .args(["test", ".", "--color=never", "--jobs", "1"])
         // Integration builds may place the compiler in an SSD target directory
         // outside the checkout, where its dev-layout stdlib discovery cannot
         // infer this source tree from a temporary test project.
@@ -132,9 +138,12 @@ fn selected_unit_test_calls_its_helper() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test unit_test ... ok"), "stdout: {stdout}");
     assert!(
-        stdout.contains("1 passed; 0 failed; 0 ignored"),
+        has_test_line(&stdout, "unit_test", "ok"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("1 passed, 0 failed, 0 ignored"),
         "stdout: {stdout}"
     );
 }
@@ -144,7 +153,7 @@ fn project_test_imports_source_module_from_project_root() {
     require_codegen();
 
     let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test_project_root_fixture");
-    let output = run_hew_in(&project, &["test", ".", "--no-color"]);
+    let output = run_hew_in(&project, &["test", ".", "--color=never"]);
 
     assert!(
         output.status.success(),
@@ -153,8 +162,8 @@ fn project_test_imports_source_module_from_project_root() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test imports_source_module ... ok"));
-    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+    assert!(has_test_line(&stdout, "imports_source_module", "ok"));
+    assert!(stdout.contains("1 passed, 0 failed, 0 ignored"));
 }
 
 #[test]
@@ -184,7 +193,7 @@ fn relative_string_import_resolves_from_test_file() {
                 "import \"support.hew\";\n\n#[test]\nfn imports_relative_file() {\n    assert(expected() == 42);\n}\n",
             ),
         ],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(
@@ -193,7 +202,11 @@ fn relative_string_import_resolves_from_test_file() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("test imports_relative_file ... ok"));
+    assert!(has_test_line(
+        &String::from_utf8_lossy(&output.stdout),
+        "imports_relative_file",
+        "ok"
+    ));
 }
 
 #[test]
@@ -205,12 +218,12 @@ fn failing_suite_exits_non_zero() {
             "failing_test.hew",
             "#[test]\nfn fails() {\n    panic(\"expected failure\");\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test fails ... FAILED"));
+    assert!(has_test_line(&stdout, "fails", "FAIL"));
     assert!(stdout.contains("expected failure"));
 }
 
@@ -229,7 +242,7 @@ fn test_processes_get_isolated_scratch_and_keep_failed_run() {
          #[test]\nfn fails() { panic(os.temp_dir()); }\n",
     );
     let output = Command::new(hew_binary())
-        .args(["test", "scratch_test.hew", "--no-color", "--jobs", "1"])
+        .args(["test", "scratch_test.hew", "--color=never", "--jobs", "1"])
         .env("HEW_STD", repo_root().join("std"))
         .env("TMPDIR", &pool)
         .env("TMP", &pool)
@@ -239,8 +252,8 @@ fn test_processes_get_isolated_scratch_and_keep_failed_run() {
         .expect("run isolated scratch test");
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test passes ... ok"), "{stdout}");
-    assert!(stdout.contains("test fails ... FAILED"), "{stdout}");
+    assert!(has_test_line(&stdout, "passes", "ok"), "{stdout}");
+    assert!(has_test_line(&stdout, "fails", "FAIL"), "{stdout}");
     let kept = stdout
         .split_once("test scratch: ")
         .and_then(|(_, rest)| rest.lines().next())
@@ -275,14 +288,14 @@ fn mixed_suite_reports_each_test_and_exits_non_zero() {
                 "#[test]\nfn beta() {\n    panic(\"boom\");\n}\n",
             ),
         ],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test alpha ... ok"));
-    assert!(stdout.contains("test beta ... FAILED"));
-    assert!(stdout.contains("1 passed; 1 failed; 0 ignored"));
+    assert!(has_test_line(&stdout, "alpha", "ok"));
+    assert!(has_test_line(&stdout, "beta", "FAIL"));
+    assert!(stdout.contains("1 passed, 1 failed, 0 ignored"));
 }
 
 #[test]
@@ -294,7 +307,7 @@ fn parallel_suite_reports_in_discovery_order() {
             "ordered_test.hew",
             "#[test]\nfn slow_first() {\n    sleep(100ms);\n}\n\n#[test]\nfn fast_second() {\n    assert(true);\n}\n",
         )],
-        &["--no-color", "--jobs", "2"],
+        &["--color=never", "--jobs", "2"],
     );
 
     assert!(output.status.success());
@@ -304,8 +317,8 @@ fn parallel_suite_reports_in_discovery_order() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let first = stdout.find("test slow_first ... ok").unwrap();
-    let second = stdout.find("test fast_second ... ok").unwrap();
+    let first = stdout.find("::slow_first").unwrap();
+    let second = stdout.find("::fast_second").unwrap();
     assert!(first < second, "stdout: {stdout}");
 }
 
@@ -324,7 +337,7 @@ fn parallel_csv_test_compilation_uses_compiler_stack_budget() {
         &[
             "test",
             "tests/hew/csv_test.hew",
-            "--no-color",
+            "--color=never",
             "--jobs",
             "2",
             "--filter",
@@ -335,15 +348,15 @@ fn parallel_csv_test_compilation_uses_compiler_stack_budget() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("test test_parse_get_by_name ..."),
+        stdout.contains("::test_parse_get_by_name"),
         "stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("test test_parse_get_by_name_missing_column_returns_empty ..."),
+        stdout.contains("::test_parse_get_by_name_missing_column_returns_empty"),
         "stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("test result:"),
+        stdout.contains("passed,") || stdout.contains("failed,"),
         "runner must render a complete result instead of aborting\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(stderr.is_empty(), "stderr: {stderr}");
@@ -365,17 +378,17 @@ fn serial_tests_do_not_overlap() {
                  .Ok(listener) => {{\n\
                      sleep(200ms);\n\
                      listener.close();\n\
-                 }},\n\
+                 }}\n\
                  .Err(_) => panic(\"serial tests overlapped\"),\n\
              }}\n\
          }}\n\n\
-         #[test]\n#[serial]\nfn serial_one() {{ hold_port(); }}\n\n\
-         #[test]\n#[serial]\nfn serial_two() {{ hold_port(); }}\n"
+         #[test]\n#[serial]\n#[real_time]\nfn serial_one() {{ hold_port(); }}\n\n\
+         #[test]\n#[serial]\n#[real_time]\nfn serial_two() {{ hold_port(); }}\n"
     );
 
     let output = run_suite(
         &[("serial_test.hew", source.as_str())],
-        &["--no-color", "--jobs", "2"],
+        &["--color=never", "--jobs", "2"],
     );
 
     assert!(
@@ -407,13 +420,13 @@ fn ignored_test_is_skipped_and_counted() {
             "ignored_test.hew",
             "#[test]\n#[ignore]\nfn skipped() {\n    panic(\"ignored tests should not run\");\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test skipped ... ignored"));
-    assert!(stdout.contains("0 passed; 0 failed; 1 ignored"));
+    assert!(has_test_line(&stdout, "skipped", "skip"));
+    assert!(stdout.contains("0 passed, 0 failed, 1 ignored"));
 }
 
 #[test]
@@ -425,14 +438,14 @@ fn include_ignored_flag_runs_skipped_tests() {
             "ignored_test.hew",
             "#[test]\n#[ignore]\nfn skipped() {\n    panic(\"ignored test ran\");\n}\n",
         )],
-        &["--no-color", "--include-ignored"],
+        &["--color=never", "--include-ignored"],
     );
 
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test skipped ... FAILED"));
+    assert!(has_test_line(&stdout, "skipped", "FAIL"));
     assert!(stdout.contains("ignored test ran"));
-    assert!(stdout.contains("0 passed; 1 failed; 0 ignored"));
+    assert!(stdout.contains("0 passed, 1 failed, 0 ignored"));
 }
 
 #[test]
@@ -450,15 +463,15 @@ fn filter_narrows_to_matching_tests() {
                 "#[test]\nfn skip_me() {\n    panic(\"filtered test should not run\");\n}\n",
             ),
         ],
-        &["--no-color", "--filter", "keeps"],
+        &["--color=never", "--filter", "keeps"],
     );
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("running 1 tests"));
-    assert!(stdout.contains("test keeps_me ... ok"));
+    assert!(stdout.contains("hew test (1 tests)"));
+    assert!(has_test_line(&stdout, "keeps_me", "ok"));
     assert!(!stdout.contains("skip_me"));
-    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+    assert!(stdout.contains("1 passed, 0 failed, 0 ignored"));
 }
 
 #[test]
@@ -547,13 +560,13 @@ fn should_panic_test_passes_when_it_panics() {
             "should_panic_test.hew",
             "#[test]\n#[should_panic]\nfn expected_panic() {\n    panic(\"boom\");\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test expected_panic ... ok"));
-    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+    assert!(has_test_line(&stdout, "expected_panic", "ok"));
+    assert!(stdout.contains("1 passed, 0 failed, 0 ignored"));
 }
 
 #[test]
@@ -565,14 +578,14 @@ fn should_panic_test_fails_when_it_does_not_panic() {
             "should_panic_test.hew",
             "#[test]\n#[should_panic]\nfn expected_panic() {\n    assert(true);\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test expected_panic ... FAILED"));
+    assert!(has_test_line(&stdout, "expected_panic", "FAIL"));
     assert!(stdout.contains("expected test to panic, but it completed successfully"));
-    assert!(stdout.contains("0 passed; 1 failed; 0 ignored"));
+    assert!(stdout.contains("0 passed, 1 failed, 0 ignored"));
 }
 
 #[test]
@@ -584,12 +597,12 @@ fn should_panic_rejects_an_explicit_nonzero_exit() {
             "should_panic_exit_test.hew",
             "#[test]\n#[should_panic]\nfn exits() {\n    exit(7);\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test exits ... FAILED"), "{stdout}");
+    assert!(has_test_line(&stdout, "exits", "FAIL"), "{stdout}");
     assert!(stdout.contains("expected a user panic"), "{stdout}");
 }
 
@@ -602,7 +615,7 @@ fn failed_assertion_reports_its_source_site() {
             "assert_site_test.hew",
             "#[test]\nfn fails() {\n    assert(1 == 2);\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -619,7 +632,7 @@ fn should_panic_rejects_a_checked_trap_with_its_site() {
             "trap_site_test.hew",
             "#[test]\n#[should_panic]\nfn traps() {\n    let values = [1, 2];\n    var index = 3;\n    let _ = values[index];\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -636,7 +649,7 @@ fn no_test_files_in_directory_exits_non_zero() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg(".")
-        .arg("--no-color")
+        .arg("--color=never")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -660,7 +673,7 @@ fn no_test_files_allow_empty_exits_zero() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg(".")
-        .arg("--no-color")
+        .arg("--color=never")
         .arg("--allow-empty")
         .current_dir(dir.path())
         .output()
@@ -681,7 +694,7 @@ fn no_test_files_allow_empty_exits_zero() {
 fn test_zero_functions_exits_nonzero() {
     let output = run_suite(
         &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -702,7 +715,7 @@ fn test_zero_functions_exits_nonzero() {
 fn test_zero_functions_allow_empty_exits_zero() {
     let output = run_suite(
         &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],
-        &["--no-color", "--allow-empty"],
+        &["--color=never", "--allow-empty"],
     );
 
     assert_eq!(output.status.code(), Some(0));
@@ -739,7 +752,7 @@ fn multi_path_invocation_aggregates_results() {
         .arg("test")
         .arg("suite_a")
         .arg("suite_b")
-        .arg("--no-color")
+        .arg("--color=never")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -748,11 +761,11 @@ fn multi_path_invocation_aggregates_results() {
     assert_eq!(output.status.code(), Some(0));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("running 2 tests"), "stdout: {stdout}");
-    assert!(stdout.contains("test alpha ... ok"), "stdout: {stdout}");
-    assert!(stdout.contains("test beta ... ok"), "stdout: {stdout}");
+    assert!(stdout.contains("hew test (2 tests)"), "stdout: {stdout}");
+    assert!(has_test_line(&stdout, "alpha", "ok"), "stdout: {stdout}");
+    assert!(has_test_line(&stdout, "beta", "ok"), "stdout: {stdout}");
     assert!(
-        stdout.contains("2 passed; 0 failed; 0 ignored"),
+        stdout.contains("2 passed, 0 failed, 0 ignored"),
         "stdout: {stdout}"
     );
 }
@@ -770,14 +783,14 @@ fn test_runner_relative_path_invocation_discovers_same_tests_as_absolute_path() 
     let relative = Command::new(hew_binary())
         .arg("test")
         .arg("suite/relative_discovery_test.hew")
-        .arg("--no-color")
+        .arg("--color=never")
         .current_dir(dir.path())
         .output()
         .unwrap();
     let absolute = Command::new(hew_binary())
         .arg("test")
         .arg(&absolute_path)
-        .arg("--no-color")
+        .arg("--color=never")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -787,15 +800,15 @@ fn test_runner_relative_path_invocation_discovers_same_tests_as_absolute_path() 
     let relative_stdout = String::from_utf8_lossy(&relative.stdout);
     let absolute_stdout = String::from_utf8_lossy(&absolute.stdout);
     assert!(
-        relative_stdout.contains("running 2 tests"),
+        relative_stdout.contains("hew test (2 tests)"),
         "stdout: {relative_stdout}"
     );
     assert!(
-        absolute_stdout.contains("running 2 tests"),
+        absolute_stdout.contains("hew test (2 tests)"),
         "stdout: {absolute_stdout}"
     );
-    assert!(relative_stdout.contains("test before_import ... ignored"));
-    assert!(relative_stdout.contains("test after_import ... ignored"));
+    assert!(has_test_line(&relative_stdout, "before_import", "skip"));
+    assert!(has_test_line(&relative_stdout, "after_import", "skip"));
     assert_eq!(relative_stdout, absolute_stdout);
 }
 
@@ -806,7 +819,7 @@ fn parse_errors_fail_the_suite() {
             "broken_test.hew",
             "#[test]\nfn broken( {\n    assert(true);\n}\n",
         )],
-        &["--no-color"],
+        &["--color=never"],
     );
 
     assert!(!output.status.success());
@@ -823,12 +836,12 @@ fn timeout_exit_code_is_non_zero() {
             "timeout_test.hew",
             "#[test]\nfn forever() {\n    loop {\n        println(\"spin\");\n    }\n}\n",
         )],
-        &["--no-color", "--timeout", "1"],
+        &["--color=never", "--timeout", "1"],
     );
 
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("test forever ... FAILED"));
+    assert!(has_test_line(&stdout, "forever", "FAIL"));
     assert!(stdout.contains("test timed out after 1s"));
 }
 
@@ -838,7 +851,7 @@ fn missing_path_exits_non_zero() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg(dir.path().join("missing"))
-        .arg("--no-color")
+        .arg("--color=never")
         .output()
         .unwrap();
 
@@ -852,7 +865,7 @@ fn test_nonexistent_path_still_exits_one() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg("/no/such/path")
-        .arg("--no-color")
+        .arg("--color=never")
         .output()
         .unwrap();
 
@@ -924,7 +937,7 @@ fn junit_failing_suite_emits_failure_element_and_exits_one() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains(r#"<failure type="runtime" message="#),
+        stdout.contains(r#"<failure type="panic" message="#),
         "stdout: {stdout}"
     );
     assert!(stdout.contains("boom"), "stdout: {stdout}");
@@ -958,7 +971,7 @@ fn junit_ignored_suite_emits_skipped_element() {
 }
 
 #[test]
-fn filter_with_no_matching_tests_exits_zero_and_reports_zero_tests() {
+fn filter_with_no_matching_tests_reports_empty_selection() {
     require_codegen();
 
     let output = run_suite(
@@ -966,20 +979,10 @@ fn filter_with_no_matching_tests_exits_zero_and_reports_zero_tests() {
             "filter_target_test.hew",
             "#[test]\nfn alpha() {\n    assert(true);\n}\n",
         )],
-        &["--no-color", "--filter", "this_pattern_matches_nothing"],
+        &["--color=never", "--filter", "this_pattern_matches_nothing"],
     );
 
-    assert!(
-        output.status.success(),
-        "stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert_eq!(output.status.code(), Some(0));
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("running 0 tests"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("0 passed; 0 failed; 0 ignored"),
-        "stdout: {stdout}"
-    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("No tests matched the requested selection."));
 }

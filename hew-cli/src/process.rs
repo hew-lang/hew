@@ -354,6 +354,7 @@ pub(crate) fn run_binary_with_driver(
     selected_test: Option<u32>,
     test_report: &Path,
     scratch_dir: &Path,
+    capture: bool,
 ) -> Result<BinaryRunOutcome, String> {
     let mut command = Command::new(binary);
     command
@@ -369,7 +370,32 @@ pub(crate) fn run_binary_with_driver(
         Some(ordinal) => command.env("HEW_TEST", ordinal.to_string()),
         None => command.env_remove("HEW_TEST"),
     };
-    run_command_captured(&mut command, timeout)
+    if capture {
+        run_command_captured(&mut command, timeout)
+    } else {
+        run_command_uncaptured(&mut command, timeout)
+    }
+}
+
+/// Run with inherited output while retaining bounded process-tree cleanup.
+pub(crate) fn run_command_uncaptured(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<BinaryRunOutcome, String> {
+    command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    let mut bounded = BoundedChild::spawn(command)?;
+    match bounded.wait_with_timeout(timeout)? {
+        ChildWaitOutcome::Timeout => Ok(BinaryRunOutcome::Timeout),
+        ChildWaitOutcome::Exited(status) if status.success() => Ok(BinaryRunOutcome::Success {
+            stdout: String::new(),
+        }),
+        ChildWaitOutcome::Exited(status) => Ok(BinaryRunOutcome::Failed {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: status.code().unwrap_or(1),
+            signal: terminating_signal(status),
+        }),
+    }
 }
 
 /// Execute an arbitrary command with bounded wall-clock time, capturing output.

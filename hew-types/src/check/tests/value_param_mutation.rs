@@ -49,8 +49,8 @@ fn nested_record_of_scalars_supports_private_mutation() {
 fn enum_with_payload_supports_private_replacement() {
     assert_check_clean(concat!(
         "enum Shape {\n",
-        "    Circle(i64),\n",
-        "    Square(i64),\n",
+        "    Circle(i64);\n",
+        "    Square(i64);\n",
         "}\n",
         "fn resize(var s: Shape) { s = Shape.Square(9); }\n",
     ));
@@ -102,7 +102,7 @@ fn consumed_resource_record_supports_mutation() {
 fn borrowed_resource_mutation_requires_ownership() {
     for body in ["c.fd = 9;", "c.retag();"] {
         let (errors, _) = parse_and_check(&format!(
-            "#[resource] type Conn {{ fd: i64 }}
+            "#[resource] type Conn {{ fd: i64; }}
              impl Conn {{ fn close(consume self) {{ println(self.fd); }} }}
              trait Retag {{ fn retag(var self); }}
              impl Retag for Conn {{ fn retag(var self) {{ self.fd = 9; }} }}
@@ -171,7 +171,7 @@ fn hashset_param_is_not_flagged() {
 fn actor_handle_param_is_not_flagged() {
     assert_check_clean(concat!(
         "actor Probe {\n",
-        "    var n: i64 = 0,\n",
+        "    var n: i64 = 0;\n",
         "    receive fn bump() { self.n = self.n + 1; }\n",
         "}\n",
         "fn poke(var p: Probe) { let _ = p.bump(); }\n",
@@ -182,7 +182,7 @@ fn actor_handle_param_is_not_flagged() {
 fn record_local_pid_field_projection_is_not_flagged() {
     assert_check_clean(concat!(
         "actor Probe {\n",
-        "    var n: i64 = 0,\n",
+        "    var n: i64 = 0;\n",
         "    receive fn bump() { n = n + 1; }\n",
         "}\n",
         "type Holder {\n    pid: Probe;\n}\n",
@@ -222,7 +222,7 @@ fn record_collection_field_supports_private_mutation() {
         ("HashSet<i64>", "insert(9)"),
     ] {
         assert_check_clean(&format!(
-            "type Holder {{ items: {ty} }} fn put(var holder: Holder) {{ holder.items.{mutation}; }}"
+            "type Holder {{ items: {ty}; }} fn put(var holder: Holder) {{ holder.items.{mutation}; }}"
         ));
     }
 }
@@ -527,7 +527,7 @@ fn a_closure_reading_the_mutated_parameter_is_not_lost() {
 fn a_handle_parameter_is_not_lost() {
     assert_no_mutation_lost(concat!(
         "actor Probe {\n",
-        "    var n: i64 = 0,\n",
+        "    var n: i64 = 0;\n",
         "    receive fn bump() { n = n + 1; }\n",
         "}\n",
         "fn poke(var p: Probe) { let _ = p.bump(); }\n",

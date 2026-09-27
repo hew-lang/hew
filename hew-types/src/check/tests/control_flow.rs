@@ -40,41 +40,6 @@ fn main() {
 }
 
 #[test]
-fn supervisor_stop_publishes_typed_runtime_target() {
-    let output = check_source(
-        r"actor Worker {
-    receive fn ping() {}
-}
-
-supervisor App {
-    child worker: Worker;
-}
-
-fn main() {
-    let app = spawn App;
-    supervisor_stop(app);
-}
-",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "builtin supervisor_stop must typecheck: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.direct_call_targets.values().any(|target| matches!(
-            target,
-            crate::check::dispatch::CallTarget::Runtime(
-                crate::runtime_call::RuntimeCallFamily::SupervisorStop
-            )
-        )),
-        "builtin supervisor_stop must publish its typed runtime family: {:#?}",
-        output.direct_call_targets
-    );
-}
-
-#[test]
 fn user_supervisor_stop_shadow_keeps_user_target() {
     let output = check_source_allowing_prelude_redeclaration(
         r"
@@ -175,7 +140,7 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let c = app.cache;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         let output = parse_and_check(source);
@@ -221,7 +186,7 @@ fn main() {
     let app = spawn App;
     let c = app.cache;
     let l = app.log;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         let output = parse_and_check(source);
@@ -263,7 +228,7 @@ supervisor Pool {
 fn main() {
     let p = spawn Pool;
     let w = p.worker;
-    supervisor_stop(p);
+    stop(p);
 }
 ";
         let output = parse_and_check(source);
@@ -354,7 +319,7 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let c = app.cache;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         // NOTE: A supervisor with mixed static+pool children may not pass all
@@ -397,7 +362,7 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let x = app.unknown;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         let result = hew_parser::parse(source);
@@ -825,7 +790,7 @@ fn main() {
 
     const DYN_ITERATOR_SOURCE: &str = r"
             type Counter {
-                val: i32,
+                val: i32;
             }
 
             impl Iterator for Counter {

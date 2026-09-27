@@ -7058,9 +7058,9 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
         let peer_source = concat!(
             "pub machine Workflow {\n",
-            "    events { Crash, }\n",
-            "    state Ready,\n",
-            "    state Faulted { code: i64, },\n",
+            "    events { Crash; }\n",
+            "    state Ready;\n",
+            "    state Faulted { code: i64; }\n",
             "    on Crash: Ready => .Faulted {\n",
             "        wrong: 1\n",
             "    }\n",

@@ -3,6 +3,7 @@ extern "C" {
 }
 
 #[test]
+#[real_time]
 fn native_ffi_is_linked() {
     assert(unsafe { hew_test_ffi_answer() } == 42);
 }

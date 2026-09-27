@@ -351,7 +351,7 @@ fn unsupervised_root_actor_blocked_in_accept_exits_zero_on_sigterm() {
 import std.net;
 
 actor Acceptor {{
-    let addr: string,
+    let addr: string;
     receive fn start() {{
         let listener = match net.listen(addr) {{ .Ok(value) => value, .Err(_) => panic("listen failed") }};
         println("READY");

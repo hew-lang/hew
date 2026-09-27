@@ -365,11 +365,11 @@ struct Envelope {
 fn generic_user_eq_keeps_borrowed_owners_on_success_and_fault_at_o0_o2() {
     let physical = physical(
         r#"
-        type Label<T> { value: T, divisor: i64 }
+        type Label<T> { value: T; divisor: i64; }
         impl<T> Eq for Label<T> {
             fn eq(self, other: Label<T>) -> bool { 10 / self.divisor == other.divisor }
         }
-        type Envelope { label: Label<string> }
+        type Envelope { label: Label<string>; }
         fn probe(a: Envelope, b: Envelope) -> bool { a == b }
         fn main() -> i64 {
             let a = Envelope { label: Label { value: "left", divisor: 2 } };

@@ -735,8 +735,8 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
         &path,
         r"
         type Counter {
-            cur: i64,
-            end: i64,
+            cur: i64;
+            end: i64;
         }
 
         impl Iterator for Counter {
@@ -841,7 +841,7 @@ fn var_self_countdown_loop_writes_receiver_back() {
     std::fs::write(
         &source,
         r"
-pub type Countdown { n: i64, }
+pub type Countdown { n: i64; }
 
 impl Iterator for Countdown {
     type Item = i64;
@@ -862,8 +862,8 @@ fn main() {
     var total = 0;
     loop {
         match cd.next() {
-            .Some(v) => { total = total + v; },
-            .None => { break; },
+            .Some(v) => { total = total + v; }
+            .None => { break; }
         }
     }
     println(total);
@@ -893,7 +893,7 @@ fn var_self_direct_second_next_observes_mutated_receiver() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64, }
+pub type Counter { n: i64; }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -908,8 +908,8 @@ fn main() {
     var c = Counter { n: 0 };
     let _first = c.next();
     match c.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println(-1); },
+        .Some(v2) => { println(v2); }
+        .None => { println(-1); }
     }
 }
 ",
@@ -973,7 +973,7 @@ fn var_self_nested_block_value_does_not_get_abi_wrapped() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64, }
+pub type Counter { n: i64; }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -989,8 +989,8 @@ fn main() {
     var c = Counter { n: 1 };
     let _first = c.next();
     match c.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println(-1); },
+        .Some(v2) => { println(v2); }
+        .None => { println(-1); }
     }
 }
 ",
@@ -1018,7 +1018,7 @@ fn var_self_generic_impl_direct_second_next_resolves_monomorphized_callee() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T, n: i64, }
+pub type Slot<T> { x: T; n: i64; }
 
 trait Tick {
     type Item;
@@ -1038,8 +1038,8 @@ fn main() {
     var s = Slot<i64> { x: 0, n: 0 };
     let _first = s.next();
     match s.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println(-1); },
+        .Some(v2) => { println(v2); }
+        .None => { println(-1); }
     }
 }
 ",
@@ -1067,7 +1067,7 @@ fn var_self_generic_method_direct_resolves_impl_and_method_type_args() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T, }
+pub type Slot<T> { x: T; }
 
 trait Tick {
     fn take<U>(var self, u: U) -> U;
@@ -3019,7 +3019,7 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0,\n\
+                 \x20   var n: i64 = 0;\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  }}\n"
             ),
@@ -3117,7 +3117,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0,\n\
+                 \x20   var n: i64 = 0;\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  \x20   receive fn boom() {{ panic(\"{pkg} crash\"); }}\n\
                  }}\n"
@@ -3195,10 +3195,10 @@ fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
     // `boom` is a completion call, so its `Err` proves the crash opened its
-    // fault record. `await_restart` then waits for that record to settle,
+    // fault record. `restarted` then waits for that record to settle,
     // which is the observable restart this test joins on.
     let _ = worker.boom();
-    let _ = await_restart sup.worker;
+    let _ = restarted(sup.worker);
     let (a, b) = await fork (worker.score(11, .Node(.Leaf(1), .Leaf(2))), worker.score(22, .Node(.Leaf(3), .Leaf(4))));
     let (c, d) = await fork (worker.score(33, .Node(.Leaf(5), .Leaf(6))), worker.score(44, .Node(.Leaf(7), .Leaf(8))));
     let ra = match a {
@@ -3218,7 +3218,8 @@ fn main() -> i64 {
         .Err(_) => -1,
     };
     print(f"{ra},{rb},{rc},{rd}");
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     0
 }
 "#,
@@ -3352,7 +3353,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
     let source = dir.path().join("suspended_actor_state_handoff.hew");
     std::fs::write(
         &source,
-        "#[resource]\n#[opaque]\ntype Marker {\n}\n\nimpl Marker {\n    fn close(consume self) {\n        unsafe {\n            hew_deque_free(self)\n        };\n        println(\"closed\");\n    }\n}\n\nextern \"C\" {\n    fn hew_deque_new() -> Marker;\n    fn hew_deque_free(consume marker: Marker);\n}\n\nactor Child {\n    let label: string;\n    let marker: Marker;\n    receive fn ping() {}\n}\n\nactor Maker {\n    receive fn go() {\n        var i: i64 = 0;\n        while i < 3 {\n            sleep(1ms);\n            let label = f\"child-{i}\";\n            let child = spawn Child(label: label.clone(), marker: unsafe {\n                hew_deque_new()\n            });\n            child.stop();\n            i = i + 1;\n        }\n        println(\"maker-done\");\n    }\n}\n\nfn main() {\n    let maker = spawn Maker;\n    let _ = maker.go();\n    sleep(200ms);\n}\n",
+        "#[resource]\n#[opaque]\ntype Marker {\n}\n\nimpl Marker {\n    fn close(consume self) {\n        unsafe {\n            hew_deque_free(self)\n        };\n        println(\"closed\");\n    }\n}\n\nextern \"C\" {\n    fn hew_deque_new() -> Marker;\n    fn hew_deque_free(consume marker: Marker);\n}\n\nactor Child {\n    let label: string;\n    let marker: Marker;\n    receive fn ping() {}\n}\n\nactor Maker {\n    receive fn go() {\n        var i: i64 = 0;\n        while i < 3 {\n            sleep(1ms);\n            let label = f\"child-{i}\";\n            let child = spawn Child(label: label.clone(), marker: unsafe {\n                hew_deque_new()\n            });\n            stop(child);\n            stopped(child);\n            i = i + 1;\n        }\n        println(\"maker-done\");\n    }\n}\n\nfn main() {\n    let maker = spawn Maker;\n    let _ = maker.go();\n    sleep(200ms);\n}\n",
     )
     .expect("write suspended actor state handoff fixture");
 

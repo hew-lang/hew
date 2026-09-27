@@ -128,7 +128,7 @@ fn flat_machine_event_spelling_has_an_owned_path_fix_it() {
 
 fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {
     let source = format!(
-        "{helper}\n machine Gate {{ events {{ Open, }} emits {{ Changed {{ label: string }}, }} state Closed {{ label: string }}, state Opened {{ label: string }}, on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"
+        "{helper}\n machine Gate {{ events {{ Open; }} emits {{ Changed {{ label: string; }} }} state Closed {{ label: string; }} state Opened {{ label: string; }} on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"
     );
     let parsed = hew_parser::parse(&source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

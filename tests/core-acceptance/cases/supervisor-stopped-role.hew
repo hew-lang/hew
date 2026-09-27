@@ -11,7 +11,7 @@ supervisor Branch {
 }
 
 supervisor Root {
-    child branch: Branch;
+    child branch: Branch restart: temporary;
 }
 
 fn main() {

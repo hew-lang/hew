@@ -8,5 +8,5 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "UseAfterMove"
-line = 12
+line = 18
 column = 13

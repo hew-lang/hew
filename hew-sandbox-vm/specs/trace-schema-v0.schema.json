@@ -157,9 +157,10 @@
       "required": ["seed", "step_budget", "virtual_clock", "inputs"],
       "properties": {
         "seed": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            { "type": "string", "pattern": "^[0-9]+$" }
+          ]
         },
         "step_budget": {
           "type": "integer",

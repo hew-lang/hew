@@ -47,9 +47,11 @@ async fn main() {
         }
     }
 
-    let (service, socket) = LspService::new(move |client| {
+    let (service, socket) = LspService::build(move |client| {
         HewLanguageServer::new_with_options(client, extra_pkg_paths.clone())
-    });
+    })
+    .custom_method("hew/tests", HewLanguageServer::tests)
+    .finish();
 
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
         .serve(service)

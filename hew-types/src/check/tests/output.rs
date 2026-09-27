@@ -1180,10 +1180,12 @@ fn source_resolutions_join_actor_field_uses_across_handlers() {
         declaration,
         Some(crate::check::scope::Resolution::Field(_, 0))
     ));
-    for written in [
-        source.find("{ count }").unwrap() + 2,
-        source.find("{ count +").unwrap() + 2,
-    ] {
+    let count_sites = source
+        .match_indices("count")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(count_sites.len(), 3, "one declaration and two handler uses");
+    for written in count_sites.into_iter().skip(1) {
         assert_eq!(
             output
                 .resolutions
@@ -1706,7 +1708,7 @@ fn expected_variant_type_reaches_nested_binding_blocks() {
 
 #[test]
 fn source_type_parameters_publish_distinct_declaration_owned_ids() {
-    let source = "type T { value: i64 } fn first<T>(consume value: T) -> T { value } fn second<T>(consume value: T) -> T { value }";
+    let source = "type T { value: i64; } fn first<T>(consume value: T) -> T { value } fn second<T>(consume value: T) -> T { value }";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);

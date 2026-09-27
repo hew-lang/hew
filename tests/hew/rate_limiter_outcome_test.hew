@@ -53,7 +53,8 @@ fn _rate_limit_denial_does_not_hide_ask_failure() {
         .Ok(outcome) => assert(outcome == 1),
         .Err(_) => assert(false),
     }
-    supervisor_stop(tree);
+    stop(tree);
+    stopped(tree);
     match worker.handle_request() {
         .Ok(outcome) => assert(outcome == 2),
         .Err(_) => assert(false),

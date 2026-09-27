@@ -175,7 +175,65 @@ pub fn compile_to_sandbox_bytecode(
     source: &str,
     profile: Option<&str>,
 ) -> Result<CompileOutput, CompileError> {
-    compile_from_semantics(source, profile)
+    compile_from_semantics(
+        source,
+        profile,
+        SANDBOX_BUFFER_LABEL,
+        hew_compile::FrontendOptions::default(),
+        &mut Vec::new(),
+    )
+}
+
+/// Compile one test file through the shared frontend and project an executable
+/// package for each selected test. Type checking and SIR lowering happen once;
+/// each package differs only by its checked entry callable.
+///
+/// # Errors
+/// Returns compiler diagnostics in the output, or an internal projection error.
+pub fn compile_tests_to_sandbox_bytecode(
+    source: &str,
+    source_path: &std::path::Path,
+    selections: &[hew_types::DeclarationOccurrence],
+    companion: Option<&std::path::Path>,
+    project_dir: &std::path::Path,
+) -> Result<TestCompileOutput, CompileError> {
+    let label = source_path.to_string_lossy();
+    let mut entries = Vec::new();
+    let output = compile_from_semantics(
+        source,
+        Some(DEFAULT_PROFILE_ALIAS),
+        &label,
+        hew_compile::FrontendOptions {
+            project_dir: Some(project_dir.to_path_buf()),
+            test_entry_selections: selections.to_vec(),
+            deterministic_admission: hew_compile::DeterministicAdmission::Tests(
+                selections.to_vec(),
+            ),
+            companion: companion.map(std::path::Path::to_path_buf),
+            ..Default::default()
+        },
+        &mut entries,
+    )?;
+    let bytecodes = output.bytecode.map_or_else(Vec::new, |package| {
+        entries
+            .into_iter()
+            .map(|entry| {
+                let mut selected = package.clone();
+                selected.entry = Some(entry);
+                selected
+            })
+            .collect()
+    });
+    Ok(TestCompileOutput {
+        diagnostics: output.diagnostics,
+        bytecodes,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct TestCompileOutput {
+    pub diagnostics: Vec<Diagnostic>,
+    pub bytecodes: Vec<SandboxBytecodePackageV1>,
 }
 
 /// Compile Hew source into a sandbox bytecode package and return the result
@@ -219,6 +277,9 @@ fn has_error_diagnostics(diagnostics: &[Diagnostic]) -> bool {
 fn compile_from_semantics(
     source: &str,
     profile: Option<&str>,
+    source_label: &str,
+    mut options: hew_compile::FrontendOptions,
+    test_entries: &mut Vec<sir_emit::Entry>,
 ) -> Result<CompileOutput, CompileError> {
     let canonical_profile = match canonical_profile(profile) {
         Ok(profile) => profile,
@@ -233,14 +294,8 @@ fn compile_from_semantics(
     // The shared frontend, not a second one: it resolves this buffer's imports
     // into the module graph, so an imported declaration reaches HIR with a
     // body instead of an unresolved binding.
-    let state = hew_compile::run_source_frontend(
-        source,
-        SANDBOX_BUFFER_LABEL,
-        &hew_compile::FrontendOptions {
-            documents: embedded_standard_library_documents(),
-            ..Default::default()
-        },
-    );
+    options.documents = embedded_standard_library_documents();
+    let state = hew_compile::run_source_frontend(source, source_label, &options);
     let mut diagnostics = state
         .parse_result
         .as_ref()
@@ -307,6 +362,28 @@ fn compile_from_semantics(
     .map_err(|error| CompileError {
         message: error.message,
     })?;
+    for test in &module.test_entries {
+        let index = module
+            .functions
+            .iter()
+            .position(|function| function.callable == test.callable)
+            .ok_or_else(|| CompileError {
+                message: "checked test entry is absent from sandbox functions".into(),
+            })?;
+        let function = u32::try_from(index).map_err(|_| CompileError {
+            message: "sandbox function table exceeds u32".into(),
+        })?;
+        let exit = match test.action {
+            hew_types::EntryExitAction::Unit => "unit",
+            hew_types::EntryExitAction::Integer(_) | hew_types::EntryExitAction::Result { .. } => {
+                "status"
+            }
+        };
+        test_entries.push(sir_emit::Entry {
+            function,
+            exit: exit.into(),
+        });
+    }
 
     Ok(CompileOutput {
         diagnostics,

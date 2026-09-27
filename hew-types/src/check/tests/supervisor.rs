@@ -20,13 +20,13 @@ fn nested_supervisor_remains_a_valid_child_target() {
 fn supervisor_stop_clause_checks_a_configured_duration() {
     let output = check_source(
         "actor Worker { receive fn ping() {} }\n\
-         supervisor Team(grace: duration) { child worker: Worker() stop: grace, }",
+         supervisor Team(grace: duration) { child worker: Worker() stop: grace; }",
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
     let invalid = check_source(
         "actor Worker { receive fn ping() {} }\n\
-         supervisor Team { child worker: Worker() stop: \"later\", }",
+         supervisor Team { child worker: Worker() stop: \"later\"; }",
     );
     assert!(
         invalid
@@ -44,7 +44,7 @@ fn generic_supervisor_infers_config_and_child_type_before_function_projection() 
         r#"fn main() {
     let group = spawn Group(seed: "owned");
     let value: Result<string, ActorError<Never>> = group.worker.get();
-    close(group);
+    stop(group); stopped(group);
 }
 
 actor Worker<T> {
@@ -122,7 +122,7 @@ supervisor Group<T>(seed: Vec<T>) {
 fn main() {
     let group = spawn Group(seed: ["owned"]);
     let values: Result<Vec<string>, ActorError<Never>> = group.worker.get();
-    close(group);
+    stop(group); stopped(group);
 }
 "#,
     );

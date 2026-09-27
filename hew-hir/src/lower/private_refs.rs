@@ -10,9 +10,11 @@ pub(super) fn collect_imported_private_fn_closure(
     ctx: &LowerCtx,
     module: &hew_parser::module::Module,
     indices: &hew_parser::module::FileSpanIndices,
+    test_entries: &[hew_types::EntryExitPlan],
 ) -> HashSet<usize> {
     let mut private = HashMap::new();
     let mut roots = Vec::new();
+    let mut reachable = HashSet::new();
     for (ordinal, (item, span)) in module.items.iter().enumerate() {
         let index = indices.item_index(&module.id, ordinal).unwrap_or_default();
         match item {
@@ -27,6 +29,10 @@ pub(super) fn collect_imported_private_fn_closure(
                 );
                 if let Some(declaration) = ctx.defs.declaration(occurrence) {
                     private.insert(declaration, (ordinal, index, span));
+                    if test_entries.iter().any(|entry| entry.entry == declaration) {
+                        reachable.insert(ordinal);
+                        roots.push((index, span));
+                    }
                 }
             }
             Item::Function(_) | Item::Impl(_) | Item::Trait(_) => roots.push((index, span)),
@@ -34,7 +40,6 @@ pub(super) fn collect_imported_private_fn_closure(
             _ => {}
         }
     }
-    let mut reachable = HashSet::new();
     while let Some((index, span)) = roots.pop() {
         for (site, resolution) in &ctx.resolutions {
             if site.module_idx != index || site.start < span.start || site.end > span.end {

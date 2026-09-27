@@ -11,7 +11,7 @@ use crate::{HirItem, HirModule};
 ///
 /// # Errors
 ///
-/// Returns a boundary error if a plan is missing, duplicated, non-root, or
+/// Returns a boundary error if a plan is missing, duplicated, invalid, or
 /// points at a body HIR did not emit.
 pub fn install_test_entry_plans(
     module: &mut HirModule,
@@ -38,12 +38,6 @@ pub fn install_test_entry_plans(
                 plan.entry
             ));
         };
-        if !module.root_item_ids.contains(&function.id) {
-            return Err(format!(
-                "checked test entry {:?} is not a root source function",
-                plan.entry
-            ));
-        }
         if !function.params.is_empty() || !function.type_params.is_empty() || function.is_generator
         {
             return Err(format!(

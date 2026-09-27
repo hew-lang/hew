@@ -564,12 +564,19 @@ impl Checker {
     pub fn set_entry_selection(&mut self, selection: crate::DeclarationOccurrence) {
         self.entry_selection = Some(selection);
         self.test_entry_selections = None;
+        self.test_entry_module = None;
     }
 
     /// Select exact root declarations for one compiled test module.
     pub fn set_test_entry_selections(&mut self, selections: Vec<crate::DeclarationOccurrence>) {
         self.test_entry_selections = Some(selections);
+        self.test_entry_module = None;
         self.entry_selection = None;
+    }
+
+    /// Preserve the authored test source when a frontend uses a synthetic graph root.
+    pub fn set_test_entry_module(&mut self, module: hew_parser::module::ModulePath) {
+        self.test_entry_module = Some(module);
     }
 
     /// Build the §6.3 fact table over every concrete accepted expression type.
@@ -1234,13 +1241,35 @@ impl Checker {
         &'a FnDecl,
         &'a std::ops::Range<usize>,
     )> {
+        let source_module = test_mode
+            .then_some(self.test_entry_module.as_ref())
+            .flatten();
+        let (owner, items) = if let Some(source_module) = source_module {
+            let Some(module) = program
+                .module_graph
+                .as_ref()
+                .and_then(|graph| graph.modules.get(source_module))
+            else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    selected_entry.span(),
+                    "selected test source module is absent from this compilation",
+                ));
+                return None;
+            };
+            (
+                self.defs.module_for_path(&source_module.dotted()),
+                module.items.as_slice(),
+            )
+        } else {
+            (self.defs.root_module(), program.items.as_slice())
+        };
         let selected_entry = if selected_entry.module().is_none() {
-            selected_entry.with_module(self.defs.root_module())
+            selected_entry.with_module(owner)
         } else {
             selected_entry
         };
-        let matched = program
-            .items
+        let matched = items
             .iter()
             .enumerate()
             .find_map(|(item_index, (item, span))| {
@@ -1248,7 +1277,7 @@ impl Checker {
                     return None;
                 };
                 let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-                    self.defs.root_module(),
+                    owner,
                     span,
                     item_index,
                     crate::DeclarationKind::Function,
@@ -1508,26 +1537,21 @@ impl Checker {
         let mut plans = Vec::with_capacity(selections.len());
         let mut invalid = false;
         for selection in selections {
-            let normalized = if selection.module().is_none() {
-                selection.with_module(self.defs.root_module())
-            } else {
-                selection
+            let Some((occurrence, declaration, span)) =
+                self.selected_entry_item(program, selection, true)
+            else {
+                invalid = true;
+                continue;
             };
-            if !seen.insert(normalized) {
+            if !seen.insert(occurrence) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::TestSignature,
-                    normalized.span(),
+                    occurrence.span(),
                     "the same test root was selected more than once",
                 ));
                 invalid = true;
                 continue;
             }
-            let Some((occurrence, declaration, span)) =
-                self.selected_entry_item(program, normalized, true)
-            else {
-                invalid = true;
-                continue;
-            };
             if !declaration.params.is_empty()
                 || declaration
                     .type_params

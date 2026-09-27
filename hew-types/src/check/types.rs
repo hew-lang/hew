@@ -3126,6 +3126,8 @@ pub struct Checker {
     pub(super) entry_selection: Option<crate::DeclarationOccurrence>,
     /// Explicit test mode, with selected root functions in discovery order.
     pub(super) test_entry_selections: Option<Vec<crate::DeclarationOccurrence>>,
+    /// Source module whose tests a file frontend selected before graph rewriting.
+    pub(super) test_entry_module: Option<hew_parser::module::ModulePath>,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority
     /// behind extern-signature nominal identity: a bare name in an extern
@@ -4344,6 +4346,7 @@ impl Checker {
             current_item_ordinal: 0,
             entry_selection: None,
             test_entry_selections: None,
+            test_entry_module: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             protected_prelude_declaration_collisions: HashSet::new(),

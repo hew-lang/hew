@@ -501,15 +501,27 @@ fn opaque_extern_diagnostic(
     diagnostic
 }
 
-fn selected_entries(output: &TypeCheckOutput, admission: &DeterministicAdmission) -> Vec<DefId> {
-    match admission {
+fn selected_entries(output: &TypeCheckOutput, options: &FrontendOptions) -> Vec<DefId> {
+    match &options.deterministic_admission {
         DeterministicAdmission::Off => Vec::new(),
         DeterministicAdmission::Tests(selections) => selections
             .iter()
             .filter_map(|selection| {
-                output
-                    .defs
-                    .declaration(selection.with_module(output.defs.root_module()))
+                if options.test_entry_selections.is_empty() {
+                    // Admission-only checks have no dispatcher selection.
+                    output
+                        .defs
+                        .declaration(selection.with_module(output.defs.root_module()))
+                } else {
+                    // The checker publishes plans in discovery order and owns
+                    // their resolved module, including directly tested std sources.
+                    options
+                        .test_entry_selections
+                        .iter()
+                        .position(|entry| entry == selection)
+                        .and_then(|index| output.test_entry_plans.get(index))
+                        .map(|plan| plan.entry)
+                }
             })
             .collect(),
         DeterministicAdmission::ProcessEntry => output
@@ -537,7 +549,7 @@ pub(super) fn check(
     root_label: &str,
     options: &FrontendOptions,
 ) -> Vec<FrontendDiagnostic> {
-    let roots = selected_entries(output, &options.deterministic_admission);
+    let roots = selected_entries(output, options);
     let requested = match &options.deterministic_admission {
         DeterministicAdmission::Off => 0,
         DeterministicAdmission::ProcessEntry => 1,

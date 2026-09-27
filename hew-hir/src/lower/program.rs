@@ -462,8 +462,12 @@ pub fn lower_program_with_mono_cap(
                 // member types and attaching source diagnostics.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
                 let saved_module_idx = ctx.current_module_idx;
-                let private_closure =
-                    collect_imported_private_fn_closure(&ctx, module, &span_indices);
+                let private_closure = collect_imported_private_fn_closure(
+                    &ctx,
+                    module,
+                    &span_indices,
+                    &type_check_output.test_entry_plans,
+                );
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                     ctx.current_item_ordinal = item_idx;
                     ctx.current_module_idx = span_indices
@@ -2288,8 +2292,12 @@ pub fn lower_program_with_mono_cap(
                 ctx.current_module_name = Some(source_module.clone());
                 let diag_start = ctx.diagnostics.len();
                 let item_start = items.len();
-                let imported_private_closure =
-                    collect_imported_private_fn_closure(&ctx, module, &span_indices);
+                let imported_private_closure = collect_imported_private_fn_closure(
+                    &ctx,
+                    module,
+                    &span_indices,
+                    &type_check_output.test_entry_plans,
+                );
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
                     .iter()

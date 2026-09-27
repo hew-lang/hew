@@ -1774,6 +1774,9 @@ fn typecheck_program_with_diagnostics(
     }
     if !options.test_entry_selections.is_empty() {
         checker.set_test_entry_selections(options.test_entry_selections.clone());
+        if let Some(module) = canonical_direct_stdlib_module_for_source(Path::new(input)) {
+            checker.set_test_entry_module(module);
+        }
     } else if let Some(entry_selection) = entry_selection {
         checker.set_entry_selection(entry_selection);
     }
@@ -4148,6 +4151,53 @@ mod tests {
                 .display(tco.entry_exit_plan.expect("selected entry plan").entry),
             "selected_test"
         );
+    }
+
+    #[test]
+    fn selected_stdlib_tests_keep_their_canonical_source_module() {
+        let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("std/concurrency/lifecycle.hew")
+            .display()
+            .to_string();
+        let source = fs::read_to_string(&input).unwrap();
+        let program = parse_source(&source, &input).unwrap();
+        let selection = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(ordinal, (item, span))| {
+                let Item::Function(function) = item else {
+                    return None;
+                };
+                (function.name.name.as_str() == "lifecycle_i64_happy_path_state_names").then(|| {
+                    hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                        None,
+                        span,
+                        ordinal,
+                        hew_types::DeclarationKind::Function,
+                        0,
+                    )
+                })
+            })
+            .expect("inline lifecycle test fixture");
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                test_entry_selections: vec![selection],
+                deterministic_admission: crate::DeterministicAdmission::Tests(vec![selection]),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("inline std test must remain selectable after graph-root rewriting");
+        let output = state.typecheck_result.tco.unwrap();
+        assert_eq!(output.test_entry_plans.len(), 1);
+        assert_eq!(
+            output.defs.path(output.test_entry_plans[0].entry),
+            "std.concurrency.lifecycle_i64_happy_path_state_names"
+        );
+        assert!(output.entry_exit_plan.is_none());
     }
 
     #[test]

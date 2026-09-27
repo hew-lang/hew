@@ -661,6 +661,10 @@ fn fail_restart_snapshot(
 ) {
     // SAFETY: caller keeps the allocation live; roster mutation is serialized.
     let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the caller keeps the owner live; cancellation freezes slots.
+    if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
+        return;
+    }
     let child_specs = &mut roster.child_specs;
     let Some(spec) = child_specs.get_mut(index) else {
         return;
@@ -688,6 +692,10 @@ fn publish_restart_snapshot(
 ) -> bool {
     // SAFETY: caller keeps the allocation live; roster mutation is serialized.
     let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: shutdown publishes cancellation before capturing role targets.
+    if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
+        return false;
+    }
     // SAFETY: caller keeps the allocation live through this guarded publish.
     let sup_actor_id = supervisor_actor_id(sup);
     // SAFETY: the roster guard above provides exclusive spec access.
@@ -1195,7 +1203,9 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
         let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
         // SAFETY: the guard serializes this scoped mutable roster access.
         let s = &mut *guard;
-        if s.child_supervisors.get(index).copied() != Some(old_child)
+        // SAFETY: shutdown cancellation freezes this roster before snapshot.
+        if unsafe { (*sup).cancelled.load(Ordering::Acquire) }
+            || s.child_supervisors.get(index).copied() != Some(old_child)
             || s.child_supervisor_tokens.get(index).copied() != Some(old_token)
         {
             // SAFETY: publication failed, so restore top-level ownership of

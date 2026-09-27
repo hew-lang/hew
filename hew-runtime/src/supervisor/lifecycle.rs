@@ -826,12 +826,14 @@ pub(crate) fn stop_local_supervisor(
     };
     let sup = pin.supervisor();
     let control = pin.control();
+    // Cancel before freezing the roster. A restart that already owns its
+    // publish lock finishes first; later publications refuse cancellation.
+    request_supervisor_shutdown(sup);
     // SAFETY: this operation's pin keeps the owner and its roster live.
     control.retain_role_wait_targets(unsafe { snapshot_role_wait_targets(sup) });
-    // Publish shutdown and close the direct route while the allocation is
+    // Close the direct route while the allocation is
     // still protected by this operation's pin. Dropping the pin then permits
     // the raw destructor path to drain without self-deadlock.
-    request_supervisor_shutdown(sup);
     let won_close = crate::lifetime::local_handles::close_current_supervisor(&control);
     if won_close {
         run_supervisor_close_hook_for_test();
@@ -4118,6 +4120,54 @@ mod tests {
             actor::hew_actor_stop(initial);
             assert_eq!(actor::hew_actor_free(initial), 0);
             hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn owner_stop_freezes_role_snapshot_before_a_pending_restart_publishes() {
+        let _rt = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+
+        // SAFETY: the retained supervisor pin excludes reclamation until the
+        // racing restart has returned and the roster assertion has finished.
+        unsafe {
+            let (sup, _source) = make_supervisor_with_heap_child(true);
+            let initial = locked_roster!(sup).children[0];
+            let token = (*sup).local_pid_id;
+            let pin = crate::lifetime::local_handles::pin_current_supervisor(token)
+                .expect("parent pin before stop");
+            let (ready, waker) = crate::wake::blocking::Readiness::new();
+            let observer = crate::actor_native::hew_actor_wait_new(token, waker.descriptor());
+
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            let entered_hook = Arc::clone(&entered);
+            let release_hook = Arc::clone(&release);
+            let hook = install_restart_spec_snapshot_hook_for_test(Arc::new(move || {
+                entered_hook.wait();
+                release_hook.wait();
+            }));
+            let address = sup as usize;
+            let pending = std::thread::spawn(move || {
+                // SAFETY: the retained pin above keeps the parent live.
+                restart_child_from_spec(address as *mut HewSupervisor, 0) as usize
+            });
+            entered.wait();
+
+            crate::supervisor::hew_supervisor_stop_native(token);
+            assert!(crate::lifetime::local_handles::pin_current_supervisor(token).is_none());
+            release.wait();
+            assert_eq!(pending.join().expect("pending restart"), 0);
+            assert_eq!(locked_roster!(sup).children[0], initial);
+            drop(hook);
+            drop(pin);
+
+            ready.wait();
+            assert_eq!(crate::actor_native::hew_actor_wait_poll(observer), 1);
+            crate::actor_native::hew_actor_wait_free(observer);
         }
     }
 

@@ -222,6 +222,9 @@ impl SupervisorControl {
             .role_wait_targets
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // Every caller cancels publishers before capture and retains an owner
+        // pin. Teardown cannot extract a child until those pins drain, so
+        // concurrent captures select the same final roster incarnations.
         if snapshot.is_none() {
             *snapshot = Some(targets);
         }

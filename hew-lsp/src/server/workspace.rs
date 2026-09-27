@@ -16,11 +16,22 @@ use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
 // ── Code lens helpers ───────────────────────────────────────────────
 
+#[cfg(test)]
 pub(super) fn build_code_lenses(
     source: &str,
     lo: &[usize],
     parse_result: &ParseResult,
     file: &str,
+) -> Vec<CodeLens> {
+    build_code_lenses_with_seeds(source, lo, parse_result, file, None)
+}
+
+pub(super) fn build_code_lenses_with_seeds(
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+    file: &str,
+    seeds: Option<&DashMap<String, String>>,
 ) -> Vec<CodeLens> {
     let ref_counts = count_all_references(parse_result);
     let mut lenses = Vec::new();
@@ -51,18 +62,33 @@ pub(super) fn build_code_lenses(
         });
     }
     for declaration in tests {
+        let selector = format!("{file}::{}", declaration.name);
+        let range = span_to_range(source, lo, &declaration.span);
         lenses.push(CodeLens {
-            range: span_to_range(source, lo, &declaration.span),
+            range,
             command: Some(Command {
                 title: "\u{25b6} Run test".to_string(),
                 command: "hew.runTest".to_string(),
-                arguments: Some(vec![serde_json::Value::String(format!(
-                    "{file}::{}",
-                    declaration.name
-                ))]),
+                arguments: Some(vec![serde_json::Value::String(selector.clone())]),
             }),
             data: None,
         });
+        if let Some(seed) = seeds.and_then(|seeds| seeds.get(&selector)) {
+            let display = seed
+                .parse::<u64>()
+                .map_or_else(|_| seed.to_string(), |seed| format!("{seed:#x}"));
+            lenses.push(CodeLens {
+                range,
+                command: Some(Command {
+                    title: format!("\u{25b6} Rerun with seed {display}"),
+                    command: "hew.runTest".to_string(),
+                    arguments: Some(vec![
+                        serde_json::json!({ "name": selector, "seed": seed.as_str() }),
+                    ]),
+                }),
+                data: None,
+            });
+        }
     }
 
     for (item, item_span) in &parse_result.program.items {

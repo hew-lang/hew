@@ -5,6 +5,7 @@ mod convert;
 mod handlers;
 mod hierarchy;
 mod navigation;
+mod testing;
 mod uri;
 mod workspace;
 
@@ -20,7 +21,9 @@ use self::handlers::text_sync::build_initialize_result_from_caps_json;
 #[cfg(test)]
 use self::handlers::workspace::extract_run_test_name;
 // Items used by the LanguageServer impl handlers.
-use self::analysis::{close_document_and_dependents, refresh_document_and_dependents};
+use self::analysis::{
+    close_document_and_dependents, collect_published_diagnostics, refresh_document_and_dependents,
+};
 use self::convert::{analysis_tokens_to_lsp, symbol_info_to_doc_symbol, to_lsp_completion};
 use self::hierarchy::{
     collect_subtypes, collect_supertypes, find_callable_at, find_incoming_calls,
@@ -33,10 +36,13 @@ use self::navigation::{
     collect_import_items, find_cross_file_definition, find_definition_in_ast,
     find_stdlib_definition, plan_workspace_rename,
 };
+use self::testing::failure_from_event;
 use self::uri::FileUriExt;
 #[cfg(test)]
+use self::workspace::build_code_lenses;
+#[cfg(test)]
 use self::workspace::collect_workspace_symbols;
-use self::workspace::{build_code_lenses, collect_project_workspace_symbols, test_inventory};
+use self::workspace::{collect_project_workspace_symbols, test_inventory};
 
 // Items additionally needed by the test module (only compiled in test builds).
 #[cfg(test)]
@@ -44,7 +50,7 @@ use self::analysis::{analyze_document, diagnostic_data};
 #[cfg(test)]
 use self::convert::analysis_symbol_kind_to_lsp;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 #[cfg(test)]
@@ -309,6 +315,34 @@ where
     Ok(())
 }
 
+async fn read_test_events<R>(reader: R) -> std::io::Result<Vec<Value>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    let mut events = Vec::new();
+    while let Some(line) = lines.next_line().await? {
+        if let Ok(event) = serde_json::from_str::<Value>(&line) {
+            if event.get("event").is_some() {
+                events.push(event);
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn with_test_diagnostics(
+    mut published: Vec<(Url, Vec<Diagnostic>)>,
+    tests: &DashMap<Url, Vec<Diagnostic>>,
+) -> Vec<(Url, Vec<Diagnostic>)> {
+    for (uri, diagnostics) in &mut published {
+        if let Some(failures) = tests.get(uri) {
+            diagnostics.extend(failures.iter().cloned());
+        }
+    }
+    published
+}
+
 async fn wait_for_output_task(
     task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
     stream_name: &str,
@@ -352,6 +386,14 @@ fn build_run_test_invocation(selector: &str) -> (PathBuf, Vec<String>) {
     )
 }
 
+fn build_seeded_test_invocation(selector: &str, seed: Option<&str>) -> (PathBuf, Vec<String>) {
+    let (program, mut args) = build_run_test_invocation(selector);
+    if let Some(seed) = seed {
+        args.extend(["--seed".to_string(), seed.to_string()]);
+    }
+    (program, args)
+}
+
 // ── Server ───────────────────────────────────────────────────────────
 
 /// Per-document debounce state: the generation counter incremented on each
@@ -374,6 +416,11 @@ pub struct HewLanguageServer {
     workspace_roots: RwLock<Vec<PathBuf>>,
     /// Per-URI generation counters used by the debounced analysis path.
     analysis_versions: AnalysisVersions,
+    /// Failures from the CLI test stream, kept separate from source diagnostics.
+    test_diagnostics: Arc<DashMap<Url, Vec<Diagnostic>>>,
+    /// A failed deterministic test's last seed, keyed by its exact selector.
+    test_seeds: Arc<DashMap<String, String>>,
+    test_run_versions: Arc<DashMap<Url, u64>>,
     /// Extra package-search directories passed via `--pkg-path` (or the
     /// `hew.pkgPath` vscode setting).  Appended to the default search roots
     /// so that `hew check --pkg-path DIR` and editor diagnostics agree on
@@ -394,6 +441,9 @@ impl HewLanguageServer {
             documents: Arc::new(DashMap::new()),
             workspace_roots: RwLock::new(Vec::new()),
             analysis_versions: Arc::new(DashMap::new()),
+            test_diagnostics: Arc::new(DashMap::new()),
+            test_seeds: Arc::new(DashMap::new()),
+            test_run_versions: Arc::new(DashMap::new()),
             extra_pkg_paths,
         }
     }
@@ -447,6 +497,12 @@ impl HewLanguageServer {
     /// The function itself is synchronous — analysis runs in a `tokio::spawn`
     /// task so the handler path returns immediately.
     fn reanalyze(&self, uri: &Url, source: &str) {
+        self.test_diagnostics.remove(uri);
+        if let Some(path) = uri.to_file_path() {
+            let prefix = format!("{}::", path.display());
+            self.test_seeds
+                .retain(|selector, _| !selector.starts_with(&prefix));
+        }
         // Increment the generation counter for this URI and capture the new value.
         let version = {
             let mut entry = self.analysis_versions.entry(uri.clone()).or_insert(0);
@@ -457,6 +513,7 @@ impl HewLanguageServer {
         // Clone the shared state the spawned task needs.
         let client = self.client.clone();
         let documents = Arc::clone(&self.documents);
+        let test_diagnostics = Arc::clone(&self.test_diagnostics);
         let versions = Arc::clone(&self.analysis_versions);
         let uri = uri.clone();
         let source = source.to_owned();
@@ -471,9 +528,9 @@ impl HewLanguageServer {
                 return;
             }
 
-            for (updated_uri, diagnostics) in
-                refresh_document_and_dependents(&uri, &source, &documents, &extra_pkg_paths)
-            {
+            let published =
+                refresh_document_and_dependents(&uri, &source, &documents, &extra_pkg_paths);
+            for (updated_uri, diagnostics) in with_test_diagnostics(published, &test_diagnostics) {
                 client
                     .publish_diagnostics(updated_uri, diagnostics, None)
                     .await;
@@ -481,7 +538,18 @@ impl HewLanguageServer {
         });
     }
 
-    async fn run_test_command(&self, test_name: &str) -> Result<Option<Value>> {
+    async fn publish_test_diagnostics_for(&self, uris: &HashSet<Url>) {
+        let published = collect_published_diagnostics(&self.documents, uris.clone());
+        for (uri, diagnostics) in with_test_diagnostics(published, &self.test_diagnostics) {
+            if uris.contains(&uri) {
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
+            }
+        }
+    }
+
+    async fn run_test_command(&self, test_name: &str, seed: Option<&str>) -> Result<Option<Value>> {
         let Some(workspace_root) = self.workspace_root() else {
             self.client
                 .show_message(
@@ -492,7 +560,46 @@ impl HewLanguageServer {
             return Ok(None);
         };
 
-        let (program, args) = build_run_test_invocation(test_name);
+        let file = test_name
+            .rsplit_once("::")
+            .map_or(test_name, |(file, _)| file);
+        let target_uri = Url::from_file_path(Path::new(file));
+        let mut affected = HashSet::new();
+        let run_version = target_uri.as_ref().map(|uri| {
+            let mut version = self.test_run_versions.entry(uri.clone()).or_insert(0);
+            *version += 1;
+            *version
+        });
+        let edit_version = target_uri
+            .as_ref()
+            .and_then(|uri| self.analysis_versions.get(uri).map(|version| *version));
+        if let Some(uri) = &target_uri {
+            affected.insert(uri.clone());
+            if let Some(mut diagnostics) = self.test_diagnostics.get_mut(uri) {
+                if test_name.contains("::") {
+                    diagnostics.retain(|diagnostic| {
+                        diagnostic
+                            .data
+                            .as_ref()
+                            .and_then(|data| data.get("selector"))
+                            .and_then(Value::as_str)
+                            != Some(test_name)
+                    });
+                } else {
+                    diagnostics.clear();
+                }
+            }
+        }
+        if test_name.contains("::") {
+            self.test_seeds.remove(test_name);
+        } else {
+            let prefix = format!("{test_name}::");
+            self.test_seeds
+                .retain(|selector, _| !selector.starts_with(&prefix));
+        }
+        self.publish_test_diagnostics_for(&affected).await;
+
+        let (program, args) = build_seeded_test_invocation(test_name, seed);
         self.client
             .show_message(
                 MessageType::INFO,
@@ -508,10 +615,10 @@ impl HewLanguageServer {
             .spawn()
         {
             Ok(mut child) => {
-                let stdout_task = child.stdout.take().map(|stdout| {
-                    let client = self.client.clone();
-                    tokio::spawn(stream_command_output(client, stdout, MessageType::INFO))
-                });
+                let stdout_task = child
+                    .stdout
+                    .take()
+                    .map(|stdout| tokio::spawn(read_test_events(stdout)));
                 let stderr_task = child.stderr.take().map(|stderr| {
                     let client = self.client.clone();
                     tokio::spawn(stream_command_output(client, stderr, MessageType::ERROR))
@@ -519,8 +626,42 @@ impl HewLanguageServer {
                 let status = child.wait().await.map_err(|error| {
                     internal_error(format!("failed to wait for test process: {error}"))
                 })?;
-                wait_for_output_task(stdout_task, "stdout").await?;
+                let events = if let Some(task) = stdout_task {
+                    task.await
+                        .map_err(|error| {
+                            internal_error(format!("failed to join test stream: {error}"))
+                        })?
+                        .map_err(|error| {
+                            internal_error(format!("failed to read test stream: {error}"))
+                        })?
+                } else {
+                    Vec::new()
+                };
                 wait_for_output_task(stderr_task, "stderr").await?;
+                if let (Some(uri), Some(run_version)) = (&target_uri, run_version) {
+                    if self.test_run_versions.get(uri).map(|version| *version) != Some(run_version)
+                        || self.analysis_versions.get(uri).map(|version| *version) != edit_version
+                    {
+                        return Ok(None);
+                    }
+                }
+                for event in &events {
+                    if let Some(failure) = failure_from_event(event, &self.documents) {
+                        affected.insert(failure.uri.clone());
+                        self.test_diagnostics
+                            .entry(failure.uri)
+                            .or_default()
+                            .push(failure.diagnostic);
+                        if let Some(seed) = failure.seed {
+                            self.test_seeds.insert(failure.selector, seed);
+                        }
+                    }
+                }
+                self.publish_test_diagnostics_for(&affected).await;
+                let client = self.client.clone();
+                tokio::spawn(async move {
+                    let _ = client.code_lens_refresh().await;
+                });
                 let level = if status.success() {
                     MessageType::INFO
                 } else {
@@ -2588,6 +2729,55 @@ impl Worker {
                 .and_then(|command| command.arguments.as_ref())
                 .and_then(|args| args.first()),
             Some(&json!("sample.hew::test_add"))
+        );
+    }
+
+    #[test]
+    fn failed_test_event_uses_fault_site_operands_and_seed_lens() {
+        let source = "#[test]\nfn fails() { assert(1 == 2); }\n";
+        let file = std::env::temp_dir().join("hew-lsp-fault-site.hew");
+        let uri = Url::from_file_path(&file).unwrap();
+        let documents = DashMap::new();
+        documents.insert(uri.clone(), make_doc(source));
+        let site = source.find("assert").unwrap();
+        let event = json!({
+            "event": "test_finished",
+            "selector": format!("{}::fails", file.display()),
+            "outcome": "failed",
+            "kind": "assertion",
+            "message": "assertion failed",
+            "report": {
+                "site_offset": site,
+                "seed": "18446744073709551615",
+                "assertion": { "operator": "==", "left": "1", "right": "2" }
+            }
+        });
+        let failure = failure_from_event(&event, &documents).expect("test failure diagnostic");
+        assert_eq!(failure.uri, uri);
+        assert_eq!(failure.diagnostic.range.start.line, 1);
+        assert_eq!(failure.diagnostic.range.start.character, 13);
+        assert_eq!(failure.diagnostic.source.as_deref(), Some("hew test"));
+        assert!(failure.diagnostic.message.contains("left: 1\nright: 2"));
+        assert_eq!(failure.seed.as_deref(), Some("18446744073709551615"));
+
+        let seeds = DashMap::new();
+        seeds.insert(failure.selector.clone(), failure.seed.unwrap());
+        let doc = documents.get(&uri).unwrap();
+        let lenses = workspace::build_code_lenses_with_seeds(
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            &file.display().to_string(),
+            Some(&seeds),
+        );
+        let rerun = lenses
+            .iter()
+            .filter_map(|lens| lens.command.as_ref())
+            .find(|command| command.title.contains("Rerun with seed"))
+            .expect("seeded rerun lens");
+        assert_eq!(
+            rerun.arguments.as_ref().unwrap()[0]["seed"],
+            "18446744073709551615"
         );
     }
 

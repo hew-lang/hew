@@ -122,11 +122,15 @@ pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeText
 }
 
 pub(crate) async fn did_close(server: &HewLanguageServer, params: DidCloseTextDocumentParams) {
-    for (updated_uri, diagnostics) in close_document_and_dependents(
+    server.test_diagnostics.remove(&params.text_document.uri);
+    let published = close_document_and_dependents(
         &params.text_document.uri,
         &server.documents,
         &server.extra_pkg_paths,
-    ) {
+    );
+    for (updated_uri, diagnostics) in
+        super::super::with_test_diagnostics(published, &server.test_diagnostics)
+    {
         server
             .client
             .publish_diagnostics(updated_uri, diagnostics, None)

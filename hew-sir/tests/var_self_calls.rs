@@ -625,6 +625,10 @@ fn main() -> i64 {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep source, failure handback and invalid ownership controls in one proof"
+)]
 fn a_plain_receiver_is_copied_back_into_its_place_when_the_method_fails() {
     let module = lower(
         r"type Point {

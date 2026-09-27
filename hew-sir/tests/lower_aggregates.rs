@@ -525,6 +525,10 @@ fn main() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the nested source and both runtime cleanup edges in one proof"
+)]
 fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
     let lowered = lower_source(
         r#"type Inner {

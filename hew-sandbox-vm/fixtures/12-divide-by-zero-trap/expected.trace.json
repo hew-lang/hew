@@ -46,7 +46,11 @@
         "kind": "trap",
         "message": "divide by zero",
         "span": null,
-        "trap_kind": "divide_by_zero"
+        "trap_kind": "divide_by_zero",
+        "hew_fault": {
+          "code": 202,
+          "kind": "DivideByZero"
+        }
       }
     ],
     "sandbox_rejections": [],

@@ -46,7 +46,11 @@
         "kind": "panic",
         "message": "sandbox panic",
         "span": null,
-        "trap_kind": "panic"
+        "trap_kind": "panic",
+        "hew_fault": {
+          "code": 212,
+          "kind": "UserPanic"
+        }
       }
     ],
     "sandbox_rejections": [],

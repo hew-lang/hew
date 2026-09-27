@@ -41,7 +41,9 @@ fn read_pid_with_retry(pid_path: string) -> string {
 }
 
 fn spawn_child_for_implicit_drop(pid_path: string) -> string {
-    let child = match process.start(f"echo $$ > {pid_path}; sleep 60") {
+    // Replace the shell with the sleeper so the tested PID owns its output
+    // descriptors; dropping a Child reaps that process, not shell descendants.
+    let child = match process.start(f"echo $$ > {pid_path}; exec sleep 60") {
         .Ok(child) => child,
         .Err(error) => panic(to_string(error)),
     };

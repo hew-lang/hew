@@ -187,7 +187,13 @@ impl Checker {
         };
 
         // Actors are always Send
-        self.registry.register_actor(identity.to_string());
+        self.registry.register_actor(
+            self.head_of_declaration(
+                self.nominal_head_for_key(identity)
+                    .expect("actor has a declaration")
+                    .id,
+            ),
+        );
 
         self.insert_type_def(identity, type_def);
         // A new handle-bearing candidate entered `type_defs`; invalidate the

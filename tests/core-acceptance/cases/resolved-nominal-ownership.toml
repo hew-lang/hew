@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-nominal-ownership"
+intent = "Same-named imported declarations retain distinct value-copy and resource-close ownership through native execution."
+source = "fixtures/resolved-nominal-ownership/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "value\nvalue\nclosed\n"
+exit = 0

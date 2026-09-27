@@ -99,27 +99,31 @@ impl Checker {
     /// `unclonable-leaf-fails-closed-transitively`, `admit-only-what-you-lower`.
     pub(in crate::check) fn record_clone_admissibility(
         &self,
-        name: &str,
+        head: crate::TypeHead,
         type_args: &[Ty],
         _span: &Span,
     ) -> RecordCloneAdmissibility {
         use TypeDefKind::{Enum, Record, Struct};
-        let receiver_ty = self.named_ty_for_key(name, type_args.to_vec());
-        if self.registry.is_resource(name) {
+        let name = head.registry_key();
+        let receiver_ty = Ty::named_head(head, type_args.to_vec());
+        if head
+            .nominal()
+            .is_some_and(|id| self.registry.is_resource(id))
+        {
             return RecordCloneAdmissibility::AffineValue {
                 type_name: name.to_string(),
                 marker: hew_parser::ast::ResourceMarker::Resource,
                 member: "value".to_string(),
             };
         }
-        if self.registry.is_linear(name) {
+        if head.nominal().is_some_and(|id| self.registry.is_linear(id)) {
             return RecordCloneAdmissibility::AffineValue {
                 type_name: name.to_string(),
                 marker: hew_parser::ast::ResourceMarker::Linear,
                 member: "value".to_string(),
             };
         }
-        let Some(type_def) = self.type_def_at(name) else {
+        let Some(type_def) = self.type_def_view().of(head) else {
             // A bare type parameter (`x: T`) has no `type_defs` entry. When it
             // carries a `Clone` bound in scope (`fn f<T: Clone>(x: T)`), admit
             // the clone and defer the concrete copy path to monomorphization
@@ -238,7 +242,7 @@ impl Checker {
         &self,
         ty: &Ty,
         path: &str,
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
     ) -> Option<CloneCapabilityBlocker> {
         use hew_parser::ast::ResourceMarker;
 
@@ -290,22 +294,27 @@ impl Checker {
                         })
                     };
                 }
-                if self.registry.is_resource(name) {
+                if head
+                    .nominal()
+                    .is_some_and(|id| self.registry.is_resource(id))
+                {
                     return Some(CloneCapabilityBlocker::Affine {
                         type_name: name.to_string(),
                         marker: ResourceMarker::Resource,
                         member: member.to_string(),
                     });
                 }
-                if self.registry.is_linear(name) {
+                if head.nominal().is_some_and(|id| self.registry.is_linear(id)) {
                     return Some(CloneCapabilityBlocker::Affine {
                         type_name: name.to_string(),
                         marker: ResourceMarker::Linear,
                         member: member.to_string(),
                     });
                 }
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.user_opaque_type_names.contains(name)
+                if self.registry.is_owned_handle(*head)
+                    || head
+                        .nominal()
+                        .is_some_and(|id| self.opaque_type_ids.contains(&id))
                 {
                     // The carrier's own capability is canonical. In particular,
                     // Receiver<T> is one non-cloneable endpoint regardless of T;
@@ -348,9 +357,9 @@ impl Checker {
                         }
                     }
                 }
-                if let Some(type_def) = self.lookup_type_def(name) {
-                    let visit_key = type_def.name.clone();
-                    if !visiting.insert(visit_key.clone()) {
+                if let Some(type_def) = self.type_def_view().of(*head) {
+                    let visit_key = *head;
+                    if !visiting.insert(visit_key) {
                         return None;
                     }
                     let mut field_names: Vec<&String> = type_def.fields.keys().collect();
@@ -374,7 +383,7 @@ impl Checker {
                         }
                     }
                     for (index, field_ty) in self
-                        .tuple_record_constructor_fields(name, &type_def)
+                        .tuple_record_constructor_fields(*head, type_def)
                         .iter()
                         .enumerate()
                     {
@@ -487,22 +496,20 @@ impl Checker {
     /// `item: T` field to `item: Handle` and the opaque leaf is detected. A
     /// monomorphic record passes `type_args = []`, so the substitution is a
     /// no-op and behaviour is unchanged. Returns the first opaque field-type
-    /// name found, or `None` if clean. Uses `canonical_owned_handle_type_name`
-    /// as the single opaque-detection authority (mirrors `ty_contains_owned_handle`
-    /// in `registration.rs`); the substitution mirrors
-    /// the ordinary recursive member walk.
+    /// name found, or `None` if clean. The selected declaration's handle and
+    /// opacity facts decide the leaf; display spelling cannot grant ownership.
     pub(super) fn record_field_contains_opaque(
         &self,
-        name: &str,
+        head: crate::TypeHead,
         type_args: &[Ty],
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
         skip_channel_handles: bool,
     ) -> Option<String> {
-        if !visiting.insert(name.to_string()) {
+        if !visiting.insert(head) {
             return None; // cycle protection
         }
         let mut found = None;
-        if let Some(type_def) = self.type_def_at(name) {
+        if let Some(type_def) = self.type_def_view().of(head) {
             for field_ty in type_def.fields.values() {
                 let field_ty =
                     Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
@@ -514,7 +521,7 @@ impl Checker {
                 }
             }
         }
-        visiting.remove(name);
+        visiting.remove(&head);
         found
     }
 
@@ -530,16 +537,16 @@ impl Checker {
     /// two stay in lockstep.
     pub(super) fn enum_variant_contains_opaque(
         &self,
-        name: &str,
+        head: crate::TypeHead,
         type_args: &[Ty],
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
         skip_channel_handles: bool,
     ) -> Option<String> {
-        if !visiting.insert(name.to_string()) {
+        if !visiting.insert(head) {
             return None; // cycle protection
         }
         let mut found = None;
-        if let Some(type_def) = self.type_def_at(name) {
+        if let Some(type_def) = self.type_def_view().of(head) {
             'variants: for variant in type_def.variants.values() {
                 let payload_tys: Vec<Ty> = match variant {
                     VariantDef::Unit => Vec::new(),
@@ -561,7 +568,7 @@ impl Checker {
                 }
             }
         }
-        visiting.remove(name);
+        visiting.remove(&head);
         found
     }
 
@@ -571,7 +578,7 @@ impl Checker {
     pub(in crate::check) fn ty_message_payload_contains_opaque(
         &self,
         ty: &Ty,
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
     ) -> Option<String> {
         self.ty_field_contains_opaque(ty, visiting, true)
     }
@@ -579,7 +586,7 @@ impl Checker {
     pub(super) fn ty_field_contains_opaque(
         &self,
         ty: &Ty,
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
         skip_channel_handles: bool,
     ) -> Option<String> {
         // Resolve inference vars so a field whose type is still a `Ty::Var`
@@ -604,8 +611,10 @@ impl Checker {
                     return None;
                 }
                 // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.user_opaque_type_names.contains(name)
+                if self.registry.is_owned_handle(*head)
+                    || head
+                        .nominal()
+                        .is_some_and(|id| self.opaque_type_ids.contains(&id))
                 {
                     return Some(name.to_string());
                 }
@@ -620,7 +629,7 @@ impl Checker {
                 // Recurse into the type def's fields, substituting the def's
                 // params with the concrete `args` at this use site.
                 if let Some(n) =
-                    self.record_field_contains_opaque(name, args, visiting, skip_channel_handles)
+                    self.record_field_contains_opaque(*head, args, visiting, skip_channel_handles)
                 {
                     return Some(n);
                 }
@@ -631,7 +640,7 @@ impl Checker {
                 // unclonable leaf. (`record_field_contains_opaque` is a no-op
                 // for an enum, and vice-versa, so both calls are kind-safe.)
                 if let Some(n) =
-                    self.enum_variant_contains_opaque(name, args, visiting, skip_channel_handles)
+                    self.enum_variant_contains_opaque(*head, args, visiting, skip_channel_handles)
                 {
                     return Some(n);
                 }

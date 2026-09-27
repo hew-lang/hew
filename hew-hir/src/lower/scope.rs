@@ -129,7 +129,7 @@ impl LowerCtx {
 
     pub(super) fn bind_actor_param(&mut self, param: &Param) -> HirBinding {
         let ty = self.lower_type(&param.ty);
-        let ty = self.qualify_current_module_record_ty(ty);
+        let ty = self.restore_type_declaration_facts(ty);
         let mut binding = self.bind_checked(
             param.name.to_string(),
             ty,
@@ -339,7 +339,7 @@ impl LowerCtx {
             // normalisation funnel as other checker→HIR boundaries so an
             // opaque Result/Option payload remains pointer-shaped, including
             // when nested inside another generic carrier.
-            Ok(resolved) => Some(self.qualify_current_module_record_ty(resolved)),
+            Ok(resolved) => Some(self.restore_type_declaration_facts(resolved)),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

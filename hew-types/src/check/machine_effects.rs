@@ -34,13 +34,13 @@ struct Summary {
     calls: Vec<(DefId, Span)>,
     /// Authored `close` bodies a release of this helper's values can run,
     /// with the resource they release.
-    releases: Vec<(DefId, String, Span)>,
+    releases: Vec<(DefId, crate::NominalId, Span)>,
     refusal: Option<(Span, String)>,
 }
 
 /// The declared `#[resource]` types whose authored `close` a release of a
 /// value of each type can run, memoized across helpers.
-type ReleaseCache = HashMap<ResolvedTy, BTreeSet<String>>;
+type ReleaseCache = HashMap<ResolvedTy, BTreeSet<crate::NominalId>>;
 
 /// The surface identity a machine is instantiated through.
 #[derive(Debug, Clone, Default)]
@@ -52,7 +52,7 @@ struct MachineShape {
 /// `resource_closes` names each `#[resource]` type's inherent `close`.
 pub(super) fn validate(
     output: &TypeCheckOutput,
-    resource_closes: &HashMap<String, DefId>,
+    resource_closes: &HashMap<crate::NominalId, DefId>,
 ) -> Vec<TypeError> {
     let Some(normalized) = &output.normalized_machines else {
         return Vec::new();
@@ -229,7 +229,7 @@ fn instantiation_sites(
     let mut sites: BTreeMap<ResolvedTy, Span> = BTreeMap::new();
     for (key, ty) in &output.resolved_expr_types {
         let mut found = Vec::new();
-        collect_instantiations(ty, shape, output, &mut found);
+        collect_instantiations(ty, shape, &mut found);
         for machine in found {
             let span = key.start..key.end;
             sites
@@ -252,7 +252,7 @@ fn instantiation_sites(
 fn prove_instantiation_releases(
     sites: &BTreeMap<ResolvedTy, Span>,
     output: &TypeCheckOutput,
-    resource_closes: &HashMap<String, DefId>,
+    resource_closes: &HashMap<crate::NominalId, DefId>,
     summaries: &HashMap<DefId, Summary>,
     cache: &mut ReleaseCache,
     proven: &mut HashSet<DefId>,
@@ -279,10 +279,19 @@ fn prove_instantiation_releases(
         for ty in [machine, &event] {
             for resource in released_resources(ty, output, cache) {
                 let Some(close) = resource_closes.get(&resource).copied() else {
-                    return Err((site.clone(), unknown_close(&resource)));
+                    return Err((
+                        site.clone(),
+                        unknown_close(output.defs.path(resource.declaration())),
+                    ));
                 };
-                prove(&output.defs, close, summaries, &mut HashSet::new(), proven)
-                    .map_err(|(_, reason)| (site.clone(), releasing(&resource, &reason)))?;
+                prove(&output.defs, close, summaries, &mut HashSet::new(), proven).map_err(
+                    |(_, reason)| {
+                        (
+                            site.clone(),
+                            releasing(output.defs.path(resource.declaration()), &reason),
+                        )
+                    },
+                )?;
             }
         }
     }
@@ -297,7 +306,7 @@ fn released_resources(
     ty: &ResolvedTy,
     output: &TypeCheckOutput,
     cache: &mut ReleaseCache,
-) -> BTreeSet<String> {
+) -> BTreeSet<crate::NominalId> {
     if let Some(found) = cache.get(ty) {
         return found.clone();
     }
@@ -310,7 +319,7 @@ fn released_resources(
 fn collect_released_resources(
     ty: &ResolvedTy,
     output: &TypeCheckOutput,
-    found: &mut BTreeSet<String>,
+    found: &mut BTreeSet<crate::NominalId>,
     seen: &mut HashSet<ResolvedTy>,
 ) {
     if !seen.insert(ty.clone()) {
@@ -318,15 +327,20 @@ fn collect_released_resources(
     }
     match ty {
         ResolvedTy::Named { head, args, .. } => {
-            let name = head.registry_key();
             for arg in args {
                 collect_released_resources(arg, output, found, seen);
             }
-            let Some(declaration) = output.type_fact_context.declarations().get(name) else {
+            let Some(declaration) = head
+                .declaration(&output.defs)
+                .and_then(|id| output.type_fact_context.declarations().get(&id))
+            else {
                 return;
             };
             if declaration.builtin.is_none() && declaration.marker == DeclarationMarker::Resource {
-                found.insert(name.to_string());
+                found.insert(
+                    head.declaration(&output.defs)
+                        .expect("declared resource has nominal identity"),
+                );
             }
             for member in &declaration.members {
                 let member = crate::value_class::substitute(member, &declaration.type_params, args);
@@ -387,32 +401,27 @@ fn unstageable_field(
 }
 
 /// Every concrete instantiation of `shape`'s own type that `ty` contains.
-fn collect_instantiations(
-    ty: &ResolvedTy,
-    shape: &MachineShape,
-    output: &TypeCheckOutput,
-    found: &mut Vec<ResolvedTy>,
-) {
+fn collect_instantiations(ty: &ResolvedTy, shape: &MachineShape, found: &mut Vec<ResolvedTy>) {
     match ty {
         ResolvedTy::Named { head, args, .. } => {
             let name = head.registry_key();
             if name == shape.type_name
                 && args.len() == shape.type_parameter_count
-                && !args.iter().any(|arg| is_abstract(arg, output))
+                && !args.iter().any(is_abstract)
             {
                 found.push(ty.clone());
             }
             for arg in args {
-                collect_instantiations(arg, shape, output, found);
+                collect_instantiations(arg, shape, found);
             }
         }
         ResolvedTy::Tuple(elements) => {
             for element in elements {
-                collect_instantiations(element, shape, output, found);
+                collect_instantiations(element, shape, found);
             }
         }
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) | ResolvedTy::Task(element) => {
-            collect_instantiations(element, shape, output, found);
+            collect_instantiations(element, shape, found);
         }
         _ => {}
     }
@@ -426,22 +435,17 @@ fn collect_instantiations(
 /// name it declared is a type, and a name it did not is a parameter. Asking
 /// both the fact context and `type_defs` matters because an actor is a
 /// declared type that carries no value facts.
-fn is_abstract(ty: &ResolvedTy, output: &TypeCheckOutput) -> bool {
+fn is_abstract(ty: &ResolvedTy) -> bool {
     match ty {
-        ResolvedTy::TypeParam { .. } => true,
-        ResolvedTy::Named { head, args, .. } if args.is_empty() && head.is_user() => {
-            !output
-                .type_fact_context
-                .declarations()
-                .contains_key(head.registry_key())
-                && super::TypeDefView::new(&output.defs, &output.type_defs)
-                    .of(*head)
-                    .is_none()
-        }
-        ResolvedTy::Named { args, .. } => args.iter().any(|arg| is_abstract(arg, output)),
-        ResolvedTy::Tuple(elements) => elements.iter().any(|element| is_abstract(element, output)),
+        ResolvedTy::TypeParam { .. }
+        | ResolvedTy::Named {
+            head: crate::TypeHead::Param(_),
+            ..
+        } => true,
+        ResolvedTy::Named { args, .. } => args.iter().any(is_abstract),
+        ResolvedTy::Tuple(elements) => elements.iter().any(is_abstract),
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) | ResolvedTy::Task(element) => {
-            is_abstract(element, output)
+            is_abstract(element)
         }
         _ => false,
     }
@@ -604,7 +608,10 @@ fn prove(
     }
     for (close, resource, span) in &summary.releases {
         if let Err((_, reason)) = prove(defs, *close, summaries, visiting, proven) {
-            return Err((span.clone(), releasing(resource, &reason)));
+            return Err((
+                span.clone(),
+                releasing(defs.path(resource.declaration()), &reason),
+            ));
         }
     }
     visiting.remove(&declaration);
@@ -614,7 +621,7 @@ fn prove(
 
 struct EffectVisitor<'a> {
     output: &'a TypeCheckOutput,
-    resource_closes: &'a HashMap<String, DefId>,
+    resource_closes: &'a HashMap<crate::NominalId, DefId>,
     module_idx: u32,
     summary: Summary,
     release_cache: &'a mut ReleaseCache,
@@ -643,7 +650,10 @@ impl EffectVisitor<'_> {
             }
             match self.resource_closes.get(&resource).copied() {
                 Some(close) => self.summary.releases.push((close, resource, span.clone())),
-                None => self.refuse(span, unknown_close(&resource)),
+                None => self.refuse(
+                    span,
+                    unknown_close(self.output.defs.path(resource.declaration())),
+                ),
             }
         }
     }

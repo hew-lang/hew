@@ -287,9 +287,7 @@ impl TypeHead {
     pub fn declaration(self, defs: &crate::DefTable) -> Option<crate::NominalId> {
         match self {
             Self::Nominal(head) | Self::Actor(head) => Some(head.id),
-            Self::Builtin(builtin) => crate::KnownDecl::of_builtin(builtin)
-                .map(crate::KnownDecl::nominal)
-                .or_else(|| defs.builtin_declaration(builtin)),
+            Self::Builtin(builtin) => defs.builtin_declaration(builtin),
             Self::Param(_) | Self::Unresolved(_) => None,
         }
     }

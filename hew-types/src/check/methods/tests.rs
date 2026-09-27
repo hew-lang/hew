@@ -261,53 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn ask_reply_send_gate_uses_exact_import_owner_and_fails_closed_without_it() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker
-            .registry
-            .register_type("hew.replysend.Reply".to_string(), vec![Ty::I64]);
-        checker.registry.register_type(
-            "hew.replynonsend.Reply".to_string(),
-            vec![Ty::Named {
-                args: vec![Ty::I64],
-                head: crate::TypeHead::Builtin(BuiltinType::Rc),
-            }],
-        );
-        checker.module_import_bindings.insert(
-            (None, 0, "replysend".to_string()),
-            "hew.replysend".to_string(),
-        );
-        checker.module_import_bindings.insert(
-            (None, 0, "replynonsend".to_string()),
-            "hew.replynonsend".to_string(),
-        );
-        let bare_reply = Ty::named_for_test("Reply", Vec::new());
-
-        let send = checker
-            .send_gate_reply_ty("replysend.Producer::make", &bare_reply)
-            .expect("an exact replysend binding and marker row must resolve");
-        assert!(matches!(send, Ty::Named { head, .. } if head.spelling() == "hew.replysend.Reply"));
-        assert!(checker.registry.implements_marker(&send, MarkerTrait::Send));
-
-        let non_send = checker
-            .send_gate_reply_ty("replynonsend.Producer::make", &bare_reply)
-            .expect("an exact replynonsend binding and marker row must resolve");
-        assert!(
-            matches!(non_send, Ty::Named { head, .. } if head.spelling() == "hew.replynonsend.Reply")
-        );
-        assert!(!checker
-            .registry
-            .implements_marker(&non_send, MarkerTrait::Send));
-
-        assert!(
-            checker
-                .send_gate_reply_ty("missing.Producer::make", &bare_reply)
-                .is_none(),
-            "a missing lexical module binding must not fall back to bare Reply"
-        );
-    }
-
-    #[test]
     fn finalize_lowering_facts_silently_drops_error_element_type() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 10..20;

@@ -645,10 +645,10 @@ impl Checker {
     }
 
     pub(in crate::check) fn reject_owned_handle_field_accessors(&mut self, fd: &FnDecl) {
-        let Some((type_name, _)) = self.current_self_type.clone() else {
+        let Some(type_name) = self.current_self_binding_ty.as_ref().and_then(Ty::head) else {
             return;
         };
-        if !self.struct_is_handle_bearing(&type_name) {
+        if !self.struct_is_handle_bearing(type_name) {
             return;
         }
         let Some(receiver_name) = fd
@@ -667,28 +667,24 @@ impl Checker {
         self.scan_block_for_owned_handle_field_return(
             &fd.body,
             receiver_name.name.as_str(),
-            &type_name,
+            type_name,
             fd.name.name.as_str(),
             &mut bindings,
         );
     }
 
-    pub(super) fn struct_is_handle_bearing(&mut self, type_name: &str) -> bool {
+    pub(super) fn struct_is_handle_bearing(&mut self, type_name: crate::TypeHead) -> bool {
         self.ensure_handle_bearing_fresh();
-        self.handle_bearing_structs.contains(type_name)
-            || self
-                .registered_type_def_name(type_name)
-                .is_some_and(|name| self.handle_bearing_structs.contains(&name))
-            || self
-                .strip_module_prefix(type_name)
-                .is_some_and(|name| self.handle_bearing_structs.contains(name))
+        type_name
+            .nominal()
+            .is_some_and(|id| self.handle_bearing_structs.contains(&id))
     }
 
     pub(super) fn scan_block_for_owned_handle_field_return(
         &mut self,
         block: &Block,
         receiver_name: &str,
-        type_name: &str,
+        type_name: crate::TypeHead,
         method_name: &str,
         bindings: &mut HashMap<String, (String, String)>,
     ) {
@@ -719,7 +715,7 @@ impl Checker {
         &mut self,
         stmts: &[Spanned<Stmt>],
         receiver_name: &str,
-        type_name: &str,
+        type_name: crate::TypeHead,
         method_name: &str,
         bindings: &mut HashMap<String, (String, String)>,
     ) {
@@ -851,7 +847,7 @@ impl Checker {
         expr: &Expr,
         span: &Span,
         receiver_name: &str,
-        type_name: &str,
+        type_name: crate::TypeHead,
         method_name: &str,
         bindings: &mut HashMap<String, (String, String)>,
     ) {
@@ -1018,11 +1014,12 @@ impl Checker {
         &mut self,
         span: &Span,
         method_name: &str,
-        type_name: &str,
+        type_name: crate::TypeHead,
         field_name: &str,
         handle_name: &str,
         via_binding: Option<&str>,
     ) {
+        let type_name = type_name.spelling();
         let via_note =
             via_binding.map_or_else(String::new, |b| format!(" (via let-binding `{b}`)"));
         self.errors.push(TypeError {
@@ -1056,7 +1053,7 @@ impl Checker {
         &self,
         expr: &Expr,
         receiver_name: &str,
-        type_name: &str,
+        type_name: crate::TypeHead,
     ) -> Option<(String, String)> {
         let Expr::FieldAccess { object, field } = expr else {
             return None;
@@ -1073,15 +1070,15 @@ impl Checker {
     pub(super) fn owned_handle_field_return_by_name(
         &self,
         field: &str,
-        type_name: &str,
+        type_name: crate::TypeHead,
     ) -> Option<(String, String)> {
-        let type_def = self.lookup_type_def(type_name)?;
+        let type_def = self.type_def_view().of(type_name)?;
         let field_ty = type_def.fields.get(field)?;
         let Ty::Named { head, .. } = field_ty else {
             return None;
         };
-        let field_type_name = head.registry_key();
-        self.canonical_owned_handle_type_name(field_type_name)
-            .map(|handle_name| (field.to_string(), handle_name))
+        self.registry
+            .is_owned_handle(*head)
+            .then(|| (field.to_string(), head.spelling().to_string()))
     }
 }

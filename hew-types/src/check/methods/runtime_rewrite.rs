@@ -32,63 +32,6 @@ impl Checker {
         self.consume_receiver_methods.contains(qualified_name)
     }
 
-    /// Resolve the reply type used for the ask-reply `Send` gate to the
-    /// module-qualified identity of the dispatched actor's defining module.
-    ///
-    /// The reply `Ty::Named` carries the bare type name (`Reply`) as written in
-    /// the imported actor's `receive fn` return annotation. The trait registry
-    /// keys marker derivation by name and the bare key is last-write-wins across
-    /// modules: two imported packages each exporting `Reply` collide, so a Send
-    /// lookup on the bare name can read the wrong module's fields and either
-    /// over-accept a non-Send reply (it reaches codegen and trips the D10 gate)
-    /// or over-reject a Send one. `method_id` is `{module}.{Actor}::{method}` for
-    /// a module actor, so the reply type is defined in `{module}`; if a
-    /// collision-free `{module}.{Name}` registry alias exists (seeded by
-    /// `register_qualified_type_alias` → `alias_type_markers`), derive `Send`
-    /// through that qualified identity. Root / flat-file actors retain their
-    /// bare identity. A module actor whose lexical import binding or canonical
-    /// marker row is absent returns `None`: the Send gate must reject rather
-    /// than consulting a same-name bare marker row.
-    pub(super) fn send_gate_reply_ty(&self, method_id: &str, resolved_reply: &Ty) -> Option<Ty> {
-        let Ty::Named { head, args, .. } = resolved_reply else {
-            return Some(resolved_reply.clone());
-        };
-        let name = head.registry_key();
-        let builtin = head.builtin();
-        // Builtins carry their own marker authority. A qualified user name,
-        // by contrast, must have an exact structural marker row.
-        if builtin.is_some() {
-            return Some(resolved_reply.clone());
-        }
-        if name.contains('.') {
-            return self
-                .registry
-                .has_type_markers(name)
-                .then(|| resolved_reply.clone());
-        }
-        let Some((actor_identity, _method)) = method_id.rsplit_once("::") else {
-            return Some(resolved_reply.clone());
-        };
-        let Some((module_short, _actor)) = actor_identity.rsplit_once('.') else {
-            return Some(resolved_reply.clone());
-        };
-        // `method_id` carries the imported actor's lexical module binding;
-        // marker derivation keys on the source declaration's full owner. A
-        // missing binding is not evidence for a bare reply type — fail closed
-        // so a same-name sibling cannot lend it a Send marker.
-        let module_owner = self.module_import_bindings.get(&(
-            self.current_module.clone(),
-            self.current_module_idx,
-            module_short.to_string(),
-        ))?;
-        let qualified = format!("{module_owner}.{name}");
-        if self.registry.has_type_markers(&qualified) {
-            Some(self.named_ty_for_key(&qualified, args.clone()))
-        } else {
-            None
-        }
-    }
-
     pub(super) fn record_actor_method_dispatch(
         &mut self,
         span: &Span,
@@ -142,39 +85,18 @@ impl Checker {
             // iff their element is), so in practice this fires only on genuinely
             // non-transferable replies (`Rc`, and any record/tuple/enum that
             // transitively carries one).
-            // Derive `Send` through the reply type's module-qualified identity
-            // so two imported packages that both export a same-bare-named reply
-            // (`badpkg.Reply` vs `goodpkg.Reply`) do not collide on the bare
-            // registry key. The qualified form is used only for the marker
-            // lookup and diagnostic text; the dispatch table keeps the original
-            // bare `reply_ty` the rest of the pipeline expects.
-            match self.send_gate_reply_ty(&method_id, &resolved_reply) {
-                Some(send_check_ty)
-                    if !send_check_ty.has_inference_var()
-                        && !send_check_ty.contains_error()
-                        && !self
-                            .registry
-                            .implements_marker(&send_check_ty, MarkerTrait::Send) =>
-                {
-                    self.report_error(
-                        TypeErrorKind::InvalidSend,
-                        span,
-                        format!(
-                            "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
-                            resolved_reply.user_facing()
-                        ),
-                    );
-                }
-                Some(_) => {}
-                None => self.report_error(
+            if !resolved_reply.has_inference_var()
+                && !resolved_reply.contains_error()
+                && !self.type_is_send(&resolved_reply)
+            {
+                self.report_error(
                     TypeErrorKind::InvalidSend,
                     span,
                     format!(
-                        "ask-shaped actor reply type `{}` has no exact module-owned Send proof \
-                         (E_DUPLEX_NON_SEND)",
+                        "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
                         resolved_reply.user_facing()
                     ),
-                ),
+                );
             }
             ActorMethodKind::Ask {
                 method_id,

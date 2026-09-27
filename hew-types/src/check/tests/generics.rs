@@ -2691,52 +2691,45 @@ fn main() -> i64 {
     }
 }
 
-#[test]
-fn in_scope_type_param_not_false_flagged_in_any_item_signature_path() {
-    // The complement of the reject sweep: a type-param name that IS in scope —
-    // declared by the enclosing actor / trait / type / impl, or by the method
-    // itself — must NOT be reported as unknown. Scope-local resolution pushes
-    // the enclosing container's generics (and the method pushes its own), so
-    // every legitimate `T` resolves. Guards the boundary against over-firing.
-    let cases = [
-        (
-            "actor-level generic, used in method",
-            r"
+const SCOPED_PARAM_SIGNATURE_CASES: &[(&str, &str)] = &[
+    (
+        "actor-level generic, used in method",
+        r"
 actor Worker<T> { fn m(x: T) -> T { x }  receive fn run() {} }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "actor-level generic, used in receive fn",
-            r"
+    ),
+    (
+        "actor-level generic, used in receive fn",
+        r"
 actor Worker<T> { receive fn handle(x: T) {} }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "actor method's own generic",
-            r"
+    ),
+    (
+        "actor method's own generic",
+        r"
 actor Worker { fn idm<T>(x: T) -> T { x }  receive fn run() {} }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "trait-level generic",
-            r"
+    ),
+    (
+        "trait-level generic",
+        r"
 trait Foo<T> { fn take(self, x: T) -> i64; }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "trait method's own generic",
-            r"
+    ),
+    (
+        "trait method's own generic",
+        r"
 trait Foo { fn idm<T>(self, x: T) -> T; }
 fn main() -> i64 { 0 }
 ",
-        ),
-        (
-            "inline type-body method, type-level generic",
-            r"type Holder<T> {
+    ),
+    (
+        "inline type-body method, type-level generic",
+        r"type Holder<T> {
     value: T;
     fn first(h: Holder<T>) -> T {
         h.value
@@ -2747,10 +2740,10 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-        (
-            "inline type-body method's own generic",
-            r"type Box {
+    ),
+    (
+        "inline type-body method's own generic",
+        r"type Box {
     v: i64;
     fn idm<T>(b: Box, x: T) -> T {
         x
@@ -2761,10 +2754,10 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-        (
-            "impl method's own generic",
-            r"type Box {
+    ),
+    (
+        "impl method's own generic",
+        r"type Box {
     v: i64;
 }
 
@@ -2778,10 +2771,10 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-        (
-            "impl-level generic",
-            r"type Holder<T> {
+    ),
+    (
+        "impl-level generic",
+        r"type Holder<T> {
     value: T;
 }
 
@@ -2795,9 +2788,17 @@ fn main() -> i64 {
     0
 }
 ",
-        ),
-    ];
-    for (label, source) in cases {
+    ),
+];
+
+#[test]
+fn in_scope_type_param_not_false_flagged_in_any_item_signature_path() {
+    // The complement of the reject sweep: a type-param name that IS in scope —
+    // declared by the enclosing actor / trait / type / impl, or by the method
+    // itself — must NOT be reported as unknown. Scope-local resolution pushes
+    // the enclosing container's generics (and the method pushes its own), so
+    // every legitimate `T` resolves. Guards the boundary against over-firing.
+    for &(label, source) in SCOPED_PARAM_SIGNATURE_CASES {
         let output = check_source(source);
         assert!(
             !output.errors.iter().any(|error| {

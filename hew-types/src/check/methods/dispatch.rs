@@ -2085,14 +2085,18 @@ impl Checker {
                     let consumes_receiver = sig.consumes_receiver
                         || self.named_type_method_consumes_receiver(name, method)
                         || self.named_type_inherent_close_consumes_receiver(
-                            name, *builtin, method, &sig,
+                            resolved.head().expect("named receiver has a head"),
+                            method,
+                            &sig,
                         );
                     if consumes_receiver {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
                         let resolved_recv = self.subst.resolve(&receiver_ty);
                         let discharges_resource = self.named_type_inherent_close_consumes_receiver(
-                            name, *builtin, method, &sig,
+                            resolved.head().expect("named receiver has a head"),
+                            method,
+                            &sig,
                         );
                         let borrowed_refused =
                             self.reject_borrowed_consumption(&receiver.0, &receiver.1);
@@ -2563,7 +2567,7 @@ impl Checker {
                     } = &resolved
                     {
                         let name = head.registry_key();
-                        match self.record_clone_admissibility(name, type_args, span) {
+                        match self.record_clone_admissibility(*head, type_args, span) {
                             RecordCloneAdmissibility::Admissible => {
                                 self.record_method_call_rewrite(
                                     span,

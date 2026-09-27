@@ -115,8 +115,7 @@ impl Checker {
     /// keeps the consume marking aligned with that contract.
     pub(super) fn named_type_inherent_close_consumes_receiver(
         &self,
-        type_name: &str,
-        builtin: Option<BuiltinType>,
+        head: crate::TypeHead,
         method: &str,
         sig: &FnSig,
     ) -> bool {
@@ -128,12 +127,16 @@ impl Checker {
         // instead of asking the name-indexed source registry to rediscover a
         // prelude spelling: imported source declarations are registry-owned,
         // while compiler carriers are catalog-owned.
-        if builtin.is_some_and(|kind| kind.close_method() == Some(method)) {
+        if head
+            .builtin()
+            .is_some_and(|kind| kind.close_method() == Some(method))
+        {
             return true;
         }
         // The trait registry is the single authority for source-declared
         // `#[resource]` facts, keyed by exact declaration identity.
-        self.registry.is_resource(type_name)
+        head.nominal()
+            .is_some_and(|id| self.registry.is_resource(id))
     }
 
     pub(in crate::check) fn record_method_call_rewrite(

@@ -62,7 +62,7 @@ pub(crate) enum HashEligibility {
 fn hash_ineligibility(
     ty: &Ty,
     types: TypeDefView<'_>,
-    resource_types: &HashSet<String>,
+    resource_types: &HashSet<crate::NominalId>,
 ) -> Option<HashEligibility> {
     match ty {
         // Fixed-width integer primitives — hash the exact-width value load.
@@ -117,8 +117,8 @@ fn hash_ineligibility(
             // representation detail. A resource-shaped `type` must never be
             // copied into a collection key slot: doing so would duplicate the
             // close obligation and make a later remove/free double-close it.
-            Some(type_def)
-                if resource_types.contains(head.registry_key()) || resource_types.contains(&type_def.name) =>
+            Some(_)
+                if head.nominal().is_some_and(|id| resource_types.contains(&id)) =>
             {
                 Some(HashEligibility::IneligibleManaged(ty.clone()))
             }
@@ -195,7 +195,7 @@ pub(crate) fn ty_is_hash_eligible(ty: &Ty, types: TypeDefView<'_>) -> HashEligib
 pub(crate) fn ty_is_hash_eligible_with_resources(
     ty: &Ty,
     types: TypeDefView<'_>,
-    resource_types: &HashSet<String>,
+    resource_types: &HashSet<crate::NominalId>,
 ) -> HashEligibility {
     hash_ineligibility(ty, types, resource_types).unwrap_or(HashEligibility::Eligible)
 }
@@ -523,7 +523,7 @@ mod tests {
             ty_is_hash_eligible_with_resources(
                 &ty,
                 crate::check::TypeDefView::for_test(&tds),
-                &HashSet::from(["Token".to_string()]),
+                &HashSet::from([crate::NominalId::for_test("Token")]),
             ),
             HashEligibility::IneligibleManaged(ty),
         );

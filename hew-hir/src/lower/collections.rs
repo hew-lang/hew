@@ -67,7 +67,7 @@ impl LowerCtx {
             return None;
         };
         let result_ty = match ResolvedTy::from_ty(&ty) {
-            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
+            Ok(resolved) => self.restore_type_declaration_facts(resolved),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -110,7 +110,7 @@ impl LowerCtx {
             .get(&key)
             .cloned()
             .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-            .map(|ty| self.qualify_current_module_record_ty(ty))
+            .map(|ty| self.restore_type_declaration_facts(ty))
     }
 
     pub(super) fn is_hashmap_ty(ty: &ResolvedTy) -> bool {
@@ -137,7 +137,7 @@ impl LowerCtx {
             return None;
         };
         let result_ty = match ResolvedTy::from_ty(&ty) {
-            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
+            Ok(resolved) => self.restore_type_declaration_facts(resolved),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

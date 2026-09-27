@@ -1398,10 +1398,7 @@ impl Checker {
         let signature_matches = self.fn_sig(key).is_some_and(|signature| {
             let resolve = |ty: &Ty| {
                 crate::ResolvedTy::from_ty(ty).map(|ty| {
-                    super::restore_member_opacity(ty, &|name| {
-                        self.user_opaque_type_names.contains(name)
-                            || self.module_registry.is_handle_type(name)
-                    })
+                    super::restore_member_opacity(ty, &|name| self.opaque_type_ids.contains(&name))
                 })
             };
             let Ok(params) = signature
@@ -2081,8 +2078,14 @@ impl Checker {
         if method.name == Ident::new("close")
             && !method.consumes_self
             && trait_bound.is_none()
-            && (self.registry.is_resource(type_name)
-                || self.user_opaque_type_names.contains(type_name))
+            && sig
+                .impl_method
+                .as_ref()
+                .and_then(|provenance| provenance.receiver)
+                .is_some_and(|owner| {
+                    let owner = crate::NominalId::from_minted_declaration(owner);
+                    self.registry.is_resource(owner) || self.opaque_type_ids.contains(&owner)
+                })
         {
             let span = if method.decl_span.start == method.decl_span.end {
                 method.fn_span.clone()

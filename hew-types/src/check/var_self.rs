@@ -237,13 +237,16 @@ impl Checker {
     fn release_may_run_close_guarded(
         &self,
         ty: &Ty,
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
     ) -> bool {
         match ty {
             Ty::Named { head, args, .. } => {
-                let name = head.registry_key();
                 let builtin = head.builtin();
-                if self.registry.is_resource(name) || self.registry.is_linear(name) {
+                if head
+                    .nominal()
+                    .is_some_and(|id| self.registry.is_resource(id))
+                    || head.nominal().is_some_and(|id| self.registry.is_linear(id))
+                {
                     return true;
                 }
                 if args
@@ -255,21 +258,21 @@ impl Checker {
                 if builtin.is_some() {
                     return false;
                 }
-                match self.registry.member_types(name) {
+                match self.registry.member_types(*head) {
                     Some(members) => {
-                        if !visiting.insert(name.to_string()) {
+                        if !visiting.insert(*head) {
                             return false;
                         }
                         let members = members.to_vec();
                         let may = members
                             .iter()
                             .any(|member| self.release_may_run_close_guarded(member, visiting));
-                        visiting.remove(name);
+                        visiting.remove(head);
                         may
                     }
                     // A name with no registered members and no declaration is
                     // an abstract type parameter.
-                    None => self.type_def_at(name).is_none() && !self.known_types.contains(name),
+                    None => matches!(head, crate::TypeHead::Param(_)),
                 }
             }
             Ty::Tuple(elements) => elements

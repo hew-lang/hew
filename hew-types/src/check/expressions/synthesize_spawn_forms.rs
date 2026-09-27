@@ -59,24 +59,7 @@ impl Checker {
         {
             return false;
         }
-        matches!(parent, Ty::Named { head, .. } if self.registry.is_resource(head.registry_key()))
-    }
-
-    /// Whether a MODULE-QUALIFIED type name denotes a transferring builtin.
-    ///
-    /// A source-declared lifecycle type (`std.link_monitor.MonitorRef`) reaches
-    /// some positions — notably a declared actor state-field type — spelled by
-    /// its qualified path with no `builtin` tag attached, so the tag test alone
-    /// misses it and the handle silently stayed shareable.
-    ///
-    /// The qualification requirement is load-bearing: `lookup_builtin_type`
-    /// also resolves BARE canonical names, and a user `type MonitorRef` shadow
-    /// is a clone-total record that must keep ordinary value semantics. Only
-    /// the dotted spelling is the stdlib declaration.
-    pub(super) fn qualified_name_resolves_to_transferring_builtin(name: &str) -> bool {
-        name.contains('.')
-            && crate::lookup_builtin_type(name)
-                .is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+        matches!(parent, Ty::Named { head, .. } if head.nominal().is_some_and(|id| self.registry.is_resource(id)))
     }
 
     pub(in crate::check) fn check_field_access(
@@ -1322,7 +1305,7 @@ impl Checker {
         //
         // `name` at this point may be qualified (`module.Handle`) after
         // `published_bare_type_qualified` resolves a bare import reference.
-        // `user_opaque_type_names` stores exact declaration identities. A
+        // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
         let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
         let canonical_owner_is_current_source = name
@@ -1336,8 +1319,9 @@ impl Checker {
             // std-looking spelling.
             || canonical_owner_is_current_source;
         let is_opaque_handle = !is_declaring_module
-            && (self.user_opaque_type_names.contains(name)
-                || self.canonical_owned_handle_type_name(name).is_some());
+            && self
+                .nominal_head_for_key(name)
+                .is_some_and(|head| self.opaque_type_ids.contains(&head.id));
         if is_opaque_handle {
             self.report_error(
                 TypeErrorKind::OpaqueDirectConstruct {

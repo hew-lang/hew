@@ -83,7 +83,7 @@ impl Checker {
         let mut parent = self.subst.resolve(&binding.ty);
         let mut owner = None;
         for (depth, step) in path.iter().enumerate() {
-            if matches!(&parent, Ty::Named { head, .. } if self.registry.is_resource(head.registry_key()))
+            if matches!(&parent, Ty::Named { head, .. } if head.nominal().is_some_and(|id| self.registry.is_resource(id)))
             {
                 owner = Some(depth);
             }
@@ -98,21 +98,32 @@ impl Checker {
 
     /// Whether a value of `ty` holds a marker-free `#[opaque]` handle that is
     /// not itself owned by a nested `#[resource]`.
-    pub(super) fn carries_resource_handle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+    pub(super) fn carries_resource_handle(
+        &self,
+        ty: &Ty,
+        visiting: &mut HashSet<crate::TypeHead>,
+    ) -> bool {
         match ty {
             Ty::Named { head, args } => {
-                let name = head.registry_key();
-                if self.registry.is_resource(name) {
+                if head
+                    .nominal()
+                    .is_some_and(|id| self.registry.is_resource(id))
+                {
                     return false;
                 }
-                if crate::value_class::ClassDeclarations::declared_type(
-                    &self.class_declarations(),
-                    name,
-                )
-                .is_some_and(|declaration| {
-                    declaration.is_opaque
-                        && declaration.marker == crate::value_class::DeclarationMarker::None
-                }) {
+                if head
+                    .nominal()
+                    .and_then(|id| {
+                        crate::value_class::ClassDeclarations::declared_type(
+                            &self.class_declarations(),
+                            id,
+                        )
+                    })
+                    .is_some_and(|declaration| {
+                        declaration.is_opaque
+                            && declaration.marker == crate::value_class::DeclarationMarker::None
+                    })
+                {
                     return true;
                 }
                 if args
@@ -121,17 +132,17 @@ impl Checker {
                 {
                     return true;
                 }
-                let Some(members) = self.registry.member_types(name) else {
+                let Some(members) = self.registry.member_types(*head) else {
                     return false;
                 };
-                if !visiting.insert(name.to_string()) {
+                if !visiting.insert(*head) {
                     return false;
                 }
                 let carries = members
                     .to_vec()
                     .iter()
                     .any(|member| self.carries_resource_handle(member, visiting));
-                visiting.remove(name);
+                visiting.remove(head);
                 carries
             }
             Ty::Tuple(elements) => elements
@@ -271,8 +282,7 @@ impl Checker {
         let Ty::Named { head, args } = parent else {
             return None;
         };
-        let name = head.registry_key();
-        let definition = self.type_def_at(name)?;
+        let definition = self.type_def_view().of(*head)?;
         if definition.type_params.len() != args.len() {
             return None;
         }
@@ -292,17 +302,16 @@ impl Checker {
         match parent {
             Ty::Tuple(items) => items.get(field.parse::<usize>().ok()?).cloned(),
             Ty::Named { head, args } => {
-                let name = head.registry_key();
                 let declaration = crate::value_class::ClassDeclarations::declared_type(
                     &self.class_declarations(),
-                    name,
+                    head.declaration(&self.defs)?,
                 )?;
                 if declaration.marker != crate::value_class::DeclarationMarker::None
                     || declaration.is_opaque
                 {
                     return None;
                 }
-                let definition = self.type_def_at(name)?;
+                let definition = self.type_def_view().of(*head)?;
                 if !matches!(definition.kind, TypeDefKind::Struct | TypeDefKind::Record)
                     || definition.type_params.len() != args.len()
                 {
@@ -533,17 +542,17 @@ impl Checker {
     pub(super) fn ty_contains_affine_actor_transfer_guarded(
         &self,
         ty: &Ty,
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
     ) -> bool {
         match ty {
             Ty::CancellationToken => true,
             Ty::Named { head, args, .. } => {
-                let name = head.registry_key();
                 let builtin = head.builtin();
                 if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
-                    || Self::qualified_name_resolves_to_transferring_builtin(name)
-                    || self.registry.is_resource(name)
-                    || self.registry.is_linear(name)
+                    || head
+                        .nominal()
+                        .is_some_and(|id| self.registry.is_resource(id))
+                    || head.nominal().is_some_and(|id| self.registry.is_linear(id))
                 {
                     return true;
                 }
@@ -555,18 +564,18 @@ impl Checker {
                 }
                 // A builtin carries no user member set to descend into, and its
                 // ownership verdict is already decided above.
-                if builtin.is_some() || !visiting.insert(name.to_string()) {
+                if builtin.is_some() || !visiting.insert(*head) {
                     return false;
                 }
                 let members: Vec<Ty> = self
                     .registry
-                    .member_types(name)
+                    .member_types(*head)
                     .map(<[Ty]>::to_vec)
                     .unwrap_or_default();
                 let carries = members
                     .iter()
                     .any(|member| self.ty_contains_affine_actor_transfer_guarded(member, visiting));
-                visiting.remove(name);
+                visiting.remove(head);
                 carries
             }
             Ty::Tuple(elements) => elements

@@ -2803,3 +2803,35 @@ fn binary_operand_diagnostics_identify_the_operator_site() {
         assert_eq!(diagnostic.span.start, source.find(expression).unwrap());
     }
 }
+
+#[test]
+fn user_ordering_trait_names_do_not_grant_operator_capabilities() {
+    for name in ["Ord", "PartialOrd"] {
+        let source = format!(
+            r"
+            type Item {{ rank: i64; }}
+            trait {name} {{ fn lt(self, other: Self) -> bool; }}
+            impl {name} for Item {{
+                fn lt(self, other: Item) -> bool {{ self.rank > other.rank }}
+            }}
+            fn main() {{
+                let left = Item {{ rank: 1 }};
+                let right = Item {{ rank: 2 }};
+                let explicit = left.lt(right);
+                let comparison = left < right;
+            }}
+        "
+        );
+        let output = check_source(&source);
+        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+        assert!(
+            matches!(
+                output.errors[0].kind,
+                TypeErrorKind::DerivedOrdUnavailable { .. }
+            ),
+            "{:?}",
+            output.errors
+        );
+        assert_eq!(source[output.errors[0].span.clone()].trim(), "left < right");
+    }
+}

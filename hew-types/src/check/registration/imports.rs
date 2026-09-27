@@ -981,9 +981,13 @@ impl Checker {
                                     name,
                                 )
                                 .unwrap_or_else(|| name.clone());
-                            let nominal = self
-                                .nominal_head_for_key(&canonical)
-                                .expect("imported handle has a source declaration");
+                            let Some(nominal) = self.nominal_head_for_key(&canonical) else {
+                                self.require_declaration_path(
+                                    &canonical,
+                                    import_span.unwrap_or(&(0..0)),
+                                );
+                                continue;
+                            };
                             let head = self.head_of_declaration(nominal.id);
                             if is_drop {
                                 self.registry.register_drop_type(head);

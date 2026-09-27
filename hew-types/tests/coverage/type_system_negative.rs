@@ -824,8 +824,8 @@ fn invalid_operation_string_plus_int() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation),
-        "Expected InvalidOperation, got errors: {:?}",
+            .any(|e| e.kind == TypeErrorKind::BinaryOperandTypes),
+        "Expected E_BINARY_OPERAND_TYPES, got errors: {:?}",
         output.errors
     );
 }

@@ -7515,6 +7515,47 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
+    fn imported_machine_step_signature_keeps_its_event_declaration() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let source = root.join("tests/core-acceptance/cases/machine-import-values.hew");
+        let state = run_document_frontend(source.to_str().unwrap(), &FrontendOptions::default());
+        let checked = state
+            .typecheck_result
+            .as_ref()
+            .unwrap()
+            .tco
+            .as_ref()
+            .unwrap();
+        assert!(state.stopped.is_none(), "{:?}", state.stopped);
+        let mut event_owners = std::collections::HashSet::new();
+        for sig in checked.fn_sigs.values() {
+            let Some(method) = &sig.impl_method else {
+                continue;
+            };
+            if method.name.as_str() != "step"
+                || method
+                    .receiver
+                    .is_none_or(|id| checked.defs.name(id).as_str() != "Gate")
+            {
+                continue;
+            }
+            let Some(hew_types::Ty::Named { head, .. }) = sig.params.first() else {
+                continue;
+            };
+            let event = head
+                .declaration(&checked.defs)
+                .expect("resolved step event");
+            assert_eq!(checked.defs.owner(event.declaration()), method.receiver);
+            event_owners.insert(event);
+        }
+        assert_eq!(
+            event_owners.len(),
+            2,
+            "the two Gate declarations keep separate events"
+        );
+    }
+
+    #[test]
     fn bundled_type_decls_preserve_qualified_declaration_identity() {
         fn lower_to_hir(input: &str) -> hew_hir::HirModule {
             let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())

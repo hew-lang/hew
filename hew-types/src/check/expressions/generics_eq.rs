@@ -319,8 +319,10 @@ impl Checker {
                 ..
             } = left_resolved
             {
-                if let Some(method) = self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
-                {
+                if let Some(method) = self.impl_method_declaration_for_slot(
+                    left_resolved,
+                    crate::type_facts::ImplMethodSlot::Value(crate::ValueCapability::Eq),
+                ) {
                     self.record_user_comparison_dispatch(
                         expr_span,
                         UserComparisonDispatch::Eq { method },
@@ -337,16 +339,20 @@ impl Checker {
             ..
         } = left_resolved
         {
-            if let Some(method) = self.trait_impl_method_declaration(left_resolved, "Ord", "lt") {
+            if let Some(method) = self.impl_method_declaration_for_slot(
+                left_resolved,
+                crate::type_facts::ImplMethodSlot::OrdLt,
+            ) {
                 self.record_user_comparison_dispatch(
                     expr_span,
                     UserComparisonDispatch::Ord { method },
                 );
                 return;
             }
-            if let Some(method) =
-                self.trait_impl_method_declaration(left_resolved, "PartialOrd", "lt")
-            {
+            if let Some(method) = self.impl_method_declaration_for_slot(
+                left_resolved,
+                crate::type_facts::ImplMethodSlot::PartialOrdLt,
+            ) {
                 self.record_user_comparison_dispatch(
                     expr_span,
                     UserComparisonDispatch::PartialOrd { method },

@@ -227,14 +227,32 @@ pub fn compute(n: i64) -> i64 {
 
 /// Parse and type-check a program with one fictional owned-handle type registered.
 fn check_source_with_handle(source: &str, handle_type: &str) -> TypeCheckOutput {
-    let parse_result = hew_parser::parse(source);
+    let (owner, name) = handle_type.rsplit_once('.').expect("qualified test handle");
+    let source = format!("import {owner};\n{source}");
+    let parse_result = hew_parser::parse(&source);
     assert!(
         parse_result.errors.is_empty(),
         "parse errors in test source: {:#?}",
         parse_result.errors
     );
     let mut registry = ModuleRegistry::new(vec![]);
-    registry.insert_handle_type_for_test(handle_type.to_string());
+    let declaration = hew_parser::parse(&format!("#[opaque] pub type {name} {{}}"));
+    registry.insert_module_info_for_test(
+        owner,
+        crate::stdlib_loader::ModuleInfo {
+            source_path: None,
+            source_items: declaration.program.items,
+            handle_types: vec![handle_type.to_string()],
+            functions: vec![],
+            clean_names: vec![],
+            handle_methods: vec![],
+            wrapper_fns: vec![],
+            drop_types: vec![],
+            resource_wrapper_types: vec![],
+            drop_funcs: vec![],
+            unsupported_type_signatures: vec![],
+        },
+    );
     let mut checker = Checker::new(registry);
     checker.check_program(&parse_result.program)
 }
@@ -496,40 +514,20 @@ impl PatternWrapper {
 #[test]
 fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
     fn register_n_plain_structs(n: usize) -> usize {
+        use std::fmt::Write as _;
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut source = String::new();
         for i in 0..n {
-            let td = hew_parser::ast::TypeDecl {
-                origin: hew_parser::ast::DeclarationOrigin::Authored,
-                visibility: hew_parser::ast::Visibility::Private,
-                kind: hew_parser::ast::TypeDeclKind::Struct,
-                name: Ident::new(&format!("S{i}")),
-                type_params: None,
-                where_clause: None,
-                body: vec![hew_parser::ast::TypeBodyItem::Field {
-                    name: Ident::new("value"),
-                    ty: (
-                        hew_parser::ast::TypeExpr::Named {
-                            path: hew_parser::ast::Path::single(
-                                hew_parser::ast::Ident::new("i64"),
-                                0..0,
-                            ),
-                            type_args: None,
-                        },
-                        0..0,
-                    ),
-                    attributes: vec![],
-                    doc_comment: None,
-                    span: 0..0,
-                }],
-                doc_comment: None,
-                wire: None,
-                is_indirect: false,
-                resource_marker: hew_parser::ast::ResourceMarker::None,
-                is_opaque: false,
-                consuming_methods: Vec::new(),
-                lang_item: None,
-            };
-            checker.register_type_decl(&td);
+            writeln!(source, "type S{i} {{ value: i64; }}").unwrap();
+        }
+        let parsed = hew_parser::parse(&source);
+        assert!(parsed.errors.is_empty());
+        checker.mint_module_identities(&parsed.program);
+        checker.mint_source_declaration_identities(&parsed.program);
+        for (item, _) in &parsed.program.items {
+            if let Item::TypeDecl(decl) = item {
+                checker.register_type_decl(decl);
+            }
         }
         // Trigger the lazy refresh with one lookup.
         checker.ensure_handle_bearing_fresh();

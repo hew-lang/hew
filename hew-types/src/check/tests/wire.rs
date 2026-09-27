@@ -601,7 +601,7 @@ type OptionalOption {
         error.message,
         "E_WIRE_OPTIONAL_REQUIRES_OPTION: wire field `value` is marked `optional` but must have type `Option<T>`"
     );
-    assert_eq!(error.span, 47..54);
+    assert_eq!(&source[error.span.clone()], "string ");
     assert_eq!(
         output
             .errors

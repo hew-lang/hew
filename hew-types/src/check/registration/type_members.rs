@@ -1025,10 +1025,17 @@ impl Checker {
         if self.type_def_at(guard_key.as_str()).is_some() {
             return;
         }
-        let declaration = self
-            .nominal_head_for_key(&guard_key)
-            .expect("pre-registered type has a minted declaration")
-            .id;
+        let Some(head) = self.nominal_head_for_key(&guard_key) else {
+            // A rejected duplicate declaration has no owner to register.
+            let span = self
+                .type_def_spans
+                .get(&guard_key)
+                .cloned()
+                .unwrap_or_default();
+            self.require_declaration_path(&guard_key, &span);
+            return;
+        };
+        let declaration = head.id;
         // #1295: record `#[resource]` types from pre-registered (imported)
         // modules too, so an imported handle type's inherent `close(self)`
         // consumes its receiver at the call site (mirrors `register_type_decl`).
@@ -1334,10 +1341,17 @@ impl Checker {
             || td.name.to_string(),
             |module| format!("{module}.{}", td.name),
         );
-        let declaration = self
-            .nominal_head_for_key(&canonical_name)
-            .expect("registered type has a minted declaration")
-            .id;
+        let Some(head) = self.nominal_head_for_key(&canonical_name) else {
+            // A rejected duplicate declaration has no owner to register.
+            let span = self
+                .type_def_spans
+                .get(&canonical_name)
+                .cloned()
+                .unwrap_or_default();
+            self.require_declaration_path(&canonical_name, &span);
+            return;
+        };
+        let declaration = head.id;
         match td.resource_marker {
             hew_parser::ast::ResourceMarker::Resource => {
                 self.registry.register_resource_type(declaration);

@@ -1890,6 +1890,22 @@ impl Checker {
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
         let constructor_match = self.lookup_variant_constructor(constructor_name);
         if let Some((type_name, expected_params, type_params)) = constructor_match {
+            let member = constructor_name
+                .rsplit("::")
+                .next()
+                .unwrap_or(constructor_name);
+            if self.type_def_at(&type_name).is_some_and(|definition| {
+                matches!(definition.variants.get(member), Some(VariantDef::Unit))
+            }) {
+                self.report_error(
+                    TypeErrorKind::PathKindMismatch,
+                    span,
+                    format!(
+                        "unit variant `{constructor_name}` is a value; remove the call parentheses"
+                    ),
+                );
+                return Ty::Error;
+            }
             if !func_name.contains("::") {
                 self.report_bare_variant_expr(
                     &func_name,

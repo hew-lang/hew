@@ -1732,8 +1732,6 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.net.tls".to_string());
-    checker.register_type_decl(&private_wrap);
-    checker.register_qualified_type_alias("tls", "Wrap");
     checker.register_stdlib_hew_items(
         "tls",
         "std.net.tls",

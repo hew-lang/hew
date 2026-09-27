@@ -35,62 +35,45 @@ fn main() {
 
 #[test]
 fn enum_constructor_mistakes_are_structured_user_errors() {
-    let output = lower_through_checker(
-        r"enum Shape {
-    Pair(i64, i64);
-    Record { left: i64; right: i64;  }
-    Unit;
-}
-
-fn main() {
-    let _wrong_arity = Shape.Pair(1);
-    let _wrong_shape = Pair { left: 1 };
-    let _missing = Record { left: 1 };
-    let _unknown = Record { left: 1, right: 2, extra: 3 };
-    let _unit_call = Shape.Unit();
-    let _record_call = Record(1, 2);
-}
-",
-    );
-
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::EnumVariantConstructorArityMismatch { .. }
-        )),
-        "expected tuple-variant arity diagnostic, got: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::EnumVariantConstructorShapeMismatch { .. }
-        )),
-        "expected enum constructor shape diagnostic, got: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::EnumVariantConstructorMissingField { .. }
-        )),
-        "expected missing enum variant field diagnostic, got: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::EnumVariantConstructorUnknownField { .. }
-        )),
-        "expected unknown enum variant field diagnostic, got: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        !output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::NotYetImplemented { .. }
-        )),
-        "enum constructor mistakes must not be reported as unsupported: {:#?}",
-        output.diagnostics
-    );
+    use hew_types::error::TypeErrorKind;
+    for (expression, kind, detail) in [
+        ("Shape.Pair(1)", TypeErrorKind::ArityMismatch, "2 argument"),
+        (
+            "Shape.Pair { left: 1 }",
+            TypeErrorKind::UndefinedType,
+            "Shape.Pair",
+        ),
+        (
+            "Shape.Record { left: 1 }",
+            TypeErrorKind::UndefinedField,
+            "right",
+        ),
+        (
+            "Shape.Record { left: 1, right: 2, extra: 3 }",
+            TypeErrorKind::UndefinedField,
+            "extra",
+        ),
+        (
+            "Shape.Unit()",
+            TypeErrorKind::PathKindMismatch,
+            "parentheses",
+        ),
+        (
+            "Shape.Record(1, 2)",
+            TypeErrorKind::UndefinedFunction,
+            "Shape.Record",
+        ),
+    ] {
+        let source = format!("enum Shape {{ Pair(i64, i64); Record {{ left: i64; right: i64; }} Unit; }}\nfn main() {{ let value = {expression}; }}");
+        // These are checker errors. A rejected program does not have the
+        // complete declaration facts needed to enter HIR.
+        let (_, checked) = crate::support::checker_pipeline::typecheck_source(&source);
+        let diagnostic = checked
+            .errors
+            .iter()
+            .find(|error| error.kind == kind)
+            .unwrap_or_else(|| panic!("{expression}: {:?}", checked.errors));
+        assert!(diagnostic.message.contains(detail), "{diagnostic:?}");
+        assert_eq!(source[diagnostic.span.clone()].trim(), expression);
+    }
 }

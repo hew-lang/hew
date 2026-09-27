@@ -861,7 +861,7 @@ fn generic_instantiation_keeps_closure_effects() {
     let source = "type Holder<T> {\n    value: T;\n}\n\nfn main() {\n    let holder = Holder { value: || {\n        sleep(1ms);\n        1\n    } };\n    let value = holder.value();\n}\n";
     assert_call_effect(source, "holder.value()", SuspensionEffect::MaySuspend);
     assert_call_effect(
-        &source.replace("|| { sleep(1ms); 1 }", "|| 1"),
+        &source.replace("sleep(1ms);", ""),
         "holder.value()",
         SuspensionEffect::Never,
     );

@@ -3021,8 +3021,8 @@ fn main() {}
         output.errors
     );
 
-    let good = Ty::named_for_test("Good", vec![]);
-    let bad = Ty::named_for_test("Bad", vec![]);
+    let good = checker.named_ty_for_key("Good", vec![]);
+    let bad = checker.named_ty_for_key("Bad", vec![]);
 
     for marker in [
         crate::traits::MarkerTrait::Send,

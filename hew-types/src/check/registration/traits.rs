@@ -2181,6 +2181,12 @@ impl Checker {
         method_name: &str,
     ) -> Option<crate::type_facts::ImplMethodSlot> {
         use crate::type_facts::{ImplMethodSlot, ValueCapability};
+        let trait_key = self.trait_defs_key_for_bound(trait_name);
+        if self.trait_key_id(&trait_key).is_some() {
+            return self
+                .trait_method_call_target_ids(trait_name, method_name)
+                .map(|(_, method)| ImplMethodSlot::Declared(method));
+        }
         match (MarkerTrait::from_name(trait_name), method_name) {
             (Some(MarkerTrait::Hash), "hash") => Some(ImplMethodSlot::Value(ValueCapability::Hash)),
             (Some(MarkerTrait::Eq), "eq") => Some(ImplMethodSlot::Value(ValueCapability::Eq)),
@@ -2199,6 +2205,14 @@ impl Checker {
         method_name: &str,
     ) -> Option<crate::DefId> {
         let slot = self.impl_method_slot(trait_name, method_name)?;
+        self.impl_method_declaration_for_slot(ty, slot)
+    }
+
+    pub(in crate::check) fn impl_method_declaration_for_slot(
+        &self,
+        ty: &Ty,
+        slot: crate::type_facts::ImplMethodSlot,
+    ) -> Option<crate::DefId> {
         let receiver = ResolvedTy::from_ty(&self.subst.resolve(ty)).ok()?;
         crate::type_facts::selected_impl_method(
             &self.trait_impl_method_declaration_ids,

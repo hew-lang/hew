@@ -40,78 +40,6 @@ fn main() {
 }
 
 #[test]
-fn supervisor_stop_publishes_typed_runtime_target() {
-    let output = check_source(
-        r"actor Worker {
-    receive fn ping() {}
-}
-
-supervisor App {
-    child worker: Worker;
-}
-
-fn main() {
-    let app = spawn App;
-    supervisor_stop(app);
-}
-",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "builtin supervisor_stop must typecheck: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.direct_call_targets.values().any(|target| matches!(
-            target,
-            crate::check::dispatch::CallTarget::Runtime(
-                crate::runtime_call::RuntimeCallFamily::SupervisorStop
-            )
-        )),
-        "builtin supervisor_stop must publish its typed runtime family: {:#?}",
-        output.direct_call_targets
-    );
-}
-
-#[test]
-fn user_supervisor_stop_shadow_keeps_user_target() {
-    let output = check_source_allowing_prelude_redeclaration(
-        r"
-        fn supervisor_stop(value: i64) -> i64 { value + 1 }
-        fn main() {
-            let value: i64 = supervisor_stop(1);
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "user supervisor_stop shadow must retain its declared signature: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.direct_call_targets.values().any(|target| matches!(
-            target,
-            crate::check::dispatch::CallTarget::User(id)
-                if output.defs.path(*id) == "supervisor_stop"
-        )),
-        "user supervisor_stop must publish the user declaration target: {:#?}",
-        output.direct_call_targets
-    );
-    assert!(
-        !output.direct_call_targets.values().any(|target| matches!(
-            target,
-            crate::check::dispatch::CallTarget::Runtime(
-                crate::runtime_call::RuntimeCallFamily::SupervisorStop
-            )
-        )),
-        "user supervisor_stop must not acquire the builtin runtime family: {:#?}",
-        output.direct_call_targets
-    );
-}
-
-#[test]
 fn instant_now_publishes_typed_runtime_target() {
     let output = check_source(
         r"
@@ -175,7 +103,7 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let c = app.cache;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         let output = parse_and_check(source);
@@ -221,7 +149,7 @@ fn main() {
     let app = spawn App;
     let c = app.cache;
     let l = app.log;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         let output = parse_and_check(source);
@@ -263,7 +191,7 @@ supervisor Pool {
 fn main() {
     let p = spawn Pool;
     let w = p.worker;
-    supervisor_stop(p);
+    stop(p);
 }
 ";
         let output = parse_and_check(source);
@@ -354,7 +282,7 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let c = app.cache;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         // NOTE: A supervisor with mixed static+pool children may not pass all
@@ -397,7 +325,7 @@ supervisor App {
 fn main() {
     let app = spawn App;
     let x = app.unknown;
-    supervisor_stop(app);
+    stop(app);
 }
 ";
         let result = hew_parser::parse(source);
@@ -825,7 +753,7 @@ fn main() {
 
     const DYN_ITERATOR_SOURCE: &str = r"
             type Counter {
-                val: i32,
+                val: i32;
             }
 
             impl Iterator for Counter {

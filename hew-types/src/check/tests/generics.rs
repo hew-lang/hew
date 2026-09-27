@@ -1036,10 +1036,10 @@ actor Greeter {
 fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
     let source = concat!(
         "actor Alpha {\n",
-        "    let beta: Beta,\n",
+        "    let beta: Beta;\n",
         "}\n",
         "actor Beta {\n",
-        "    let alpha: Alpha,\n",
+        "    let alpha: Alpha;\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1283,7 +1283,7 @@ fn main() {}
 }
 
 #[test]
-fn typecheck_closed_actor_handle_waits_for_termination() {
+fn typecheck_stopped_actor_handle_waits_for_termination() {
     let output = check_source(
         r#"
         actor Greeter {
@@ -1294,8 +1294,9 @@ fn typecheck_closed_actor_handle_waits_for_termination() {
         fn main() {
             let g = spawn Greeter;
             let _ = g.greet("hi");
-            fork close(g);
-            closed(g);
+            stop(g);
+            let waiter = fork stopped(g);
+            await waiter;
         }
         "#,
     );
@@ -1372,10 +1373,9 @@ fn named_actor_receive_dispatch_reports_bad_arg_once() {
     );
 }
 
-/// `close(actor)` is a plain call that waits for terminal cleanup: it has type
-/// `()`, and `await` on it is refused as it is on any other call (U383).
+/// `stopped(actor)` is a plain unit-valued call; `await` on it is refused.
 #[test]
-fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
+fn stopped_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
     let output = check_source(
         r"
         actor Greeter {
@@ -1385,7 +1385,8 @@ fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
         }
         fn main() {
             let g = spawn Greeter;
-            close(g);
+            stop(g);
+            stopped(g);
         }
         ",
     );
@@ -1404,7 +1405,7 @@ fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
         }
         fn main() {
             let g = spawn Greeter;
-            await close(g);
+            await stopped(g);
         }
         ",
     );
@@ -4552,7 +4553,7 @@ fn main() -> i64 {{
     let right: Option<i64> = Some(1);
     let out = await store.keep(left, right);
     match out {{
-        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Ok(v) => match v {{ true => 0, false => 1 }}
         .Err(_) => 2,
     }}
 }}
@@ -4582,7 +4583,7 @@ fn main() -> i64 {{
     let right: Option<HashMap<string, i64>> = Some(b);
     let out = await store.keep(left, right);
     match out {{
-        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Ok(v) => match v {{ true => 0, false => 1 }}
         .Err(_) => 2,
     }}
 }}

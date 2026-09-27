@@ -661,9 +661,8 @@ fn direct_main_observations_require_actor_context() {
     }
 }
 
-/// A source declaration owns its name. `close` and `closed` are actor-handle
-/// spellings, so a program that declares one of them keeps its own signature
-/// while a handle call in the same program still reaches the builtin.
+/// A source declaration owns its name even when it resembles a retired
+/// lifecycle operation.
 #[test]
 fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
     let source = "actor Worker { receive fn ping() {} }\n\
@@ -674,23 +673,22 @@ fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
          fn main() {\n\
              let worker = spawn Worker();\n\
              let _sent = worker.ping();\n\
-             close(worker);\n\
+             stop(worker);\n\
              let _checked = check();\n\
          }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
-/// Negative control for the guard: with no declaration in scope both handle
-/// builtins keep their own signature on a real pid.
+/// With no declaration in scope both lifecycle builtins accept a real pid.
 #[test]
-fn an_undeclared_close_and_closed_still_take_a_handle() {
+fn an_undeclared_stop_and_stopped_take_a_handle() {
     let source = "actor Worker { receive fn ping() {} }\n\
          fn main() {\n\
              let worker = spawn Worker();\n\
              let _sent = worker.ping();\n\
-             close(worker);\n\
-             closed(worker);\n\
+             stop(worker);\n\
+             stopped(worker);\n\
          }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
@@ -699,8 +697,8 @@ fn an_undeclared_close_and_closed_still_take_a_handle() {
 /// Negative control: without a declaration the builtin still owns the name and
 /// still refuses a two-argument call.
 #[test]
-fn an_undeclared_closed_keeps_the_handle_builtin_arity() {
-    let output = check_source("fn main() { closed(7, \"ok\"); }");
+fn an_undeclared_stopped_keeps_the_handle_builtin_arity() {
+    let output = check_source("fn main() { stopped(7, \"ok\"); }");
     assert!(
         output
             .errors
@@ -711,47 +709,37 @@ fn an_undeclared_closed_keeps_the_handle_builtin_arity() {
     );
 }
 
-/// `stop` is the actor handle's own lifecycle method (#3193): `self.stop()`
-/// inside the actor and `pid.stop()` outside it both type as `()`, while a
-/// receive handler can no longer take the name and the retired free function
-/// is gone.
+/// The free `stop` function is distinct from a receive handler named `stop`.
 #[test]
-fn actor_stop_is_a_handle_method_and_a_reserved_handler_name() {
+fn actor_stop_is_distinct_from_a_stop_receive_handler() {
     let accepted = check_source(
         "actor Worker {\n\
-             receive fn work() { self.stop(); println(\"after\"); }\n\
+             receive fn work() { stop(self); println(\"after\"); }\n\
              #[on(stop)]\n\
-             fn stop() {}\n\
+             fn on_stop() {}\n\
          }\n\
          fn main() {\n\
              let worker = spawn Worker;\n\
              let _sent = worker.work();\n\
-             let unit: () = worker.stop();\n\
+             let unit: () = stop(worker);\n\
              let _ = unit;\n\
          }",
     );
     assert!(accepted.errors.is_empty(), "{:?}", accepted.errors);
 
-    let reserved = check_source(
+    let handler = check_source(
         "actor Worker { receive fn stop() {} }\n\
-         fn main() { let _worker = spawn Worker; }",
+         fn main() { let worker = spawn Worker; let _sent = worker.stop(); stop(worker); stopped(worker); }",
     );
-    assert!(
-        reserved
-            .errors
-            .iter()
-            .any(|error| error.message.contains("E_RESERVED_HANDLER_NAME")),
-        "{:?}",
-        reserved.errors
-    );
+    assert!(handler.errors.is_empty(), "{:?}", handler.errors);
 
     for (source, expected) in [
         (
             "actor Worker { receive fn ping() {} }\n\
              fn main() { let worker = spawn Worker; worker.stop(1); }",
-            "argument",
+            "E_ACTOR_HANDLE_METHOD_RETIRED",
         ),
-        ("fn main() { stop(1); }", "undefined function `stop`"),
+        ("fn main() { stop(1); }", "actor"),
     ] {
         let output = check_source(source);
         assert!(

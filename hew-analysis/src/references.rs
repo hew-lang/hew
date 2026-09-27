@@ -1404,7 +1404,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(init: make_config()),\n",
+            "    child w: Worker(init: make_config());\n",
             "}",
         );
         let pr = parse(source);

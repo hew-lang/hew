@@ -77,13 +77,13 @@ fn main() {}
     );
 }
 
-// ── await_restart keyword ────────────────────────────────────────────────────
+// ── Restart wait ────────────────────────────────────────────────────────────
 
-/// `await_restart sup.child` on a STATIC supervised child type-checks cleanly:
-/// the operand is a static child accessor, so the keyword is well-formed and the
+/// `restarted(sup.child)` on a static supervised child type-checks cleanly:
+/// the operand is a static child accessor, so the call is well-formed and the
 /// stable handle keeps the child's `ChildRef<ChildType>` type.
 #[test]
-fn await_restart_on_static_child_accepted() {
+fn restarted_on_static_child_accepted() {
     let output = typecheck(
         r"actor Worker {
     receive fn ping() {}
@@ -98,25 +98,25 @@ supervisor App {
 
 fn main() {
     let sup = spawn App;
-    let _w: ChildRef<Worker> = await_restart sup.w;
+    let _w: ChildRef<Worker> = restarted(sup.w);
 }
 ",
     );
     let relevant: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.message.contains("await_restart"))
+        .filter(|e| e.message.contains("restarted"))
         .collect();
     assert!(
         relevant.is_empty(),
-        "`await_restart sup.w` on a static child must type-check cleanly: {relevant:#?}"
+        "`restarted(sup.w)` on a static child must type-check cleanly: {relevant:#?}"
     );
 }
 
-/// `await_restart` on a WHOLE pool is rejected: a pool names many slots, so it
-/// has no single restart signal. The diagnostic points at the member form.
+/// `restarted` on a whole pool is rejected: a pool names many slots, so it
+/// has no single restart signal.
 #[test]
-fn await_restart_on_whole_pool_rejected() {
+fn restarted_on_whole_pool_rejected() {
     let output = typecheck(
         r"actor Worker {
     receive fn ping() {}
@@ -131,26 +131,26 @@ supervisor Pool {
 
 fn main() {
     let sup = spawn Pool;
-    let _w = await_restart sup.worker;
+    let _w = restarted(sup.worker);
 }
 ",
     );
     let rejected = output
         .errors
         .iter()
-        .any(|e| e.message.contains("await_restart") && e.message.contains("sup.pool[i]"));
+        .any(|e| e.message.contains("`restarted` expects a supervised role"));
     assert!(
         rejected,
-        "`await_restart` on a whole pool must be rejected and name the member form; \
+        "`restarted` on a whole pool must be rejected; \
          got: {:#?}",
         output.errors
     );
 }
 
-/// `await_restart sup.pool[i]` on ONE pool member type-checks: each member
+/// `restarted(sup.pool[i])` on one pool member type-checks: each member
 /// occupies its own supervised slot, so it has its own restart signal.
 #[test]
-fn await_restart_on_pool_member_accepted() {
+fn restarted_on_pool_member_accepted() {
     let output = typecheck(
         r"actor Worker {
     receive fn ping() {}
@@ -165,39 +165,40 @@ supervisor Pool {
 
 fn main() {
     let sup = spawn Pool;
-    let _w: ChildRef<Worker> = await_restart sup.worker[0];
+    let _w: ChildRef<Worker> = restarted(sup.worker[0]);
 }
 ",
     );
     let relevant: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.message.contains("await_restart"))
+        .filter(|e| e.message.contains("restarted"))
         .collect();
     assert!(
         relevant.is_empty(),
-        "`await_restart sup.worker[0]` must type-check cleanly: {relevant:#?}"
+        "`restarted(sup.worker[0])` must type-check cleanly: {relevant:#?}"
     );
 }
 
-/// `await_restart` on a non-supervisor-child operand is rejected with a clear
+/// `restarted` on a non-supervisor-child operand is rejected with a clear
 /// diagnostic — the operand must name a supervisor child slot.
 #[test]
-fn await_restart_on_non_child_operand_rejected() {
+fn restarted_on_non_child_operand_rejected() {
     let output = typecheck(
         r"
         fn main() {
             let x = 5;
-            let _y = await_restart x;
+            let _y = restarted(x);
         }
         ",
     );
-    let rejected = output.errors.iter().any(|e| {
-        e.message.contains("await_restart") && e.message.contains("supervisor child slot")
-    });
+    let rejected = output
+        .errors
+        .iter()
+        .any(|e| e.message.contains("`restarted` expects a supervised role"));
     assert!(
         rejected,
-        "`await_restart` on a non-supervised-child operand must be rejected; got: {:#?}",
+        "`restarted` on a non-supervised-child operand must be rejected; got: {:#?}",
         output.errors
     );
 }

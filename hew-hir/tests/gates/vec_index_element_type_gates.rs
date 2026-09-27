@@ -331,20 +331,20 @@ fn vec_index_in_machine_transition_body_rejected() {
 
         machine M {{
             events {{
-                Go,
-                Reset,
+                Go;
+                Reset;
             }}
 
-            state Idle,
-            state Done,
+            state Idle;
+            state Done;
             on Go: Idle => .Done {{
                 let xs: Vec<()> = make_units();
                 let _: () = xs[0];
                 .Done
             }}
-            on Go: Done => .Done,
-            on Reset: Done => .Idle,
-            on Reset: Idle => .Idle,
+            on Go: Done => .Done;
+            on Reset: Done => .Idle;
+            on Reset: Idle => .Idle;
         }}
         "
     ));
@@ -373,17 +373,17 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
         machine M {{
             events {{
-                Go,
-                Reset,
+                Go;
+                Reset;
             }}
 
-            state Idle,
-            state Done,
-            on Go: Idle => .Done when make_units()[0] == (),
-            on Go: Idle => .Idle,
-            on Go: Done => .Done,
-            on Reset: Done => .Idle,
-            on Reset: Idle => .Idle,
+            state Idle;
+            state Done;
+            on Go: Idle => .Done when make_units()[0] == ();
+            on Go: Idle => .Idle;
+            on Go: Done => .Done;
+            on Reset: Done => .Idle;
+            on Reset: Idle => .Idle;
         }}
         "
     ));

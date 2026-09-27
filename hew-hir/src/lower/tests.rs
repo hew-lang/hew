@@ -7,7 +7,7 @@ use hew_types::Checker;
 fn source_annotations_keep_user_nominals_with_builtin_spellings() {
     for name in ["Task", "Unit", "Stream", "Sink", "Connection"] {
         let source = format!(
-            "type {name}<T> {{ value: T }} fn keep(consume value: {name}<i64>) -> {name}<i64> {{ value }}"
+            "type {name}<T> {{ value: T; }} fn keep(consume value: {name}<i64>) -> {name}<i64> {{ value }}"
         );
         let (_, output, lowered) = parse_typecheck_and_lower(&source);
         assert!(
@@ -49,7 +49,7 @@ fn source_annotations_keep_user_nominals_with_builtin_spellings() {
 
 #[test]
 fn annotation_lowering_requires_the_checked_type_at_its_source_site() {
-    let source = "type Value { number: i64 } fn main() { let value: Value = Value { number: 7 }; println(value.number); }";
+    let source = "type Value { number: i64; } fn main() { let value: Value = Value { number: 7 }; println(value.number); }";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -3172,11 +3172,10 @@ fn main() -> i64 {
 // recursion — exhaustivity catches a *missing* arm, but not an arm that
 // exists yet skips sub-expressions.
 
-/// A lambda actor's `close()` releases the handle and is an ordinary call:
-/// it needs no `await` in either position (U383).
+/// A lambda actor's graceful stop is an ordinary unit-valued call in either position.
 #[test]
-fn lambda_actor_close_produces_unit_in_value_and_statement_positions() {
-    for operation in ["a.close();", "let value: () = a.close();"] {
+fn lambda_actor_stop_produces_unit_in_value_and_statement_positions() {
+    for operation in ["stop(a);", "let value: () = stop(a);"] {
         let source = format!("fn main() {{ let a = actor |x: i64| {{}}; {operation} }}");
         let (_, checked, lowered) = parse_typecheck_and_lower(&source);
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
@@ -3821,7 +3820,7 @@ fn conn_holder_module(
 ) -> hew_parser::module::Module {
     let source = format!(
         "pub actor Conn {{ receive fn ping() -> i64 {{ {ping_result} }} }}\n\
-             pub actor {holder_name} {{ let conn: Conn, receive fn get() -> i64 {{ 0 }} }}\n"
+             pub actor {holder_name} {{ let conn: Conn; receive fn get() -> i64 {{ 0 }} }}\n"
     );
     let parsed = hew_parser::parse(&source);
     assert!(

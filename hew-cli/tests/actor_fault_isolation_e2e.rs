@@ -182,7 +182,7 @@ fn main() {
     var f1 = sup.f1;
     let _ = f1.work();
     let _ = f1.boom();
-    f1 = await_restart sup.f1;
+    f1 = restarted(sup.f1);
     let _ = f1.work();
     println("MAIN_DONE");
 }
@@ -208,9 +208,9 @@ fn main() {
     let sup = spawn Pool;
     var f1 = sup.f1;
     let _ = f1.boom();
-    f1 = await_restart sup.f1;
+    f1 = restarted(sup.f1);
     let _ = f1.boom();
-    let _ = await_restart sup.f1;
+    let _ = restarted(sup.f1);
     println("MAIN_DONE");
 }
 "#;
@@ -251,7 +251,7 @@ fn main() {
     let probe = spawn Probe;
     let w = sup.w;
     let _ = w.boom();
-    let _ = await_restart sup.w;
+    let _ = restarted(sup.w);
     match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
@@ -349,7 +349,7 @@ fn main() {
     let probe = spawn Probe;
     let t1 = sup.t1;
     let _ = t1.boom();
-    let _ = await_restart sup.t1;
+    let _ = restarted(sup.t1);
     match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
@@ -392,7 +392,7 @@ fn main() {
     let probe = spawn Probe;
     let w = sup.w;
     let _ = w.boom();
-    let _ = await_restart sup.w;
+    let _ = restarted(sup.w);
     match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
@@ -518,11 +518,11 @@ fn main() {
     var f1 = inner.f1;
     let _ = f1.work();
     let _ = f1.boom();
-    f1 = await_restart inner.f1;
+    f1 = restarted(inner.f1);
     let _ = f1.boom();
     // The inner budget is spent, so the escalation hands the subtree to the
     // outer supervisor, which restarts it.
-    inner = await_restart outer.inner;
+    inner = restarted(outer.inner);
     f1 = inner.f1;
     let _ = f1.work();
     println("MAIN_DONE");
@@ -563,13 +563,13 @@ fn main() {
     let bad = spawn GivingUp;
     var r1 = good.r1;
     let _ = r1.boom();
-    r1 = await_restart good.r1;
+    r1 = restarted(good.r1);
     let _ = r1.work();
     var g1 = bad.g1;
     let _ = g1.boom();
-    g1 = await_restart bad.g1;
+    g1 = restarted(bad.g1);
     let _ = g1.boom();
-    let _ = await_restart bad.g1;
+    let _ = restarted(bad.g1);
     println("MAIN_DONE");
 }
 "#;

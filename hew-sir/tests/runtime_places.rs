@@ -512,7 +512,7 @@ fn immutable_field_receivers_and_wrong_element_types_remain_rejected() {
             hew_types::error::TypeErrorKind::MutabilityError,
         ),
     ] {
-        let source = format!("type State {{ xs: Vec<i64>, map: HashMap<i64, i64>, set: HashSet<i64> }} fn main() -> i64 {{ {declaration} state = State {{ xs: [1], map: HashMap.new(), set: HashSet.new() }}; {mutation}; 0 }}");
+        let source = format!("type State {{ xs: Vec<i64>; map: HashMap<i64, i64>; set: HashSet<i64>; }} fn main() -> i64 {{ {declaration} state = State {{ xs: [1], map: HashMap.new(), set: HashSet.new() }}; {mutation}; 0 }}");
         let parsed = hew_parser::parse(&source);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));

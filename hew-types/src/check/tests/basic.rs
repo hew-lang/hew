@@ -2156,8 +2156,8 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     let source = concat!(
         "import ecosystem.db.sqlite;\n",
         "enum Result {\n",
-        "    Ok(i64),\n",
-        "    Err(i64)\n",
+        "    Ok(i64);\n",
+        "    Err(i64);\n",
         "}\n",
         "fn unwrap_or(r: Result, fallback: i64) -> i64 {\n",
         "    match r {\n",

@@ -1249,9 +1249,9 @@ mod tests {
 
     const MACHINE_SOURCE: &str = concat!(
         "machine Counter {\n",
-        "    events { Tick { by: i64 } }\n",
-        "    state Idle,\n",
-        "    state Live { hits: i64 },\n",
+        "    events { Tick { by: i64; } }\n",
+        "    state Idle;\n",
+        "    state Live { hits: i64; }\n",
         "    on Tick(by): Idle => Live { hits: by }\n",
         "    on Tick: Live => Live reenter {\n",
         "        /*cursor*/\n",
@@ -1283,9 +1283,9 @@ mod tests {
     fn machine_event_head_binding_is_a_local() {
         let source = concat!(
             "machine Counter {\n",
-            "    events { Tick { by: i64 } }\n",
-            "    state Idle,\n",
-            "    state Live { hits: i64 },\n",
+            "    events { Tick { by: i64; } }\n",
+            "    state Idle;\n",
+            "    state Live { hits: i64; }\n",
             "    on Tick(by): Idle => Live {\n",
             "        hits: /*cursor*/by\n",
             "    }\n",

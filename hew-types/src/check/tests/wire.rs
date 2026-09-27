@@ -289,16 +289,16 @@ fn generic_wire_facade_refuses_values_without_a_codec() {
             r"
             import std.encoding.wire;
 
-            type Plain {{ a: i64 }}
+            type Plain {{ a: i64; }}
 
             #[wire]
-            type Outer {{ p: Plain @1 }}
+            type Outer {{ p: Plain @1; }}
 
             #[wire]
-            type Tree {{ v: i64 @1, kids: Vec<Tree> @2 }}
+            type Tree {{ v: i64 @1; kids: Vec<Tree> @2; }}
 
             #[resource]
-            type Handle {{ fd: i64 }}
+            type Handle {{ fd: i64; }}
 
             impl Handle {{
                 fn close(consume self) {{}}

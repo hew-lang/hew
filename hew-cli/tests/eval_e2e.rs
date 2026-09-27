@@ -297,7 +297,7 @@ fn eval_std_observe_scrape_and_series_include_actor_attribution() {
         r#"import std.observe;
 
 actor Counter {
-    var count: i64,
+    var count: i64;
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -1580,8 +1580,8 @@ fn eval_wasm_hashmap_record_key_uses_thunk_values_correctly() {
         "wasm_hashmap_point_i64",
         r#"
 type Point {
-    x: i64,
-    y: i64
+    x: i64;
+    y: i64;
 }
 
 {

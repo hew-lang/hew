@@ -93,7 +93,7 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
             _ => "",
         };
         let source = format!(r#"import std.stream;
-            type Reader {{ input: Stream<string> }}
+            type Reader {{ input: Stream<string>; }}
             fn open() -> Stream<string> {{ match stream.open("resource.txt") {{
                 .Ok(input) => input.lines(), .Err(_) => panic("open failed"),
             }} }}
@@ -120,7 +120,7 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
     let binary = hew_testutil::compiled_binary_path(dir.path(), "declared");
     std::fs::write(
         &input,
-        "#[resource] type Custom { value: i64 }\n\
+        "#[resource] type Custom { value: i64; }\n\
          impl Custom { fn close(consume self) { println(self.value); } }\n\
          fn main() { let _custom = Custom { value: 1 }; println(\"body\"); }\n",
     )

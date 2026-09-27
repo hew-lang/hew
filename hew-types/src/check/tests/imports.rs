@@ -747,7 +747,7 @@ fn supervisor_actor_named_and_aliased_imports_publish_exact_identity() {
             "pub actor Worker { receive fn identify() -> i64 { 17 } }",
         );
         let supervisor = hew_parser::parse(&format!(
-            "supervisor App {{ child worker: {binding} restart: temporary, }}"
+            "supervisor App {{ child worker: {binding} restart: temporary; }}"
         ));
         assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
         let mut items = vec![(Item::Import(import), 0..1)];

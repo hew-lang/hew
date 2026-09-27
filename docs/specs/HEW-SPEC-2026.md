@@ -521,7 +521,7 @@ string or another ordinary value.
 
 **Operations:**
 
-```hew,no_run
+```hew
 fn main() {
     let worker = actor |msg: i64| { println(msg); };
     let _ = worker(42);                              // wait for completion
@@ -1172,7 +1172,7 @@ independent snapshot; capturing an affine resource transfers its owner. An
 explicit `move` requests transfer. The parent cannot reuse a transferred
 resource, and no capture creates shared mutable actor state.
 
-```hew,no_run
+```hew
 fn main() {
     let prefix = "received: ";
     let worker = actor |message: string| {
@@ -1746,7 +1746,7 @@ Hew distinguishes three cases of variable shadowing:
 
 - **Same-scope rebinding** — a **hard error**. Declaring a name that is already bound in the same scope is rejected outright:
 
-  ```hew
+  ```hew,ignore
   fn main() {
       let x = 1;
       let x = 2;  // compile error: variable `x` is already defined in this scope
@@ -1755,7 +1755,7 @@ Hew distinguishes three cases of variable shadowing:
 
 - **Outer-scope shadowing of an actor field** — a **hard error**. Actor fields must have unambiguous bare names; a parameter, local variable, or loop variable that shadows a field is rejected:
 
-  ```hew
+  ```hew,ignore
 actor Example {
     var count: i64 = 0;
 
@@ -1770,7 +1770,7 @@ actor Example {
   ```hew
   fn main() {
       let x = 1;
-      if condition {
+      if true {
           let x = 2;  // warning: variable `x` shadows a binding in an outer scope
           println(x);
       }
@@ -2807,7 +2807,7 @@ fn main() {
 
 **Ambiguous cases require annotations:**
 
-```hew
+```hew,ignore
 // ERROR: Cannot infer types for lambda parameters
 let f = |x, y| x + y;  // No context to determine x, y types
 

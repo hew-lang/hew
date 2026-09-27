@@ -24,13 +24,14 @@ fn main() {
 
 All other standard library modules require an explicit import at the top of the file:
 
-```hew
+```hew,no_run
 import std.fs;
 import std.encoding.json;
 
 fn main() {
     let raw = fs.read("data.json").expect("read succeeds");
-    println(json.parse(raw).expect("parse succeeds"));
+    let value = json.parse(raw).expect("parse succeeds");
+    println(value.stringify().expect("encode succeeds"));
 }
 ```
 
@@ -46,8 +47,8 @@ A `scope` produces its body value after child tasks and cleanup finish.
 recovery. Ordinary application `Err` values stay values; structured faults
 and cancellation govern scope failure.
 
-Actor `close(actor)` requests a cooperative stop and waits for terminal
-cleanup; `closed(actor)` observes it. `mailbox` is the submission view and
+Actor `stop(actor)` requests a cooperative stop; `stopped(actor)` waits for
+terminal cleanup. `mailbox` is the submission view and
 `policy` selects completion-call admission. Supervisor lifecycle forms and
 typed request recovery in `ActorError` remain implementation gaps; see
 [builtins](builtins.hew).

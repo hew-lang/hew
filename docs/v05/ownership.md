@@ -1,5 +1,8 @@
 # Hew Value-Semantics and Ownership Contract
 
+The short code fences in this v0.5 design note are illustrative fragments; they
+refer to surrounding declarations and are not standalone examples.
+
 ## Core principle: copy-on-write, immutable by default
 
 Values in Hew are immutable views shared by refcount; a copy is made only on
@@ -14,7 +17,7 @@ with `var self`; there are no ownership annotations to write. Lifetimes, mutable
 references, and a capability lattice are permanent refusals, not deferred
 features.
 
-```hew
+```hew,ignore
 let p = build_point();
 let a = area(p);        // borrow — p is still yours
 let b = perimeter(p);   // borrow again — legal, no clone needed
@@ -75,7 +78,7 @@ order:
 copy-on-write's lazy, on-demand fork. `clone x` (prefix form, the natural and
 primary spelling) and `x.clone()` (method form) are equivalent:
 
-```hew
+```hew,ignore
 var a: Vec<i64> = Vec.new();
 a.push(1); a.push(2);
 var b = clone a;      // == a.clone() — independent copy, forked eagerly now
@@ -106,7 +109,7 @@ Sending an ordinary value across an **actor boundary** is a logical snapshot,
 not a move. A `receive fn` method call gives the receiver an independent value,
 and the sender's binding **stays valid**:
 
-```hew
+```hew,ignore
 let greeting = "hello";
 printer.print_message(greeting);
 println(greeting);   // still legal — send took a snapshot, greeting is yours
@@ -127,7 +130,7 @@ values rather than adopting ordinary snapshot semantics.
 This makes fan-out natural — send the same value to many workers in a loop with
 no ceremony:
 
-```hew
+```hew,ignore
 for conn in batch {
     worker.handle(conn_info, conn);   // conn_info sent each iteration, still valid
 }
@@ -193,7 +196,7 @@ a value has no identity to compare: `let b = a` gives you a copy whose address
 is a cost detail, so an identity answer would report the copy-on-write tier
 rather than anything about your program. Compare values with `==`.
 
-```hew
+```hew,ignore
 let p = spawn Worker();
 let q = p;
 println(f"{p is q}");   // true — one actor, two names
@@ -242,7 +245,7 @@ lifetime errors, no borrow-checker vocabulary, and no capability terms to learn.
 
 `==` in Hew compares **values**, not addresses:
 
-```hew
+```hew,ignore
 let a = "hello";
 let b = "hello";
 a == b  // true — structural equality, derived for free

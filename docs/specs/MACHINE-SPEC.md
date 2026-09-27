@@ -87,7 +87,7 @@ including owning strings, bytes and collections.
 
 A rule has the form:
 
-```hew
+```hew,ignore
 on Input: Source => Target reenter when condition { field: value }
 ```
 

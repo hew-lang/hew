@@ -38,7 +38,10 @@ import std.observe;
 
 println(observe.read("heap.live_bytes").unwrap_or(0));
 println(observe.read("actors.turns_total") ?? 0);
-println(observe.read("does.not.exist")); // None
+match observe.read("does.not.exist") {
+    .Some(value) => println(value),
+    .None => println("None"),
+}
 ```
 
 Unknown names return `None`. Runtime `u64` values are converted to `i64`; values

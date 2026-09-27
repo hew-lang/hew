@@ -10,7 +10,9 @@
 `std.encoding.wire` exposes one generic codec surface for every admitted
 `Serializable` value:
 
-```hew
+The fragment assumes a caller-defined `Feature` type and `features` value.
+
+```hew,ignore
 import std.encoding.wire;
 
 let json = wire.to_json(features);

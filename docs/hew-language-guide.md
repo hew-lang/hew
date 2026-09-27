@@ -1998,7 +1998,7 @@ An `actor |params| { .. }` expression declares an actor with no source name.
 Its captures become the actor's state, its body becomes its one handler, and
 it evaluates to an `actor(Msg) -> Reply` handle, which mirrors an `fn` type.
 
-```hew,no_run
+```hew
 fn main() {
     let factor = 3;
     let scale = actor |n: i64| -> i64 {
@@ -2030,7 +2030,7 @@ the reply. `policy(handle)` completes like the handle and chooses only how a
 full mailbox is answered. A lambda actor declares no mailbox, so both views
 default to `.Wait`.
 
-```hew,no_run
+```hew
 fn main() {
     let log = actor |line: string| {
         println(line);

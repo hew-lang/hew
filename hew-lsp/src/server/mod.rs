@@ -2593,32 +2593,50 @@ impl Worker {
 
     #[test]
     fn test_inventory_uses_open_document_and_exact_identity() {
-        let uri = Url::parse("file:///project/cart_test.hew").unwrap();
+        let root = std::env::temp_dir().join("hew-lsp-inventory-project");
+        let file = root.join("cart_test.hew");
+        let uri = Url::from_file_path(&file).unwrap();
         let documents = DashMap::new();
         documents.insert(uri.clone(), make_doc("#[test]\nfn totals() {}\n"));
-        let entries = test_inventory(&documents, &[PathBuf::from("/project")], Some(&uri));
+        let entries = test_inventory(&documents, &[root], Some(&uri));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["identity"], "cart_test.hew::totals");
-        assert_eq!(entries[0]["selector"], "/project/cart_test.hew::totals");
+        assert_eq!(
+            entries[0]["selector"],
+            format!("{}::totals", file.display())
+        );
         assert_eq!(entries[0]["uri"], uri.as_str());
         assert_eq!(entries[0]["ignored"], false);
     }
 
     #[test]
     fn test_inventory_keeps_same_named_tests_in_two_roots_distinct() {
-        let first = Url::parse("file:///first/cart_test.hew").unwrap();
-        let second = Url::parse("file:///second/cart_test.hew").unwrap();
+        let first_root = std::env::temp_dir().join("hew-lsp-inventory-first");
+        let second_root = std::env::temp_dir().join("hew-lsp-inventory-second");
+        let first_file = first_root.join("cart_test.hew");
+        let second_file = second_root.join("cart_test.hew");
+        let first = Url::from_file_path(&first_file).unwrap();
+        let second = Url::from_file_path(&second_file).unwrap();
         let documents = DashMap::new();
         documents.insert(first.clone(), make_doc("#[test]\nfn totals() {}\n"));
         documents.insert(second.clone(), make_doc("#[test]\nfn totals() {}\n"));
-        let roots = [PathBuf::from("/first"), PathBuf::from("/second")];
+        let roots = [first_root, second_root];
         let left = test_inventory(&documents, &roots, Some(&first));
         let right = test_inventory(&documents, &roots, Some(&second));
-        assert_eq!(left[0]["selector"], "/first/cart_test.hew::totals");
-        assert_eq!(right[0]["selector"], "/second/cart_test.hew::totals");
+        assert_eq!(
+            left[0]["selector"],
+            format!("{}::totals", first_file.display())
+        );
+        assert_eq!(
+            right[0]["selector"],
+            format!("{}::totals", second_file.display())
+        );
         assert_ne!(left[0]["selector"], right[0]["selector"]);
         assert_eq!(left[0]["identity"], "cart_test.hew::totals");
-        assert_eq!(right[0]["identity"], "/second/cart_test.hew::totals");
+        assert_eq!(
+            right[0]["identity"],
+            format!("{}::totals", second_file.display()).replace('\\', "/")
+        );
     }
 
     #[test]

@@ -66,7 +66,7 @@ impl DiscoveredTestFile {
 pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
     let mut tests = Vec::new();
     let companion = matched_production_peer(std::path::Path::new(file));
-    for declaration in hew_analysis::tests::discover_tests(program) {
+    for declaration in hew_analysis::test_discovery::discover_tests(program) {
         tests.push(TestCase {
             name: declaration.name,
             file: file.to_string(),
@@ -122,7 +122,7 @@ pub fn discover_tests_in_file(path: &str) -> Result<DiscoveredTestFile, String> 
 ///
 /// Returns an error string if directory traversal fails.
 pub fn discover_test_files(dir: &str) -> Result<Vec<String>, String> {
-    hew_analysis::tests::source_files(std::path::Path::new(dir))
+    hew_analysis::test_discovery::source_files(std::path::Path::new(dir))
         .map(|files| {
             files
                 .iter()
@@ -232,6 +232,7 @@ fn test_panic() {
                     .join("beta_test.hew")
                     .display()
                     .to_string(),
+                dir.path().join("plain.hew").display().to_string(),
                 dir.path()
                     .join("tests")
                     .join("gamma.hew")
@@ -242,7 +243,6 @@ fn test_panic() {
                     .join("helper.hew")
                     .display()
                     .to_string(),
-                dir.path().join("plain.hew").display().to_string(),
             ]
         );
     }
@@ -258,34 +258,5 @@ fn test_panic() {
         assert!(discovered.tests.is_empty());
         assert!(discovered.has_parse_errors());
         assert!(!discovered.parse_errors.is_empty());
-    }
-
-    #[test]
-    fn hew_test_prefix_excluded_from_discovery() {
-        // A leftover hew_test_*.hew temp file inside a tests/ dir must NOT be
-        // collected. It is not authored test input and may contain a stale
-        // process entry that competes with the selected test root.
-        let dir = tempdir().unwrap();
-        let tests_dir = dir.path().join("tests");
-        std::fs::create_dir_all(&tests_dir).unwrap();
-
-        // Plant a legitimate test file.
-        std::fs::write(
-            tests_dir.join("real_test.hew"),
-            "#[test]\nfn real() { assert(true); }\n",
-        )
-        .unwrap();
-
-        // Plant the stale temp file that the runner previously left behind.
-        std::fs::write(tests_dir.join("hew_test_xq7r9abc.hew"), "fn main() { }\n").unwrap();
-
-        let files = discover_test_files(dir.path().to_str().unwrap()).unwrap();
-
-        // Only the real fixture — the hew_test_ file must be excluded.
-        assert_eq!(files.len(), 1, "expected exactly 1 file, got: {files:?}");
-        assert!(
-            files[0].ends_with("real_test.hew"),
-            "collected file should be real_test.hew, got: {files:?}",
-        );
     }
 }

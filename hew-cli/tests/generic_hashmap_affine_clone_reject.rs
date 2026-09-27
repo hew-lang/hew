@@ -80,7 +80,7 @@ fn main() {
         "the refusal must name the parameter and the bound it is missing: {combined}"
     );
     assert!(
-        combined.contains("generic_hashmap_affine_clone.hew:9:5"),
+        combined.contains("generic_hashmap_affine_clone.hew:11:5"),
         "the refusal belongs to the declaration, with its own span: {combined}"
     );
     assert!(

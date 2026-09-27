@@ -418,7 +418,7 @@ fn main() {
                 .Some(value) => println(f"got {value}"),
                 .None => println("closed"),
             }
-        },
+        }
         after 1s => println("timeout"),
     };
     tx.close();

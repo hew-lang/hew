@@ -768,7 +768,7 @@ fn main() {
     );
 }
 
-/// `supervisor_stop` on a supervisor with an arg-initialized stateful child
+/// Graceful `stop` on a supervisor with an arg-initialized stateful child
 /// must tear down cleanly. Regression pin for the state-drop double free:
 /// the synthesized `__hew_state_drop_<Actor>` callback freed the state
 /// wrapper itself, but every runtime consumer (`free_actor_resources`,
@@ -780,7 +780,7 @@ fn main() {
 /// poisoned-allocator triple makes a survived double free deterministic on
 /// macOS instead of silent; the env vars are inert elsewhere.
 #[test]
-fn supervisor_stop_with_stateful_child_exits_cleanly() {
+fn stop_supervisor_with_stateful_child_exits_cleanly() {
     require_codegen();
 
     let source = r#"actor Counter {
@@ -803,7 +803,8 @@ fn main() {
     let sup = spawn CounterGroup;
     let _ = sup.c1.increment();
     let _ = sup.c2.increment();
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     println("Stopped");
 }
 "#;
@@ -824,7 +825,7 @@ fn main() {
 
     assert!(
         output.status.success(),
-        "supervisor_stop with stateful children must exit 0 (state-drop \
+        "stopping stateful children must exit 0 (state-drop \
          double-free regression); stderr: {stderr}"
     );
     assert!(
@@ -887,13 +888,13 @@ supervisor Pool {
             panic!("expected a MissingActorSpawnArgument diagnostic; got: {diagnostics:#?}")
         });
 
-    // `child w1: Worker;` is on source line 9 (1-based). The unrelated
+    // `child w1: Worker;` is on source line 11 (1-based). The unrelated
     // `receive fn work(x: i64)` parameter that a SiteId collision previously
     // rendered a caret on lives on line 3 — asserting an exact match (not
     // merely "not line 3") pins the fix to the real declaration rather than
     // any other incidentally-different line.
     assert_eq!(
-        missing["span"]["start_line"], 9,
+        missing["span"]["start_line"], 11,
         "MissingActorSpawnArgument must carry the child declaration's real \
          source line, not a sentinel or an unrelated colliding site; \
          diagnostic: {missing:#?}"

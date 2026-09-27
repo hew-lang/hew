@@ -24,7 +24,7 @@ fn private_source_symbols_do_not_interpose_native_file_io() {
                 if identity(main_body(5)) != 8 { return 3; }
                 if anonymous(5) != 9 { return 4; }
                 match fs.read("input.bin") {
-                    .Ok(text) => { if text != "native file contents\n" { return 5; } },
+                    .Ok(text) => { if text != "native file contents\n" { return 5; } }
                     .Err(_) => return 6,
                 }
                 println("private source calls and native file I/O");

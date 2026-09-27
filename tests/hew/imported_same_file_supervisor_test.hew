@@ -5,5 +5,6 @@ import "imported_same_file_supervisor_support/worker.hew";
 #[test]
 fn imported_supervisor_runs_its_same_file_actor() {
     let sup = spawn Inner;
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
 }

@@ -1,8 +1,8 @@
-// Acceptance fixture: a #[on(exit)] linked-actor exit hook compiles end-to-end
+// Acceptance fixture: a #[on(link)] linked-actor exit hook compiles end-to-end
 // (M-7-R, Q210/A211).
 //
 // Exercises the full pipeline:
-//   - the checker accepts `#[on(exit)] fn on_peer_exit(note: CrashNotification)`
+//   - the checker accepts `#[on(link)] fn on_peer_exit(note: CrashNotification)`
 //     (a recognised lifecycle hook returning `()`)
 //   - HIR lowers it as HirLifecycleHookKind::Exit
 //   - MIR emits `Watcher__on_exit` with the two-field ABI (actor_id, kind_tag)
@@ -18,7 +18,7 @@
 import std.failure.{CrashNotification};
 
 actor Watcher {
-    #[on(exit)]
+    #[on(link)]
     fn on_peer_exit(note: CrashNotification) {
         let _id = note.actor_id;
         let _kind = note.kind;

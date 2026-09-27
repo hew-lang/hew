@@ -14,7 +14,6 @@ fn main() {
     let team = spawn Team;
     mailbox(team.worker).wait_on(team.worker).expect("admit wait");
     stopped(team.worker);
-    println("unexpected completion");
     stop(team);
     stopped(team);
 }

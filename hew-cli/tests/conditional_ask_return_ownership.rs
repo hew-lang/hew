@@ -39,8 +39,10 @@ fn main() -> i64 {
         .Ok(data) => data == "true-path".to_bytes(),
         .Err(_) => false,
     };
-    close(forwarder);
-    close(recipient);
+    stop(forwarder);
+    stopped(forwarder);
+    stop(recipient);
+    stopped(recipient);
     if false_ok && true_ok {
         0
     } else {

@@ -550,6 +550,15 @@ fn queued_file_cancellation_never_blocks_submission_or_writes_after_abandonment(
 
 struct StopReactor;
 
+impl StopReactor {
+    fn start() -> Self {
+        // Each serialized test owns a fresh listener-admission generation.
+        // A preceding runtime shutdown may have closed the global gate.
+        crate::reactor::reset_listener_admission();
+        Self
+    }
+}
+
 impl Drop for StopReactor {
     fn drop(&mut self) {
         crate::reactor::reactor_shutdown();
@@ -583,7 +592,7 @@ unsafe fn take_read(operation: *const HewAsyncIo) -> Vec<u8> {
 #[test]
 fn tcp_read_rearms_after_each_result_and_preserves_eof() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     let payload: Vec<u8> = (0..15_000)
         .map(|index| u8::try_from(index % 251).unwrap())
@@ -618,7 +627,7 @@ fn tcp_read_rearms_after_each_result_and_preserves_eof() {
 #[test]
 fn tcp_write_owns_its_buffer_and_resumes_without_repeating_a_prefix() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let payload: Vec<u8> = (0..16 * 1024 * 1024)
@@ -670,7 +679,7 @@ fn tcp_write_owns_its_buffer_and_resumes_without_repeating_a_prefix() {
 #[test]
 fn cancelling_a_partial_tcp_write_quiesces_before_reusing_its_connection() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let payload = vec![0xa5; 16 * 1024 * 1024];
@@ -741,7 +750,7 @@ fn cancelling_a_partial_tcp_write_quiesces_before_reusing_its_connection() {
 #[test]
 fn tcp_cancel_detaches_before_rearming_the_same_handle() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     let cancelled = Arc::new(ReadySignal::default());
     // SAFETY: no peer data can complete this read before cancellation.
@@ -765,7 +774,8 @@ fn tcp_cancel_detaches_before_rearming_the_same_handle() {
 #[test]
 fn tcp_accept_untaken_result_closes_the_peer_and_taken_result_stays_owned() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    crate::reactor::close_listener_admission();
+    let _reactor = StopReactor::start();
     for take in [false, true] {
         let (listener, mut peer) = crate::transport::tcp_listener_with_pending_conn_for_test();
         peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -810,7 +820,7 @@ fn tcp_accept_untaken_result_closes_the_peer_and_taken_result_stays_owned() {
 #[test]
 fn tcp_busy_and_invalid_handle_errors_do_not_replace_the_pending_owner() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     let signal = Arc::new(ReadySignal::default());
     // SAFETY: the connection is live; the first operation remains pending.
@@ -963,7 +973,7 @@ fn cancelled_running_file_read_drains_before_its_cleanup_wake() {
 #[test]
 fn tcp_read_timeout_is_an_io_error_and_releases_the_connection_for_reuse() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     assert_eq!(crate::transport::hew_tcp_set_read_timeout(handle, 50), 0);
     let signal = Arc::new(ReadySignal::default());
@@ -1006,7 +1016,7 @@ fn tcp_read_timeout_is_an_io_error_and_releases_the_connection_for_reuse() {
 #[test]
 fn tcp_write_timeout_reports_partial_progress_as_an_io_error() {
     let _runtime = crate::runtime_test_guard();
-    let _reactor = StopReactor;
+    let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
     peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     assert_eq!(crate::transport::hew_tcp_set_write_timeout(handle, 250), 0);

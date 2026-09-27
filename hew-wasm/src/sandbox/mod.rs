@@ -283,6 +283,7 @@ pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String 
                 "name": test.name,
                 "range": {"start": test.span.start, "end": test.span.end},
                 "ignored": test.ignored,
+                "should_panic": test.should_panic,
                 "real_time": test.real_time,
                 "bytecode": null,
             })).collect::<Vec<_>>(),
@@ -316,6 +317,7 @@ pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String 
                         "name": test.name,
                         "range": {"start": test.span.start, "end": test.span.end},
                         "ignored": test.ignored,
+                        "should_panic": test.should_panic,
                         "real_time": test.real_time,
                         "bytecode": bytecode,
                     })

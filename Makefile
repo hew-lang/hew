@@ -565,9 +565,11 @@ dev-dist: assemble-release ## Release: package the current development build as 
 
 wasm-runtime: wasm-runtime-debug
 
-# Build the hew-wasm browser analysis-only module (requires: cargo install wasm-pack)
+# Build the hew-wasm browser compiler package (requires wasm-pack).
+# no-install uses an existing wasm-bindgen CLI in managed build environments.
+WASM_PACK_MODE ?= normal
 wasm: ## Build: build the browser WebAssembly package
-	wasm-pack build hew-wasm --target web --release
+	wasm-pack build hew-wasm --target web --release --mode $(WASM_PACK_MODE)
 
 .PHONY: npm-packages
 npm-packages: ## Release: build, stage and execute the two npm packages together

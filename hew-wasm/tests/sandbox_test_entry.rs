@@ -3,7 +3,7 @@ use hew_wasm::sandbox::compile_tests_to_sandbox_bytecode_js;
 #[test]
 fn browser_export_compiles_selected_test_packages_once_per_source() {
     let source =
-        "#[test]\nfn first() { assert(true); }\n#[test]\nfn second() { assert(1 == 2); }\n";
+        "#[test]\nfn first() { assert(true); }\n#[test]\n#[should_panic]\nfn second() { assert(1 == 2); }\n";
     let output = compile_tests_to_sandbox_bytecode_js(source, "playground.hew");
     let output: serde_json::Value = serde_json::from_str(&output).expect("browser JSON");
     assert_eq!(output["diagnostics"], serde_json::json!([]));
@@ -11,6 +11,8 @@ fn browser_export_compiles_selected_test_packages_once_per_source() {
     assert_eq!(tests.len(), 2);
     assert_eq!(tests[0]["identity"], "playground.hew::first");
     assert_eq!(tests[1]["identity"], "playground.hew::second");
+    assert_eq!(tests[0]["should_panic"], false);
+    assert_eq!(tests[1]["should_panic"], true);
     assert!(tests
         .iter()
         .all(|test| test["bytecode"]["entry"].is_object()));

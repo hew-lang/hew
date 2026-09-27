@@ -226,6 +226,7 @@ jobs:
           make test-compiler-lifecycle
           make test-opaque-resource-lifecycle-matrix-external
           make core-acceptance
+          make test-doc-examples
           make test-hew-ratchet
           make test-migrate-corpus
 

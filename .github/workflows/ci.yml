@@ -453,6 +453,9 @@ jobs:
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
       - name: Run core acceptance partition
         run: make -o hew-native core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/3"
+      - name: Run documentation examples
+        if: matrix.shard == 0
+        run: make -o hew-native test-doc-examples
       - name: Run package integration
         if: matrix.shard == 0
         run: make -o hew-native observe-functional-test test-pkg-import test-package-install

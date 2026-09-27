@@ -144,6 +144,11 @@ impl Checker {
         span: &Span,
         rewrite: MethodCallRewrite,
     ) {
+        if let MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+        | MethodCallRewrite::RewriteToFunction { target, .. } = &rewrite
+        {
+            self.check_source_call_target(span, target);
+        }
         self.method_call_rewrites
             .insert(SpanKey::in_module(span, self.current_module_idx), rewrite);
     }

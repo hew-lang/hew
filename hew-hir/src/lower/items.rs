@@ -761,7 +761,7 @@ impl LowerCtx {
         }
     }
 
-    /// Lower ordinary imported bodies and retain callable memory-floor stubs.
+    /// Lower ordinary imported bodies and validate intrinsic declaration stubs.
     /// Checker-admitted semantic runtime operations have no source body: their
     /// calls already carry a typed runtime family. Verify the same signature
     /// contract before suppressing them, so inconsistent checker/HIR facts
@@ -777,7 +777,7 @@ impl LowerCtx {
         let Some(intrinsic_key) = self.intrinsic_declarations.get(&source_key).cloned() else {
             return self.lower_fn_with_name(func, qualified, span);
         };
-        let Some(entry) = crate::stdlib_catalog::entries()
+        let Some(_entry) = crate::stdlib_catalog::entries()
             .iter()
             .find(|e| e.name == intrinsic_key)
         else {
@@ -833,14 +833,9 @@ impl LowerCtx {
                 return None;
             }
         }
-        match entry.linkage {
-            crate::stdlib_catalog::BuiltinLinkage::CalleeNameDispatchOnly => {
-                let mut lowered = self.lower_fn_with_name(func, qualified, span)?;
-                lowered.intrinsic_id = Some(intrinsic_key);
-                Some(lowered)
-            }
-            _ => None,
-        }
+        // Catalogue declarations supply signatures, never executable empty
+        // bodies. Demanded operations must have an explicit lowering contract.
+        None
     }
 
     /// Variant of `lower_fn_with_name` that prepends impl-block-level type

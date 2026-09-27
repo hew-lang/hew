@@ -4409,6 +4409,36 @@ mod tests {
     }
 
     #[test]
+    fn memory_floor_calls_are_rejected_at_the_source_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = write_source(dir.path(), "main.hew",
+            "import std.mem; fn main() { let pointer = mem.alloc(8, 8); mem.dealloc(pointer, 8, 8); }");
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("raw memory primitives are not a source-language API");
+        assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            FrontendDiagnosticKind::Type(error)
+                if matches!(&error.kind, hew_types::error::TypeErrorKind::IntrinsicOutsideFloor { intrinsic_key, .. }
+                    if intrinsic_key == "mem.alloc")
+        )), "{:?}", failure.diagnostics);
+    }
+
+    #[test]
+    fn direct_memory_floor_intrinsics_remain_declarations() {
+        let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("std/mem/mem.hew");
+        let state =
+            run_file_frontend_to_typecheck(input.to_str().unwrap(), &FrontendOptions::default())
+                .expect("memory floor signatures typecheck");
+        let output = state.typecheck_result.tco.unwrap();
+        Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, &output)
+            .expect("memory floor declarations do not manufacture executable bodies");
+    }
+
+    #[test]
     fn direct_stdlib_check_retains_source_diagnostics() {
         let dir = tempfile::tempdir().expect("create direct stdlib fixture");
         let std_dir = dir.path().join("std");

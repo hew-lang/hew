@@ -1381,10 +1381,50 @@ impl Checker {
         Some(applied_sig.return_type)
     }
 
+    /// Refuse compiler-internal memory operations before lowering source calls.
+    pub(super) fn check_source_call_target(&mut self, span: &Span, target: &CallTarget) {
+        use crate::stdlib_authority::Intrinsic;
+
+        let intrinsic = match target {
+            CallTarget::Builtin { endpoint } => Intrinsic::from_key(endpoint),
+            CallTarget::User(declaration) => self
+                .intrinsic_declarations
+                .iter()
+                .find(|(key, _)| self.lookup_declaration(key) == Some(*declaration))
+                .and_then(|(_, key)| Intrinsic::from_key(key)),
+            _ => None,
+        };
+        if let Some(
+            intrinsic @ (Intrinsic::MemAlloc
+            | Intrinsic::MemRealloc
+            | Intrinsic::MemDealloc
+            | Intrinsic::MemPtrOffset
+            | Intrinsic::MemPtrCopy),
+        ) = intrinsic
+        {
+            if self.errors.iter().any(|error| {
+                error.span == *span
+                    && error.source_module == self.current_module
+                    && matches!(error.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })
+            }) {
+                return;
+            }
+            self.report_error(
+                    TypeErrorKind::IntrinsicOutsideFloor {
+                        intrinsic_key: intrinsic.key().to_string(),
+                        module: self.current_module.clone().unwrap_or_else(|| "(root)".into()),
+                    },
+                    span,
+                    "E_INTRINSIC_OUTSIDE_FLOOR: raw memory primitives are compiler-internal and cannot be called from source".into(),
+                );
+        }
+    }
+
     /// Publish the canonical target of an admitted ordinary call.  This is the
     /// authority boundary for `HirExprKind::Call`; lowerings never recover it
     /// from a callee name or a linker symbol.
     pub(super) fn record_direct_call_target(&mut self, span: &Span, target: CallTarget) {
+        self.check_source_call_target(span, &target);
         self.direct_call_targets
             .insert(SpanKey::in_module(span, self.current_module_idx), target);
     }

@@ -1031,7 +1031,7 @@ mod tests {
             "mailbox(worker)(7)",
             "policy(worker, on_full: .Reject)(7)",
         ] {
-            let source = format!("fn main() {{ let factor = 3; let worker = actor |n: i64| {{ println(n * factor); }}; let _ = {call}; stop(worker); stopped(worker); }}");
+            let source = format!("fn main() {{ let factor = 3; let worker = actor |n: i64| {{ if n > 1 {{ let _ = worker(n - 1); }} println(n * factor); }}; let _ = {call}; stop(worker); stopped(worker); }}");
             check_source(&source, DeterministicAdmission::ProcessEntry).unwrap();
         }
     }

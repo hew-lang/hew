@@ -1016,6 +1016,7 @@ impl Checker {
                         // Marked as already-used (read_count=1 in `define`) to avoid a
                         // spurious unused-variable warning at this site.
                         self.env.define(bind_name.to_string(), handle_ty, false);
+                        self.record_callable_binding_candidates(*bind_name, value.as_ref());
                     }
                 }
                 // Set pending_let_closure_name so synthesize_identifier can

@@ -2033,6 +2033,25 @@ fn lambda_actor_recursive_self_call_typechecks() {
     );
 }
 
+#[test]
+fn ordinary_closure_cannot_capture_an_outer_actor_receiver() {
+    let output = typecheck_inline(
+        r"fn main() {
+            let worker = actor |n: i64| { println(n); };
+            let forward = |n: i64| { let _ = worker(n); };
+            forward(1);
+        }",
+    );
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            error.kind,
+            hew_types::error::TypeErrorKind::ClosureCapturesDuplexHandle { .. }
+        )),
+        "outer actor receiver must retain its capture restriction: {:#?}",
+        output.errors
+    );
+}
+
 /// Lambda actor handles are `Duplex<Msg, Reply>` under the hood.  Now that
 /// `Duplex::send()` is a wired method, calling `.send()` on a lambda actor
 /// handle routes through the duplex-method dispatcher and typechecks cleanly

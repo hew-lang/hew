@@ -2601,9 +2601,22 @@ impl Checker {
             .lookup_with_depth(&func_name)
             .map(|(depth, binding)| (depth, binding.clone()))
         {
-            // Publish the selected local binding for every value-call kind,
-            // including actor handles and their delivery views.
-            self.synthesize(&func.0, &func.1);
+            let recursive_actor_receiver = self.in_lambda_actor_body
+                && self.callable_binding_candidates.get(&binding.id).is_some_and(|origins| {
+                    !origins.may_be_unknown
+                        && matches!(origins.known.as_slice(), [super::types::CallableCandidate::Closure(site)]
+                            if self.effect_graph.current_body.as_ref()
+                                == Some(&super::effects::EffectBody::Closure(site.clone())))
+                });
+            if recursive_actor_receiver {
+                if let Expr::Ident(name) = &func.0 {
+                    // The actor's recursive receiver denotes its current turn,
+                    // not an owned capture from the enclosing environment.
+                    self.record_local_resolution(*name, &func.1);
+                }
+            } else {
+                self.synthesize(&func.0, &func.1);
+            }
             if let Some(sig) = binding
                 .def_span
                 .as_ref()

@@ -129,17 +129,12 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
 /// SWIM frames) the tick never escalates either node.
 ///
 /// Runs under simulated time.  The test explicitly advances `SIMTIME_MS`
-/// by one protocol period at a time, sleeping real `SWIM_ALIVE_REAL_SLEEP_MS`
+/// by one protocol period at a time, observing fresh peer timestamps
 /// between advances so the loopback TCP ping-ack round-trip completes and
 /// the connection-reader thread can update `last_seen_ms = hew_now_ms()`.
 /// This is load-immune: the SWIM thresholds are in sim time, so high CPU
 /// overhead (e.g. from `TSan` or coverage instrumentation) never causes a
 /// false-DEAD verdict.
-// WINDOWS-TODO: loopback TCP on Windows has higher round-trip latency
-// (15 ms OS timer granularity) than this test's real-sleep window.  Fix
-// requires the IOCP reactor (Phase 2) timer infrastructure. Tracked as a
-// windows row in tests/expected-failures.tsv rather than an ignore, so
-// recovery is detected automatically.
 #[cfg(feature = "quic")]
 #[test]
 fn alive_node_is_not_falsely_killed_by_driven_swim() {

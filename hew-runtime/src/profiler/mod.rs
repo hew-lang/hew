@@ -212,9 +212,12 @@ pub fn maybe_start_with_context(
 /// Parse the `HEW_PPROF` env var into a listen mode.
 ///
 /// Returns `None` on non-unix platforms when `auto`/`1` is requested.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "returns None on non-unix platforms for auto/1; all-Some on unix is correct"
+#[cfg_attr(
+    unix,
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "returns None on non-unix platforms for auto/1; all-Some on unix is correct"
+    )
 )]
 fn parse_listen_mode(val: &str) -> Option<ListenMode> {
     match val {

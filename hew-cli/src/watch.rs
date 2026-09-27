@@ -148,7 +148,7 @@ pub fn cmd_test_watch(args: &crate::args::TestArgs) {
                     if *is_dir {
                         path.starts_with(selection)
                     } else {
-                        path.as_path() == selection.as_path()
+                        path.as_path() == selection.as_path() || path.parent() == selection.parent()
                     }
                 })
         });
@@ -160,7 +160,10 @@ pub fn cmd_test_watch(args: &crate::args::TestArgs) {
             && (changed
                 .file_stem()
                 .is_some_and(|stem| stem.to_string_lossy().ends_with("_test"))
-                || (args.doc && changed.extension().is_some_and(|ext| ext == "md")));
+                || (args.doc && changed.extension().is_some_and(|ext| ext == "md")))
+            && selected
+                .iter()
+                .any(|(path, is_dir, _)| *is_dir || path == &changed);
         if !focused {
             // A helper, production peer, or deletion can affect any selected
             // test, so refresh discovery and rerun the full selection.

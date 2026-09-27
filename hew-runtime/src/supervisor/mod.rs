@@ -1418,6 +1418,8 @@ unsafe fn close_supervisor_access(
     let control = runtime
         .local_handles
         .supervisor_control_for_raw(token, sup)?;
+    // SAFETY: this teardown owner keeps the raw allocation live until close.
+    control.retain_role_wait_targets(unsafe { snapshot_role_wait_targets(sup) });
     let won_close = control.begin_close();
     runtime.local_handles.retire_supervisor_route(&control);
     if won_close {

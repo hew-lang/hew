@@ -247,7 +247,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             (target, None)
         };
-        let edge = self.new_actor_wait_edge(target.into(), 2)?;
         let cycle = self
             .ctx
             .append_basic_block(self.value, "actor.wait.cycle.fault");
@@ -286,6 +285,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             (new, vec![target.into(), waker.into()])
         };
         let wait = call_value(&self.builder, new, &arguments, "actor.wait")?.into_pointer_value();
+        let edge_new = coro::external(
+            self.llvm,
+            "hew_actor_wait_edge_new_for_wait",
+            ptr.fn_type(&[ptr.into(), ptr.into(), self.ctx.i32_type().into()], false),
+        )?;
+        let edge = call_value(
+            &self.builder,
+            edge_new,
+            &[
+                frame.state.into(),
+                wait.into(),
+                self.ctx.i32_type().const_int(2, false).into(),
+            ],
+            "actor.wait.edge",
+        )?
+        .into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "actor.wait.poll");
         let inspect = self
             .ctx

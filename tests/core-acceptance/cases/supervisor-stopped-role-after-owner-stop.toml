@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-stopped-role-after-owner-stop"
+intent = "A stored child role observes its exact incarnation's cleanup after the owner closes role admission."
+source = "cases/supervisor-stopped-role-after-owner-stop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "hook finished\nrole observed\nteam observed\n"
+exit = 0

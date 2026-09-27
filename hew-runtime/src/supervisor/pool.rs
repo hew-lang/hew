@@ -667,6 +667,63 @@ pub extern "C" fn hew_supervisor_native_role_owner(
     crate::lifetime::local_handles::current_supervisor_role_owner(owner, slot)
 }
 
+/// Freeze exact child completions before closing the owner's direct route.
+///
+/// # Safety
+/// `supervisor` is pinned by the caller until this snapshot returns.
+pub(crate) unsafe fn snapshot_role_wait_targets(
+    supervisor: *mut HewSupervisor,
+) -> (
+    Vec<Option<crate::actor_native::NativeWaitTarget>>,
+    Vec<Option<crate::actor_native::NativeWaitTarget>>,
+) {
+    // SAFETY: the caller's pin or teardown claim retains this supervisor.
+    let roster = unsafe { &(*supervisor).roster }.lock_or_recover();
+    let actors = roster
+        .children
+        .iter()
+        .map(|actor| {
+            if actor.is_null() {
+                return None;
+            }
+            // SAFETY: the roster keeps the exact child live under this guard.
+            unsafe { &**actor }
+                .native_completion
+                .clone()
+                .map(|completion| crate::actor_native::NativeWaitTarget {
+                    completion,
+                    // SAFETY: the same roster guard retains this incarnation.
+                    actor: unsafe { crate::lifetime::live_actors::ActorIncarnation::of(*actor) },
+                    supervisor_token: None,
+                })
+        })
+        .collect();
+    let nested_tokens = roster
+        .child_supervisors
+        .iter()
+        .enumerate()
+        .map(|(index, pointer)| {
+            (!pointer.is_null())
+                .then(|| roster.child_supervisor_tokens.get(index).copied())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    drop(roster);
+    let nested = nested_tokens
+        .into_iter()
+        .map(|token| {
+            token
+                .and_then(crate::lifetime::local_handles::current_supervisor_completion)
+                .map(|completion| crate::actor_native::NativeWaitTarget {
+                    completion,
+                    actor: crate::lifetime::live_actors::ActorIncarnation::NONE,
+                    supervisor_token: token,
+                })
+        })
+        .collect();
+    (actors, nested)
+}
+
 /// Request a transition for the nested supervisor selected by a stable role.
 /// The parent notification is installed before teardown so a normal stop can
 /// refill a permanent child slot.
@@ -710,6 +767,27 @@ pub unsafe extern "C" fn hew_supervisor_native_role_wait_new(
     role_kind: c_int,
 ) -> *mut crate::actor_native::HewNativeActorWait {
     let owner_pin = crate::lifetime::local_handles::pin_current_supervisor(owner);
+    if owner_pin.is_none() {
+        let resolved = crate::lifetime::local_handles::current_supervisor_role_wait_owner(owner);
+        if let Some(pin) = resolved.and_then(crate::lifetime::local_handles::pin_current_supervisor)
+        {
+            let target = if role_kind == ROLE_KIND_SUPERVISOR {
+                nested_child_token(pin.supervisor(), slot)
+            } else {
+                actor_child_token(pin.supervisor(), slot)
+            }
+            .unwrap_or(crate::lifetime::local_handles::HewLocalPidId::INVALID);
+            // SAFETY: this pin holds the selected roster until registration.
+            return unsafe { crate::actor_native::hew_actor_wait_new(target, waker) };
+        }
+        let target = crate::lifetime::local_handles::current_supervisor_role_wait_target(
+            owner,
+            slot,
+            role_kind == ROLE_KIND_SUPERVISOR,
+        );
+        // SAFETY: registration retains the caller's live descriptor.
+        return unsafe { crate::actor_native::wait_from_target(target, waker) };
+    }
     let target = owner_pin
         .as_ref()
         .and_then(|pin| {
@@ -721,8 +799,7 @@ pub unsafe extern "C" fn hew_supervisor_native_role_wait_new(
         })
         .unwrap_or(crate::lifetime::local_handles::HewLocalPidId::INVALID);
     // SAFETY: registration clones completion and the caller supplied the waker.
-    let wait = unsafe { crate::actor_native::hew_actor_wait_new(target, waker) };
-    wait
+    unsafe { crate::actor_native::hew_actor_wait_new(target, waker) }
 }
 
 /// Copy an actor role's selected incarnation even after admission has closed.

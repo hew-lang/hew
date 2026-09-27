@@ -1239,6 +1239,7 @@ non-declarable = [
   "hew_actor_wait_edge_fault",
   "hew_actor_wait_edge_free",
   "hew_actor_wait_edge_new",
+  "hew_actor_wait_edge_new_for_wait",
   "hew_actor_wait_edge_pending",
   "hew_actor_wait_edge_prepare",
   "hew_actor_wait_free",

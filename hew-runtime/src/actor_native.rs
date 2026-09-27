@@ -15,7 +15,9 @@ use crate::lifetime::live_actors::ActorIncarnation;
 pub(crate) mod cleanup;
 #[path = "actor_native_close.rs"]
 mod close;
-pub(crate) use close::{finish_actor_terminal, finish_native_terminal};
+pub(crate) use close::{
+    finish_actor_terminal, finish_native_terminal, wait_from_target, NativeWaitTarget,
+};
 pub use close::{
     hew_actor_stop_native, hew_actor_terminate_native, hew_actor_wait_free, hew_actor_wait_new,
     hew_actor_wait_poll, hew_actor_wait_take_fault, HewNativeActorWait, NativeActorCompletion,

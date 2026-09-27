@@ -1,7 +1,7 @@
 //! Instance admission: type-fact and shape requests, monomorphization and closure/vtable requests.
 
 use super::{
-    callable_signature, callable_signature_with_substitution, declared_type_param_name,
+    callable_signature, callable_signature_with_substitution, declared_type_parameter,
     dyn_boundary_passing, dyn_passing_admits, dyn_receiver_passing, function_source_origin,
     is_supported_instance_type_arg, project_type_facts, require_aggregate_shape,
     require_signature_shapes, require_type_shapes, require_variant_shape, AggregateShapeRef,
@@ -1263,9 +1263,9 @@ impl<'a> InstanceService<'a> {
                 self_type.args.len()
             ));
         }
-        let mut bindings: HashMap<&str, &ResolvedTy> = HashMap::new();
+        let mut bindings: HashMap<hew_types::ParamHead, &ResolvedTy> = HashMap::new();
         for (pattern, concrete) in pattern_args.iter().zip(&self_type.args) {
-            let name = declared_type_param_name(pattern, &entry.impl_type_params).ok_or_else(|| {
+            let name = declared_type_parameter(pattern, &entry.impl_type_params).ok_or_else(|| {
                 format!(
                     "generic implementation `{}` receives `{}` in a position SIR cannot bind to a type parameter",
                     self.module.defs.path(*method),
@@ -1286,7 +1286,7 @@ impl<'a> InstanceService<'a> {
             .impl_type_params
             .iter()
             .map(|param| {
-                bindings.get(param.as_str()).map_or_else(
+                bindings.get(param).map_or_else(
                     || {
                         Err(format!(
                             "generic implementation `{}` leaves type parameter `{param}` unbound by its receiver",

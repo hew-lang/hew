@@ -87,11 +87,12 @@ pub use self::types::{
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
     DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
     EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, ImportedImplBodyFact,
-    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
-    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, ImplMethodProvenance,
+    ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind, MathGenericOp,
+    MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
+    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
     TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
@@ -306,11 +307,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             // convert would be a guess. A marked declaration's class comes
             // from its marker, not its members, so it keeps its row with no
             // members instead - consumers that need the fields refuse there.
-            let parameters = definition.type_params.iter().cloned().collect();
-            let Ok(resolved) = ResolvedTy::from_ty_with_type_params(
-                &ty.materialize_literal_defaults(),
-                &parameters,
-            ) else {
+            let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
                 if marker == DeclarationMarker::None {
                     return None;
                 }
@@ -1015,7 +1012,11 @@ impl Checker {
                 self.mint_item_declaration_identities(
                     root,
                     root,
-                    NominalNamespace::RootBare,
+                    if self.checking_embedded_builtins {
+                        NominalNamespace::FlattenedFile
+                    } else {
+                        NominalNamespace::RootBare
+                    },
                     item_index,
                     item,
                     span,
@@ -1028,7 +1029,11 @@ impl Checker {
                 self.mint_item_declaration_identities(
                     root,
                     root,
-                    NominalNamespace::RootBare,
+                    if self.checking_embedded_builtins {
+                        NominalNamespace::FlattenedFile
+                    } else {
+                        NominalNamespace::RootBare
+                    },
                     item_index,
                     item,
                     span,
@@ -1090,15 +1095,29 @@ impl Checker {
     }
 
     pub(super) fn current_declaration_module(&self) -> Option<crate::ModuleId> {
-        self.current_item_source
+        let source = self
+            .current_item_source
             .as_deref()
-            .and_then(|source| self.defs.module_for_source(source))
+            .and_then(|source| self.defs.module_for_source(source));
+        let namespace = self
+            .current_module
+            .as_deref()
+            .and_then(|module| self.defs.module_for_path(module))
             .or_else(|| {
-                self.current_module
+                self.registration_origin_module
                     .as_deref()
                     .and_then(|module| self.defs.module_for_path(module))
-            })
-            .or_else(|| self.defs.root_module())
+            });
+        namespace.map_or_else(
+            || source.or_else(|| self.defs.root_module()),
+            |namespace| {
+                Some(
+                    source
+                        .filter(|file| self.scopes.namespace_of(*file) == namespace)
+                        .unwrap_or(namespace),
+                )
+            },
+        )
     }
 
     /// Resolve a declaration path the checker holds: its canonical render, or
@@ -2094,6 +2113,21 @@ impl Checker {
             }
         }
         self.declare_item_type_parameter_scopes(module, item_ordinal, item, span);
+        if matches!(item, Item::Trait(_)) {
+            if let Some(module) = module {
+                let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    Some(module),
+                    span,
+                    item_ordinal,
+                    crate::DeclarationKind::Trait,
+                    0,
+                );
+                if let Some(owner) = self.defs.declaration(occurrence) {
+                    self.scopes
+                        .declare_receiver_parameter(module, owner, span.clone());
+                }
+            }
+        }
         for id in minted_types {
             if let Some(builtin) = self.declaration_builtin(id) {
                 self.defs.bind_builtin_declaration(builtin, id);
@@ -2243,7 +2277,7 @@ impl Checker {
     /// the builtin spelling table, or a shipped encoding value. A root or user
     /// module declaration with the same spelling stays its own nominal.
     fn declaration_builtin(&self, id: crate::DefId) -> Option<crate::BuiltinType> {
-        if self.defs.module(id) == self.defs.root_module() {
+        if !self.checking_embedded_builtins && self.defs.module(id) == self.defs.root_module() {
             return None;
         }
         let path = self.defs.path(id);
@@ -2262,7 +2296,7 @@ impl Checker {
         program: &Program,
         base: &crate::DefTable,
     ) -> TypeCheckOutput {
-        self.seed_defs = Some(base.fork_for_embedded());
+        self.seed_defs = Some(base.fork_for_embedded_builtins());
         self.checking_embedded_builtins = true;
         let output = self.check_program(program);
         self.checking_embedded_builtins = false;
@@ -2822,7 +2856,7 @@ impl Checker {
         let mut resolved_fn_sigs: HashMap<crate::DefId, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
             .map(|(id, sig)| {
-                let resolved = self.resolve_fn_sig(&sig);
+                let resolved = self.resolve_source_fn_sig(id, &sig);
                 (id, resolved)
             })
             .collect();
@@ -2856,21 +2890,19 @@ impl Checker {
             *ty = self.finalize_type_for_handoff(ty);
         }
         self.current_module = saved_output_module;
-        for sig in resolved_fn_sigs.values_mut() {
-            *sig = self.resolve_fn_sig(sig);
+        for (declaration, sig) in &mut resolved_fn_sigs {
+            *sig = self.resolve_source_fn_sig(*declaration, sig);
         }
         let imported_impl_body_facts = checked_impl_body_callees
             .into_iter()
             .filter_map(|(declaration, callees)| {
                 let sig = resolved_fn_sigs.get(&declaration)?;
-                let type_params: HashSet<String> = sig.type_params.iter().cloned().collect();
                 let params = sig
                     .params
                     .iter()
-                    .map(|ty| ResolvedTy::from_ty_with_type_params(ty, &type_params).ok())
+                    .map(|ty| ResolvedTy::from_ty(ty).ok())
                     .collect::<Option<Vec<_>>>()?;
-                let return_type =
-                    ResolvedTy::from_ty_with_type_params(&sig.return_type, &type_params).ok()?;
+                let return_type = ResolvedTy::from_ty(&sig.return_type).ok()?;
                 let receiver = sig
                     .impl_method
                     .as_ref()
@@ -3121,6 +3153,7 @@ impl Checker {
         let resolutions = self.scopes.take_resolutions();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
+            declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             resolved_annotation_types,
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),

@@ -337,21 +337,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::SupervisorChild {
                 supervisor, child, ..
             } => self
-                .emit_supervisor_child(*supervisor, *child, sources, result, false)
-                .map(Some),
-            ActorOperation::SupervisorAwaitRestart {
-                supervisor, child, ..
-            } => self
-                .emit_supervisor_child(*supervisor, *child, sources, result, true)
+                .emit_supervisor_child(*supervisor, *child, sources, result)
                 .map(Some),
             // A pool view is the same pair a role is — the owning supervisor
             // and a slot — except the slot is the first of the pool's members.
             ActorOperation::SupervisorPoolView {
                 supervisor, child, ..
             } => self
-                .emit_supervisor_child(*supervisor, *child, sources, result, false)
+                .emit_supervisor_child(*supervisor, *child, sources, result)
                 .map(Some),
-            ActorOperation::SupervisorStop(_) => self.emit_supervisor_stop(sources).map(Some),
             _ => Ok(None),
         }
     }
@@ -557,7 +551,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         child: u32,
         sources: &[StorageId],
         result: Option<StorageId>,
-        await_restart: bool,
     ) -> CodegenResult<IntValue<'ctx>> {
         let supervisor = self.supervisor(id)?;
         let [source] = sources else {
@@ -571,34 +564,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .slot(child as usize)
             .ok_or_else(|| CodegenError::FailClosed("declared child has no runtime slot".into()))?;
         let token = self.load_supervisor_owner(*source)?;
-        if await_restart {
-            let wait = get_or_declare_external(
-                self.llvm,
-                "hew_supervisor_native_await_restart",
-                self.ctx.void_type().fn_type(
-                    &[
-                        token.get_type().into(),
-                        self.ctx.i32_type().into(),
-                        self.ctx.i32_type().into(),
-                    ],
-                    false,
-                ),
-            )?;
-            self.builder
-                .build_call(
-                    wait,
-                    &[
-                        token.into(),
-                        self.ctx.i32_type().const_int(u64::from(slot), false).into(),
-                        self.ctx
-                            .i32_type()
-                            .const_int(role_kind(&supervisor.children[child as usize].role), false)
-                            .into(),
-                    ],
-                    "",
-                )
-                .llvm_ctx("wait for the declared child to be live again")?;
-        }
         let role = self.slots[result.0 as usize];
         let role_ty = self
             .ctx
@@ -620,20 +585,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(self.ctx.i32_type().const_zero())
     }
 
-    /// `pool[i]`, `pool.get(i)` and `await_restart pool[i]`: one member's role
+    /// `pool[i]` and `pool.get(i)`: one member's role
     /// from the view, the caller's index and the declared member count. The
     /// members occupy consecutive slots from the view's base, so the member is
     /// arithmetic once the index is proved to be one of them.
     pub(super) fn emit_supervisor_pool_member(
         &self,
-        operation: hew_types::runtime_call::SupervisorPoolOp,
         option: Option<hew_mir::physical::PhysicalVariantId>,
         sources: &[StorageId],
         result: StorageId,
         normal: &hew_mir::physical::PhysicalEdge,
         failure: Option<&hew_mir::physical::PhysicalEdge>,
     ) -> CodegenResult<()> {
-        use hew_types::runtime_call::SupervisorPoolOp;
         let [view, index, count] = sources else {
             return Err(CodegenError::FailClosed(
                 "supervisor pool member takes its view, index and member count".into(),
@@ -685,33 +648,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_int_add(base, offset, "pool.slot")
             .llvm_ctx("address the pool member's slot")?;
-        if operation == SupervisorPoolOp::AwaitRestartMember {
-            let wait = get_or_declare_external(
-                self.llvm,
-                "hew_supervisor_native_await_restart",
-                self.ctx.void_type().fn_type(
-                    &[
-                        token.get_type().into(),
-                        self.ctx.i32_type().into(),
-                        self.ctx.i32_type().into(),
-                    ],
-                    false,
-                ),
-            )?;
-            self.builder
-                .build_call(
-                    wait,
-                    &[
-                        token.into(),
-                        slot.into(),
-                        // A pool's members are actors: SIR refuses a pool of
-                        // supervisors, which the runtime keeps in its own space.
-                        self.ctx.i32_type().const_zero().into(),
-                    ],
-                    "",
-                )
-                .llvm_ctx("wait for the pool member to be live again")?;
-        }
         let role_ty = self.ctx.struct_type(
             &[token.get_type().into(), self.ctx.i32_type().into()],
             false,
@@ -768,30 +704,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             Ok(owner)
         }
-    }
-
-    /// `supervisor_stop(sup)`: stop every child, then the supervisor.
-    pub(super) fn emit_supervisor_stop(
-        &self,
-        sources: &[StorageId],
-    ) -> CodegenResult<IntValue<'ctx>> {
-        let [source] = sources else {
-            return Err(CodegenError::FailClosed(
-                "supervisor stop requires one handle".into(),
-            ));
-        };
-        let value = self.load(*source, "supervisor.stop.handle")?;
-        let stop = get_or_declare_external(
-            self.llvm,
-            "hew_local_pid_supervisor_stop",
-            self.ctx
-                .i32_type()
-                .fn_type(&[value.get_type().into()], false),
-        )?;
-        self.builder
-            .build_call(stop, &[value.into()], "supervisor.stopped")
-            .llvm_ctx("stop the declared supervisor")?;
-        Ok(self.ctx.i32_type().const_zero())
     }
 
     /// Load a message target. A role re-resolves to its current incarnation

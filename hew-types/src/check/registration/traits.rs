@@ -48,7 +48,7 @@ impl Checker {
         sd: &SupervisorDecl,
         identity: &str,
     ) {
-        let type_params: Vec<_> = sd.type_params.iter().map(|p| p.name.to_string()).collect();
+        let type_params = self.declaration_parameter_heads(identity);
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let fields = sd
             .params
@@ -57,7 +57,7 @@ impl Checker {
             .collect();
         let mut bounds = self.collect_type_param_bounds(Some(&sd.type_params), None);
         for parameter in &type_params {
-            let bounds = bounds.entry(parameter.clone()).or_default();
+            let bounds = bounds.entry(parameter.spelling.to_string()).or_default();
             if !bounds.iter().any(|bound| bound == "Send") {
                 bounds.push("Send".into());
             }
@@ -146,14 +146,12 @@ impl Checker {
         // init parameters are resolved, or a field's `HashMap<K, V>` key
         // admission cannot see K's declared bounds and is rejected as if K
         // had none.
-        let type_param_names: Vec<String> = ad
-            .type_params
-            .iter()
-            .map(|tp| tp.name.to_string())
-            .collect();
+        let type_param_names = self.declaration_parameter_heads(identity);
         let mut type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
         for parameter in &type_param_names {
-            let bounds = type_param_bounds.entry(parameter.clone()).or_default();
+            let bounds = type_param_bounds
+                .entry(parameter.spelling.to_string())
+                .or_default();
             if !bounds.iter().any(|bound| bound == "Send") {
                 bounds.push("Send".into());
             }
@@ -258,11 +256,12 @@ impl Checker {
     }
 
     pub(in crate::check) fn trait_info_from_decl(
+        &mut self,
         tr: &TraitDecl,
         source_module: Option<String>,
         file_index: u32,
     ) -> TraitInfo {
-        Self::trait_info_from_decl_with_diagnostics(tr, source_module, file_index, &mut Vec::new())
+        self.trait_info_from_decl_with_diagnostics(tr, source_module, file_index, &mut Vec::new())
     }
 
     /// Idempotently seed `#[lang_item("…")]` bindings from a compiled-in
@@ -386,6 +385,7 @@ impl Checker {
     /// `type Bar; type Bar;` declarations are reported here (the impl-side
     /// duplicate-detection is handled separately in `build_impl_alias_entries`).
     pub(in crate::check) fn trait_info_from_decl_with_diagnostics(
+        &mut self,
         tr: &TraitDecl,
         source_module: Option<String>,
         file_index: u32,
@@ -420,11 +420,15 @@ impl Checker {
                 }
             }
         }
-        let type_params = tr
-            .type_params
-            .as_ref()
-            .map(|params| params.iter().map(|p| p.name.to_string()).collect())
-            .unwrap_or_default();
+        let declaration_name = source_module.as_ref().map_or_else(
+            || tr.name.to_string(),
+            |module| format!("{module}.{}", tr.name),
+        );
+        let type_params = if tr.type_params.as_ref().is_none_or(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.declaration_parameter_heads(&declaration_name)
+        };
         TraitInfo {
             source_module,
             file_index,
@@ -512,7 +516,19 @@ impl Checker {
                     let expr = entry.expr.clone();
                     let resolved = self.resolve_type_expr(&expr);
                     if !matches!(resolved, Ty::Error) {
-                        self.impl_assoc_type_bindings.insert(key, resolved);
+                        let parameters = self.source_parameter_heads(
+                            id.type_params.as_deref().unwrap_or_default(),
+                            &id.target_type.1,
+                        );
+                        let receiver = self.resolve_type_expr(&id.target_type);
+                        self.impl_assoc_type_bindings.insert(
+                            key,
+                            super::super::types::ImplAssociatedType {
+                                ty: resolved,
+                                receiver,
+                                parameters,
+                            },
+                        );
                     }
                 }
             }
@@ -768,7 +784,12 @@ impl Checker {
         let key = self.trait_ref_lookup_key(trait_name);
         self.trait_def_at(&key)
             .or_else(|| self.trait_def_at(trait_name))
-            .map(|info| info.type_params.clone())
+            .map(|info| {
+                info.type_params
+                    .iter()
+                    .map(|parameter| parameter.spelling.to_string())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -866,7 +887,7 @@ impl Checker {
             },
             doc_comment: None,
             decl_span: span.clone(),
-            fn_span: 0..0,
+            fn_span: method.span.clone(),
             intrinsic: None,
             consumes_self: method.consumes_self,
         };
@@ -969,11 +990,12 @@ impl Checker {
         &self,
         ty: &Ty,
         impl_self: &Ty,
-        trait_param_map: &HashMap<String, Ty>,
+        trait_param_map: &HashMap<crate::ParamHead, Ty>,
     ) -> Ty {
         match ty {
             Ty::Named { head, args }
-                if args.is_empty() && *head == crate::TypeHead::self_param() =>
+                if args.is_empty()
+                    && matches!(head, crate::TypeHead::Param(parameter) if parameter.is_receiver()) =>
             {
                 impl_self.clone()
             }
@@ -981,7 +1003,7 @@ impl Checker {
                 head: crate::TypeHead::Param(param),
                 args,
             } if args.is_empty() => {
-                if let Some(mapped) = trait_param_map.get(param.spelling.as_str()) {
+                if let Some(mapped) = trait_param_map.get(param) {
                     return mapped.clone();
                 }
                 ty.clone()
@@ -1819,11 +1841,11 @@ impl Checker {
         };
 
         // Build trait-type-param substitution map.
-        let mut trait_param_map: HashMap<String, Ty> = HashMap::new();
+        let mut trait_param_map: HashMap<crate::ParamHead, Ty> = HashMap::new();
         if let Some(args) = trait_bound.type_args.as_ref() {
             for (param_name, arg_expr) in trait_info.type_params.iter().zip(args.iter()) {
                 let resolved = self.resolve_type_expr(arg_expr);
-                trait_param_map.insert(param_name.clone(), resolved);
+                trait_param_map.insert(*param_name, resolved);
             }
         } else if self
             .lang_items
@@ -1839,7 +1861,7 @@ impl Checker {
             // arguments from whichever method happened to be checked first.
             if let Some(actual_index_ty) = impl_sig.params.first() {
                 trait_param_map.insert(
-                    trait_info.type_params[0].clone(),
+                    trait_info.type_params[0],
                     self.subst.resolve(actual_index_ty),
                 );
             }
@@ -1871,6 +1893,11 @@ impl Checker {
             self.named_ty_for_key(&impl_self_name, self_type_args.to_vec())
         };
 
+        let impl_parameters = self.source_parameter_heads(
+            method.type_params.as_deref().unwrap_or_default(),
+            &method.fn_span,
+        );
+
         // Materialise the expected impl-side signature.
         let expected_params: Vec<Ty> = trait_sig
             .params
@@ -1879,8 +1906,8 @@ impl Checker {
                 let projected = self.substitute_trait_sig_for_impl(p, &impl_self, &trait_param_map);
                 Self::rename_method_type_params(
                     &projected,
-                    trait_method.type_params.as_ref(),
-                    method.type_params.as_ref(),
+                    &trait_sig.type_params,
+                    &impl_parameters,
                 )
             })
             .collect();
@@ -1890,11 +1917,7 @@ impl Checker {
                 &impl_self,
                 &trait_param_map,
             );
-            Self::rename_method_type_params(
-                &projected,
-                trait_method.type_params.as_ref(),
-                method.type_params.as_ref(),
-            )
+            Self::rename_method_type_params(&projected, &trait_sig.type_params, &impl_parameters)
         };
 
         // Cascading-Ty::Error suppression: if anything in expected or actual

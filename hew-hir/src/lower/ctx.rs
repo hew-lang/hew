@@ -81,6 +81,7 @@ impl LowerCtx {
             numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
             extern_method_signatures: tc_output.extern_method_signatures.clone(),
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
+            declaration_type_parameters: tc_output.declaration_type_parameters.clone(),
             resolved_annotation_types: tc_output.resolved_annotation_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -145,6 +146,7 @@ impl LowerCtx {
             regex_literal_index: HashMap::new(),
             machine_ctor_registry: HashMap::new(),
             const_registry: HashMap::new(),
+            source_const_entries: HashMap::new(),
             folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
             indirect_enum_names: HashSet::new(),
@@ -229,11 +231,22 @@ impl LowerCtx {
         None
     }
 
+    fn replace_root_declaration_module(
+        &mut self,
+        root: Option<hew_types::ModuleId>,
+    ) -> Option<hew_types::ModuleId> {
+        match root {
+            Some(root) => self.declaration_module_by_file_index.insert(0, root),
+            None => self.declaration_module_by_file_index.remove(&0),
+        }
+    }
+
     pub(super) fn with_typecheck_facts<T>(
         &mut self,
         tc_output: &TypeCheckOutput,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        let saved_root = self.replace_root_declaration_module(tc_output.defs.root_module());
         let saved_direct_calls = std::mem::replace(
             &mut self.direct_call_targets,
             tc_output.direct_call_targets.clone(),
@@ -282,6 +295,10 @@ impl LowerCtx {
                 &mut self.resolved_annotation_types,
                 tc_output.resolved_annotation_types.clone(),
             ),
+            std::mem::replace(
+                &mut self.declaration_type_parameters,
+                tc_output.declaration_type_parameters.clone(),
+            ),
             std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
             std::mem::replace(
                 &mut self.call_argument_slots,
@@ -320,6 +337,7 @@ impl LowerCtx {
             self.expr_types,
             self.resolved_expr_types,
             self.resolved_annotation_types,
+            self.declaration_type_parameters,
             self.recovery_kinds,
             self.call_argument_slots,
             self.select_sources,
@@ -331,7 +349,37 @@ impl LowerCtx {
         self.direct_call_targets = saved_direct_calls;
         self.resolutions = saved_resolutions;
         self.numeric_operand_coercions = saved_numeric_coercions;
+        self.replace_root_declaration_module(saved_root);
 
+        result
+    }
+
+    /// Materialize a trait default using its declaration-owned receiver binder.
+    pub(super) fn with_default_receiver<T>(
+        &mut self,
+        trait_id: hew_types::DefId,
+        receiver: &ResolvedTy,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let parameter = hew_types::ParamHead::receiver(trait_id);
+        let substitutions = HashMap::from([(parameter, receiver.clone())]);
+        let annotations = self.resolved_annotation_types.clone();
+        let expressions = self.resolved_expr_types.clone();
+        let checker_expressions = self.expr_types.clone();
+        for ty in self.resolved_annotation_types.values_mut() {
+            *ty = substitute_ty(ty, &substitutions);
+        }
+        for ty in self.resolved_expr_types.values_mut() {
+            *ty = substitute_ty(ty, &substitutions);
+        }
+        let checker_receiver = receiver.to_ty();
+        for ty in self.expr_types.values_mut() {
+            *ty = ty.substitute_type_param(parameter, &checker_receiver);
+        }
+        let result = f(self);
+        self.resolved_annotation_types = annotations;
+        self.resolved_expr_types = expressions;
+        self.expr_types = checker_expressions;
         result
     }
 
@@ -576,91 +624,6 @@ impl LowerCtx {
         id
     }
 
-    /// Try to record a generic-fn callsite in the monomorphisation
-    /// registry. Returns silently for non-generic callees, callees not
-    /// in `fn_registry` (builtins/runtime symbols/lambda bindings), and
-    /// callsites with no `call_type_args` entry — the latter being the
-    /// trivially-monomorphic case from the checker's perspective (an
-    /// explicit `<T>` instantiation that already resolved to concrete
-    /// types and was not recorded per `calls.rs:183` `record_call_type_args`).
-    ///
-    /// Emits `MonomorphisationCallTypeArgsViolation` when a recorded
-    /// entry fails the `ResolvedTy::from_ty` boundary conversion, and
-    /// `MonomorphisationCapExceeded` (at most once per invocation) when
-    /// the registry cap is hit.
-    /// Recursive check: does this `ResolvedTy` contain a `Named` whose
-    /// name matches any type parameter declared on any top-level fn in
-    /// this module? If so, the value is "still abstract" — the call
-    /// site we're looking at is inside a generic body and the type-arg
-    /// has not yet been substituted. Such entries must not enter the
-    /// monomorphisation registry; G-1.b's body substitution pass will
-    /// re-walk these callsites with substituted args and produce real
-    /// entries.
-    ///
-    /// The check is a conservative over-approximation: a user-declared
-    /// type with the same name as a type param (e.g. `pub type T { ... }`)
-    /// would also be skipped. This is fine — that's not idiomatic Hew,
-    /// and the checker uses `Named` for both cases; the only correct
-    /// resolution requires bound-symbol metadata the checker side-table
-    /// does not currently expose. Skipping is safe at G-1.a (no false
-    /// emissions); a real `T`-named user type still produces the entry
-    /// at the outer non-generic callsite where `type_args` is `[]`.
-    pub(super) fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
-        match ty {
-            ResolvedTy::Named { head, args, .. } => {
-                let name = head.registry_key();
-                if self.is_type_param_symbol(name) {
-                    return true;
-                }
-                args.iter().any(|a| self.contains_abstract_type_param(a))
-            }
-            ResolvedTy::Tuple(items) => items.iter().any(|t| self.contains_abstract_type_param(t)),
-            ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
-                self.contains_abstract_type_param(elem)
-            }
-            ResolvedTy::Function { params, ret, .. } => {
-                params.iter().any(|p| self.contains_abstract_type_param(p))
-                    || self.contains_abstract_type_param(ret)
-            }
-            ResolvedTy::Closure {
-                params,
-                ret,
-                captures,
-                ..
-            } => {
-                params.iter().any(|p| self.contains_abstract_type_param(p))
-                    || self.contains_abstract_type_param(ret)
-                    || captures
-                        .iter()
-                        .any(|c| self.contains_abstract_type_param(c))
-            }
-            ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
-                self.contains_abstract_type_param(pointee)
-            }
-            ResolvedTy::TraitObject { traits } => traits.iter().any(|tb| {
-                tb.args.iter().any(|a| self.contains_abstract_type_param(a))
-                    || tb
-                        .assoc_bindings
-                        .iter()
-                        .any(|(_, t)| self.contains_abstract_type_param(t))
-            }),
-            ResolvedTy::Task(inner) => self.contains_abstract_type_param(inner),
-            // A structural type parameter is abstract by construction.
-            ResolvedTy::TypeParam { .. } => true,
-            _ => false,
-        }
-    }
-
-    /// Does `name` match any type-parameter declared on any top-level
-    /// fn in `fn_registry`? Used to filter "still-abstract" type args
-    /// from the monomorphisation registry. See
-    /// `contains_abstract_type_param` for the rationale.
-    pub(super) fn is_type_param_symbol(&self, name: &str) -> bool {
-        self.fn_registry
-            .values()
-            .any(|entry| entry.type_params.iter().any(|p| p == name))
-    }
-
     /// Read a source callable through its exact checker declaration. Ordinary
     /// functions retain an `ItemId` seal against same-spelled registration;
     /// externs retain their own entry even when the C symbol is shared.
@@ -706,22 +669,51 @@ impl LowerCtx {
         None
     }
 
+    pub(super) fn source_type_parameters(
+        &mut self,
+        span: &Span,
+        count: usize,
+    ) -> Vec<hew_types::ParamHead> {
+        if count == 0 {
+            return Vec::new();
+        }
+        let module = self
+            .declaration_module_by_file_index
+            .get(&self.current_module_idx)
+            .copied()
+            .or_else(|| self.defs.root_module());
+        if let Some((_, _, parameters)) = self
+            .declaration_type_parameters
+            .values()
+            .filter(|(file, region, parameters)| {
+                Some(*file) == module
+                    && region.start <= span.start
+                    && span.end <= region.end
+                    && parameters.len() == count
+            })
+            .min_by_key(|(_, region, _)| region.end - region.start)
+        {
+            return parameters.clone();
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "source generic parameters".to_string(),
+                reason: "missing checker declaration binder facts".to_string(),
+            },
+            span.clone(),
+            format!("generic declaration at {span:?} in {module:?} requires {count} checker-owned binder identities"),
+        ));
+        Vec::new()
+    }
+
     pub(super) fn checked_member_ty(
         &mut self,
         ty: &Ty,
-        parameters: &[String],
+        _parameters: &[hew_types::ParamHead],
         span: &Span,
     ) -> ResolvedTy {
-        let binders = parameters.iter().cloned().collect();
-        match ResolvedTy::from_ty_with_type_params(ty, &binders) {
-            Ok(resolved) => {
-                let qualified = self.qualify_current_module_record_ty(resolved);
-                let named = parameters
-                    .iter()
-                    .map(|name| ResolvedTy::param(name))
-                    .collect::<Vec<_>>();
-                substitute_type_params(&qualified, parameters, &named)
-            }
+        match ResolvedTy::from_ty(ty) {
+            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
             Err(error) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

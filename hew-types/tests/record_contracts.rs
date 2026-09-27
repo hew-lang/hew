@@ -280,7 +280,12 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
     }
     for capability in [Hash, Eq] {
         assert!(service
-            .capability_plan(&ResolvedTy::TypeParam { name: "T".into() }, capability)
+            .capability_plan(
+                &ResolvedTy::TypeParam {
+                    name: hew_types::ParamHead::for_test("T")
+                },
+                capability
+            )
             .is_err());
         assert!(service
             .capability_plan(
@@ -385,7 +390,9 @@ fn main() -> i64 {
     assert!(service.require(&key).is_err());
     let abstract_fn = ResolvedTy::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![ResolvedTy::TypeParam { name: "U".into() }],
+        params: vec![ResolvedTy::TypeParam {
+            name: hew_types::ParamHead::for_test("U"),
+        }],
         ret: Box::new(ResolvedTy::Unit),
     };
     assert_eq!(

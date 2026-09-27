@@ -275,21 +275,20 @@ pub(super) fn plan_impl_block_symbols(
     if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
         return;
     }
-    let TypeExpr::Named {
-        path: named_path,
-        type_args,
-    } = &impl_decl.target_type.0
-    else {
+    let TypeExpr::Named { path: _, type_args } = &impl_decl.target_type.0 else {
         return;
     };
-    let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-    if impl_type_param_names(impl_decl)
-        .iter()
-        .any(|type_param| type_param == self_type_name)
-    {
+    if matches!(
+        ctx.lower_type(&impl_decl.target_type),
+        ResolvedTy::TypeParam { .. }
+            | ResolvedTy::Named {
+                head: hew_types::TypeHead::Param(_),
+                ..
+            }
+    ) {
         return;
     }
-    let impl_type_params = impl_type_param_names(impl_decl);
+    let impl_type_params = impl_type_parameters(ctx, impl_decl);
     let concrete_args: Vec<ResolvedTy> = if impl_type_params.is_empty() {
         type_args
             .as_deref()
@@ -407,10 +406,11 @@ pub(super) fn materialized_default_body_plan(
         );
         if ctx.impl_method_symbol_collisions.contains(&declaration) {
             let method = trait_method_to_fn_decl(&default_method.method);
+            let impl_parameters = impl_type_parameters(ctx, impl_decl);
             ctx.register_impl_method_fn_entry_at(
                 symbol_self_name,
                 &method,
-                &impl_type_param_names(impl_decl),
+                &impl_parameters,
                 &symbol,
             );
         }
@@ -526,7 +526,7 @@ pub(super) fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
             .expect("trait_method_to_fn_decl called on method without body"),
         doc_comment: None,
         decl_span: 0..0,
-        fn_span: 0..0,
+        fn_span: method.span.clone(),
         intrinsic: None,
         consumes_self: false,
     }
@@ -718,11 +718,14 @@ pub(super) fn is_builtin_callable_impl(item: &Item) -> bool {
         || is_builtin_request_owner_impl(item)
 }
 
-pub(super) fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
-    decl.type_params
-        .as_ref()
-        .map(|params| params.iter().map(|param| param.name.to_string()).collect())
-        .unwrap_or_default()
+pub(super) fn impl_type_parameters(
+    ctx: &mut LowerCtx,
+    decl: &hew_parser::ast::ImplDecl,
+) -> Vec<hew_types::ParamHead> {
+    ctx.source_type_parameters(
+        &decl.target_type.1,
+        decl.type_params.as_ref().map_or(0, Vec::len),
+    )
 }
 
 pub(super) fn check_builtin_callable_impl_program(
@@ -735,9 +738,8 @@ pub(super) fn check_builtin_callable_impl_program(
     // collide with root user nominals of the same leaf. The executable HIR is
     // still lowered from the original source AST, preserving all source spans.
     let mut checker_program = program.clone();
-    // These externs are already registered under their std.builtins owner.
-    // Re-declaring them in the isolated checker's root would give a close
-    // wrapper a different release identity from its lifecycle contract.
+    // Externs retain their canonical registration. Source declarations reuse
+    // their std.builtins identities while providing local field visibility.
     checker_program
         .items
         .retain(|(item, _)| !matches!(item, Item::ExternBlock(_)));
@@ -762,7 +764,7 @@ pub(super) fn check_builtin_callable_impl_program(
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
     // The run mints into a fork of the compilation's table, so every id its
     // facts carry indexes that table (TRANSITION(P2): see
-    // `DefTable::fork_for_embedded`).
+    // `DefTable::fork_for_embedded_builtins`).
     let output = checker.check_embedded_builtins(&checker_program, defs);
     assert!(
         output.defs.extends(defs),

@@ -17,59 +17,64 @@ use crate::{DefTable, NominalId};
 
 pub(crate) fn instantiate_named_method_sig(
     mut sig: FnSig,
-    type_params: &[String],
+    type_params: &[crate::ParamHead],
     type_args: &[Ty],
 ) -> FnSig {
-    // A method's own type parameter (`map<U>`) is a binder distinct from any
-    // caller parameter the receiver carries in (`Option<U>` inside `fn f<U>`).
-    // Rename a colliding binder first so substituting the impl parameters
-    // cannot make the two indistinguishable.
-    let captures = |name: &str| type_args.iter().any(|arg| arg.mentions_named_param(name));
-    let mut renames: HashMap<String, Ty> = HashMap::new();
-    for method_param in sig
-        .type_params
-        .iter()
-        .filter(|param| !type_params.contains(param) && captures(param))
-    {
-        let mut fresh = format!("{method_param}'");
-        while captures(&fresh) || sig.type_params.contains(&fresh) {
-            fresh.push('\'');
-        }
-        renames.insert(method_param.clone(), Ty::param(&fresh));
-    }
-    if !renames.is_empty() {
-        let binder_name = |name: &String| match renames.get(name) {
-            Some(Ty::Named { head, .. }) => head.spelling().to_string(),
-            _ => name.clone(),
+    let subst_map: HashMap<crate::ParamHead, Ty> = if let Some(method) = &sig.impl_method {
+        let Some(substitution) = impl_receiver_substitution(method, type_args) else {
+            sig.return_type = Ty::Error;
+            return sig;
         };
-        for param_ty in &mut sig.params {
-            *param_ty = param_ty.substitute_named_params_parallel(&renames);
-        }
-        sig.return_type = sig.return_type.substitute_named_params_parallel(&renames);
-        sig.type_params = sig.type_params.iter().map(binder_name).collect();
-        sig.type_param_bounds = sig
-            .type_param_bounds
-            .into_iter()
-            .map(|(name, bounds)| (binder_name(&name), bounds))
-            .collect();
-    }
-
-    let subst_map: HashMap<String, Ty> = type_params
-        .iter()
-        .zip(type_args.iter())
-        .map(|(p, a)| (p.clone(), a.clone()))
-        .collect();
+        substitution
+    } else {
+        type_params
+            .iter()
+            .copied()
+            .zip(type_args.iter().cloned())
+            .collect()
+    };
     for param_ty in &mut sig.params {
-        *param_ty = param_ty.substitute_named_params_parallel(&subst_map);
+        *param_ty = param_ty.substitute_type_params_parallel(&subst_map);
     }
-    sig.return_type = sig.return_type.substitute_named_params_parallel(&subst_map);
+    sig.return_type = sig.return_type.substitute_type_params_parallel(&subst_map);
 
-    let substituted_params: HashSet<_> = type_params.iter().cloned().collect();
+    let substituted_params: HashSet<_> = subst_map.keys().copied().collect();
     sig.type_params
         .retain(|type_param| !substituted_params.contains(type_param));
-    sig.type_param_bounds
-        .retain(|type_param, _| !substituted_params.contains(type_param));
+    sig.type_param_bounds.retain(|name, _| {
+        sig.type_params
+            .iter()
+            .any(|parameter| parameter.spelling.as_str() == name)
+    });
     sig
+}
+
+pub(crate) fn impl_receiver_substitution(
+    method: &crate::check::ImplMethodProvenance,
+    type_args: &[Ty],
+) -> Option<HashMap<crate::ParamHead, Ty>> {
+    if method.receiver_args.len() != type_args.len() {
+        return None;
+    }
+    let variables: HashMap<_, _> = method
+        .receiver_parameters
+        .iter()
+        .copied()
+        .map(|parameter| (parameter, Ty::Var(crate::ty::TypeVar::fresh())))
+        .collect();
+    let mut inference = crate::ty::Substitution::new();
+    for (pattern, argument) in method.receiver_args.iter().zip(type_args) {
+        let pattern = pattern.substitute_type_params_parallel(&variables);
+        if crate::unify::unify_exact(&mut inference, &pattern, argument).is_err() {
+            return None;
+        }
+    }
+    Some(
+        variables
+            .into_iter()
+            .map(|(parameter, variable)| (parameter, inference.resolve(&variable)))
+            .collect(),
+    )
 }
 
 fn lookup_user_type_def<'a>(
@@ -255,7 +260,7 @@ fn named_method_sig(
 #[must_use]
 pub fn instantiate_stdlib_method_sig(
     sig: &FnSig,
-    type_params: &[String],
+    type_params: &[crate::ParamHead],
     type_args: &[Ty],
 ) -> FnSig {
     instantiate_named_method_sig(sig.clone(), type_params, type_args)
@@ -496,7 +501,7 @@ mod tests {
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
@@ -512,8 +517,8 @@ mod tests {
             "Wrapper::value".to_string(),
             FnSig {
                 param_names: vec!["next".to_string()],
-                params: vec![Ty::param("T")],
-                return_type: Ty::param("T"),
+                params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+                return_type: Ty::param(crate::ParamHead::for_test("T")),
                 ..FnSig::default()
             },
         );
@@ -617,10 +622,17 @@ mod tests {
 
         let type_def = lookup_type_def(&crate::DefTable::new(), &type_defs, "Stream")
             .expect("builtin stream type def should resolve");
-        assert_eq!(type_def.type_params, vec!["T".to_string()]);
+        assert_eq!(
+            type_def.type_params,
+            vec![crate::DefTable::builtin_parameter(
+                BuiltinType::Stream,
+                0,
+                "T"
+            )]
+        );
         assert_eq!(
             type_def.methods["recv"].return_type,
-            Ty::option(Ty::param("T"))
+            Ty::option(Ty::param(type_def.type_params[0]))
         );
     }
 

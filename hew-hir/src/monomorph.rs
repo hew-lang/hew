@@ -558,7 +558,7 @@ impl RecordLayoutRegistry {
 #[must_use]
 pub fn substitute_type_params(
     ty: &ResolvedTy,
-    params: &[String],
+    params: &[hew_types::ParamHead],
     args: &[ResolvedTy],
 ) -> ResolvedTy {
     debug_assert_eq!(
@@ -586,17 +586,12 @@ pub fn substitute_type_params(
             is_opaque,
             ..
         } => {
-            let name = head.registry_key();
-            // Bare type-parameter reference (e.g. `T`) — substitute. A nominal
-            // of the same spelling is a different type.
-            if named_args.is_empty()
-                && matches!(
-                    head,
-                    hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)
-                )
-            {
-                if let Some(idx) = params.iter().position(|p| p == name) {
-                    return args[idx].clone();
+            if let hew_types::TypeHead::Param(parameter) = head {
+                if named_args.is_empty() {
+                    if let Some(index) = params.iter().position(|candidate| candidate == parameter)
+                    {
+                        return args[index].clone();
+                    }
                 }
             }
             // Otherwise descend into the args so `Vec<T>` becomes `Vec<i64>`.
@@ -989,19 +984,21 @@ mod tests {
 
     #[test]
     fn substitute_replaces_bare_type_param() {
-        let params = vec!["T".to_string()];
+        let params = vec![hew_types::ParamHead::for_test("T")];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::param("T");
+        let ty = ResolvedTy::param(hew_types::ParamHead::for_test("T"));
         assert_eq!(substitute_type_params(&ty, &params, &args), ResolvedTy::I64);
     }
 
     #[test]
     fn substitute_descends_into_nested_named() {
         // Vec<T> with T=i64 -> Vec<i64>
-        let params = vec!["T".to_string()];
+        let params = vec![hew_types::ParamHead::for_test("T")];
         let args = vec![ResolvedTy::I64];
-        let ty =
-            ResolvedTy::named_builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::param("T")]);
+        let ty = ResolvedTy::named_builtin(
+            hew_types::BuiltinType::Vec,
+            vec![ResolvedTy::param(hew_types::ParamHead::for_test("T"))],
+        );
         assert_eq!(
             substitute_type_params(&ty, &params, &args),
             ResolvedTy::named_builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::I64])
@@ -1010,7 +1007,7 @@ mod tests {
 
     #[test]
     fn substitute_leaves_unrelated_named_alone() {
-        let params = vec!["T".to_string()];
+        let params = vec![hew_types::ParamHead::for_test("T")];
         let args = vec![ResolvedTy::I64];
         let ty = ResolvedTy::named_for_test("Label", vec![]);
         assert_eq!(substitute_type_params(&ty, &params, &args), ty);
@@ -1023,20 +1020,26 @@ mod tests {
         // `-> Option<T>` return type); it is a distinct enum variant from
         // the legacy `Named { args: [] }` form and must substitute the
         // same way.
-        let params = vec!["T".to_string()];
+        let params = vec![hew_types::ParamHead::for_test("T")];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::TypeParam { name: "T".into() };
+        let ty = ResolvedTy::TypeParam {
+            name: hew_types::ParamHead::for_test("T"),
+        };
         assert_eq!(substitute_type_params(&ty, &params, &args), ResolvedTy::I64);
     }
 
     #[test]
     fn substitute_descends_into_nested_type_param_variant() {
         // Option<T> where T is the structural TypeParam variant -> Option<i64>.
-        let params = vec!["T".to_string()];
+        let params = vec![hew_types::ParamHead::for_test("T")];
         let args = vec![ResolvedTy::I64];
         let builtin = hew_types::BuiltinType::Option;
-        let ty =
-            ResolvedTy::named_builtin(builtin, vec![ResolvedTy::TypeParam { name: "T".into() }]);
+        let ty = ResolvedTy::named_builtin(
+            builtin,
+            vec![ResolvedTy::TypeParam {
+                name: hew_types::ParamHead::for_test("T"),
+            }],
+        );
         assert_eq!(
             substitute_type_params(&ty, &params, &args),
             ResolvedTy::named_builtin(builtin, vec![ResolvedTy::I64])
@@ -1143,8 +1146,11 @@ mod tests {
     fn recursive_polymorphic_self_ignores_matching_args() {
         // Box<T> with field `next: Box<T>` — same args, not a
         // polymorphic-recursion hazard (the layout converges).
-        let current_args = vec![ResolvedTy::param("T")];
-        let field_ty = ResolvedTy::named_for_test("Box", vec![ResolvedTy::param("T")]);
+        let current_args = vec![ResolvedTy::param(hew_types::ParamHead::for_test("T"))];
+        let field_ty = ResolvedTy::named_for_test(
+            "Box",
+            vec![ResolvedTy::param(hew_types::ParamHead::for_test("T"))],
+        );
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
             "Box",

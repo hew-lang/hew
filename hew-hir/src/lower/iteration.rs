@@ -70,9 +70,7 @@ impl LowerCtx {
             );
             return None;
         };
-        let type_params: HashSet<String> = sig.type_params.iter().cloned().collect();
-        let Ok(mut ret_ty) = ResolvedTy::from_ty_with_type_params(&sig.return_type, &type_params)
-        else {
+        let Ok(mut ret_ty) = ResolvedTy::from_ty(&sig.return_type) else {
             self.unsupported(
                 span.clone(),
                 format!("{context} method `{callee}` has a non-boundary return type"),

@@ -1367,7 +1367,7 @@ mod tests {
             HirExprKind::CallTraitMethodStatic {
                 receiver: Box::new(static_trait_receiver),
                 target: unsupported("static trait call"),
-                receiver_type_param: "T".to_string(),
+                receiver_type_param: hew_types::ParamHead::for_test("T"),
                 args: Vec::new(),
                 evaluation_order: Vec::new(),
                 ret_ty: ResolvedTy::Unit,

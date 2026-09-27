@@ -2237,14 +2237,16 @@ fn verifier_admits_the_same_header_and_call_with_a_read_only_slot() {
 #[test]
 fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
+    let declaration = DefId::for_test("borrow_template");
     module.generic_templates = vec![hew_sir::SemGenericTemplate {
-        id: GenericTemplateId {
-            declaration: DefId::for_test("borrow_template"),
-        },
+        id: GenericTemplateId { declaration },
         function: ItemId(2),
         symbol: "borrow_template".to_string(),
         source_origin: FunctionSourceOrigin::Unknown,
-        type_params: vec!["T".to_string()],
+        type_params: vec![hew_types::ParamHead::new(
+            hew_types::TypeParamId::new(declaration, 0),
+            hew_parser::ast::Symbol::intern("T"),
+        )],
         signature: SemSignature {
             params: vec![SemAbiParam {
                 ty: ResolvedTy::I64,
@@ -2268,14 +2270,16 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
 #[test]
 fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
+    let declaration = DefId::for_test("read_only_template");
     module.generic_templates = vec![hew_sir::SemGenericTemplate {
-        id: GenericTemplateId {
-            declaration: DefId::for_test("read_only_template"),
-        },
+        id: GenericTemplateId { declaration },
         function: ItemId(2),
         symbol: "read_only_template".to_string(),
         source_origin: FunctionSourceOrigin::Unknown,
-        type_params: vec!["T".to_string()],
+        type_params: vec![hew_types::ParamHead::new(
+            hew_types::TypeParamId::new(declaration, 0),
+            hew_parser::ast::Symbol::intern("T"),
+        )],
         signature: SemSignature {
             params: vec![SemAbiParam {
                 ty: ResolvedTy::I64,

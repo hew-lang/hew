@@ -144,7 +144,11 @@ impl LowerCtx {
         let emitted = self
             .call_site_type_args
             .get(&site)
-            .filter(|args| !args.iter().any(|ty| self.contains_abstract_type_param(ty)))
+            .filter(|args| {
+                !args
+                    .iter()
+                    .any(super::substitution::contains_abstract_symbol)
+            })
             .map_or_else(
                 || {
                     self.fn_symbol_overrides
@@ -212,7 +216,7 @@ impl LowerCtx {
                 );
             }
             if self.defs.kind(declaration) == hew_types::DeclarationKind::Const {
-                if let Some(entry) = self.const_registry.get(self.defs.path(declaration)) {
+                if let Some(entry) = self.source_const_entries.get(&declaration) {
                     return (
                         HirExprKind::BindingRef {
                             name: name.to_string(),

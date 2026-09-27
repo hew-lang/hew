@@ -2056,7 +2056,9 @@ mod tests {
             assert_ne!(ref_id, 0);
 
             let target_id = (*target).id;
-            let notify = std::thread::spawn(move || notify_monitors_on_death(target_id, 77, 0));
+            let notify = std::thread::spawn(move || {
+                notify_monitors_on_death(target_id, HewActorState::Crashed as i32, 0);
+            });
             entered.wait();
 
             // The DOWN message has now been delivered: `notify` is parked in

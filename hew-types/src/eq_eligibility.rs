@@ -141,16 +141,16 @@ fn eq_ineligibility(ty: &Ty, types: TypeDefView<'_>) -> Option<EqEligibilityFail
     }
 }
 
-fn instantiate_type_def_member(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+fn instantiate_type_def_member(ty: &Ty, type_params: &[crate::ParamHead], type_args: &[Ty]) -> Ty {
     if type_params.is_empty() || type_params.len() != type_args.len() {
         return ty.clone();
     }
-    let substitutions: HashMap<String, Ty> = type_params
+    let substitutions: HashMap<crate::ParamHead, Ty> = type_params
         .iter()
-        .cloned()
+        .copied()
         .zip(type_args.iter().cloned())
         .collect();
-    ty.substitute_named_params_parallel(&substitutions)
+    ty.substitute_type_params_parallel(&substitutions)
 }
 
 fn walk_instantiated_fields_for_eq_eligibility(

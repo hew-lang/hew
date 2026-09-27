@@ -605,7 +605,7 @@ mod tests {
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Vec".to_string(),
-                type_params: vec!["T".to_string()],
+                type_params: vec![crate::ParamHead::for_test("T")],
                 bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),

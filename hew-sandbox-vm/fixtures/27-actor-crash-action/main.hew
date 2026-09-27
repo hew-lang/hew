@@ -4,7 +4,7 @@ actor Worker {
     }
     #[on(crash)]
     fn crashed(info: CrashInfo) -> CrashAction {
-        CrashAction.Kill
+        CrashAction.GiveUp
     }
 }
 
@@ -22,5 +22,6 @@ fn main() {
         .Err(.Dead) => "killed",
         _ => "unexpected",
     });
-    close(tree);
+    stop(tree);
+    stopped(tree);
 }

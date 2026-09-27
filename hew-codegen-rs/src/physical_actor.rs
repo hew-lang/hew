@@ -1595,14 +1595,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     | hew_mir::physical::LifecycleTarget::SupervisorRole(_)
             );
             if matches!(operation, ActorOperation::AwaitStopped(_)) {
-                self.emit_actor_await_closed(
+                self.emit_actor_await_stopped(
                     *source,
-                    role.then_some((
-                        matches!(
-                            target,
-                            hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-                        ),
-                        false,
+                    role.then_some(matches!(
+                        target,
+                        hew_mir::physical::LifecycleTarget::SupervisorRole(_)
                     )),
                     unwind,
                 )?;
@@ -1615,37 +1612,41 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ),
                     unwind,
                 )?;
+            } else if matches!(
+                target,
+                hew_mir::physical::LifecycleTarget::SupervisorRole(_)
+            ) {
+                let role = self.load(*source, "lifecycle.role")?.into_struct_value();
+                let owner = self
+                    .builder
+                    .build_extract_value(role, 0, "lifecycle.role.owner")
+                    .llvm_ctx("read nested role owner")?;
+                let slot = self
+                    .builder
+                    .build_extract_value(role, 1, "lifecycle.role.slot")
+                    .llvm_ctx("read nested role slot")?;
+                let request = coro::external(
+                    self.llvm,
+                    "hew_supervisor_native_role_request",
+                    self.ctx.void_type().fn_type(
+                        &[
+                            owner.get_type().into(),
+                            slot.get_type().into(),
+                            self.ctx.i32_type().into(),
+                        ],
+                        false,
+                    ),
+                )?;
+                let terminate = self.ctx.i32_type().const_int(
+                    u64::from(matches!(operation, ActorOperation::Terminate(_))),
+                    false,
+                );
+                self.builder
+                    .build_call(request, &[owner.into(), slot.into(), terminate.into()], "")
+                    .llvm_ctx("request nested supervisor transition")?;
             } else {
                 let value = self.load(*source, "lifecycle.handle")?;
-                let value = if matches!(
-                    target,
-                    hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-                ) {
-                    let role = value.into_struct_value();
-                    let owner = self
-                        .builder
-                        .build_extract_value(role, 0, "lifecycle.role.owner")
-                        .llvm_ctx("read nested role owner")?;
-                    let slot = self
-                        .builder
-                        .build_extract_value(role, 1, "lifecycle.role.slot")
-                        .llvm_ctx("read nested role slot")?;
-                    let resolve = coro::external(
-                        self.llvm,
-                        "hew_supervisor_native_nested_child",
-                        owner
-                            .get_type()
-                            .into_int_type()
-                            .fn_type(&[owner.get_type().into(), slot.get_type().into()], false),
-                    )?;
-                    call_value(
-                        &self.builder,
-                        resolve,
-                        &[owner.into(), slot.into()],
-                        "lifecycle.nested",
-                    )?
-                    .into_int_value()
-                } else if role {
+                let value = if role {
                     self.resolve_role_handle(value.into_struct_value())?
                 } else {
                     value.into_int_value()
@@ -1663,13 +1664,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ) => "hew_actor_terminate_native",
                     (
                         ActorOperation::Stop(_),
-                        hew_mir::physical::LifecycleTarget::Supervisor(_)
-                        | hew_mir::physical::LifecycleTarget::SupervisorRole(_),
+                        hew_mir::physical::LifecycleTarget::Supervisor(_),
                     ) => "hew_supervisor_stop_native",
                     (
                         ActorOperation::Terminate(_),
-                        hew_mir::physical::LifecycleTarget::Supervisor(_)
-                        | hew_mir::physical::LifecycleTarget::SupervisorRole(_),
+                        hew_mir::physical::LifecycleTarget::Supervisor(_),
                     ) => "hew_supervisor_terminate_native",
                     _ => unreachable!("lifecycle operation selected above"),
                 };
@@ -1704,17 +1703,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             ActorOperation::Spawn(id)
             | ActorOperation::SelfHandle(id)
-            | ActorOperation::Close(id)
-            | ActorOperation::AwaitClosed(id)
             | ActorOperation::StreamStart { actor: id, .. }
             | ActorOperation::Submit { actor: id, .. } => *id,
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
-            | ActorOperation::SupervisorAwaitRestart { .. }
-            | ActorOperation::SupervisorPoolView { .. }
-            | ActorOperation::SupervisorAwaitClosed(_)
-            | ActorOperation::SupervisorRoleAwaitClosed { .. }
-            | ActorOperation::SupervisorStop(_) => ActorId(u32::MAX),
+            | ActorOperation::SupervisorPoolView { .. } => ActorId(u32::MAX),
         };
         let mut sources = Vec::new();
         for transfer in transfers {
@@ -1734,31 +1727,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("record supervisor boundary status")?;
             return self.emit_call_outcome(status, result, Some(normal), unwind);
         }
-        if matches!(
-            operation,
-            ActorOperation::AwaitClosed(_)
-                | ActorOperation::SupervisorAwaitClosed(_)
-                | ActorOperation::SupervisorRoleAwaitClosed { .. }
-        ) {
-            let [source] = sources.as_slice() else {
-                return Err(CodegenError::FailClosed(
-                    "termination wait requires one identity".into(),
-                ));
-            };
-            let role_close = match operation {
-                ActorOperation::SupervisorRoleAwaitClosed { closing, .. } => Some((true, closing)),
-                _ => None,
-            };
-            self.emit_actor_await_closed(*source, role_close, unwind)?;
-            for source in sources {
-                self.clear_owned(source)?;
-            }
-            let status = self.ctx.i32_type().const_zero();
-            self.builder
-                .build_store(self.active_status, status)
-                .llvm_ctx("record termination observation status")?;
-            return self.emit_call_outcome(status, result, Some(normal), unwind);
-        }
         let actor =
             self.module.actors.get(id.0 as usize).ok_or_else(|| {
                 CodegenError::FailClosed("missing native actor descriptor".into())
@@ -1775,31 +1743,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | ActorOperation::AwaitRestarted(_)
             | ActorOperation::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
-            }
-            ActorOperation::Close(_) => {
-                let [source] = sources.as_slice() else {
-                    return Err(CodegenError::FailClosed(
-                        "close requires one actor identity".into(),
-                    ));
-                };
-                let value = self.load(*source, "close.actor")?;
-                let close = coro::external(
-                    self.llvm,
-                    "hew_actor_close_native",
-                    self.ctx
-                        .void_type()
-                        .fn_type(&[value.get_type().into()], false),
-                )?;
-                self.builder
-                    .build_call(close, &[value.into()], "")
-                    .llvm_ctx("request cooperative actor stop")?;
-                self.store(
-                    result.ok_or_else(|| {
-                        CodegenError::FailClosed("close requires its actor identity result".into())
-                    })?,
-                    value,
-                )?;
-                self.ctx.i32_type().const_zero()
             }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
             ActorOperation::SelfHandle(_) => {
@@ -1823,14 +1766,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.store(result, value)?;
                 self.ctx.i32_type().const_zero()
             }
-            ActorOperation::AwaitClosed(_)
-            | ActorOperation::SupervisorSpawn(_)
+            ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
-            | ActorOperation::SupervisorAwaitRestart { .. }
-            | ActorOperation::SupervisorPoolView { .. }
-            | ActorOperation::SupervisorAwaitClosed(_)
-            | ActorOperation::SupervisorRoleAwaitClosed { .. }
-            | ActorOperation::SupervisorStop(_) => unreachable!("emitted above"),
+            | ActorOperation::SupervisorPoolView { .. } => unreachable!("emitted above"),
             ActorOperation::StreamStart { message, .. } => {
                 self.emit_actor_stream_start(actor, message, &sources, unwind)?
             }

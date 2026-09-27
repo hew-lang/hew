@@ -131,7 +131,7 @@ pub struct TraitDef {
     /// Trait name
     pub name: String,
     /// Type parameters
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     /// Super traits this trait extends
     pub super_traits: Vec<String>,
     /// Methods defined by this trait
@@ -202,7 +202,7 @@ pub struct TraitRegistry {
     ///
     /// Populated by `register_type_params`, called alongside `register_type` at
     /// every type / record / machine declaration site.
-    type_params: HashMap<String, Vec<String>>,
+    type_params: HashMap<String, Vec<crate::ParamHead>>,
 }
 
 struct MarkerDerivation<'a> {
@@ -387,7 +387,7 @@ impl TraitRegistry {
     /// After registration, `is_type_param_placeholder` resolves field names
     /// against this list rather than the absence-based heuristic, making
     /// placeholder classification deterministic and fail-closed.
-    pub fn register_type_params(&mut self, name: String, params: Vec<String>) {
+    pub fn register_type_params(&mut self, name: String, params: Vec<crate::ParamHead>) {
         // Unconditionally last-write-wins to stay in lockstep with
         // `register_type` / `type_fields`. See doc comment above.
         self.type_params.insert(name, params);
@@ -1042,7 +1042,7 @@ impl TraitRegistry {
         let _ = marker;
         self.type_params
             .get(parent_name)
-            .is_none_or(|params| params.iter().any(|p| p == param.spelling.as_str()))
+            .is_none_or(|params| params.iter().any(|p| p == param))
     }
 }
 
@@ -1529,7 +1529,7 @@ mod tests {
         // Simulates: type Box<T> { v: T }
         // Registration stores the field as Ty::Named { name: "T" } — the type
         // parameter placeholder.
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         registry.register_type("Box".to_string(), vec![t_param]);
 
         // Box<i64> — T instantiated to i64
@@ -1546,7 +1546,7 @@ mod tests {
     fn user_generic_enum_with_send_arg_is_send() {
         let mut registry = TraitRegistry::new();
         // Simulates: enum Tree<T> { Leaf(T); Empty }
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         registry.register_type("Tree".to_string(), vec![t_param]);
 
         let tree_i64 = Ty::named_for_test("Tree", vec![Ty::I64]);
@@ -1561,7 +1561,7 @@ mod tests {
     #[test]
     fn user_generic_struct_with_concrete_and_param_fields_is_send() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         // type Msg<T> { payload: T; id: i64 }
         registry.register_type("Msg".to_string(), vec![t_param, Ty::I64]);
 
@@ -1579,7 +1579,7 @@ mod tests {
     #[test]
     fn user_generic_struct_with_rc_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         registry.register_type("Box".to_string(), vec![t_param]);
 
         // Box<Rc<i64>> — Rc is explicitly not-Send
@@ -1602,7 +1602,7 @@ mod tests {
     #[test]
     fn user_generic_struct_with_stream_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         registry.register_type("Box".to_string(), vec![t_param]);
 
         let rc_i64 = Ty::Named {
@@ -1663,7 +1663,7 @@ mod tests {
     #[test]
     fn negative_impl_field_not_laundered_by_generic_wrapper() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         let no_send = Ty::named_for_test("NoSend", vec![]);
         // NoSend is a concrete type explicitly opted out of Send.
         registry.register_negative_impl("NoSend".to_string(), MarkerTrait::Send);
@@ -1676,7 +1676,7 @@ mod tests {
             "Wrapper<i64> must NOT be Send: it holds a NoSend field (registered negative impl)"
         );
         // Positive control: a wrapper with a genuine param field only IS Send.
-        let t_only = Ty::param("T");
+        let t_only = Ty::param(crate::ParamHead::for_test("T"));
         registry.register_type("PureWrapper".to_string(), vec![t_only]);
         let pure_i64 = Ty::named_for_test("PureWrapper", vec![Ty::I64]);
         assert!(
@@ -1691,7 +1691,7 @@ mod tests {
     #[test]
     fn negative_impl_is_marker_scoped_not_global() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         let bad_sync = Ty::named_for_test("BadSync", vec![]);
         // BadSync has a negative Sync fact but NOT a negative Send fact.
         registry.register_negative_impl("BadSync".to_string(), MarkerTrait::Sync);
@@ -1719,10 +1719,13 @@ mod tests {
     #[test]
     fn register_type_params_positive_all_send_fields() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         // type Envelope<T> { id: i64; payload: T }
         registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
-        registry.register_type_params("Envelope".to_string(), vec!["T".to_string()]);
+        registry.register_type_params(
+            "Envelope".to_string(),
+            vec![crate::ParamHead::for_test("T")],
+        );
 
         let env_string = Ty::named_for_test("Envelope", vec![Ty::String]);
         assert!(
@@ -1740,9 +1743,12 @@ mod tests {
     #[test]
     fn register_type_params_negative_non_send_arg() {
         let mut registry = TraitRegistry::new();
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
-        registry.register_type_params("Envelope".to_string(), vec!["T".to_string()]);
+        registry.register_type_params(
+            "Envelope".to_string(),
+            vec![crate::ParamHead::for_test("T")],
+        );
 
         let rc_i64 = Ty::Named {
             head: crate::TypeHead::Builtin(BuiltinType::Rc),
@@ -1782,12 +1788,12 @@ mod tests {
             }],
         );
 
-        let t_param = Ty::param("T");
+        let t_param = Ty::param(crate::ParamHead::for_test("T"));
         let concrete_bad = Ty::named_for_test("ConcreteBad", vec![]);
         // type Wrapper<T> { bad: ConcreteBad; item: T }
         registry.register_type("Wrapper".to_string(), vec![concrete_bad, t_param]);
         // Declare T as the only type parameter; ConcreteBad is NOT a param.
-        registry.register_type_params("Wrapper".to_string(), vec!["T".to_string()]);
+        registry.register_type_params("Wrapper".to_string(), vec![crate::ParamHead::for_test("T")]);
 
         let wrapper_i64 = Ty::named_for_test("Wrapper", vec![Ty::I64]);
         assert!(
@@ -1831,9 +1837,12 @@ mod tests {
         let mut registry = TraitRegistry::new();
 
         // --- module a: type Collision<T> { value: T } ---
-        let t_a_param = Ty::param("T");
+        let t_a_param = Ty::param(crate::ParamHead::for_test("T"));
         registry.register_type("Collision".to_string(), vec![t_a_param]);
-        registry.register_type_params("Collision".to_string(), vec!["T".to_string()]);
+        registry.register_type_params(
+            "Collision".to_string(),
+            vec![crate::ParamHead::for_test("T")],
+        );
         // Simulate alias_type_markers("Collision", "a.Collision") when module a
         // is imported — snapshots a's fields and params under the qualified key.
         registry.alias_type_markers("Collision", "a.Collision");
@@ -1849,11 +1858,14 @@ mod tests {
 
         // --- module b: type Collision<U> { hidden: T } ---
         // Field "T" here refers to b's concrete type, not a type parameter.
-        let t_b_field = Ty::param("T");
+        let t_b_field = Ty::param(crate::ParamHead::for_test("T"));
         // last-write-wins: overwrites a's fields.
         registry.register_type("Collision".to_string(), vec![t_b_field]);
         // last-write-wins (the fix): overwrites a's stale params ["T"] with ["U"].
-        registry.register_type_params("Collision".to_string(), vec!["U".to_string()]);
+        registry.register_type_params(
+            "Collision".to_string(),
+            vec![crate::ParamHead::for_test("U")],
+        );
         // Snapshot b's fields and params under the qualified key.
         registry.alias_type_markers("Collision", "b.Collision");
 

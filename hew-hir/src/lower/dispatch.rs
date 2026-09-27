@@ -80,7 +80,7 @@ impl LowerCtx {
         &mut self,
         receiver: HirExpr,
         target: hew_types::CallTarget,
-        receiver_type_param: String,
+        receiver_type_param: hew_types::ParamHead,
         args: LoweredCallArgs,
         ret_ty: ResolvedTy,
         span: &Span,
@@ -135,7 +135,7 @@ impl LowerCtx {
         &mut self,
         value: HirExpr,
         target: hew_types::CallTarget,
-        type_param_name: String,
+        type_param_name: hew_types::ParamHead,
         span: Span,
     ) -> HirExpr {
         let kind = self.make_static_trait_dispatch_call(
@@ -323,12 +323,11 @@ impl LowerCtx {
                 // `T` to a bare `Named`) defers to per-monomorphisation static
                 // dispatch; a concrete user type calls its `impl Display` fmt
                 // symbol directly (byte-identical to the pre-#1565 path).
-                if self.current_fn_type_params.contains(name) {
-                    let type_param_name = name;
+                if let hew_types::TypeHead::Param(parameter) = head {
                     return self.build_display_static_dispatch(
                         value,
                         display_target,
-                        type_param_name.to_string(),
+                        *parameter,
                         span,
                     );
                 }
@@ -342,7 +341,7 @@ impl LowerCtx {
                 // verified it. Defer the concrete `Display::fmt` selection to
                 // monomorphisation (#1565); the concrete type is never
                 // re-derived here.
-                let type_param_name = name.clone();
+                let type_param_name = *name;
                 self.build_display_static_dispatch(value, display_target, type_param_name, span)
             }
             _ => {
@@ -502,7 +501,7 @@ impl LowerCtx {
         }
         if type_args
             .iter()
-            .any(|ty| self.contains_abstract_type_param(ty))
+            .any(super::substitution::contains_abstract_symbol)
         {
             return;
         }

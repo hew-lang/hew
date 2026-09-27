@@ -7,7 +7,7 @@ use super::*;
 /// surrounding function's type params have been substituted.
 pub(super) struct TraitMethodStaticSite {
     /// Type-parameter name of the receiver (e.g. "T" in `fn display<T: Show>`).
-    pub(super) receiver_type_param: String,
+    pub(super) receiver_type_param: hew_types::ParamHead,
     /// Checker-selected trait-method identity. The monomorphisation lookup
     /// consumes its ids directly rather than rebuilding them from spellings.
     pub(super) target: hew_types::CallTarget,
@@ -32,7 +32,8 @@ pub(super) fn closure_under_substitution(
     // Map of emitted fn symbol → checker declaration identity plus the local
     // body origin and type parameters. The linker symbol locates the body;
     // the declaration is the authority carried into every MonoKey.
-    let mut fn_info: HashMap<String, (ItemId, hew_types::DefId, Vec<String>)> = HashMap::new();
+    let mut fn_info: HashMap<String, (ItemId, hew_types::DefId, Vec<hew_types::ParamHead>)> =
+        HashMap::new();
     for item in items {
         if let HirItem::Function(f) = item {
             origin_fns.insert(f.id, f);
@@ -54,10 +55,10 @@ pub(super) fn closure_under_substitution(
             continue;
         };
         // Build substitution map: type_param name → concrete arg.
-        let subst: HashMap<String, ResolvedTy> = origin
+        let subst: HashMap<hew_types::ParamHead, ResolvedTy> = origin
             .type_params
             .iter()
-            .cloned()
+            .copied()
             .zip(key.type_args.iter().cloned())
             .collect();
         // Walk the body to discover Call sites.
@@ -82,10 +83,7 @@ pub(super) fn closure_under_substitution(
                 args.iter().map(|t| substitute_ty(t, &subst)).collect();
             // Skip if still abstract — the surrounding mono is generic
             // in some symbol that we don't have a concrete value for.
-            if substituted
-                .iter()
-                .any(|t| contains_abstract_symbol(t, &fn_info))
-            {
+            if substituted.iter().any(contains_abstract_symbol) {
                 continue;
             }
             let new_key = MonoKey {
@@ -178,10 +176,7 @@ pub(super) fn closure_under_substitution(
                 continue;
             }
             // Skip if type_args still contain abstract symbols.
-            if type_args
-                .iter()
-                .any(|t| contains_abstract_symbol(t, &fn_info))
-            {
+            if type_args.iter().any(contains_abstract_symbol) {
                 continue;
             }
             let new_key = MonoKey {
@@ -383,7 +378,7 @@ pub(super) fn collect_call_sites_in_expr(
             // monomorphisation closure to resolve once the enclosing
             // function's type params are substituted.
             trait_out.push(TraitMethodStaticSite {
-                receiver_type_param: receiver_type_param.clone(),
+                receiver_type_param: *receiver_type_param,
                 target: target.clone(),
             });
             collect_call_sites_in_expr(receiver, out, trait_out);
@@ -407,7 +402,7 @@ pub(super) fn collect_call_sites_in_expr(
                     receiver_type_param,
                     ..
                 } => trait_out.push(TraitMethodStaticSite {
-                    receiver_type_param: receiver_type_param.clone(),
+                    receiver_type_param: *receiver_type_param,
                     target: call_target.clone(),
                 }),
             }
@@ -594,18 +589,16 @@ pub(super) fn collect_call_sites_in_expr(
 )]
 pub fn substitute_ty<S: std::hash::BuildHasher>(
     ty: &ResolvedTy,
-    subst: &HashMap<String, ResolvedTy, S>,
+    subst: &HashMap<hew_types::ParamHead, ResolvedTy, S>,
 ) -> ResolvedTy {
     match ty {
         // Only a binder is substituted: a nominal of the same spelling is a
         // different type.
         ResolvedTy::Named {
-            head: head @ (hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)),
+            head: hew_types::TypeHead::Param(parameter),
             args,
             ..
-        } if args.is_empty() && subst.contains_key(head.registry_key()) => {
-            subst[head.registry_key()].clone()
-        }
+        } if args.is_empty() && subst.contains_key(parameter) => subst[parameter].clone(),
         ResolvedTy::Named {
             head,
             args,
@@ -678,32 +671,19 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
     }
 }
 
-pub(super) fn contains_abstract_symbol(
-    ty: &ResolvedTy,
-    fn_info: &HashMap<String, (ItemId, hew_types::DefId, Vec<String>)>,
-) -> bool {
-    // A type contains an abstract symbol if any `Named { args: [] }`
-    // matches a type-parameter name declared on any top-level fn.
-    let is_type_param = |name: &str| {
-        fn_info
-            .values()
-            .any(|(_, _, params)| params.iter().any(|p| p == name))
-    };
+/// Whether a type still contains a declaration-owned generic parameter.
+pub(super) fn contains_abstract_symbol(ty: &ResolvedTy) -> bool {
     match ty {
         ResolvedTy::Named { head, args, .. } => {
-            let name = head.registry_key();
-            if args.is_empty() && is_type_param(name) {
+            if head.is_param() {
                 return true;
             }
-            args.iter().any(|a| contains_abstract_symbol(a, fn_info))
+            args.iter().any(contains_abstract_symbol)
         }
-        ResolvedTy::Tuple(items) => items.iter().any(|t| contains_abstract_symbol(t, fn_info)),
-        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
-            contains_abstract_symbol(elem, fn_info)
-        }
+        ResolvedTy::Tuple(items) => items.iter().any(contains_abstract_symbol),
+        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => contains_abstract_symbol(elem),
         ResolvedTy::Function { params, ret, .. } => {
-            params.iter().any(|p| contains_abstract_symbol(p, fn_info))
-                || contains_abstract_symbol(ret, fn_info)
+            params.iter().any(contains_abstract_symbol) || contains_abstract_symbol(ret)
         }
         ResolvedTy::Closure {
             params,
@@ -711,26 +691,21 @@ pub(super) fn contains_abstract_symbol(
             captures,
             ..
         } => {
-            params.iter().any(|p| contains_abstract_symbol(p, fn_info))
-                || contains_abstract_symbol(ret, fn_info)
-                || captures
-                    .iter()
-                    .any(|c| contains_abstract_symbol(c, fn_info))
+            params.iter().any(contains_abstract_symbol)
+                || contains_abstract_symbol(ret)
+                || captures.iter().any(contains_abstract_symbol)
         }
         ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
-            contains_abstract_symbol(pointee, fn_info)
+            contains_abstract_symbol(pointee)
         }
         ResolvedTy::TraitObject { traits } => traits.iter().any(|bound| {
-            bound
-                .args
-                .iter()
-                .any(|a| contains_abstract_symbol(a, fn_info))
+            bound.args.iter().any(contains_abstract_symbol)
                 || bound
                     .assoc_bindings
                     .iter()
-                    .any(|(_, t)| contains_abstract_symbol(t, fn_info))
+                    .any(|(_, t)| contains_abstract_symbol(t))
         }),
-        ResolvedTy::Task(inner) => contains_abstract_symbol(inner, fn_info),
+        ResolvedTy::Task(inner) => contains_abstract_symbol(inner),
         // A structural type parameter is abstract by construction.
         ResolvedTy::TypeParam { .. } => true,
         _ => false,

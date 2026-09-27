@@ -715,7 +715,10 @@ fn generic_machine_type_params_survive_registration() {
         .type_def_at_path("Worker")
         .expect("Worker should be registered as a type");
     assert_eq!(
-        td.type_params,
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "generic machine type param T must survive into TypeDef"
     );
@@ -734,7 +737,10 @@ fn generic_machine_multi_params_survive_registration() {
         .type_def_at_path("Pipeline")
         .expect("Pipeline should be registered as a type");
     assert_eq!(
-        td.type_params,
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["In".to_string(), "Out".to_string()],
         "multi-param generic machine type params must survive into TypeDef"
     );
@@ -938,19 +944,39 @@ fn main() {
     );
 
     let machine_td = output.type_def_at_path("Lifecycle").unwrap();
-    assert_eq!(machine_td.type_params, vec!["T".to_string()]);
+    assert_eq!(
+        machine_td
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["T".to_string()]
+    );
     match &machine_td.variants["Loaded"] {
         hew_types::VariantDef::Struct(fields) => {
-            assert_eq!(fields, &vec![("value".to_string(), Ty::param("T"),)]);
+            assert_eq!(
+                fields,
+                &vec![("value".to_string(), Ty::param(machine_td.type_params[0]),)]
+            );
         }
         other => panic!("expected Loaded to be a struct variant, got: {other:?}"),
     }
 
     let event_td = output.type_def_at_path("Lifecycle.Event").unwrap();
-    assert_eq!(event_td.type_params, vec!["T".to_string()]);
+    assert_eq!(
+        event_td
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["T".to_string()]
+    );
     match &event_td.variants["Load"] {
         hew_types::VariantDef::Struct(fields) => {
-            assert_eq!(fields, &vec![("value".to_string(), Ty::param("T"),)]);
+            assert_eq!(
+                fields,
+                &vec![("value".to_string(), Ty::param(event_td.type_params[0]),)]
+            );
         }
         other => panic!("expected Load to be a struct variant, got: {other:?}"),
     }
@@ -960,7 +986,7 @@ fn main() {
         vec![Ty::named_in(
             &output.defs,
             "Lifecycle.Event",
-            vec![Ty::param("T")]
+            vec![Ty::param(machine_td.methods["step"].type_params[0])]
         )]
     );
 }
@@ -1294,7 +1320,10 @@ fn imported_generic_machine_type_params_survive_registration() {
         .type_def_at_path("workers.Worker")
         .expect("generic machine 'Worker' must be registered via the non-root module path");
     assert_eq!(
-        td.type_params,
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "generic type param T must survive into TypeDef when registered via module graph"
     );
@@ -1302,7 +1331,11 @@ fn imported_generic_machine_type_params_survive_registration() {
         .type_def_at_path("workers.Worker.Event")
         .expect("companion event enum 'WorkerEvent' must be registered");
     assert_eq!(
-        event_td.type_params,
+        event_td
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "companion event enum must carry the same type param T"
     );
@@ -1422,7 +1455,13 @@ machine Lifecycle<T: Resource> {
     let td = output
         .type_def_at_path("Lifecycle")
         .expect("Lifecycle should be registered as a type");
-    assert_eq!(td.type_params, vec!["T".to_string()]);
+    assert_eq!(
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["T".to_string()]
+    );
 }
 
 /// Slice β positive gate: a use site `Lifecycle<File>` where `File: Resource`

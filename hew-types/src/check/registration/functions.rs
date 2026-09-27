@@ -18,6 +18,46 @@ use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
+    /// Resolve source binders through the declaration scopes that own them.
+    pub(in crate::check) fn source_parameter_heads(
+        &mut self,
+        parameters: &[TypeParam],
+        span: &Span,
+    ) -> Vec<crate::ParamHead> {
+        let Some(module) = self.current_declaration_module() else {
+            return Vec::new();
+        };
+        parameters.iter().filter_map(|parameter| {
+            if let Some(id) = self.scopes.source_type_parameter(module, span, parameter.name) {
+                Some(crate::ParamHead::new(id, parameter.name.name))
+            } else {
+                self.report_error(TypeErrorKind::InvalidOperation, span,
+                    format!("internal compiler error: generic parameter `{}` has no declaration identity in {} at {span:?}", parameter.name, self.defs.module_path(module)));
+                None
+            }
+        }).collect()
+    }
+
+    /// Read the binder inventory when registering a named source declaration.
+    pub(in crate::check) fn declaration_parameter_heads(
+        &mut self,
+        name: &str,
+    ) -> Vec<crate::ParamHead> {
+        let path = self.declaration_identity(name);
+        let Some(owner) = self
+            .lookup_declaration(&path)
+            .or_else(|| self.lookup_declaration(name))
+        else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &(0..0),
+                format!("internal compiler error: generic declaration `{name}` has no identity"),
+            );
+            return Vec::new();
+        };
+        self.scopes.declaration_parameters(owner)
+    }
+
     /// Populate `declared_type_param_names` with every type-parameter name
     /// declared anywhere in the program and its modules — on type / record /
     /// trait / impl / machine / actor declarations and on every generic method
@@ -58,7 +98,12 @@ impl Checker {
         let trait_param_names: Vec<String> = self
             .trait_defs
             .values()
-            .flat_map(|trait_def| trait_def.type_params.iter().cloned())
+            .flat_map(|trait_def| {
+                trait_def
+                    .type_params
+                    .iter()
+                    .map(|parameter| parameter.spelling.to_string())
+            })
             .collect();
         self.declared_type_param_names.extend(trait_param_names);
     }
@@ -444,7 +489,7 @@ impl Checker {
                         .current_impl_surface_target
                         .replace(target_name.clone());
                     // Do NOT push generic_ctx here — type params like T should remain
-                    // as Ty::Named so that substitute_named_param can replace them
+                    // as Ty::Named so that substitute_type_param can replace them
                     // at method call sites with concrete type arguments.
 
                     // Set current_self_type for resolving `Self` in method parameters
@@ -555,46 +600,56 @@ impl Checker {
                                     Self::trait_receiver_identity_is_structurally_valid(&m);
                                 let concrete_self =
                                     self.named_ty_for_key(type_name, self_type_args.clone());
-                                let (params, return_type) = if let Some(sig) =
-                                    self.fn_sig(&trait_method_key).cloned()
-                                {
-                                    // Qualified trait signatures registered outside an impl
-                                    // scope can still include a concrete receiver
-                                    // (`fn bump(box: CounterBox)`) because receiver
-                                    // detection there only knows about `Self`.
-                                    // When copying defaults onto a concrete impl,
-                                    // drop that leading receiver iff the trait sig
-                                    // still has it.
-                                    let sig_skip = usize::from(
-                                        skip == 1 && sig.params.len() == m.params.len(),
-                                    );
-                                    (
-                                        sig.params
-                                            .iter()
-                                            .skip(sig_skip)
-                                            .map(|ty| {
-                                                ty.substitute_named_param("Self", &concrete_self)
-                                            })
-                                            .collect::<Vec<_>>(),
-                                        sig.return_type
-                                            .substitute_named_param("Self", &concrete_self),
-                                    )
-                                } else {
-                                    (
-                                        m.params
-                                            .iter()
-                                            .skip(skip)
-                                            .map(|p| {
-                                                self.resolve_registered_annotation_ty_no_holes(
-                                                    &p.ty,
-                                                )
-                                            })
-                                            .collect(),
-                                        m.return_type.as_ref().map_or(Ty::Unit, |ret| {
-                                            self.resolve_registered_annotation_ty_no_holes(ret)
-                                        }),
-                                    )
-                                };
+                                let (params, return_type) =
+                                    if let Some(sig) = self.fn_sig(&trait_method_key).cloned() {
+                                        // Qualified trait signatures registered outside an impl
+                                        // scope can still include a concrete receiver
+                                        // (`fn bump(box: CounterBox)`) because receiver
+                                        // detection there only knows about `Self`.
+                                        // When copying defaults onto a concrete impl,
+                                        // drop that leading receiver iff the trait sig
+                                        // still has it.
+                                        let sig_skip = usize::from(
+                                            skip == 1 && sig.params.len() == m.params.len(),
+                                        );
+                                        (
+                                            sig.params
+                                                .iter()
+                                                .skip(sig_skip)
+                                                .map(|ty| {
+                                                    ty.substitute_type_param(
+                                                        crate::ParamHead::receiver(
+                                                            self.lookup_declaration(&trait_key)
+                                                                .expect("resolved trait owns Self"),
+                                                        ),
+                                                        &concrete_self,
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>(),
+                                            sig.return_type.substitute_type_param(
+                                                crate::ParamHead::receiver(
+                                                    self.lookup_declaration(&trait_key)
+                                                        .expect("resolved trait owns Self"),
+                                                ),
+                                                &concrete_self,
+                                            ),
+                                        )
+                                    } else {
+                                        (
+                                            m.params
+                                                .iter()
+                                                .skip(skip)
+                                                .map(|p| {
+                                                    self.resolve_registered_annotation_ty_no_holes(
+                                                        &p.ty,
+                                                    )
+                                                })
+                                                .collect(),
+                                            m.return_type.as_ref().map_or(Ty::Unit, |ret| {
+                                                self.resolve_registered_annotation_ty_no_holes(ret)
+                                            }),
+                                        )
+                                    };
                                 let sig = FnSig {
                                     param_names: param_names.clone(),
                                     params: params.clone(),
@@ -1266,9 +1321,8 @@ impl Checker {
 
         let fn_assoc_bindings = fn_scope.assoc_bindings;
         let sig = FnSig {
-            type_params: fd.type_params.as_ref().map_or(vec![], |params| {
-                params.iter().map(|p| p.name.to_string()).collect()
-            }),
+            type_params: self
+                .source_parameter_heads(fd.type_params.as_deref().unwrap_or_default(), &fd.fn_span),
             type_param_bounds: self
                 .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
             param_ownership: fd
@@ -1345,11 +1399,7 @@ impl Checker {
         };
         let signature_matches = self.fn_sig(key).is_some_and(|signature| {
             let resolve = |ty: &Ty| {
-                crate::ResolvedTy::from_ty_with_type_params(
-                    ty,
-                    &signature.type_params.iter().cloned().collect(),
-                )
-                .map(|ty| {
+                crate::ResolvedTy::from_ty(ty).map(|ty| {
                     super::restore_member_opacity(ty, &|name| {
                         self.user_opaque_type_names.contains(name)
                             || self.module_registry.is_handle_type(name)
@@ -1370,7 +1420,7 @@ impl Checker {
             signature
                 .type_params
                 .iter()
-                .map(String::as_str)
+                .map(|parameter| parameter.spelling.as_str())
                 .eq(family.source_intrinsic_type_params().iter().copied())
                 && !fd.is_generator
                 // A parameter is consumed exactly when the contract moves it.
@@ -1555,7 +1605,7 @@ impl Checker {
         );
         let returns_self_type = match return_type {
             Ty::Named { head, args }
-                if *head == crate::TypeHead::self_param()
+                if matches!(head, crate::TypeHead::Param(parameter) if parameter.is_receiver())
                     || self.strict_names_same_owner(
                         head.registry_key(),
                         head.builtin(),
@@ -1716,6 +1766,14 @@ impl Checker {
                 .unwrap_or_default();
             let receiver = Ty::from_name(&type_identity)
                 .unwrap_or_else(|| self.named_ty_for_key(&type_identity, receiver_args));
+            let impl_parameters = self.source_parameter_heads(
+                impl_type_params.map_or(&[], Vec::as_slice),
+                &method.fn_span,
+            );
+            let method_parameters = self.source_parameter_heads(
+                method.type_params.as_deref().unwrap_or_default(),
+                &method.fn_span,
+            );
             self.trait_impl_method_binders.insert(
                 declaration_id,
                 crate::type_facts::ImplMethodBinders {
@@ -1725,17 +1783,8 @@ impl Checker {
                         impl_where_clause,
                         method,
                     ),
-                    impl_params: impl_type_params
-                        .into_iter()
-                        .flatten()
-                        .map(|param| param.name.to_string())
-                        .collect(),
-                    method_params: method
-                        .type_params
-                        .iter()
-                        .flatten()
-                        .map(|param| param.name.to_string())
-                        .collect(),
+                    impl_params: impl_parameters,
+                    method_params: method_parameters,
                 },
             );
             let exact_type_identity = impl_type_params
@@ -1833,14 +1882,11 @@ impl Checker {
             let impl_assoc_bindings = impl_scope.assoc_bindings;
             let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
                 .unwrap_or_else(|| method_key.clone());
+            let impl_parameters = self.source_parameter_heads(impl_tps, &method.fn_span);
             if let Some(sig) = self.fn_sig_mut(&key) {
-                for tp in impl_tps {
-                    if !sig
-                        .type_params
-                        .iter()
-                        .any(|param| param == tp.name.name.as_str())
-                    {
-                        sig.type_params.push(tp.name.to_string());
+                for parameter in impl_parameters {
+                    if !sig.type_params.contains(&parameter) {
+                        sig.type_params.push(parameter);
                     }
                 }
                 for (param, bounds) in impl_bounds {
@@ -1907,12 +1953,12 @@ impl Checker {
         }
 
         // Collect type param names: impl-level + method-level.
-        let mut all_type_params: Vec<String> = impl_type_params
-            .map(|tps| tps.iter().map(|tp| tp.name.to_string()).collect())
-            .unwrap_or_default();
-        if let Some(method_tps) = &method.type_params {
-            all_type_params.extend(method_tps.iter().map(|tp| tp.name.to_string()));
-        }
+        let mut all_type_params = self
+            .source_parameter_heads(impl_type_params.map_or(&[], Vec::as_slice), &method.fn_span);
+        all_type_params.extend(self.source_parameter_heads(
+            method.type_params.as_deref().unwrap_or_default(),
+            &method.fn_span,
+        ));
 
         // Collect bounds from both the impl's type params/where-clause and the
         // method's own where-clause. Impl-level bounds cover both inline
@@ -1960,6 +2006,15 @@ impl Checker {
                         .canonical_nominal_name(type_name)
                         .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
                 ),
+                receiver_args: self
+                    .current_self_type
+                    .as_ref()
+                    .map_or_else(Vec::new, |(_, args)| args.clone()),
+                receiver_parameters: all_type_params
+                    .iter()
+                    .take(impl_type_params.map_or(0, Vec::len))
+                    .copied()
+                    .collect(),
                 name: method.name.to_string(),
                 is_inherent: trait_bound.is_none(),
                 span: if method.decl_span.is_empty() {
@@ -2339,10 +2394,16 @@ impl Checker {
             crate::DeclarationKind::ImplMethod,
             0,
         );
-        if let Ok(declaration) = self
-            .defs
-            .declare(occurrence, method.name.name, None, path.clone())
-        {
+        // Rechecking an admitted source body keeps its declaration even when
+        // the body is presented through a different lexical import surface.
+        let declaration = self.defs.declaration(occurrence).map_or_else(
+            || {
+                self.defs
+                    .declare(occurrence, method.name.name, None, path.clone())
+            },
+            Ok,
+        );
+        if let Ok(declaration) = declaration {
             if let Some(module) = self.current_declaration_module() {
                 self.scopes.declare_type_parameters(
                     module,
@@ -2381,36 +2442,26 @@ impl Checker {
     /// diagnostic (future) is not preempted.
     pub(super) fn rename_method_type_params(
         ty: &Ty,
-        trait_method_tps: Option<&Vec<hew_parser::ast::TypeParam>>,
-        impl_method_tps: Option<&Vec<hew_parser::ast::TypeParam>>,
+        trait_parameters: &[crate::ParamHead],
+        impl_parameters: &[crate::ParamHead],
     ) -> Ty {
-        let trait_names: Vec<&str> = trait_method_tps
-            .map(|v| v.iter().map(|tp| tp.name.name.as_str()).collect())
-            .unwrap_or_default();
-        let impl_names: Vec<&str> = impl_method_tps
-            .map(|v| v.iter().map(|tp| tp.name.name.as_str()).collect())
-            .unwrap_or_default();
-        if trait_names.is_empty() || trait_names.len() != impl_names.len() {
+        if trait_parameters.len() != impl_parameters.len() {
             return ty.clone();
         }
-        // Build the full rename map and substitute in parallel.  Sequential
-        // substitution aliases entries when trait names and impl names
-        // permute: renaming T→U then U→T would map both back to T.
-        // Identity entries (t == u) are harmless to include.
-        let subst_map: HashMap<String, Ty> = trait_names
+        let substitutions = trait_parameters
             .iter()
-            .zip(impl_names.iter())
-            .map(|(t, u)| ((*t).to_string(), Ty::param(u)))
+            .copied()
+            .zip(impl_parameters.iter().copied().map(Ty::param))
             .collect();
-        ty.substitute_named_params_parallel(&subst_map)
+        ty.substitute_type_params_parallel(&substitutions)
     }
 
     pub(in crate::check) fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
         let mut generic_bindings = std::collections::HashMap::new();
-        if let Some(type_params) = &rf.type_params {
-            for tp in type_params {
-                generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
-            }
+        for parameter in
+            self.source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span)
+        {
+            generic_bindings.insert(parameter.spelling.to_string(), Ty::param(parameter));
         }
         if !generic_bindings.is_empty() {
             self.generic_ctx.push(generic_bindings);
@@ -2452,9 +2503,8 @@ impl Checker {
         let type_param_bounds =
             self.collect_type_param_bounds(rf.type_params.as_ref(), rf.where_clause.as_ref());
         let sig = FnSig {
-            type_params: rf.type_params.as_ref().map_or(vec![], |params| {
-                params.iter().map(|p| p.name.to_string()).collect()
-            }),
+            type_params: self
+                .source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span),
             type_param_bounds,
             param_names,
             params,
@@ -2506,9 +2556,8 @@ impl Checker {
         if pushed_bounds {
             self.current_type_param_bounds.pop();
         }
-        let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.to_string()).collect()
-        });
+        let type_params =
+            self.source_parameter_heads(fd.type_params.as_deref().unwrap_or_default(), &fd.fn_span);
         // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
         let return_type =
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));

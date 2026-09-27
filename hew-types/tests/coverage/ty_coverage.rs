@@ -623,7 +623,7 @@ fn contains_var_in_trait_object() {
 #[test]
 fn contains_var_in_named_machine_and_error() {
     let v = TypeVar(5050);
-    assert!(!Ty::param("M").contains_var(v));
+    assert!(!Ty::param(hew_types::ParamHead::for_test("M")).contains_var(v));
     assert!(!Ty::Error.contains_var(v));
 }
 

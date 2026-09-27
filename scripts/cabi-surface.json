@@ -322,21 +322,6 @@
     },
     {
       "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_actor_close_native( local_handles::HewLocalPidId)",
-        "wasm32-wasip1": "fn hew_actor_close_native( local_handles::HewLocalPidId)"
-      },
-      "symbol": "hew_actor_close_native"
-    },
-    {
-      "availability": [
         "native"
       ],
       "classification": "non-declarable",
@@ -1321,7 +1306,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1366,7 +1351,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -1381,7 +1366,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17621,19 +17606,6 @@
         "native"
       ],
       "classification": "non-declarable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_supervisor_native_await_restart( HewLocalPidId, u32, c_int, )"
-      },
-      "symbol": "hew_supervisor_native_await_restart"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17646,20 +17618,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_supervisor_native_nested_child( HewLocalPidId, u32, ) -> HewLocalPidId"
-      },
-      "symbol": "hew_supervisor_native_nested_child"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17672,7 +17631,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17685,7 +17644,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -17712,11 +17671,24 @@
         "native"
       ],
       "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_supervisor_native_role_request( HewLocalPidId, u32, c_int, )"
+      },
+      "symbol": "hew_supervisor_native_role_request"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_native_role_wait_new( HewLocalPidId, u32, *const HewWaker, c_int, c_int, ) -> *mut HewNativeActorWait"
+        "native": "fn hew_supervisor_native_role_wait_new( HewLocalPidId, u32, *const HewWaker, c_int, ) -> *mut HewNativeActorWait"
       },
       "symbol": "hew_supervisor_native_role_wait_new"
     },
@@ -17875,45 +17847,6 @@
         "native": "fn hew_supervisor_remove_child( *mut HewSupervisor, c_int, ) -> c_int"
       },
       "symbol": "hew_supervisor_remove_child"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_supervisor_restart_await_blocking( *mut HewSupervisor, u32)"
-      },
-      "symbol": "hew_supervisor_restart_await_blocking"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_supervisor_restart_await_detach( *mut HewSupervisor, *mut HewReadSlot, )"
-      },
-      "symbol": "hew_supervisor_restart_await_detach"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_supervisor_restart_await_suspend( *mut HewSupervisor, u32, *mut HewActor, *mut HewReadSlot, ) -> i32"
-      },
-      "symbol": "hew_supervisor_restart_await_suspend"
     },
     {
       "availability": [
@@ -18088,7 +18021,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18101,7 +18034,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18418,7 +18351,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",

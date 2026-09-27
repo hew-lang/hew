@@ -211,10 +211,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
     }
 
-    pub(super) fn emit_actor_await_closed(
+    pub(super) fn emit_actor_await_stopped(
         &self,
         source: StorageId,
-        role_wait: Option<(bool, bool)>,
+        role_wait: Option<bool>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let frame = self.frame.as_ref().ok_or_else(|| {
@@ -251,7 +251,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let cycle = self
             .ctx
             .append_basic_block(self.value, "actor.wait.cycle.fault");
-        let (new, arguments) = if let (Some((nested, closing)), Some(slot)) = (role_wait, slot) {
+        let (new, arguments) = if let (Some(nested), Some(slot)) = (role_wait, slot) {
             let new = coro::external(
                 self.llvm,
                 "hew_supervisor_native_role_wait_new",
@@ -260,7 +260,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         target.get_type().into(),
                         self.ctx.i32_type().into(),
                         ptr.into(),
-                        self.ctx.i32_type().into(),
                         self.ctx.i32_type().into(),
                     ],
                     false,
@@ -275,10 +274,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.ctx
                         .i32_type()
                         .const_int(u64::from(nested), false)
-                        .into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(u64::from(closing), false)
                         .into(),
                 ],
             )

@@ -233,7 +233,7 @@ impl Checker {
                             Item::Trait(td) => {
                                 let qualified = format!("{module_name}.{}", td.name);
                                 if !self.trait_def_keys.contains_key(&qualified) {
-                                    let info = Self::trait_info_from_decl(
+                                    let info = self.trait_info_from_decl(
                                         td,
                                         Some(module_name.clone()),
                                         self.current_module_idx,
@@ -315,7 +315,7 @@ impl Checker {
                         continue;
                     }
                     let mut trait_errors = Vec::new();
-                    let info = Self::trait_info_from_decl_with_diagnostics(
+                    let info = self.trait_info_from_decl_with_diagnostics(
                         td,
                         self.current_module.clone(),
                         self.current_module_idx,
@@ -398,16 +398,11 @@ impl Checker {
         self.type_def_spans
             .entry(identity.clone())
             .or_insert_with(|| span.clone());
-        let type_params: Vec<String> = decl
-            .type_params
-            .iter()
-            .flatten()
-            .map(|param| param.name.to_string())
-            .collect();
+        let type_params = self.scopes.declaration_parameters(declaration);
         self.generic_ctx.push(
             type_params
                 .iter()
-                .map(|param| (param.clone(), Ty::param(param)))
+                .map(|param| (param.spelling.to_string(), Ty::param(*param)))
                 .collect(),
         );
         let mut holes = Vec::new();
@@ -696,9 +691,11 @@ impl Checker {
             TypeDeclKind::Struct => TypeDefKind::Struct,
             TypeDeclKind::Enum => TypeDefKind::Enum,
         };
-        let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.to_string()).collect()
-        });
+        let type_param_names = if td.type_params.as_ref().is_none_or(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.declaration_parameter_heads(td.name.name.as_str())
+        };
 
         let mut fields = HashMap::new();
         let mut field_order: Vec<String> = Vec::new();
@@ -807,9 +804,11 @@ impl Checker {
     }
 
     pub(super) fn reresolve_record_members_in_scope(&mut self, rd: &RecordDecl) {
-        let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.to_string()).collect()
-        });
+        let type_param_names = if rd.type_params.as_ref().is_none_or(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.declaration_parameter_heads(rd.name.name.as_str())
+        };
         let mut hole_vars = Vec::new();
 
         match &rd.kind {
@@ -1043,9 +1042,11 @@ impl Checker {
             TypeDeclKind::Struct => TypeDefKind::Struct,
             TypeDeclKind::Enum => TypeDefKind::Enum,
         };
-        let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.to_string()).collect()
-        });
+        let type_param_names = if td.type_params.as_ref().is_none_or(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.declaration_parameter_heads(td.name.name.as_str())
+        };
         let type_param_bounds =
             self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
 
@@ -1053,7 +1054,7 @@ impl Checker {
         {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for name in &type_param_names {
-                if !seen.insert(name.as_str()) {
+                if !seen.insert(name.spelling.as_str()) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::DuplicateDefinition,
                         0..0,
@@ -1072,7 +1073,7 @@ impl Checker {
         let mut hole_vars = Vec::new();
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::param(name))
+            .map(|name| Ty::param(*name))
             .collect();
 
         for item in &td.body {
@@ -1357,9 +1358,11 @@ impl Checker {
         let mut variants = HashMap::new();
         let mut variant_order = Vec::new();
         let mut hole_vars = Vec::new();
-        let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.to_string()).collect()
-        });
+        let type_param_names = if td.type_params.as_ref().is_none_or(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.declaration_parameter_heads(td.name.name.as_str())
+        };
 
         // Reject duplicate type parameter names within the same declaration.
         // The parser cannot catch this because `parse_type_params` has no
@@ -1367,7 +1370,7 @@ impl Checker {
         {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for name in &type_param_names {
-                if !seen.insert(name.as_str()) {
+                if !seen.insert(name.spelling.as_str()) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::DuplicateDefinition,
                         0..0,
@@ -1384,7 +1387,7 @@ impl Checker {
             self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::param(name))
+            .map(|name| Ty::param(*name))
             .collect();
 
         for item in &td.body {
@@ -1556,16 +1559,18 @@ impl Checker {
     }
 
     pub(super) fn register_record_decl_in_scope(&mut self, rd: &RecordDecl) {
-        let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.to_string()).collect()
-        });
+        let type_param_names = if rd.type_params.as_ref().is_none_or(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.declaration_parameter_heads(rd.name.name.as_str())
+        };
         let type_param_bounds =
             self.collect_type_param_bounds(rd.type_params.as_ref(), rd.where_clause.as_ref());
 
         // Build the return type for constructors: `R` or `R<T1, T2, …>`
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::param(name))
+            .map(|name| Ty::param(*name))
             .collect();
         let declaration_name = self.current_module_identity().map_or_else(
             || rd.name.to_string(),
@@ -2029,8 +2034,7 @@ impl Checker {
             md.where_clause.as_ref(),
             span,
         );
-        let type_param_names: Vec<String> =
-            md.type_params.iter().map(|p| p.name.to_string()).collect();
+        let type_param_names = self.source_parameter_heads(&md.type_params, span);
         // Collect inline `<T: Trait>` and `where T: Trait` bounds into a
         // single side table keyed by machine name then param name. At
         // the checker layer, a bound's source (inline vs where clause)
@@ -2105,7 +2109,7 @@ impl Checker {
         }
         let machine_generic_args: Vec<Ty> = type_param_names
             .iter()
-            .map(|name| Ty::param(name))
+            .map(|name| Ty::param(*name))
             .collect();
         let machine_identity = self.declaration_identity(md.name.name.as_str());
         let machine_ty = self.named_ty_for_key(&machine_identity, machine_generic_args.clone());

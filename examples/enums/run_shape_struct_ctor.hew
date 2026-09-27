@@ -8,7 +8,7 @@
 //      from declaration-order payload slots.
 //   3. The arm body uses both bound payload values in a single expression.
 enum Shape {
-    Box { w: i64; h: i64;  }
+    Box { w: i64; h: i64; }
     Origin;
 }
 

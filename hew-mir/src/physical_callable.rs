@@ -500,12 +500,12 @@ pub(super) fn verify_dyn_call(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     receiver: ArgumentTransfer,
-    slot: u32,
-    method: hew_types::DefId,
+    selected_method: (u32, hew_types::DefId),
     signature: &PhysicalCallSignature,
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
 ) -> Result<(), PhysicalError> {
+    let (slot, method) = selected_method;
     let source = match receiver {
         ArgumentTransfer::Borrow(id)
         | ArgumentTransfer::BorrowMut(id)

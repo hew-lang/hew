@@ -256,7 +256,7 @@ impl Checker {
         trait_name: &str,
         receiver_ty: &Ty,
     ) -> Option<FnSig> {
-        let mut subst: HashMap<String, Ty> = HashMap::new();
+        let mut subst: HashMap<crate::ParamHead, Ty> = HashMap::new();
         // Clone out of the side table so the structural match can take `&mut
         // self` (it unifies unbound receiver vars against concrete `Self` args).
         if let Some(self_args) = self
@@ -273,7 +273,7 @@ impl Checker {
             if self_args.len() != receiver_args.len() {
                 return None;
             }
-            let impl_params: HashSet<String> = sig.type_params.iter().cloned().collect();
+            let impl_params: HashSet<crate::ParamHead> = sig.type_params.iter().copied().collect();
             // Snapshot `self.subst` around the applicability probe: a multi-arg
             // `Self` (`HashMap<K, V>`) unifies each concrete arg into `self.subst`
             // as it matches, but a LATER arg may reject the impl. Without the
@@ -295,16 +295,25 @@ impl Checker {
         }
         for param_ty in &mut sig.params {
             *param_ty = param_ty
-                .substitute_named_param("Self", receiver_ty)
-                .substitute_named_params_parallel(&subst);
+                .substitute_type_param(
+                    crate::ParamHead::receiver(self.lookup_declaration(trait_name)?),
+                    receiver_ty,
+                )
+                .substitute_type_params_parallel(&subst);
         }
         sig.return_type = sig
             .return_type
-            .substitute_named_param("Self", receiver_ty)
-            .substitute_named_params_parallel(&subst);
+            .substitute_type_param(
+                crate::ParamHead::receiver(self.lookup_declaration(trait_name)?),
+                receiver_ty,
+            )
+            .substitute_type_params_parallel(&subst);
         sig.type_params.retain(|tp| !subst.contains_key(tp));
-        sig.type_param_bounds
-            .retain(|tp, _| !subst.contains_key(tp));
+        sig.type_param_bounds.retain(|name, _| {
+            sig.type_params
+                .iter()
+                .any(|parameter| parameter.spelling.as_str() == name)
+        });
         Some(sig)
     }
 
@@ -332,8 +341,8 @@ impl Checker {
         &mut self,
         self_arg: &Ty,
         receiver_arg: &Ty,
-        impl_params: &HashSet<String>,
-        subst: &mut HashMap<String, Ty>,
+        impl_params: &HashSet<crate::ParamHead>,
+        subst: &mut HashMap<crate::ParamHead, Ty>,
     ) -> bool {
         let receiver_resolved = self.subst.resolve(receiver_arg);
         match self_arg {
@@ -341,12 +350,11 @@ impl Checker {
             Ty::Named {
                 head: crate::TypeHead::Param(param),
                 args,
-            } if args.is_empty() && impl_params.iter().any(|p| p == param.spelling.as_str()) => {
-                let name = param.spelling.as_str();
-                if let Some(existing) = subst.get(name) {
+            } if args.is_empty() && impl_params.iter().any(|p| p == param) => {
+                if let Some(existing) = subst.get(param) {
                     return *existing == receiver_resolved;
                 }
-                subst.insert(name.to_string(), receiver_resolved);
+                subst.insert(*param, receiver_resolved);
                 true
             }
             // Constructed / concrete-nominal `Self` type: same constructor, then
@@ -391,11 +399,10 @@ impl Checker {
     /// structure. Used to gate unifying an unbound receiver var against a `Self`
     /// argument: only fully-concrete `Self` args (no impl params) may drive
     /// inference of the receiver's element type.
-    pub(super) fn ty_contains_impl_param(ty: &Ty, impl_params: &HashSet<String>) -> bool {
+    pub(super) fn ty_contains_impl_param(ty: &Ty, impl_params: &HashSet<crate::ParamHead>) -> bool {
         match ty {
             Ty::Named { head, args } => {
-                let name = head.registry_key();
-                impl_params.contains(name)
+                matches!(head, crate::TypeHead::Param(parameter) if impl_params.contains(parameter))
                     || args
                         .iter()
                         .any(|a| Self::ty_contains_impl_param(a, impl_params))

@@ -466,7 +466,7 @@ else needs `impl Display for {rendered}`)"
                             td.type_params.iter().zip(&type_args).fold(
                                 ty.clone(),
                                 |acc, (tp_name, fresh_var)| {
-                                    acc.substitute_named_param(tp_name, fresh_var)
+                                    acc.substitute_type_param(*tp_name, fresh_var)
                                 },
                             )
                         })
@@ -960,15 +960,15 @@ else needs `impl Display for {rendered}`)"
                     .iter()
                     .map(|_| Ty::Var(TypeVar::fresh()))
                     .collect();
-                let ctor_subst_map: HashMap<String, Ty> = td
+                let ctor_subst_map: HashMap<crate::ParamHead, Ty> = td
                     .type_params
                     .iter()
                     .zip(args.iter())
-                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .map(|(p, a)| (*p, a.clone()))
                     .collect();
                 let subst_params: Vec<Ty> = params
                     .iter()
-                    .map(|p| p.substitute_named_params_parallel(&ctor_subst_map))
+                    .map(|p| p.substitute_type_params_parallel(&ctor_subst_map))
                     .collect();
                 let ret = self.named_ty_for_key(&qualified_type, args);
                 Ty::Function {
@@ -1003,9 +1003,9 @@ else needs `impl Display for {rendered}`)"
     pub(super) fn lookup_struct_variant_init(
         &self,
         surface_name: &str,
-    ) -> Option<(String, Vec<(String, Ty)>, Vec<String>)> {
+    ) -> Option<(String, Vec<(String, Ty)>, Vec<crate::ParamHead>)> {
         let variant_name = surface_name.rsplit("::").next().unwrap_or(surface_name);
-        let mut candidates: Vec<(String, Vec<(String, Ty)>, Vec<String>)> = self
+        let mut candidates: Vec<(String, Vec<(String, Ty)>, Vec<crate::ParamHead>)> = self
             .type_defs
             .iter()
             .filter_map(|(type_name, td)| {

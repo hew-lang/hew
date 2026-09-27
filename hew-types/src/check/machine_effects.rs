@@ -46,7 +46,7 @@ type ReleaseCache = HashMap<ResolvedTy, BTreeSet<String>>;
 #[derive(Debug, Clone, Default)]
 struct MachineShape {
     type_name: String,
-    type_params: Vec<String>,
+    type_parameter_count: usize,
 }
 
 /// `resource_closes` names each `#[resource]` type's inherent `close`.
@@ -397,7 +397,7 @@ fn collect_instantiations(
         ResolvedTy::Named { head, args, .. } => {
             let name = head.registry_key();
             if name == shape.type_name
-                && args.len() == shape.type_params.len()
+                && args.len() == shape.type_parameter_count
                 && !args.iter().any(|arg| is_abstract(arg, output))
             {
                 found.push(ty.clone());
@@ -568,12 +568,7 @@ fn machine_shape(implementation: &hew_parser::ast::ImplDecl) -> MachineShape {
     };
     MachineShape {
         type_name,
-        type_params: implementation
-            .type_params
-            .iter()
-            .flatten()
-            .map(|param| param.name.to_string())
-            .collect(),
+        type_parameter_count: implementation.type_params.as_ref().map_or(0, Vec::len),
     }
 }
 

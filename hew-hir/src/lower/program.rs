@@ -310,7 +310,7 @@ pub fn lower_program_with_mono_cap(
                     if impl_decl.where_clause.is_none()
                         || classify_unsupported_where_clause(impl_decl).is_none()
                     {
-                        let impl_type_params = impl_type_param_names(impl_decl);
+                        let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
                         // For concrete specialised impls (empty impl type-params,
                         // non-empty target type args), compute the mangled self-type
                         // name so the fn_registry key is distinct per instantiation.
@@ -374,7 +374,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Const(const_decl) => {
-                ctx.register_const_entry(const_decl);
+                ctx.register_const_entry(const_decl, span, true);
             }
             // No fn signatures to register for the variants below in this
             // pass. If a new Item variant is added, the compiler will force a
@@ -644,7 +644,8 @@ pub fn lower_program_with_mono_cap(
                                 if impl_decl.where_clause.is_none()
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
-                                    let impl_type_params = impl_type_param_names(impl_decl);
+                                    let impl_type_params =
+                                        impl_type_parameters(&mut ctx, impl_decl);
                                     let symbol_self_name =
                                         imported_impl_symbol_self_name(&module_full_path, name);
                                     for method in &impl_decl.methods {
@@ -696,10 +697,7 @@ pub fn lower_program_with_mono_cap(
                         // name get a stable `ItemId` that matches the
                         // `HirItem::Const` emitted in the later pass.
                         Item::Const(const_decl) => {
-                            let id = ctx.ids.item();
-                            let ty = ctx.lower_type(&const_decl.ty);
-                            let qualified = format!("{module_full_path}.{}", const_decl.name);
-                            ctx.const_registry.insert(qualified, ConstEntry { id, ty });
+                            ctx.register_const_entry(const_decl, item_span, false);
                         }
                         // Non-pub Function/TypeDecl/Record fall here (not exported to importers).
                         Item::Import(_)
@@ -1248,10 +1246,8 @@ pub fn lower_program_with_mono_cap(
         let variants = builtin_enum_hir_variants(spec);
         ctx.enum_variants_by_name
             .insert(spec.canonical_type_name.to_string(), variants);
-        ctx.enum_type_params.insert(
-            spec.canonical_type_name.to_string(),
-            spec.type_params.iter().map(|s| (*s).to_string()).collect(),
-        );
+        ctx.enum_type_params
+            .insert(spec.canonical_type_name.to_string(), spec.parameter_heads());
         ctx.enum_item_ids
             .insert(spec.canonical_type_name.to_string(), spec.item_id);
         // Tag-only / monomorphic builtin enums (e.g. `LookupError`) need a
@@ -1711,6 +1707,26 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
+    let source_selected_impl_methods: HashSet<_> = ctx
+        .direct_call_targets
+        .values()
+        .chain(
+            ctx.method_call_rewrites
+                .values()
+                .filter_map(|rewrite| match rewrite {
+                    hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
+                    | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                        target,
+                        ..
+                    } => Some(target),
+                    _ => None,
+                }),
+        )
+        .filter_map(|target| match target {
+            hew_types::CallTarget::ImplMethod(declaration) => Some(*declaration),
+            _ => None,
+        })
+        .collect();
     // Register executable std builtins.hew impl methods only after all user
     // item IDs have been preallocated. This makes builtin bodies visible to
     // source-body lowering without perturbing stable user `ItemId`s. Ordinary
@@ -1753,7 +1769,7 @@ pub fn lower_program_with_mono_cap(
                     } else {
                         imported_impl_symbol_self_name("std.builtins", name)
                     };
-                    let impl_type_params = impl_type_param_names(impl_decl);
+                    let impl_type_params = impl_type_parameters(ctx, impl_decl);
                     for method in &impl_decl.methods {
                         let emitted_symbol = crate::node::HirImplBlock::method_symbol(
                             &symbol_owner,
@@ -1780,7 +1796,7 @@ pub fn lower_program_with_mono_cap(
                                 })
                             });
                         let selected_by_checker = declaration.as_ref().is_some_and(|declaration| {
-                            ctx.direct_call_targets.values().any(|target| {
+                            source_selected_impl_methods.contains(declaration) || ctx.direct_call_targets.values().any(|target| {
                                 matches!(target, hew_types::CallTarget::ImplMethod(selected) if selected == declaration)
                             }) || ctx.method_call_rewrites.values().any(|rewrite| match rewrite {
                                 hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
@@ -2551,21 +2567,10 @@ pub fn lower_program_with_mono_cap(
                         // `Instr::ConstGlobalLoad` resolves correctly at codegen.
                         //
                         // The pre-pass registered every const under its qualified key
-                        // `"module_short.CONST_NAME"`.  `lower_const` looks up
-                        // `const_registry[decl.name]` for the pre-allocated ItemId,
-                        // so we temporarily alias the qualified entry under the bare
-                        // name, lower, then remove the alias to avoid polluting the
-                        // global registry.
+                        // The declaration's canonical entry owns its ItemId.
                         Item::Const(const_decl) => {
-                            let qualified = format!("{source_module}.{}", const_decl.name);
-                            if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
-                                ctx.const_registry
-                                    .insert(const_decl.name.to_string(), entry);
-                                let lowered = ctx.lower_const(const_decl, span.clone());
-                                ctx.const_registry.remove(const_decl.name.name.as_str());
-                                if let Some(lowered) = lowered {
-                                    items.push(HirItem::Const(lowered));
-                                }
+                            if let Some(lowered) = ctx.lower_const(const_decl, span.clone()) {
+                                items.push(HirItem::Const(lowered));
                             }
                         }
                         // Emit `HirItem::Actor` entries for imported actors
@@ -2635,26 +2640,6 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Supervisor(lowered));
                             }
                         }
-                        // RAII-2 (#1295): a PACKAGE-imported trait is just as
-                        // much an invisible-body boundary as a root or
-                        // file-flattened one. Its bodyless method signatures are
-                        // a contract whose impls may disagree on whether a
-                        // `#[resource]`/`#[linear]` value parameter is borrowed
-                        // or consumed, so the disposition must be pinned with
-                        // `consume` at the signature. The root third pass checks
-                        // `Item::Trait` (above); without this arm an imported
-                        // trait fell through to the no-op catch-all below, so an
-                        // imported `fn put(self, item: Handle)` could cross the
-                        // boundary unannotated — a drop-safety bypass. Mirror the
-                        // root check here. A trait has no runtime artefact, so
-                        // (like the root arm) this emits no HirItem.
-                        Item::Trait(trait_decl) => {
-                            for trait_item in &trait_decl.items {
-                                if let TraitItem::Method(method) = trait_item {
-                                    if method.body.is_none() {}
-                                }
-                            }
-                        }
                         Item::Record(decl) => {
                             if let Some(mut record) = ctx.lower_record_decl(decl, span.clone()) {
                                 record.defining_module = Some(source_module.clone());
@@ -2663,7 +2648,8 @@ pub fn lower_program_with_mono_cap(
                         }
                         // Machines are normalized into ordinary declarations
                         // by the checker before HIR.
-                        Item::Import(_)
+                        Item::Trait(_)
+                        | Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)

@@ -32,6 +32,13 @@ specifications.
   later consumers must use its declaration or binding identity. Structural
   rules should protect those published facts, not reject every string map
   used to read source, render diagnostics or select an external ABI symbol.
+- Generic parameters carry their declaring `DefId` and parameter index through
+  checker types, HIR and substitution. Spelling is for source lookup and display.
+  An impl receiver is instantiated from its resolved parameter pattern; the
+  nominal type's parameter list does not identify an impl's binders. Trait
+  default bodies substitute the declaring trait's receiver binder explicitly.
+- HIR registers callable and constant bodies under checker declaration IDs.
+  Import aliases and repeated inventory visits must reuse those body entries.
 - Source annotations cross the checker boundary as resolved types keyed by
   their source file and span. HIR must reject a missing annotation fact rather
   than resolve its spelling again.

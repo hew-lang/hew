@@ -10,7 +10,11 @@ machine Slot {
 
     default { state }
 }
-type SlotEvent { n: i64; }
+
+type SlotEvent {
+    n: i64;
+}
+
 fn main() {
     let user = SlotEvent { n: 4 };
     var slot = Slot.Idle;

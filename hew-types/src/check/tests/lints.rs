@@ -475,7 +475,10 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
             .get(name)
             .unwrap_or_else(|| panic!("missing builtin signature for {name}"));
         assert_eq!(
-            sig.type_params,
+            sig.type_params
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
             vec!["T".to_string()],
             "{name} should expose a single generic parameter"
         );
@@ -592,7 +595,7 @@ fn deferred_bound_check_drains_after_defaulting() {
     let span = 0..0;
     let var = TypeVar::fresh();
     let sig = FnSig {
-        type_params: vec!["T".to_string()],
+        type_params: vec![crate::ParamHead::for_test("T")],
         type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
         ..Default::default()
     };
@@ -635,7 +638,7 @@ fn deferred_bound_check_skips_when_var_remains_unresolved() {
     let span = 0..0;
     let var = TypeVar::fresh();
     let sig = FnSig {
-        type_params: vec!["T".to_string()],
+        type_params: vec![crate::ParamHead::for_test("T")],
         type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
         ..Default::default()
     };
@@ -684,7 +687,7 @@ fn deferred_bound_check_drains_when_var_resolves_to_satisfying_type() {
     let span = 0..0;
     let var = TypeVar::fresh();
     let sig = FnSig {
-        type_params: vec!["T".to_string()],
+        type_params: vec![crate::ParamHead::for_test("T")],
         type_param_bounds: HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
         ..Default::default()
     };

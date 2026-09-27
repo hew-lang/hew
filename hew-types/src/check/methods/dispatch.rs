@@ -288,10 +288,10 @@ impl Checker {
                         }
                         self.check_arity(args, expected_params.len(), "this function", span);
                         {
-                            let subst_map: HashMap<String, Ty> = type_params
+                            let subst_map: HashMap<crate::ParamHead, Ty> = type_params
                                 .iter()
                                 .zip(inferred_args.iter())
-                                .map(|(p, a)| (p.clone(), a.clone()))
+                                .map(|(p, a)| (*p, a.clone()))
                                 .collect();
                             for (i, arg) in args.iter().enumerate() {
                                 if let Some(param_ty) = expected_params.get(i) {
@@ -299,7 +299,7 @@ impl Checker {
                                     let expected_ty = if subst_map.is_empty() {
                                         param_ty.clone()
                                     } else {
-                                        param_ty.substitute_named_params_parallel(&subst_map)
+                                        param_ty.substitute_type_params_parallel(&subst_map)
                                     };
                                     self.check_against(expr, sp, &expected_ty);
                                 }
@@ -2381,14 +2381,25 @@ impl Checker {
                 //    1 → record StaticTraitDispatch rewrite
                 let bounds_for_type_param = self.current_function.as_ref().and_then(|fn_name| {
                     self.fn_sig(fn_name).and_then(|sig| {
-                        if sig.type_params.iter().any(|param| param == name) {
+                        if sig
+                            .type_params
+                            .iter()
+                            .any(|param| param.spelling.as_str() == name)
+                        {
                             sig.type_param_bounds.get(name).cloned()
                         } else {
                             None
                         }
                     })
                 });
-                if let Some(bounds) = bounds_for_type_param {
+                if let (
+                    Ty::Named {
+                        head: crate::TypeHead::Param(receiver_parameter),
+                        ..
+                    },
+                    Some(bounds),
+                ) = (&resolved, bounds_for_type_param)
+                {
                     // Expand all bounds into (bound_trait, declaring_trait, sig) tuples.
                     // For each bound, also walk its supertrait DAG to collect every
                     // trait that DIRECTLY declares the method — this catches the
@@ -2422,12 +2433,16 @@ impl Checker {
                             hits.into_iter().next().unwrap();
                         // Replace `Self` references with the type parameter type.
                         let self_ty = resolved.clone();
+                        let self_parameter = crate::ParamHead::receiver(
+                            self.lookup_declaration(&declaring_trait)
+                                .expect("resolved declaring trait owns Self"),
+                        );
                         for param_ty in &mut trait_sig.params {
-                            *param_ty = param_ty.substitute_named_param("Self", &self_ty);
+                            *param_ty = param_ty.substitute_type_param(self_parameter, &self_ty);
                         }
                         trait_sig.return_type = trait_sig
                             .return_type
-                            .substitute_named_param("Self", &self_ty);
+                            .substitute_type_param(self_parameter, &self_ty);
                         if trait_sig.requires_mutable_receiver {
                             self.check_mutable_method_receiver(
                                 receiver,
@@ -2499,7 +2514,7 @@ impl Checker {
                             span,
                             MethodCallRewrite::StaticTraitDispatch {
                                 target,
-                                receiver_type_param: name.to_string(),
+                                receiver_type_param: *receiver_parameter,
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
                                 consumes_receiver: trait_sig.consumes_receiver,
                                 returns_receiver_identity: trait_sig.returns_receiver_identity,

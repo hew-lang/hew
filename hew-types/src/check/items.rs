@@ -25,7 +25,7 @@ impl Checker {
             .map(|sig| {
                 let mut bounds = sig.type_param_bounds.clone();
                 for param in &sig.type_params {
-                    bounds.entry(param.clone()).or_default();
+                    bounds.entry(param.spelling.to_string()).or_default();
                 }
                 TypeParamScope::new(
                     bounds,
@@ -1264,7 +1264,7 @@ impl Checker {
                         body: body.clone(),
                         doc_comment: None,
                         decl_span: 0..0,
-                        fn_span: 0..0,
+                        fn_span: method.span.clone(),
                         intrinsic: None,
                         consumes_self: false,
                     };
@@ -1283,10 +1283,14 @@ impl Checker {
                     // in those traits.  We inject `Self → [TraitName]` into the
                     // registered sig for `Trait::method` so the same path
                     // resolves sibling trait-method calls on the `Self` receiver.
+                    let self_parameter = crate::ParamHead::receiver(
+                        self.lookup_declaration(&self.declaration_identity(td.name.name.as_str()))
+                            .expect("registered trait owns Self"),
+                    );
                     let prev_sig = self.fn_sig(&qualified).cloned();
                     if let Some(sig) = self.fn_sig_mut(&qualified) {
-                        if !sig.type_params.contains(&"Self".to_string()) {
-                            sig.type_params.push("Self".to_string());
+                        if !sig.type_params.contains(&self_parameter) {
+                            sig.type_params.push(self_parameter);
                         }
                         sig.type_param_bounds
                             .entry("Self".to_string())
@@ -1316,22 +1320,14 @@ impl Checker {
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
         let identity = Self::actor_identity(self.current_module.as_deref(), ad.name.name.as_str());
+        let parameters = self.declaration_parameter_heads(&identity);
         let actor_ty = self.named_ty_for_key(
             &identity,
-            ad.type_params
-                .iter()
-                .map(|parameter| Ty::param(&parameter.name.to_string()))
-                .collect(),
+            parameters.iter().copied().map(Ty::param).collect(),
         );
-        let generic_bindings: HashMap<_, _> = ad
-            .type_params
+        let generic_bindings: HashMap<_, _> = parameters
             .iter()
-            .map(|parameter| {
-                (
-                    parameter.name.to_string(),
-                    Ty::param(&parameter.name.to_string()),
-                )
-            })
+            .map(|parameter| (parameter.spelling.to_string(), Ty::param(*parameter)))
             .collect();
         let has_parameters = !generic_bindings.is_empty();
         if has_parameters {
@@ -2568,10 +2564,10 @@ impl Checker {
         }
 
         let mut generic_bindings = std::collections::HashMap::new();
-        if let Some(type_params) = &rf.type_params {
-            for tp in type_params {
-                generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
-            }
+        for parameter in
+            self.source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span)
+        {
+            generic_bindings.insert(parameter.spelling.to_string(), Ty::param(parameter));
         }
         if !generic_bindings.is_empty() {
             self.generic_ctx.push(generic_bindings);
@@ -2894,10 +2890,10 @@ impl Checker {
             // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)
             // so method bodies can reference them.
             let mut generic_bindings = std::collections::HashMap::new();
-            if let Some(tps) = &id.type_params {
-                for tp in tps {
-                    generic_bindings.insert(tp.name.to_string(), Ty::param(&tp.name.to_string()));
-                }
+            for parameter in
+                self.source_parameter_heads(id.type_params.as_deref().unwrap_or_default(), span)
+            {
+                generic_bindings.insert(parameter.spelling.to_string(), Ty::param(parameter));
             }
             let pushed_generic = !generic_bindings.is_empty();
             if pushed_generic {

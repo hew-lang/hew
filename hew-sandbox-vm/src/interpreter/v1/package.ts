@@ -521,9 +521,7 @@ export type ActorOperation =
         | "stop"
         | "terminate"
         | "await_stopped"
-        | "await_restarted"
-        | "close"
-        | "await_closed";
+        | "await_restarted";
       actor: number;
     }
   | { op: "call_start" | "call_take"; protocol: ActorProtocol }
@@ -533,8 +531,6 @@ export type ActorOperation =
   | {
       op:
         | "supervisor_spawn"
-        | "supervisor_stop"
-        | "supervisor_await_closed"
         | "stop"
         | "terminate"
         | "await_stopped"
@@ -542,18 +538,10 @@ export type ActorOperation =
       supervisor: number;
     }
   | {
-      op:
-        | "supervisor_child"
-        | "supervisor_await_restart"
-        | "supervisor_pool_view";
+      op: "supervisor_child" | "supervisor_pool_view";
       supervisor: number;
       child: number;
       owner_is_role: boolean;
-    }
-  | {
-      op: "supervisor_role_await_closed";
-      supervisor: number;
-      closing: boolean;
     };
 
 export interface ActorShape {

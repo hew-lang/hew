@@ -567,12 +567,12 @@ impl Checker {
         let substitutions = declaration
             .type_params
             .iter()
-            .cloned()
+            .copied()
             .zip(args.iter().cloned())
             .collect::<std::collections::HashMap<_, _>>();
         let resolve = |ty: &Ty| {
             self.subst
-                .resolve(&ty.substitute_named_params_parallel(&substitutions))
+                .resolve(&ty.substitute_type_params_parallel(&substitutions))
         };
         Some((
             signature.params.iter().map(resolve).collect(),
@@ -591,7 +591,16 @@ impl Checker {
             .or_insert_with(|| super::TypeDef {
                 kind: super::TypeDefKind::Struct,
                 name: method_id.to_string(),
-                type_params: vec!["Params".into(), "Reply".into(), "Failure".into()],
+                type_params: ["Params", "Reply", "Failure"]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        crate::ParamHead::new(
+                            crate::TypeParamId::new(id, index),
+                            hew_parser::ast::Symbol::intern(name),
+                        )
+                    })
+                    .collect(),
                 bounds: std::collections::HashMap::new(),
                 fields: std::collections::HashMap::new(),
                 field_order: Vec::new(),

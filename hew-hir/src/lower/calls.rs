@@ -759,7 +759,7 @@ impl LowerCtx {
         &mut self,
         self_name: &str,
         default: &hew_types::ResolvedTraitDefault,
-        impl_type_params: &[String],
+        impl_type_params: &[hew_types::ParamHead],
     ) {
         let previous_module =
             std::mem::replace(&mut self.current_module_name, default.source_module.clone());

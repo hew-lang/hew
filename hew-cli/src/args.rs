@@ -645,7 +645,20 @@ pub struct EvalArgs {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum TestFormat {
     Text,
+    Json,
     Junit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TestEngine {
+    Native,
+    Vm,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TestColour {
+    Always,
+    Never,
 }
 
 #[derive(Debug, Args)]
@@ -668,15 +681,30 @@ pub struct TestArgs {
     /// Output format.
     #[arg(long, value_enum, default_value = "text")]
     pub format: TestFormat,
+    /// Execute on the native runtime or the sandbox VM.
+    #[arg(long, value_enum, default_value = "native")]
+    pub engine: TestEngine,
     /// Per-test timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, default_value = "30", value_name = "DURATION")]
     pub timeout: String,
-    /// Disable coloured output.
-    #[arg(long)]
-    pub no_color: bool,
+    /// Control terminal colour (automatic for a terminal by default).
+    #[arg(long, value_enum)]
+    pub color: Option<TestColour>,
+    /// Show captured output from successful tests too.
+    #[arg(long, conflicts_with = "no_capture")]
+    pub show_output: bool,
+    /// Stream child output directly to the terminal; runs one test at a time.
+    #[arg(long, conflicts_with = "show_output")]
+    pub no_capture: bool,
+    /// Rerun the failures recorded by the previous `hew test` invocation.
+    #[arg(long, conflicts_with = "paths")]
+    pub rerun_failed: bool,
     /// Run ignored tests too.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "ignored")]
     pub include_ignored: bool,
+    /// Run only ignored tests.
+    #[arg(long, conflicts_with = "include_ignored")]
+    pub ignored: bool,
     /// Exit 0 when no test files or functions are discovered.
     #[arg(long)]
     pub allow_empty: bool,
@@ -696,6 +724,9 @@ pub struct TestArgs {
     /// Also run each deterministic test under N random schedules.
     #[arg(long, value_name = "N", default_value = "0")]
     pub schedules: u32,
+    /// Maximum VM instructions or native driver steps per test.
+    #[arg(long, value_name = "N", default_value = "10000000")]
+    pub step_budget: u64,
 }
 
 /// How the deterministic driver orders a test's participants.

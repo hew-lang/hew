@@ -171,14 +171,68 @@ pub struct NominalHead {
     pub spelling: hew_parser::ast::Symbol,
 }
 
-/// A generic binder.
-///
-/// TRANSITION(A1 commit 3): a binder is identified by its spelling until the
-/// signature tables carry their owner's `TypeParamId`s; the head kind alone
-/// already keeps a binder from resolving to a same-spelled nominal.
+/// A generic binder's declaration-owned identity and display spelling.
 #[derive(Debug, Clone, Copy)]
 pub struct ParamHead {
+    pub id: crate::TypeParamId,
     pub spelling: hew_parser::ast::Symbol,
+}
+
+impl ParamHead {
+    /// The trait receiver binder occupies a reserved position outside explicit parameters.
+    #[must_use]
+    pub fn receiver(owner: crate::DefId) -> Self {
+        Self::new(
+            crate::TypeParamId::new(owner, usize::from(u16::MAX)),
+            hew_parser::ast::Symbol::intern("Self"),
+        )
+    }
+
+    #[must_use]
+    pub fn is_receiver(self) -> bool {
+        self.id.index == u16::MAX
+    }
+
+    #[must_use]
+    pub fn new(id: crate::TypeParamId, spelling: hew_parser::ast::Symbol) -> Self {
+        Self { id, spelling }
+    }
+
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(spelling: &str) -> Self {
+        Self::new(
+            crate::TypeParamId::new(crate::DefId::for_test(format!("#parameter {spelling}")), 0),
+            hew_parser::ast::Symbol::intern(spelling),
+        )
+    }
+}
+impl PartialEq for ParamHead {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ParamHead {}
+impl std::hash::Hash for ParamHead {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl PartialOrd for ParamHead {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ParamHead {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+impl fmt::Display for ParamHead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.spelling.fmt(f)
+    }
 }
 
 impl NominalHead {
@@ -197,7 +251,7 @@ enum HeadIdentity {
     Nominal(crate::NominalId),
     Actor(crate::NominalId),
     Builtin(BuiltinType),
-    Param(hew_parser::ast::Symbol),
+    Param(crate::TypeParamId),
     Unresolved(hew_parser::ast::Symbol),
 }
 
@@ -207,17 +261,9 @@ impl TypeHead {
             Self::Nominal(head) => HeadIdentity::Nominal(head.id),
             Self::Actor(head) => HeadIdentity::Actor(head.id),
             Self::Builtin(builtin) => HeadIdentity::Builtin(builtin),
-            Self::Param(head) => HeadIdentity::Param(head.spelling),
+            Self::Param(head) => HeadIdentity::Param(head.id),
             Self::Unresolved(spelling) => HeadIdentity::Unresolved(spelling),
         }
-    }
-
-    /// The abstract `Self` binder of a trait declaration.
-    #[must_use]
-    pub fn self_param() -> Self {
-        Self::Param(ParamHead {
-            spelling: hew_parser::ast::sym::SELF_TYPE,
-        })
     }
 
     /// The head a declared nominal names: a std declaration that is a
@@ -248,12 +294,10 @@ impl TypeHead {
         }
     }
 
-    /// A generic binder spelled `spelling`.
+    /// A resolved generic binder.
     #[must_use]
-    pub fn param(spelling: &str) -> Self {
-        Self::Param(ParamHead {
-            spelling: hew_parser::ast::Symbol::intern(spelling),
-        })
+    pub fn param(parameter: ParamHead) -> Self {
+        Self::Param(parameter)
     }
 
     /// The name a string-keyed registry filed this head's declaration under.
@@ -353,13 +397,18 @@ impl Ord for TypeHead {
                 HeadIdentity::Nominal(id) => (0, id.declaration().index_u32(), 0),
                 HeadIdentity::Actor(id) => (1, id.declaration().index_u32(), 0),
                 HeadIdentity::Builtin(builtin) => (2, builtin as u32, 0),
-                HeadIdentity::Param(_) => (3, 0, 0),
+                HeadIdentity::Param(id) => (3, id.owner.index_u32(), u32::from(id.index)),
                 HeadIdentity::Unresolved(_) => (4, 0, 0),
             }
         }
-        self.spelling()
-            .cmp(other.spelling())
-            .then_with(|| rank(self.identity()).cmp(&rank(other.identity())))
+        rank(self.identity())
+            .cmp(&rank(other.identity()))
+            .then_with(|| match (self.identity(), other.identity()) {
+                (HeadIdentity::Unresolved(left), HeadIdentity::Unresolved(right)) => {
+                    left.cmp(&right)
+                }
+                _ => std::cmp::Ordering::Equal,
+            })
     }
 }
 
@@ -2024,68 +2073,58 @@ impl Ty {
         }
     }
 
-    /// Whether a bare named type parameter spelled `param_name` occurs anywhere
-    /// in this type.
+    /// Whether this type contains a resolved generic binder.
     #[must_use]
-    pub fn mentions_named_param(&self, param_name: &str) -> bool {
-        self.as_param_named(param_name)
-            || self.any_child(&|child| child.mentions_named_param(param_name))
+    pub fn has_type_parameters(&self) -> bool {
+        matches!(
+            self,
+            Ty::Named {
+                head: TypeHead::Param(_),
+                ..
+            }
+        ) || self.any_child(&Self::has_type_parameters)
     }
 
-    /// Substitute a named type parameter (e.g. `T`) with a concrete type in a type expression.
-    /// Used to resolve generic fields/methods on instantiated types.
+    /// Whether this type contains the selected generic binder.
     #[must_use]
-    pub fn substitute_named_param(&self, param_name: &str, replacement: &Ty) -> Ty {
-        if self.as_param_named(param_name) {
+    pub fn mentions_type_param(&self, parameter: ParamHead) -> bool {
+        self.as_type_param(parameter)
+            || self.any_child(&|child| child.mentions_type_param(parameter))
+    }
+
+    /// Substitute one declaration-owned generic parameter.
+    #[must_use]
+    pub fn substitute_type_param(&self, parameter: ParamHead, replacement: &Ty) -> Ty {
+        if self.as_type_param(parameter) {
             return replacement.clone();
         }
-        self.map_children(&mut |child| child.substitute_named_param(param_name, replacement))
+        self.map_children(&mut |child| child.substitute_type_param(parameter, replacement))
     }
 
-    /// Substitute all named type parameters simultaneously in a single structural
-    /// traversal. Unlike chaining [`substitute_named_param`] calls sequentially,
-    /// this never re-substitutes the result of one replacement into another —
-    /// so a swap map like `{"A": B, "B": A}` correctly yields `Pair<B,A>` rather
-    /// than aliasing both params back to `A`.
-    ///
-    /// Every `Ty::Named` leaf with empty args is looked up in `map` exactly once.
-    /// If found, the replacement is returned as-is (no further substitution into
-    /// the replacement). Composites recurse structurally.
+    /// Substitute bound parameters simultaneously without rewriting replacements.
     #[must_use]
-    pub fn substitute_named_params_parallel(&self, map: &HashMap<String, Ty>) -> Ty {
+    pub fn substitute_type_params_parallel(&self, map: &HashMap<ParamHead, Ty>) -> Ty {
         if let Ty::Named {
-            head: head @ (TypeHead::Param(_) | TypeHead::Unresolved(_)),
+            head: TypeHead::Param(parameter),
             args,
         } = self
         {
             if args.is_empty() {
-                return map
-                    .get(head.spelling())
-                    .cloned()
-                    .unwrap_or_else(|| self.clone());
+                return map.get(parameter).cloned().unwrap_or_else(|| self.clone());
             }
         }
-        self.map_children(&mut |child| child.substitute_named_params_parallel(map))
+        self.map_children(&mut |child| child.substitute_type_params_parallel(map))
     }
 
-    /// Whether this is the generic binder spelled `param_name`. Only a binder
-    /// head matches: a nominal of the same spelling is a different type.
-    ///
-    /// TRANSITION(A1 commit 3): an unresolved spelling also matches, until
-    /// every binder is minted as a parameter head with its owner's id.
-    fn as_param_named(&self, param_name: &str) -> bool {
-        matches!(
-            self,
-            Ty::Named { head: head @ (TypeHead::Param(_) | TypeHead::Unresolved(_)), args }
-                if args.is_empty() && head.spelling() == param_name
-        )
+    fn as_type_param(&self, parameter: ParamHead) -> bool {
+        matches!(self, Ty::Named { head: TypeHead::Param(selected), args } if args.is_empty() && selected.id == parameter.id)
     }
 
     /// The generic binder spelled `spelling`.
     #[must_use]
-    pub fn param(spelling: &str) -> Ty {
+    pub fn param(parameter: ParamHead) -> Ty {
         Ty::Named {
-            head: TypeHead::param(spelling),
+            head: TypeHead::param(parameter),
             args: Vec::new(),
         }
     }
@@ -2229,14 +2268,17 @@ mod tests {
     }
 
     #[test]
-    fn test_substitute_named_param() {
+    fn test_substitute_type_param() {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::param("T")],
-            ret: Box::new(Ty::Tuple(vec![Ty::param("T"), Ty::I32])),
+            params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+            ret: Box::new(Ty::Tuple(vec![
+                Ty::param(crate::ParamHead::for_test("T")),
+                Ty::I32,
+            ])),
         };
 
-        let substituted = ty.substitute_named_param("T", &Ty::String);
+        let substituted = ty.substitute_type_param(crate::ParamHead::for_test("T"), &Ty::String);
 
         assert_eq!(
             substituted,
@@ -2265,13 +2307,14 @@ mod tests {
     }
 
     #[test]
-    fn test_borrow_substitute_named_param_recurses_through_pointee() {
+    fn test_borrow_substitute_type_param_recurses_through_pointee() {
         // `&T` with `T := string` must become `&string`.
         let borrow = Ty::Borrow {
-            pointee: Box::new(Ty::param("T")),
+            pointee: Box::new(Ty::param(crate::ParamHead::for_test("T"))),
         };
 
-        let substituted = borrow.substitute_named_param("T", &Ty::String);
+        let substituted =
+            borrow.substitute_type_param(crate::ParamHead::for_test("T"), &Ty::String);
 
         assert_eq!(
             substituted,
@@ -2552,15 +2595,33 @@ mod tests {
         );
     }
 
-    // --- substitute_named_params_parallel ---
+    // --- substitute_type_params_parallel ---
 
     /// A generic binder: substitution replaces parameter heads only.
     fn named(n: &str) -> Ty {
-        Ty::param(n)
+        Ty::param(crate::ParamHead::for_test(n))
     }
 
     fn named_with_args(n: &str, args: Vec<Ty>) -> Ty {
         Ty::named_for_test(n, args)
+    }
+
+    #[test]
+    fn substitution_distinguishes_same_spelled_declaration_parameters() {
+        let first = ParamHead::new(
+            crate::TypeParamId::new(crate::DefId::for_test("first"), 0),
+            hew_parser::ast::Symbol::intern("T"),
+        );
+        let second = ParamHead::new(
+            crate::TypeParamId::new(crate::DefId::for_test("second"), 0),
+            hew_parser::ast::Symbol::intern("T"),
+        );
+        let renamed = ParamHead::new(first.id, hew_parser::ast::Symbol::intern("Renamed"));
+        let input = Ty::Tuple(vec![Ty::param(first), Ty::param(second)]);
+        assert_eq!(
+            input.substitute_type_param(renamed, &Ty::I64),
+            Ty::Tuple(vec![Ty::I64, Ty::param(second)]),
+        );
     }
 
     #[test]
@@ -2574,12 +2635,14 @@ mod tests {
         // Parallel substitution must replace all leaves in one pass, so
         // Pair<A, B> under {A→B, B→A} becomes Pair<B, A>, not Pair<A, A>.
         let pair_a_b = named_with_args("Pair", vec![named("A"), named("B")]);
-        let swap_map: HashMap<String, Ty> =
-            [("A".to_string(), named("B")), ("B".to_string(), named("A"))]
-                .into_iter()
-                .collect();
+        let swap_map: HashMap<crate::ParamHead, Ty> = [
+            (crate::ParamHead::for_test("A"), named("B")),
+            (crate::ParamHead::for_test("B"), named("A")),
+        ]
+        .into_iter()
+        .collect();
 
-        let result = pair_a_b.substitute_named_params_parallel(&swap_map);
+        let result = pair_a_b.substitute_type_params_parallel(&swap_map);
 
         assert_eq!(
             result,
@@ -2593,11 +2656,14 @@ mod tests {
         // When no param in the map is also a replacement target for another
         // param (i.e. no permutation), parallel and sequential results are the same.
         let pair_a_b = named_with_args("Pair", vec![named("A"), named("B")]);
-        let map: HashMap<String, Ty> = [("A".to_string(), Ty::I64), ("B".to_string(), Ty::String)]
-            .into_iter()
-            .collect();
+        let map: HashMap<crate::ParamHead, Ty> = [
+            (crate::ParamHead::for_test("A"), Ty::I64),
+            (crate::ParamHead::for_test("B"), Ty::String),
+        ]
+        .into_iter()
+        .collect();
 
-        let result = pair_a_b.substitute_named_params_parallel(&map);
+        let result = pair_a_b.substitute_type_params_parallel(&map);
 
         assert_eq!(result, named_with_args("Pair", vec![Ty::I64, Ty::String]),);
     }
@@ -2606,9 +2672,11 @@ mod tests {
     fn parallel_substitution_leaves_unmentioned_params_intact() {
         // Params not in the map pass through unchanged.
         let ty = named_with_args("Triple", vec![named("X"), named("Y"), named("Z")]);
-        let map: HashMap<String, Ty> = [("X".to_string(), Ty::Bool)].into_iter().collect();
+        let map: HashMap<crate::ParamHead, Ty> = [(crate::ParamHead::for_test("X"), Ty::Bool)]
+            .into_iter()
+            .collect();
 
-        let result = ty.substitute_named_params_parallel(&map);
+        let result = ty.substitute_type_params_parallel(&map);
 
         assert_eq!(
             result,
@@ -2621,12 +2689,15 @@ mod tests {
         // If A→B and the replacement B is itself a named param, the result
         // must stay as B — not chain through a further lookup for B.
         let ty = named("A");
-        let map: HashMap<String, Ty> = [("A".to_string(), named("B")), ("B".to_string(), Ty::I64)]
-            .into_iter()
-            .collect();
+        let map: HashMap<crate::ParamHead, Ty> = [
+            (crate::ParamHead::for_test("A"), named("B")),
+            (crate::ParamHead::for_test("B"), Ty::I64),
+        ]
+        .into_iter()
+        .collect();
 
         // Parallel: A → lookup("A") = B, done. Sequential would then apply B→i64.
-        let result = ty.substitute_named_params_parallel(&map);
+        let result = ty.substitute_type_params_parallel(&map);
         assert_eq!(result, named("B"), "parallel must not chain through B→i64");
     }
 }

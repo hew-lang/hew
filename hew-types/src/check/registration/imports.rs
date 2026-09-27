@@ -752,6 +752,18 @@ impl Checker {
                     let registry_module = self
                         .defs
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
+                    if !self.defs.module_has_source_declarations(registry_module) {
+                        for (ordinal, (item, span)) in registry_source_items.iter().enumerate() {
+                            self.mint_item_declaration_identities(
+                                Some(registry_module),
+                                Some(registry_module),
+                                crate::check::NominalNamespace::Owned,
+                                ordinal,
+                                item,
+                                span,
+                            );
+                        }
+                    }
                     if let Some(source_path) = resolved_source_path {
                         self.record_canonical_std_module_source(
                             &canonical_owner,
@@ -807,6 +819,14 @@ impl Checker {
 
                     // Register wrapper pub fn signatures
                     for wfn in wrapper_fns {
+                        let type_params = if wfn.type_params.is_empty() {
+                            Vec::new()
+                        } else {
+                            self.declaration_parameter_heads(&format!(
+                                "{canonical_owner}.{}",
+                                wfn.name
+                            ))
+                        };
                         let sig = FnSig {
                             params: wfn
                                 .params
@@ -815,16 +835,16 @@ impl Checker {
                                     self.canonicalize_registry_signature(
                                         ty,
                                         &canonical_owner,
-                                        &wfn.type_params,
+                                        &type_params,
                                     )
                                 })
                                 .collect(),
                             return_type: self.canonicalize_registry_signature(
                                 &wfn.return_type,
                                 &canonical_owner,
-                                &wfn.type_params,
+                                &type_params,
                             ),
-                            type_params: wfn.type_params,
+                            type_params,
                             type_param_bounds: wfn.type_param_bounds,
                             ..FnSig::default()
                         };
@@ -1439,7 +1459,7 @@ impl Checker {
                     // validation) — `x.default_method()` failed with
                     // "no method". Register the declaration for every imported
                     // trait; `pub` still governs the namespace claim below.
-                    let info = Self::trait_info_from_decl(
+                    let info = self.trait_info_from_decl(
                         tr,
                         self.current_module.clone(),
                         self.current_module_idx,

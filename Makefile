@@ -455,7 +455,7 @@ stdlib: libhew-debug ## Build: build all standard-library packages
 # Internal integration-test bootstrap. Broad artifacts are explicit here and
 # are not imposed on every host-only gate.
 .PHONY: test-artifacts
-test-artifacts: hew-native wasm-runtime
+test-artifacts: hew-native libhew-cross-release-lib wasm-runtime
 
 # Cargo owns freshness for its configurable output tree. This target remains
 # phony deliberately: a fixed Make stamp cannot distinguish two different

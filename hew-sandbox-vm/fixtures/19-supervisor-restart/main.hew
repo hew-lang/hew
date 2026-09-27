@@ -18,5 +18,6 @@ fn main() {
     let worker = tree.worker;
     let _ = worker.fail();
     println(worker.work().expect("fresh incarnation"));
-    close(tree);
+    stop(tree);
+    stopped(tree);
 }

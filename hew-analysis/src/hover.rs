@@ -1034,19 +1034,23 @@ fn struct_pattern_field_ty(
     Some(apply_type_args_to_ty(field_ty, &type_def.type_params, args))
 }
 
-fn apply_type_args(payload_tys: &[Ty], type_params: &[String], type_args: &[Ty]) -> Vec<Ty> {
+fn apply_type_args(
+    payload_tys: &[Ty],
+    type_params: &[hew_types::ParamHead],
+    type_args: &[Ty],
+) -> Vec<Ty> {
     payload_tys
         .iter()
         .map(|ty| apply_type_args_to_ty(ty, type_params, type_args))
         .collect()
 }
 
-fn apply_type_args_to_ty(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+fn apply_type_args_to_ty(ty: &Ty, type_params: &[hew_types::ParamHead], type_args: &[Ty]) -> Ty {
     type_params
         .iter()
         .zip(type_args.iter())
         .fold(ty.clone(), |acc, (param, arg)| {
-            acc.substitute_named_param(param, arg)
+            acc.substitute_type_param(*param, arg)
         })
 }
 
@@ -1447,7 +1451,15 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
     let type_params = if type_def.type_params.is_empty() {
         String::new()
     } else {
-        format!("<{}>", type_def.type_params.join(", "))
+        format!(
+            "<{}>",
+            type_def
+                .type_params
+                .iter()
+                .map(|parameter| parameter.spelling.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     };
     let mut parts = format!("```hew\n{kind_str} {}{type_params}", type_def.name);
     let has_body = !type_def.fields.is_empty()
@@ -1668,7 +1680,10 @@ mod tests {
         let td = TypeDef {
             kind: TypeDefKind::Struct,
             name: "Pair".to_string(),
-            type_params: vec!["A".to_string(), "B".to_string()],
+            type_params: vec![
+                hew_types::ParamHead::for_test("A"),
+                hew_types::ParamHead::for_test("B"),
+            ],
             bounds: HashMap::new(),
             fields: HashMap::new(),
             field_order: vec![],

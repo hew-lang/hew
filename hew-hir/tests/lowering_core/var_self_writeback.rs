@@ -132,7 +132,14 @@ fn pair(value: Holder<string>) -> (i64, Holder<string>) {
             _ => None,
         })
         .expect("generic var self method");
-    assert_eq!(method.type_params, ["T"]);
+    assert_eq!(
+        method
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["T"]
+    );
     assert!(matches!(&method.return_ty, ResolvedTy::Tuple(fields)
         if fields[1] == method.params[0].ty));
     assert_receiver_return(method, method.body.tail.as_ref().unwrap());

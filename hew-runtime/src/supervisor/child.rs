@@ -1219,16 +1219,3 @@ pub static HEW_CIRCUIT_BREAKER_OPEN: c_int = 1;
 /// Circuit breaker state: `HALF_OPEN` (probe restart).
 #[no_mangle]
 pub static HEW_CIRCUIT_BREAKER_HALF_OPEN: c_int = 2;
-
-// ── Cooperative restart-await observer (`await_restart`) ─────────────────────
-
-/// Codegen ABI: the `await_restart` parked the continuation; the runtime wakes
-/// it via `enqueue_resume` when the restart cycle completes. The caller MUST
-/// `coro.suspend`.
-pub const RESTART_AWAIT_SUSPEND: i32 = 0;
-/// Codegen ABI: the role is settled — it holds a running incarnation with no
-/// fault pending under it, or it is permanently Dead (will never restart). The
-/// caller MUST NOT suspend and resumes immediately on the bind edge —
-/// re-resolving the slot, which is either Live (proceed) or fails closed at the
-/// send re-resolve (never an infinite hang).
-pub const RESTART_AWAIT_READY: i32 = 1;

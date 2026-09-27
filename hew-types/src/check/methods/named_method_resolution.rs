@@ -958,6 +958,10 @@ impl Checker {
                     .map(|item| self.ty_to_dispatch_pattern(item))
                     .collect(),
             ),
+            Ty::Named {
+                head: crate::TypeHead::Param(parameter),
+                args,
+            } if args.is_empty() => TyPattern::Parameter(parameter),
             Ty::Named { head, args } => {
                 let name = head.registry_key();
                 if args.is_empty() {
@@ -989,7 +993,11 @@ impl Checker {
         }
         if let Some(fn_name) = self.current_function.as_ref() {
             if let Some(sig) = self.fn_sig(fn_name) {
-                if sig.type_params.iter().any(|param| param == param_name) {
+                if sig
+                    .type_params
+                    .iter()
+                    .any(|param| param.spelling.as_str() == param_name)
+                {
                     return sig
                         .type_param_bounds
                         .get(param_name)

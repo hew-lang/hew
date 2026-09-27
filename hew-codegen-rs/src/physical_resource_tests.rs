@@ -139,6 +139,8 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
         let engine = llvm
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .unwrap();
+        // MCJIT resolves the whole module, including the process-entry adapter.
+        // Map its runtime imports even though this oracle calls the body directly.
         for (symbol, address) in [
             ("selected_case", selected_case as *const () as usize),
             ("hew_process_run", create_owner as *const () as usize),
@@ -161,6 +163,18 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
             (
                 "hew_fault_drop",
                 hew_runtime::fault::hew_fault_drop as *const () as usize,
+            ),
+            (
+                "hew_fault_set_site",
+                hew_runtime::fault::hew_fault_set_site as *const () as usize,
+            ),
+            (
+                "hew_fault_report_entry",
+                hew_runtime::fault::hew_fault_report_entry as *const () as usize,
+            ),
+            (
+                "hew_process_exit_byte",
+                hew_runtime::exit_status::hew_process_exit_byte as *const () as usize,
             ),
         ] {
             engine.add_global_mapping(

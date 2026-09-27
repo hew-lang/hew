@@ -1,4 +1,4 @@
-type Node { label: string }
+type Node { label: string; }
 
 fn main() {
     let rc = Rc.new(Node { label: "node" });

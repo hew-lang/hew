@@ -150,7 +150,7 @@ impl LowerCtx {
                     let value = self.make_expr(
                         HirExprKind::FieldAccess {
                             object: Box::new(object),
-                            field: method.clone(),
+                            field: method.0.to_string(),
                         },
                         field_ty,
                         IntentKind::Read,

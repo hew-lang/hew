@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-carrier-branch-return"
+intent = "Branch-local owned-carrier return oracles. Shape `owned_carrier_branch_return_high` (branch returned vec has flat leak slope, branch returned vec is live and freed once under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-carrier-branch-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "OK"
+exit = 0

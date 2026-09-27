@@ -207,14 +207,14 @@ fn defer_calls_require_transitive_non_suspending_effects() {
     let mut missing = fixture::module(true);
     missing
         .functions
-        .retain(|f| f.declaration.full_path() != "fail");
+        .retain(|f| missing.defs.path(f.declaration) != "fail");
     rejects(missing, "defer call has no proven non-suspending body");
 
     let mut suspending = fixture::module(true);
     let callee = suspending
         .functions
         .iter_mut()
-        .find(|f| f.declaration.full_path() == "fail")
+        .find(|f| suspending.defs.path(f.declaration) == "fail")
         .unwrap();
     callee.blocks[0].terminator = SemTerminator::RtCall {
         id: OpId(0),
@@ -234,6 +234,7 @@ fn defer_rejects_active_fault_calls_and_failed_result_reads() {
     let function = fixture::probe(&mut active);
     function.blocks[1].terminator = SemTerminator::Panic {
         message: fixture::boundary(function.params[1].value, BoundaryDecision::Borrow),
+        assertion: None,
         cleanup: fixture::edge(16),
     };
     let mut call = function.blocks[5].terminator.clone();

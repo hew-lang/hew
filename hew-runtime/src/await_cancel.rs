@@ -525,8 +525,10 @@ mod tests {
             // (5): advance the wheel past the deadline. The cancelled entry must
             // be reclaimed without firing — a fired callback here would be a
             // use-after-free against the freed registration.
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            let fired = crate::timer_wheel::hew_timer_wheel_tick(tw);
+            let fired = crate::timer_wheel::timer_wheel_tick_to(
+                tw,
+                crate::clock::hew_now_ms().saturating_add(5),
+            );
             assert_eq!(
                 fired, 0,
                 "a cancelled sleep deadline must not fire — a non-zero count would \

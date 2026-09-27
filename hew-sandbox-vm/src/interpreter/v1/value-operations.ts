@@ -1,5 +1,5 @@
 import { UNIT, cloneValue, type VmValue } from "../values.js";
-import type { PackageV1 } from "./package.js";
+import { runtimeTag, type PackageV1 } from "./package.js";
 import { ShimFault } from "./shims.js";
 
 export type ValueRequest =
@@ -186,11 +186,12 @@ function option(
   const descriptor = shape == null ? undefined : pkg.variants[shape];
   if (!descriptor)
     throw new Error("collection result lacks its checked Option shape");
-  const name = value === undefined ? "None" : "Some";
+  const role = value === undefined ? "OptionNone" : "OptionSome";
   return {
     kind: "enum",
     typeId: descriptor.name,
-    tag: descriptor.cases.findIndex((entry) => entry.name === name),
+    shape: descriptor.id,
+    tag: runtimeTag(descriptor, role),
     payload: value === undefined ? [] : [value],
   };
 }

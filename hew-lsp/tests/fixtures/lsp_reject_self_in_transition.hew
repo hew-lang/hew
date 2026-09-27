@@ -1,10 +1,10 @@
 machine Counter {
     events {
-        Tick,
+        Tick;
     }
 
-    state Idle,
-    state Live { hits: i64 },
+    state Idle;
+    state Live { hits: i64; }
 
     on Tick: Idle => Live { hits: 0 }
     on Tick: Live => Live reenter { hits: self.hits + 1 }

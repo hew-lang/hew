@@ -1,6 +1,5 @@
-// A lambda actor is an actor: `.send(msg)` is the same completion call as
-// `handle(msg)`, and `.close()` is the same terminal release `close(handle)`
-// performs, so both spellings deliver through one path and yield one envelope.
+// A lambda actor's `.send(msg)` and direct call both deliver through one
+// completion path. `stop(handle); stopped(handle);` drains and releases it.
 fn main() {
     let doubler = actor |x: i64| {
         println(x * 2);
@@ -13,7 +12,11 @@ fn main() {
         .Ok(_) => println("called"),
         .Err(_) => panic("rejected"),
     }
-    doubler.close();
+    {
+        let __hew_migrated_actor_527 = doubler;
+        stop(__hew_migrated_actor_527);
+        stopped(__hew_migrated_actor_527);
+    };
 
     // An owned message crosses the boundary: the handler receives the string
     // the caller built and the caller keeps nothing to release.
@@ -21,10 +24,14 @@ fn main() {
         println(f"hello {name}");
     };
     match greeter.send(f"world-{1}") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("rejected"),
     }
-    greeter.close();
+    {
+        let __hew_migrated_actor_878 = greeter;
+        stop(__hew_migrated_actor_878);
+        stopped(__hew_migrated_actor_878);
+    };
 
     // A reply-shaped lambda answers its caller.
     let square = actor |x: i64| -> i64 {
@@ -34,6 +41,10 @@ fn main() {
         .Ok(value) => println(f"square {value}"),
         .Err(_) => panic("rejected"),
     }
-    close(square);
+    {
+        let __hew_migrated_actor_1132 = square;
+        stop(__hew_migrated_actor_1132);
+        stopped(__hew_migrated_actor_1132);
+    };
     println("done");
 }

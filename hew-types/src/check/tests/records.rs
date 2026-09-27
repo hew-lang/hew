@@ -13,16 +13,19 @@ mod cross_module_same_name {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             visibility: Visibility::Pub,
             kind: TypeDeclKind::Struct,
-            name: name.to_string(),
+            name: Ident::new(name),
             type_params: None,
             where_clause: None,
             body: fields
                 .iter()
                 .map(|(field_name, ty_name)| TypeBodyItem::Field {
-                    name: field_name.to_string(),
+                    name: Ident::new(field_name),
                     ty: (
                         TypeExpr::Named {
-                            name: ty_name.to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new(ty_name),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..0,
@@ -48,7 +51,7 @@ mod cross_module_same_name {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Pub,
-            name: "ok".to_string(),
+            name: Ident::new("ok"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -56,12 +59,16 @@ mod cross_module_same_name {
             body: Block {
                 stmts: vec![(
                     Stmt::Let {
-                        pattern: (Pattern::Identifier("thing".to_string()), 0..0),
+                        pattern: (Pattern::Identifier(Ident::new("thing")), 0..0),
                         ty: None,
                         value: Some((
                             Expr::StructInit {
-                                name: record_name.to_string(),
-                                fields: vec![(field_name.to_string(), make_int_literal(1, 0..0))],
+                                path: hew_parser::ast::Path::single(
+                                    hew_parser::ast::Ident::new(record_name),
+                                    0..0,
+                                ),
+                                fields: vec![(Ident::new(field_name), make_int_literal(1, 0..0))],
+                                field_name_spans: Vec::new(),
                                 type_args: None,
                                 base: None,
                             },
@@ -83,9 +90,9 @@ mod cross_module_same_name {
 
     #[test]
     fn construction_uses_module_local_same_named_record() {
-        let root_id = ModuleId::root();
-        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+        let root_id = ModulePath::root();
+        let alpha_id = ModulePath::new(["alpha"]);
+        let beta_id = ModulePath::new(["beta"]);
 
         let alpha_module = Module {
             id: alpha_id.clone(),
@@ -136,9 +143,9 @@ mod cross_module_same_name {
 
     #[test]
     fn qualified_construction_uses_imported_same_named_record() {
-        let root_id = ModuleId::root();
-        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+        let root_id = ModulePath::root();
+        let alpha_id = ModulePath::new(["alpha"]);
+        let beta_id = ModulePath::new(["beta"]);
 
         let alpha_module = Module {
             id: alpha_id.clone(),
@@ -196,7 +203,7 @@ mod cross_module_same_name {
         let alpha_import = make_user_import(
             &["alpha"],
             Some(ImportSpec::Names(vec![ImportName {
-                name: "Thing".to_string(),
+                name: Ident::new("Thing"),
                 alias: None,
             }])),
             vec![(Item::TypeDecl(make_record("Thing", &[("a", "i64")])), 0..10)],
@@ -204,7 +211,7 @@ mod cross_module_same_name {
         let beta_import = make_user_import(
             &["beta"],
             Some(ImportSpec::Names(vec![ImportName {
-                name: "Thing".to_string(),
+                name: Ident::new("Thing"),
                 alias: None,
             }])),
             vec![(
@@ -251,12 +258,15 @@ mod record_admission {
         // Named-field construction with all required fields and correct types
         // must produce no errors.
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                let p = Point { x: 1, y: 2 };
-            }
-            ",
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 };
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -269,12 +279,15 @@ mod record_admission {
     fn construction_missing_field_rejected() {
         // Omitting a required field must produce a missing-field error.
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                let p = Point { x: 1 };
-            }
-            ",
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let p = Point { x: 1 };
+}
+",
         );
         let has_missing = output
             .errors
@@ -292,12 +305,15 @@ mod record_admission {
         // Providing a field that does not exist in the record must produce an
         // undefined-field error.
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                let p = Point { x: 1, y: 2, z: 3 };
-            }
-            ",
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2, z: 3 };
+}
+",
         );
         let has_extra = output
             .errors
@@ -315,12 +331,15 @@ mod record_admission {
         // A field initialised with the wrong type must produce a type-mismatch
         // error.
         let output = check_source(
-            r#"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                let p = Point { x: "hello", y: 2 };
-            }
-            "#,
+            r#"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let p = Point { x: "hello", y: 2 };
+}
+"#,
         );
         let has_mismatch = output.errors.iter().any(|e| {
             e.message.contains("string")
@@ -339,13 +358,16 @@ mod record_admission {
         // Field access on a valid record must resolve the field type and
         // produce no errors.
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                let p = Point { x: 10, y: 20 };
-                let n: i64 = p.x;
-            }
-            ",
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    let n: i64 = p.x;
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -358,13 +380,16 @@ mod record_admission {
     fn field_write_rejected() {
         // Assigning to a record field through an immutable binding must be rejected.
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                let p: Point = Point { x: 1, y: 2 };
-                p.x = 5;
-            }
-            ",
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let p: Point = Point { x: 1, y: 2 };
+    p.x = 5;
+}
+",
         );
         let has_rejection = output
             .errors
@@ -380,13 +405,16 @@ mod record_admission {
     #[test]
     fn field_write_through_mutable_binding_accepted() {
         let output = check_source(
-            r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                var p: Point = Point { x: 1, y: 2 };
-                p.x = 5;
-            }
-            ",
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    var p: Point = Point { x: 1, y: 2 };
+    p.x = 5;
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -448,12 +476,15 @@ mod record {
             // `Point { x: 5, ..base }` where base is Point — checker accepts it
             // because `base` fills the missing `y` field.
             let output = check_source(
-                r"
-                type Point { x: i64, y: i64 }
-                fn f(base: Point) -> Point {
-                    Point { x: 5, ..base }
-                }
-                ",
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn f(base: Point) -> Point {
+    Point { ..base, x: 5 }
+}
+",
             );
             assert!(
                 output.errors.is_empty(),
@@ -466,12 +497,15 @@ mod record {
         fn all_fields_explicit_with_base_accepted() {
             // All fields listed explicitly plus base — still valid (explicit overrides).
             let output = check_source(
-                r"
-                type Point { x: i64, y: i64 }
-                fn f(base: Point) -> Point {
-                    Point { x: 1, y: 2, ..base }
-                }
-                ",
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn f(base: Point) -> Point {
+    Point { ..base, x: 1, y: 2 }
+}
+",
             );
             assert!(
                 output.errors.is_empty(),
@@ -484,12 +518,15 @@ mod record {
         fn no_explicit_fields_base_only_accepted() {
             // `Point { ..base }` — base fills all fields.
             let output = check_source(
-                r"
-                type Point { x: i64, y: i64 }
-                fn f(base: Point) -> Point {
-                    Point { ..base }
-                }
-                ",
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn f(base: Point) -> Point {
+    Point { ..base }
+}
+",
             );
             assert!(
                 output.errors.is_empty(),
@@ -502,13 +539,21 @@ mod record {
         fn base_wrong_type_rejected() {
             // `Point { x: 5, ..other }` where `other` is a different type — must error.
             let output = check_source(
-                r"
-                type Point { x: i64, y: i64 }
-                type Color { r: i64, g: i64, b: i64 }
-                fn f(other: Color) -> Point {
-                    Point { x: 5, ..other }
-                }
-                ",
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
+type Color {
+    r: i64;
+    g: i64;
+    b: i64;
+}
+
+fn f(other: Color) -> Point {
+    Point { ..other, x: 5 }
+}
+",
             );
             let has_error = output
                 .errors
@@ -525,12 +570,15 @@ mod record {
         fn missing_field_without_base_still_rejected() {
             // No functional update — missing field still an error.
             let output = check_source(
-                r"
-                type Point { x: i64, y: i64 }
-                fn f() -> Point {
-                    Point { x: 1 }
-                }
-                ",
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn f() -> Point {
+    Point { x: 1 }
+}
+",
             );
             let has_missing = output
                 .errors
@@ -547,12 +595,15 @@ mod record {
         fn explicit_field_type_wrong_rejected() {
             // Explicit field type mismatch must still be caught even when base is present.
             let output = check_source(
-                r#"
-                type Point { x: i64, y: i64 }
-                fn f(base: Point) -> Point {
-                    Point { x: "not-an-i64", ..base }
-                }
-                "#,
+                r#"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn f(base: Point) -> Point {
+    Point { ..base, x: "not-an-i64" }
+}
+"#,
             );
             assert!(
                 !output.errors.is_empty(),
@@ -566,13 +617,21 @@ mod record {
             // Typed `let p: Point = Point { x: 5, ..other }` where `other` is a
             // different type — the check_against path must also validate the base.
             let output = check_source(
-                r"
-                type Point { x: i64, y: i64 }
-                type Color { r: i64, g: i64, b: i64 }
-                fn f(other: Color) {
-                    let p: Point = Point { x: 5, ..other };
-                }
-                ",
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
+type Color {
+    r: i64;
+    g: i64;
+    b: i64;
+}
+
+fn f(other: Color) {
+    let p: Point = Point { ..other, x: 5 };
+}
+",
             );
             let has_error = output
                 .errors
@@ -967,21 +1026,22 @@ mod assoc_types_slice1 {
         // assoc-type binding is itself a type parameter that carries the
         // required bound. Must accept without spurious BoundsNotSatisfied.
         let (errors, _warnings) = parse_and_check_with_stdlib(
-            r"
-            trait Show {
-                type Out: Display;
-                fn show(val: Self) -> Self.Out;
-            }
+            r"trait Show {
+    type Out: Display;
+    fn show(val: Self) -> Self.Out;
+}
 
-            type Holder<T> {
-                value: T,
-            }
+type Holder<T> {
+    value: T;
+}
 
-            impl<T: Display> Show for Holder<T> {
-                type Out = T;
-                fn show(val: Holder<T>) -> T { val.value }
-            }
-            ",
+impl<T: Display> Show for Holder<T> {
+    type Out = T;
+    fn show(val: Holder<T>) -> T {
+        val.value
+    }
+}
+",
         );
         let bound_errors: Vec<_> = errors
             .iter()
@@ -1030,21 +1090,22 @@ mod assoc_types_slice1 {
         // binds `type Item = i64`. Checker must accept the impl's `next`
         // returning `Option<i64>` against `Option<Self::Item>`.
         let output = check_source_allowing_prelude_redeclaration(
-            r"
-            trait Iterator {
-                type Item;
-                fn next(var val: Self) -> Option<Self.Item>;
-            }
+            r"trait Iterator {
+    type Item;
+    fn next(var val: Self) -> Option<Self.Item>;
+}
 
-            type Counter {
-                value: i64,
-            }
+type Counter {
+    value: i64;
+}
 
-            impl Iterator for Counter {
-                type Item = i64;
-                fn next(var c: Counter) -> Option<i64> { .Some(c.value) }
-            }
-            ",
+impl Iterator for Counter {
+    type Item = i64;
+    fn next(var c: Counter) -> Option<i64> {
+        .Some(c.value)
+    }
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -1160,21 +1221,22 @@ mod assoc_types_slice1 {
         // silently accept an unverified bound. Slice 2 (composite bound
         // propagation) is the proper home for the relaxation.
         let (errors, _warnings) = parse_and_check_with_stdlib(
-            r"
-            trait Show {
-                type Out: Display;
-                fn show(val: Self) -> Self.Out;
-            }
+            r"trait Show {
+    type Out: Display;
+    fn show(val: Self) -> Self.Out;
+}
 
-            type Container<T> {
-                value: T,
-            }
+type Container<T> {
+    value: T;
+}
 
-            impl<T: Display> Show for Container<T> {
-                type Out = Option<T>;
-                fn show(val: Container<T>) -> Option<T> { .Some(val.value) }
-            }
-            ",
+impl<T: Display> Show for Container<T> {
+    type Out = Option<T>;
+    fn show(val: Container<T>) -> Option<T> {
+        .Some(val.value)
+    }
+}
+",
         );
         let bound_err = errors
             .iter()
@@ -1240,29 +1302,30 @@ mod assoc_types_slice2 {
         // Calling `make(counter)` where `Counter: Iterator<Item = i32>`
         // must materialise the return type as `i32` (the impl's binding).
         let output = check_source(
-            r"
-            trait Iterator {
-                type Item;
-                fn next(var it: Self) -> Option<Self.Item>;
-            }
+            r"trait Iterator {
+    type Item;
+    fn next(var it: Self) -> Option<Self.Item>;
+}
 
-            type Counter {
-                value: i64,
-            }
+type Counter {
+    value: i64;
+}
 
-            impl Iterator for Counter {
-                type Item = i64;
-                fn next(var c: Counter) -> Option<i64> { .Some(c.value) }
-            }
+impl Iterator for Counter {
+    type Item = i64;
+    fn next(var c: Counter) -> Option<i64> {
+        .Some(c.value)
+    }
+}
 
-            fn make<I: Iterator>(it: I) -> Option<I.Item> {
-                it.next()
-            }
+fn make<I: Iterator>(it: I) -> Option<I.Item> {
+    it.next()
+}
 
-            fn caller() -> Option<i64> {
-                make(Counter { value: 1 })
-            }
-            ",
+fn caller() -> Option<i64> {
+    make(Counter { value: 1 })
+}
+",
         );
         // No type-mismatch error: caller's `Option<i64>` annotation must
         // unify with `make`'s monomorphised return `Option<I::Item>` →
@@ -1436,11 +1499,15 @@ mod assoc_types_slice2 {
     #[test]
     fn unknown_trait_bound_shape_rejected_for_impl_inline_type_param_bound() {
         let output = check_source(
-            r"
-            type Foo<T> { value: T, }
-            impl<T: Eq<U>, U> Foo<T> { }
-            fn main() {}
-            ",
+            r"type Foo<T> {
+    value: T;
+}
+
+impl<T: Eq<U>, U> Foo<T> {
+}
+
+fn main() {}
+",
         );
         assert!(
             output.errors.iter().any(|e| matches!(
@@ -1458,11 +1525,15 @@ mod assoc_types_slice2 {
     #[test]
     fn unknown_trait_bound_shape_rejected_for_impl_where_clause_bound() {
         let output = check_source(
-            r"
-            type Foo<T> { value: T, }
-            impl<T, U> Foo<T> where T: Eq<U> { }
-            fn main() {}
-            ",
+            r"type Foo<T> {
+    value: T;
+}
+
+impl<T, U> Foo<T> where T: Eq<U> {
+}
+
+fn main() {}
+",
         );
         assert!(
             output.errors.iter().any(|e| matches!(
@@ -1480,14 +1551,16 @@ mod assoc_types_slice2 {
     #[test]
     fn unknown_trait_bound_shape_rejected_for_machine_type_param_bound() {
         let output = check_source(
-            r"
-            machine M<T: Eq<U>, U> {
-                events { Tick, }
-                state Idle,
-                on Tick: Idle => .Idle,
-            }
-            fn main() {}
-            ",
+            r"machine M<T: Eq<U>, U> {
+    events {
+        Tick;
+    }
+    state Idle;
+    on Tick: Idle => .Idle;
+}
+
+fn main() {}
+",
         );
         assert!(
             output.errors.iter().any(|e| matches!(
@@ -1514,7 +1587,7 @@ mod assoc_types_slice2 {
                 .iter()
                 .map(|name| ExternFnDecl {
                     attributes: Vec::new(),
-                    name: name.to_string(),
+                    name: Ident::new(name),
                     params: vec![],
                     return_type: None,
                     is_variadic: false,
@@ -1909,7 +1982,7 @@ mod assoc_types_slice2 {
             abi: "C".to_string(),
             functions: vec![ExternFnDecl {
                 attributes: Vec::new(),
-                name: "totally_made_up_ffi_symbol".to_string(),
+                name: Ident::new("totally_made_up_ffi_symbol"),
                 params: vec![],
                 return_type: None,
                 is_variadic: false,
@@ -1940,15 +2013,15 @@ mod assoc_types_slice2 {
     #[test]
     fn genblock_inside_actor_receive_handler_is_rejected() {
         let output = check_source(
-            r"
-            actor Counter {
-                count: i32,
-                receive fn tick() {
-                    let _g = gen { count = count + 1; };
-                }
-            }
-            fn main() {}
-            ",
+            r"actor Counter {
+    let count: i32;
+    receive fn tick() {
+        let _g = gen { count = count + 1; };
+    }
+}
+
+fn main() {}
+",
         );
         assert!(
             output
@@ -2036,15 +2109,15 @@ mod assoc_types_slice2 {
     #[test]
     fn genblock_in_actor_receive_is_rejected_not_empty_generator() {
         let output = check_source(
-            r"
-            actor Counter {
-                count: i32,
-                receive fn tick() {
-                    let _g = gen { };
-                }
-            }
-            fn main() {}
-            ",
+            r"actor Counter {
+    let count: i32;
+    receive fn tick() {
+        let _g = gen {};
+    }
+}
+
+fn main() {}
+",
         );
         assert!(
             output
@@ -2069,24 +2142,23 @@ mod assoc_types_slice2 {
     #[test]
     fn genblock_inside_machine_transition_is_rejected() {
         let output = check_source(
-            r"
-            machine Door {
-                events {
-                    Toggle,
-                }
+            r"machine Door {
+    events {
+        Toggle;
+    }
 
-                state Closed,
-                state Open,
+    state Closed;
+    state Open;
 
+    on Toggle: Closed => Open {
+        let _g = gen { yield 1; };
+        Open
+    }
+    on Toggle: Open => Closed;
+}
 
-                on Toggle: Closed => Open {
-                    let _g = gen { yield 1; };
-                    Open
-                }
-                on Toggle: Open => Closed,
-            }
-            fn main() {}
-            ",
+fn main() {}
+",
         );
         assert!(
             output.errors.iter().any(|e| e
@@ -2100,24 +2172,23 @@ mod assoc_types_slice2 {
     #[test]
     fn await_inside_machine_transition_is_rejected() {
         let output = check_source(
-            r"
-            machine Door {
-                events {
-                    Toggle,
-                }
+            r"machine Door {
+    events {
+        Toggle;
+    }
 
-                state Closed,
-                state Open,
+    state Closed;
+    state Open;
 
+    on Toggle: Closed => Open {
+        await pending;
+        Open
+    }
+    on Toggle: Open => Closed;
+}
 
-                on Toggle: Closed => Open {
-                    await pending;
-                    Open
-                }
-                on Toggle: Open => Closed,
-            }
-            fn main() {}
-            ",
+fn main() {}
+",
         );
         assert!(
             output.errors.iter().any(|e| e
@@ -2136,27 +2207,27 @@ mod assoc_types_slice2 {
     #[test]
     fn machine_transition_builds_local_vec_purely() {
         let output = check_source(
-            r"
-            machine Log {
-                events {
-                    Append { item: i64, },
-                }
-                state Empty,
-                state Filled { items: Vec<i64>, },
-                on Append(item): Empty => Filled {
-                    var v: Vec<i64> = Vec.new();
-                    v.push(item);
-                    Filled { items: v }
-                }
-                on Append(item): Filled => Filled reenter {
-                    var v = state.items;
-                    v.push(item);
-                    Filled { items: v }
-                }
-                default { state }
-            }
-            fn main() {}
-            ",
+            r"machine Log {
+    events {
+        Append { item: i64; }
+    }
+    state Empty;
+    state Filled { items: Vec<i64>; }
+    on Append(item): Empty => Filled {
+        var v: Vec<i64> = Vec.new();
+        v.push(item);
+        Filled { items: v }
+    }
+    on Append(item): Filled => Filled reenter {
+        var v = state.items;
+        v.push(item);
+        Filled { items: v }
+    }
+    default { state }
+}
+
+fn main() {}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -2170,22 +2241,22 @@ mod assoc_types_slice2 {
     #[test]
     fn machine_transition_builds_local_hashmap_purely() {
         let output = check_source(
-            r"
-            machine Counts {
-                events {
-                    Bump { key: string, },
-                }
-                state Empty,
-                state Filled { counts: HashMap<string, i64>, },
-                on Bump(key): Empty => Filled {
-                    var m: HashMap<string, i64> = HashMap.new();
-                    m.insert(key, 1);
-                    Filled { counts: m }
-                }
-                default { state }
-            }
-            fn main() {}
-            ",
+            r"machine Counts {
+    events {
+        Bump { key: string; }
+    }
+    state Empty;
+    state Filled { counts: HashMap<string, i64>; }
+    on Bump(key): Empty => Filled {
+        var m: HashMap<string, i64> = HashMap.new();
+        m.insert(key, 1);
+        Filled { counts: m }
+    }
+    default { state }
+}
+
+fn main() {}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -2200,23 +2271,23 @@ mod assoc_types_slice2 {
     #[test]
     fn machine_transition_calling_println_is_still_rejected() {
         let output = check_source(
-            r"
-            machine Log {
-                events {
-                    Append { item: i64, },
-                }
-                state Empty,
-                state Filled { items: Vec<i64>, },
-                on Append(item): Empty => Filled {
-                    println(item);
-                    var v: Vec<i64> = Vec.new();
-                    v.push(item);
-                    Filled { items: v }
-                }
-                default { state }
-            }
-            fn main() {}
-            ",
+            r"machine Log {
+    events {
+        Append { item: i64; }
+    }
+    state Empty;
+    state Filled { items: Vec<i64>; }
+    on Append(item): Empty => Filled {
+        println(item);
+        var v: Vec<i64> = Vec.new();
+        v.push(item);
+        Filled { items: v }
+    }
+    default { state }
+}
+
+fn main() {}
+",
         );
         assert!(
             output.errors.iter().any(|e| e

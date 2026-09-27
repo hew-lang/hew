@@ -21,7 +21,7 @@
 // a SIGTRAP's 133 still carries that, and the printed sentinel carries which
 // recoverable arm ran.
 actor Worker {
-    var value: i64 = 5,
+    var value: i64 = 5;
     receive fn tick() {
         value = value + 1;
     }
@@ -34,41 +34,30 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
 
-    child w1: Worker(value: 5),
+    child w1: Worker(value: 5);
 }
 
 fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w1;
-    // Crash until the child is PERMANENTLY dead, observing the effect rather
-    // than assuming a fixed number of sleeps reaches it. A wall-clock loop is
-    // load-sensitive: under a busy machine the restarts had not yet exhausted
-    // the budget when the asks below ran, and the fixture asserted its sentinel
-    // against a LIVE child.
-    var attempts: i64 = 0;
-    var dead = false;
-    while attempts < 30 && !dead {
-        let alive = match w.get_value() {
-            .Ok(_) => true,
-            .Err(_) => false,
-        };
-        if alive {
-            let _ = w.crash_me();
-            sleep(120ms);
-        } else {
-            dead = true;
-        }
-        attempts = attempts + 1;
-    }
-    // Make a failed precondition legible: the stdout diff then names the reason
-    // instead of only showing a wrong sentinel.
-    if !dead {
-        println("PRECONDITION_CHILD_STILL_ALIVE");
-    }
-    sleep(200ms);
+    // The budget is one restart, so the second crash leaves the role
+    // permanently dead; each `restarted` waits for the ruling on the crash
+    // its own call already observed.
+    let _ = w.crash_me();
+    let _ = {
+        let __hew_migrated_role_1953 = sup.w1;
+        restarted(__hew_migrated_role_1953);
+        __hew_migrated_role_1953
+    };
+    let _ = w.crash_me();
+    let _ = {
+        let __hew_migrated_role_2013 = sup.w1;
+        restarted(__hew_migrated_role_2013);
+        __hew_migrated_role_2013
+    };
     // Tell to a permanently-dead child: dropped recoverably, NOT a trap.
     let _ = w.tick();
     // Ask a permanently-dead child: recoverable Err, NOT a trap.

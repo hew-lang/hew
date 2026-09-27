@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-push-temp-set-temp"
+intent = "Owned-Vec element-store TEMP leak oracles: a fresh, unbound aggregate rvalue used as a `Vec::push` / `Vec::set` element source must not leak its heap. Shape `set_temp_high` (vec set owned temp no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-push-temp-set-temp.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

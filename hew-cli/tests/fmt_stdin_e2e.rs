@@ -65,7 +65,21 @@ fn fmt_stdin_writes_formatted_source_to_stdout() {
 #[test]
 fn fmt_stdin_handles_regex_records_and_is_operator() {
     let input = concat!(
-        r#"type Point{x:i32,y:i32} fn main()->i32{let pattern=re"^hew[0-9]+$";let base=Point{x:1,y:2};let updated=Point{x:3,..base};if updated.x is i32 {pattern;} updated.x}"#,
+        r#"type Point {
+    x: i32;
+    y: i32;
+}
+
+fn main() -> i32 {
+    let pattern = re"^hew[0-9]+$";
+    let base = Point { x: 1, y: 2 };
+    let updated = Point { ..base, x: 3 };
+    if updated.x is i32 {
+        pattern;
+    }
+    updated.x
+}
+"#,
         "\n"
     );
     let output = run_fmt(&["fmt", "--stdin"], input);
@@ -257,7 +271,7 @@ fn fmt_migrate_uses_checker_resolved_variant_owners_and_check_is_non_destructive
     let dir = support::tempdir();
     let path = dir.path().join("legacy.hew");
     let source = concat!(
-        "enum Choice { Present(i64), }\n\n",
+        "enum Choice {\n    Present(i64);\n}\n",
         "fn contextual() -> Choice { Present(42) }\n",
         "fn inferred() { let value = Present(7); }\n"
     );
@@ -304,6 +318,101 @@ fn fmt_migrate_uses_checker_resolved_variant_owners_and_check_is_non_destructive
 }
 
 #[test]
+fn fmt_migrate_rewrites_declared_machine_event_aliases() {
+    let dir = support::tempdir();
+    let path = dir.path().join("machine-events.hew");
+    let source = "import std.machines.toggle.{Toggle, ToggleEvent};\n\nmachine Tank {\n    events {\n        Tick;\n    }\n    state Idle;\n    state Filled;\n    on Tick: Idle => Filled;\n    default { state }\n}\n\nfn main() {\n    var tank = Tank.Idle;\n    let _ = tank.step(TankEvent.Tick);\n    var toggle: Toggle = .Off;\n    let _ = toggle.step(ToggleEvent.Flip);\n    println(\"TankEvent\");\n}\n";
+    std::fs::write(&path, source).unwrap();
+
+    let migration = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        migration.status.success(),
+        "migration failed: {}",
+        String::from_utf8_lossy(&migration.stderr)
+    );
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains("Tank.Event.Tick"), "{migrated}");
+    assert!(migrated.contains("Toggle.Event.Flip"), "{migrated}");
+    assert!(
+        migrated.contains("import std.machines.toggle.{Toggle}"),
+        "{migrated}"
+    );
+    assert!(migrated.contains("\"TankEvent\""), "{migrated}");
+    let check = Command::new(hew_binary())
+        .arg("check")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "migrated source did not type-check: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let fixed_point = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--check"])
+        .arg(&path)
+        .env("TMPDIR", dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        fixed_point.status.success(),
+        "migration snapshot inside the source parent failed: {}",
+        String::from_utf8_lossy(&fixed_point.stderr)
+    );
+}
+
+#[test]
+fn fmt_migrate_selects_actor_lifecycle_without_touching_resource_close() {
+    let dir = support::tempdir();
+    let path = dir.path().join("actor-lifecycle.hew");
+    let source = r"
+        #[resource] type Gate { value: i64, }
+        impl Gate { fn close(consume self) {} }
+        actor Worker { receive fn ping() {} }
+        supervisor Team { child after: Worker, }
+        fn main() {
+            let team = spawn Team;
+            let _ = await_restart team.after;
+            close(team);
+            let gate = Gate { value: 1 };
+            gate.close();
+        }
+    ";
+    std::fs::write(&path, source).unwrap();
+
+    let migrate = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        migrate.status.success(),
+        "migration failed: {}",
+        String::from_utf8_lossy(&migrate.stderr)
+    );
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains("restarted("), "{migrated}");
+    assert!(migrated.contains("stop("), "{migrated}");
+    assert!(migrated.contains("stopped("), "{migrated}");
+    assert!(migrated.contains("gate.close();"), "{migrated}");
+    assert!(!migrated.contains("await_restart"), "{migrated}");
+    let second = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--check"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "migration changed on a second pass: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+}
+
+#[test]
 fn fmt_migrate_root_discovers_nested_hew_sources() {
     let dir = support::tempdir();
     let nested = dir.path().join("nested");
@@ -311,7 +420,7 @@ fn fmt_migrate_root_discovers_nested_hew_sources() {
     let path = nested.join("legacy.hew");
     std::fs::write(
         &path,
-        "enum Choice { Present(i64), }\n\nfn pick() -> Choice { Present(42) }\n\nfn main() { let _ = pick(); }\n",
+        "enum Choice {\n    Present(i64);\n}\n\nfn pick() -> Choice {\n    Present(42)\n}\n\nfn main() {\n    let _ = pick();\n}\n",
     )
     .unwrap();
 
@@ -381,7 +490,7 @@ fn fmt_migrate_root_typechecks_legacy_directory_module_peers() {
     std::fs::write(
         &peer,
         concat!(
-            "pub type Dog { label: string, }\n",
+            "pub type Dog {\n    label: string;\n}\n",
             "impl Greeter for Dog {\n",
             "    fn name(self) -> string { self.label }\n",
             "}\n",
@@ -432,10 +541,57 @@ fn fmt_migrate_root_refuses_nonrewritable_directory_peer_transactionally() {
 }
 
 #[test]
+fn fmt_migrate_combines_punctuation_and_actor_lifecycle_atomically() {
+    let dir = support::tempdir();
+    let actor = dir.path().join("actor.hew");
+    let peer = dir.path().join("peer.hew");
+    let legacy = "actor Worker { var count: i64 = 0, receive fn ping() {} }\nsupervisor Team { child worker: Worker, }\nfn main() { let team = spawn Team; let _ = await_restart team.worker; }\n";
+    let invalid = "fn broken( {\n";
+    std::fs::write(&actor, legacy).unwrap();
+    std::fs::write(&peer, invalid).unwrap();
+
+    let migrate = || {
+        Command::new(hew_binary())
+            .args(["fmt", "--migrate", "--root"])
+            .arg(dir.path())
+            .output()
+            .unwrap()
+    };
+    let refused = migrate();
+    assert!(!refused.status.success());
+    assert_eq!(std::fs::read_to_string(&actor).unwrap(), legacy);
+    assert_eq!(std::fs::read_to_string(&peer).unwrap(), invalid);
+
+    std::fs::write(&peer, "fn helper() {}\n").unwrap();
+    let migrated = migrate();
+    assert!(
+        migrated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&migrated.stderr)
+    );
+    let once = std::fs::read_to_string(&actor).unwrap();
+    assert!(once.contains("count: i64 = 0;"), "{once}");
+    assert!(once.contains("child worker: Worker;"), "{once}");
+    assert!(once.contains("restarted("), "{once}");
+    assert!(!once.contains("await_restart"), "{once}");
+    let checked = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--check", "--root"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(actor).unwrap(), once);
+}
+
+#[test]
 fn fmt_migrate_lists_typecheck_failure_sites_instead_of_succeeding() {
     let dir = support::tempdir();
     let path = dir.path().join("invalid.hew");
-    let source = "enum Choice { Present, }\n\nfn main() { let value = Choice; }\n";
+    let source = "enum Choice {\n    Present;\n}\n\nfn main() {\n    let value = Choice;\n}\n";
     std::fs::write(&path, source).unwrap();
 
     let output = Command::new(hew_binary())
@@ -448,10 +604,8 @@ fn fmt_migrate_lists_typecheck_failure_sites_instead_of_succeeding() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains(&format!(
-            "migration refused {}:50-56: type checking failed",
-            path.display()
-        )),
+        stderr.contains("migration refused")
+            && stderr.contains("type checking failed: type `Choice` cannot be used as a value"),
         "stderr: {stderr}"
     );
 }
@@ -461,7 +615,7 @@ fn fmt_migrate_refuses_checker_variants_missing_migration_warnings() {
     let dir = support::tempdir();
     let path = dir.path().join("missing-warning.hew");
     let source = concat!(
-        "enum Shape { Box { w: i64, h: i64 }, }\n\n",
+        "enum Shape {\n    Box { w: i64; h: i64;  }\n}\n",
         "fn make() -> Shape { Box { w: 3, h: 4 } }\n"
     );
     std::fs::write(&path, source).unwrap();

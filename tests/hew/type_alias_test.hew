@@ -1,5 +1,3 @@
-import std.testing;
-
 type Meters = i64;
 
 type Pair<T> = (T, T);
@@ -23,14 +21,14 @@ fn roundtrip_pair(pair: Pair<i64>) -> Pair<i64> {
 #[test]
 fn test_concrete_alias_and_impl_identity() {
     let distance: Meters = 5;
-    testing.assert_eq(distance, 5);
-    testing.assert_eq(distance.answer(), 42);
+    assert(distance == 5);
+    assert(distance.answer() == 42);
 }
 
 #[test]
 fn test_parameterized_alias() {
     let _pair: Pair<i64> = roundtrip_pair((20, 22));
-    testing.assert_true(true);
+    assert(true);
 }
 
 #[test]
@@ -38,5 +36,5 @@ fn test_generic_rhs_alias_in_signatures() {
     var values: MyMap = HashMap.new();
     values.insert("answer", 42);
     let _returned: MyMap = roundtrip(values);
-    testing.assert_true(true);
+    assert(true);
 }

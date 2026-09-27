@@ -1,0 +1,10 @@
+[[case]]
+id = "match-result-record-destructure-endpoint-plain-let"
+intent = "Match-result record ownership oracle for the panic-sibling join shape. Shape `endpoint_plain_let` (match result record plain let exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-result-record-destructure-endpoint-plain-let.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "10.11.12.13\n"
+exit = 0

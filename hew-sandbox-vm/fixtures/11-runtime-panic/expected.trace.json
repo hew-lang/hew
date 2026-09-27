@@ -9,6 +9,10 @@
     },
     {
       "failure": {
+        "hew_fault": {
+          "code": 212,
+          "kind": "UserPanic"
+        },
         "kind": "panic",
         "message": "sandbox panic",
         "span": null,
@@ -43,6 +47,10 @@
     },
     "runtime_failures": [
       {
+        "hew_fault": {
+          "code": 212,
+          "kind": "UserPanic"
+        },
         "kind": "panic",
         "message": "sandbox panic",
         "span": null,

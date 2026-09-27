@@ -18,16 +18,19 @@ fn check_ok(source: &str) -> TypeCheckOutput {
 
 #[test]
 fn set_snapshot_has_the_canonical_element_result_and_dispatch() {
-    let source = r#"
-        type Member { name: string, rank: i64 }
-        fn main() -> i64 {
-            var members: HashSet<Member> = HashSet.new();
-            members.insert(Member { name: "kept", rank: 7 });
-            let snapshot: Vec<Member> = members.to_vec();
-            members.clear();
-            snapshot.len()
-        }
-    "#;
+    let source = r#"type Member {
+    name: string;
+    rank: i64;
+}
+
+fn main() -> i64 {
+    var members: HashSet<Member> = HashSet.new();
+    members.insert(Member { name: "kept", rank: 7 });
+    let snapshot: Vec<Member> = members.to_vec();
+    members.clear();
+    snapshot.len()
+}
+"#;
     let output = check_ok(source);
     let start = source.find("members.to_vec()").unwrap();
     let site = SpanKey::from(&(start..start + "members.to_vec()".len()));
@@ -39,11 +42,7 @@ fn set_snapshot_has_the_canonical_element_result_and_dispatch() {
         output.expr_types[&site],
         Ty::builtin_named(
             hew_types::BuiltinType::Vec,
-            vec![Ty::Named {
-                name: "Member".into(),
-                args: vec![],
-                builtin: None,
-            }]
+            vec![Ty::named_in(&output.defs, "Member", vec![])]
         )
     );
     assert!(
@@ -129,7 +128,7 @@ fn collection_reads_do_not_count_as_binding_writes() {
 fn collection_field_mutation_tracks_the_containing_binding() {
     for (ty, constructor, mutation) in MUTATIONS {
         let source = format!(
-            "type Holder {{ values: {ty} }} fn main() -> i64 {{ var holder = Holder {{ values: {constructor} }}; holder.values.{mutation}; holder.values.len() }}"
+            "type Holder {{ values: {ty}; }} fn main() -> i64 {{ var holder = Holder {{ values: {constructor} }}; holder.values.{mutation}; holder.values.len() }}"
         );
         let output = check_ok(&source);
         assert!(
@@ -213,8 +212,8 @@ fn map_snapshots_admit_nested_ordinary_values_and_owned_keys() {
     ] {
         let source = format!(
             r"
-            type Key {{ name: string, rank: i64 }}
-            enum Payload {{ Empty, Text(string), Children(Vec<Payload>), }}
+            type Key {{ name: string; rank: i64; }}
+            enum Payload {{ Empty; Text(string); Children(Vec<Payload>); }}
             fn main() -> i64 {{
                 let values: HashMap<Key, {value}> = HashMap.new();
                 let keys: Vec<Key> = values.keys();
@@ -231,20 +230,28 @@ fn map_snapshots_admit_nested_ordinary_values_and_owned_keys() {
 #[test]
 fn map_iteration_uses_the_same_recursive_snapshot_admission() {
     check_ok(
-        r"
-        enum Carrier<T> { Leaf(T), Branches(Vec<Entry<T>>), }
-        type Entry<T> { value: Carrier<T> }
-        fn main() -> i64 {
-            let values: HashMap<string, Carrier<string>> = HashMap.new();
-            var count = 0;
-            for (key, value) in values { count += key.len(); }
-            var cursor = values.into_iter();
-            match cursor.next() {
-                .Some((key, value)) => count + key.len(),
-                .None => count,
-            }
-        }
-    ",
+        r"enum Carrier<T> {
+    Leaf(T);
+    Branches(Vec<Entry<T>>);
+}
+
+type Entry<T> {
+    value: Carrier<T>;
+}
+
+fn main() -> i64 {
+    let values: HashMap<string, Carrier<string>> = HashMap.new();
+    var count = 0;
+    for (key, value) in values {
+        count += key.len();
+    }
+    var cursor = values.into_iter();
+    match cursor.next() {
+        .Some((key, value)) => count + key.len(),
+        .None => count,
+    }
+}
+",
     );
 }
 
@@ -254,11 +261,11 @@ fn map_snapshots_preserve_resource_and_function_value_refusals() {
     // shape's, not a projection's. Every other clone-free value is stored and
     // refused only where an operation copies it out.
     for (declarations, value, reason, keys_ok) in [
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Token", "has no copy operation", true),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} } type Holder { token: Token }", "Holder", "has no copy operation", true),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Vec<Token>", "has no copy operation", true),
+        ("#[resource]\ntype Token {\n    id: i64;\n}\n\nimpl Token {\n    fn close(consume self) {}\n}\n", "Token", "has no copy operation", true),
+        ("#[resource]\ntype Token {\n    id: i64;\n}\n\nimpl Token {\n    fn close(consume self) {}\n}\n\ntype Holder {\n    token: Token;\n}\n", "Holder", "has no copy operation", true),
+        ("#[resource]\ntype Token {\n    id: i64;\n}\n\nimpl Token {\n    fn close(consume self) {}\n}\n", "Vec<Token>", "has no copy operation", true),
         ("", "fn(i64) -> i64", "no map ingress", false),
-        ("type Holder { callback: fn(i64) -> i64 }", "Holder", "has no copy operation", true),
+        ("type Holder {\n    callback: fn(i64) -> i64;\n}\n", "Holder", "has no copy operation", true),
         ("", "Vec<fn(i64) -> i64>", "has no copy operation", true),
     ] {
         for projection in ["values", "entries", "into_iter"] {
@@ -291,7 +298,7 @@ fn generic_key_uses_its_substituted_semantic_capabilities() {
             ("HashSet", "values.insert(Key { value: 7 });")
         };
         check_ok(&format!(
-            "type Key<T> {{ value: T }}
+            "type Key<T> {{ value: T; }}
              impl<T> Hash for Key<T> {{ fn hash(self) -> i64 {{ 1 }} }}
              fn main() -> i64 {{
                  var values: {collection} = {constructor}.new();
@@ -305,19 +312,29 @@ fn generic_key_uses_its_substituted_semantic_capabilities() {
 #[test]
 fn generic_keys_keep_owned_values_and_projection_types() {
     check_ok(
-        r#"
-        type Key<T> { value: T }
-        impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
-        type Payload<T> { value: T }
-        fn main() -> i64 {
-            var values: HashMap<Key<string>, Vec<Payload<string>>> = HashMap.new();
-            values.insert(Key { value: "key" }, Vec.new());
-            let keys: Vec<Key<string>> = values.keys();
-            let payloads: Vec<Vec<Payload<string>>> = values.values();
-            let entries: Vec<(Key<string>, Vec<Payload<string>>)> = values.entries();
-            keys.len() + payloads.len() + entries.len()
-        }
-    "#,
+        r#"type Key<T> {
+    value: T;
+}
+
+impl<T> Hash for Key<T> {
+    fn hash(self) -> i64 {
+        1
+    }
+}
+
+type Payload<T> {
+    value: T;
+}
+
+fn main() -> i64 {
+    var values: HashMap<Key<string>, Vec<Payload<string>>> = HashMap.new();
+    values.insert(Key { value: "key" }, Vec.new());
+    let keys: Vec<Key<string>> = values.keys();
+    let payloads: Vec<Vec<Payload<string>>> = values.values();
+    let entries: Vec<(Key<string>, Vec<Payload<string>>)> = values.entries();
+    keys.len() + payloads.len() + entries.len()
+}
+"#,
     );
 }
 
@@ -325,11 +342,11 @@ fn generic_keys_keep_owned_values_and_projection_types() {
 fn key_hash_override_does_not_invent_eq_or_resource_copy() {
     for (declarations, key) in [
         (
-            "#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }",
+            "#[resource]\ntype Token {\n    id: i64;\n}\n\nimpl Token {\n    fn close(consume self) {}\n}\n",
             "Token",
         ),
-        ("type Key<T> { value: T }", "Key<fn(i64) -> i64>"),
-        ("enum Choice { A, B }", "Choice"),
+        ("type Key<T> {\n    value: T;\n}\n", "Key<fn(i64) -> i64>"),
+        ("enum Choice {\n    A;\n    B;\n}\n", "Choice"),
     ] {
         for collection in [format!("HashMap<{key}, i64>"), format!("HashSet<{key}>")] {
             let source = format!("{declarations} fn inspect(values: {collection}) -> i64 {{ values.len() }} fn main() {{}}");
@@ -344,7 +361,7 @@ fn key_hash_override_does_not_invent_eq_or_resource_copy() {
             );
         }
     }
-    let output = check("type Key<T> { value: T } impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } } fn main() { let values: HashMap<Key<fn(i64) -> i64>, string> = HashMap.new(); }");
+    let output = check("type Key<T> {\n    value: T;\n}\n\nimpl<T> Hash for Key<T> {\n    fn hash(self) -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let values: HashMap<Key<fn(i64) -> i64>, string> = HashMap.new();\n}\n");
     assert!(
         output
             .errors
@@ -359,8 +376,8 @@ fn key_hash_override_does_not_invent_eq_or_resource_copy() {
 #[test]
 fn forward_declared_map_values_are_checked_after_registration() {
     for declarations in [
-        "type First { values: HashMap<string, Second> } type Second { name: string }",
-        "type Second { name: string } type First { values: HashMap<string, Second> }",
+        "type First {\n    values: HashMap<string, Second>;\n}\n\ntype Second {\n    name: string;\n}\n",
+        "type Second {\n    name: string;\n}\n\ntype First {\n    values: HashMap<string, Second>;\n}\n",
     ] {
         check_ok(&format!(
             "{declarations} fn main() {{ let value = First {{ values: HashMap.new() }}; }}"
@@ -369,8 +386,8 @@ fn forward_declared_map_values_are_checked_after_registration() {
     // A map of a clone-free value is an ordinary type: it is read by borrow and
     // drained by removal, so only an operation that copies its values refuses.
     for declarations in [
-        "type First { values: HashMap<string, Second> } #[resource] type Second { id: i64 } impl Second { fn close(consume self) {} }",
-        "#[resource] type Second { id: i64 } impl Second { fn close(consume self) {} } type First { values: HashMap<string, Second> }",
+        "type First {\n    values: HashMap<string, Second>;\n}\n\n#[resource]\ntype Second {\n    id: i64;\n}\n\nimpl Second {\n    fn close(consume self) {}\n}\n",
+        "#[resource]\ntype Second {\n    id: i64;\n}\n\nimpl Second {\n    fn close(consume self) {}\n}\n\ntype First {\n    values: HashMap<string, Second>;\n}\n",
     ] {
         check_ok(&format!("{declarations} fn main() {{}}"));
         let output = check(&format!(
@@ -384,7 +401,7 @@ fn forward_declared_map_values_are_checked_after_registration() {
 fn abstract_map_key_does_not_hide_a_forward_resource_value() {
     // The value obligation belongs to the operation that copies values out, and
     // an abstract key must not hide it there.
-    let output = check("#[resource] type Second { id: i64 } impl Second { fn close(consume self) {} } fn snap<K: Hash + Eq>(values: HashMap<K, Second>) { values.entries(); } fn main() {}");
+    let output = check("#[resource]\ntype Second {\n    id: i64;\n}\n\nimpl Second {\n    fn close(consume self) {}\n}\n\nfn snap<K: Hash + Eq>(values: HashMap<K, Second>) {\n    values.entries();\n}\n\nfn main() {}\n");
     assert!(
         output
             .errors

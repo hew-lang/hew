@@ -1,7 +1,7 @@
 type Label = string;
 
 type AppConfig {
-    label: Label,
+    label: Label;
 }
 
 actor App {

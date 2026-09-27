@@ -1,9 +1,21 @@
-enum Payload<T> { Value(T, string), Empty }
-enum Envelope<T> { Wrapped(T), Empty }
-enum Token<T> { Value(T) }
+enum Payload<T> {
+    Value(T, string);
+    Empty;
+}
+
+enum Envelope<T> {
+    Wrapped(T);
+    Empty;
+}
+
+enum Token<T> {
+    Value(T);
+}
 
 actor Gate {
-    receive fn ready(value: bool) -> bool { value }
+    receive fn ready(value: bool) -> bool {
+        value
+    }
 }
 
 fn result_case(value: Result<bool, string>) -> string {
@@ -30,7 +42,7 @@ fn nested_case(value: Envelope<Payload<bool>>) -> string {
             .Value(false, label) => label + " false",
             .Value(_, _) => panic("literal cases did not match"),
             .Empty => "payload empty",
-        },
+        }
         .Empty => "envelope empty",
     }
 }
@@ -101,7 +113,10 @@ fn direct_string_case(value: string, guarded: bool) -> string {
 }
 
 fn string_wildcard(value: string) -> string {
-    match value { "yes" => "yes", _ => "wildcard" }
+    match value {
+        "yes" => "yes",
+        _ => "wildcard",
+    }
 }
 
 fn main() {

@@ -1,0 +1,11 @@
+[[case]]
+id = "enum-resource-variant-returned-bytes-loan-crash"
+intent = " Shape `returned_bytes_loan_crash` (returned bytes loan releases once on success and crash) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-resource-variant-returned-bytes-loan-crash.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok=7\nhandled-crash\nsurvived\n"
+stderr = "hew: failure: UserPanic (212): crash during returned bytes loan\nhew: actor crash in Runner.run (actor 2): UserPanic\n"
+exit = 1

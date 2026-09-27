@@ -5,12 +5,15 @@ fn main() -> i64 {
         map.insert(f"key-{i}", f"value-{i}");
         i = i + 1;
     }
-
     var count = 0;
     var length = 0;
     for key in map.keys() {
         count = count + 1;
         length = length + key.len();
     }
-    if count == 3 && length == 15 { 0 } else { 92 }
+    if count == 3 && length == 15 {
+        0
+    } else {
+        92
+    }
 }

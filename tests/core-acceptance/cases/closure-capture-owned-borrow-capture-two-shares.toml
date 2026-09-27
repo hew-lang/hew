@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-capture-owned-borrow-capture-two-shares"
+intent = "Per-iteration leak / double-free oracle for the closure-env KEYSTONE: an escaping (heap-boxed) closure that captures an OWNED value (`string`, `Vec`, a heap-owning record, an owned-payload enum) must free that captured value EXACTLY once… Shape `borrow_capture_two_shares_df` (borrow capture two shares freed exactly once under malloc scribble, borrow capture two shares leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/closure-capture-owned-borrow-capture-two-shares.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

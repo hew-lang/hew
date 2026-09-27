@@ -1,0 +1,10 @@
+[[case]]
+id = "discarded-owned-option-wildcard-hashmap-remove"
+intent = "Leak and exactly-once guards for discarded caller-owned `Option<T>` results. Shape `wildcard_hashmap_remove_high` (wildcard hashmap remove has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/discarded-owned-option-wildcard-hashmap-remove.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

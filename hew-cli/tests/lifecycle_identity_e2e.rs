@@ -23,20 +23,21 @@ fn root_and_imported_module_members_accept_canonical_lifecycle_payloads() {
     let main = workspace.path().join("main.hew");
     fs::write(
         &main,
-        r"
-import std.failure.{CrashNotification, CrashKind};
+        r"import std.failure.{CrashNotification, CrashKind};
+
 import std.link_monitor.{DownNotification, DownReason};
+
 import lifecyclepkg.events;
 
 type RootEnvelope {
-    exit: CrashNotification,
-    down: DownNotification,
+    exit: CrashNotification;
+    down: DownNotification;
 }
 
 enum RootEvent {
-    Exit(CrashNotification),
-    Kind(CrashKind),
-    Down(DownReason),
+    Exit(CrashNotification);
+    Kind(CrashKind);
+    Down(DownReason);
 }
 
 fn main() -> i64 {
@@ -47,11 +48,10 @@ fn main() -> i64 {
     .expect("write root lifecycle fixture");
     fs::write(
         workspace.path().join("src/events.hew"),
-        r"
-import std.failure.{CrashNotification};
+        r"import std.failure.{CrashNotification};
 
 pub enum PeerEvent {
-    Exit(CrashNotification),
+    Exit(CrashNotification);
 }
 
 pub fn code() -> i64 {
@@ -88,7 +88,7 @@ fn whole_module_alias_exit_hook_compiles_and_runs_with_scalar_abi() {
 import std.failure as f;
 
 actor Watcher {
-    #[on(exit)]
+    #[on(link)]
     fn on_peer_exit(note: f.CrashNotification) {
         let _id = note.actor_id;
         let _kind = note.kind;
@@ -138,7 +138,8 @@ actor Watcher {
             DownTarget.Remote(_) => 0,
         };
         let _reason = match note.reason {
-            DownReason.Exited => 1,
+            DownReason.Stopped => 1,
+            DownReason.Terminated => 5,
             DownReason.Crashed(_) => 2,
             DownReason.MonitorLost => 3,
             DownReason.LocalShutdown => 4,

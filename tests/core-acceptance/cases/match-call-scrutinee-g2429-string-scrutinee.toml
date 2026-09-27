@@ -1,0 +1,10 @@
+[[case]]
+id = "match-call-scrutinee-g2429-string-scrutinee"
+intent = "From-call match-scrutinee enum-payload leak oracle (#2429 guard). Shape `g2429_string_scrutinee_high` (from call string scrutinee loop leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-call-scrutinee-g2429-string-scrutinee.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "parked-destroy-owned-local-overwritten-enum-binder-across-suspend"
+intent = "Destroy-while-parked owned-local leak / double-free oracle (#2395). Shape `overwritten_enum_binder_across_suspend` (overwritten enum payload binder drops on parked destroy) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/parked-destroy-owned-local-overwritten-enum-binder-across-suspend.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "stopped\n"
+exit = 0

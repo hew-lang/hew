@@ -8,7 +8,7 @@ fn main() {
         .Ok(r) => {
             println("query ok");
             r.free();
-        },
+        }
         .Err(_) => println("ask failed"),
     }
 }

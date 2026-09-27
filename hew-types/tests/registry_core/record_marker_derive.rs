@@ -11,32 +11,24 @@ use hew_types::ty::Ty;
 // ---------------------------------------------------------------------------
 
 fn named(name: &str) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args: vec![],
-    }
+    Ty::named_for_test(name, vec![])
 }
 
 fn named_with(name: &str, args: Vec<Ty>) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args,
-    }
+    Ty::named_for_test(name, args)
 }
 
 /// Register a named-field record and return a `Ty` for it.
 fn register_named_record(reg: &mut TraitRegistry, name: &str, fields: Vec<Ty>) -> Ty {
-    reg.register_type(name.to_string(), fields);
-    reg.register_record_type(name.to_string());
+    reg.register_type(named(name).head().unwrap(), fields);
+    reg.register_record_type(named(name).head().unwrap());
     named(name)
 }
 
 /// Register a tuple-record and return a `Ty` for it.
 fn register_tuple_record(reg: &mut TraitRegistry, name: &str, positional: Vec<Ty>) -> Ty {
-    reg.register_type(name.to_string(), positional);
-    reg.register_record_type(name.to_string());
+    reg.register_type(named(name).head().unwrap(), positional);
+    reg.register_record_type(named(name).head().unwrap());
     named(name)
 }
 
@@ -315,7 +307,12 @@ fn record_closure_field_not_eq_not_hash_not_copy() {
 fn record_negative_impl_overrides_field_derivation() {
     let mut reg = TraitRegistry::new();
     let pt = register_named_record(&mut reg, "OpaquePoint", vec![Ty::I64, Ty::I64]);
-    reg.register_negative_impl("OpaquePoint".to_string(), MarkerTrait::Eq);
+    reg.register_negative_impl(
+        hew_types::Ty::user_for_test("OpaquePoint", vec![])
+            .head()
+            .unwrap(),
+        MarkerTrait::Eq,
+    );
 
     assert!(
         !reg.implements_marker(&pt, MarkerTrait::Eq),

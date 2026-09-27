@@ -1,0 +1,11 @@
+import ownership.owned;
+import ownership.plain;
+
+fn main() {
+    let resource = owned.Ticket { text: "closed" };
+    let value = plain.Ticket { text: "value" };
+    let copy = value;
+    println(copy.text);
+    println(value.text);
+    resource.close();
+}

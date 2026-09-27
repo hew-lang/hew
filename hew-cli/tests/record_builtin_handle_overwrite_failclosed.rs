@@ -14,9 +14,10 @@ use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, tempdir};
 
-const RESOURCE_FIELD_OVERWRITE: &str = r#"
-#[resource]
-type Handle { id: i64 }
+const RESOURCE_FIELD_OVERWRITE: &str = r#"#[resource]
+type Handle {
+    id: i64;
+}
 
 impl Handle {
     fn close(consume self) {
@@ -24,7 +25,9 @@ impl Handle {
     }
 }
 
-type Holder { value: Handle }
+type Holder {
+    value: Handle;
+}
 
 fn main() {
     var holder = Holder { value: Handle { id: 1 } };
@@ -74,8 +77,10 @@ fn ordinary_record_owned_handle_overwrite_closes_the_old_value_exactly_once() {
 fn ordinary_string_record_overwrite_remains_admitted() {
     let output = check_source(
         "string_overwrite",
-        r#"
-type Holder { value: string }
+        r#"type Holder {
+    value: string;
+}
+
 fn main() {
     var holder = Holder { value: "old" };
     holder.value = "new";
@@ -94,11 +99,21 @@ fn main() {
 fn ordinary_user_sender_receiver_shadows_remain_admitted() {
     let output = check_source(
         "user_channel_name_shadows",
-        r"
-type UserSender { value: i64 }
-type UserReceiver { value: i64 }
-type SenderHolder { value: UserSender }
-type ReceiverHolder { value: UserReceiver }
+        r"type UserSender {
+    value: i64;
+}
+
+type UserReceiver {
+    value: i64;
+}
+
+type SenderHolder {
+    value: UserSender;
+}
+
+type ReceiverHolder {
+    value: UserReceiver;
+}
 
 fn overwrite_sender(a: UserSender, b: UserSender) -> i64 {
     var holder = SenderHolder { value: a };
@@ -113,8 +128,7 @@ fn overwrite_receiver(a: UserReceiver, b: UserReceiver) -> i64 {
 }
 
 fn main() -> i64 {
-    overwrite_sender(UserSender { value: 1 }, UserSender { value: 2 })
-        + overwrite_receiver(UserReceiver { value: 3 }, UserReceiver { value: 4 })
+    overwrite_sender(UserSender { value: 1 }, UserSender { value: 2 }) + overwrite_receiver(UserReceiver { value: 3 }, UserReceiver { value: 4 })
 }
 ",
     );

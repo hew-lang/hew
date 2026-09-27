@@ -97,8 +97,8 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 ### Topic Collections
 
-- **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing. Each is self-checking, ships a paired `.expected`, and is gated by `make test-surface-examples`
-- **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities. Each is self-checking, ships a paired `.expected`, and is gated by `make test-surface-examples`
+- **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing. Each is self-checking, ships a paired `.expected`, and is gated as a core-acceptance `example-algo-*`/`example-datastruct-*` case
+- **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities. Each is self-checking, ships a paired `.expected`, and is gated as a core-acceptance `example-algo-*`/`example-datastruct-*` case
 - **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the curated source of truth for the downstream browser playground catalog. After editing files under `playground/`, refresh it with `make baselines` (or `python3 scripts/gen-playground-manifest.py` for that artefact alone), use `make playground-manifest-check` for the cheap freshness check, use `make playground-check` for the repo-local browser/tooling preflight that validates the curated entries through `hew-wasm`'s analysis-only `analyze()` surface before building `hew-wasm`, and use `make playground-wasi-check` in codegen-capable environments for the real `hew run --target wasm32-wasi` proof path:
   - `basics/` -- Hello world, fibonacci, higher-order functions, string interpolation
   - `concurrency/` -- Actor pipelines, async/await, counters, supervisors
@@ -112,15 +112,15 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 ### v0.5 Surfaces
 
-- **v05/surfaces/** -- Examples retained from v0.5, with current call syntax where migrated. Historical directory and file names are not language spellings or evidence of current acceptance. Every source must ship a paired `.expected` and is gated by `make test-surface-examples`; missing or orphan expectations, nonzero exits, timeouts, and combined-output drift after CRLF and terminal-newline normalization all fail the closed-corpus runner:
+- **v05/surfaces/** -- Examples retained from v0.5, with current call syntax where migrated. Historical directory and file names are not language spellings or evidence of current acceptance. Every source must ship a paired `.expected` and is gated as a core-acceptance `example-algo-*`/`example-datastruct-*` case; missing or orphan expectations, nonzero exits, timeouts, and combined-output drift after CRLF and terminal-newline normalization all fail the closed-corpus runner:
   - [`typed_streams.hew`](v05/surfaces/typed_streams.hew) -- suspending typed streams (`sink.send(x)` / `stream.recv()`)
   - [`regex_captures.hew`](v05/surfaces/regex_captures.hew) -- regex capture groups (`capture` / `capture_named` / `find_all` / `find_all_submatch`)
   - [`template_render.hew`](v05/surfaces/template_render.hew) -- Go-style text templates (`parse` + `render_try`)
   - [`unicode_runes.hew`](v05/surfaces/unicode_runes.hew) -- unicode rune helpers + classification predicates
-  - [`scanner_tokens.hew`](v05/surfaces/scanner_tokens.hew) -- line and word tokenisation through the value-state `std.io.scanner` API. It is admitted to `make test-surface-examples` with an exact five-line normalized-output expectation and no diagnostic allowances, so output, diagnostics, status, and timeout drift all fail the gate.
+  - [`scanner_tokens.hew`](v05/surfaces/scanner_tokens.hew) -- line and word tokenisation through the value-state `std.io.scanner` API. It is admitted as `example-surface-scanner_tokens` with an exact five-line stdout expectation and no diagnostic allowances, so output, diagnostics, status, and timeout drift all fail the case.
 - Networking surfaces live under **net/**:
   - [`http_await_service.hew`](net/http_await_service.hew) -- HTTP/1.1 client + server with suspending calls (two routes). Uses loopback (`127.0.0.1`) and has a paired `.expected`. The server's accept loop runs as a `fork`ed task so the client below it can dial concurrently.
-  - [`tls_client.hew`](net/tls_client.hew) -- TLS client free-function surface (`tls.connect`/`write`/`read`/`close`); type-checks + runs, encrypted round-trip gated on a known v0.5 data-plane ABI fix. **Excluded from `make test-surface-examples`** on purpose: it dials a real public host (`example.com:443`), a genuine outbound network dependency that cannot run offline, and it deliberately fails closed on the data-plane gap. It ships a paired `.expected` for local diffing only.
+  - [`tls_client.hew`](net/tls_client.hew) -- TLS client free-function surface (`tls.connect`/`write`/`read`/`close`); type-checks + runs, encrypted round-trip gated on a known v0.5 data-plane ABI fix. **Excluded from the core-acceptance example cases** on purpose: it dials a real public host (`example.com:443`), a genuine outbound network dependency that cannot run offline, and it deliberately fails closed on the data-plane gap. It ships a paired `.expected` for local diffing only.
 
 ### Cross-Language Comparisons
 

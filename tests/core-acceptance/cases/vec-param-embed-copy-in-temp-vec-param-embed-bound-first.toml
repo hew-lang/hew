@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-vec-param-embed-bound-first"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `vec_param_embed_bound_first_high` (bound first copy in control has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-vec-param-embed-bound-first.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

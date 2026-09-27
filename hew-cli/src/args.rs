@@ -148,6 +148,10 @@ pub struct CompileArgs {
     /// LLVM artifacts are emitted.
     #[arg(long = "dump-sir", conflicts_with = "dump_mir")]
     pub dump_sir: bool,
+    /// Emit the compilation's declaration table (every module and
+    /// declaration row with its id, kind, owner and path) and exit.
+    #[arg(long = "dump-defs", conflicts_with_all = ["dump_mir", "dump_sir"])]
+    pub dump_defs: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
@@ -322,6 +326,10 @@ impl CommonBuildArgs {
 // Run
 // ---------------------------------------------------------------------------
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "clap maps independent run switches directly to booleans"
+)]
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// Input .hew file, or a package directory. Omit it to run the package
@@ -347,6 +355,15 @@ pub struct RunArgs {
     /// Execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
+    /// Run on the single-thread driver with a virtual clock.
+    #[arg(long)]
+    pub deterministic: bool,
+    /// Choose how the deterministic driver picks ready work.
+    #[arg(long, value_enum, requires = "deterministic")]
+    pub schedule: Option<TestSchedule>,
+    /// Seed for a random deterministic schedule (hex `0x..` or decimal).
+    #[arg(long, value_name = "N", value_parser = parse_seed, requires = "deterministic")]
+    pub seed: Option<u64>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Surface diagnostic-only stack-allocation hints from the type checker.
@@ -370,8 +387,24 @@ impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
+            deterministic_admission: if self.deterministic {
+                hew_compile::DeterministicAdmission::ProcessEntry
+            } else {
+                hew_compile::DeterministicAdmission::Off
+            },
             ..self.common.base_compile_options()
         }
+    }
+
+    /// Runtime driver configuration for this run, if deterministic mode was requested.
+    pub fn deterministic_env(&self) -> Option<String> {
+        self.deterministic.then(|| {
+            let schedule = match self.schedule.unwrap_or(TestSchedule::Fifo) {
+                TestSchedule::Fifo => "fifo",
+                TestSchedule::Random => "random",
+            };
+            format!("schedule={schedule},seed={:#x}", self.seed.unwrap_or(0))
+        })
     }
 }
 
@@ -616,7 +649,20 @@ pub struct EvalArgs {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum TestFormat {
     Text,
+    Json,
     Junit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TestEngine {
+    Native,
+    Vm,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TestColour {
+    Always,
+    Never,
 }
 
 #[derive(Debug, Args)]
@@ -627,6 +673,9 @@ pub enum TestFormat {
 pub struct TestArgs {
     /// Files or directories to test.
     pub paths: Vec<PathBuf>,
+    /// Run executable Hew code fences in source comments or Markdown files.
+    #[arg(long)]
+    pub doc: bool,
     /// List discovered test identities without compiling or running them.
     #[arg(long)]
     pub list: bool,
@@ -639,15 +688,36 @@ pub struct TestArgs {
     /// Output format.
     #[arg(long, value_enum, default_value = "text")]
     pub format: TestFormat,
+    /// Execute on the native runtime or the sandbox VM.
+    #[arg(long, value_enum, default_value = "native")]
+    pub engine: TestEngine,
     /// Per-test timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, default_value = "30", value_name = "DURATION")]
     pub timeout: String,
-    /// Disable coloured output.
-    #[arg(long)]
-    pub no_color: bool,
+    /// Control terminal colour (automatic for a terminal by default).
+    #[arg(long, value_enum)]
+    pub color: Option<TestColour>,
+    /// Show captured output from successful tests too.
+    #[arg(long, conflicts_with = "no_capture")]
+    pub show_output: bool,
+    /// Stream child output directly to the terminal; runs one test at a time.
+    #[arg(long, conflicts_with = "show_output")]
+    pub no_capture: bool,
+    /// Save traces from failing runs in this directory.
+    #[arg(long, value_name = "DIR")]
+    pub trace: Option<PathBuf>,
+    /// Rerun the failures recorded by the previous `hew test` invocation.
+    #[arg(long, conflicts_with = "paths")]
+    pub rerun_failed: bool,
+    /// Rerun tests in changed source files until interrupted.
+    #[arg(long, conflicts_with = "rerun_failed")]
+    pub watch: bool,
     /// Run ignored tests too.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "ignored")]
     pub include_ignored: bool,
+    /// Run only ignored tests.
+    #[arg(long, conflicts_with = "include_ignored")]
+    pub ignored: bool,
     /// Exit 0 when no test files or functions are discovered.
     #[arg(long)]
     pub allow_empty: bool,
@@ -657,6 +727,39 @@ pub struct TestArgs {
     /// memory pressure from concurrent compilation tasks.
     #[arg(long, short = 'j', value_name = "N")]
     pub jobs: Option<std::num::NonZeroUsize>,
+    /// Schedule of each deterministic test's first run.
+    #[arg(long, value_enum, default_value = "fifo")]
+    pub schedule: TestSchedule,
+    /// Seed of every deterministic test (hex `0x..` or decimal); defaults to a
+    /// stable hash of each test's identity.
+    #[arg(long, value_name = "N", value_parser = parse_seed)]
+    pub seed: Option<u64>,
+    /// Also run each deterministic test under N random schedules.
+    #[arg(long, value_name = "N", default_value = "0")]
+    pub schedules: u32,
+    /// Maximum VM instructions or native driver steps per test.
+    #[arg(long, value_name = "N", default_value = "10000000")]
+    pub step_budget: u64,
+}
+
+/// How the deterministic driver orders a test's participants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TestSchedule {
+    /// In the order they became ready.
+    Fifo,
+    /// A seeded uniform pick at every step.
+    Random,
+}
+
+fn parse_seed(value: &str) -> Result<u64, String> {
+    let parsed = match value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => value.parse(),
+    };
+    parsed.map_err(|_| format!("`{value}` is not a decimal or 0x-prefixed hex seed"))
 }
 
 // ---------------------------------------------------------------------------

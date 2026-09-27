@@ -114,7 +114,8 @@ impl Parser<'_> {
     fn parse_record_init_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let expr_start = lhs.1.start;
         self.advance();
-        let (fields, base) = self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
+        let (fields, field_name_spans, base) =
+            self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
         let end = self.peek_span().start;
         Some(match lhs {
             (Expr::ContextVariant(mut context), _) => {
@@ -122,11 +123,12 @@ impl Parser<'_> {
                 (Expr::ContextVariant(context), expr_start..end)
             }
             (Expr::GenericApplySuffix { target, type_args }, _) => {
-                if let Some(name) = Self::dotted_expr_name(&target.0) {
+                if let Some(path) = Path::from_chain(&target) {
                     (
                         Expr::StructInit {
-                            name,
+                            path,
                             fields,
+                            field_name_spans,
                             type_args: Some(type_args),
                             base,
                         },
@@ -234,6 +236,15 @@ impl Parser<'_> {
         self.block_arm_body.replace(false)
     }
 
+    fn parse_nested_block_arm_expr(&mut self, block_arm_body: bool) -> Option<Spanned<Expr>> {
+        if block_arm_body {
+            let _guard = self.set_block_arm_body();
+            self.parse_expr()
+        } else {
+            self.parse_expr()
+        }
+    }
+
     /// Parse an `if`/`while` condition or `match` scrutinee. In this position a
     /// bare identifier directly followed by `{` opens the block, never a struct
     /// literal, so the `no_struct_literal` restriction is set for the duration
@@ -296,6 +307,18 @@ impl Parser<'_> {
             let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
             let end = operand.1.end;
             (Expr::Clone(Box::new(operand)), start..end)
+        } else if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "await_restart") {
+            let keyword_span = self.peek_span();
+            self.advance()?;
+            let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
+            let end = operand.1.end;
+            self.error_at_with_kind_and_hint(
+                "E_AWAIT_RESTART_RETIRED: `await_restart` is retired".to_string(),
+                keyword_span,
+                "write `restarted(role)`; it waits for a live incarnation",
+                ParseDiagnosticKind::AwaitRestartRetired,
+            );
+            (Expr::AwaitRestart(Box::new(operand)), start..end)
         } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
@@ -341,11 +364,6 @@ impl Parser<'_> {
                     let end = operand.1.end;
                     (Expr::Await(Box::new(operand)), start..end)
                 }
-                Token::AwaitRestart => {
-                    let operand = self.parse_expr_bp(rbp)?;
-                    let end = operand.1.end;
-                    (Expr::AwaitRestart(Box::new(operand)), start..end)
-                }
                 Token::Star => {
                     // Raw pointer dereference (`*expr`).  v0.5 parses but
                     // the type checker rejects with either
@@ -364,7 +382,7 @@ impl Parser<'_> {
                 _ => unreachable!("prefix parser dispatches only recognized unary operators"),
             }
         } else {
-            self.parse_primary()?
+            self.parse_primary(block_arm_body)?
         };
 
         // Infix + postfix
@@ -434,7 +452,7 @@ impl Parser<'_> {
             // type arguments outside the bounded dotted-suffix lookahead, such
             // as a unit type. This path commits only after the full type list
             // parses and is immediately followed by a call.
-            if self.peek() == Some(&Token::Less) && matches!(lhs.0, Expr::Identifier(_)) {
+            if self.peek() == Some(&Token::Less) && matches!(lhs.0, Expr::Ident(_)) {
                 let saved = self.save_pos();
                 self.advance();
                 if let Some(type_args) = self.parse_type_args() {
@@ -541,7 +559,7 @@ impl Parser<'_> {
                 self.advance();
                 let error_span = self.peek_span();
                 let error = self.expect_ident()?;
-                if error == "_" {
+                if error.name == sym::UNDERSCORE {
                     self.error_at(
                         "a handler requires a named error binding".to_string(),
                         error_span,
@@ -664,7 +682,7 @@ impl Parser<'_> {
         clippy::too_many_lines,
         reason = "expression parser with many branches"
     )]
-    pub(crate) fn parse_primary(&mut self) -> Option<Spanned<Expr>> {
+    pub(crate) fn parse_primary(&mut self, block_arm_body: bool) -> Option<Spanned<Expr>> {
         let start = self.peek_span().start;
 
         let expr = match self.peek()? {
@@ -790,9 +808,9 @@ impl Parser<'_> {
                 Expr::Literal(Literal::Bool(false))
             }
             Token::Label(label) => {
-                let name = (*label).to_string();
+                let name = Ident::new(label);
                 self.advance();
-                Expr::Identifier(name)
+                Expr::Ident(name)
             }
             Token::Identifier("capture")
                 if self.peek_at(self.pos + 1) == Some(&Token::LeftParen)
@@ -877,7 +895,8 @@ impl Parser<'_> {
                 Expr::MachineEmit { event_name, fields }
             }
             Token::Identifier(name) => {
-                let name = name.to_string();
+                let name = Ident::new(name);
+                let name_span = self.peek_span();
                 self.advance();
 
                 // Check for struct initialization — including the explicit-type-arg form
@@ -919,19 +938,20 @@ impl Parser<'_> {
                         self.advance(); // consume {
                                         // Inside the struct body the `{` is consumed, so any
                                         // nested bare-ident struct literal is unambiguous again.
-                        let (fields, base) =
+                        let (fields, field_name_spans, base) =
                             self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                         Expr::StructInit {
-                            name,
+                            path: Path::single(name, name_span),
                             fields,
+                            field_name_spans,
                             type_args: explicit_type_args,
                             base,
                         }
                     } else {
-                        Expr::Identifier(name)
+                        Expr::Ident(name)
                     }
                 } else {
-                    Expr::Identifier(name)
+                    Expr::Ident(name)
                 }
             }
             Token::Less => {
@@ -1133,7 +1153,7 @@ impl Parser<'_> {
                     // The `else` arm is an expression, exactly as it is for a
                     // plain `if`: a block, another `if`, or another `if let`.
                     let else_body = if self.eat(&Token::Else) {
-                        Some(Box::new(self.parse_expr()?))
+                        Some(Box::new(self.parse_nested_block_arm_expr(block_arm_body)?))
                     } else {
                         None
                     };
@@ -1147,9 +1167,9 @@ impl Parser<'_> {
                         unreachable!("a condition with no `let` operand is one expression")
                     };
                     let condition = Box::new(condition);
-                    let then_block = Box::new(self.parse_expr()?);
+                    let then_block = Box::new(self.parse_nested_block_arm_expr(block_arm_body)?);
                     let else_block = if self.eat(&Token::Else) {
-                        Some(Box::new(self.parse_expr()?))
+                        Some(Box::new(self.parse_nested_block_arm_expr(block_arm_body)?))
                     } else {
                         None
                     };
@@ -1272,9 +1292,9 @@ impl Parser<'_> {
                 // or spawn ActorName<T>(...) with explicit turbofish type args.
                 let name = self.expect_ident()?;
                 let name_end = self.peek_span().start;
-                let mut target = (Expr::Identifier(name), start..name_end);
+                let mut target = (Expr::Ident(name), start..name_end);
                 while self.eat(&Token::Dot) {
-                    let actor_name = self.expect_ident()?;
+                    let actor_name = self.expect_ident_spanned()?;
                     let actor_end = self.peek_span().start;
                     target = (
                         Expr::FieldAccess {
@@ -1517,8 +1537,14 @@ impl Parser<'_> {
                         self.advance();
                         let duration = self.parse_expr()?;
                         self.expect(&Token::FatArrow)?;
-                        let body = self.parse_expr()?;
-                        self.eat(&Token::Comma);
+                        let body_looks_like_block = self.arm_body_opens_block();
+                        let body = if body_looks_like_block {
+                            let _guard = self.set_block_arm_body();
+                            self.parse_expr()?
+                        } else {
+                            self.parse_expr()?
+                        };
+                        self.expect_arm_separator(body_looks_like_block);
                         timeout = Some(Box::new(TimeoutClause {
                             duration: Box::new(duration),
                             body: Box::new(body),
@@ -1558,7 +1584,7 @@ impl Parser<'_> {
             tok if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(tok).unwrap();
                 self.advance();
-                Expr::Identifier(name.to_string())
+                Expr::Ident(Ident::new(name))
             }
             _ => {
                 let found = match self.peek() {
@@ -1574,10 +1600,10 @@ impl Parser<'_> {
         Some((expr, start..end))
     }
 
-    fn parse_private_capture_prefix(&mut self) -> Option<Vec<Spanned<String>>> {
+    fn parse_private_capture_prefix(&mut self) -> Option<Vec<Spanned<Ident>>> {
         self.expect(&Token::Identifier("capture"))?;
         self.expect(&Token::LeftParen)?;
-        let mut captures: Vec<Spanned<String>> = Vec::new();
+        let mut captures: Vec<Spanned<Ident>> = Vec::new();
         loop {
             self.expect(&Token::Var)?;
             let span = self.peek_span();
@@ -1599,7 +1625,7 @@ impl Parser<'_> {
         &mut self,
         is_move: bool,
         start: usize,
-        private_captures: Vec<Spanned<String>>,
+        private_captures: Vec<Spanned<Ident>>,
     ) -> Option<Expr> {
         let params = if self.eat(&Token::PipePipe) {
             Vec::new()
@@ -1682,7 +1708,17 @@ impl Parser<'_> {
             let value = self.parse_expr()?;
             entries.push((key, value));
 
-            if !self.eat(&Token::Comma) {
+            if self.peek() == Some(&Token::Semicolon) {
+                let span = self.peek_span();
+                self.error_at_with_kind_and_hint(
+                    "list elements are separated by `,`; `;` ends a declaration or statement"
+                        .to_string(),
+                    span,
+                    "replace `;` with `,`",
+                    ParseDiagnosticKind::ListSeparator,
+                );
+                self.advance();
+            } else if !self.eat(&Token::Comma) {
                 break;
             }
             if self.peek() == Some(&Token::RightBrace) {
@@ -1757,7 +1793,7 @@ impl Parser<'_> {
 
         // Handle tuple index: t.0, t.1, etc.
         if let Some(Token::Integer(n)) = self.peek() {
-            let field = n.to_string();
+            let field = (Ident::new(n), self.peek_span());
             self.advance();
             let end = self.peek_span().start;
             return Some((
@@ -1769,24 +1805,24 @@ impl Parser<'_> {
             ));
         }
 
-        let method = self.expect_ident()?;
+        let method = self.expect_ident_spanned()?;
 
         // Pure-dot nominal record/record-variant path: `wire.Message.Data { ... }`.
         if self.peek() == Some(&Token::LeftBrace)
             && !self.no_struct_literal()
             && self.probe_struct_init_brace()
         {
-            if let Some(mut name) = Self::dotted_expr_name(&lhs.0) {
-                name.push('.');
-                name.push_str(&method);
+            if let Some(mut path) = Path::from_chain(&lhs) {
+                path.segments.push(method);
                 self.advance();
-                let (fields, base) =
+                let (fields, field_name_spans, base) =
                     self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                 let end = self.peek_span().start;
                 return Some((
                     Expr::StructInit {
-                        name,
+                        path,
                         fields,
+                        field_name_spans,
                         type_args: None,
                         base,
                     },
@@ -1837,6 +1873,7 @@ impl Parser<'_> {
 
     pub(crate) fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
         let mut fields = Vec::new();
+        let mut field_name_spans = Vec::new();
         let mut base: Option<Box<Spanned<Expr>>> = None;
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::DotDot) {
@@ -1860,30 +1897,28 @@ impl Parser<'_> {
                 }
                 continue;
             }
-            let field_name = self.expect_ident()?;
+            let (field_name, field_name_span) = self.expect_ident_spanned()?;
             self.expect(&Token::Colon)?;
             let value = self.parse_expr()?;
             fields.push((field_name, value));
+            field_name_spans.push(field_name_span);
 
-            if !self.eat(&Token::Comma) {
+            if self.peek() == Some(&Token::Semicolon) {
+                let span = self.peek_span();
+                self.error_at_with_kind_and_hint(
+                    "list elements are separated by `,`; `;` ends a declaration or statement"
+                        .to_string(),
+                    span,
+                    "replace `;` with `,`",
+                    ParseDiagnosticKind::ListSeparator,
+                );
+                self.advance();
+            } else if !self.eat(&Token::Comma) {
                 break;
             }
         }
         self.expect(&Token::RightBrace)?;
-        Some((fields, base))
-    }
-
-    pub(crate) fn dotted_expr_name(expr: &Expr) -> Option<String> {
-        match expr {
-            Expr::Identifier(name) => Some(name.clone()),
-            Expr::FieldAccess { object, field } => {
-                let mut name = Self::dotted_expr_name(&object.0)?;
-                name.push('.');
-                name.push_str(field);
-                Some(name)
-            }
-            _ => None,
-        }
+        Some((fields, field_name_spans, base))
     }
 
     /// Parse a comma-separated list of call arguments, supporting both

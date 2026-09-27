@@ -1,0 +1,13 @@
+[[case]]
+id = "driver-lost-update-random-13"
+intent = "The deterministic driver runs the read-then-write race to the same balance every time for schedule `schedule=random,seed=13`."
+source = "cases/driver-lost-update.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.env]
+HEW_DETERMINISTIC = "schedule=random,seed=13"
+
+[case.expected]
+stdout = "30\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-vec-get-clone-for-in"
+intent = "Nested-`Vec` index-read (`hew_vec_get_clone`) drop canary (hew-lang/hew#2725, site a). Shape `nested_vec_get_clone_for_in_high` (get clone for in leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-vec-get-clone-for-in.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

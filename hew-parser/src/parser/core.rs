@@ -181,29 +181,87 @@ impl<'src> Parser<'src> {
         false
     }
 
-    /// Data members require commas, with an optional trailing comma before `}`.
-    /// Recover at a wrong delimiter without admitting a second source dialect.
-    pub(crate) fn expect_structural_separator(&mut self) {
-        if self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBrace) {
+    /// Finish a bodyless declaration member. Recover so punctuation migration
+    /// can print the same AST in the current spelling.
+    pub(crate) fn expect_member_terminator(&mut self, what: &str) {
+        if self.eat(&Token::Semicolon) {
+            if self.peek() == Some(&Token::Semicolon) {
+                let span = self.peek_span();
+                self.error_at_with_kind_and_hint(
+                    "unnecessary second semicolon".to_string(),
+                    span,
+                    "remove this separator",
+                    ParseDiagnosticKind::SeparatorAfterBody,
+                );
+                self.advance();
+            }
             return;
         }
-        let mut span = self.peek_span();
-        let semicolon = self.peek() == Some(&Token::Semicolon);
-        if !semicolon {
-            let end = self.tokens[self.pos.saturating_sub(1)].1.end;
-            span = end..end;
-        }
-        self.error_at_with_hint(
-            "expected `,` between structural members".to_string(),
+        let comma = self.peek() == Some(&Token::Comma);
+        let end = self.last_token_end;
+        let span = if comma { self.peek_span() } else { end..end };
+        let article = if matches!(what, "event" | "emission") {
+            "an"
+        } else {
+            "a"
+        };
+        self.error_at_with_kind_and_hint(
+            format!("{article} {what} declaration member ends with `;`"),
             span,
-            if semicolon {
-                "replace `;` with `,`"
+            if comma {
+                "replace `,` with `;`; run `hew fmt --migrate` to update punctuation"
             } else {
-                "insert `,` after the member"
+                "insert `;` after the member; run `hew fmt --migrate` to update punctuation"
             },
+            ParseDiagnosticKind::MemberTerminator,
         );
-        if semicolon {
+        if comma {
             self.advance();
+        }
+    }
+
+    /// A closing brace already ends a bodied member or arm.
+    pub(crate) fn refuse_mark_after_body(&mut self) {
+        if matches!(self.peek(), Some(Token::Comma | Token::Semicolon)) {
+            let span = self.peek_span();
+            let mark = if self.peek() == Some(&Token::Comma) {
+                ","
+            } else {
+                ";"
+            };
+            self.error_at_with_kind_and_hint(
+                format!("`}}` ends this member; remove the `{mark}`"),
+                span,
+                "remove this separator; run `hew fmt --migrate` to update punctuation",
+                ParseDiagnosticKind::SeparatorAfterBody,
+            );
+            self.advance();
+        }
+    }
+
+    pub(crate) fn expect_arm_separator(&mut self, body_is_block: bool) {
+        if body_is_block {
+            self.refuse_mark_after_body();
+        } else if self.peek() == Some(&Token::RightBrace) || self.eat(&Token::Comma) {
+            // A final comma is optional in a list.
+        } else {
+            let semicolon = self.peek() == Some(&Token::Semicolon);
+            let span = if semicolon {
+                self.peek_span()
+            } else {
+                let end = self.last_token_end;
+                end..end
+            };
+            self.error_at_with_kind_and_hint(
+                "list elements are separated by `,`; `;` ends a declaration or statement"
+                    .to_string(),
+                span,
+                "insert `,` between arms",
+                ParseDiagnosticKind::ListSeparator,
+            );
+            if semicolon {
+                self.advance();
+            }
         }
     }
 
@@ -772,33 +830,50 @@ impl<'src> Parser<'src> {
         }
     }
 
-    pub(crate) fn expect_ident(&mut self) -> Option<String> {
+    pub(crate) fn expect_ident(&mut self) -> Option<Ident> {
+        self.expect_ident_spanned().map(|(ident, _)| ident)
+    }
+
+    /// Consume an identifier-like word as text, or an empty string after
+    /// reporting the error. Attribute names and arguments and wire modifiers
+    /// are words, not language names, so they stay text.
+    pub(crate) fn expect_word(&mut self) -> String {
+        self.expect_ident()
+            .map(|ident| ident.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Consume an identifier and keep its span, for path segments and member
+    /// names that tooling points at.
+    pub(crate) fn expect_ident_spanned(&mut self) -> Option<Spanned<Ident>> {
+        let span = self.peek_span();
         match self.peek() {
             Some(Token::Identifier(name)) => {
-                let name = name.to_string();
+                let ident = Ident::new(name);
                 self.advance();
-                Some(name)
+                Some((ident, span))
             }
             Some(tok) => {
                 if let Some(name) = Self::contextual_keyword_name(tok) {
                     self.advance();
-                    Some(name.to_string())
+                    Some((Ident::new(name), span))
                 } else if let Some(kw) = tok.keyword_str() {
                     // Reserved keyword in a name position — emit a targeted
                     // diagnostic so the user knows the word is off-limits.
-                    self.error_at_with_hint(
+                    self.error_at_with_kind_and_hint(
                         format!("`{kw}` is a reserved word and cannot be used as a name"),
                         self.peek_span(),
                         format!("rename this item to something other than `{kw}`"),
+                        ParseDiagnosticKind::ReservedName,
                     );
                     None
                 } else {
-                    self.error(format!("expected identifier, found {tok}"));
+                    self.error_unexpected_token("identifier", format!("{tok}"));
                     None
                 }
             }
             None => {
-                self.error("expected identifier, found end of file".to_string());
+                self.error_unexpected_eof("identifier");
                 None
             }
         }
@@ -839,20 +914,21 @@ impl<'src> Parser<'src> {
         }
     }
 
-    pub(crate) fn expect_import_path_segment(&mut self) -> Option<String> {
+    pub(crate) fn expect_import_path_segment(&mut self) -> Option<Spanned<Ident>> {
+        let span = self.peek_span();
         match self.peek() {
             Some(tok) => {
                 if let Some(name) = Self::import_path_segment_keyword(tok) {
                     self.advance();
-                    Some(name.to_string())
+                    Some((Ident::new(name), span))
                 } else if let Some(name) = Self::contextual_keyword_name(tok) {
                     self.advance();
-                    Some(name.to_string())
+                    Some((Ident::new(name), span))
                 } else {
-                    self.expect_ident()
+                    self.expect_ident_spanned()
                 }
             }
-            None => self.expect_ident(),
+            None => self.expect_ident_spanned(),
         }
     }
 

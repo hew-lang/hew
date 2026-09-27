@@ -52,11 +52,11 @@ fn function_values_demand_their_bodies_and_share_indirect_call_cleanup() {
     assert!(module
         .functions
         .iter()
-        .any(|function| function.declaration.full_path() == "increment"));
+        .any(|function| module.defs.path(function.declaration) == "increment"));
     assert!(!module
         .functions
         .iter()
-        .any(|function| function.declaration.full_path() == "unrelated"));
+        .any(|function| module.defs.path(function.declaration) == "unrelated"));
     assert!(module
         .functions
         .iter()
@@ -245,7 +245,7 @@ fn callable_captures_compose_with_conditional_result_and_optional_payloads() {
             }}
             fn main() -> i64 {{
                 match choose(true) {{
-                    .Ok(.Some(callback)) => {{ var counter = callback; counter() }},
+                    .Ok(.Some(callback)) => {{ var counter = callback; counter() }}
                     _ => 0,
                 }}
             }}
@@ -256,37 +256,53 @@ fn callable_captures_compose_with_conditional_result_and_optional_payloads() {
 #[test]
 fn callable_values_coerce_in_records_and_explicit_clone_preserves_capabilities() {
     lower_source(
-        r"
-        type Holder { callback: fn[clone](i64) -> i64, }
-        fn increment(value: i64) -> i64 { value + 1 }
-        fn main() -> i64 {
-            let holder = Holder { callback: increment };
-            let copied = clone holder.callback;
-            copied(41)
-        }
-    ",
+        r"type Holder {
+    callback: fn[clone](i64) -> i64;
+}
+
+fn increment(value: i64) -> i64 {
+    value + 1
+}
+
+fn main() -> i64 {
+    let holder = Holder { callback: increment };
+    let copied = clone holder.callback;
+    copied(41)
+}
+",
     );
 }
 
 #[test]
 fn mutable_callable_field_invocation_borrows_the_stored_environment() {
     let module = lower_source(
-        r"
-        type Holder { next: fn[var, clone]() -> i64, }
-        fn main() -> i64 {
-            let count = 0;
-            var holder = Holder { next: capture(var count) || { count = count + 1; count } };
-            println(holder.next());
-            holder.next()
-        }
-    ",
+        r"type Holder {
+    next: fn[var, clone]() -> i64;
+}
+
+fn main() -> i64 {
+    let count = 0;
+    var holder = Holder { next: capture(var count) || {
+        count = count + 1;
+        count
+    } };
+    println(holder.next());
+    holder.next()
+}
+",
     );
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
-    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = hew_sir::place_plan(
+        &module.defs,
+        main,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     let mut receivers = Vec::new();
     for block in &main.blocks {
         if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
@@ -343,7 +359,7 @@ fn declared_consuming_parameters_own_their_normal_and_fault_cleanup() {
         let invoke = module
             .functions
             .iter()
-            .find(|function| function.declaration.full_path() == "invoke")
+            .find(|function| module.defs.path(function.declaration) == "invoke")
             .unwrap();
         assert_eq!(invoke.params[0].own, hew_sir::OwnKind::Owned);
         assert_eq!(
@@ -402,7 +418,7 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
     let advance = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "advance")
+        .find(|function| module.defs.path(function.declaration) == "advance")
         .unwrap();
     assert_eq!(advance.params[0].own, hew_sir::OwnKind::Guaranteed);
     let copied = advance.blocks.iter().flat_map(|block| &block.ops)
@@ -430,7 +446,7 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
     let consuming = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "consume_advance")
+        .find(|function| module.defs.path(function.declaration) == "consume_advance")
         .unwrap();
     assert_eq!(consuming.params[0].own, hew_sir::OwnKind::Owned);
     assert!(!consuming.blocks.iter().flat_map(|block| &block.ops)
@@ -446,7 +462,7 @@ fn borrowed_callable_replacements_share_local_storage_across_branches() {
         let function = module
             .functions
             .iter()
-            .find(|function| function.declaration.full_path() == name)
+            .find(|function| module.defs.path(function.declaration) == name)
             .unwrap();
         assert_eq!(function.params[0].own, hew_sir::OwnKind::Guaranteed);
         let hew_sir::BindingTarget::Place(local) = function
@@ -564,7 +580,7 @@ fn private_replacement_keeps_pre_assignment_reads_borrowed() {
     let function = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "replace")
+        .find(|function| module.defs.path(function.declaration) == "replace")
         .unwrap();
     let first_call = function
         .blocks
@@ -583,31 +599,40 @@ fn private_replacement_keeps_pre_assignment_reads_borrowed() {
 #[test]
 fn mutable_aggregate_parameters_keep_callable_fields_private_across_control_flow() {
     lower_source(
-        r#"
-        type Holder { next: fn[var, clone]() -> i64, label: string }
-        fn advance(var holder: Holder, flag: bool) -> i64 {
-            if flag { holder.next(); }
-            println(holder.label);
-            holder.next()
-        }
-        fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
-            for i in 0..2 { pair.0(); }
-            println(pair.1);
-            pair.0()
-        }
-        fn main() -> i64 {
-            let count = 10;
-            var holder = Holder {
-                next: capture(var count) || { count += 1; count },
-                label: "private record",
-            };
-            println(advance(holder, true));
-            println(holder.next());
-            var pair: (fn[var, clone]() -> i64, string) = (holder.next, "private tuple");
-            println(advance_pair(pair));
-            pair.0()
-        }
-        "#,
+        r#"type Holder {
+    next: fn[var, clone]() -> i64;
+    label: string;
+}
+
+fn advance(var holder: Holder, flag: bool) -> i64 {
+    if flag {
+        holder.next();
+    }
+    println(holder.label);
+    holder.next()
+}
+
+fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
+    for i in 0 .. 2 {
+        pair.0();
+    }
+    println(pair.1);
+    pair.0()
+}
+
+fn main() -> i64 {
+    let count = 10;
+    var holder = Holder { next: capture(var count) || {
+        count += 1;
+        count
+    }, label: "private record" };
+    println(advance(holder, true));
+    println(holder.next());
+    var pair: (fn[var, clone]() -> i64, string) = (holder.next, "private tuple");
+    println(advance_pair(pair));
+    pair.0()
+}
+"#,
     );
 }
 

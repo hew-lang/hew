@@ -831,6 +831,7 @@
             }
           ],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 10
@@ -1266,6 +1267,7 @@
     {
       "close": 3,
       "kind": "record",
+      "shape": 0,
       "ty": "std.text.regex.Pattern"
     }
   ],

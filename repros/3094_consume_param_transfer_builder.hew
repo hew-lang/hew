@@ -18,7 +18,7 @@ type Handle {
 
 #[resource]
 type Value {
-    handle: Handle,
+    handle: Handle;
 }
 
 trait ValueMethods {
@@ -29,7 +29,7 @@ trait ValueMethods {
 }
 
 pub enum BuildError {
-    Failed(string),
+    Failed(string);
 }
 
 impl ValueMethods for Value {
@@ -87,8 +87,8 @@ fn close_canonical() {
     match try_build() {
         .Ok(value) => {
             value.close();
-        },
-        .Err(BuildError.Failed(_)) => {},
+        }
+        .Err(BuildError.Failed(_)) => {}
     }
 }
 
@@ -96,8 +96,8 @@ fn close_compatibility_alias() {
     match try_build() {
         .Ok(value) => {
             value.free();
-        },
-        .Err(BuildError.Failed(_)) => {},
+        }
+        .Err(BuildError.Failed(_)) => {}
     }
 }
 

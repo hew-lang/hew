@@ -34,25 +34,25 @@ struct Summary {
     calls: Vec<(DefId, Span)>,
     /// Authored `close` bodies a release of this helper's values can run,
     /// with the resource they release.
-    releases: Vec<(DefId, String, Span)>,
+    releases: Vec<(DefId, crate::NominalId, Span)>,
     refusal: Option<(Span, String)>,
 }
 
 /// The declared `#[resource]` types whose authored `close` a release of a
 /// value of each type can run, memoized across helpers.
-type ReleaseCache = HashMap<ResolvedTy, BTreeSet<String>>;
+type ReleaseCache = HashMap<ResolvedTy, BTreeSet<crate::NominalId>>;
 
 /// The surface identity a machine is instantiated through.
 #[derive(Debug, Clone, Default)]
 struct MachineShape {
     type_name: String,
-    type_params: Vec<String>,
+    type_parameter_count: usize,
 }
 
 /// `resource_closes` names each `#[resource]` type's inherent `close`.
 pub(super) fn validate(
     output: &TypeCheckOutput,
-    resource_closes: &HashMap<String, DefId>,
+    resource_closes: &HashMap<crate::NominalId, DefId>,
 ) -> Vec<TypeError> {
     let Some(normalized) = &output.normalized_machines else {
         return Vec::new();
@@ -103,7 +103,7 @@ pub(super) fn validate(
             );
         }
         lints::walk_body(&body.function.body, &mut visitor);
-        summaries.insert(declaration.clone(), visitor.summary);
+        summaries.insert(*declaration, visitor.summary);
     }
     let mut facts =
         TypeFactService::new(output.type_fact_context.clone(), output.type_facts.clone());
@@ -115,7 +115,14 @@ pub(super) fn validate(
         let mut visiting = HashSet::new();
         let mut proven = HashSet::new();
         let sites = instantiation_sites(&shape, output);
-        let proof = prove(&declaration, &summaries, &mut visiting, &mut proven).and_then(|()| {
+        let proof = prove(
+            &output.defs,
+            declaration,
+            &summaries,
+            &mut visiting,
+            &mut proven,
+        )
+        .and_then(|()| {
             prove_instantiation_releases(
                 &sites,
                 output,
@@ -222,7 +229,7 @@ fn instantiation_sites(
     let mut sites: BTreeMap<ResolvedTy, Span> = BTreeMap::new();
     for (key, ty) in &output.resolved_expr_types {
         let mut found = Vec::new();
-        collect_instantiations(ty, shape, output, &mut found);
+        collect_instantiations(ty, shape, &mut found);
         for machine in found {
             let span = key.start..key.end;
             sites
@@ -245,28 +252,46 @@ fn instantiation_sites(
 fn prove_instantiation_releases(
     sites: &BTreeMap<ResolvedTy, Span>,
     output: &TypeCheckOutput,
-    resource_closes: &HashMap<String, DefId>,
+    resource_closes: &HashMap<crate::NominalId, DefId>,
     summaries: &HashMap<DefId, Summary>,
     cache: &mut ReleaseCache,
     proven: &mut HashSet<DefId>,
 ) -> Result<(), (Span, String)> {
     for (machine, site) in sites {
-        let ResolvedTy::Named { name, args, .. } = machine else {
+        let ResolvedTy::Named { head, args, .. } = machine else {
             continue;
         };
-        let event = ResolvedTy::Named {
-            name: format!("{name}Event"),
-            args: args.clone(),
-            builtin: None,
-            is_opaque: false,
+        let Some(machine_nominal) = head.nominal() else {
+            continue;
         };
+        let Some(event_type) = output.defs.member_of_kind(
+            machine_nominal.declaration(),
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        ) else {
+            continue;
+        };
+        let event_nominal = crate::NominalId::from_minted_declaration(event_type);
+        let event = ResolvedTy::named_user(
+            crate::NominalHead::new(event_nominal, output.defs.path(event_nominal.declaration())),
+            args.clone(),
+        );
         for ty in [machine, &event] {
             for resource in released_resources(ty, output, cache) {
-                let Some(close) = resource_closes.get(&resource).cloned() else {
-                    return Err((site.clone(), unknown_close(&resource)));
+                let Some(close) = resource_closes.get(&resource).copied() else {
+                    return Err((
+                        site.clone(),
+                        unknown_close(output.defs.path(resource.declaration())),
+                    ));
                 };
-                prove(&close, summaries, &mut HashSet::new(), proven)
-                    .map_err(|(_, reason)| (site.clone(), releasing(&resource, &reason)))?;
+                prove(&output.defs, close, summaries, &mut HashSet::new(), proven).map_err(
+                    |(_, reason)| {
+                        (
+                            site.clone(),
+                            releasing(output.defs.path(resource.declaration()), &reason),
+                        )
+                    },
+                )?;
             }
         }
     }
@@ -281,7 +306,7 @@ fn released_resources(
     ty: &ResolvedTy,
     output: &TypeCheckOutput,
     cache: &mut ReleaseCache,
-) -> BTreeSet<String> {
+) -> BTreeSet<crate::NominalId> {
     if let Some(found) = cache.get(ty) {
         return found.clone();
     }
@@ -294,23 +319,28 @@ fn released_resources(
 fn collect_released_resources(
     ty: &ResolvedTy,
     output: &TypeCheckOutput,
-    found: &mut BTreeSet<String>,
+    found: &mut BTreeSet<crate::NominalId>,
     seen: &mut HashSet<ResolvedTy>,
 ) {
     if !seen.insert(ty.clone()) {
         return;
     }
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named { head, args, .. } => {
             for arg in args {
                 collect_released_resources(arg, output, found, seen);
             }
-            let Some(declaration) = output.type_fact_context.declarations().get(name.as_str())
+            let Some(declaration) = head
+                .declaration(&output.defs)
+                .and_then(|id| output.type_fact_context.declarations().get(&id))
             else {
                 return;
             };
             if declaration.builtin.is_none() && declaration.marker == DeclarationMarker::Resource {
-                found.insert(name.clone());
+                found.insert(
+                    head.declaration(&output.defs)
+                        .expect("declared resource has nominal identity"),
+                );
             }
             for member in &declaration.members {
                 let member = crate::value_class::substitute(member, &declaration.type_params, args);
@@ -344,10 +374,10 @@ fn unstageable_field(
     output: &TypeCheckOutput,
     facts: &mut TypeFactService,
 ) -> Option<(String, String, ResolvedTy)> {
-    let ResolvedTy::Named { name, args, .. } = machine else {
+    let ResolvedTy::Named { head, args, .. } = machine else {
         return None;
     };
-    let definition = output.type_defs.get(name)?;
+    let definition = super::TypeDefView::new(&output.defs, &output.type_defs).of(*head)?;
     let mut states: Vec<_> = definition.variants.iter().collect();
     states.sort_by(|left, right| left.0.cmp(right.0));
     for (state, variant) in states {
@@ -371,31 +401,27 @@ fn unstageable_field(
 }
 
 /// Every concrete instantiation of `shape`'s own type that `ty` contains.
-fn collect_instantiations(
-    ty: &ResolvedTy,
-    shape: &MachineShape,
-    output: &TypeCheckOutput,
-    found: &mut Vec<ResolvedTy>,
-) {
+fn collect_instantiations(ty: &ResolvedTy, shape: &MachineShape, found: &mut Vec<ResolvedTy>) {
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
-            if name == &shape.type_name
-                && args.len() == shape.type_params.len()
-                && !args.iter().any(|arg| is_abstract(arg, output))
+        ResolvedTy::Named { head, args, .. } => {
+            let name = head.registry_key();
+            if name == shape.type_name
+                && args.len() == shape.type_parameter_count
+                && !args.iter().any(is_abstract)
             {
                 found.push(ty.clone());
             }
             for arg in args {
-                collect_instantiations(arg, shape, output, found);
+                collect_instantiations(arg, shape, found);
             }
         }
         ResolvedTy::Tuple(elements) => {
             for element in elements {
-                collect_instantiations(element, shape, output, found);
+                collect_instantiations(element, shape, found);
             }
         }
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) | ResolvedTy::Task(element) => {
-            collect_instantiations(element, shape, output, found);
+            collect_instantiations(element, shape, found);
         }
         _ => {}
     }
@@ -409,25 +435,17 @@ fn collect_instantiations(
 /// name it declared is a type, and a name it did not is a parameter. Asking
 /// both the fact context and `type_defs` matters because an actor is a
 /// declared type that carries no value facts.
-fn is_abstract(ty: &ResolvedTy, output: &TypeCheckOutput) -> bool {
+fn is_abstract(ty: &ResolvedTy) -> bool {
     match ty {
-        ResolvedTy::TypeParam { .. } => true,
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin: None,
+        ResolvedTy::TypeParam { .. }
+        | ResolvedTy::Named {
+            head: crate::TypeHead::Param(_),
             ..
-        } if args.is_empty() => {
-            !output
-                .type_fact_context
-                .declarations()
-                .contains_key(name.as_str())
-                && !output.type_defs.contains_key(name.as_str())
-        }
-        ResolvedTy::Named { args, .. } => args.iter().any(|arg| is_abstract(arg, output)),
-        ResolvedTy::Tuple(elements) => elements.iter().any(|element| is_abstract(element, output)),
+        } => true,
+        ResolvedTy::Named { args, .. } => args.iter().any(is_abstract),
+        ResolvedTy::Tuple(elements) => elements.iter().any(is_abstract),
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) | ResolvedTy::Task(element) => {
-            is_abstract(element, output)
+            is_abstract(element)
         }
         _ => false,
     }
@@ -457,13 +475,13 @@ fn collect_bodies<'a>(
                         kind,
                         0,
                     );
-                    if let Some(declaration) = output.identity.declaration(occurrence) {
+                    if let Some(declaration) = output.defs.declaration(occurrence) {
                         if function.origin == DeclarationOrigin::MachineStep
-                            && !machines.iter().any(|(id, _)| id == declaration)
+                            && !machines.iter().any(|(id, _)| *id == declaration)
                         {
-                            machines.push((declaration.clone(), shape.clone()));
+                            machines.push((declaration, shape.clone()));
                         }
-                        bodies.entry(declaration.clone()).or_insert_with(|| Body {
+                        bodies.entry(declaration).or_insert_with(|| Body {
                             function,
                             module_idx,
                             source_module: source_module.clone(),
@@ -510,7 +528,7 @@ fn collect_bodies<'a>(
         program
             .items
             .iter()
-            .map(|_| (output.identity.root_module(), 0, None))
+            .map(|_| (output.defs.root_module(), 0, None))
             .collect(),
     );
     if let Some(graph) = &program.module_graph {
@@ -522,7 +540,7 @@ fn collect_bodies<'a>(
             let Some(module) = graph.modules.get(id) else {
                 continue;
             };
-            let dotted = id.path.join(".");
+            let dotted = id.dotted();
             let contexts = module
                 .items
                 .iter()
@@ -531,8 +549,8 @@ fn collect_bodies<'a>(
                     let owner = graph
                         .item_source(id, ordinal)
                         .or_else(|| module.source_paths.first())
-                        .and_then(|source| output.identity.module_for_source(source))
-                        .or_else(|| output.identity.module_for_path(&dotted));
+                        .and_then(|source| output.defs.module_for_source(source))
+                        .or_else(|| output.defs.module_for_path(&dotted));
                     (
                         owner,
                         indices.item_index(id, ordinal).unwrap_or_default(),
@@ -549,35 +567,31 @@ fn collect_bodies<'a>(
 /// generated impl the normalizer produced for it.
 fn machine_shape(implementation: &hew_parser::ast::ImplDecl) -> MachineShape {
     let type_name = match &implementation.target_type.0 {
-        hew_parser::ast::TypeExpr::Named { name, .. } => name.clone(),
+        hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
         _ => String::new(),
     };
     MachineShape {
         type_name,
-        type_params: implementation
-            .type_params
-            .iter()
-            .flatten()
-            .map(|param| param.name.clone())
-            .collect(),
+        type_parameter_count: implementation.type_params.as_ref().map_or(0, Vec::len),
     }
 }
 
 fn prove(
-    declaration: &DefId,
+    defs: &crate::DefTable,
+    declaration: DefId,
     summaries: &HashMap<DefId, Summary>,
     visiting: &mut HashSet<DefId>,
     proven: &mut HashSet<DefId>,
 ) -> Result<(), (Span, String)> {
-    if proven.contains(declaration) || !visiting.insert(declaration.clone()) {
+    if proven.contains(&declaration) || !visiting.insert(declaration) {
         return Ok(());
     }
-    let Some(summary) = summaries.get(declaration) else {
+    let Some(summary) = summaries.get(&declaration) else {
         return Err((
             0..0,
             format!(
                 "helper `{}` has no inspectable checked body",
-                declaration.display_name()
+                defs.display(declaration)
             ),
         ));
     };
@@ -585,26 +599,29 @@ fn prove(
         return Err(refusal.clone());
     }
     for (callee, span) in &summary.calls {
-        if let Err((_, reason)) = prove(callee, summaries, visiting, proven) {
+        if let Err((_, reason)) = prove(defs, *callee, summaries, visiting, proven) {
             return Err((
                 span.clone(),
-                format!("call to `{}`: {reason}", callee.display_name()),
+                format!("call to `{}`: {reason}", defs.display(*callee)),
             ));
         }
     }
     for (close, resource, span) in &summary.releases {
-        if let Err((_, reason)) = prove(close, summaries, visiting, proven) {
-            return Err((span.clone(), releasing(resource, &reason)));
+        if let Err((_, reason)) = prove(defs, *close, summaries, visiting, proven) {
+            return Err((
+                span.clone(),
+                releasing(defs.path(resource.declaration()), &reason),
+            ));
         }
     }
-    visiting.remove(declaration);
-    proven.insert(declaration.clone());
+    visiting.remove(&declaration);
+    proven.insert(declaration);
     Ok(())
 }
 
 struct EffectVisitor<'a> {
     output: &'a TypeCheckOutput,
-    resource_closes: &'a HashMap<String, DefId>,
+    resource_closes: &'a HashMap<crate::NominalId, DefId>,
     module_idx: u32,
     summary: Summary,
     release_cache: &'a mut ReleaseCache,
@@ -631,9 +648,12 @@ impl EffectVisitor<'_> {
             {
                 continue;
             }
-            match self.resource_closes.get(&resource).cloned() {
+            match self.resource_closes.get(&resource).copied() {
                 Some(close) => self.summary.releases.push((close, resource, span.clone())),
-                None => self.refuse(span, unknown_close(&resource)),
+                None => self.refuse(
+                    span,
+                    unknown_close(self.output.defs.path(resource.declaration())),
+                ),
             }
         }
     }
@@ -641,7 +661,7 @@ impl EffectVisitor<'_> {
     fn target(&mut self, target: &CallTarget, span: &Span, call: &str) {
         match target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
-                self.summary.calls.push((declaration.clone(), span.clone()));
+                self.summary.calls.push((*declaration, span.clone()));
             }
             CallTarget::Runtime(family) if pure_runtime(*family) => {}
             CallTarget::RuntimeCollection(MethodTargetFamily::Vec(method))
@@ -708,13 +728,13 @@ impl NodeVisitor for EffectVisitor<'_> {
             let (UserComparisonDispatch::Eq { method }
             | UserComparisonDispatch::Ord { method }
             | UserComparisonDispatch::PartialOrd { method }) = dispatch;
-            self.summary.calls.push((method.clone(), span.clone()));
+            self.summary.calls.push((*method, span.clone()));
         }
         match expr {
             Expr::Call { function, .. } => {
                 let call = match &function.0 {
-                    Expr::Identifier(name) => format!("{name}(...)"),
-                    Expr::FieldAccess { field, .. } => format!("{field}(...)"),
+                    Expr::Ident(name) => format!("{name}(...)"),
+                    Expr::FieldAccess { field, .. } => format!("{}(...)", field.0),
                     _ => "call".to_string(),
                 };
                 if let Some(target) = self.output.direct_call_targets.get(&key) {
@@ -723,7 +743,9 @@ impl NodeVisitor for EffectVisitor<'_> {
                     self.refuse(span, format!("`{call}` has no checked direct target"));
                 }
             }
-            Expr::MethodCall { method, .. } => self.method(&key, span, &format!("{method}(...)")),
+            Expr::MethodCall { method, .. } => {
+                self.method(&key, span, &format!("{}(...)", method.0));
+            }
             Expr::Clone(_) => self.method(&key, span, "clone"),
             Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
@@ -743,8 +765,9 @@ impl NodeVisitor for EffectVisitor<'_> {
                 span,
                 "concurrency, unsafe access and latent effects are not admitted in machine helpers",
             ),
-            Expr::Identifier(name)
-                if crate::ExecutionContextReader::from_surface_name(name).is_some() =>
+            Expr::Ident(name)
+                if crate::ExecutionContextReader::from_surface_name(name.name.as_str())
+                    .is_some() =>
             {
                 self.refuse(span, "machine evaluation cannot observe execution context");
             }

@@ -1,17 +1,16 @@
 //! Tests for std::net::smtp error surfacing.
 //!
-//! Every case here is offline and deterministic: an out-of-range port is
+//! Every case stays on loopback: an out-of-range port is
 //! rejected before any socket work, and the connect probes target a loopback
 //! port that was bound to claim an ephemeral number and then released, so the
 //! connection is refused immediately rather than waiting on a timeout.
+//! Socket operations still use the host scheduler.
 //! Message-build validation is covered by hew-std/src/smtp.rs's
 //! `#[cfg(test)]` unit tests, which reach it without a transport.
 
 import std.net.smtp;
 
 import std.net.websocket;
-
-import std.testing;
 
 /// Claim an ephemeral loopback port and release it.
 ///
@@ -23,20 +22,21 @@ fn closed_loopback_port() -> i64 {
             let port = server.port();
             server.close();
             port
-        },
+        }
         .Err(_err) => {
             panic("could not claim an ephemeral loopback port");
             0
-        },
+        }
     }
 }
 
 #[test]
+#[real_time]
 fn test_module_try_send_bad_port_surfaces_reason() {
     let result = smtp.send("localhost", 999999, "u", "p", "a@example.com", "b@example.com", "s", "b");
     match result {
         .Ok(_) => panic("expected an out-of-range port to fail"),
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
@@ -45,26 +45,28 @@ fn test_module_try_send_bad_port_surfaces_reason() {
 /// a live `Conn` and the failure only surfaced at the first send. The probe
 /// makes it observable at connect time.
 #[test]
+#[real_time]
 fn test_connect_to_a_closed_port_is_a_failure_not_a_live_conn() {
     let port = closed_loopback_port();
     match smtp.connect("127.0.0.1", port, "u", "p") {
         .Ok(conn) => {
             conn.close();
             panic("expected a connect to a closed port to fail");
-        },
-        .Err(msg) => testing.assert_true(msg.contains("cannot reach")),
+        }
+        .Err(msg) => assert(msg.contains("cannot reach")),
     }
 }
 
 #[test]
+#[real_time]
 fn test_connect_tls_to_a_closed_port_is_a_failure_not_a_live_conn() {
     let port = closed_loopback_port();
     match smtp.connect_tls("127.0.0.1", port, "u", "p") {
         .Ok(conn) => {
             conn.close();
             panic("expected a TLS connect to a closed port to fail");
-        },
-        .Err(msg) => testing.assert_true(msg.contains("cannot reach")),
+        }
+        .Err(msg) => assert(msg.contains("cannot reach")),
     }
 }
 
@@ -77,41 +79,45 @@ fn test_connect_tls_to_a_closed_port_is_a_failure_not_a_live_conn() {
 // fail fast with an explicit out-of-range message, never a real send/connect
 // attempt on port 587 (or any other wrapped value).
 #[test]
+#[real_time]
 fn test_module_try_send_oversized_i64_port_does_not_wrap() {
     let result = smtp.send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");
     match result {
         .Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
 #[test]
+#[real_time]
 fn test_module_try_send_html_oversized_i64_port_does_not_wrap() {
     let result = smtp.send_html("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "<b>b</b>");
     match result {
         .Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
 #[test]
+#[real_time]
 fn test_conn_connect_oversized_i64_port_rejects_before_relay_init() {
     match smtp.connect("localhost", 4294967883, "u", "p") {
         .Ok(conn) => {
             conn.close();
             panic("expected an oversized port to be rejected, not wrapped");
-        },
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        }
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
 #[test]
+#[real_time]
 fn test_conn_connect_tls_oversized_i64_port_rejects_before_relay_init() {
     match smtp.connect_tls("localhost", 4294967883, "u", "p") {
         .Ok(conn) => {
             conn.close();
             panic("expected an oversized port to be rejected, not wrapped");
-        },
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        }
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }

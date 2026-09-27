@@ -4,13 +4,13 @@ use hew_hir::{mangle_dotted_name, mangle_resolved_ty};
 use hew_types::{ResolvedTraitBound, ResolvedTy};
 
 fn named(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
-    ResolvedTy::named_user(name, args)
+    ResolvedTy::user_for_test(name, args)
 }
 
 #[test]
 fn type_param_probe_key_encoding_is_preserved() {
     let ty = ResolvedTy::TypeParam {
-        name: "T".to_string(),
+        name: hew_types::ParamHead::for_test("T"),
     };
     assert_eq!(mangle_resolved_ty(&ty), "typeparam$xT$g");
 }
@@ -52,6 +52,7 @@ fn nested_type_fragments_distinguish_former_collision_pairs() {
     let iterator_i64 = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![("Item".to_string(), ResolvedTy::I64)],
         }],
@@ -59,6 +60,7 @@ fn nested_type_fragments_distinguish_former_collision_pairs() {
     let iterator_string = ResolvedTy::TraitObject {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![],
             assoc_bindings: vec![("Item".to_string(), ResolvedTy::String)],
         }],
@@ -100,7 +102,7 @@ fn type_family(depth: usize) -> Vec<ResolvedTy> {
         ResolvedTy::String,
         named("Leaf", vec![]),
         ResolvedTy::TypeParam {
-            name: "T".to_string(),
+            name: hew_types::ParamHead::for_test("T"),
         },
     ];
 
@@ -138,6 +140,7 @@ fn type_family(depth: usize) -> Vec<ResolvedTy> {
                 ResolvedTy::TraitObject {
                     traits: vec![ResolvedTraitBound {
                         trait_name: "Iterator".to_string(),
+                        trait_id: None,
                         args: vec![ty.clone()],
                         assoc_bindings: vec![("Item".to_string(), ty.clone())],
                     }],

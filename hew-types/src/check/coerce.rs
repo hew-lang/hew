@@ -173,7 +173,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::TraitNotObjectSafe {
                         trait_name: trait_name.to_string(),
-                        method_name: method.name.clone(),
+                        method_name: method.name.to_string(),
                         reason: "generic method",
                     },
                     span,
@@ -190,7 +190,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::TraitNotObjectSafe {
                             trait_name: trait_name.to_string(),
-                            method_name: method.name.clone(),
+                            method_name: method.name.to_string(),
                             reason: "Self-returning method",
                         },
                         span,
@@ -232,7 +232,7 @@ impl Checker {
         actor_name: &str,
         trait_name: &str,
     ) -> bool {
-        let Some(trait_info) = self.trait_defs.get(trait_name).cloned() else {
+        let Some(trait_info) = self.trait_def_at(trait_name).cloned() else {
             return false;
         };
         // A trait with no methods is never "satisfied" implicitly (mirrors the
@@ -244,10 +244,15 @@ impl Checker {
             return false;
         };
         for method in &trait_info.methods {
-            let Some(handler) = descriptor.handlers.iter().find(|h| h.name == method.name) else {
+            let Some(handler) = descriptor
+                .handlers
+                .iter()
+                .find(|h| h.name == method.name.name.as_str())
+            else {
                 return false;
             };
-            let Some(trait_sig) = self.lookup_trait_method(trait_name, &method.name) else {
+            let Some(trait_sig) = self.lookup_trait_method(trait_name, method.name.name.as_str())
+            else {
                 return false;
             };
             if trait_sig.params.len() != handler.param_tys.len() {
@@ -281,7 +286,7 @@ impl Checker {
     /// satisfaction is lowerable, so an explicit `impl` must not admit the
     /// coercion.
     pub(super) fn trait_is_handler_style(&self, trait_name: &str) -> bool {
-        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+        let Some(trait_info) = self.trait_def_at(trait_name) else {
             return false;
         };
         if trait_info.methods.is_empty() {
@@ -291,7 +296,7 @@ impl Checker {
             method
                 .params
                 .first()
-                .is_none_or(|first| first.name != "self")
+                .is_none_or(|first| first.name.name != hew_parser::ast::sym::SELF_VALUE)
         })
     }
 
@@ -300,7 +305,7 @@ impl Checker {
     pub(super) fn is_coercible_numeric(&self, expr: &Expr) -> bool {
         is_integer_literal(expr)
             || is_float_literal(expr)
-            || matches!(expr, Expr::Identifier(name) if self.const_values.contains_key(name))
+            || matches!(expr, Expr::Ident(name) if self.const_values.contains_key(name.name.as_str()))
     }
 
     /// Unify two branch types (if/else, if-let/else).
@@ -334,40 +339,6 @@ impl Checker {
         self.subst.resolve(then_ty)
     }
 
-    /// Reject the issue #2651 nominal collision at the type boundary: a
-    /// root-local type conflated with an unrelated import (`Widget` vs
-    /// `widgeti8.Widget`) is structurally equal under the permissive suffix rule
-    /// `unify` uses, yet names two DISTINCT definitions. Detect it compare-only —
-    /// no name is rewritten and no variable is bound, so nothing leaks into a
-    /// `Subst` binding or the downstream checker→HIR/MIR name handoff (the
-    /// record-layout registry keeps single-module references bare on purpose).
-    /// Resolve existing substitutions first, then inspect every corresponding
-    /// nominal node even when another generic argument remains unresolved. A
-    /// genuine same-def alias (`Box` ↔ `nestbox.Box`, prelude
-    /// `MonitorError` ↔ `link_monitor.MonitorError`, builtin `HashSet` ↔
-    /// `collections.HashSet`) is owner-identical and passes straight through to
-    /// `unify`; a real structural mismatch is not suffix-equal and is left for
-    /// `unify` to report (preserving its coercion-recovery paths). Returns `true`
-    /// (and reports the mismatch) exactly when it intercepts the collision.
-    fn reject_nominal_owner_conflict(&mut self, expected: &Ty, actual: &Ty, span: &Span) -> bool {
-        let expected_resolved = self.subst.resolve(expected);
-        let actual_resolved = self.subst.resolve(actual);
-        if !self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
-            return false;
-        }
-        let (expected_label, actual_label) =
-            disambiguate_mismatch_labels(&expected_resolved, &actual_resolved);
-        self.report_error(
-            TypeErrorKind::Mismatch {
-                expected: expected_label.clone(),
-                actual: actual_label.clone(),
-            },
-            span,
-            format!("type mismatch: expected `{expected_label}`, found `{actual_label}`"),
-        );
-        true
-    }
-
     /// Run a non-diagnostic unification probe without bypassing nominal-owner
     /// identity. Callers that use unification for inference, coercion trials,
     /// or associated-type projection must route through this helper; raw
@@ -376,32 +347,24 @@ impl Checker {
     pub(super) fn try_unify_with_owner_identity(&mut self, expected: &Ty, actual: &Ty) -> bool {
         let expected_resolved = self.normalize_for_use(expected);
         let actual_resolved = self.normalize_for_use(actual);
-        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved)
-            || self.callable_erasure_loses_obligation(&expected_resolved, &actual_resolved)
-        {
+        if self.callable_erasure_loses_obligation(&expected_resolved, &actual_resolved) {
             return false;
         }
         crate::unify::coerce(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
     }
 
-    /// Run invariant unification against an isolated substitution while
-    /// retaining the checker's nominal-owner authority.
+    /// Run invariant unification against an isolated substitution.
     ///
     /// Callable joins use a trial substitution spanning every parameter and
     /// the return type. A failed relation restores the trial to its state at
     /// entry, so this helper is safe for other speculative invariant probes.
-    pub(super) fn try_unify_invariant_with_owner_identity(
-        &self,
+    pub(super) fn try_unify_invariant(
         subst: &mut crate::ty::Substitution,
         expected: &Ty,
         actual: &Ty,
     ) -> bool {
         let expected_resolved = subst.resolve(expected);
         let actual_resolved = subst.resolve(actual);
-        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
-            return false;
-        }
-
         let snapshot = subst.snapshot();
         if crate::unify::unify(subst, &expected_resolved, &actual_resolved).is_ok() {
             true
@@ -428,9 +391,6 @@ impl Checker {
         actual: &Ty,
     ) -> bool {
         let expected_resolved = self.normalize_for_use(expected);
-        if self.nominal_owner_conflict(&expected_resolved, actual) {
-            return false;
-        }
         unify(&mut self.subst, &expected_resolved, actual).is_ok()
     }
 
@@ -454,13 +414,10 @@ impl Checker {
         };
         if matches!((expected, actual), (Ty::Closure { .. }, Ty::Closure { .. })) {
             self.report_error_with_suggestions(
-                kind,
+                TypeErrorKind::ClosureShapeMismatch,
                 span,
-                "type mismatch: each closure literal has its own type".to_string(),
-                vec![format!(
-                    "write the binding type as `{}` to hold either closure",
-                    expected.user_facing()
-                )],
+                "type mismatch: closures require compatible callable shapes".to_string(),
+                vec!["use closures with matching parameter and return types".to_string()],
             );
         } else if *expected != Ty::Error && *actual != Ty::Error {
             self.report_error(
@@ -479,11 +436,7 @@ impl Checker {
         let actual_projected = self.normalize_for_use(actual);
         let expected = &expected_projected;
         let actual = &actual_projected;
-        // Reject the issue #2651 nominal collision at the type boundary before
-        // unification would silently accept it; see `reject_nominal_owner_conflict`.
-        if self.reject_nominal_owner_conflict(expected, actual, span)
-            || self.reject_callable_erasure(expected, actual, span)
-        {
+        if self.reject_callable_erasure(expected, actual, span) {
             return;
         }
         // Snapshot substitution so partial bindings are rolled back on failure
@@ -534,14 +487,16 @@ impl Checker {
             ) {
                 if let (
                     Ty::Named {
-                        name: trait_name, ..
+                        head: trait_head, ..
                     },
                     Ty::Named {
-                        name: concrete_name,
+                        head: concrete_head,
                         ..
                     },
                 ) = (expected_inner, actual_inner)
                 {
+                    let trait_name = trait_head.registry_key();
+                    let concrete_name = concrete_head.registry_key();
                     // Only a true trait-implementation narrowing is admitted.
                     // Identical inner names would have unified above; reaching
                     // here with equal names means a generic-arg mismatch that
@@ -561,7 +516,7 @@ impl Checker {
                     //    `E_CODEGEN`. Reject it here with an honest type error.
                     //  - Ordinary (receiver-method) trait: an explicit or
                     //    structural impl is the satisfaction authority.
-                    if trait_name != concrete_name && self.trait_defs.contains_key(trait_name) {
+                    if trait_name != concrete_name && self.has_trait_def(trait_name) {
                         let satisfied = if self.trait_is_handler_style(trait_name) {
                             self.actor_satisfies_handler_trait(concrete_name, trait_name)
                         } else {
@@ -639,11 +594,11 @@ impl Checker {
         span: &Span,
     ) -> Option<bool> {
         let trait_name = bound.trait_name.as_str();
-        let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
+        let trait_lookup_key = self.dyn_bound_trait_key(bound);
         // Resolve the trait declaration; an unregistered trait can never be
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
-        let trait_info = self.trait_defs.get(&trait_lookup_key).cloned()?;
+        let trait_info = self.trait_def_at(&trait_lookup_key).cloned()?;
         if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
             return None;
         }
@@ -663,7 +618,7 @@ impl Checker {
                 .collect()
         };
         for key in declaring_keys {
-            let Some(info) = self.trait_defs.get(&key).cloned() else {
+            let Some(info) = self.trait_def_at(&key).cloned() else {
                 continue;
             };
             if !self.validate_dyn_object_safety(&key, &info, span) {
@@ -730,12 +685,19 @@ impl Checker {
             .join("+");
 
         let canonical_type_name = match concrete_type {
-            Ty::Named { builtin: None, .. } => self
+            Ty::Named {
+                head:
+                    crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            } => self
                 .flat_file_import_type_owner(type_name)
                 .or_else(|| self.canonical_nominal_name(type_name))
                 .unwrap_or_else(|| type_name.to_string()),
             Ty::Named {
-                builtin: Some(_), ..
+                head: crate::TypeHead::Builtin(_) | crate::TypeHead::Actor(_),
+                ..
             } => type_name.to_string(),
             _ => self
                 .canonical_nominal_name(type_name)
@@ -776,7 +738,6 @@ impl Checker {
                     &slot.trait_key,
                     &slot.method_name,
                 )
-                .map(|(declaration, _)| declaration)
             };
             let qualified = if multi {
                 format!("{}::{}", slot.trait_spelling, slot.method_name)
@@ -795,6 +756,7 @@ impl Checker {
         }
         let vtable_key = DynVtableKey {
             trait_name: composite_trait_name.clone(),
+            trait_ids: traits.iter().map(|bound| bound.trait_id).collect(),
             concrete_type: concrete_type.clone(),
             assoc_bindings: assoc_bindings.clone(),
         };
@@ -803,6 +765,7 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             DynCoercion {
                 trait_name: composite_trait_name,
+                trait_bounds: traits.to_vec(),
                 concrete_type: concrete_type.clone(),
                 vtable_key,
                 assoc_bindings,
@@ -826,8 +789,9 @@ fn concrete_type_name_for_dyn(ty: &Ty) -> Option<String> {
     if let Some(canonical) = defaulted.canonical_lowering_name() {
         return Some(canonical.to_string());
     }
-    if let Ty::Named { name, .. } = &defaulted {
-        return Some(name.clone());
+    if let Ty::Named { head, .. } = &defaulted {
+        let name = head.registry_key();
+        return Some(name.to_string());
     }
     None
 }
@@ -859,7 +823,11 @@ fn canonical_dyn_assoc_bindings(traits: &[crate::ty::TraitObjectBound]) -> Vec<D
 /// trait methods at `dyn Trait` coercion sites.
 fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
     match expr {
-        TypeExpr::Named { name, type_args } => {
+        TypeExpr::Named {
+            path: named_path,
+            type_args,
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             if name == "Self" {
                 return true;
             }
@@ -917,7 +885,7 @@ fn disambiguate_mismatch_labels(expected: &Ty, actual: &Ty) -> (String, String) 
     }
     let qualify = |ty: &Ty, label: &str| {
         let Ty::Named {
-            builtin: Some(kind),
+            head: crate::TypeHead::Builtin(kind),
             ..
         } = ty
         else {

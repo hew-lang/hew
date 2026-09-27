@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-borrowed-cow-ingress-borrowed-bytes-ingress"
+intent = "Carrier-general collection-ingress exactly-once oracles: the borrowed `bytes` parameter, the REASSIGNED parameter generation, and the `VecIter` `string` yield binder. Shape `borrowed_bytes_ingress` (borrowed bytes value ingress does not double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/collection-borrowed-cow-ingress-borrowed-bytes-ingress.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1|16"
+exit = 0

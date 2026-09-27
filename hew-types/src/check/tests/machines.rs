@@ -1,8 +1,134 @@
 use super::*;
 
+#[test]
+fn machine_event_type_is_an_owned_member() {
+    let source = "machine Tank {\n    events {\n        Tick;\n    }\n    state Idle;\n    on Tick: Idle => Idle;\n}\n\nfn feed(event: Tank.Event) -> i64 {\n    1\n}\n";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let machine = output
+        .defs
+        .lookup_path("Tank")
+        .expect("machine declaration");
+    let event = output
+        .defs
+        .member_of_kind(
+            machine,
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        )
+        .expect("machine-owned event type");
+    assert_eq!(output.defs.owner(event), Some(machine));
+    assert_eq!(output.defs.path(event), "Tank.Event");
+    assert!(output.defs.lookup_path("TankEvent").is_none());
+    let start = source.find("Tank.Event").unwrap();
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(start..start + 4), 0)),
+        Some(&crate::check::scope::Resolution::Nominal(
+            crate::NominalId::from_minted_declaration(machine)
+        ))
+    );
+    assert_eq!(
+        output
+            .resolutions
+            .get(&SpanKey::in_module(&(start + 5..start + 10), 0)),
+        Some(&crate::check::scope::Resolution::Nominal(
+            crate::NominalId::from_minted_declaration(event)
+        ))
+    );
+}
+
+#[test]
+fn generated_machine_parameters_keep_distinct_binding_spans() {
+    let source = "machine First {\n    events {\n        Go;\n    }\n    state Idle;\n    on Go: Idle => Idle;\n}\n\nmachine Second {\n    events {\n        Go;\n    }\n    state Idle;\n    on Go: Idle => Idle;\n}\n";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let normalized = output.normalized_machines.as_ref().expect("normalization");
+    let mut bindings = std::collections::HashSet::new();
+    let mut generated = 0;
+    for (item, _) in &normalized.program.items {
+        let Item::Impl(implementation) = item else {
+            continue;
+        };
+        for method in &implementation.methods {
+            if !matches!(
+                method.origin,
+                hew_parser::ast::DeclarationOrigin::MachineStep
+                    | hew_parser::ast::DeclarationOrigin::MachineCompanion
+            ) {
+                continue;
+            }
+            generated += 1;
+            for param in &method.params {
+                let binder = SpanKey::in_module(&param.name_span, 0);
+                let resolution = output
+                    .resolutions
+                    .get(&binder)
+                    .expect("generated parameter binder row");
+                assert!(matches!(
+                    resolution,
+                    crate::check::scope::Resolution::Local(_)
+                ));
+                assert!(bindings.insert(resolution), "generated binder collision");
+                assert!(
+                    output.resolutions.iter().any(|(use_span, use_resolution)| {
+                        *use_span != binder
+                            && use_resolution == resolution
+                            && normalized
+                                .source_spans
+                                .contains_key(&(use_span.start..use_span.end))
+                    }),
+                    "generated parameter use did not join its binder: {param:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(generated, 4, "two machines each generate two methods");
+    assert_eq!(
+        bindings.len(),
+        6,
+        "each generated parameter has one identity"
+    );
+}
+
+#[test]
+fn flat_machine_event_spelling_has_an_owned_path_fix_it() {
+    let source = "machine Tank {\n    events {\n        Tick;\n    }\n    state Idle;\n    on Tick: Idle => Idle;\n}\n\nfn feed(event: TankEvent) -> i64 {\n    1\n}\n\nfn main() {\n    let _ = TankEvent.Tick;\n}\n";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType
+                && error
+                    .suggestions
+                    .iter()
+                    .any(|suggestion| suggestion.contains("Tank.Event"))
+        }),
+        "{:#?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedVariable
+                && error
+                    .suggestions
+                    .iter()
+                    .any(|suggestion| suggestion.contains("Tank.Event"))
+        }),
+        "{:#?}",
+        output.errors
+    );
+}
+
 fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {
     let source = format!(
-        "{helper}\n machine Gate {{ events {{ Open, }} emits {{ Changed {{ label: string }}, }} state Closed {{ label: string }}, state Opened {{ label: string }}, on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"
+        "{helper}\n machine Gate {{ events {{ Open; }} emits {{ Changed {{ label: string; }} }} state Closed {{ label: string; }} state Opened {{ label: string; }} on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"
     );
     let parsed = hew_parser::parse(&source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -48,9 +174,9 @@ fn machine_rejects_direct_and_transitive_effects() {
 #[test]
 fn machine_requires_guard_fallback_and_target_payload() {
     for source in [
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened when true, on Open: Opened => Opened, } fn main() {}",
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened { .Closed } default { state } } fn main() {}",
-        "machine Gate { events { Open, } state Closed, state Opened { label: string }, on Open: Closed => Opened { label: 3 } default { state } } fn main() {}",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened when true;\n    on Open: Opened => Opened;\n}\n\nfn main() {}\n",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened {\n        .Closed\n    }\n    default { state }\n}\n\nfn main() {}\n",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened { label: string; }\n    on Open: Closed => Opened { label: 3 }\n    default { state }\n}\n\nfn main() {}\n",
     ] {
         let parsed = hew_parser::parse(source);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -61,7 +187,7 @@ fn machine_requires_guard_fallback_and_target_payload() {
 
 #[test]
 fn machine_step_report_uses_normal_must_use_diagnostic() {
-    let source = "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened, default { state } } fn main() { var gate: Gate = .Closed; gate.step(.Open); }";
+    let source = "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened;\n    default { state }\n}\n\nfn main() {\n    var gate: Gate = .Closed;\n    gate.step(.Open);\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -78,7 +204,7 @@ fn machine_step_report_uses_normal_must_use_diagnostic() {
 
 #[test]
 fn ordinary_machine_preserves_original_declaration_occurrence() {
-    let parsed = hew_parser::parse("machine Gate { events { Open, } state Closed, state Opened, default { state } } pub fn after() -> i64 { 7 } fn main() {}");
+    let parsed = hew_parser::parse("machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    default { state }\n}\n\npub fn after() -> i64 {\n    7\n}\n\nfn main() {}\n");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let machine_span = parsed.program.items[0].1.clone();
     let function_span = parsed.program.items[1].1.clone();
@@ -89,14 +215,14 @@ fn ordinary_machine_preserves_original_declaration_occurrence() {
         (function_span, 1, crate::DeclarationKind::Function),
     ] {
         let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-            output.identity.root_module(),
+            output.defs.root_module(),
             &span,
             ordinal,
             kind,
             0,
         );
         assert!(
-            output.identity.declaration(occurrence).is_some(),
+            output.defs.declaration(occurrence).is_some(),
             "authored occurrence lost: {occurrence:?}"
         );
     }
@@ -125,7 +251,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     }
 
     let machine = hew_parser::parse(
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened, default { state } }",
+        "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened;\n    default { state }\n}\n",
     );
     assert!(machine.errors.is_empty(), "{:?}", machine.errors);
 
@@ -148,7 +274,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     ];
     root_items.extend(machine.program.items.clone());
 
-    let root_id = ModuleId::root();
+    let root_id = ModulePath::root();
     let root_module = Module {
         id: root_id.clone(),
         items: root_items.clone(),
@@ -168,7 +294,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     let normalized = machine_normalize::normalize(&program)
         .expect("normalization succeeds")
         .expect("a machine is present");
-    let root = &normalized.program.module_graph.as_ref().unwrap().modules[&ModuleId::root()];
+    let root = &normalized.program.module_graph.as_ref().unwrap().modules[&ModulePath::root()];
     assert_eq!(
         root.items.len(),
         normalized.program.items.len(),

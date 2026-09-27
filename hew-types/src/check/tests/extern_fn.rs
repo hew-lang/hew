@@ -32,7 +32,7 @@ fn extern_borrow_signature_registers_exact_types() {
         "#,
     );
     assert!(output.errors.is_empty(), "errors: {:#?}", output.errors);
-    let sig = output.fn_sigs.get("read").expect("extern signature");
+    let sig = output.sigs().get("read").expect("extern signature");
     let borrow_i64 = Ty::Borrow {
         pointee: Box::new(Ty::I64),
     };
@@ -150,17 +150,22 @@ fn agreeing_duplicate_declarations_resolve_to_one_contract() {
         .established("hew_one_contract")
         .expect("symbol must carry a contract");
     assert_eq!(
-        contract.owner.full_path(),
+        output.defs.path(contract.owner),
         "first",
         "the first declaration owns the contract"
     );
     let first = output
         .extern_contracts
-        .contract_for_declaration("first")
+        .contract_for_declaration(output.defs.lookup_path("first").expect("first declaration"))
         .expect("minting declaration resolves to the contract");
     let second = output
         .extern_contracts
-        .contract_for_declaration("second")
+        .contract_for_declaration(
+            output
+                .defs
+                .lookup_path("second")
+                .expect("second declaration"),
+        )
         .expect("agreeing re-declaration adopts the contract");
     assert_eq!(
         first.owner, second.owner,
@@ -200,9 +205,9 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     };
     import.resolved_items = Some(stream.program.items.clone().into());
 
-    let root_id = ModuleId::root();
-    let stream_id = ModuleId::new(vec!["std".to_string(), "stream".to_string()]);
-    let net_id = ModuleId::new(vec!["std".to_string(), "net".to_string()]);
+    let root_id = ModulePath::root();
+    let stream_id = ModulePath::new(["std", "stream"]);
+    let net_id = ModulePath::new(["std", "net"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -282,14 +287,14 @@ fn injected_ordinary_function_borrow_fails_closed() {
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert_one_borrow_outside_extern(&output.errors, borrow_span);
     assert!(output
-        .fn_sigs
+        .sigs()
         .get("ordinary")
         .is_none_or(|sig| { sig.params.iter().all(|ty| !matches!(ty, Ty::Borrow { .. })) }));
 }
 
 #[test]
 fn injected_ordinary_field_and_alias_borrows_fail_closed() {
-    let mut field_program = hew_parser::parse("type Holder { value: i64 }").program;
+    let mut field_program = hew_parser::parse("type Holder {\n    value: i64;\n}\n").program;
     let field_span = 21..22;
     let Item::TypeDecl(decl) = &mut field_program.items[0].0 else {
         panic!("expected type declaration");
@@ -300,7 +305,7 @@ fn injected_ordinary_field_and_alias_borrows_fail_closed() {
     inject_borrow(ty, field_span.clone());
     let field_output = Checker::new(ModuleRegistry::new(vec![])).check_program(&field_program);
     assert_one_borrow_outside_extern(&field_output.errors, field_span);
-    assert!(field_output.type_defs.get("Holder").is_none_or(|def| {
+    assert!(field_output.type_def_at_path("Holder").is_none_or(|def| {
         def.fields
             .get("value")
             .is_none_or(|ty| !matches!(ty, Ty::Borrow { .. }))
@@ -338,11 +343,11 @@ fn checker_extern_context_does_not_leak_to_ordinary_signature() {
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert_one_borrow_outside_extern(&output.errors, borrow_span);
     assert!(matches!(
-        output.fn_sigs["get"].return_type,
+        output.sigs()["get"].return_type,
         Ty::Borrow { .. }
     ));
     assert!(output
-        .fn_sigs
+        .sigs()
         .get("ordinary")
         .is_none_or(|sig| { !matches!(sig.return_type, Ty::Borrow { .. }) }));
 }
@@ -362,7 +367,7 @@ fn extern_symbol_on_extern_c_fn_populates_fn_sig_spec() {
         "#,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("vec_push")
         .expect("extern fn must be registered");
     let spec = sig
@@ -490,16 +495,21 @@ fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
 #[test]
 fn user_extern_with_stdlib_endpoint_is_not_promoted_to_runtime_family() {
     let output = check_source(
-        r#"
-        type Encoder { value: string }
+        r#"type Encoder {
+    value: string;
+}
 
-        impl Encoder {
-            #[extern_symbol(hew_string_to_bytes)]
-            fn encode(self) -> bytes { b"" }
-        }
+impl Encoder {
+    #[extern_symbol(hew_string_to_bytes)]
+    fn encode(self) -> bytes {
+        b""
+    }
+}
 
-        fn use_encoder(value: Encoder) -> bytes { value.encode() }
-        "#,
+fn use_encoder(value: Encoder) -> bytes {
+    value.encode()
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(output.method_call_rewrites.values().any(|rewrite| matches!(
@@ -526,7 +536,7 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
         "#,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("unrelated")
         .expect("extern fn must be registered");
     assert!(
@@ -542,16 +552,17 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
 #[test]
 fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
     let output = check_source(
-        r#"
-        type Holder { x: i64 }
+        r#"type Holder {
+    x: i64;
+}
 
-        impl Holder {
-            #[extern_symbol("hew_holder_clone")]
-            fn cloned(self) -> Holder {
-                self
-            }
-        }
-        "#,
+impl Holder {
+    #[extern_symbol("hew_holder_clone")]
+    fn cloned(self) -> Holder {
+        self
+    }
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -559,7 +570,7 @@ fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
         output.errors
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Holder::cloned")
         .expect("impl method must be in fn_sigs");
     let spec = sig
@@ -573,8 +584,7 @@ fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
     );
 
     let td = output
-        .type_defs
-        .get("Holder")
+        .type_def_at_path("Holder")
         .expect("Holder type must be registered");
     let method_sig = td
         .methods
@@ -625,7 +635,7 @@ fn malformed_extern_symbol_template_emits_invalid_template_diagnostic() {
     // and route through the legacy path (or surface an
     // unresolved-symbol diagnostic later).
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("bad")
         .expect("extern fn must still be registered for downstream resolution");
     assert!(
@@ -667,11 +677,11 @@ fn empty_extern_symbol_template_is_rejected_with_empty_reason() {
 fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
     use std::path::PathBuf;
     let pkg_source = if divergent {
-        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
+        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
     } else {
         "pub fn unrelated() -> i64 {\n    0\n}\n"
     };
-    let aaa_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let aaa_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let pkg_file = PathBuf::from("/nonexistent/oracle/pkg/pkg.hew");
     let aaa_file = PathBuf::from("/nonexistent/oracle/pkg/aaa.hew");
 
@@ -680,9 +690,9 @@ fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
     let aaa_items = hew_parser::parse(aaa_source);
     assert!(aaa_items.errors.is_empty(), "parse: {:?}", aaa_items.errors);
 
-    let root_id = ModuleId::root();
-    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
-    let aaa_id = ModuleId::new(vec!["pkg".to_string(), "aaa".to_string()]);
+    let root_id = ModulePath::root();
+    let pkg_id = ModulePath::new(["pkg"]);
+    let aaa_id = ModulePath::new(["pkg", "aaa"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     // Module `pkg` = pkg.hew items + aaa.hew items (peer assembly).
@@ -793,8 +803,8 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
     let primary_source = "pub fn unrelated() -> i64 {\n    0\n}\n";
     let inert_source = "pub fn filler() -> i64 {\n    1\n}\n";
     let two_field_source =
-        "type Tok {\n    a: i64,\n    b: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let three_field_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64;\n    b: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let three_field_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/tri/pkg/pkg.hew");
     let inert_file = PathBuf::from("/nonexistent/tri/pkg/a-b.hew");
     let two_field_file = PathBuf::from("/nonexistent/tri/pkg/a+b.hew");
@@ -810,8 +820,8 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
     let two_field_items = parsed(two_field_source);
     let three_field_items = parsed(three_field_source);
 
-    let root_id = ModuleId::root();
-    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let root_id = ModulePath::root();
+    let pkg_id = ModulePath::new(["pkg"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     let mut items = primary_items.clone();
@@ -864,9 +874,9 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
 fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
     use std::path::PathBuf;
     let primary_source =
-        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let peer_source =
-        "type Tag {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
+        "type Tag {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/distinct/pkg/pkg.hew");
     let peer_file = PathBuf::from("/nonexistent/distinct/pkg/peer.hew");
 
@@ -878,8 +888,8 @@ fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
     let primary_items = parsed(primary_source);
     let peer_items = parsed(peer_source);
 
-    let root_id = ModuleId::root();
-    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let root_id = ModulePath::root();
+    let pkg_id = ModulePath::new(["pkg"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     let mut items = primary_items.clone();
@@ -948,8 +958,8 @@ enum ImportLexicalShape {
 fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     use std::path::PathBuf;
     let sm_source =
-        "pub type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let om_source = "pub type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n";
+        "pub type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let om_source = "pub type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n";
     let nt_source = "extern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let sm_file = PathBuf::from("/nonexistent/implex/sm.hew");
     let om_file = PathBuf::from("/nonexistent/implex/om.hew");
@@ -964,19 +974,19 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     let om_items = parsed(om_source);
     let nt_items = parsed(nt_source);
 
-    let root_id = ModuleId::root();
-    let sm_id = ModuleId::new(vec!["sm".to_string()]);
-    let om_id = ModuleId::new(vec!["om".to_string()]);
-    let nt_id = ModuleId::new(vec!["nt".to_string()]);
+    let root_id = ModulePath::root();
+    let sm_id = ModulePath::new(["sm"]);
+    let om_id = ModulePath::new(["om"]);
+    let nt_id = ModulePath::new(["nt"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     let named = |source: &str, alias: Option<&str>| {
         Some(ImportSpec::Names(vec![ImportName {
-            name: source.to_string(),
-            alias: alias.map(str::to_string),
+            name: Ident::new(source),
+            alias: alias.map(Ident::new),
         }]))
     };
-    let nt_imports: Vec<(ModuleId, Option<ImportSpec>)> = match shape {
+    let nt_imports: Vec<(ModulePath, Option<ImportSpec>)> = match shape {
         ImportLexicalShape::PlainModuleImport => vec![(sm_id.clone(), None)],
         ImportLexicalShape::AmbiguousImports => {
             vec![(sm_id.clone(), None), (om_id.clone(), None)]
@@ -989,12 +999,12 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     };
 
     let add_module = |mg: &mut ModuleGraph,
-                      id: &ModuleId,
+                      id: &ModulePath,
                       items: &Vec<Spanned<Item>>,
                       file: &PathBuf,
-                      imports: Vec<(ModuleId, Option<ImportSpec>)>| {
+                      imports: Vec<(ModulePath, Option<ImportSpec>)>| {
         mg.item_sources
-            .insert(id.path.join("."), vec![file.clone(); items.len()]);
+            .insert(id.dotted(), vec![file.clone(); items.len()]);
         mg.add_module(Module {
             id: id.clone(),
             items: items.clone(),

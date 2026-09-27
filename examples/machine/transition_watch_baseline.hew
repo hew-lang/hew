@@ -8,7 +8,7 @@
 // This baseline keeps owner and observer in one actor; the cross-actor
 // split (pipe halves travelling through actor messages) builds on
 // the same shape.
-import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
+import std.concurrency.lifecycle.{Lifecycle};
 
 import std.stream;
 
@@ -20,7 +20,7 @@ actor Combined {
         };
         var lc: Lifecycle<i64> = .Created;
         let before = lc.state_name();
-        lc.step(LifecycleEvent.Initialise);
+        lc.step(Lifecycle.Event.Initialise);
         let after_step = lc.state_name();
         if before != after_step {
             tx.send(f"{before} -> {after_step}").expect("send");
@@ -32,7 +32,7 @@ actor Combined {
                     .Some(tr) => println(tr),
                     .None => println("watch closed"),
                 }
-            },
+            }
             after 2s => println("timeout"),
         };
         rx.close();
@@ -42,5 +42,4 @@ actor Combined {
 fn main() {
     let c = spawn Combined;
     let _ = c.run();
-    sleep(200ms);
 }

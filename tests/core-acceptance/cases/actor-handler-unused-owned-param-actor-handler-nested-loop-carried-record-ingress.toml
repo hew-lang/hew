@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-actor-handler-nested-loop-carried-record-ingress"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `actor_handler_nested_loop_carried_record_ingress_high` (nested loop carried record ingress retains once per distinct state owner) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-actor-handler-nested-loop-carried-record-ingress.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-spawn-owned-arg-generic-fork-str"
+intent = "Generic free-fn task spawn: owned-`string` value-arg safety oracle. Shape `generic_fork_str_high` (generic fork owned str leak slope is flat, generic fork owned str no double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/generic-spawn-owned-arg-generic-fork-str.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

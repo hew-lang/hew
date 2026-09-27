@@ -2,7 +2,7 @@
 // RemotePid<T>::send boundary.
 #[wire]
 type Ping {
-    n: i64 @1,
+    n: i64 @1;
 }
 
 actor Worker {

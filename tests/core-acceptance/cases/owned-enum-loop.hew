@@ -1,4 +1,7 @@
-enum Choice { Text(string), Empty }
+enum Choice {
+    Text(string);
+    Empty;
+}
 
 fn main() -> i64 {
     let original = Choice.Text("payload".to_upper());
@@ -9,7 +12,9 @@ fn main() -> i64 {
             .Text(value) => value,
             .Empty => "empty",
         };
-        if text.len() != 7 { return 1; }
+        if text.len() != 7 {
+            return 1;
+        }
         count += 1;
     }
     println(f"{count}");

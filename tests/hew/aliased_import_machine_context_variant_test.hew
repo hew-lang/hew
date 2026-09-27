@@ -8,22 +8,20 @@
 
 import tests.hew.machine_context_variant_support.light_defs as lights;
 
-import std.testing;
-
 #[test]
 fn contextual_transition_bodies_run_under_an_aliased_import() {
     var light = lights.initial();
-    light.step(lights.LightEvent.Toggle);
-    testing.assert_eq_str(light.state_name(), "Off");
+    light.step(lights.Light.Event.Toggle);
+    assert(light.state_name() == "Off");
 }
 
 #[test]
 fn aliased_import_reaches_the_struct_payload_state_the_contextual_body_built() {
     var light = lights.Light.On;
-    light.step(lights.LightEvent.Label);
+    light.step(lights.Light.Event.Label);
     let label = match light {
         lights.Light.Named { label } => label,
         _ => "none",
     };
-    testing.assert_eq_str(label, "LIT");
+    assert(label == "LIT");
 }

@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-aggregate-ingress-record-returned"
+intent = "Ownership oracle for an `Rc` / `Weak` handle moved into a VALUE aggregate. Shape `record_returned_high` (record field binder first does not over release, record field binder first does not under release) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-aggregate-ingress-record-returned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

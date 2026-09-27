@@ -4,7 +4,7 @@
 //
 // Design intent:
 //   - Good.compute(x) returns x * 2 (would yield 20).
-//   - Bad.compute(x) traps: `assert_eq(x, x + 1)` is always false, so the
+//   - Bad.compute(x) traps: `assert(x == x + 1)` is always false, so the
 //     handler aborts. Unlike the retired `join { }` form (which propagated
 //     the trap as a caller-side SIGABRT), batch fork surfaces the trapped
 //     actor's crash through the ordinary actor-crash path and the process
@@ -24,7 +24,7 @@ actor Good {
 
 actor Bad {
     receive fn compute(x: i64) -> i64 {
-        assert_eq(x, x + 1);
+        assert(x == x + 1);
         x
     }
 }

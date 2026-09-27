@@ -97,7 +97,7 @@ pub struct DeclaredType {
     /// same fact spelled on a type, and only some producers stamp it, so §1.1
     /// reads whichever of the two says yes.
     pub is_opaque: bool,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub members: Vec<ResolvedTy>,
 }
 
@@ -113,12 +113,20 @@ pub trait ClassDeclarations {
     /// [`ClassError::UnknownDeclaration`] and the caller fails closed. A
     /// lookup that cannot render one of a declaration's member types must
     /// answer `None` rather than an aggregate over the members it managed.
-    fn declared_type(&self, name: &str) -> Option<DeclaredType>;
+    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType>;
+
+    /// The exact source declaration implementing a compiler-owned aggregate.
+    fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId>;
 }
 
-impl ClassDeclarations for BTreeMap<String, DeclaredType> {
-    fn declared_type(&self, name: &str) -> Option<DeclaredType> {
-        self.get(name).cloned()
+impl ClassDeclarations for BTreeMap<crate::NominalId, DeclaredType> {
+    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType> {
+        self.get(&id).cloned()
+    }
+
+    fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId> {
+        self.iter()
+            .find_map(|(id, declaration)| (declaration.builtin == Some(builtin)).then_some(*id))
     }
 }
 
@@ -127,7 +135,11 @@ impl ClassDeclarations for BTreeMap<String, DeclaredType> {
 pub struct NoDeclarations;
 
 impl ClassDeclarations for NoDeclarations {
-    fn declared_type(&self, _name: &str) -> Option<DeclaredType> {
+    fn declared_type(&self, _id: crate::NominalId) -> Option<DeclaredType> {
+        None
+    }
+
+    fn builtin_declaration(&self, _builtin: BuiltinType) -> Option<crate::NominalId> {
         None
     }
 }
@@ -142,15 +154,8 @@ static NO_DECLARATIONS: NoDeclarations = NoDeclarations;
 /// `is_linear` and `Checker.type_defs`). Both live in `hew-types`, so this is
 /// not a cross-crate join.
 ///
-/// MARKED SHORTCUT — declaration lookup is keyed by the declaration's canonical
-/// path spelling, inherited from `main`.
-/// WHY: `ResolvedTy::Named` carries no `DefId`, so a name is the only key a
-/// resolved type offers.
-/// WHEN: `IdentityTable::declare` (#3210) gives declarations an identity that a
-/// later lane threads onto the type.
-/// WHAT: this context keys on that `DefId` and the name map is deleted.
-/// This is not a fact-table join: `type_facts` is keyed structurally by
-/// [`crate::type_facts::TypeInstanceKey`], never by a name.
+/// Declaration and recursive-instance lookup use nominal identity. Display
+/// spelling cannot change the ownership facts selected for a type.
 ///
 /// Deliberately not `Copy`: every §1.1 entry point takes it by reference, so
 /// the class rule reads one context rather than silently duplicating it.
@@ -185,8 +190,8 @@ impl<'a> ClassContext<'a> {
     }
 
     #[must_use]
-    pub fn declaration(&self, name: &str) -> Option<DeclaredType> {
-        self.declarations.declared_type(name)
+    pub fn declaration(&self, id: crate::NominalId) -> Option<DeclaredType> {
+        self.declarations.declared_type(id)
     }
 }
 
@@ -280,17 +285,17 @@ pub fn classify_ty(
 /// per declaration rather than once per member occurrence.
 #[derive(Default)]
 struct Walk {
-    on_path: Vec<(String, Vec<ResolvedTy>)>,
-    polymorphic: BTreeMap<String, bool>,
+    on_path: Vec<(crate::NominalId, Vec<ResolvedTy>)>,
+    polymorphic: BTreeMap<crate::NominalId, bool>,
 }
 
 impl Walk {
-    fn is_polymorphic(&mut self, name: &str, decls: &ClassContext<'_>) -> bool {
-        if let Some(answer) = self.polymorphic.get(name) {
+    fn is_polymorphic(&mut self, id: crate::NominalId, decls: &ClassContext<'_>) -> bool {
+        if let Some(answer) = self.polymorphic.get(&id) {
             return *answer;
         }
-        let answer = is_polymorphically_recursive(name, decls);
-        self.polymorphic.insert(name.to_string(), answer);
+        let answer = is_polymorphically_recursive(id, decls);
+        self.polymorphic.insert(id, answer);
         answer
     }
 }
@@ -301,7 +306,7 @@ impl Walk {
 /// An argument that mentions none of them is a constant: substituting the
 /// declaration's parameters cannot change it, so an edge carrying it reaches
 /// one fixed instantiation however many times the cycle turns.
-fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
+fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
     if is_own_parameter(ty, params) {
         return true;
     }
@@ -337,15 +342,14 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
 /// the declaration was resolved without a type-parameter scope, as a
 /// zero-argument user `Named`. [`substitute`] reads both spellings and so does
 /// this.
-fn is_own_parameter(arg: &ResolvedTy, params: &[String]) -> bool {
+fn is_own_parameter(arg: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
     let name = match arg {
         ResolvedTy::TypeParam { name } => name,
         ResolvedTy::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
             ..
-        } if args.is_empty() => name,
+        } if args.is_empty() => param,
         _ => return false,
     };
     params.iter().any(|param| param == name)
@@ -368,7 +372,7 @@ fn is_own_parameter(arg: &ResolvedTy, params: &[String]) -> bool {
 fn collect_mentions(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
-    out: &mut Vec<(String, Vec<ResolvedTy>)>,
+    out: &mut Vec<(crate::NominalId, Vec<ResolvedTy>)>,
 ) {
     match ty {
         ResolvedTy::Tuple(elements) => {
@@ -382,25 +386,18 @@ fn collect_mentions(
                 collect_mentions(capture, decls, out);
             }
         }
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } => {
-            let builtin = builtin.or_else(|| {
-                if decls.declaration(name).is_some() {
-                    None
-                } else {
-                    crate::builtin_type::lookup_builtin_type(name)
-                }
+        ResolvedTy::Named { head, args, .. } => {
+            let identity = head.nominal().or_else(|| {
+                head.builtin()
+                    .and_then(|builtin| decls.declarations.builtin_declaration(builtin))
             });
+            let builtin = head.builtin();
             match builtin {
                 // The two builtins whose class is the Aggregate rule over a
                 // declaration, so they are declaration mentions like any other.
                 Some(BuiltinType::CrashInfo | BuiltinType::CrashNotification) | None => {
-                    if decls.declaration(name).is_some() {
-                        out.push((name.clone(), args.clone()));
+                    if let Some(id) = identity.filter(|id| decls.declaration(*id).is_some()) {
+                        out.push((id, args.clone()));
                     }
                     for arg in args {
                         collect_mentions(arg, decls, out);
@@ -445,14 +442,14 @@ fn collect_mentions(
 /// argument on every turn, so it has no finite fixpoint to join. A declaration
 /// that never reaches itself refuses nothing, whatever arguments a caller
 /// supplies: a nested `Wrapper<Wrapper<i64>>` is an ordinary aggregate.
-fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
-    let mut seen: BTreeSet<(String, bool)> = BTreeSet::new();
-    let mut stack = vec![(name.to_string(), false)];
+fn is_polymorphically_recursive(id: crate::NominalId, decls: &ClassContext<'_>) -> bool {
+    let mut seen: BTreeSet<(crate::NominalId, bool)> = BTreeSet::new();
+    let mut stack = vec![(id, false)];
     while let Some((current, grew)) = stack.pop() {
-        if !seen.insert((current.clone(), grew)) {
+        if !seen.insert((current, grew)) {
             continue;
         }
-        let Some(declared) = decls.declaration(&current) else {
+        let Some(declared) = decls.declaration(current) else {
             continue;
         };
         let mut mentions = Vec::new();
@@ -484,7 +481,7 @@ fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
                     && !is_own_parameter(arg, &declared.type_params)
             });
             let grew = grew || grows;
-            if grew && mentioned == name {
+            if grew && mentioned == id {
                 return true;
             }
             stack.push((mentioned, grew));
@@ -540,18 +537,21 @@ fn classify_all(
 }
 
 /// Substitute a declaration's own type parameters out of a member type.
-pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> ResolvedTy {
+pub(crate) fn substitute(
+    ty: &ResolvedTy,
+    params: &[crate::ParamHead],
+    args: &[ResolvedTy],
+) -> ResolvedTy {
     // A declaration's own parameter reaches here spelled either as an abstract
     // `TypeParam` or, when the declaration was resolved without a type-parameter
     // scope, as a zero-argument user `Named`. Both are the same parameter.
     let parameter_name = match ty {
         ResolvedTy::TypeParam { name } => Some(name),
         ResolvedTy::Named {
-            name,
+            head: crate::TypeHead::Param(param),
             args,
-            builtin: None,
             ..
-        } if args.is_empty() => Some(name),
+        } if args.is_empty() => Some(param),
         _ => None,
     };
     if let Some(index) =
@@ -575,17 +575,15 @@ pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]
             ResolvedTy::Slice(Box::new(substitute(element, params, args)))
         }
         ResolvedTy::Named {
-            name,
+            head,
             args: named_args,
-            builtin,
             is_opaque,
         } => ResolvedTy::Named {
-            name: name.clone(),
+            head: *head,
             args: named_args
                 .iter()
                 .map(|arg| substitute(arg, params, args))
                 .collect(),
-            builtin: *builtin,
             is_opaque: *is_opaque,
         },
         ResolvedTy::Function {
@@ -655,8 +653,14 @@ fn classify(
     let linear_none = (ValueClass::Linear, CloneKind::None);
 
     Ok(match ty {
-        // integers, floats, Bool, Char, Unit, Never, Duration
-        ResolvedTy::I8
+        // integers, floats, Bool, Char, Unit, Never, Duration; and an actor,
+        // which is the type of its handle: a pid never owns the actor, so its
+        // drop frees nothing.
+        ResolvedTy::Named {
+            head: crate::TypeHead::Actor(_),
+            ..
+        }
+        | ResolvedTy::I8
         | ResolvedTy::I16
         | ResolvedTy::I32
         | ResolvedTy::I64
@@ -719,11 +723,14 @@ fn classify(
         ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
         // Arrays own their element storage; copying uses the element recipe.
         ResolvedTy::Array(element, _) => collection_facts(&[classify(element, decls, walk)?]),
-        ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { name: name.clone() }),
+        ResolvedTy::TypeParam { name } => {
+            return Err(ClassError::TypeParam {
+                name: name.spelling.to_string(),
+            })
+        }
         ResolvedTy::Named {
-            name,
+            head: head @ crate::TypeHead::Builtin(builtin),
             args,
-            builtin: Some(builtin),
             ..
         } => match builtin {
             // marker BitCopy today
@@ -773,15 +780,9 @@ fn classify(
             // one gives `HashMapIter<i64, i64>` a `DeepCopy` clone that physical
             // MIR cannot realize, because the record's heap fields must be
             // cloned field-wise however cheap their elements are.
-            BuiltinType::VecIter => {
-                classify_declaration("std.builtins.VecIter", args, decls, walk)?
-            }
-            BuiltinType::HashMapIter => {
-                classify_declaration("std.builtins.HashMapIter", args, decls, walk)?
-            }
-            // Aggregate rule over the std declaration's fields.
-            BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
-                classify_declaration(name, args, decls, walk)?
+            BuiltinType::VecIter | BuiltinType::HashMapIter
+            | BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
+                classify_declaration(head, args, decls, walk)?
             }
             BuiltinType::JsonValue | BuiltinType::YamlValue => {
                 (ValueClass::CowValue, CloneKind::DeepCopy)
@@ -800,17 +801,22 @@ fn classify(
             }
         },
         ResolvedTy::Named {
-            name,
+            head:
+                head @ (crate::TypeHead::Nominal(_)
+                | crate::TypeHead::Param(_)
+                | crate::TypeHead::Unresolved(_)),
             args,
-            builtin: None,
             is_opaque,
         } => {
+            let name = head.registry_key();
             // `builtin` is the identity fact. A `Named` that carries none and
             // that the context holds no declaration for is refused in every
             // context, the empty one included: reading the name against the
             // builtin table here would be a second identity authority.
-            let Some(declared) = decls.declaration(name) else {
-                return Err(ClassError::UnknownDeclaration { name: name.clone() });
+            let Some(declared) = head.nominal().and_then(|id| decls.declaration(id)) else {
+                return Err(ClassError::UnknownDeclaration {
+                    name: name.to_string(),
+                });
             };
             match declared.marker {
                 DeclarationMarker::Resource => affine_none,
@@ -826,7 +832,7 @@ fn classify(
                 // marker, whether or not its name happens to collide with a
                 // compiler builtin (`Location`, `Handle`).
                 DeclarationMarker::None if *is_opaque || declared.is_opaque => bits,
-                DeclarationMarker::None => classify_declaration(name, args, decls, walk)?,
+                DeclarationMarker::None => classify_declaration(head, args, decls, walk)?,
             }
         }
     })
@@ -834,13 +840,23 @@ fn classify(
 
 /// Aggregate rule over one declaration's substituted member types.
 fn classify_declaration(
-    name: &str,
+    head: &crate::TypeHead,
     args: &[ResolvedTy],
     decls: &ClassContext<'_>,
     walk: &mut Walk,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
+    let name = head.registry_key();
+    let id = head
+        .nominal()
+        .or_else(|| {
+            head.builtin()
+                .and_then(|builtin| decls.declarations.builtin_declaration(builtin))
+        })
+        .ok_or_else(|| ClassError::UnknownDeclaration {
+            name: name.to_string(),
+        })?;
     let declared = decls
-        .declaration(name)
+        .declaration(id)
         .ok_or_else(|| ClassError::UnknownDeclaration {
             name: name.to_string(),
         })?;
@@ -875,12 +891,12 @@ fn classify_declaration(
     // and the box's own class row lands (P2, §5.3).
     // WHAT: the recursive occurrence reads the box's row instead of the
     // collection floor.
-    if walk.is_polymorphic(name, decls) {
+    if walk.is_polymorphic(id, decls) {
         return Err(ClassError::RecursiveInstantiation {
             name: name.to_string(),
         });
     }
-    let instance = (name.to_string(), args.to_vec());
+    let instance = (id, args.to_vec());
     if walk.on_path.contains(&instance) {
         return Ok((ValueClass::CowValue, CloneKind::FieldWise));
     }

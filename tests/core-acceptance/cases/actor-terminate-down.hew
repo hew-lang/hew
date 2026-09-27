@@ -1,0 +1,43 @@
+import std.link_monitor;
+
+actor Target {
+    #[on(stop)]
+    fn stopped_hook() {
+        println("unexpected stop hook");
+    }
+}
+
+actor Watcher {
+    var downs: i64 = 0;
+
+    receive fn watch(target: Target) -> link_monitor.MonitorRef {
+        monitor(target).expect("monitor target")
+    }
+
+    receive fn count() -> i64 {
+        downs
+    }
+
+    #[on(down)]
+    fn down(note: link_monitor.DownNotification) {
+        match note.reason {
+            .Terminated => {
+                downs += 1;
+                println("terminated");
+            }
+            _ => panic("wrong end reason"),
+        }
+    }
+}
+
+fn main() {
+    let target = spawn Target();
+    let watcher = spawn Watcher();
+    let observation = watcher.watch(target).expect("watch target");
+    terminate(target);
+    stopped(target);
+    assert(watcher.count().expect("down count") == 1);
+    observation.close();
+    stop(watcher);
+    stopped(watcher);
+}

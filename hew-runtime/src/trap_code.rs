@@ -41,8 +41,8 @@ pub(crate) unsafe fn write_stderr(msg: &[u8]) {
         WriteFile(
             handle,
             msg.as_ptr(),
-            msg.len() as u32,
-            &mut written,
+            u32::try_from(msg.len()).unwrap_or(u32::MAX),
+            &raw mut written,
             std::ptr::null_mut(),
         );
     }
@@ -213,6 +213,7 @@ pub(crate) unsafe fn fault_trap_bridge(code: c_int, reported: bool) {
         }
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let _ = std::io::Write::flush(&mut std::io::stderr());
+        crate::test_report::finish(1);
         // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8);
         // the trap code in the reported line is the runtime's internal tag and
         // is never the process exit status.

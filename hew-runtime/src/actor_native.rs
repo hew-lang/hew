@@ -16,9 +16,12 @@ pub(crate) mod cleanup;
 #[path = "actor_native_close.rs"]
 mod close;
 pub(crate) use close::{
-    finish_actor_terminal, finish_native_terminal, hew_actor_close_native, hew_actor_wait_new,
+    finish_actor_terminal, finish_native_terminal, wait_from_target, NativeWaitTarget,
 };
-pub use close::{HewNativeActorWait, NativeActorCompletion};
+pub use close::{
+    hew_actor_stop_native, hew_actor_terminate_native, hew_actor_wait_free, hew_actor_wait_new,
+    hew_actor_wait_poll, hew_actor_wait_take_fault, HewNativeActorWait, NativeActorCompletion,
+};
 #[path = "actor_native_wait_graph.rs"]
 pub(crate) mod wait_graph;
 
@@ -126,7 +129,7 @@ pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool
 #[no_mangle]
 pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
     let shutdown_status = drain_to_quiescence();
-    if source_status != 0 {
+    let status = if source_status != 0 {
         // A native `main` return is the process exit code directly (unlike
         // the `exit()` builtin, it never passes through `hew_exit`), so it
         // needs the same portable byte truncation applied here.
@@ -142,18 +145,24 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
         1
     } else {
         crate::exit_status::hew_runtime_exit_status()
-    }
+    };
+    crate::test_report::finish(status);
+    status
 }
 
 /// Run every actor to a stop and reclaim the runtime, returning a non-zero
 /// status when shutdown itself failed.
 ///
-/// Natively this is the shutdown phase machine waiting on the worker threads.
-/// wasm32 has no worker to wait for: the process drains its own run queue and
-/// timer wheel until nothing is left to run.
+/// Natively this is the shutdown phase machine; on the single-thread driver it
+/// runs inline, the driver doing the work the workers would. wasm32 has no
+/// shutdown machine: the process drains its ready list and due timers until
+/// nothing is left to run.
 fn drain_to_quiescence() -> i32 {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if crate::driver::active() {
+            crate::driver::run_to_quiescence();
+        }
         crate::shutdown::hew_shutdown_initiate_implicit(0);
         let status = crate::shutdown::hew_shutdown_wait();
         crate::scheduler::hew_runtime_cleanup_after_main();
@@ -161,7 +170,8 @@ fn drain_to_quiescence() -> i32 {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        crate::wasm_driver::drain_to_quiescence()
+        crate::driver::run_to_quiescence();
+        0
     }
 }
 

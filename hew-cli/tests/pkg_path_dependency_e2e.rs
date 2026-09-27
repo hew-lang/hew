@@ -341,7 +341,11 @@ fn missing_canonical_library_root_has_actionable_text_json_parity() {
     assert_eq!(diagnostics[0]["code"], "E_PACKAGE_ROOT_MISSING");
     assert_eq!(diagnostics[0]["severity"], "error");
     assert_eq!(
-        diagnostics[0]["message"].as_str().unwrap(),
+        format!(
+            "error[{}]: {}",
+            diagnostics[0]["code"].as_str().unwrap(),
+            diagnostics[0]["message"].as_str().unwrap()
+        ),
         text_stderr.trim_end(),
         "text and JSON must carry the same actionable diagnostic"
     );
@@ -390,7 +394,11 @@ fn local_and_installed_package_roots_are_ambiguous_in_text_and_json() {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert_eq!(diagnostics[0]["code"], "E_IMPORT_AMBIGUOUS");
     assert_eq!(
-        diagnostics[0]["message"].as_str().unwrap(),
+        format!(
+            "error[{}]: {}",
+            diagnostics[0]["code"].as_str().unwrap(),
+            diagnostics[0]["message"].as_str().unwrap()
+        ),
         text_stderr.trim_end()
     );
 }

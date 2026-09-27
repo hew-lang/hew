@@ -7,12 +7,12 @@
 //!
 //! ```hew
 //! machine Counter {
-//!     events { Inc, Reset, }
-//!     state Zero,
-//!     state NonZero { value: i64 },
+//!     events { Inc; Reset; }
+//!     state Zero;
+//!     state NonZero { value: i64; }
 //!     on Inc: Zero => NonZero { value: 1 }
 //!     on Inc: NonZero => NonZero reenter { value: state.value + 1 }
-//!     on Reset: NonZero => Zero,
+//!     on Reset: NonZero => Zero;
 //!     default { state }
 //! }
 //!

@@ -1,0 +1,10 @@
+[[case]]
+id = "fungible-tell-recover-payload-fungible-tell-recover"
+intent = "Fungible-tell recover-edge payload oracle (#2126) — the empirical (compiled-binary) half of the undelivered-payload release contract in `lower_actor_send` / `emit_undelivered_send_payload_release`. Shape `fungible_tell_recover_high` (fungible tell recover payload leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fungible-tell-recover-payload-fungible-tell-recover.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

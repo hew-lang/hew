@@ -1,0 +1,10 @@
+[[case]]
+id = "http-ws-string-result-retention-websocket-error-string"
+intent = "Darwin leak slopes for shipped HTTP/WebSocket string wrappers. Shape `websocket_error_string_high` (shipped websocket error string wrapper has no per call leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/http-ws-string-result-retention-websocket-error-string.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n46\n"
+exit = 0

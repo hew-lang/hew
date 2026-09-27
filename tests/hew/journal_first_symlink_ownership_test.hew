@@ -3,8 +3,6 @@
 
 import std.string;
 
-import std.testing;
-
 fn is_symlink(path: string) -> bool {
     // The ownership-sensitive accumulator is independent of filesystem state.
     false
@@ -29,5 +27,5 @@ fn first_symlink(root: string, rel_path: string) -> string {
 
 #[test]
 fn scans_regular_path_components() {
-    testing.assert_eq_str(first_symlink(".", "does-not-exist/child"), "");
+    assert(first_symlink(".", "does-not-exist/child") == "");
 }

@@ -1,5 +1,6 @@
 //! Conservative syntactic escape classification for closure bindings.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::{condition_exprs, Block, Expr, Spanned, Stmt, StringPart};
 
 use super::types::{ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule};
@@ -47,14 +48,12 @@ pub(super) fn classify_closure_escape_in_block(
     }
 
     if !acc.any_use {
-        // No use-sites — conservative default. The closure
-        // never runs and never escapes, but the classifier cannot
-        // *positively* prove `Local` (the introduction may be a typo
-        // or dead branch). Conservative call: `Escapes` /
-        // `NoStaticBinding`.
+        // The bound name has no use in the rest of its lexical scope,
+        // including nested closure bodies. This is a positive fact about
+        // invocation, separate from an unknown anonymous closure escape.
         return ClosureEscapeFact {
-            kind: ClosureEscapeKind::Escapes,
-            rule: ClosureEscapeRule::NoStaticBinding,
+            kind: ClosureEscapeKind::NeverInvoked,
+            rule: ClosureEscapeRule::NoUsesInScope,
         };
     }
     if acc.forked_use {
@@ -157,8 +156,8 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
             if let Some((e, _)) = opt {
                 // A bare reference to our closure-bound name in a
                 // return statement is the textbook `Returned` rule.
-                if let Expr::Identifier(n) = e {
-                    if n == name {
+                if let Expr::Ident(n) = e {
+                    if n.name.as_str() == name {
                         acc.any_use = true;
                         if in_fork {
                             acc.forked_use = true;
@@ -203,7 +202,7 @@ fn esc_visit_expr(
     is_tail: bool,
 ) {
     match expr {
-        Expr::Identifier(n) if n == name => {
+        Expr::Ident(n) if n.name.as_str() == name => {
             acc.any_use = true;
             if in_fork {
                 acc.forked_use = true;
@@ -213,10 +212,10 @@ fn esc_visit_expr(
                 acc.record_nonlocal(ClosureEscapeRule::StoredOrSent);
             }
         }
-        Expr::Identifier(_) => {}
+        Expr::Ident(_) => {}
         Expr::Call { function, args, .. } => {
             // Direct call `name(args)` is the only safe shape.
-            let direct = matches!(&function.0, Expr::Identifier(n) if n == name);
+            let direct = matches!(&function.0, Expr::Ident(n) if n.name.as_str() == name);
             if direct {
                 acc.any_use = true;
                 if in_fork {
@@ -258,7 +257,7 @@ fn esc_visit_expr(
             body,
         } => {
             esc_visit_expr(&operand.0, name, in_fork, acc, false);
-            if error.0 != name {
+            if error.0 != Ident::new(name) {
                 esc_visit_expr(&body.0, name, in_fork, acc, is_tail);
             }
         }
@@ -352,10 +351,18 @@ fn esc_visit_expr(
                 esc_visit_expr(&arm.body.0, name, in_fork, acc, is_tail);
             }
         }
-        // Nested closures: don't descend syntactically. The
-        // transitive-escape rule is honored at dispatcher level by
-        // observing the inner closure's own classification.
-        Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => {}
+        // A nested closure can retain this binding and later invoke it. Its
+        // body must participate in the no-use proof even when the nested
+        // closure is itself never called; a false positive only refuses the
+        // stronger NeverInvoked fact.
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            let mut nested = EscapeAccumulator::default();
+            esc_visit_expr(&body.0, name, in_fork, &mut nested, false);
+            if nested.any_use {
+                acc.any_use = true;
+                acc.record_nonlocal(ClosureEscapeRule::StoredOrSent);
+            }
+        }
         Expr::Spawn { target, args, .. } => {
             esc_visit_expr(&target.0, name, in_fork, acc, false);
             for (_, (e, _)) in args {
@@ -450,8 +457,8 @@ fn esc_visit_expr(
 /// Argument-position walker — a bare reference to the closure-bound
 /// name as an argument flags `PassedToHigherOrder`.
 fn esc_visit_arg(expr: &Expr, name: &str, in_fork: bool, acc: &mut EscapeAccumulator) {
-    if let Expr::Identifier(n) = expr {
-        if n == name {
+    if let Expr::Ident(n) = expr {
+        if n.name.as_str() == name {
             acc.any_use = true;
             if in_fork {
                 acc.forked_use = true;

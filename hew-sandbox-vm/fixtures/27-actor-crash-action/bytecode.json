@@ -28,7 +28,7 @@
         "message"
       ],
       "id": 0,
-      "name": "std.failure.CrashInfo"
+      "name": "CrashInfo"
     },
     {
       "fields": [
@@ -80,8 +80,8 @@
             },
             "result_shape": null,
             "span": {
-              "end": 272,
-              "start": 272
+              "end": 300,
+              "start": 300
             },
             "submission_shapes": {
               "failure": null,
@@ -136,8 +136,8 @@
             },
             "result_shape": null,
             "span": {
-              "end": 301,
-              "start": 301
+              "end": 329,
+              "start": 329
             },
             "submission_shapes": {
               "failure": null,
@@ -161,8 +161,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 272,
-              "start": 272
+              "end": 300,
+              "start": 300
             }
           }
         },
@@ -173,8 +173,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 272,
-              "start": 272
+              "end": 300,
+              "start": 300
             }
           }
         },
@@ -228,8 +228,8 @@
               }
             ],
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             },
             "unwind": {
               "args": [],
@@ -248,8 +248,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 301,
-              "start": 301
+              "end": 329,
+              "start": 329
             }
           }
         },
@@ -260,8 +260,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 301,
-              "start": 301
+              "end": 329,
+              "start": 329
             }
           }
         },
@@ -285,8 +285,8 @@
             },
             "op": "cleanup.dispatch",
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             }
           }
         },
@@ -301,8 +301,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             }
           }
         },
@@ -317,8 +317,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             }
           }
         },
@@ -329,8 +329,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             }
           }
         },
@@ -341,8 +341,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             }
           }
         },
@@ -391,8 +391,8 @@
               }
             ],
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             },
             "unwind": {
               "args": [],
@@ -411,8 +411,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             }
           }
         },
@@ -423,8 +423,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 326,
-              "start": 326
+              "end": 354,
+              "start": 354
             }
           }
         },
@@ -448,8 +448,8 @@
             },
             "op": "cleanup.dispatch",
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -464,8 +464,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -480,8 +480,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -492,8 +492,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -504,8 +504,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -550,8 +550,8 @@
             "scrutinee": 7,
             "shape": 1,
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -566,8 +566,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -578,8 +578,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 359,
-              "start": 359
+              "end": 387,
+              "start": 387
             }
           }
         },
@@ -591,8 +591,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 405,
-                "start": 405
+                "end": 449,
+                "start": 449
               },
               "str": 0
             }
@@ -612,8 +612,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 405,
-              "start": 405
+              "end": 449,
+              "start": 449
             }
           }
         },
@@ -644,8 +644,8 @@
             },
             "op": "branch",
             "span": {
-              "end": 405,
-              "start": 405
+              "end": 449,
+              "start": 449
             },
             "then": {
               "args": [],
@@ -670,8 +670,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 390,
-                "start": 390
+                "end": 426,
+                "start": 426
               },
               "str": 1
             }
@@ -686,8 +686,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 405,
-              "start": 405
+              "end": 449,
+              "start": 449
             }
           }
         },
@@ -699,8 +699,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 405,
-                "start": 405
+                "end": 449,
+                "start": 449
               },
               "str": 0
             }
@@ -715,8 +715,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 405,
-              "start": 405
+              "end": 449,
+              "start": 449
             }
           }
         },
@@ -748,8 +748,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 405,
-              "start": 405
+              "end": 449,
+              "start": 449
             },
             "structural": null,
             "unwind": null
@@ -769,7 +769,7 @@
           "term": {
             "args": [
               {
-                "decision": "move",
+                "decision": "borrow",
                 "value": 1
               }
             ],
@@ -780,15 +780,15 @@
             },
             "op": "actor.call",
             "operation": {
-              "op": "supervisor_stop",
+              "op": "stop",
               "supervisor": 0
             },
             "request_shapes": null,
             "result": null,
             "result_shape": null,
             "span": {
-              "end": 432,
-              "start": 432
+              "end": 480,
+              "start": 480
             },
             "submission_shapes": null,
             "unwind": {
@@ -799,17 +799,46 @@
         },
         {
           "id": 29,
-          "ops": [],
+          "ops": [
+            {
+              "dst": 17,
+              "op": "const.unit",
+              "own": "none",
+              "span": {
+                "end": 475,
+                "start": 475
+              }
+            }
+          ],
           "params": [],
           "term": {
-            "edge": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 1
+              }
+            ],
+            "error_shape": null,
+            "normal": {
               "args": [],
               "to": 32
             },
-            "op": "goto",
+            "op": "actor.call",
+            "operation": {
+              "op": "await_stopped",
+              "supervisor": 0
+            },
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
             "span": {
-              "end": 432,
-              "start": 432
+              "end": 499,
+              "start": 499
+            },
+            "submission_shapes": null,
+            "unwind": {
+              "args": [],
+              "to": 33
             }
           }
         },
@@ -824,8 +853,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 432,
-              "start": 432
+              "end": 480,
+              "start": 480
             }
           }
         },
@@ -836,8 +865,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 432,
-              "start": 432
+              "end": 480,
+              "start": 480
             }
           }
         },
@@ -846,10 +875,54 @@
           "ops": [],
           "params": [],
           "term": {
+            "edge": {
+              "args": [],
+              "to": 35
+            },
+            "op": "goto",
+            "span": {
+              "end": 499,
+              "start": 499
+            }
+          }
+        },
+        {
+          "id": 33,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 34
+            },
+            "op": "goto",
+            "span": {
+              "end": 499,
+              "start": 499
+            }
+          }
+        },
+        {
+          "id": 34,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 499,
+              "start": 499
+            }
+          }
+        },
+        {
+          "id": 35,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
             "span": {
-              "end": 432,
-              "start": 432
+              "end": 499,
+              "start": 499
             },
             "value": null
           }
@@ -886,8 +959,8 @@
               "own": "none",
               "shape": 0,
               "span": {
-                "end": 122,
-                "start": 122
+                "end": 142,
+                "start": 142
               },
               "variant": 2
             }
@@ -900,8 +973,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 122,
-              "start": 122
+              "end": 142,
+              "start": 142
             }
           }
         },
@@ -919,8 +992,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 122,
-              "start": 122
+              "end": 142,
+              "start": 142
             },
             "value": {
               "decision": "move",
@@ -959,14 +1032,15 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45,
-                "start": 45
+                "end": 53,
+                "start": 53
               },
               "str": 2
             }
           ],
           "params": [],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 1
@@ -977,8 +1051,8 @@
             },
             "op": "panic",
             "span": {
-              "end": 45,
-              "start": 45
+              "end": 53,
+              "start": 53
             }
           }
         },
@@ -993,8 +1067,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45,
-              "start": 45
+              "end": 53,
+              "start": 53
             }
           }
         },
@@ -1012,8 +1086,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 45,
-              "start": 45
+              "end": 53,
+              "start": 53
             }
           }
         }
@@ -1061,8 +1135,8 @@
             },
             "result_shape": null,
             "span": {
-              "end": 221,
-              "start": 221
+              "end": 248,
+              "start": 248
             },
             "submission_shapes": {
               "failure": null,
@@ -1091,8 +1165,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 221,
-              "start": 221
+              "end": 248,
+              "start": 248
             }
           }
         },
@@ -1107,8 +1181,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 221,
-              "start": 221
+              "end": 248,
+              "start": 248
             }
           }
         },
@@ -1119,8 +1193,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 221,
-              "start": 221
+              "end": 248,
+              "start": 248
             }
           }
         },
@@ -1131,8 +1205,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 221,
-              "start": 221
+              "end": 248,
+              "start": 248
             },
             "value": {
               "decision": "move",
@@ -1204,11 +1278,12 @@
         },
         {
           "fields": [],
-          "name": "Kill"
+          "name": "GiveUp"
         }
       ],
       "id": 0,
-      "name": "std.failure.CrashAction"
+      "name": "CrashAction",
+      "runtime_tags": {}
     },
     {
       "cases": [
@@ -1226,7 +1301,11 @@
         }
       ],
       "id": 1,
-      "name": "Result<(), ActorError<Never, Never>>"
+      "name": "Result<(), ActorError<Never, Never>>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     },
     {
       "cases": [
@@ -1276,12 +1355,25 @@
         }
       ],
       "id": 2,
-      "name": "ActorError<Never, Never>"
+      "name": "ActorError<Never, Never>",
+      "runtime_tags": {
+        "ActorErrorConnectionDropped": 8,
+        "ActorErrorDead": 3,
+        "ActorErrorEncodeFailed": 7,
+        "ActorErrorFailed": 1,
+        "ActorErrorNodeNotRunning": 5,
+        "ActorErrorPartition": 9,
+        "ActorErrorRejected": 0,
+        "ActorErrorRoutingFailed": 6,
+        "ActorErrorTimeout": 4,
+        "ActorErrorTrapped": 2
+      }
     },
     {
       "cases": [],
       "id": 3,
-      "name": "Never"
+      "name": "Never",
+      "runtime_tags": {}
     },
     {
       "cases": [
@@ -1331,7 +1423,20 @@
         }
       ],
       "id": 4,
-      "name": "SendError"
+      "name": "SendError",
+      "runtime_tags": {
+        "SendErrorBackpressure": 9,
+        "SendErrorCancelled": 6,
+        "SendErrorClosed": 1,
+        "SendErrorDead": 10,
+        "SendErrorFull": 0,
+        "SendErrorLocalShutdown": 5,
+        "SendErrorNodeRoutingNotWired": 2,
+        "SendErrorPartition": 3,
+        "SendErrorStaleRef": 4,
+        "SendErrorUnauthorized": 8,
+        "SendErrorVersionMismatch": 7
+      }
     }
   ],
   "vtables": []

@@ -74,7 +74,7 @@ fn let_else_carries_else_block() {
     );
     // The Ok-path pattern is preserved verbatim (it is the binder source).
     assert!(
-        matches!(&pattern.0, hew_parser::ast::Pattern::Constructor { .. }),
+        matches!(&pattern.0, hew_parser::ast::Pattern::NominalPath { .. }),
         "expected a constructor pattern (Ok(n)), got {:?}",
         pattern.0
     );

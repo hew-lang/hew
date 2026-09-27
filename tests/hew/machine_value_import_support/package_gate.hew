@@ -4,15 +4,15 @@ fn decorate(value: string) -> string {
 
 pub machine Gate {
     events {
-        Open,
+        Open;
     }
 
     emits {
-        Changed { label: string, },
+        Changed { label: string; }
     }
 
-    state Closed { label: string, },
-    state Opened { label: string, },
+    state Closed { label: string; }
+    state Opened { label: string; }
 
     on Open: Closed => Opened {
         emit Changed { label: decorate(state.label) };
@@ -28,13 +28,13 @@ pub fn package_gate() -> Gate {
 
 pub machine Marker {
     events {
-        Advance,
+        Advance;
     }
 
-    state Waiting,
-    state Complete,
+    state Waiting;
+    state Complete;
 
-    on Advance: Waiting => Complete,
+    on Advance: Waiting => Complete;
 
     default { state }
 }

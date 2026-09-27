@@ -41,6 +41,10 @@ impl DispatchSignal {
         self.cond.notify_all();
     }
 
+    fn current(&self) -> i32 {
+        *self.count.lock().unwrap()
+    }
+
     fn wait_for(&self, expected: i32, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut count = self.count.lock().unwrap();
@@ -91,6 +95,9 @@ fn state_lock_serializes_parallel_dispatch_attempts() {
         }
     });
 
+    // WHY a window: nothing reports that the second acquirer has parked, so
+    // this leg passes vacuously on a slow host. WHAT the real fix is: a
+    // waiter count on the state lock.
     assert!(
         rx.recv_timeout(Duration::from_millis(100)).is_err(),
         "second acquire must block while the first dispatch holds the lock"
@@ -100,7 +107,7 @@ fn state_lock_serializes_parallel_dispatch_attempts() {
         HEW_ACTOR_STATE_LOCK_OK
     );
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(2))
+        rx.recv()
             .expect("second acquire should proceed after release"),
         HEW_ACTOR_STATE_LOCK_OK
     );
@@ -270,8 +277,11 @@ fn scheduler_releases_state_lock_after_handler_panic() {
         unsafe { hew_actor_state_lock_release(actor.as_ptr()) },
         HEW_ACTOR_STATE_LOCK_OK
     );
-    assert!(
-        !PANIC_RELEASE_SIGNAL.wait_for(1, Duration::from_millis(25)),
+    // The handler's panic happens before the actor turns Crashed, so any
+    // success-path record would already be visible here.
+    assert_eq!(
+        PANIC_RELEASE_SIGNAL.current(),
+        0,
         "the panicking handler must not continue into its success path"
     );
 }
@@ -300,16 +310,14 @@ fn dispatch_refuses_null_context_lock_seat() {
     hew_runtime::scheduler::inject_null_lock_seat_once_for_test();
     actor.send_empty(1);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
     while unsafe { hew_actor_get_error(actor.as_ptr()) } == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "null lock-seat dispatch did not trap the actor"
-        );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(
-        !NULL_LOCK_SIGNAL.wait_for(1, Duration::from_millis(50)),
+    // The refusal is decided before the dispatch body would run, so a body
+    // that ran would already have recorded.
+    assert_eq!(
+        NULL_LOCK_SIGNAL.current(),
+        0,
         "dispatch body must not run when ctx->lock_seat is null"
     );
     assert_eq!(

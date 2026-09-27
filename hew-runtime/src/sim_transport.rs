@@ -371,24 +371,15 @@ impl ParkHandshake {
     /// into `cv.wait_timeout` / `cv.wait_while` — the only path by
     /// which this call can regain the lock once the flag is observed
     /// true. Returns the held guard so the caller can choose exactly
-    /// when to release it, or `None` on timeout.
-    fn wait_until_parked(
-        &self,
-        timeout: std::time::Duration,
-    ) -> Option<std::sync::MutexGuard<'_, ParkState>> {
+    /// when to release it. The test runner's timeout is the hang guard.
+    fn wait_until_parked(&self) -> std::sync::MutexGuard<'_, ParkState> {
         let guard = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (guard, timed_out) = self
-            .parked_cv
-            .wait_timeout_while(guard, timeout, |s| !s.parked)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if timed_out.timed_out() {
-            None
-        } else {
-            Some(guard)
-        }
+        self.parked_cv
+            .wait_while(guard, |s| !s.parked)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -1390,10 +1381,7 @@ mod tests {
     /// `sim_recv` is only a deadlock fuse, not the primary wake mechanism.
     #[test]
     fn blocked_recv_wakes_on_peer_close() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
         use std::thread;
-        use std::time::{Duration, Instant};
 
         // SAFETY: t is owned for the duration of this test; both threads
         // hold the address as a usize and reconstitute the pointer locally.
@@ -1403,11 +1391,9 @@ mod tests {
             let (client, server) = make_pair(t, "sim://peer-close-wake:0");
 
             let t_addr = t as usize;
-            let started = Arc::new(AtomicBool::new(false));
-            let started_clone = Arc::clone(&started);
+            let state = shell_state((*t).r#impl).expect("transport must be live");
 
             let recv_handle = thread::spawn(move || {
-                started_clone.store(true, Ordering::Release);
                 let mut buf = [0u8; 32];
                 let t_local = t_addr as *mut HewTransport;
                 #[allow(
@@ -1423,15 +1409,9 @@ mod tests {
                 }
             });
 
-            // Wait for the recv thread to actually enter sim_recv. A short
-            // sleep is enough because `started` flips before the FFI call,
-            // and the recv loop parks within microseconds.
-            let deadline = Instant::now() + Duration::from_secs(1);
-            while !started.load(Ordering::Acquire) {
-                assert!(Instant::now() <= deadline, "recv thread never started");
-                thread::sleep(Duration::from_millis(1));
-            }
-            thread::sleep(Duration::from_millis(20));
+            // Wait until the recv loop has parked on the empty connection.
+            drop(state.recv_park.wait_until_parked());
+            drop(state);
 
             // Close the client side — this should wake the blocked recv via
             // `cv.notify_all()` inside `sim_close_conn`.
@@ -1439,20 +1419,7 @@ mod tests {
             let ops = &*transport_ref.ops;
             ops.close_conn.unwrap()(transport_ref.r#impl, client);
 
-            // The recv must complete promptly (well under the watchdog).
-            // We give it a generous budget to absorb CI scheduler jitter
-            // but the actual wake is immediate.
-            let join_deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if recv_handle.is_finished() {
-                    break;
-                }
-                assert!(
-                    Instant::now() <= join_deadline,
-                    "recv did not wake within 5s of peer close"
-                );
-                thread::sleep(Duration::from_millis(5));
-            }
+            // The close wakes the parked recv.
             let outcome = recv_handle.join().expect("recv thread panicked");
             assert!(
                 matches!(outcome, SimRecvOutcome::PeerClosed),
@@ -1911,7 +1878,6 @@ mod tests {
     #[test]
     fn destroy_wakes_blocked_recv() {
         use std::thread;
-        use std::time::{Duration, Instant};
 
         // SAFETY: we leak `t` to the recv thread via a usize and
         // call sim_transport_free from the main thread; the recv
@@ -1964,10 +1930,7 @@ mod tests {
             // the recv loop is already blocked inside `cv.wait_while`,
             // not merely scheduled and not merely past a
             // table/partition check.
-            let park_guard = state
-                .recv_park
-                .wait_until_parked(Duration::from_secs(1))
-                .expect("recv loop never registered on cv within 1s of starting");
+            let park_guard = state.recv_park.wait_until_parked();
 
             // Release before destroying: the recv loop is *already*
             // parked inside `cv.wait_while` at this point (proven
@@ -1982,17 +1945,6 @@ mod tests {
 
             sim_transport_free(t);
 
-            let join_deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if recv_handle.is_finished() {
-                    break;
-                }
-                assert!(
-                    Instant::now() <= join_deadline,
-                    "recv did not wake within 5s of sim_transport_free"
-                );
-                thread::sleep(Duration::from_millis(5));
-            }
             let outcome = recv_handle.join().expect("recv thread panicked");
 
             // In strict mode there is exactly one possible outcome:

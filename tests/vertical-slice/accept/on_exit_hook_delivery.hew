@@ -1,4 +1,4 @@
-// A linked peer really crashes, so Watcher's #[on(exit)] hook must be invoked
+// A linked peer really crashes, so Watcher's #[on(link)] hook must be invoked
 // through the sys-dispatch ABI.  The bare CrashNotification spelling exercises
 // the canonical std::failure provenance path; stdout is emitted only by the
 // hook, so a successful run proves delivery as well as LLVM verification.
@@ -13,15 +13,19 @@ actor Crasher {
 
 actor Watcher {
     receive fn link_to(peer: Crasher) -> i64 {
-        link(peer);
-        1
+        match link(peer) {
+            .Ok(_) => 1,
+            .Err(_) => panic("link failed"),
+        }
     }
 
-    #[on(exit)]
+    #[on(link)]
     fn on_peer_exit(note: CrashNotification) {
         let _id = note.actor_id;
         println("exit-hook-fired");
     }
+
+    receive fn ping() {}
 }
 
 fn main() -> i64 {
@@ -31,9 +35,11 @@ fn main() -> i64 {
     match linked {
         .Ok(_) => {
             let _ = crasher.crash();
-            sleep(100ms);
+            // The crash queued the exit notification before the failed call
+            // returned, so the hook runs before this call is served.
+            let _ = watcher.ping();
             0
-        },
+        }
         .Err(_) => 2,
     }
 }

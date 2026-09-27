@@ -1,6 +1,6 @@
 #[resource]
 type Tok {
-    id: i64,
+    id: i64;
 }
 
 impl Tok {
@@ -10,12 +10,12 @@ impl Tok {
 }
 
 type ResRec {
-    t: Tok,
+    t: Tok;
 }
 
 enum Held {
-    Nothing,
-    One(Tok),
+    Nothing;
+    One(Tok);
 }
 
 #[opaque]
@@ -24,8 +24,8 @@ type DqH {
 
 #[resource]
 type Dq {
-    handle: DqH,
-    tag: i64,
+    handle: DqH;
+    tag: i64;
 }
 
 impl Dq {

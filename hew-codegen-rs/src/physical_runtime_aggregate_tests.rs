@@ -97,7 +97,7 @@ fn collection_module(map: bool) -> PhysicalModule {
     };
     physical(&format!(
         r"
-        type Entry {{ key: string, value: string }}
+        type Entry {{ key: string; value: string; }}
         fn inspect(index: i64, take: bool) -> i64 {{
             {setup}
             let entry = entries[index];
@@ -144,7 +144,7 @@ fn run_index(map: bool, failed: bool) {
     let callee = physical
         .callables
         .iter()
-        .find(|callee| callee.declaration.full_path() == "inspect")
+        .find(|callee| physical.defs.path(callee.declaration) == "inspect")
         .unwrap();
     let symbol = emitted_symbol(&physical, callee);
     let mut failures = Vec::new();

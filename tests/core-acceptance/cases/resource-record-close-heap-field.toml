@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-record-close-heap-field"
+intent = "Field-bearing `#[resource]` record `close()` oracle (spec §3.7.3 / §10(d)). Shape `heap_field` (resource record heap field leak slope below tolerance, resource record heap field no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/resource-record-close-heap-field.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

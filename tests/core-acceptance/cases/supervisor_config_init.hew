@@ -1,5 +1,3 @@
-// Historical supervisor fixture: its stop call still needs migration to the
-// decided close(sup) form, whose implementation is pending.
 // MIR-corpus fixture: the v0.6 init-closure restart model — config-derived
 // child init.
 //
@@ -13,13 +11,13 @@
 //     bootstrap emits per config-init child (the #2229 corpus-pin discipline:
 //     pin every new RuntimeCall family in the golden corpus).
 type AppConfig {
-    size: i64,
-    label: string,
+    size: i64;
+    label: string;
 }
 
 actor Cache {
-    var capacity: i64,
-    var name: string,
+    var capacity: i64;
+    var name: string;
     receive fn get_cap(_n: i64) -> i64 {
         capacity;
         name.len()
@@ -27,16 +25,20 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child cache: Cache(capacity: config.size, name: config.label),
+    child cache: Cache(capacity: config.size, name: config.label);
 }
 
 fn main() -> i64 {
     let cfg = AppConfig { size: 5, label: "hi" };
     let sup = spawn App(config: cfg);
     let _c = sup.cache;
-    supervisor_stop(sup);
+    {
+        let __hew_migrated_actor_1356 = sup;
+        stop(__hew_migrated_actor_1356);
+        stopped(__hew_migrated_actor_1356);
+    };
     0
 }

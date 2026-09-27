@@ -11,7 +11,7 @@ fn main() -> i64 {
         .Err(_) => return 1,
     };
     match tx.send(7) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => return 1,
     }
     let received = match rx.recv() {

@@ -6,5 +6,5 @@ import std.string;
 
 fn main() {
     let parts = string.split("", "");
-    assert_eq(parts.len(), 0);
+    assert(parts.len() == 0);
 }

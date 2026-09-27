@@ -1,0 +1,11 @@
+[[case]]
+id = "enum-resource-variant-xml-projected-helper-crash"
+intent = " Shape `xml_projected_helper_crash` (projected resource close then crash releases source snapshot once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-resource-variant-xml-projected-helper-crash.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok=9\nhandled-crash\nsurvived\n"
+stderr = "hew: failure: UserPanic (212): crash after explicit close\nhew: actor crash in Crasher.run (actor 2): UserPanic\n"
+exit = 1

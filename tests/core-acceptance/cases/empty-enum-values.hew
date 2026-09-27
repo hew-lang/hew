@@ -1,13 +1,20 @@
-enum QuietOutput {}
-enum QuietStepDisposition { Taken, Ignored }
+enum QuietOutput {
+}
+
+enum QuietStepDisposition {
+    Taken;
+    Ignored;
+}
+
 type QuietStep {
-    outputs: Vec<QuietOutput>,
-    disposition: QuietStepDisposition,
-    label: string,
+    outputs: Vec<QuietOutput>;
+    disposition: QuietStepDisposition;
+    label: string;
 }
 
 fn impossible(output: QuietOutput) -> i64 {
-    match output {}
+    match output {
+    }
 }
 
 fn step(label: string) -> QuietStep {
@@ -27,12 +34,16 @@ fn main() -> i64 {
         return 1;
     }
     match saved.outputs.get(0) {
-        .Some(output) => { return impossible(output); },
-        .None => {},
+        .Some(output) => {
+            return impossible(output);
+        }
+        .None => {}
     }
     match saved.disposition {
-        .Taken => {},
-        .Ignored => { return 2; },
+        .Taken => {}
+        .Ignored => {
+            return 2;
+        }
     }
     println(saved.label);
     println(report.label);

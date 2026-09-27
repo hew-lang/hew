@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-callee-consume-drop-enum-callee-mixed-arms"
+intent = "Leak oracle for the callee-side drop of a CONSUMED by-value enum param (#2732). Shape `enum_callee_mixed_arms_high` (mixed move out and read does not double free, mixed move out and read leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-callee-consume-drop-enum-callee-mixed-arms.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

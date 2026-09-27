@@ -15,7 +15,9 @@
 // `free(): invalid pointer`). Asserted against the BUILT NATIVE binary so
 // the double free cannot hide behind `hew run`'s masking.
 fn main() {
-    for x in { [99, 6, 100] } {
+    for x in {
+        [99, 6, 100]
+    } {
         println(x);
     }
 }

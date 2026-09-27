@@ -18,7 +18,7 @@ fn probe(module: &mut PhysicalModule) -> &mut PhysicalFunction {
     let callable = module
         .callables
         .iter()
-        .find(|c| c.declaration.full_path() == "probe")
+        .find(|c| module.defs.path(c.declaration) == "probe")
         .unwrap()
         .id;
     module
@@ -198,6 +198,7 @@ fn physical_defer_keeps_the_parked_linear_cleanup_cause() {
             ],
             SemTerminator::Panic {
                 message: fixture::boundary(ValueId(2), BoundaryDecision::Borrow),
+                assertion: None,
                 cleanup: fixture::edge(1),
             },
         ),

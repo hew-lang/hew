@@ -9,7 +9,7 @@ trait Labeled {
 }
 
 type Person {
-    tag: string,
+    tag: string;
 }
 
 impl Person {
@@ -19,7 +19,7 @@ impl Person {
 }
 
 type Bag {
-    items: Vec<i64>,
+    items: Vec<i64>;
 }
 
 impl Bag {
@@ -29,8 +29,8 @@ impl Bag {
 }
 
 enum Status {
-    Active(string),
-    Retired(i64),
+    Active(string);
+    Retired(i64);
 }
 
 impl Status {
@@ -49,13 +49,11 @@ fn describe(value: dyn Labeled) -> string {
 fn main() {
     let person: dyn Labeled = Person { tag: string.repeat("a", 64) };
     println(describe(person));
-
     var items: Vec<i64> = Vec.new();
     items.push(1);
     items.push(2);
     let bag: dyn Labeled = Bag { items: items };
     println(describe(bag));
-
     var crowd: Vec<dyn Labeled> = Vec.new();
     crowd.push(Status.Active(string.repeat("z", 32)));
     crowd.push(Status.Retired(1998));

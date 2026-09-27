@@ -45,7 +45,7 @@ fn main() {
     let (actor_name, actor_args) = handle_ty
         .actor_handle_identity()
         .unwrap_or_else(|| panic!("expected an actor handle, got {handle_ty:?}"));
-    assert_eq!(actor_name, "Buffer");
+    assert_eq!(actor_name.spelling.as_str(), "Buffer");
     assert_eq!(actor_args.len(), 1, "Buffer<i64> should have 1 type arg");
     assert!(
         matches!(&actor_args[0], Ty::I64),
@@ -115,7 +115,7 @@ fn checker_actor_rejects_non_send_type_argument_at_spawn() {
 
 #[test]
 fn checker_actor_accepts_structurally_send_record_argument() {
-    let source = "type Packet { value: i64 } actor Holder<T> { receive fn put(item: T) {} } fn main() { let _pid = spawn Holder<Packet>(); }";
+    let source = "type Packet {\n    value: i64;\n}\n\nactor Holder<T> {\n    receive fn put(item: T) {}\n}\n\nfn main() {\n    let _pid = spawn Holder<Packet>();\n}\n";
     let (_, output) = common::parse_and_typecheck_isolated(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -200,7 +200,7 @@ fn main() {
 
 #[test]
 fn checker_actor_infers_owner_from_init_and_substitutes_handler_reply() {
-    let source = "actor Holder<T> { var value: Option<T> = .None, init(seed: T) { value = .Some(seed); } receive fn get() -> Option<T> { value } } fn main() { let holder = spawn Holder(seed: 41); let result: i64 = holder.get().expect(\"reply\").expect(\"set\"); }";
+    let source = "actor Holder<T> {\n    var value: Option<T> = .None;\n    init(seed: T) {\n        value = .Some(seed);\n    }\n    receive fn get() -> Option<T> {\n        value\n    }\n}\n\nfn main() {\n    let holder = spawn Holder(seed: 41);\n    let result: i64 = holder.get().expect(\"reply\").expect(\"set\");\n}\n";
     let (_, output) = common::parse_and_typecheck_inline(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -225,9 +225,8 @@ fn checker_actor_handler_rejects_another_instances_payload() {
 ///   "cannot infer type for expression type at checker output boundary"
 #[test]
 fn checker_spawn_hashmap_new_infers_from_field_type() {
-    let source = r"
-actor Cache {
-    let store: HashMap<string, i64>,
+    let source = r"actor Cache {
+    let store: HashMap<string, i64>;
     receive fn size() -> i64 {
         store.len()
     }
@@ -252,9 +251,8 @@ fn main() {
 /// type.  Same root cause as the `HashMap` case.
 #[test]
 fn checker_spawn_vec_new_infers_from_field_type() {
-    let source = r"
-actor Log {
-    let entries: Vec<string>,
+    let source = r"actor Log {
+    let entries: Vec<string>;
     receive fn count() -> i64 {
         entries.len()
     }
@@ -281,9 +279,8 @@ fn main() {
 ///   "type mismatch: expected `T`, found `i64`".
 #[test]
 fn checker_spawn_substitutes_type_args_into_generic_field_arg() {
-    let source = r"
-actor Box<T> {
-    let value: T,
+    let source = r"actor Box<T> {
+    let value: T;
     receive fn touch() {}
 }
 
@@ -307,9 +304,8 @@ fn main() {
 /// `i64`, not the generic `T`).
 #[test]
 fn checker_spawn_generic_field_arg_type_mismatch_still_reported() {
-    let source = r#"
-actor Box<T> {
-    let value: T,
+    let source = r#"actor Box<T> {
+    let value: T;
     receive fn touch() {}
 }
 

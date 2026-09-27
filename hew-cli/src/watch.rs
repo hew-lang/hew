@@ -67,6 +67,140 @@ pub fn cmd_watch(args: &crate::args::WatchArgs) {
     watch_loop(&input, args.run, args.clear, args.debounce, &options);
 }
 
+/// Reuse the watcher for isolated `hew test` child runs. A child may fail a
+/// test without ending the watch loop; each changed file gets its own rerun.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one watch loop owns filesystem events, process replacement, and test selection"
+)]
+pub fn cmd_test_watch(args: &crate::args::TestArgs) {
+    let selections = if args.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        args.paths.clone()
+    };
+    let selected = selections
+        .iter()
+        .map(|selection| {
+            let spelling = selection.to_string_lossy();
+            let file = spelling
+                .rsplit_once("::")
+                .map_or(spelling.as_ref(), |(file, _)| file);
+            let path = Path::new(file)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(file));
+            (path.clone(), path.is_dir(), selection.clone())
+        })
+        .collect::<Vec<_>>();
+    let original = std::env::args_os()
+        .skip(1)
+        .filter(|arg| arg != "--watch")
+        .collect::<Vec<_>>();
+    run_test_child(&original);
+    emit_watch_ready(&watch_palette());
+
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        if let Ok(event) = result {
+            let _ = tx.send(event);
+        }
+    })
+    .unwrap_or_else(|error| {
+        eprintln!("Error: cannot create test watcher: {error}");
+        std::process::exit(1);
+    });
+    let mut watched_roots = std::collections::HashSet::new();
+    for (path, is_dir, _) in &selected {
+        let watch_path = if *is_dir {
+            path.as_path()
+        } else {
+            path.parent().unwrap_or_else(|| Path::new("."))
+        };
+        if watched_roots.insert(watch_path.to_path_buf()) {
+            watcher
+                .watch(
+                    watch_path,
+                    if *is_dir {
+                        RecursiveMode::Recursive
+                    } else {
+                        RecursiveMode::NonRecursive
+                    },
+                )
+                .unwrap_or_else(|error| {
+                    eprintln!("Error: cannot watch {}: {error}", watch_path.display());
+                    std::process::exit(1);
+                });
+        }
+    }
+
+    while let Ok(event) = rx.recv() {
+        let changed = event.paths.iter().find(|path| {
+            matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+            ) && path
+                .extension()
+                .is_some_and(|extension| extension == "hew" || (args.doc && extension == "md"))
+                && !path.components().any(|component| {
+                    matches!(component.as_os_str().to_str(), Some("target" | ".git"))
+                })
+                && selected.iter().any(|(selection, is_dir, _)| {
+                    if *is_dir {
+                        path.starts_with(selection)
+                    } else {
+                        path.as_path() == selection.as_path() || path.parent() == selection.parent()
+                    }
+                })
+        });
+        let Some(changed) = changed else { continue };
+        let changed = (*changed).clone();
+        while rx.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        emit_changed_file(&changed.display().to_string(), &watch_palette());
+        let focused = changed.is_file()
+            && (changed
+                .file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().ends_with("_test"))
+                || (args.doc && changed.extension().is_some_and(|ext| ext == "md")))
+            && selected
+                .iter()
+                .any(|(path, is_dir, _)| *is_dir || path == &changed);
+        if !focused {
+            // A helper, production peer, or deletion can affect any selected
+            // test, so refresh discovery and rerun the full selection.
+            run_test_child(&original);
+            emit_watch_ready(&watch_palette());
+            continue;
+        }
+        let mut invocation = original.clone();
+        for selection in &args.paths {
+            if let Some(position) = invocation
+                .iter()
+                .position(|argument| argument == selection.as_os_str())
+            {
+                invocation.remove(position);
+            }
+        }
+        let exact = selected.iter().find_map(|(path, is_dir, spelling)| {
+            (!*is_dir && path == &changed && spelling.to_string_lossy().contains("::"))
+                .then(|| spelling.as_os_str().to_os_string())
+        });
+        invocation.push(exact.unwrap_or_else(|| changed.as_os_str().to_os_string()));
+        run_test_child(&invocation);
+        emit_watch_ready(&watch_palette());
+    }
+}
+
+fn run_test_child(args: &[std::ffi::OsString]) {
+    let executable = std::env::current_exe().unwrap_or_else(|error| {
+        eprintln!("Error: cannot locate hew for test watch: {error}");
+        std::process::exit(1);
+    });
+    match std::process::Command::new(executable).args(args).status() {
+        Ok(_) => {}
+        Err(error) => eprintln!("Error: cannot rerun tests: {error}"),
+    }
+}
+
 fn watch_loop(
     input: &str,
     run: bool,

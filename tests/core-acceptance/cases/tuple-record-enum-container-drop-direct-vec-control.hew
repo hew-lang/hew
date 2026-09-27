@@ -1,0 +1,6 @@
+fn main() {
+    var items = Vec.new();
+    items.push("first");
+    items.push("second");
+    println(f"len={items.len()}");
+}

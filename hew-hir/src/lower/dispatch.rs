@@ -1,0 +1,999 @@
+//! Comparison, display, assertion and interpolation dispatch.
+
+use super::*;
+
+impl LowerCtx {
+    /// Lower a `==`/`!=`/`<`/`<=`/`>`/`>=` binary expression the checker
+    /// marked for user-impl dispatch (D340 — see [`UserComparisonDispatch`])
+    /// into a call to the resolved impl method, rather than the structural
+    /// comparison codegen path `Expr::Binary` otherwise lowers to.
+    ///
+    /// No trait declares `eq`/`lt` (`Eq`/`Ord`/`PartialOrd` are compiler
+    /// marker traits with no `trait_defs` entry — see `MarkerTrait` in
+    /// `hew-types/src/traits.rs`), so there is no independent contract
+    /// pinning these method names or the derived-order convention below;
+    /// this lowering is their sole producer and so is the one place that
+    /// convention is decided: `Eq` calls `<type>::eq(left, right)`, negated
+    /// for `!=`; `Ord`/`PartialOrd` calls `<type>::lt`, permuting/negating
+    /// the operands so every ordering operator reduces to one user-provided
+    /// `lt` — `<` is `lt(a,b)`, `>` is `lt(b,a)`, `<=` is `!lt(b,a)`, `>=` is
+    /// `!lt(a,b)`.
+    pub(super) fn lower_user_comparison_dispatch(
+        &mut self,
+        dispatch: &UserComparisonDispatch,
+        op: BinaryOp,
+        left: HirExpr,
+        right: HirExpr,
+        span: Span,
+    ) -> HirExpr {
+        let (method, args, negate): (&hew_types::DefId, Vec<HirExpr>, bool) = match dispatch {
+            UserComparisonDispatch::Eq { method } => {
+                (method, vec![left, right], op == BinaryOp::NotEqual)
+            }
+            UserComparisonDispatch::Ord { method }
+            | UserComparisonDispatch::PartialOrd { method } => match op {
+                BinaryOp::Greater => (method, vec![right, left], false),
+                BinaryOp::LessEqual => (method, vec![right, left], true),
+                BinaryOp::GreaterEqual => (method, vec![left, right], true),
+                // `Less`, and any op the checker never records `Ord`
+                // dispatch for, share the direct `lt(left, right)` shape.
+                _ => (method, vec![left, right], false),
+            },
+        };
+        let Some(symbol) = self.registered_impl_method_symbol(*method) else {
+            let name = self.defs.path(*method).to_string();
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.clone(),
+                    reason: "selected comparison impl has no emitted body symbol".to_string(),
+                },
+                span.clone(),
+                "checker selected a comparison implementation but HIR did not emit its body",
+            ));
+            return self.unsupported_expr(span, format!("comparison dispatch: missing {name}"));
+        };
+        let Some(call) = self.build_user_fn_call(&symbol, args, span.clone()) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: symbol.clone(),
+                    reason: format!("no fn_registry entry for user comparison impl `{symbol}`"),
+                },
+                span.clone(),
+                "checker recorded a user comparison dispatch but HIR has no corresponding \
+                 impl symbol — checker-HIR contract violation",
+            ));
+            return self.unsupported_expr(span, format!("comparison dispatch: missing {symbol}"));
+        };
+        if negate {
+            self.build_bool_not(call, span)
+        } else {
+            call
+        }
+    }
+
+    /// Build a [`HirExprKind::CallTraitMethodStatic`] for the
+    /// `MethodCallRewrite::StaticTraitDispatch` arm of `lower_method_call` and
+    /// the abstract-`T` arm of `lower_display_dispatch`. SIR selects the
+    /// concrete callee from the target identities and the substituted
+    /// receiver, and fails closed when no impl is registered.
+    pub(super) fn make_static_trait_dispatch_call(
+        &mut self,
+        receiver: HirExpr,
+        target: hew_types::CallTarget,
+        receiver_type_param: hew_types::ParamHead,
+        args: LoweredCallArgs,
+        ret_ty: ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        if !self.ensure_executable_target(&target, "static trait call", span) {
+            return HirExprKind::Unsupported("static trait call has no checker target".to_string());
+        }
+        HirExprKind::CallTraitMethodStatic {
+            receiver: Box::new(receiver),
+            target,
+            receiver_type_param,
+            args: args.args,
+            evaluation_order: args.evaluation_order,
+            ret_ty,
+        }
+    }
+
+    /// Preserve method-level instantiation facts until SIR selects the impl
+    /// from the concrete receiver. Impl parameters are bound there separately;
+    /// the checker recorded only the method's parameters at this call site.
+    pub(super) fn record_static_trait_type_args(&mut self, span: &Span, site: SiteId) {
+        let Some(arguments) = self.call_type_args.get(&self.mk_key(span)).cloned() else {
+            return;
+        };
+        let mut resolved = Vec::with_capacity(arguments.len());
+        for argument in &arguments {
+            match ResolvedTy::from_ty(argument) {
+                Ok(argument) => {
+                    resolved.push(self.restore_type_declaration_facts(argument));
+                }
+                Err(error) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "static trait method type arguments".to_string(),
+                            reason: error.to_string(),
+                        },
+                        span.clone(),
+                        "static trait method requires checker-resolved type arguments",
+                    ));
+                    return;
+                }
+            }
+        }
+        self.call_site_type_args.insert(site, resolved);
+    }
+
+    /// Emit a `Display::fmt` static trait-dispatch over an abstract type
+    /// parameter `type_param_name` (#1565). The concrete `Display` impl is
+    /// selected per monomorphisation, which fails closed if no impl is
+    /// registered. Result is always `string`.
+    pub(super) fn build_display_static_dispatch(
+        &mut self,
+        value: HirExpr,
+        target: hew_types::CallTarget,
+        type_param_name: hew_types::ParamHead,
+        span: Span,
+    ) -> HirExpr {
+        let kind = self.make_static_trait_dispatch_call(
+            value,
+            target,
+            type_param_name,
+            LoweredCallArgs {
+                args: Vec::new(),
+                evaluation_order: Vec::new(),
+            },
+            ResolvedTy::String,
+            &span,
+        );
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::String,
+            intent: IntentKind::Read,
+            kind,
+            span,
+        }
+    }
+
+    /// Lower a single interpolant of an f-string to a `string`-typed HIR
+    /// expression by dispatching through `Display`.
+    ///
+    /// The display *method name* is resolved through
+    /// [`hew_types::LangItemRegistry`] (`LANG_ITEM_DISPLAY_FMT` key)
+    /// rather than hard-coded so renaming the stdlib `fmt` method only
+    /// requires moving the `#[lang_item("display_fmt")]` attribute. With
+    /// no registry entry, every interpolation is rejected fail-closed.
+    ///
+    /// Concretely:
+    ///
+    /// * `string` values prefer a user `impl Display for string` if one
+    ///   exists (resolved through the per-type method symbol); otherwise
+    ///   they pass through identity. The stdlib provides the identity
+    ///   impl so a non-user-overridden `string` interpolation does call
+    ///   it.
+    /// * Primitives route through the per-type `to_string_*` catalog
+    ///   entries that back the built-in `impl Display for <primitive>`
+    ///   blocks in `std::builtins`.
+    /// * Named user types route through the registry-derived method
+    ///   symbol on the user type (`<Type>::<method_name>`).
+    /// * Any path that would reach a fabricated fallback emits a
+    ///   `CheckerBoundaryViolation` and returns an `Unsupported`
+    ///   sentinel — the checker's `require_display_impl` gate is the
+    ///   authoritative reject point. Reaching the sentinel means
+    ///   compilation halts: never a silent empty-string substitute.
+    pub(super) fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        let dispatch_ty = value.ty.clone();
+        self.lower_display_dispatch_for_type(value, dispatch_ty, span)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "display lowering keeps all fail-closed dispatch cases in one authority"
+    )]
+    pub(super) fn lower_display_dispatch_for_type(
+        &mut self,
+        value: HirExpr,
+        dispatch_ty: ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        // Resolve the Display method name through the lang-item registry.
+        // Missing entry is fail-closed: f-string lowering cannot synthesise
+        // dispatch without a method-name binding.
+        let Some(display_binding) = self.lang_items.get(hew_types::LANG_ITEM_DISPLAY_FMT) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Display::fmt".to_string(),
+                    reason: format!(
+                        "no lang-item registered for key `{}`",
+                        hew_types::LANG_ITEM_DISPLAY_FMT
+                    ),
+                },
+                span.clone(),
+                "f-string lowering requires a trait method tagged \
+                 `#[lang_item(\"display_fmt\")]` in scope",
+            ));
+            return self.unsupported_expr(span, "f-string display dispatch: no display lang-item");
+        };
+        let Some(method_name) = display_binding.method_name.clone() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Display::fmt".to_string(),
+                    reason: "display lang-item is missing its method spelling".to_string(),
+                },
+                span.clone(),
+                "f-string lowering requires a method-level display lang item",
+            ));
+            return self.unsupported_expr(
+                span,
+                "f-string display dispatch: malformed display lang-item",
+            );
+        };
+        let Some((display_trait, display_method)) = self.lang_items.display_method_identity()
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Display::fmt".to_string(),
+                    reason: "display lang-item lacks canonical declaration identities".to_string(),
+                },
+                span.clone(),
+                "f-string lowering requires checker-registered Display declaration identities",
+            ));
+            return self
+                .unsupported_expr(span, "f-string display dispatch: untyped display lang-item");
+        };
+        let display_target = hew_types::CallTarget::static_trait(display_trait, display_method);
+        let ty = dispatch_ty;
+        match &ty {
+            // String: route through a user `impl Display for string` if one
+            // is registered in the user's OWN source (a root-level impl,
+            // bare `string::fmt` symbol — see `fstring_string_routes_
+            // through_user_display_impl`); otherwise the stdlib's own
+            // `impl Display for string` in `std/builtins.hew`, discovered
+            // like any imported module's impl (see
+            // `insert_builtins_display_module`), so its symbol carries that
+            // module prefix, exactly like `duration` below. The stdlib
+            // identity impl ordinarily makes this a real (no-op) call so a
+            // user impl can transparently replace it; falling through to
+            // raw identity below only happens with neither impl registered
+            // (zero-stdlib unit tests).
+            ResolvedTy::String => {
+                let user_symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                let stdlib_symbol =
+                    crate::node::HirImplBlock::method_symbol("std.builtins.string", &method_name);
+                if let Some(call) =
+                    self.build_user_fn_call(&user_symbol, vec![value.clone()], span.clone())
+                {
+                    call
+                } else if let Some(call) =
+                    self.build_user_fn_call(&stdlib_symbol, vec![value.clone()], span.clone())
+                {
+                    call
+                } else {
+                    // No registered impl at all — fall through to identity.
+                    value
+                }
+            }
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char => self.lower_scalar_display(value, &ty, span),
+            // `duration` has a pure-Hew `impl Display for duration` in
+            // `std/builtins.hew`, discovered and lowered like any imported
+            // module's impl (see `insert_builtins_display_module`), so
+            // dispatch to its module-qualified fmt symbol exactly like a
+            // user named-type Display impl. The `_` fail-closed arm below
+            // would otherwise reject it (checker–HIR contract violation)
+            // even though the checker admitted it.
+            ResolvedTy::Duration => self.dispatch_display_to_named_impl(
+                "std.builtins.duration",
+                &[],
+                &method_name,
+                value,
+                span,
+            ),
+            ResolvedTy::Named {
+                head: hew_types::TypeHead::Builtin(BuiltinType::NodeId),
+                ..
+            } => self.build_catalog_call("hew_node_id_display", vec![value], span),
+            ResolvedTy::Named {
+                head: hew_types::TypeHead::Builtin(BuiltinType::Location),
+                ..
+            } => self.build_catalog_call("hew_location_display", vec![value], span),
+            ResolvedTy::Named {
+                head: hew_types::TypeHead::Builtin(BuiltinType::RemotePid),
+                ..
+            } => self.build_catalog_call("hew_remote_pid_display", vec![value], span),
+            ResolvedTy::Named { head, args, .. } => {
+                let name = head.registry_key();
+                // An abstract type parameter `T: Display` (the checker lowers
+                // `T` to a bare `Named`) defers to per-monomorphisation static
+                // dispatch; a concrete user type calls its `impl Display` fmt
+                // symbol directly (byte-identical to the pre-#1565 path).
+                if let hew_types::TypeHead::Param(parameter) = head {
+                    return self.build_display_static_dispatch(
+                        value,
+                        display_target,
+                        *parameter,
+                        span,
+                    );
+                }
+                let name = name.to_string();
+                let type_args = args.clone();
+                self.dispatch_display_to_named_impl(&name, &type_args, &method_name, value, span)
+            }
+            ResolvedTy::TypeParam { name } => {
+                // Abstract type parameter `T` carrying a `Display` bound — the
+                // checker's `require_display_impl` / generic-bound gate already
+                // verified it. Defer the concrete `Display::fmt` selection to
+                // monomorphisation (#1565); the concrete type is never
+                // re-derived here.
+                let type_param_name = *name;
+                self.build_display_static_dispatch(value, display_target, type_param_name, span)
+            }
+            _ => {
+                // Same invariant as the named-type arm: the checker should
+                // have rejected this interpolant via `require_display_impl`.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("Display::{method_name}"),
+                        reason: format!("no Display dispatch shape for type `{ty:?}`"),
+                    },
+                    span.clone(),
+                    "checker accepted a Display interpolant of an unsupported type \
+                     shape — checker–HIR contract violation",
+                ));
+                self.unsupported_expr(span, "f-string display dispatch: unsupported type shape")
+            }
+        }
+    }
+
+    pub(super) fn build_structural_format_call(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        let fn_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+            params: vec![value.ty.clone()],
+            ret: Box::new(ResolvedTy::String),
+        };
+        let callee = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: fn_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Unit),
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::String,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Call {
+                target: hew_types::CallTarget::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::StructuralFormat,
+                ),
+                callee: Box::new(callee),
+                args: vec![value],
+                evaluation_order: Vec::new(),
+            },
+            span,
+        }
+    }
+
+    /// Render one scalar through its `to_string_*` catalog builtin, widening
+    /// first when the scalar is narrower than the conversion's ABI type
+    /// (`f32`/`i8`/`i16`/`u16`/`isize`/`usize`). The runtime exports one entry
+    /// per canonical width, so the cast is what lets the narrow widths share
+    /// it, and it keeps the argument type equal to the runtime contract's.
+    pub(super) fn lower_scalar_display(
+        &mut self,
+        value: HirExpr,
+        ty: &ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        let (builtin, abi_ty) = scalar_display_builtin(ty);
+        let argument = if *ty == abi_ty {
+            value
+        } else {
+            HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: abi_ty.clone(),
+                intent: IntentKind::Read,
+                kind: HirExprKind::NumericCast {
+                    value: Box::new(value),
+                    from_ty: ty.clone(),
+                    to_ty: abi_ty,
+                },
+                span: span.clone(),
+            }
+        };
+        self.build_catalog_call(builtin, vec![argument], span)
+    }
+
+    /// Dispatch a `Display::fmt` call to a concrete named/builtin type's impl
+    /// symbol (`<type>::fmt`).
+    ///
+    /// Shared by the duration and concrete-named-type arms of
+    /// [`Self::lower_display_dispatch`]. The checker's `require_display_impl`
+    /// gate guarantees the impl exists; reaching the `else` here means the
+    /// symbol is absent from the HIR fn registry — a checker–HIR contract
+    /// violation surfaced fail-closed rather than fabricating an empty string.
+    pub(super) fn dispatch_display_to_named_impl(
+        &mut self,
+        type_name: &str,
+        type_args: &[ResolvedTy],
+        method_name: &str,
+        value: HirExpr,
+        span: Span,
+    ) -> HirExpr {
+        let symbol = crate::node::HirImplBlock::method_symbol(type_name, method_name);
+        if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
+            self.register_display_impl_monomorphisation(&symbol, type_args, &span, call.site);
+            return call;
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: symbol.clone(),
+                reason: format!("no fn_registry entry for display impl `{symbol}`"),
+            },
+            span.clone(),
+            "checker accepted a Display interpolant but HIR has no \
+             corresponding impl symbol — checker–HIR contract violation",
+        ));
+        self.unsupported_expr(span, format!("display dispatch: missing {symbol}"))
+    }
+
+    /// Interpolating a value whose `impl Display` block is generic
+    /// (`impl<E> Display for ActorError<E>`) needs the same
+    /// per-instantiation monomorphisation an ordinary `value.fmt()` call gets.
+    /// The f-string spine synthesises its own call site, so no checker
+    /// `call_type_args` entry exists for it; the concrete type's own arguments
+    /// are the substitution, taken positionally against the impl block's
+    /// declared parameters.
+    pub(super) fn register_display_impl_monomorphisation(
+        &mut self,
+        symbol: &str,
+        type_args: &[ResolvedTy],
+        span: &Span,
+        call_site: SiteId,
+    ) {
+        let Some(entry) = self.fn_registry.get(symbol) else {
+            return;
+        };
+        if entry.linkage.is_some() || entry.type_params.is_empty() {
+            return;
+        }
+        let origin = entry.id;
+        let builtin_family = entry.builtin_family;
+        if entry.type_params.len() != type_args.len() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: symbol.to_string(),
+                    reason: format!(
+                        "generic Display impl declares {} parameters, interpolated type carries {}",
+                        entry.type_params.len(),
+                        type_args.len()
+                    ),
+                },
+                span.clone(),
+                "a generic Display impl must be parameterised by its own self type's arguments",
+            ));
+            return;
+        }
+        let type_args = type_args.to_vec();
+        self.call_site_type_args
+            .insert(call_site, type_args.clone());
+        if builtin_family.is_some() {
+            return;
+        }
+        if type_args
+            .iter()
+            .any(super::substitution::contains_abstract_symbol)
+        {
+            return;
+        }
+        let Some(declaration) = self
+            .impl_method_body_symbols
+            .iter()
+            .chain(self.impl_body_plan.symbols.iter())
+            .find_map(|(declaration, emitted)| (emitted == symbol).then_some(*declaration))
+        else {
+            return;
+        };
+        let _ = self.mono_registry.insert(MonoKey {
+            origin,
+            declaration,
+            linker_symbol: symbol.to_string(),
+            type_args,
+        });
+    }
+
+    /// #1565: route `println` / `print` / `to_string` of a value whose type
+    /// is an abstract type parameter `T: Display` through the Display
+    /// static-trait-dispatch spine (`lower_display_dispatch`).
+    ///
+    /// The concrete-ABI overloads (`println_i64`, `to_string_str`, …) are
+    /// resolved earlier by `stdlib_catalog::resolve_overload` and never reach
+    /// here; this only fires when that lookup returned `None` because the
+    /// single argument is a `ResolvedTy::TypeParam`. `to_string` yields the
+    /// rendered string directly; `print` / `println` wrap it in the
+    /// `print_str` / `println_str` catalog builtins.
+    ///
+    /// Returns `Err(args)` (handing the arguments back so the caller can fall
+    /// through to the fail-closed `UnresolvedBuiltinOverload`) when the call
+    /// is not one of those three builtins over exactly one type-parameter
+    /// argument, or when no Display method lang-item is in scope.
+    pub(super) fn try_lower_generic_display_builtin(
+        &mut self,
+        name: &str,
+        args: Vec<HirExpr>,
+        span: &Span,
+    ) -> Result<(HirExprKind, ResolvedTy), Vec<HirExpr>> {
+        let is_display_surface = matches!(name, "println" | "print" | "to_string");
+        // Route a single `Display` argument through the Display dispatch spine
+        // whenever no concrete-ABI overload matched. Reaching this fallback
+        // means `stdlib_catalog::resolve_overload` found no monomorphic entry
+        // (`println_i32`, `to_string_str`, …) for the argument type, yet the
+        // argument is already known to implement `Display`: `println` / `print`
+        // / `to_string` are generic `T: Display` builtins, so the checker's
+        // type-parameter bound enforcement (`Checker::enforce_type_param_bounds`
+        // / `type_satisfies_trait_bound` in `check/generics.rs`) rejects a
+        // non-`Display` argument before HIR lowering runs — `println(blob)` on a
+        // type with no `impl Display` fails that bound gate with "does not
+        // implement trait `Display` required by `T`" and never reaches here.
+        // (That is a distinct gate from the f-string-only `require_display_impl`,
+        // which validates each interpolation part.) So the argument count is the
+        // only condition worth testing: `lower_display_dispatch` already has a
+        // working arm for every shape a `Display` value can take — `string`,
+        // every scalar (incl. `char` and the narrow ints via
+        // `scalar_display_builtin`), `duration`, named-`instant`, identity
+        // aggregates, concrete named `impl Display` types, and abstract type
+        // parameters `T: Display` — and fails closed on anything else.
+        // Enumerating a subset of those shapes here only re-hid the rest behind
+        // `UnresolvedBuiltinOverload` (#2351: `char`/`i8`/`f32`; #2492: named
+        // types with a real `impl Display`), even though f-string interpolation
+        // of the identical value already renders it fine through this shell.
+        let single_dispatchable = args.len() == 1;
+        if !is_display_surface || !single_dispatchable || self.lang_items.display_method().is_none()
+        {
+            return Err(args);
+        }
+        let value = args
+            .into_iter()
+            .next()
+            .expect("single argument checked above");
+        let rendered = self.lower_display_dispatch(value, span.clone());
+        let lowered = match name {
+            "to_string" => (rendered.kind, rendered.ty),
+            "print" => {
+                let call = self.build_catalog_call("print_str", vec![rendered], span.clone());
+                (call.kind, call.ty)
+            }
+            // `println`
+            _ => {
+                let call = self.build_catalog_call("println_str", vec![rendered], span.clone());
+                (call.kind, call.ty)
+            }
+        };
+        Ok(lowered)
+    }
+
+    /// Desugar `assert(condition)` and `assert(condition, message)` into
+    /// ordinary HIR: a branch that panics with the failure report.
+    ///
+    /// ```text
+    /// {
+    ///     let __hew_assert_left_N  = <left>;     // comparisons only
+    ///     let __hew_assert_right_N = <right>;
+    ///     if !(__hew_assert_left_N <op> __hew_assert_right_N) {
+    ///         panic("assertion failed: <text>[: <message>]\n  left: …\n right: …");
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// When the condition's top-level operator is a comparison, both operands
+    /// are bound first, so each evaluates exactly once although the comparison
+    /// and the report both read it; the comparison is rebuilt from the bindings
+    /// through the same user-impl or structural path a written comparison
+    /// takes. Every other condition, and every condition in a `defer` body
+    /// (which may not call a rendering that can fault), is evaluated once as
+    /// written and reported by its text alone. The message
+    /// sits on the failure branch, so it is evaluated only when the assertion
+    /// fails. `<text>` is the condition's canonical source text.
+    pub(super) fn lower_assertion(
+        &mut self,
+        args: &[CallArg],
+        comparison: Option<([&Spanned<Expr>; 2], BinaryOp)>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let (condition, message) = match args {
+            [condition] => (condition.expr(), None),
+            [condition, message] => (condition.expr(), Some(message.expr())),
+            _ => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "assert".to_string(),
+                        reason: "assertion did not receive a condition and an optional message"
+                            .to_string(),
+                    },
+                    span.clone(),
+                    "checker must reject an assertion with the wrong arity",
+                ));
+                return (
+                    HirExprKind::Unsupported(
+                        "`assert` takes a condition and an optional message".into(),
+                    ),
+                    ResolvedTy::Unit,
+                );
+            }
+        };
+        let condition_span = &condition.1;
+        let text = hew_parser::fmt::format_expression(condition);
+
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let mut statements = Vec::new();
+        let mut operands_rendered = None;
+        let holds = match comparison {
+            Some((operands, op)) if self.defer_body_depth == 0 => {
+                let (comparison, rendered) = self.bind_compared_operands(
+                    operands,
+                    op,
+                    condition_span,
+                    span,
+                    &mut statements,
+                );
+                operands_rendered = Some((rendered, op));
+                comparison
+            }
+            _ => self.lower_expr(condition, IntentKind::Read),
+        };
+
+        let guard = self.assertion_guard(holds, &text, message, operands_rendered, span);
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(guard),
+            span: span.clone(),
+        });
+        self.pop_scope();
+
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements,
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: span.clone(),
+            }),
+            ResolvedTy::Unit,
+        )
+    }
+
+    /// Bind both compared operands once, left then right, and rebuild the
+    /// comparison from the bindings through the same user-impl or structural
+    /// path a written comparison takes. Returns the comparison and both
+    /// operands rendered for the report.
+    fn bind_compared_operands(
+        &mut self,
+        operands: [&Spanned<Expr>; 2],
+        op: BinaryOp,
+        condition_span: &Span,
+        span: &Span,
+        statements: &mut Vec<HirStmt>,
+    ) -> (HirExpr, [HirExpr; 2]) {
+        let mut refs = Vec::with_capacity(2);
+        for (role, operand) in ["left", "right"].into_iter().zip(operands) {
+            let operand_key = self.mk_key(&operand.1);
+            let rendering = self
+                .unrendered_assertion_operands
+                .contains(&operand_key)
+                .then(|| self.expr_types.get(&operand_key).cloned())
+                .flatten();
+            let value = self.lower_expr(operand, IntentKind::Read);
+            let ty = value.ty.clone();
+            let name = format!("__hew_assert_{role}_{}", self.ids.binding().0);
+            let binding = self.bind(name.clone(), ty.clone(), false, operand.1.clone());
+            let id = binding.id;
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(binding, Some(value)),
+                span: operand.1.clone(),
+            });
+            refs.push((name, id, ty, operand.1.clone(), rendering));
+        }
+        let reference = |ctx: &mut Self, index: usize| {
+            let (name, id, ty, operand_span, _) = &refs[index];
+            ctx.make_binding_ref(
+                name.clone(),
+                *id,
+                ty.clone(),
+                IntentKind::Read,
+                operand_span.clone(),
+            )
+        };
+        let left_ref = reference(self, 0);
+        let right_ref = reference(self, 1);
+        let comparison_key = self.mk_key(condition_span);
+        let comparison =
+            if let Some(dispatch) = self.user_comparison_dispatch.get(&comparison_key).cloned() {
+                self.lower_user_comparison_dispatch(
+                    &dispatch,
+                    op,
+                    left_ref,
+                    right_ref,
+                    condition_span.clone(),
+                )
+            } else {
+                self.make_expr(
+                    HirExprKind::Binary {
+                        op,
+                        left: Box::new(left_ref),
+                        right: Box::new(right_ref),
+                    },
+                    ResolvedTy::Bool,
+                    IntentKind::Read,
+                    condition_span.clone(),
+                )
+            };
+        let rendered = [0, 1].map(|index| {
+            let value = reference(self, index);
+            let rendering = refs[index].4.clone();
+            self.render_assertion_operand(value, rendering.as_ref(), span)
+        });
+        (comparison, rendered)
+    }
+
+    /// The failure report: the condition text, the message on the failure
+    /// branch, and the rendered operands of a comparison.
+    fn assertion_report(
+        &mut self,
+        text: &str,
+        message: Option<&Spanned<Expr>>,
+        operands: Option<[HirExpr; 2]>,
+        span: &Span,
+    ) -> HirExpr {
+        let mut report =
+            self.build_string_literal_expr(format!("assertion failed: {text}"), span.clone());
+        if let Some(message) = message {
+            let separator = self.build_string_literal_expr(": ".to_string(), span.clone());
+            let message = self.lower_expr(message, IntentKind::Read);
+            report =
+                self.build_catalog_call("string_concat", vec![report, separator], span.clone());
+            report = self.build_catalog_call("string_concat", vec![report, message], span.clone());
+        }
+        if let Some([left, right]) = operands {
+            for (label, rendered) in [("\n  left: ", left), ("\n right: ", right)] {
+                let label = self.build_string_literal_expr(label.to_string(), span.clone());
+                report =
+                    self.build_catalog_call("string_concat", vec![report, label], span.clone());
+                report =
+                    self.build_catalog_call("string_concat", vec![report, rendered], span.clone());
+            }
+        }
+        report
+    }
+
+    /// `if !holds { panic(report) }`, retaining compared values separately in
+    /// the typed fault so editors can show a diff without parsing report text.
+    fn assertion_guard(
+        &mut self,
+        holds: HirExpr,
+        text: &str,
+        message: Option<&Spanned<Expr>>,
+        operands: Option<([HirExpr; 2], BinaryOp)>,
+        span: &Span,
+    ) -> HirExpr {
+        let then_scope = self.ids.scope();
+        self.push_scope();
+        let mut statements = Vec::new();
+        let panic_call = if let Some((rendered, operator)) = operands {
+            let mut bindings = Vec::with_capacity(2);
+            for (role, value) in ["left", "right"].into_iter().zip(rendered) {
+                let name = format!("__hew_assert_rendered_{role}_{}", self.ids.binding().0);
+                let binding = self.bind(name.clone(), ResolvedTy::String, false, span.clone());
+                let id = binding.id;
+                statements.push(HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Let(binding, Some(value)),
+                    span: span.clone(),
+                });
+                bindings.push((name, id));
+            }
+            let report_refs = [0, 1].map(|index| {
+                let (name, id) = &bindings[index];
+                self.make_binding_ref(
+                    name.clone(),
+                    *id,
+                    ResolvedTy::String,
+                    IntentKind::Read,
+                    span.clone(),
+                )
+            });
+            let report = self.assertion_report(text, message, Some(report_refs), span);
+            let operator = self.build_string_literal_expr(operator.to_string(), span.clone());
+            let payload_refs = [0, 1].map(|index| {
+                let (name, id) = &bindings[index];
+                self.make_binding_ref(
+                    name.clone(),
+                    *id,
+                    ResolvedTy::String,
+                    IntentKind::Read,
+                    span.clone(),
+                )
+            });
+            let [left, right] = payload_refs;
+            self.build_catalog_call(
+                "assertion_panic",
+                vec![report, operator, left, right],
+                span.clone(),
+            )
+        } else {
+            let report = self.assertion_report(text, message, None, span);
+            self.build_catalog_call("panic", vec![report], span.clone())
+        };
+        self.pop_scope();
+        let then_block = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::Never,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: then_scope,
+                statements,
+                tail: Some(Box::new(panic_call)),
+                ty: ResolvedTy::Never,
+                span: span.clone(),
+            }),
+            span: span.clone(),
+        };
+        let fails = self.make_expr(
+            HirExprKind::Unary {
+                op: hew_parser::ast::UnaryOp::Not,
+                operand: Box::new(holds),
+                operand_ty: ResolvedTy::Bool,
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+        self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(fails),
+                then_expr: Box::new(then_block),
+                else_expr: None,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        )
+    }
+
+    /// Render one compared operand for an assertion report: structurally,
+    /// as `{:?}` renders a value, or by name for a type the checker found has
+    /// no structural rendering.
+    fn render_assertion_operand(
+        &mut self,
+        value: HirExpr,
+        unrendered: Option<&hew_types::Ty>,
+        span: &Span,
+    ) -> HirExpr {
+        match unrendered {
+            Some(ty) => {
+                self.build_string_literal_expr(format!("<{}>", ty.user_facing()), span.clone())
+            }
+            // A string already is its rendering, and a scalar renders
+            // through its `to_string_*` builtin as it does everywhere.
+            None if value.ty == ResolvedTy::String => value,
+            None if matches!(
+                value.ty,
+                ResolvedTy::I8
+                    | ResolvedTy::I16
+                    | ResolvedTy::I32
+                    | ResolvedTy::I64
+                    | ResolvedTy::U8
+                    | ResolvedTy::U16
+                    | ResolvedTy::U32
+                    | ResolvedTy::U64
+                    | ResolvedTy::Isize
+                    | ResolvedTy::Usize
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Bool
+                    | ResolvedTy::Char
+            ) =>
+            {
+                let ty = value.ty.clone();
+                self.lower_scalar_display(value, &ty, span.clone())
+            }
+            None => self.build_structural_format_call(value, span.clone()),
+        }
+    }
+
+    /// Lower an `Expr::InterpolatedString` to a chain of `string_concat` calls
+    /// joining literal segments with `Display::fmt(…)` results.  Empty
+    /// interpolations collapse to the empty-string literal.  The result type
+    /// is always `ResolvedTy::String` so the surrounding lowering wraps it
+    /// like any other string-typed expression.
+    pub(super) fn lower_interpolated_string(
+        &mut self,
+        parts: &[StringPart],
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let mut segments: Vec<HirExpr> = Vec::with_capacity(parts.len());
+        for part in parts {
+            match part {
+                StringPart::Literal(text) => {
+                    if !text.is_empty() {
+                        segments.push(self.build_string_literal_expr(text.clone(), span.clone()));
+                    }
+                }
+                StringPart::Expr((expr, expr_span)) => {
+                    let authored =
+                        self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
+
+                    let anchor_site = self.ids.site();
+                    let value =
+                        self.subsumed_value(anchor_site, expr_span, IntentKind::Read, authored);
+                    let rendered = self.lower_display_dispatch(value, expr_span.clone());
+                    segments.push(rendered);
+                }
+                StringPart::StructuralExpr((expr, expr_span)) => {
+                    let authored =
+                        self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
+
+                    let anchor_site = self.ids.site();
+                    let value =
+                        self.subsumed_value(anchor_site, expr_span, IntentKind::Read, authored);
+                    let dispatch_ty = self
+                        .interpolation_display_types
+                        .get(&self.mk_key(expr_span))
+                        .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                    let rendered = if let Some(dispatch_ty) = dispatch_ty {
+                        self.lower_display_dispatch_for_type(value, dispatch_ty, expr_span.clone())
+                    } else {
+                        self.build_structural_format_call(value, expr_span.clone())
+                    };
+                    segments.push(rendered);
+                }
+            }
+        }
+        if segments.is_empty() {
+            return (
+                HirExprKind::Literal(HirLiteral::String(String::new())),
+                ResolvedTy::String,
+            );
+        }
+        let mut iter = segments.into_iter();
+        let mut acc = iter.next().expect("non-empty segments by construction");
+        for next in iter {
+            acc = self.build_catalog_call("string_concat", vec![acc, next], span.clone());
+        }
+        // The caller re-wraps `(kind, ty)` with its own site, so returning the
+        // last segment's kind directly would drop that segment's site along
+        // with every side table keyed on it (a generic `Display` impl records
+        // its per-instantiation type arguments there). Keep the segment whole
+        // inside a transparent subsumed value.
+        let ty = acc.ty.clone();
+        (
+            HirExprKind::SubsumedValue {
+                source: Box::new(acc),
+            },
+            ty,
+        )
+    }
+}

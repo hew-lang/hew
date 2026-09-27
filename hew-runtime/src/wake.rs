@@ -105,51 +105,46 @@ impl ReadinessRegistrations {
 /// This is not a [`blocking::Readiness`] wait: the condition lives in the
 /// caller's `Mutex`, not in a latch, so the caller loops and re-reads it.
 /// Natively the peer's `notify_all` ends the wait early and the timeout bounds
-/// a caller that also polls something nobody notifies. wasm32 has one thread -
-/// this one - so releasing the lock and stepping the process driver is what
-/// lets the peer run at all, and the driver fails closed on its own when
-/// nothing is left that could.
+/// a caller that also polls something nobody notifies. On the single-thread
+/// driver this thread is the only one, so releasing the lock and stepping the
+/// driver is what lets the peer run at all, and the driver fails closed on its
+/// own when nothing is left that could.
 pub(crate) fn wait_for_peer<'a, T>(
     lock: &'a std::sync::Mutex<T>,
     condition: &std::sync::Condvar,
     guard: std::sync::MutexGuard<'a, T>,
     timeout: std::time::Duration,
 ) -> std::sync::MutexGuard<'a, T> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = lock;
-        condition
-            .wait_timeout(guard, timeout)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        use crate::util::MutexExt;
+    use crate::util::MutexExt;
+    if crate::driver::active() {
         let _ = (condition, timeout);
         drop(guard);
-        crate::wasm_driver::step();
-        lock.lock_or_recover()
+        crate::driver::step();
+        return lock.lock_or_recover();
     }
+    let _ = lock;
+    condition
+        .wait_timeout(guard, timeout)
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .0
 }
 
 /// A readiness latch for synchronous hosting boundaries. Actor and task
 /// continuations use scheduler readiness targets instead of waiting here.
 pub mod blocking {
     use super::{HewWaker, OwnedWaker};
-    #[cfg(not(target_arch = "wasm32"))]
-    use crate::util::CondvarExt;
-    use crate::util::MutexExt;
+    use crate::util::{CondvarExt, MutexExt};
     use std::ffi::c_void;
-    #[cfg(not(target_arch = "wasm32"))]
-    use std::sync::Condvar;
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
 
     #[derive(Debug, Default)]
     pub struct Readiness {
         pending: Mutex<bool>,
-        #[cfg(not(target_arch = "wasm32"))]
         changed: Condvar,
+        /// On the single-thread driver: the set latch is on the ready list and
+        /// its waiter resumes only once the driver picks it.
+        scheduled: AtomicBool,
     }
 
     impl Readiness {
@@ -171,8 +166,17 @@ pub mod blocking {
         }
 
         /// Consume one readiness notification, blocking only if none arrived.
-        #[cfg(not(target_arch = "wasm32"))]
+        ///
+        /// On the single-thread driver the waiting thread is the one that must
+        /// make progress: it steps the driver until the driver picks this latch,
+        /// so the waiter takes its turn in the schedule like any participant.
         pub fn wait(&self) {
+            if crate::driver::active() {
+                while self.scheduled.load(Ordering::Acquire) || !self.take_ready() {
+                    crate::driver::step();
+                }
+                return;
+            }
             let mut pending = self.pending.lock_or_recover();
             while !*pending {
                 pending = self.changed.wait_or_recover(pending);
@@ -180,32 +184,35 @@ pub mod blocking {
             *pending = false;
         }
 
-        /// Consume one readiness notification, driving the process while none
-        /// has arrived.
-        ///
-        /// wasm32 has no worker thread to satisfy this latch, so the waiting
-        /// thread is the one that must make progress: each step advances the
-        /// timer wheel against the WASI clock and fails closed when no
-        /// readiness source is left at all.
-        #[cfg(target_arch = "wasm32")]
-        pub fn wait(&self) {
-            while !self.take_ready() {
-                crate::wasm_driver::step();
-            }
-        }
-
         /// Consume an already pending notification without blocking.
         pub fn take_ready(&self) -> bool {
             std::mem::take(&mut *self.pending.lock_or_recover())
+        }
+
+        /// The driver picked this latch's ready-list entry.
+        pub(crate) fn picked(&self) {
+            self.scheduled.store(false, Ordering::Release);
         }
     }
 
     unsafe extern "C" fn wake(context: *mut c_void) {
         // SAFETY: descriptor holders retain this Arc allocation.
         let readiness = unsafe { &*context.cast::<Readiness>() };
-        *readiness.pending.lock_or_recover() = true;
-        #[cfg(not(target_arch = "wasm32"))]
-        readiness.changed.notify_one();
+        let was_pending = std::mem::replace(&mut *readiness.pending.lock_or_recover(), true);
+        if !crate::driver::active() {
+            readiness.changed.notify_one();
+            return;
+        }
+        if was_pending || readiness.scheduled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // SAFETY: the descriptor holder's reference keeps the allocation live
+        // while the ready list takes its own.
+        let entry = unsafe {
+            Arc::increment_strong_count(context.cast::<Readiness>());
+            Arc::from_raw(context.cast::<Readiness>())
+        };
+        crate::driver::publish_root(entry);
     }
 
     unsafe extern "C" fn retain(context: *mut c_void) {

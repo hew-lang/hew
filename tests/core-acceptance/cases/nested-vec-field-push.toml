@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-vec-field-push"
+intent = "Nested-`Vec` field-push drop oracle (hew-lang/hew#2721). Shape `nested_vec_field_push_high` (field push drop leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-vec-field-push.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 44

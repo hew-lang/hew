@@ -177,8 +177,8 @@ impl Verifier {
                         for (_, arg) in &child.init_args {
                             self.expr(arg);
                         }
-                        if let Some(pool_count) = &child.pool_count {
-                            self.expr(pool_count);
+                        for expr in child.pool_count.iter().chain(child.stop.iter()) {
+                            self.expr(expr);
                         }
                     }
                 }
@@ -186,8 +186,8 @@ impl Verifier {
                     // V0b: impl-block metadata only contributes its own
                     // HirNodeId. The per-method bodies are emitted as
                     // sibling `HirItem::Function` entries and are walked
-                    // through the `Function` arm above, so no recursion
-                    // into `block.method_symbols` is needed here.
+                    // through the `Function` arm above, so this arm only
+                    // verifies the block's own node.
                     self.node(block.node, block.span.clone());
                 }
                 HirItem::ExternFn(ef) => {
@@ -465,9 +465,8 @@ impl Verifier {
                 }
                 let expected_expr_ty = if matches!(expr.kind, HirExprKind::TryWidthCast { .. }) {
                     ResolvedTy::Named {
-                        name: "Option".to_string(),
                         args: vec![to_ty.clone()],
-                        builtin: Some(BuiltinType::Option),
+                        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
                         is_opaque: false,
                     }
                 } else {
@@ -856,8 +855,8 @@ impl Verifier {
                     }
                 }
                 match &expr.ty {
-                    ResolvedTy::Named { name, args, .. }
-                        if name == "Generator" && args.len() == 2 =>
+                    ResolvedTy::Named { head, args, .. }
+                        if head.registry_key() == "Generator" && args.len() == 2 =>
                     {
                         if args[0] != *yield_ty || args[1] != *return_ty {
                             self.diagnostics.push(self.diagnostic(
@@ -1283,6 +1282,7 @@ mod tests {
         HirModule {
             indexed_place_operations: HashMap::new(),
             entry_exit_plan: None,
+            test_entry_plans: Vec::new(),
             items,
             diagnostic_source_modules: HashMap::new(),
             root_item_ids: HashSet::default(),
@@ -1296,6 +1296,7 @@ mod tests {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),
+            defs: Arc::default(),
         }
     }
 
@@ -1366,7 +1367,7 @@ mod tests {
             HirExprKind::CallTraitMethodStatic {
                 receiver: Box::new(static_trait_receiver),
                 target: unsupported("static trait call"),
-                receiver_type_param: "T".to_string(),
+                receiver_type_param: hew_types::ParamHead::for_test("T"),
                 args: Vec::new(),
                 evaluation_order: Vec::new(),
                 ret_ty: ResolvedTy::Unit,

@@ -28,7 +28,7 @@ actor Inbox {
                     .Some(msg) => println(msg),
                     .None => println("closed"),
                 }
-            },
+            }
             after 1s => println("timeout"),
         };
         rx.close();
@@ -38,5 +38,4 @@ actor Inbox {
 fn main() {
     let i = spawn Inbox;
     let _ = i.run(0);
-    sleep(200ms);
 }

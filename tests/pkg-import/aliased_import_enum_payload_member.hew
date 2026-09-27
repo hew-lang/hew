@@ -14,11 +14,11 @@
 //
 // Harness verb: hew run
 // Expected: the code carried by the aliased-type variant payload is read back.
-import hew.aliassrc.{ Payload as Tag };
+import hew.aliassrc.{Payload as Tag};
 
 enum Wrap {
-    Has(Tag),
-    Empty,
+    Has(Tag);
+    Empty;
 }
 
 fn main() {

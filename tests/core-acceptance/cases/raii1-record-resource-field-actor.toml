@@ -1,0 +1,10 @@
+[[case]]
+id = "raii1-record-resource-field-actor"
+intent = "RAII-1 oracle: an authored `#[resource] #[opaque]` handle is released by its own `close` exactly once on every exit path, alone and inside a record (spec §3.7.3 / §10(d)). Shape `actor` (raii1 actor shutdown closes state field once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/raii1-record-resource-field-actor.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "done\nclosed\n"
+exit = 0

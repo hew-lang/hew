@@ -1,0 +1,11 @@
+[[case]]
+id = "identity_w1c_methods"
+intent = "Imported callable identity selects the matching implementation body."
+source = "../vertical-slice/accept/identity_w1c.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "20\n"
+exit = 0

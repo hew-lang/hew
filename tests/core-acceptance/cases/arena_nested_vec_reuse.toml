@@ -1,0 +1,10 @@
+[[case]]
+id = "arena_nested_vec_reuse"
+intent = "A free slot reused for a transitively heap-owning element must move/drop the old payload exactly once."
+source = "../vertical-slice/accept/arena_nested_vec_reuse.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "3\ntrue\ntrue\n3\n"
+exit = 0

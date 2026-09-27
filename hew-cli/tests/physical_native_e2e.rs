@@ -141,10 +141,17 @@ fn object_emission_skips_linking_and_selected_test_ignores_main() {
     assert!(std::fs::metadata(object).unwrap().len() > 0);
     assert!(!hew_testutil::compiled_binary_path(dir.path(), "selected_test").exists());
     let mut command = Command::new(hew_binary());
-    command.arg("test").arg(&source).arg("--no-color");
+    command.arg("test").arg(&source).arg("--format").arg("json");
     let result = run_bounded_command(command, "run selected owned test");
     assert!(result.status.success(), "{}", describe_output(&result));
-    assert!(String::from_utf8_lossy(&result.stdout).contains("test selected ... ok"));
+    assert!(String::from_utf8_lossy(&result.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .any(|event| event["event"] == "test_finished"
+            && event["identity"]
+                .as_str()
+                .is_some_and(|id| id.ends_with("::selected"))
+            && event["outcome"] == "passed"));
 }
 
 #[test]

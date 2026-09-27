@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-string-concat-temp-generic-record-repeat"
+intent = "Leak / double-free oracle for the #2434 root-cause split. Shape `generic_record_repeat_df` (generic record repeat field freed exactly once under malloc scribble, generic record repeat field has no per iteration leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-string-concat-temp-generic-record-repeat.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "field\n"
+exit = 0

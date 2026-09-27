@@ -3,14 +3,14 @@
 
 machine Deep {
     events {
-        Go,
+        Go;
     }
 
     state Outer {
         initial state Inner {
-            initial state TooDeep,
+            initial state TooDeep;
         }
-    },
+    }
 
     on Go: _ => _ {
         state

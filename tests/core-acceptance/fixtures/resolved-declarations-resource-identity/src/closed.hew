@@ -1,6 +1,6 @@
 #[resource]
 type Ticket {
-    id: i64,
+    id: i64;
 }
 
 impl Ticket {

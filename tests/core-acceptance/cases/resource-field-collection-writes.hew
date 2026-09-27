@@ -3,8 +3,8 @@
 // the resource whole, so it closes once with the contents it had.
 #[resource]
 type Conn {
-    fd: i64,
-    items: Vec<string>,
+    fd: i64;
+    items: Vec<string>;
 }
 
 impl Conn {
@@ -14,8 +14,8 @@ impl Conn {
 }
 
 type Pair {
-    conn: Conn,
-    uses: i64,
+    conn: Conn;
+    uses: i64;
 }
 
 fn fill(at: i64) {

@@ -2,10 +2,12 @@ fn index() -> i32 {
     println("index");
     0
 }
+
 fn replacement() -> string {
     println("replacement");
     "new".to_upper()
 }
+
 fn main() {
     var vector: Vec<string> = ["old".to_upper()];
     let vector_alias = vector;

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-state-resource-field-pos"
+intent = "An opaque resource in actor state closes exactly once at teardown. Shape `pos` (unreassigned resource field closes once, unreassigned resource field no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-state-resource-field-pos.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "done\nclosed\n"
+exit = 0

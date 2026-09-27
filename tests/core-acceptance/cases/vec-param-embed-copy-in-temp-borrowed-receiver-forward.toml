@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-borrowed-receiver-forward"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `borrowed_receiver_forward` (borrowed receiver forward releases each owner exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-borrowed-receiver-forward.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "i:-alpha|keep"
+exit = 0

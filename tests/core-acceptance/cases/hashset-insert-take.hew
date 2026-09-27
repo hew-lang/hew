@@ -10,7 +10,7 @@ fn main() {
     var seen: HashSet<string> = HashSet.new();
     // Nine inserts over three distinct freshly built elements: six of them
     // land on the already-present path with an owned duplicate in hand.
-    for i in 0..9 {
+    for i in 0 .. 9 {
         seen.insert(label(i));
     }
     println(f"distinct={seen.len()}");
@@ -26,7 +26,6 @@ fn main() {
     // whatever is left when it goes out of scope.
     let removed = seen.remove(kept);
     println(f"removed={removed} len={seen.len()}");
-
     var drained: HashSet<string> = HashSet.new();
     drained.insert(f"only-{0}");
     drained.insert(f"only-{0}");

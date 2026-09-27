@@ -1,0 +1,10 @@
+[[case]]
+id = "coalesce_owned_payload_leak"
+intent = "Coalesce owned-payload leak/double-drop oracle (#2541)."
+source = "../vertical-slice/accept/coalesce_owned_payload_leak.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "processed=2 latest_len=14\n"
+exit = 0

@@ -31,7 +31,7 @@ fn report(value: Result<Option<fn[var, clone]() -> i64>, string>) {
             var next = callback;
             println(next());
             println(next());
-        },
+        }
         .Ok(.None) => println("none"),
         .Err(reason) => println(reason),
     }

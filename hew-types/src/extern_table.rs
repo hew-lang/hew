@@ -165,7 +165,7 @@ impl ExternTable {
             contract.symbol
         );
         self.record_declaration(
-            contract.owner.clone(),
+            contract.owner,
             ExternDeclaration {
                 contract: Some(id),
                 symbol: contract.symbol.clone(),
@@ -251,7 +251,7 @@ impl ExternTable {
         if !record.symbol.is_empty() {
             self.by_symbol_and_module
                 .entry((record.symbol.clone(), record.declaring_module.clone()))
-                .or_insert_with(|| declaration.clone());
+                .or_insert_with(|| declaration);
         }
         self.declarations.insert(declaration, record);
     }
@@ -259,8 +259,8 @@ impl ExternTable {
     /// Whether `declaration` names a registered extern declaration — the
     /// `unsafe`-gating authority.
     #[must_use]
-    pub fn requires_unsafe(&self, declaration: &str) -> bool {
-        self.declarations.contains_key(declaration)
+    pub fn requires_unsafe(&self, declaration: DefId) -> bool {
+        self.declarations.contains_key(&declaration)
     }
 
     /// The declaration record for a fn-sig declaration key — the call-site
@@ -270,17 +270,17 @@ impl ExternTable {
     /// row would otherwise publish its own key as the call's endpoint and
     /// displace the runtime-family classification the witness calls need.
     #[must_use]
-    pub fn declaration(&self, declaration: &str) -> Option<&ExternDeclaration> {
+    pub fn declaration(&self, declaration: DefId) -> Option<&ExternDeclaration> {
         self.declarations
-            .get(declaration)
+            .get(&declaration)
             .filter(|record| record.owns_endpoint)
     }
 
     /// The contract a declaration key resolves to, when it is a
     /// contract-bearing extern declaration.
     #[must_use]
-    pub fn contract_for_declaration(&self, declaration: &str) -> Option<&ExternContract> {
-        let id = self.declarations.get(declaration)?.contract?;
+    pub fn contract_for_declaration(&self, declaration: DefId) -> Option<&ExternContract> {
+        let id = self.declarations.get(&declaration)?.contract?;
         Some(&self.contracts[id.0 as usize])
     }
 

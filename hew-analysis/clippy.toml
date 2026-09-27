@@ -1,0 +1,14 @@
+# Identity-authority batch (plans/identity-authority-final.md section 4.2).
+#
+# `disallowed-methods` pins the two renderer boundaries once the carriers
+# land: `DefTable::path` is the one production renderer of a declaration
+# path (called only from hew-hir/src/symbol.rs), and `Symbol::as_str` is
+# reserved for the display/filesystem-mapping call sites the plan names.
+# Neither target exists yet (P1/P2 mint the `Symbol`/`DefTable` carriers) —
+# this file is a placeholder that a later lane (P1/P2/L0-final) fills in and
+# enables; it must not fail clippy on this crate before then.
+#
+# disallowed-methods = [
+#     { path = "hew_types::DefTable::path", reason = "only hew-hir/src/symbol.rs may render a declaration path; every other caller must consume the DefId" },
+#     { path = "hew_lexer::Symbol::as_str", reason = "Symbol implements Display; as_str is reserved for the renderer allowlist in plans/identity-authority-final.md section 4.2" },
+# ]

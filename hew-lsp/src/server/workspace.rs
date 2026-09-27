@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use hew_analysis::references::count_all_references;
 use hew_analysis::symbols::build_document_symbols;
 use hew_analysis::{util::compute_line_offsets, SymbolInfo};
-use hew_parser::ast::{Attribute, Item};
+use hew_parser::ast::Item;
 use hew_parser::ParseResult;
 use tower_lsp_server::lsp_types::{CodeLens, Command, Location, SymbolInformation, Uri as Url};
 
@@ -16,10 +16,22 @@ use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
 // ── Code lens helpers ───────────────────────────────────────────────
 
+#[cfg(test)]
 pub(super) fn build_code_lenses(
     source: &str,
     lo: &[usize],
     parse_result: &ParseResult,
+    file: &str,
+) -> Vec<CodeLens> {
+    build_code_lenses_with_seeds(source, lo, parse_result, file, None)
+}
+
+pub(super) fn build_code_lenses_with_seeds(
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+    file: &str,
+    seeds: Option<&DashMap<String, String>>,
 ) -> Vec<CodeLens> {
     let ref_counts = count_all_references(parse_result);
     let mut lenses = Vec::new();
@@ -37,43 +49,70 @@ pub(super) fn build_code_lenses(
         }
     };
 
+    let tests = hew_analysis::test_discovery::discover_tests(&parse_result.program);
+    if !tests.is_empty() {
+        lenses.push(CodeLens {
+            range: offset_range_to_lsp(source, lo, 0, 0),
+            command: Some(Command {
+                title: "\u{25b6} Run file".to_string(),
+                command: "hew.runTest".to_string(),
+                arguments: Some(vec![serde_json::Value::String(file.to_string())]),
+            }),
+            data: None,
+        });
+    }
+    for declaration in tests {
+        let selector = format!("{file}::{}", declaration.name);
+        let range = span_to_range(source, lo, &declaration.span);
+        lenses.push(CodeLens {
+            range,
+            command: Some(Command {
+                title: "\u{25b6} Run test".to_string(),
+                command: "hew.runTest".to_string(),
+                arguments: Some(vec![serde_json::Value::String(selector.clone())]),
+            }),
+            data: None,
+        });
+        if let Some(seed) = seeds.and_then(|seeds| seeds.get(&selector)) {
+            let display = seed
+                .parse::<u64>()
+                .map_or_else(|_| seed.to_string(), |seed| format!("{seed:#x}"));
+            lenses.push(CodeLens {
+                range,
+                command: Some(Command {
+                    title: format!("\u{25b6} Rerun with seed {display}"),
+                    command: "hew.runTest".to_string(),
+                    arguments: Some(vec![
+                        serde_json::json!({ "name": selector, "seed": seed.as_str() }),
+                    ]),
+                }),
+                data: None,
+            });
+        }
+    }
+
     for (item, item_span) in &parse_result.program.items {
         match item {
             Item::Function(f) => {
                 let range = span_to_range(source, lo, item_span);
-                lenses.push(ref_lens(range, &f.name));
-                if has_test_attribute(&f.attributes) {
-                    lenses.push(CodeLens {
-                        range,
-                        command: Some(Command {
-                            title: "\u{25b6} Run test".to_string(),
-                            command: "hew.runTest".to_string(),
-                            arguments: Some(vec![serde_json::Value::String(f.name.clone())]),
-                        }),
-                        data: None,
-                    });
-                }
+                lenses.push(ref_lens(range, f.name.name.as_str()));
             }
             Item::Actor(a) => {
                 let range = span_to_range(source, lo, item_span);
-                lenses.push(ref_lens(range, &a.name));
+                lenses.push(ref_lens(range, a.name.name.as_str()));
                 for recv in &a.receive_fns {
                     let recv_range = if recv.span.is_empty() {
                         range
                     } else {
                         span_to_range(source, lo, &recv.span)
                     };
-                    lenses.push(ref_lens(recv_range, &recv.name));
+                    lenses.push(ref_lens(recv_range, recv.name.name.as_str()));
                 }
             }
             _ => {}
         }
     }
     lenses
-}
-
-pub(super) fn has_test_attribute(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|a| a.name == "test")
 }
 
 // ── Workspace symbol helpers ────────────────────────────────────────
@@ -144,6 +183,86 @@ pub(super) fn collect_project_workspace_symbols(
     }
 
     symbols
+}
+
+/// Discover test identities and source ranges for the editor test protocol.
+pub(super) fn test_inventory(
+    documents: &DashMap<Url, DocumentState>,
+    workspace_roots: &[PathBuf],
+    requested: Option<&Url>,
+) -> Vec<serde_json::Value> {
+    let paths = requested.map_or_else(
+        || workspace_symbol_paths(documents, workspace_roots),
+        |uri| {
+            uri.to_file_path()
+                .map_or_else(Vec::new, |path| vec![path.into_owned()])
+        },
+    );
+    let mut inventory = Vec::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        let path = normalize_workspace_path(&path);
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Some(uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+        if let Some(doc) = documents.get(&uri) {
+            append_test_items(
+                &mut inventory,
+                workspace_roots,
+                &path,
+                &uri,
+                &doc.source,
+                &doc.line_offsets,
+                &doc.parse_result,
+            );
+        } else if let Some(source) = source_for_path(&path, documents) {
+            let parsed = hew_parser::parse(&source);
+            let lines = compute_line_offsets(&source);
+            append_test_items(
+                &mut inventory,
+                workspace_roots,
+                &path,
+                &uri,
+                &source,
+                &lines,
+                &parsed,
+            );
+        }
+    }
+    inventory
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "source and parse state are borrowed as one document"
+)]
+fn append_test_items(
+    inventory: &mut Vec<serde_json::Value>,
+    roots: &[PathBuf],
+    path: &Path,
+    uri: &Url,
+    source: &str,
+    lines: &[usize],
+    parsed: &ParseResult,
+) {
+    let relative = roots
+        .first()
+        .and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(path);
+    let file = relative.to_string_lossy().replace('\\', "/");
+    for test in hew_analysis::test_discovery::discover_tests(&parsed.program) {
+        inventory.push(serde_json::json!({
+            "identity": format!("{file}::{}", test.name),
+            "selector": format!("{}::{}", path.display(), test.name),
+            "uri": uri,
+            "range": span_to_range(source, lines, &test.span),
+            "ignored": test.ignored,
+            "real_time": test.real_time,
+        }));
+    }
 }
 
 #[expect(
@@ -427,6 +546,6 @@ fn path_is_under_workspace_root(path: &Path, workspace_roots: &[PathBuf]) -> boo
         .any(|root| normalized_path.starts_with(root))
 }
 
-fn normalize_workspace_path(path: &Path) -> PathBuf {
+pub(super) fn normalize_workspace_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }

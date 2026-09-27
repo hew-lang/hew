@@ -1,0 +1,10 @@
+[[case]]
+id = "let-else-call-scrutinee-g2429-letelse-divergent-2"
+intent = "From-call `let … else` scrutinee enum-payload leak oracle (#2429 class). Shape `g2429_letelse_divergent_scribble` (letelse divergent edges no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/let-else-call-scrutinee-g2429-letelse-divergent-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

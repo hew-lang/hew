@@ -109,26 +109,78 @@ fn vec_index_supported_element_types_accepted() {
     // retained hew_vec_get_str owner (balanced by scope-exit hew_string_drop);
     // tuples route through hew_vec_get_layout.
     let out = lower(
-        r"
-        type UserRecord { x: i32 }
-        fn pick_bool(xs: Vec<bool>, i: i64) -> bool { xs[i] }
-        fn pick_char(xs: Vec<char>, i: i64) -> char { xs[i] }
-        fn pick_i8(xs: Vec<i8>, i: i64) -> i8 { xs[i] }
-        fn pick_u8(xs: Vec<u8>, i: i64) -> u8 { xs[i] }
-        fn pick_i16(xs: Vec<i16>, i: i64) -> i16 { xs[i] }
-        fn pick_u16(xs: Vec<u16>, i: i64) -> u16 { xs[i] }
-        fn pick_i32(xs: Vec<i32>, i: i64) -> i32 { xs[i] }
-        fn pick_i64(xs: Vec<i64>, i: i64) -> i64 { xs[i] }
-        fn pick_isize(xs: Vec<isize>, i: i64) -> isize { xs[i] }
-        fn pick_usize(xs: Vec<usize>, i: i64) -> usize { xs[i] }
-        fn pick_f32(xs: Vec<f32>, i: i64) -> f32 { xs[i] }
-        fn pick_f64(xs: Vec<f64>, i: i64) -> f64 { xs[i] }
-        fn pick_string(xs: Vec<string>, i: i64) -> string { xs[i] }
-        fn pick_named(xs: Vec<UserRecord>, i: i64) -> UserRecord { xs[i] }
-        fn pick_tuple(xs: Vec<(i64, i64)>, i: i64) -> (i64, i64) { xs[i] }
-        fn pick_duration(xs: Vec<duration>, i: i64) -> duration { xs[i] }
-        fn pick_instant(xs: Vec<instant>, i: i64) -> instant { xs[i] }
-        ",
+        r"type UserRecord {
+    x: i32;
+}
+
+fn pick_bool(xs: Vec<bool>, i: i64) -> bool {
+    xs[i]
+}
+
+fn pick_char(xs: Vec<char>, i: i64) -> char {
+    xs[i]
+}
+
+fn pick_i8(xs: Vec<i8>, i: i64) -> i8 {
+    xs[i]
+}
+
+fn pick_u8(xs: Vec<u8>, i: i64) -> u8 {
+    xs[i]
+}
+
+fn pick_i16(xs: Vec<i16>, i: i64) -> i16 {
+    xs[i]
+}
+
+fn pick_u16(xs: Vec<u16>, i: i64) -> u16 {
+    xs[i]
+}
+
+fn pick_i32(xs: Vec<i32>, i: i64) -> i32 {
+    xs[i]
+}
+
+fn pick_i64(xs: Vec<i64>, i: i64) -> i64 {
+    xs[i]
+}
+
+fn pick_isize(xs: Vec<isize>, i: i64) -> isize {
+    xs[i]
+}
+
+fn pick_usize(xs: Vec<usize>, i: i64) -> usize {
+    xs[i]
+}
+
+fn pick_f32(xs: Vec<f32>, i: i64) -> f32 {
+    xs[i]
+}
+
+fn pick_f64(xs: Vec<f64>, i: i64) -> f64 {
+    xs[i]
+}
+
+fn pick_string(xs: Vec<string>, i: i64) -> string {
+    xs[i]
+}
+
+fn pick_named(xs: Vec<UserRecord>, i: i64) -> UserRecord {
+    xs[i]
+}
+
+fn pick_tuple(xs: Vec<(i64, i64)>, i: i64) -> (i64, i64) {
+    xs[i]
+}
+
+fn pick_duration(xs: Vec<duration>, i: i64) -> duration {
+    xs[i]
+}
+
+fn pick_instant(xs: Vec<instant>, i: i64) -> instant {
+    xs[i]
+}
+",
     );
 
     let index_diags = index_diagnostics(&out);
@@ -149,26 +201,79 @@ fn vec_index_supported_element_types_accepted() {
 fn vec_slice_supported_element_types_accepted() {
     // Range-slice on scalar widths, string, tuples, and named records/enums must NOT fire.
     let out = lower(
-        r"
-        type UserRecord { x: i32 }
-        enum Colour { Red, Green, }
-        fn slice_bool(xs: Vec<bool>) -> Vec<bool> { xs[0..2] }
-        fn slice_char(xs: Vec<char>) -> Vec<char> { xs[0..2] }
-        fn slice_i8(xs: Vec<i8>) -> Vec<i8> { xs[0..2] }
-        fn slice_u16(xs: Vec<u16>) -> Vec<u16> { xs[0..2] }
-        fn slice_i32(xs: Vec<i32>) -> Vec<i32> { xs[0..2] }
-        fn slice_i64(xs: Vec<i64>) -> Vec<i64> { xs[0..2] }
-        fn slice_isize(xs: Vec<isize>) -> Vec<isize> { xs[0..2] }
-        fn slice_usize(xs: Vec<usize>) -> Vec<usize> { xs[0..2] }
-        fn slice_f32(xs: Vec<f32>) -> Vec<f32> { xs[1..3] }
-        fn slice_f64(xs: Vec<f64>) -> Vec<f64> { xs[1..3] }
-        fn slice_string(xs: Vec<string>) -> Vec<string> { xs[2..4] }
-        fn slice_tuple(xs: Vec<(i64, i64)>) -> Vec<(i64, i64)> { xs[0..1] }
-        fn slice_named(xs: Vec<UserRecord>) -> Vec<UserRecord> { xs[0..1] }
-        fn slice_enum(xs: Vec<Colour>) -> Vec<Colour> { xs[0..1] }
-        fn slice_duration(xs: Vec<duration>) -> Vec<duration> { xs[0..1] }
-        fn slice_instant(xs: Vec<instant>) -> Vec<instant> { xs[0..1] }
-        ",
+        r"type UserRecord {
+    x: i32;
+}
+
+enum Colour {
+    Red;
+    Green;
+}
+
+fn slice_bool(xs: Vec<bool>) -> Vec<bool> {
+    xs[0..2]
+}
+
+fn slice_char(xs: Vec<char>) -> Vec<char> {
+    xs[0..2]
+}
+
+fn slice_i8(xs: Vec<i8>) -> Vec<i8> {
+    xs[0..2]
+}
+
+fn slice_u16(xs: Vec<u16>) -> Vec<u16> {
+    xs[0..2]
+}
+
+fn slice_i32(xs: Vec<i32>) -> Vec<i32> {
+    xs[0..2]
+}
+
+fn slice_i64(xs: Vec<i64>) -> Vec<i64> {
+    xs[0..2]
+}
+
+fn slice_isize(xs: Vec<isize>) -> Vec<isize> {
+    xs[0..2]
+}
+
+fn slice_usize(xs: Vec<usize>) -> Vec<usize> {
+    xs[0..2]
+}
+
+fn slice_f32(xs: Vec<f32>) -> Vec<f32> {
+    xs[1..3]
+}
+
+fn slice_f64(xs: Vec<f64>) -> Vec<f64> {
+    xs[1..3]
+}
+
+fn slice_string(xs: Vec<string>) -> Vec<string> {
+    xs[2..4]
+}
+
+fn slice_tuple(xs: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+    xs[0..1]
+}
+
+fn slice_named(xs: Vec<UserRecord>) -> Vec<UserRecord> {
+    xs[0..1]
+}
+
+fn slice_enum(xs: Vec<Colour>) -> Vec<Colour> {
+    xs[0..1]
+}
+
+fn slice_duration(xs: Vec<duration>) -> Vec<duration> {
+    xs[0..1]
+}
+
+fn slice_instant(xs: Vec<instant>) -> Vec<instant> {
+    xs[0..1]
+}
+",
     );
 
     let index_diags = index_diagnostics(&out);
@@ -226,20 +331,20 @@ fn vec_index_in_machine_transition_body_rejected() {
 
         machine M {{
             events {{
-                Go,
-                Reset,
+                Go;
+                Reset;
             }}
 
-            state Idle,
-            state Done,
+            state Idle;
+            state Done;
             on Go: Idle => .Done {{
                 let xs: Vec<()> = make_units();
                 let _: () = xs[0];
                 .Done
             }}
-            on Go: Done => .Done,
-            on Reset: Done => .Idle,
-            on Reset: Idle => .Idle,
+            on Go: Done => .Done;
+            on Reset: Done => .Idle;
+            on Reset: Idle => .Idle;
         }}
         "
     ));
@@ -268,17 +373,17 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
         machine M {{
             events {{
-                Go,
-                Reset,
+                Go;
+                Reset;
             }}
 
-            state Idle,
-            state Done,
-            on Go: Idle => .Done when make_units()[0] == (),
-            on Go: Idle => .Idle,
-            on Go: Done => .Done,
-            on Reset: Done => .Idle,
-            on Reset: Idle => .Idle,
+            state Idle;
+            state Done;
+            on Go: Idle => .Done when make_units()[0] == ();
+            on Go: Idle => .Idle;
+            on Go: Done => .Done;
+            on Reset: Done => .Idle;
+            on Reset: Idle => .Idle;
         }}
         "
     ));
@@ -308,32 +413,33 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
     // will start accepting the bool entry and exit indexings without any
     // further walker change.
     let out = lower(
-        r"
-        fn make_bools() -> Vec<bool> { [] }
+        r"fn make_bools() -> Vec<bool> {
+    []
+}
 
-        machine M {
-            events {
-                Go,
-                Reset,
-            }
+machine M {
+    events {
+        Go;
+        Reset;
+    }
 
-            state Idle {
-                entry {
-                    let xs: Vec<bool> = make_bools();
-                    let _: bool = xs[0];
-                }
-                exit {
-                    let xs: Vec<bool> = make_bools();
-                    let _: bool = xs[0];
-                }
-            },
-            state Done,
-            on Go: Idle => .Done,
-            on Go: Done => .Done,
-            on Reset: Done => .Idle,
-            on Reset: Idle => .Idle,
+    state Idle {
+        entry {
+            let xs: Vec<bool> = make_bools();
+            let _: bool = xs[0];
         }
-        ",
+        exit {
+            let xs: Vec<bool> = make_bools();
+            let _: bool = xs[0];
+        }
+    }
+    state Done;
+    on Go: Idle => .Done;
+    on Go: Done => .Done;
+    on Reset: Done => .Idle;
+    on Reset: Idle => .Idle;
+}
+",
     );
 
     // The pre-fix walker would skip state.entry/state.exit entirely. The

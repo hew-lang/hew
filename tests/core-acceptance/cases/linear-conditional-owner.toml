@@ -8,5 +8,5 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "E_MUST_CONSUME"
-line = 6
-column = 24
+line = 12
+column = 20

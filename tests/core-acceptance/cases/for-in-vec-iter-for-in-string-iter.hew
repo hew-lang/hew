@@ -1,0 +1,14 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var v: Vec<string> = Vec.new();
+        v.push("iter-string-alpha");
+        v.push("iter-string-beta");
+        for s in v.iter() {
+            total = total + s.len();
+        }
+        i = i + 1;
+    }
+    total % 7
+}

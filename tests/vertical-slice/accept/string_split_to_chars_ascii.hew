@@ -7,8 +7,8 @@ import std.string;
 
 fn main() {
     let parts = string.split("abc", "");
-    assert_eq(parts.len(), 3);
-    assert_eq(parts[0], "a");
-    assert_eq(parts[1], "b");
-    assert_eq(parts[2], "c");
+    assert(parts.len() == 3);
+    assert(parts[0] == "a");
+    assert(parts[1] == "b");
+    assert(parts[2] == "c");
 }

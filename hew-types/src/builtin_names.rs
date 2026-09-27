@@ -312,34 +312,42 @@ pub fn builtin_method_info(
     kind.info().methods.iter().find(|info| info.name == method)
 }
 
-fn type_param_ty() -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: "T".to_string(),
-        args: vec![],
-    }
+fn type_parameter(kind: BuiltinNamedType) -> crate::ParamHead {
+    use crate::def_table::BuiltinAnchor;
+    let anchor = match kind {
+        BuiltinNamedType::Stream => BuiltinAnchor::Stream,
+        BuiltinNamedType::Sink => BuiltinAnchor::Sink,
+        BuiltinNamedType::RemotePid => BuiltinAnchor::RemotePid,
+        BuiltinNamedType::CancellationToken => unreachable!("CancellationToken has no parameters"),
+    };
+    crate::ParamHead::new(
+        crate::TypeParamId::new(crate::DefTable::anchor(anchor), 0),
+        hew_parser::ast::Symbol::intern("T"),
+    )
 }
 
 fn self_container_ty(kind: BuiltinNamedType, inner: Ty) -> Ty {
-    Ty::normalize_named(kind.canonical_name().to_string(), vec![inner])
+    let builtin = crate::builtin_type::lookup_builtin_type(kind.canonical_name())
+        .expect("every builtin named type is a builtin type");
+    Ty::named_head(crate::TypeHead::Builtin(builtin), vec![inner])
 }
 
 impl BuiltinMethodSigTemplate {
     fn instantiate(self, owner: BuiltinNamedType) -> FnSig {
-        let item_ty = type_param_ty();
+        let item_ty = || Ty::param(type_parameter(owner));
         match self {
             Self::ValueToSendResult => FnSig {
                 param_names: vec!["item".to_string()],
-                params: vec![item_ty],
+                params: vec![item_ty()],
                 return_type: Ty::result(Ty::Unit, Ty::send_error()),
                 ..FnSig::default()
             },
             Self::CloneSelf => FnSig {
-                return_type: self_container_ty(owner, item_ty),
+                return_type: self_container_ty(owner, item_ty()),
                 ..FnSig::default()
             },
             Self::ReturnOptionT => FnSig {
-                return_type: Ty::option(item_ty),
+                return_type: Ty::option(item_ty()),
                 ..FnSig::default()
             },
             Self::ReturnString => FnSig {
@@ -361,7 +369,7 @@ impl BuiltinMethodSigTemplate {
             Self::CountToSelf => FnSig {
                 param_names: vec!["count".to_string()],
                 params: vec![Ty::I64],
-                return_type: self_container_ty(owner, item_ty),
+                return_type: self_container_ty(owner, item_ty()),
                 ..FnSig::default()
             },
         }
@@ -454,7 +462,7 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
                         type_params: if info.kind == BuiltinNamedType::CancellationToken {
                             Vec::new()
                         } else {
-                            vec!["T".to_string()]
+                            vec![type_parameter(info.kind)]
                         },
                         bounds: HashMap::new(),
                         fields: HashMap::new(),

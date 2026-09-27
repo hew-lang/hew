@@ -5,7 +5,7 @@
 //! member count is a declaration fact the caller supplies, so an accessor is
 //! arithmetic and a bounds test with no runtime lookup of its own.
 
-use super::{
+use crate::runtime_call::{
     runtime_semantic_contract, RuntimeArgumentContract, RuntimeArgumentEffect,
     RuntimeLogicalFailure, RuntimeResultEffect, RuntimeSemanticContract, RuntimeValueKind,
 };
@@ -20,9 +20,6 @@ pub enum SupervisorPoolOp {
     Member,
     /// `pool.get(i)` — the member's role, or `None` outside them.
     Get,
-    /// `await_restart pool[i]` — wait for that member's own slot to be Live
-    /// again, or permanently gone, then its role.
-    AwaitRestartMember,
 }
 
 impl SupervisorPoolOp {
@@ -30,7 +27,6 @@ impl SupervisorPoolOp {
         match self {
             Self::Member => "supervisor.pool.member",
             Self::Get => "supervisor.pool.get",
-            Self::AwaitRestartMember => "supervisor.pool.await_restart_member",
         }
     }
 
@@ -49,7 +45,7 @@ impl SupervisorPoolOp {
         };
         const BOUNDS: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
         match self {
-            Self::Member | Self::AwaitRestartMember => runtime_semantic_contract(
+            Self::Member => runtime_semantic_contract(
                 &[VIEW, INDEX, COUNT],
                 RuntimeResultEffect::IndependentValue(RuntimeValueKind::PoolMember),
                 BOUNDS,

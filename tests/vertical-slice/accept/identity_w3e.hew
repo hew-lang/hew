@@ -1,0 +1,5 @@
+fn println(s: string) {}
+
+fn main() {
+    println("x");
+}

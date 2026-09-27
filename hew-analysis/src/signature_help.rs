@@ -8,6 +8,8 @@ use crate::{ParameterInfo, SignatureHelpResult, SignatureInfo};
 
 struct CallContext {
     callee: String,
+    callee_start: usize,
+    callee_end: usize,
     receiver_end: Option<usize>,
     /// Source text of each argument up to the cursor; the last is the one
     /// the cursor is in.
@@ -121,6 +123,21 @@ pub fn build_signature_help(
 }
 
 fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
+    // A checked callee is already overload-selected. Its identity takes
+    // precedence over every spelling-based compatibility path below.
+    if let Some((span, resolution)) =
+        crate::identity::resolution_at(tc, 0, context.callee_end.saturating_sub(1))
+    {
+        if span.start >= context.callee_start && span.end <= context.callee_end {
+            if let hew_types::check::scope::Resolution::Def(id)
+            | hew_types::check::scope::Resolution::Member(id) = resolution
+            {
+                if let Some(sig) = tc.fn_sigs.get(&id) {
+                    return Some(sig.clone());
+                }
+            }
+        }
+    }
     if let Some(sig) = find_exact_fn_sig(&context.callee, tc) {
         return Some(sig);
     }
@@ -165,7 +182,7 @@ fn find_module_qualified_fn_sig(callee: &str, tc: &TypeCheckOutput) -> Option<Fn
     let owner = tc
         .module_import_bindings
         .get(&(None, 0, binding.to_string()))?;
-    tc.fn_sigs.get(&format!("{owner}.{leaf}")).cloned()
+    tc.sigs().get(&format!("{owner}.{leaf}")).cloned()
 }
 
 /// Find the call the cursor is inside and its arguments up to the cursor.
@@ -181,7 +198,8 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
             b')' | b']' | b'}' => depth += 1,
             b'(' => {
                 if depth == 0 {
-                    let (callee, receiver_end) = extract_fn_name_before(source, i)?;
+                    let (callee, receiver_end, callee_start, callee_end) =
+                        extract_fn_name_before(source, i)?;
                     let bounds: Vec<usize> = std::iter::once(i)
                         .chain(commas.into_iter().rev())
                         .chain(std::iter::once(offset))
@@ -192,6 +210,8 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
                         .collect();
                     return Some(CallContext {
                         callee,
+                        callee_start,
+                        callee_end,
                         receiver_end,
                         args,
                     });
@@ -212,7 +232,10 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
 }
 
 /// Extract the function/method name immediately before the `(` at `paren_pos`.
-fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Option<usize>)> {
+fn extract_fn_name_before(
+    source: &str,
+    paren_pos: usize,
+) -> Option<(String, Option<usize>, usize, usize)> {
     let before = source[..paren_pos].trim_end();
     if before.is_empty() {
         return None;
@@ -237,7 +260,7 @@ fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Opt
     let callee = before[start..end].to_string();
     let receiver_end = callee.rfind('.').map(|dot_pos| start + dot_pos);
 
-    Some((callee, receiver_end))
+    Some((callee, receiver_end, start, end))
 }
 
 fn find_receiver_method_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
@@ -258,10 +281,10 @@ fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
         if let Some(sig) = find_root_fn_sig(last, tc) {
             return Some(sig);
         }
-        if let Some(sig) = tc.fn_sigs.get(last) {
+        if let Some(sig) = tc.sigs().get(last) {
             return Some(sig.clone());
         }
-        for (sig_name, sig) in &tc.fn_sigs {
+        for (sig_name, sig) in tc.sigs().entries() {
             if sig_name.ends_with(&format!("::{last}")) {
                 return Some(sig.clone());
             }
@@ -275,7 +298,7 @@ fn find_exact_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     if let Some(sig) = find_root_fn_sig(name, tc) {
         return Some(sig);
     }
-    tc.fn_sigs.get(name).cloned()
+    tc.sigs().get(name).cloned()
 }
 
 /// Signature of a bare free-function spelling declared by the ROOT unit.
@@ -289,9 +312,9 @@ fn find_root_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     if name.contains('.') || name.contains("::") {
         return None;
     }
-    let root = tc.identity.root_module_path()?;
-    let declaration = tc.identity.declaration_by_path(&format!("{root}.{name}"))?;
-    tc.fn_sigs.get(declaration.full_path()).cloned()
+    let root = tc.defs.root_module_path()?;
+    let declaration = tc.defs.lookup_path(&format!("{root}.{name}"))?;
+    tc.sigs().get(tc.defs.path(declaration)).cloned()
 }
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.
@@ -317,6 +340,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     fn make_tc_with_fn_sigs(fn_sigs: HashMap<String, FnSig>) -> TypeCheckOutput {
+        let fn_sig_parts = hew_types::check::FnSigFixture::new(fn_sigs).into_parts();
         TypeCheckOutput {
             expr_types: HashMap::new(),
             resolved_expr_types: HashMap::new(),
@@ -327,7 +351,9 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             internal_builtin_enum_names: std::collections::HashSet::new(),
-            fn_sigs,
+            fn_sigs: fn_sig_parts.0,
+            fn_sig_keys: fn_sig_parts.1,
+            builtin_fn_sigs: fn_sig_parts.2,
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
@@ -389,7 +415,7 @@ mod tests {
     /// `expr_types`; all other fields are defaulted via `make_tc_with_fn_sigs`.
     fn make_tc_with_fields(
         fn_sigs: HashMap<String, FnSig>,
-        type_defs: HashMap<String, hew_types::check::TypeDef>,
+        type_defs: HashMap<hew_types::NominalId, hew_types::check::TypeDef>,
         expr_types: HashMap<hew_types::check::SpanKey, Ty>,
     ) -> TypeCheckOutput {
         let mut tc = make_tc_with_fn_sigs(fn_sigs);
@@ -529,14 +555,24 @@ mod tests {
     #[test]
     fn sig_help_labels_impl_block_method_with_return_type() {
         let source = "\
-type Caps { count: i64, }
-type Matcher { id: i64, }
+type Caps {
+    count: i64;
+}
+
+type Matcher {
+    id: i64;
+}
+
 trait MatcherMethods {
     fn captures(self, input: string) -> Caps;
 }
+
 impl MatcherMethods for Matcher {
-    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
+    fn captures(m: Matcher, input: string) -> Caps {
+        Caps { count: 0 }
+    }
 }
+
 fn probe(mat: Matcher, s: string) {
     let c = mat.captures(s);
 }
@@ -585,7 +621,7 @@ fn probe(mat: Matcher, s: string) {
 
         let mut type_defs = HashMap::new();
         type_defs.insert(
-            "StreamModule".to_string(),
+            hew_types::NominalId::for_test("StreamModule"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "StreamModule".to_string(),
@@ -615,11 +651,7 @@ fn probe(mat: Matcher, s: string) {
                 end: 6,
                 module_idx: 0,
             },
-            Ty::Named {
-                name: "StreamModule".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            Ty::named_for_test("StreamModule", vec![]),
         );
 
         let tc = make_tc_with_fields(fn_sigs, type_defs, expr_types);
@@ -651,7 +683,7 @@ fn probe(mat: Matcher, s: string) {
 
         let mut type_defs = HashMap::new();
         type_defs.insert(
-            "Widget".to_string(),
+            hew_types::NominalId::for_test("Widget"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Widget".to_string(),
@@ -673,11 +705,7 @@ fn probe(mat: Matcher, s: string) {
                 end: 5,
                 module_idx: 0,
             },
-            Ty::Named {
-                name: "Widget".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            Ty::named_for_test("Widget", vec![]),
         );
 
         let tc = make_tc_with_fields(fn_sigs, type_defs, expr_types);

@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-string-index-compare-no-double-free"
+intent = "Constant-leak oracle for the `Vec<string>` index-temp-into-string-compare shape and the owned array-repeat (`[\"x\"; N]`) clone shape. Shape `no_double_free` (index compare release is exactly once under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-string-index-compare-no-double-free.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "alpha\n9OK"
+exit = 0

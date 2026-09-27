@@ -11,7 +11,7 @@ trait Formatter {
 }
 
 type TagFormatter {
-    tag: string,
+    tag: string;
 }
 
 impl Formatter for TagFormatter {
@@ -21,8 +21,8 @@ impl Formatter for TagFormatter {
 }
 
 actor Registry {
-    var byName: HashMap<string, dyn Formatter> = HashMap.new(),
-    var seen: HashSet<string> = HashSet.new(),
+    var byName: HashMap<string, dyn Formatter> = HashMap.new();
+    var seen: HashSet<string> = HashSet.new();
 
     receive fn add(k: string) {
         let f: dyn Formatter = TagFormatter { tag: k };
@@ -62,23 +62,19 @@ fn main() -> i64 {
     let registry = spawn Registry;
     let _ = registry.add("a");
     let _ = registry.add("b");
-
     // Both seats carry the two entries the handlers published back.
     let after_inserts = ask_count(registry.size());
     let members = ask_count(registry.members());
-
     let rendered = match registry.render("a") {
         .Ok(text) => text,
         .Err(_e) => "failed",
     };
-
     let _ = registry.forget("a");
     let after_removal = ask_count(registry.size());
     let missing = match registry.render("a") {
         .Ok(text) => text,
         .Err(_e) => "failed",
     };
-
     if rendered != "a:hi" {
         return 1;
     }

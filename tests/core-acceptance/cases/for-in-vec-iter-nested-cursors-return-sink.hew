@@ -1,0 +1,33 @@
+fn mk_a() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("na" + "-alpha");
+    v.push("na" + "-beta");
+    return v;
+}
+
+fn mk_b() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("nb" + "-alpha");
+    v.push("nb" + "-beta");
+    return v;
+}
+
+fn frame() -> HashMap<i64, string> {
+    var sink: HashMap<i64, string> = HashMap.new();
+    for a in mk_a() {
+        for b in mk_b() {
+            sink.insert(0, a);
+            sink.insert(1, b);
+            return sink;
+        }
+    }
+    return sink;
+}
+
+fn main() {
+    let sink = frame();
+    print(sink.len());
+    print(sink.get(0).unwrap_or("missing"));
+    print(sink.get(1).unwrap_or("missing"));
+    print("OK");
+}

@@ -9,7 +9,7 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, RuntimeCallFamily, VecValueOp};
 
-const ITEM: &str = "type Item { parts: Vec<i64> }";
+const ITEM: &str = "type Item {\n    parts: Vec<i64>;\n}\n";
 
 fn compiled(source: &str) -> SemModule {
     let parsed = hew_parser::parse(source);

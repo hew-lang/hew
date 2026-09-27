@@ -1,4 +1,7 @@
-type Point { x: i64, label: string }
+type Point {
+    x: i64;
+    label: string;
+}
 
 impl Display for Point {
     fn fmt(p: Point) -> string {
@@ -12,8 +15,10 @@ fn expected() -> Point {
 
 fn main() {
     let retained = ["caller owner".to_upper(), "sibling".to_upper()];
-    defer { println(retained[0]); }
+    defer {
+        println(retained[0]);
+    }
     let actual = Point { x: 3, label: "actual".to_upper() };
-    assert_eq(actual, expected());
+    assert(actual == expected());
     println("unreachable");
 }

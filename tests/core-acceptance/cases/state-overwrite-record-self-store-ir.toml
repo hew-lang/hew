@@ -1,0 +1,10 @@
+[[case]]
+id = "state-overwrite-record-self-store-ir"
+intent = "State-field overwrite leak oracles for collection, record, and enum actor state fields, plus alias-shape use-after-free pins. Shape `record_self_store_ir` (record self store emits one recursive clone authority, record self store keeps aliased leaves alive) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/state-overwrite-record-self-store-ir.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 15

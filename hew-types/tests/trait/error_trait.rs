@@ -22,11 +22,13 @@ use hew_types::error::TypeErrorKind;
 #[test]
 fn impl_error_without_display_is_refused() {
     let output = typecheck(
-        r"
-        type ParseFailure { detail: string }
+        r"type ParseFailure {
+    detail: string;
+}
 
-        impl Error for ParseFailure {}
-        ",
+impl Error for ParseFailure {
+}
+",
     );
     let error = output
         .errors
@@ -50,17 +52,19 @@ fn impl_error_before_its_display_impl_is_accepted() {
     // The obligation is checked against the whole program's impl set, not the
     // impls seen so far, so writing `impl Error` first is legal.
     let output = typecheck(
-        r#"
-        type ParseFailure { detail: string }
+        r#"type ParseFailure {
+    detail: string;
+}
 
-        impl Error for ParseFailure {}
+impl Error for ParseFailure {
+}
 
-        impl Display for ParseFailure {
-            fn fmt(value: ParseFailure) -> string {
-                f"parse failed: {value.detail}"
-            }
-        }
-        "#,
+impl Display for ParseFailure {
+    fn fmt(value: ParseFailure) -> string {
+        f"parse failed: {value.detail}"
+    }
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -72,36 +76,38 @@ fn impl_error_before_its_display_impl_is_accepted() {
 #[test]
 fn error_impl_coerces_to_dyn_error_at_every_error_position() {
     let output = typecheck(
-        r#"
-        type ParseFailure { detail: string }
+        r#"type ParseFailure {
+    detail: string;
+}
 
-        impl Display for ParseFailure {
-            fn fmt(value: ParseFailure) -> string {
-                f"parse failed: {value.detail}"
-            }
-        }
+impl Display for ParseFailure {
+    fn fmt(value: ParseFailure) -> string {
+        f"parse failed: {value.detail}"
+    }
+}
 
-        impl Error for ParseFailure {}
+impl Error for ParseFailure {
+}
 
-        fn parse(text: string) -> i64 fails dyn Error {
-            if text == "" {
-                return error ParseFailure { detail: "empty" }
-            }
-            return 1
-        }
+fn parse(text: string) -> i64 fails dyn Error {
+    if text == "" {
+        return error ParseFailure { detail: "empty" };
+    }
+    return 1;
+}
 
-        fn parse_twice(text: string) -> i64 fails dyn Error {
-            let first = parse(text)?;
-            return first + 1
-        }
+fn parse_twice(text: string) -> i64 fails dyn Error {
+    let first = parse(text)?;
+    return first + 1;
+}
 
-        fn wrapped(text: string) -> Result<i64, dyn Error> {
-            if text == "" {
-                return .Err(ParseFailure { detail: "empty" })
-            }
-            return .Ok(1)
-        }
-        "#,
+fn wrapped(text: string) -> Result<i64, dyn Error> {
+    if text == "" {
+        return .Err(ParseFailure { detail: "empty" });
+    }
+    return .Ok(1);
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -113,13 +119,14 @@ fn error_impl_coerces_to_dyn_error_at_every_error_position() {
 #[test]
 fn type_without_error_impl_does_not_coerce_to_dyn_error() {
     let output = typecheck(
-        r#"
-        type Bare { detail: string }
+        r#"type Bare {
+    detail: string;
+}
 
-        fn parse() -> i64 fails dyn Error {
-            return error Bare { detail: "empty" }
-        }
-        "#,
+fn parse() -> i64 fails dyn Error {
+    return error Bare { detail: "empty" };
+}
+"#,
     );
     assert!(
         output
@@ -165,16 +172,33 @@ fn unknown_trait_in_dyn_type_is_refused_once() {
 #[test]
 fn entry_dyn_error_renders_through_the_display_fmt_slot() {
     let output = typecheck(
-        r#"
-        trait Pretty { fn fmt(self) -> string; }
-        type Failure { detail: string }
-        impl Display for Failure { fn fmt(value: Failure) -> string { "display" } }
-        impl Error for Failure {}
-        impl Pretty for Failure { fn fmt(self) -> string { "pretty" } }
-        fn main() -> Result<(), dyn (Pretty + Error)> {
-            .Err(Failure { detail: "x" })
-        }
-        "#,
+        r#"trait Pretty {
+    fn fmt(self) -> string;
+}
+
+type Failure {
+    detail: string;
+}
+
+impl Display for Failure {
+    fn fmt(value: Failure) -> string {
+        "display"
+    }
+}
+
+impl Error for Failure {
+}
+
+impl Pretty for Failure {
+    fn fmt(self) -> string {
+        "pretty"
+    }
+}
+
+fn main() -> Result<(), dyn (Pretty + Error)> {
+    .Err(Failure { detail: "x" })
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     let Some(hew_types::EntryExitPlan {
@@ -194,5 +218,5 @@ fn entry_dyn_error_renders_through_the_display_fmt_slot() {
     // `Pretty.fmt` occupies slot 3; `Display.fmt`, reached through `Error`,
     // is slot 4.
     assert_eq!(*slot, 4);
-    assert_eq!(method.full_path(), "std.builtins.Display::fmt");
+    assert_eq!(output.defs.path(*method), "std.builtins.Display::fmt");
 }

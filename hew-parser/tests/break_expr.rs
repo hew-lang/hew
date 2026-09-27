@@ -136,7 +136,7 @@ fn labelled_break_in_match_arm_parses() {
     };
     assert!(matches!(
         &stmts[0].0,
-        Stmt::Break { label: Some(l), value: None } if l == "outer"
+        Stmt::Break { label: Some(l), value: None } if l.name.as_str() == "outer"
     ));
 }
 
@@ -186,7 +186,7 @@ fn statement_position_match_arm_break_still_parses() {
 #[test]
 fn break_expr_desugar_matches_explicit_block_form() {
     let sugared = parse("fn f() { while true { let x = match 1 { 1 => break, _ => 0 }; } }");
-    let explicit = parse("fn f() { while true { let x = match 1 { 1 => { break; }, _ => 0 }; } }");
+    let explicit = parse("fn f() {\n    while true {\n        let x = match 1 {\n            1 => {\n                break;\n            }\n            _ => 0,\n        };\n    }\n}\n");
     assert!(sugared.errors.is_empty(), "{:#?}", sugared.errors);
     assert!(explicit.errors.is_empty(), "{:#?}", explicit.errors);
     assert!(
@@ -200,7 +200,7 @@ fn break_expr_desugar_matches_explicit_block_form() {
 fn continue_expr_desugar_matches_explicit_block_form() {
     let sugared = parse("fn f() { while true { let x = match 1 { 1 => continue, _ => 0 }; } }");
     let explicit =
-        parse("fn f() { while true { let x = match 1 { 1 => { continue; }, _ => 0 }; } }");
+        parse("fn f() {\n    while true {\n        let x = match 1 {\n            1 => {\n                continue;\n            }\n            _ => 0,\n        };\n    }\n}\n");
     assert!(sugared.errors.is_empty(), "{:#?}", sugared.errors);
     assert!(explicit.errors.is_empty(), "{:#?}", explicit.errors);
     assert!(
@@ -218,10 +218,10 @@ fn continue_expr_desugar_matches_explicit_block_form() {
 fn parse_err_missing_comma(src: &str) {
     let result = parse(src);
     assert!(
-        result.errors.iter().any(|e| matches!(
-            &e.kind,
-            ParseDiagnosticKind::UnexpectedToken { expected, .. } if expected == "`,`"
-        )),
+        result
+            .errors
+            .iter()
+            .any(|e| e.kind == ParseDiagnosticKind::ListSeparator),
         "expected a missing-comma error for `{src}`, got: {:#?}",
         result.errors
     );

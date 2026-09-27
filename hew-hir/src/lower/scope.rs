@@ -1,0 +1,388 @@
+//! Binding scopes and name lookup.
+
+use super::*;
+
+impl LowerCtx {
+    pub(super) fn pattern_name(&mut self, pattern: &Spanned<Pattern>) -> Option<String> {
+        if let Pattern::Identifier(name) = &pattern.0 {
+            Some(name.to_string())
+        } else {
+            self.unsupported(pattern.1.clone(), "pattern", "slice-2");
+            None
+        }
+    }
+
+    pub(super) fn bind(
+        &mut self,
+        name: String,
+        ty: ResolvedTy,
+        mutable: bool,
+        span: std::ops::Range<usize>,
+    ) -> HirBinding {
+        let id = self.ids.binding();
+        if let Some(scope) = self.binding_scopes.last_mut() {
+            scope.insert(id, (name.clone(), ty.clone(), span.clone()));
+        }
+        HirBinding {
+            id,
+            name,
+            ty,
+            mutable,
+            span,
+            is_consume: false,
+        }
+    }
+
+    /// Bind an authored declaration using the identity published by the
+    /// checker at the declaration's source span. A missing row is a broken
+    /// checker/HIR contract, never permission to select a same-named item.
+    pub(super) fn bind_checked(
+        &mut self,
+        name: String,
+        ty: ResolvedTy,
+        mutable: bool,
+        span: Span,
+    ) -> HirBinding {
+        let key = self.mk_key(&span);
+        let source = self.resolutions.get(&key).copied();
+        let binding = self.bind(name.clone(), ty.clone(), mutable, span.clone());
+        match source {
+            Some(Resolution::Local(source)) => {
+                if let Some(scope) = self.checked_scopes.last_mut() {
+                    scope.insert(source, (binding.id, ty, span));
+                }
+            }
+            other => self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name,
+                    reason: format!("missing Local resolution at {key:?}; found {other:?}"),
+                },
+                span,
+                "source binding has no checker-owned local identity",
+            )),
+        }
+        binding
+    }
+
+    pub(super) fn lookup_checked(&self, source: TypeBindingId) -> Option<(BindingId, ResolvedTy)> {
+        self.checked_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&source).map(|(id, ty, _)| (*id, ty.clone())))
+    }
+
+    pub(super) fn bind_actor_state_field(&mut self, field: &HirField, index: usize) -> HirBinding {
+        let span = field.span.clone();
+        let key = self.mk_key(&span);
+        let source = self.resolutions.get(&key).copied();
+        let binding = self.bind(field.name.clone(), field.ty.clone(), true, span.clone());
+        let expected = self.current_actor_nominal.zip(u32::try_from(index).ok());
+        match (source, expected) {
+            (Some(Resolution::Field(owner, slot)), Some((expected_owner, expected_slot)))
+                if owner == expected_owner && slot == expected_slot =>
+            {
+                if let Some(scope) = self.checked_field_scopes.last_mut() {
+                    scope.insert((owner, slot), (binding.id, field.ty.clone(), span));
+                }
+            }
+            other => self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: field.name.clone(),
+                    reason: format!("actor field identity at {key:?} differs from {other:?}"),
+                },
+                span,
+                "actor state field has no matching checker-owned member identity",
+            )),
+        }
+        binding
+    }
+
+    pub(super) fn lookup_checked_field(
+        &self,
+        owner: hew_types::NominalId,
+        index: u32,
+    ) -> Option<(BindingId, ResolvedTy)> {
+        self.checked_field_scopes.iter().rev().find_map(|scope| {
+            scope
+                .get(&(owner, index))
+                .map(|(id, ty, _)| (*id, ty.clone()))
+        })
+    }
+
+    /// Lower an AST function value parameter to its `HirBinding`, carrying the
+    /// `consume` modifier (`param.is_consume`) onto the binding so the
+    /// param-ownership classifier can pin its by-move disposition. Mirrors
+    /// `bind` for the type/mutability/scope-registration mechanics; the only
+    /// addition is propagating the consume annotation, which `bind` (shared by
+    /// every non-param binder) always leaves `false`.
+    pub(super) fn bind_param(&mut self, param: &Param) -> HirBinding {
+        let ty = self.lower_type(&param.ty);
+        let mut binding = self.bind_checked(
+            param.name.to_string(),
+            ty,
+            param.is_mutable,
+            param.name_span.clone(),
+        );
+        binding.is_consume = param.is_consume;
+        binding
+    }
+
+    pub(super) fn bind_actor_param(&mut self, param: &Param) -> HirBinding {
+        let ty = self.lower_type(&param.ty);
+        let ty = self.restore_type_declaration_facts(ty);
+        let mut binding = self.bind_checked(
+            param.name.to_string(),
+            ty,
+            param.is_mutable,
+            param.name_span.clone(),
+        );
+        binding.is_consume = param.is_consume;
+        binding
+    }
+
+    /// Register a pre-allocated `BindingId` for a checked source binder.
+    ///
+    /// Used when the caller needs the `BindingId` before the scope is pushed
+    /// (e.g. `HirMatchArmPredicate::Binding` where the id is embedded in the
+    /// predicate and must be available before the guard expression is lowered).
+    pub(super) fn bind_checked_existing(
+        &mut self,
+        id: BindingId,
+        name: String,
+        ty: ResolvedTy,
+        _mutable: bool,
+        span: std::ops::Range<usize>,
+    ) {
+        let key = self.mk_key(&span);
+        let source = self.resolutions.get(&key).copied();
+        if let Some(scope) = self.binding_scopes.last_mut() {
+            scope.insert(id, (name.clone(), ty.clone(), span.clone()));
+        }
+        match source {
+            Some(Resolution::Local(source)) => {
+                if let Some(scope) = self.checked_scopes.last_mut() {
+                    scope.insert(source, (id, ty, span));
+                }
+            }
+            other => self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name,
+                    reason: format!("missing Local resolution at {key:?}; found {other:?}"),
+                },
+                span,
+                "source binding has no checker-owned local identity",
+            )),
+        }
+    }
+
+    /// Give a generated identifier an exact binding during one AST rewrite.
+    /// Source identifiers never read this overlay; they join checker rows.
+    pub(super) fn with_synthetic_binding_use<R>(
+        &mut self,
+        span: &Span,
+        binding: &HirBinding,
+        lower: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let key = self.mk_key(span);
+        let prior = self
+            .synthetic_binding_uses
+            .insert(key.clone(), (binding.id, binding.ty.clone()));
+        let result = lower(self);
+        if let Some(prior) = prior {
+            self.synthetic_binding_uses.insert(key, prior);
+        } else {
+            self.synthetic_binding_uses.remove(&key);
+        }
+        result
+    }
+
+    /// Look up a tagged-union constructor using canonical owner identity.
+    ///
+    /// Imported declarations are registered only under module-qualified keys.
+    /// The checker-selected result/scrutinee type therefore wins over surface
+    /// spelling, then import aliases and the module currently being lowered are
+    /// considered. Direct lookup is last and is intentionally limited by the
+    /// registry producer to root-local and builtin short keys. This prevents
+    /// two imported modules that both declare `Shape::Box` from overwriting one
+    /// another through a process-global short key.
+    pub(super) fn lookup_variant_ctor(
+        &self,
+        name: &str,
+        owner_ty: Option<&ResolvedTy>,
+    ) -> Option<(String, usize, &HirVariantKind)> {
+        let ResolvedTy::Named { head, .. } = owner_ty? else {
+            return None;
+        };
+        let owner = match head {
+            hew_types::TypeHead::Builtin(_) => head.registry_key(),
+            _ => self.defs.path(head.declaration(&self.defs)?.declaration()),
+        };
+        let variant_name = name
+            .rsplit_once("::")
+            .or_else(|| name.rsplit_once('.'))
+            .map_or(name, |(_, variant)| variant);
+        let variants = self.enum_variants_by_name.get(owner)?;
+        let (index, variant) = variants
+            .iter()
+            .enumerate()
+            .find(|(_, variant)| variant.name == variant_name)?;
+        Some((owner.to_string(), index, &variant.kind))
+    }
+
+    /// Instantiate the declaration's payload types using the checked enum
+    /// owner. Literal syntax must not supply a replacement type for a generic
+    /// field; the same substitution also owns the enum's concrete layout.
+    pub(super) fn instantiated_pattern_payload_types(
+        &self,
+        name: &str,
+        owner_ty: &ResolvedTy,
+        arity: usize,
+    ) -> Result<Vec<ResolvedTy>, String> {
+        let (owner, _, kind) = self
+            .lookup_variant_ctor(name, Some(owner_ty))
+            .ok_or_else(|| format!("missing checked variant constructor for {owner_ty:?}"))?;
+        let fields = match kind {
+            HirVariantKind::Tuple(fields) => fields.as_slice(),
+            HirVariantKind::Unit => &[],
+            HirVariantKind::Struct(_) => {
+                return Err("tuple variant pattern has a record declaration".into());
+            }
+        };
+        let ResolvedTy::Named { args, .. } = owner_ty else {
+            return Err("variant pattern has a non-nominal owner".into());
+        };
+        let params = self
+            .enum_type_params
+            .get(&owner)
+            .map_or(&[][..], Vec::as_slice);
+        if params.len() != args.len() || fields.len() != arity {
+            return Err(
+                "variant pattern disagrees with its checked generic or payload arity".into(),
+            );
+        }
+        Ok(fields
+            .iter()
+            .map(|ty| substitute_type_params(ty, params, args))
+            .collect())
+    }
+
+    pub(super) fn resolved_option_inner(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+        match ty {
+            ResolvedTy::Named {
+                args,
+                head: hew_types::TypeHead::Builtin(BuiltinType::Option),
+                ..
+            } if args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    pub(super) fn resolved_result_parts(ty: &ResolvedTy) -> Option<(&ResolvedTy, &ResolvedTy)> {
+        match ty {
+            ResolvedTy::Named {
+                args,
+                head: hew_types::TypeHead::Builtin(BuiltinType::Result),
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
+            _ => None,
+        }
+    }
+
+    pub(super) fn checker_expr_resolved_ty(
+        &mut self,
+        span: &std::ops::Range<usize>,
+        name: &str,
+    ) -> Option<ResolvedTy> {
+        let checker_key = self.mk_key(span);
+        let Some(checker_ty) = self.expr_types.get(&checker_key).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "checker-authoritative expression type is required for `?` lowering",
+            ));
+            return None;
+        };
+        match ResolvedTy::from_ty(&checker_ty) {
+            // `Ty::Named` does not carry source-declaration opacity. Route
+            // checker-authored expression types through the same identity
+            // normalisation funnel as other checker→HIR boundaries so an
+            // opaque Result/Option payload remains pointer-shaped, including
+            // when nested inside another generic carrier.
+            Ok(resolved) => Some(self.restore_type_declaration_facts(resolved)),
+            Err(err) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.to_string(),
+                        reason: err.to_string(),
+                    },
+                    span.clone(),
+                    "checker-authoritative expression type failed boundary conversion",
+                ));
+                None
+            }
+        }
+    }
+
+    pub(super) fn builtin_variant_predicate(
+        &mut self,
+        builtin: BuiltinType,
+        variant_name: &str,
+        span: &std::ops::Range<usize>,
+    ) -> Option<(HirMatchArmPredicate, usize)> {
+        let type_name = builtin.canonical_name();
+        let qualified = format!("{type_name}::{variant_name}");
+        let Some((registered_type, variant_idx)) =
+            self.machine_ctor_registry.get(&qualified).cloned()
+        else {
+            self.unsupported(
+                span.clone(),
+                format!("`?` builtin variant `{qualified}` missing from ctor registry"),
+                "question-operator",
+            );
+            return None;
+        };
+        if registered_type != type_name {
+            self.unsupported(
+                span.clone(),
+                format!(
+                    "`?` builtin variant `{qualified}` resolved to unexpected type `{registered_type}`"
+                ),
+                "question-operator",
+            );
+            return None;
+        }
+        let Ok(variant_idx_u32) = u32::try_from(variant_idx) else {
+            self.unsupported(
+                span.clone(),
+                format!("`?` builtin variant `{qualified}` index exceeds u32::MAX"),
+                "question-operator",
+            );
+            return None;
+        };
+        Some((
+            HirMatchArmPredicate::EnumVariant {
+                variant_match: hew_types::VariantMatch {
+                    type_name: type_name.to_string(),
+                    variant_name: variant_name.to_string(),
+                },
+                variant_idx: variant_idx_u32,
+            },
+            variant_idx,
+        ))
+    }
+
+    pub(super) fn push_scope(&mut self) {
+        self.binding_scopes.push(HashMap::new());
+        self.checked_scopes.push(HashMap::new());
+        self.checked_field_scopes.push(HashMap::new());
+    }
+
+    pub(super) fn pop_scope(&mut self) {
+        self.binding_scopes.pop();
+        self.checked_scopes.pop();
+        self.checked_field_scopes.pop();
+    }
+}

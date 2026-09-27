@@ -51,7 +51,7 @@ fn role_kind(role: &SemSupervisedRole) -> u64 {
     kind as u64
 }
 
-/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter and name.
+/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter, name and deadline.
 fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let ptr = ctx.ptr_type(AddressSpace::default());
     ctx.struct_type(
@@ -60,6 +60,7 @@ fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
             ctx.i32_type().into(),
             ptr.into(),
             ptr.into(),
+            ctx.i64_type().into(),
         ],
         false,
     )
@@ -142,6 +143,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                             .into(),
                         spawn.as_global_value().as_pointer_value().into(),
                         name.into(),
+                        self.ctx
+                            .i64_type()
+                            .const_int(
+                                match child.stop_deadline {
+                                    hew_mir::physical::SemStopDeadline::Literal(ns) => ns as u64,
+                                    hew_mir::physical::SemStopDeadline::Config(_) => 0,
+                                },
+                                true,
+                            )
+                            .into(),
                     ]),
                 );
             }
@@ -326,21 +337,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::SupervisorChild {
                 supervisor, child, ..
             } => self
-                .emit_supervisor_child(*supervisor, *child, sources, result, false)
-                .map(Some),
-            ActorOperation::SupervisorAwaitRestart {
-                supervisor, child, ..
-            } => self
-                .emit_supervisor_child(*supervisor, *child, sources, result, true)
+                .emit_supervisor_child(*supervisor, *child, sources, result)
                 .map(Some),
             // A pool view is the same pair a role is — the owning supervisor
             // and a slot — except the slot is the first of the pool's members.
             ActorOperation::SupervisorPoolView {
                 supervisor, child, ..
             } => self
-                .emit_supervisor_child(*supervisor, *child, sources, result, false)
+                .emit_supervisor_child(*supervisor, *child, sources, result)
                 .map(Some),
-            ActorOperation::SupervisorStop(_) => self.emit_supervisor_stop(sources).map(Some),
             _ => Ok(None),
         }
     }
@@ -400,13 +405,72 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .map_or(ptr.const_null(), |function| {
                 function.as_global_value().as_pointer_value()
             });
-        let children = self
+        let children_table = self
             .llvm
             .get_global(&symbol(supervisor, "children"))
             .ok_or_else(|| {
                 CodegenError::FailClosed("supervisor lacks its declared child table".into())
             })?
             .as_pointer_value();
+        let children = if supervisor.children.iter().any(|child| {
+            matches!(
+                child.stop_deadline,
+                hew_mir::physical::SemStopDeadline::Config(_)
+            )
+        }) {
+            let entry_ty = native_child_spec_type(self.ctx);
+            let array_ty = entry_ty.array_type(supervisor.registered_slots());
+            let local = self
+                .builder
+                .build_alloca(array_ty, "supervisor.children")
+                .llvm_ctx("allocate configured child deadlines")?;
+            let defaults = self
+                .builder
+                .build_load(array_ty, children_table, "supervisor.children.defaults")
+                .llvm_ctx("read child descriptor defaults")?;
+            self.builder
+                .build_store(local, defaults)
+                .llvm_ctx("copy child descriptor defaults")?;
+            let mut slot = 0u32;
+            for child in &supervisor.children {
+                if let hew_mir::physical::SemStopDeadline::Config(index) = child.stop_deadline {
+                    let source = sources.get(index).ok_or_else(|| {
+                        CodegenError::FailClosed("stop deadline lost its config parameter".into())
+                    })?;
+                    let deadline = self.load(*source, "supervisor.stop.deadline")?;
+                    for offset in 0..child.slots() {
+                        // SAFETY: the slot is derived from the verified child table.
+                        let entry = unsafe {
+                            self.builder.build_in_bounds_gep(
+                                array_ty,
+                                local,
+                                &[
+                                    self.ctx.i32_type().const_zero(),
+                                    self.ctx
+                                        .i32_type()
+                                        .const_int(u64::from(slot + offset), false),
+                                ],
+                                "supervisor.child.descriptor",
+                            )
+                        }
+                        .llvm_ctx("address the configured child")?;
+                        let field = self
+                            .builder
+                            .build_struct_gep(entry_ty, entry, 4, "supervisor.child.stop_ns")
+                            .llvm_ctx("address the child stop deadline")?;
+                        self.builder
+                            .build_store(field, deadline)
+                            .llvm_ctx("set the child stop deadline")?;
+                    }
+                }
+                slot = slot.checked_add(child.slots()).ok_or_else(|| {
+                    CodegenError::FailClosed("child descriptor slot count overflowed".into())
+                })?;
+            }
+            local
+        } else {
+            children_table
+        };
         let spawn = get_or_declare_external(
             self.llvm,
             "hew_supervisor_native_spawn",
@@ -487,7 +551,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         child: u32,
         sources: &[StorageId],
         result: Option<StorageId>,
-        await_restart: bool,
     ) -> CodegenResult<IntValue<'ctx>> {
         let supervisor = self.supervisor(id)?;
         let [source] = sources else {
@@ -501,34 +564,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .slot(child as usize)
             .ok_or_else(|| CodegenError::FailClosed("declared child has no runtime slot".into()))?;
         let token = self.load_supervisor_owner(*source)?;
-        if await_restart {
-            let wait = get_or_declare_external(
-                self.llvm,
-                "hew_supervisor_native_await_restart",
-                self.ctx.void_type().fn_type(
-                    &[
-                        token.get_type().into(),
-                        self.ctx.i32_type().into(),
-                        self.ctx.i32_type().into(),
-                    ],
-                    false,
-                ),
-            )?;
-            self.builder
-                .build_call(
-                    wait,
-                    &[
-                        token.into(),
-                        self.ctx.i32_type().const_int(u64::from(slot), false).into(),
-                        self.ctx
-                            .i32_type()
-                            .const_int(role_kind(&supervisor.children[child as usize].role), false)
-                            .into(),
-                    ],
-                    "",
-                )
-                .llvm_ctx("wait for the declared child to be live again")?;
-        }
         let role = self.slots[result.0 as usize];
         let role_ty = self
             .ctx
@@ -550,20 +585,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(self.ctx.i32_type().const_zero())
     }
 
-    /// `pool[i]`, `pool.get(i)` and `await_restart pool[i]`: one member's role
+    /// `pool[i]` and `pool.get(i)`: one member's role
     /// from the view, the caller's index and the declared member count. The
     /// members occupy consecutive slots from the view's base, so the member is
     /// arithmetic once the index is proved to be one of them.
     pub(super) fn emit_supervisor_pool_member(
         &self,
-        operation: hew_types::runtime_call::SupervisorPoolOp,
         option: Option<hew_mir::physical::PhysicalVariantId>,
         sources: &[StorageId],
         result: StorageId,
         normal: &hew_mir::physical::PhysicalEdge,
         failure: Option<&hew_mir::physical::PhysicalEdge>,
     ) -> CodegenResult<()> {
-        use hew_types::runtime_call::SupervisorPoolOp;
         let [view, index, count] = sources else {
             return Err(CodegenError::FailClosed(
                 "supervisor pool member takes its view, index and member count".into(),
@@ -615,33 +648,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_int_add(base, offset, "pool.slot")
             .llvm_ctx("address the pool member's slot")?;
-        if operation == SupervisorPoolOp::AwaitRestartMember {
-            let wait = get_or_declare_external(
-                self.llvm,
-                "hew_supervisor_native_await_restart",
-                self.ctx.void_type().fn_type(
-                    &[
-                        token.get_type().into(),
-                        self.ctx.i32_type().into(),
-                        self.ctx.i32_type().into(),
-                    ],
-                    false,
-                ),
-            )?;
-            self.builder
-                .build_call(
-                    wait,
-                    &[
-                        token.into(),
-                        slot.into(),
-                        // A pool's members are actors: SIR refuses a pool of
-                        // supervisors, which the runtime keeps in its own space.
-                        self.ctx.i32_type().const_zero().into(),
-                    ],
-                    "",
-                )
-                .llvm_ctx("wait for the pool member to be live again")?;
-        }
         let role_ty = self.ctx.struct_type(
             &[token.get_type().into(), self.ctx.i32_type().into()],
             false,
@@ -698,30 +704,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             Ok(owner)
         }
-    }
-
-    /// `supervisor_stop(sup)`: stop every child, then the supervisor.
-    pub(super) fn emit_supervisor_stop(
-        &self,
-        sources: &[StorageId],
-    ) -> CodegenResult<IntValue<'ctx>> {
-        let [source] = sources else {
-            return Err(CodegenError::FailClosed(
-                "supervisor stop requires one handle".into(),
-            ));
-        };
-        let value = self.load(*source, "supervisor.stop.handle")?;
-        let stop = get_or_declare_external(
-            self.llvm,
-            "hew_local_pid_supervisor_stop",
-            self.ctx
-                .i32_type()
-                .fn_type(&[value.get_type().into()], false),
-        )?;
-        self.builder
-            .build_call(stop, &[value.into()], "supervisor.stopped")
-            .llvm_ctx("stop the declared supervisor")?;
-        Ok(self.ctx.i32_type().const_zero())
     }
 
     /// Load a message target. A role re-resolves to its current incarnation
@@ -811,7 +793,7 @@ mod abi_tests {
     use hew_runtime::supervisor::HewNativeChildSpec;
     use std::mem::{align_of, offset_of, size_of};
 
-    fn fields() -> [(usize, usize); 4] {
+    fn fields() -> [(usize, usize); 5] {
         [
             (
                 offset_of!(HewNativeChildSpec, restart_policy),
@@ -828,6 +810,10 @@ mod abi_tests {
             (
                 offset_of!(HewNativeChildSpec, name),
                 field_size(|spec: &HewNativeChildSpec| &spec.name),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, stop_ns),
+                field_size(|spec: &HewNativeChildSpec| &spec.stop_ns),
             ),
         ]
     }
@@ -855,6 +841,7 @@ mod abi_tests {
             &[
                 ctx.i32_type().into(),
                 ptr.into(),
+                ctx.i64_type().into(),
                 ctx.i32_type().into(),
                 ptr.into(),
             ],

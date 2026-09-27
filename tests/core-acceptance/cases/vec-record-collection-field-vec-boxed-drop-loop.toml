@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-record-collection-field-vec-boxed-drop-loop"
+intent = "Owned-element `Vec<record-with-collection-field>` array-literal leak oracle (v0.6-generic-direct-call). Shape `vec_boxed_drop_loop_high` (vec boxed outer drop no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-record-collection-field-vec-boxed-drop-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 88

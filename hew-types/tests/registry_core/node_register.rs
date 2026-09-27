@@ -8,16 +8,16 @@ use hew_types::error::TypeErrorKind;
 #[test]
 fn node_register_accepts_an_actor_handle() {
     let output = common::typecheck(
-        r#"
-        actor Worker {
-            let n: i32,
-            init() {}
-        }
-        fn main() {
-            let pid = spawn Worker(n: 0);
-            Node.register("worker", pid);
-        }
-    "#,
+        r#"actor Worker {
+    let n: i32;
+    init() {}
+}
+
+fn main() {
+    let pid = spawn Worker(n: 0);
+    Node.register("worker", pid);
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -53,17 +53,17 @@ fn node_register_rejects_integer_literal() {
 #[test]
 fn node_register_rejects_remote_pid() {
     let output = common::typecheck(
-        r#"
-        actor Worker {
-            let n: i32,
-            init() {}
-        }
-        fn main() {
-            let pid = spawn Worker(n: 0);
-            let remote: RemotePid<Worker> = pid;
-            Node.register("worker", remote);
-        }
-    "#,
+        r#"actor Worker {
+    let n: i32;
+    init() {}
+}
+
+fn main() {
+    let pid = spawn Worker(n: 0);
+    let remote: RemotePid<Worker> = pid;
+    Node.register("worker", remote);
+}
+"#,
     );
     assert!(
         !output.errors.is_empty(),
@@ -78,16 +78,16 @@ fn node_register_rejects_remote_pid() {
 #[test]
 fn node_register_result_eq_zero_typechecks() {
     let output = common::typecheck(
-        r#"
-        actor Worker {
-            let n: i32,
-            init() {}
-        }
-        fn main() {
-            let pid = spawn Worker(n: 0);
-            let ok: bool = Node.register("worker", pid) == 0;
-        }
-    "#,
+        r#"actor Worker {
+    let n: i32;
+    init() {}
+}
+
+fn main() {
+    let pid = spawn Worker(n: 0);
+    let ok: bool = Node.register("worker", pid) == 0;
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),

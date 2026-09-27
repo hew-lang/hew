@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-mixed-param-not-double-freed"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `mixed_param_not_double_freed` (mixed parameter projection survives store and natural drop) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-mixed-param-not-double-freed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "9|1|PARAM-PIN|1|OK"
+exit = 0

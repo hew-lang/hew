@@ -48,7 +48,7 @@ impl Parser<'_> {
                 break;
             }
 
-            let field_name = self.expect_ident()?;
+            let (field_name, name_span) = self.expect_ident_spanned()?;
             let pattern = if self.eat(&Token::Colon) {
                 Some(self.parse_pattern()?)
             } else {
@@ -56,6 +56,7 @@ impl Parser<'_> {
             };
             fields.push(PatternField {
                 name: field_name,
+                name_span,
                 pattern,
             });
 
@@ -177,12 +178,13 @@ impl Parser<'_> {
                 Pattern::ContextVariant(ContextVariantPattern { name, payload })
             }
             Some(Token::Identifier(name)) => {
-                let first = name.to_string();
+                let first = Ident::new(name);
+                let first_span = self.peek_span();
                 self.advance();
-                if first == "_" {
+                if first.name == sym::UNDERSCORE {
                     Pattern::Wildcard
                 } else {
-                    let mut segments = vec![first.clone()];
+                    let mut segments = vec![(first, first_span)];
                     loop {
                         match self.peek() {
                             Some(Token::Dot)
@@ -191,7 +193,7 @@ impl Parser<'_> {
                             _ => break,
                         }
                         self.advance();
-                        segments.push(self.expect_ident()?);
+                        segments.push(self.expect_ident_spanned()?);
                     }
 
                     if segments.len() == 1 {
@@ -208,16 +210,15 @@ impl Parser<'_> {
                                 }
                             }
                             self.expect(&Token::RightParen)?;
-                            Pattern::Constructor {
-                                name: first,
-                                patterns,
+                            Pattern::NominalPath {
+                                path: Path { segments },
+                                payload: Some(NominalPatternPayload::Tuple(patterns)),
                             }
                         } else if self.eat(&Token::LeftBrace) {
                             let (fields, rest) = self.parse_record_pattern_fields()?;
-                            Pattern::Struct {
-                                name: first,
-                                fields,
-                                rest,
+                            Pattern::NominalPath {
+                                path: Path { segments },
+                                payload: Some(NominalPatternPayload::Record { fields, rest }),
                             }
                         } else {
                             Pattern::Identifier(first)
@@ -341,7 +342,7 @@ impl Parser<'_> {
             Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
                 self.advance();
-                Pattern::Identifier(name.to_string())
+                Pattern::Identifier(Ident::new(name))
             }
             _ => {
                 let found = match self.peek() {
@@ -387,7 +388,7 @@ impl Parser<'_> {
         //
         // `arm_body_opens_block` accepts every opener `is_block_expr` accepts —
         // not just `{` — so `if`/`match`/`unsafe`/`scope`/`select`/`fork {`/
-        // `after(..) {` arm bodies keep their optional trailing comma.
+        // `after(..) {` arm bodies end at their closing brace.
         let body_looks_like_block = self.arm_body_opens_block();
         let body = if body_looks_like_block {
             // The arm needs no trailing comma, so the next arm's pattern may
@@ -399,13 +400,7 @@ impl Parser<'_> {
         } else {
             self.parse_expr()?
         };
-        if self.peek() == Some(&Token::RightBrace) {
-            self.eat(&Token::Comma); // trailing comma optional on last arm
-        } else if body_looks_like_block {
-            self.eat(&Token::Comma);
-        } else {
-            self.expect(&Token::Comma)?;
-        }
+        self.expect_arm_separator(body_looks_like_block);
 
         Some(MatchArm {
             pattern,
@@ -429,8 +424,14 @@ impl Parser<'_> {
         }
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
-        let body = self.parse_expr()?;
-        self.eat(&Token::Comma);
+        let body_looks_like_block = self.arm_body_opens_block();
+        let body = if body_looks_like_block {
+            let _guard = self.set_block_arm_body();
+            self.parse_expr()?
+        } else {
+            self.parse_expr()?
+        };
+        self.expect_arm_separator(body_looks_like_block);
 
         Some(SelectArm {
             binding,

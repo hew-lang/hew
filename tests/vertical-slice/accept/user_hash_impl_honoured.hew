@@ -1,4 +1,6 @@
-type Key { id: i64 }
+type Key {
+    id: i64;
+}
 
 impl Eq for Key {
     fn eq(self, other: Key) -> bool {

@@ -7,6 +7,10 @@
 use crate::ast_visit::{self, AstVisitor};
 use hew_parser::ast::{condition_exprs, Block, Expr, Item, Span, Stmt, StringPart};
 use hew_parser::ParseResult;
+use hew_types::check::dispatch::CallTarget;
+use hew_types::check::scope::Resolution;
+use hew_types::check::SpanKey;
+use hew_types::{DefId, TypeCheckOutput};
 
 /// A single call site found in the AST.
 #[derive(Debug, Clone)]
@@ -15,6 +19,44 @@ pub struct CallSite {
     pub name: String,
     /// Byte-offset span of the call expression (not just the callee identifier).
     pub span: Span,
+    /// The source expression naming the callee; identity rows select its leaf.
+    pub callee_span: Span,
+}
+
+/// Checker-selected declaration for a call site, when its lowering target is
+/// direct. `Some(None)` is a checked indirect or runtime edge and must not be
+/// guessed from the call's rendered name. `None` means the checker has not yet
+/// published a call fact for this source form.
+#[must_use]
+pub fn checked_call_target(
+    call: &CallSite,
+    output: &TypeCheckOutput,
+    module_idx: u32,
+) -> Option<Option<DefId>> {
+    let key = SpanKey::in_module(&call.span, module_idx);
+    if let Some(target) = output.direct_call_targets.get(&key) {
+        let declaration = match target {
+            CallTarget::User(id)
+            | CallTarget::RecordConstructor(id)
+            | CallTarget::ImplMethod(id) => Some(*id),
+            CallTarget::Extern { declaration, .. }
+            | CallTarget::DeclaredRuntime { declaration, .. } => Some(*declaration),
+            CallTarget::DynamicVtable { method, .. }
+            | CallTarget::StaticTraitMethod { method, .. } => Some(*method),
+            CallTarget::Runtime(_)
+            | CallTarget::Builtin { .. }
+            | CallTarget::RuntimeCollection(_)
+            | CallTarget::IndirectFunctionValue
+            | CallTarget::Unsupported { .. } => None,
+        };
+        return Some(declaration);
+    }
+    let (_, resolution) =
+        crate::identity::resolution_at(output, module_idx, call.callee_span.end.saturating_sub(1))?;
+    Some(match resolution {
+        Resolution::Def(id) | Resolution::Member(id) => Some(id),
+        _ => None,
+    })
 }
 
 /// Collect all call sites across every item body in the parse result.
@@ -78,17 +120,19 @@ impl<'ast> AstVisitor<'ast> for CallCollector {
     ) {
         match expr {
             Expr::Call { function, .. } => {
-                if let Expr::Identifier(name) = &function.0 {
+                if let Expr::Ident(name) = &function.0 {
                     self.calls.push(CallSite {
-                        name: name.clone(),
+                        name: name.to_string(),
                         span: span.clone(),
+                        callee_span: function.1.clone(),
                     });
                 }
             }
             Expr::MethodCall { method, .. } => {
                 self.calls.push(CallSite {
-                    name: method.clone(),
+                    name: method.0.to_string(),
                     span: span.clone(),
+                    callee_span: method.1.clone(),
                 });
             }
             _ => {}
@@ -195,10 +239,11 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
     match expr {
         Expr::Call { function, args, .. } => {
             let (func, _) = function.as_ref();
-            if let Expr::Identifier(name) = func {
+            if let Expr::Ident(name) = func {
                 calls.push(CallSite {
-                    name: name.clone(),
+                    name: name.to_string(),
                     span: expr_span.clone(),
+                    callee_span: function.1.clone(),
                 });
             }
             collect_calls_in_expr(function.as_ref(), calls);
@@ -237,8 +282,9 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             ..
         } => {
             calls.push(CallSite {
-                name: method.clone(),
+                name: method.0.to_string(),
                 span: expr_span.clone(),
+                callee_span: method.1.clone(),
             });
             collect_calls_in_expr(receiver.as_ref(), calls);
             for arg in args {
@@ -384,7 +430,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(rhs.as_ref(), calls);
         }
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

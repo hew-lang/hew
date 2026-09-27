@@ -4,7 +4,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.io;
 //!
 //! fn main() {

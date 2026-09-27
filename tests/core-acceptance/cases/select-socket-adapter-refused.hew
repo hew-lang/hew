@@ -3,6 +3,7 @@
 // winning receive will not wait. The selecting actor traps with a named
 // reason on its own turn; the process survives and a sibling keeps serving.
 import std.net;
+
 import std.stream;
 
 actor Watcher {
@@ -11,7 +12,7 @@ actor Watcher {
             v from src.recv() => match v {
                 .Some(_) => 1,
                 .None => 0,
-            },
+            }
             after 10s => -1,
         }
     }

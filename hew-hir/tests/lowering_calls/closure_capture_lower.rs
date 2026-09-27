@@ -397,7 +397,8 @@ fn generic_function_values_register_concrete_targets_and_site_arguments() {
     let origin = monos[0].key.origin;
     assert!(monos
         .iter()
-        .all(|mono| mono.key.origin == origin && mono.key.declaration.full_path() == "id"));
+        .all(|mono| mono.key.origin == origin
+            && output.module.defs.path(mono.key.declaration) == "id"));
     for ty in [ResolvedTy::I64, ResolvedTy::String] {
         assert!(monos
             .iter()
@@ -431,12 +432,12 @@ fn generic_function_values_close_under_substitution() {
     let output = typecheck_and_lower("fn id<T>(x: T) -> T { x } fn factory<T>() -> fn(T) -> T { id<T> } fn main() { let f = factory<i64>(); f(4); }");
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(
-        output
+        output.module.monomorphisations.iter().any(|mono| output
             .module
-            .monomorphisations
-            .iter()
-            .any(|mono| mono.key.declaration.full_path() == "id"
-                && mono.key.type_args == vec![ResolvedTy::I64]),
+            .defs
+            .path(mono.key.declaration)
+            == "id"
+            && mono.key.type_args == vec![ResolvedTy::I64]),
         "{:?}",
         output.module.monomorphisations
     );
@@ -488,7 +489,7 @@ fn generic_function_value_requires_complete_checker_facts() {
 
 #[test]
 fn mutable_callable_field_call_keeps_the_selected_projection() {
-    let output = typecheck_and_lower("type Holder { next: fn[var, clone](i64) -> i64 } fn main() { let count: i64 = 0; var holder = Holder { next: capture(var count) |step: i64| { count = count + step; count } }; holder.next(1); }");
+    let output = typecheck_and_lower("type Holder {\n    next: fn[var, clone](i64) -> i64;\n}\n\nfn main() {\n    let count: i64 = 0;\n    var holder = Holder { next: capture(var count) |step: i64| {\n        count = count + step;\n        count\n    } };\n    holder.next(1);\n}\n");
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let main = output
         .module

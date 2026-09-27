@@ -10,13 +10,10 @@ use hew_hir::{
     lower_program_host_target, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx,
 };
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
-const BANK_SRC: &str = "pub actor Account {\n\
-                        \x20   var balance: i64 = 0,\n\
-                        \x20   receive fn deposit(n: i64) -> i64 { balance = balance + n; balance }\n\
-                        }\n";
+const BANK_SRC: &str = "pub actor Account {\n    var balance: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        balance = balance + n;\n        balance\n    }\n}\n";
 
 /// Build a program whose root resolves `import hew::bank` (resolved items
 /// attached) and whose module graph carries the `bank` module, mirroring the
@@ -37,7 +34,7 @@ fn build_program(root_src: &str) -> Program {
 
     let import_item: Spanned<Item> = (
         Item::Import(ImportDecl {
-            path: vec!["hew".to_string(), "bank".to_string()],
+            path: hew_parser::ast::Path::from_spellings(&["hew", "bank"]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -49,8 +46,8 @@ fn build_program(root_src: &str) -> Program {
         0..0,
     );
 
-    let bank_id = ModuleId::new(vec!["bank".to_string()]);
-    let root_id = ModuleId::root();
+    let bank_id = ModulePath::new(["bank"]);
+    let root_id = ModulePath::root();
     let bank_module = Module {
         id: bank_id.clone(),
         items: imported.program.items,
@@ -118,9 +115,9 @@ fn collect_spawns(expr: &HirExpr, spawns: &mut Vec<(String, ResolvedTy)>) {
 /// The actor's own dotted name, if `ty` is that actor's handle type (D489:
 /// an actor is the type of its handle, so the handle carries the actor's
 /// nominal identity directly rather than wrapping it in a separate carrier).
-fn actor_handle_name(ty: &ResolvedTy) -> Option<String> {
+fn actor_handle_name(defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<String> {
     ty.actor_handle_instance()
-        .map(|instance| instance.nominal.full_path().to_string())
+        .map(|instance| defs.path(instance.nominal.declaration()).to_string())
 }
 
 /// `spawn bank.Account()` carries the dotted identity on both the lowered
@@ -143,7 +140,7 @@ fn qualified_spawn_lowers_dotted_actor_name_and_handle_type() {
         "lowered spawn must carry the canonical dotted actor identity"
     );
     assert_eq!(
-        actor_handle_name(ty),
+        actor_handle_name(&output.module.defs, ty),
         Some("hew.bank.Account".to_string()),
         "spawn result type must be hew.bank.Account, got {ty:?}"
     );
@@ -154,13 +151,7 @@ fn qualified_spawn_lowers_dotted_actor_name_and_handle_type() {
 #[test]
 fn root_spawn_keeps_bare_actor_name_and_handle_type() {
     let program = build_program(
-        "actor Local {\n\
-         \x20   var total: i64 = 0,\n\
-         \x20   receive fn poke() { total = total + 1; }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let l = spawn Local();\n\
-         }\n",
+        "actor Local {\n    var total: i64 = 0;\n    receive fn poke() {\n        total = total + 1;\n    }\n}\n\nfn main() {\n    let l = spawn Local();\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
@@ -169,5 +160,8 @@ fn root_spawn_keeps_bare_actor_name_and_handle_type() {
     assert_eq!(spawns.len(), 1, "expected one spawn, got {spawns:?}");
     let (actor_name, ty) = &spawns[0];
     assert_eq!(actor_name, "Local");
-    assert_eq!(actor_handle_name(ty), Some("Local".to_string()));
+    assert_eq!(
+        actor_handle_name(&output.module.defs, ty),
+        Some("Local".to_string())
+    );
 }

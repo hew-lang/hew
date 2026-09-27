@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-project-param-tail-drop-owned-project-param-tail"
+intent = "Leak and poisoned-allocator oracle for owned record/tuple project matches over by-value parameters. Shape `owned_project_param_tail_scribble` (owned project param tail is clean under malloc scribble, owned project param tail leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-project-param-tail-drop-owned-project-param-tail.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "param-tail-ok\n"
+exit = 0

@@ -6,7 +6,7 @@
 // handler occupies the only thread that could activate Cache, so the
 // capacity-one queue stays full across all three submissions.
 actor Cache {
-    mailbox 1 overflow coalesce(channel) fallback drop_new,
+    mailbox 1 overflow coalesce(channel) fallback drop_new;
     receive fn update(channel: i64, reading: i64) {}
 }
 
@@ -35,6 +35,8 @@ fn main() {
     let cache = spawn Cache;
     let driver = spawn Driver;
     let _ = driver.run(cache);
-    close(driver);
-    close(cache);
+    stop(driver);
+    stopped(driver);
+    stop(cache);
+    stopped(cache);
 }

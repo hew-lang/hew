@@ -38,7 +38,7 @@ fn native_defer_abi_child() {
         physical
             .callables
             .iter()
-            .find(|c| c.declaration.full_path() == "probe")
+            .find(|c| physical.defs.path(c.declaration) == "probe")
             .unwrap(),
     );
     let ctx = Context::create();

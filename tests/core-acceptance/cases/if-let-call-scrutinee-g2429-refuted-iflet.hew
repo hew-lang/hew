@@ -1,0 +1,11 @@
+fn f() -> Option<string> {
+    .None
+}
+
+fn main() {
+    if let .Some(b) = f() {
+        print(b);
+    } else {
+        print("e");
+    }
+}

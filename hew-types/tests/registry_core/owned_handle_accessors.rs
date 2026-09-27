@@ -6,23 +6,13 @@ use hew_types::error::TypeErrorKind;
 #[test]
 fn handle_wrapper_accessor_returning_raw_field_is_rejected() {
     let output = typecheck(
-        "
-        import std.text.regex;
-
-        type PatternWrapper {
-            pattern: regex.Pattern
-        }
-
-        impl PatternWrapper {
-            fn pattern(wrapper: PatternWrapper) -> regex.Pattern {
-                wrapper.pattern
-            }
-        }
-        ",
+        "import std.text.regex;\n\ntype PatternWrapper {\n    pattern: regex.Pattern;\n}\n\nimpl PatternWrapper {\n    fn pattern(wrapper: PatternWrapper) -> regex.Pattern {\n        wrapper.pattern\n    }\n}\n",
     );
 
     assert!(
-        output.handle_bearing_structs.contains("PatternWrapper"),
+        output
+            .handle_bearing_structs
+            .contains(&output.defs.lookup_nominal("PatternWrapper").unwrap()),
         "expected PatternWrapper to be marked handle-bearing, got: {:#?}",
         output.handle_bearing_structs
     );
@@ -42,24 +32,23 @@ fn handle_wrapper_accessor_returning_raw_field_is_rejected() {
 #[test]
 fn handle_wrapper_methods_can_use_inner_handle_without_exposing_it() {
     let output = typecheck(
-        r#"
-        import std.text.regex;
+        r#"import std.text.regex;
 
-        type PatternWrapper {
-            pattern: regex.Pattern
-        }
+type PatternWrapper {
+    pattern: regex.Pattern;
+}
 
-        impl PatternWrapper {
-            fn matches(wrapper: PatternWrapper, text: string) -> bool {
-                wrapper.pattern.is_match(text)
-            }
-        }
+impl PatternWrapper {
+    fn matches(wrapper: PatternWrapper, text: string) -> bool {
+        wrapper.pattern.is_match(text)
+    }
+}
 
-        fn main() {
-            let wrapper = PatternWrapper { pattern: regex.new("a+") };
-            assert(wrapper.matches("aaa"));
-        }
-        "#,
+fn main() {
+    let wrapper = PatternWrapper { pattern: regex.new("a+") };
+    assert(wrapper.matches("aaa"));
+}
+"#,
     );
 
     assert!(

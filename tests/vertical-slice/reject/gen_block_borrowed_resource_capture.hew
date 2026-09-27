@@ -4,7 +4,7 @@
 // `consume` is offered here — a resource has no cloneable spelling.
 #[resource]
 type Token {
-    id: i64,
+    id: i64;
 }
 
 impl Token {

@@ -1,0 +1,11 @@
+[[case]]
+id = "http-ws-string-result-retention-http-request-strings"
+intent = "Darwin leak slopes for shipped HTTP/WebSocket string wrappers. Shape `http_request_strings_high` (shipped http request string wrappers have no per call leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/http-ws-string-result-retention-http-request-strings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n"
+stderr = "hew: failure: UserPanic (212): HTTP request retention response failed\nhew: actor crash in Client.fetch (actor 1): UserPanic\nhew: failure: UserPanic (212): HTTP retention client failed\n"
+exit = 1

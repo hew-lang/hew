@@ -6,10 +6,10 @@
 // owner — every nested buffer is released exactly once at scope exit, with no
 // leak and no double-free.
 enum RedisReply {
-    Nil,
-    Int(i64),
-    Text(string),
-    Array([RedisReply]),
+    Nil;
+    Int(i64);
+    Text(string);
+    Array([RedisReply]);
 }
 
 fn main() {
@@ -31,14 +31,14 @@ fn main() {
         match reply {
             RedisReply.Int(n) => {
                 int_sum = int_sum + n;
-            },
+            }
             RedisReply.Array(_) => {
                 arrays = arrays + 1;
-            },
+            }
             RedisReply.Text(_) => {
                 texts = texts + 1;
-            },
-            RedisReply.Nil => {},
+            }
+            RedisReply.Nil => {}
         }
     }
     println(f"replies={replies.len()}");

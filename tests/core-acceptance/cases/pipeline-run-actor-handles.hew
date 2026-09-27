@@ -6,7 +6,7 @@
 import std.pipeline;
 
 fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
-    PipelineItemI64 { value: value, label: label, crash_stage: false }
+    pipeline.PipelineItemI64 { value: value, label: label, crash_stage: false }
 }
 
 fn settled_count(source: pipeline.SourceI64, expected: i64) -> i64 {
@@ -14,8 +14,12 @@ fn settled_count(source: pipeline.SourceI64, expected: i64) -> i64 {
     var polls = 0;
     while count != expected && polls < 5000 {
         match source.count() {
-            .Ok(value) => { count = value; },
-            .Err(_) => { count = -1; },
+            .Ok(value) => {
+                count = value;
+            }
+            .Err(_) => {
+                count = -1;
+            }
         }
         polls = polls + 1;
         if count != expected {
@@ -27,7 +31,7 @@ fn settled_count(source: pipeline.SourceI64, expected: i64) -> i64 {
 
 fn push(source: pipeline.SourceI64, value: i64, label: string) {
     match source.push(item(value, label)) {
-        .Ok(true) => {},
+        .Ok(true) => {}
         .Ok(false) => panic("the pipeline refused an item"),
         .Err(_) => panic("the pipeline source refused its call"),
     }

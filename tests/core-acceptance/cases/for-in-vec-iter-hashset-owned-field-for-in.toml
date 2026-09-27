@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-vec-iter-hashset-owned-field-for-in"
+intent = "`for x in vec` cursor (`VecIter<T>`) scope-exit drop oracles: per-iteration leak slope plus a poisoned-allocator no-use-after-free pin for the place-source reuse shape (issue #1949). Shape `hashset_owned_field_for_in` (hashset owned field for in runs clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-vec-iter-hashset-owned-field-for-in.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "3OK"
+exit = 0

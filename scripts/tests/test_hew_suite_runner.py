@@ -23,7 +23,6 @@ def run(
     *,
     emit_o0_outcomes: Path | None = None,
     ambient_opt_level: str | None = None,
-    strict_recoveries: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         "bash",
@@ -41,7 +40,6 @@ def run(
         "HEW_BIN": str(compiler),
         "HEW_TESTS_DIR": str(fixtures),
         "HEW_JUNIT_STUB_MODE": mode,
-        "RATCHET_STRICT_RECOVERIES": "1" if strict_recoveries else "0",
     }
     if ambient_opt_level is not None:
         environment["HEW_OPT_LEVEL"] = ambient_opt_level
@@ -157,7 +155,9 @@ def test_failure_kind_drift_fails_the_ratchet_without_matching_text() -> None:
             )
 
 
-def test_recovery_is_nonblocking_in_pr_mode_and_strict_in_accounting() -> None:
+def test_recovery_is_always_nonblocking() -> None:
+    # D555 amendment: a recovered ledger row is reported, never a CI
+    # failure, in every invocation.
     with tempfile.TemporaryDirectory() as temp:
         work = Path(temp)
         fixtures, compiler = make_fixture(work)
@@ -168,17 +168,6 @@ def test_recovery_is_nonblocking_in_pr_mode_and_strict_in_accounting() -> None:
         recovery = run(compiler, fixtures, expected, report, "pass")
         assert recovery.returncode == 0, recovery.stdout + recovery.stderr
         assert "NOW-PASSES: sample.hew::sample" in recovery.stdout
-
-        strict = run(
-            compiler,
-            fixtures,
-            expected,
-            report,
-            "pass",
-            strict_recoveries=True,
-        )
-        assert strict.returncode != 0
-        assert "NOW-PASSES: sample.hew::sample" in strict.stdout
 
 
 def test_skips_and_missing_identities_are_not_recoveries() -> None:
@@ -283,7 +272,7 @@ def test_runner_status_must_agree_before_report_is_published() -> None:
 if __name__ == "__main__":
     test_valid_failure_report_and_status_one_reach_the_ratchet()
     test_failure_kind_drift_fails_the_ratchet_without_matching_text()
-    test_recovery_is_nonblocking_in_pr_mode_and_strict_in_accounting()
+    test_recovery_is_always_nonblocking()
     test_skips_and_missing_identities_are_not_recoveries()
     test_duplicate_failure_identities_are_rejected()
     test_pass_and_failure_path_aliases_are_rejected()

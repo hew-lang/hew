@@ -1,0 +1,10 @@
+[[case]]
+id = "match-bound-payload-drop-nested-enum-deadline"
+intent = "Match/if-let-bound owned-payload drop leak oracle (hew-lang/hew gap #63 guard). Shape `nested_enum_deadline` (nested enum deadline recovers after the child drains, nested enum payload cancel drops parent exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-bound-payload-drop-nested-enum-deadline.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "deadline recovered\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "match-skipped-field-drop-skip-agg"
+intent = "Skipped-field drop oracle for partial match destructures — the empirical (compiled-binary) half of the exact-drop-op matrix whose MIR side lives in `tests/core-acceptance/cases/match_skip_*.hew`. Shape `skip_agg_scribble` (skipped aggregate field no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-skipped-field-drop-skip-agg.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "k"
+exit = 0

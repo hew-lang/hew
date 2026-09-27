@@ -86,9 +86,9 @@ pub fn complete(
 
     // Add type definitions and function signatures from the type checker.
     if let Some(tc) = type_output {
-        for name in tc.type_defs.keys() {
+        for id in tc.type_defs.keys() {
             items.push(CompletionItem {
-                label: name.clone(),
+                label: tc.defs.path(id.declaration()).to_string(),
                 kind: CompletionKind::Type,
                 detail: None,
                 documentation: None,
@@ -97,7 +97,7 @@ pub fn complete(
                 sort_text: None,
             });
         }
-        for (name, sig) in &tc.fn_sigs {
+        for (name, sig) in tc.sigs().entries() {
             items.push(fn_sig_completion(name, sig));
         }
     }
@@ -133,8 +133,8 @@ fn try_is_type_pattern_completions(
     let mut items: Vec<_> = tc
         .type_defs
         .keys()
-        .map(|name| CompletionItem {
-            label: name.clone(),
+        .map(|id| CompletionItem {
+            label: tc.defs.path(id.declaration()).to_string(),
             kind: CompletionKind::Type,
             detail: None,
             documentation: None,
@@ -197,8 +197,8 @@ fn try_dot_completions(
 
     let mut items = Vec::new();
     let message_ty = match receiver_ty {
-        hew_types::Ty::Named { name, args, .. }
-            if name == hew_types::actor_delivery::FAILURE_TYPE && args.len() == 1 =>
+        hew_types::Ty::Named { head, args }
+            if *head == hew_types::KnownDecl::SendFailure.head() && args.len() == 1 =>
         {
             &args[0]
         }
@@ -299,13 +299,13 @@ fn module_member_completions(
     };
 
     let mut items = Vec::new();
-    for (key, sig) in &tc.fn_sigs {
+    for (key, sig) in tc.sigs().entries() {
         if let Some(leaf) = direct_leaf(key) {
             items.push(fn_sig_completion(&leaf, sig));
         }
     }
-    for (key, definition) in &tc.type_defs {
-        let Some(leaf) = direct_leaf(key) else {
+    for (id, definition) in &tc.type_defs {
+        let Some(leaf) = direct_leaf(tc.defs.path(id.declaration())) else {
             continue;
         };
         items.push(CompletionItem {
@@ -378,7 +378,16 @@ fn try_struct_init_completions(
     let type_name = extract_type_name_before(source, brace_pos)?;
 
     let tc = type_output?;
-    let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
+    let type_end = source.get(..brace_pos)?.trim_end().len();
+    let checked = crate::identity::resolution_at(tc, 0, type_end.saturating_sub(1))
+        .filter(|(span, _)| span.start >= type_end.saturating_sub(type_name.len()));
+    let type_def = match checked {
+        Some((_, hew_types::check::scope::Resolution::Nominal(id))) => {
+            tc.type_defs.get(&id).cloned()?
+        }
+        Some(_) => return None,
+        None => method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?,
+    };
     if type_def.fields.is_empty() {
         return None;
     }
@@ -417,7 +426,7 @@ fn try_enum_variant_completions(
 
     let type_name = extract_type_name_before(source, dot_pos - 1)?;
     let tc = type_output?;
-    let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
+    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?;
     if type_def.kind != TypeDefKind::Enum {
         return None;
     }
@@ -515,7 +524,7 @@ fn try_spawn_completions(
         match item {
             Item::Actor(a) => {
                 items.push(CompletionItem {
-                    label: a.name.clone(),
+                    label: a.name.to_string(),
                     kind: CompletionKind::Actor,
                     detail: Some("actor".to_string()),
                     documentation: None,
@@ -526,7 +535,7 @@ fn try_spawn_completions(
             }
             Item::Supervisor(s) => {
                 items.push(CompletionItem {
-                    label: s.name.clone(),
+                    label: s.name.to_string(),
                     kind: CompletionKind::Actor,
                     detail: Some("supervisor".to_string()),
                     documentation: None,
@@ -577,10 +586,11 @@ fn try_spawn_completions(
 /// candidate or produce an unspellable fully canonical label.
 fn imported_actor_spawn_labels(output: &TypeCheckOutput) -> Vec<String> {
     let mut labels = BTreeSet::new();
-    for (identity, definition) in &output.type_defs {
+    for (id, definition) in &output.type_defs {
         if definition.kind != TypeDefKind::Actor {
             continue;
         }
+        let identity = output.defs.path(id.declaration());
         let Some((owner, actor_name)) = identity.rsplit_once('.') else {
             continue;
         };
@@ -607,24 +617,24 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
         match item {
             Item::Function(f) => {
                 for p in &f.params {
-                    locals.push(local_completion(&p.name));
+                    locals.push(local_completion(p.name.name.as_str()));
                 }
                 collect_locals_from_block(&f.body, offset, &mut locals);
             }
             Item::Actor(a) => {
                 for field in &a.fields {
-                    locals.push(local_completion(&field.name));
+                    locals.push(local_completion(field.name.name.as_str()));
                 }
                 if let Some(init) = &a.init {
                     for p in &init.params {
-                        locals.push(local_completion(&p.name));
+                        locals.push(local_completion(p.name.name.as_str()));
                     }
                     collect_locals_from_block(&init.body, offset, &mut locals);
                 }
                 for recv in &a.receive_fns {
                     if span_contains_offset(&recv.span, offset) {
                         for p in &recv.params {
-                            locals.push(local_completion(&p.name));
+                            locals.push(local_completion(p.name.name.as_str()));
                         }
                         collect_locals_from_block(&recv.body, offset, &mut locals);
                     }
@@ -632,7 +642,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 for method in &a.methods {
                     if span_contains_offset(&method.fn_span, offset) {
                         for p in &method.params {
-                            locals.push(local_completion(&p.name));
+                            locals.push(local_completion(p.name.name.as_str()));
                         }
                         collect_locals_from_block(&method.body, offset, &mut locals);
                     }
@@ -643,7 +653,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     if let TypeBodyItem::Method(method) = body_item {
                         if span_contains_offset(&method.fn_span, offset) {
                             for p in &method.params {
-                                locals.push(local_completion(&p.name));
+                                locals.push(local_completion(p.name.name.as_str()));
                             }
                             collect_locals_from_block(&method.body, offset, &mut locals);
                         }
@@ -654,7 +664,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 for method in &i.methods {
                     if span_contains_offset(&method.fn_span, offset) {
                         for p in &method.params {
-                            locals.push(local_completion(&p.name));
+                            locals.push(local_completion(p.name.name.as_str()));
                         }
                         collect_locals_from_block(&method.body, offset, &mut locals);
                     }
@@ -665,7 +675,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     if let TraitItem::Method(method) = trait_item {
                         if span_contains_offset(&method.span, offset) {
                             for p in &method.params {
-                                locals.push(local_completion(&p.name));
+                                locals.push(local_completion(p.name.name.as_str()));
                             }
                             if let Some(body) = &method.body {
                                 collect_locals_from_block(body, offset, &mut locals);
@@ -770,7 +780,7 @@ fn collect_locals_from_stmt(
             {
                 collect_locals_from_spanned_expr(value, offset, locals);
             } else {
-                locals.push(local_completion(name));
+                locals.push(local_completion(name.name.as_str()));
             }
         }
         Stmt::For { pattern, body, .. } if in_stmt_scope => {
@@ -905,7 +915,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         } => {
             collect_locals_from_spanned_expr(operand, offset, locals);
             if span_contains_offset(&body.1, offset) {
-                locals.push(local_completion(&error.0));
+                locals.push(local_completion(error.0.name.as_str()));
                 collect_locals_from_spanned_expr(body, offset, locals);
             }
         }
@@ -1010,8 +1020,8 @@ fn collect_condition_names(conditions: &[ConditionItem], locals: &mut Vec<Comple
 
 fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
     match pattern {
-        Pattern::Identifier(name) => locals.push(local_completion(name)),
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+        Pattern::Identifier(name) => locals.push(local_completion(name.name.as_str())),
+        Pattern::Tuple(patterns) => {
             for (p, _) in patterns {
                 collect_pattern_names(p, locals);
             }
@@ -1026,12 +1036,12 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
                 collect_nominal_payload_names(payload, locals);
             }
         }
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+        Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 if let Some((pattern, _)) = &field.pattern {
                     collect_pattern_names(pattern, locals);
                 } else {
-                    locals.push(local_completion(&field.name));
+                    locals.push(local_completion(field.name.name.as_str()));
                 }
             }
         }
@@ -1063,7 +1073,7 @@ fn collect_nominal_payload_names(
                 if let Some((pattern, _)) = &field.pattern {
                     collect_pattern_names(pattern, locals);
                 } else {
-                    locals.push(local_completion(&field.name));
+                    locals.push(local_completion(field.name.name.as_str()));
                 }
             }
         }
@@ -1239,9 +1249,9 @@ mod tests {
 
     const MACHINE_SOURCE: &str = concat!(
         "machine Counter {\n",
-        "    events { Tick { by: i64 } }\n",
-        "    state Idle,\n",
-        "    state Live { hits: i64 },\n",
+        "    events { Tick { by: i64; } }\n",
+        "    state Idle;\n",
+        "    state Live { hits: i64; }\n",
         "    on Tick(by): Idle => Live { hits: by }\n",
         "    on Tick: Live => Live reenter {\n",
         "        /*cursor*/\n",
@@ -1273,9 +1283,9 @@ mod tests {
     fn machine_event_head_binding_is_a_local() {
         let source = concat!(
             "machine Counter {\n",
-            "    events { Tick { by: i64 } }\n",
-            "    state Idle,\n",
-            "    state Live { hits: i64 },\n",
+            "    events { Tick { by: i64; } }\n",
+            "    state Idle;\n",
+            "    state Live { hits: i64; }\n",
             "    on Tick(by): Idle => Live {\n",
             "        hits: /*cursor*/by\n",
             "    }\n",
@@ -1324,10 +1334,10 @@ mod tests {
                 );
                 (
                     Item::Import(ImportDecl {
-                        path: path.iter().map(ToString::to_string).collect(),
+                        path: hew_parser::ast::Path::from_spellings(path),
                         spec: None,
                         selection_trailing_comma: false,
-                        module_alias: module_alias.map(str::to_string),
+                        module_alias: module_alias.map(hew_parser::ast::Ident::new),
                         file_path: None,
                         resolved_items: Some(parsed.program.items.into()),
                         resolved_item_source_paths: Vec::new(),
@@ -1359,10 +1369,7 @@ mod tests {
     /// the file-local actor keeps its bare label.
     #[test]
     fn spawn_completions_disambiguate_same_named_module_actors() {
-        let actor_src = "pub actor Account {\n\
-                         \x20   var n: i64 = 0,\n\
-                         \x20   receive fn who() -> i64 { 1 }\n\
-                         }\n";
+        let actor_src = "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n";
         // Checked program (parsable shape) supplies the imported actors.
         let output = type_check_with_modules(
             "actor Local {}\nfn main() { }\n",
@@ -1434,16 +1441,28 @@ mod tests {
     #[test]
     fn completions_surface_impl_block_methods_with_return_type() {
         let source = "\
-type Caps { count: i64, }
-type Matcher { id: i64, }
+type Caps {
+    count: i64;
+}
+
+type Matcher {
+    id: i64;
+}
+
 trait MatcherMethods {
     fn captures(self, input: string) -> Caps;
     fn find_all(self, input: string) -> Vec<string>;
 }
+
 impl MatcherMethods for Matcher {
-    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
-    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec.new() }
+    fn captures(m: Matcher, input: string) -> Caps {
+        Caps { count: 0 }
+    }
+    fn find_all(m: Matcher, input: string) -> Vec<string> {
+        Vec.new()
+    }
 }
+
 fn probe(mat: Matcher, s: string) {
     let c = mat.captures(s);
 }
@@ -1558,13 +1577,14 @@ fn probe(mat: Matcher, s: string) {
     #[test]
     fn struct_init_completions_offer_field_names() {
         let source = r"type Point {
-    x: i32,
-    y: i32,
+    x: i32;
+    y: i32;
 }
 
 fn example() {
-    let point = Point { /*cursor*/ };
-}";
+    let point = Point { /*cursor*/  };
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1577,12 +1597,13 @@ fn example() {
     #[test]
     fn struct_init_completions_include_field_type_detail() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 fn example() {
-    let point = Point { /*cursor*/ };
-}";
+    let point = Point { /*cursor*/  };
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));
 
@@ -1622,13 +1643,14 @@ fn example() {
     #[test]
     fn struct_init_completions_do_not_fire_for_enum_types() {
         let source = r"enum Color {
-    Red,
-    Blue,
+    Red;
+    Blue;
 }
 
 fn example() {
-    let color = Color { /*cursor*/ };
-}";
+    let color = Color { /*cursor*/  };
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1642,14 +1664,15 @@ fn example() {
     #[test]
     fn enum_variant_completions_offer_all_variants() {
         let source = r"enum Color {
-    Blue,
-    Point { x: i32, y: i32 },
-    Rgb(u8, u8, u8),
+    Blue;
+    Point { x: i32; y: i32;  }
+    Rgb(u8, u8, u8);
 }
 
 fn example() {
-    let color = Color./*cursor*/Blue;
-}";
+    let color = Color. /*cursor*/ Blue;
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1665,12 +1688,13 @@ fn example() {
     #[test]
     fn enum_variant_completions_do_not_fire_for_struct_type() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 fn example() {
-    let point = Point./*cursor*/new();
-}";
+    let point = Point. /*cursor*/ new();
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
             .into_iter()
@@ -1700,14 +1724,15 @@ fn example() {
     #[test]
     fn enum_variant_completions_include_payload_detail() {
         let source = r"enum Color {
-    Blue,
-    Point { x: i32, y: i32 },
-    Rgb(u8, u8, u8),
+    Blue;
+    Point { x: i32; y: i32;  }
+    Rgb(u8, u8, u8);
 }
 
 fn example() {
-    let color = Color./*cursor*/Blue;
-}";
+    let color = Color. /*cursor*/ Blue;
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));
 
@@ -1912,13 +1937,17 @@ impl Box {
         // This test uses an empty module registry (no stdlib), so `tell` won't
         // appear here; it is covered by the stdlib-loaded hew-lsp integration test.
         let source = r"actor Counter {
-    count: i64,
-    receive fn increment(n: i64) { count = count + n; }
+    let count: i64;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
 }
+
 fn main() {
     let c = spawn Counter(count: 0);
-    c./*cursor*/increment(1);
-}";
+    c. /*cursor*/ increment(1);
+}
+";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
@@ -1934,19 +1963,23 @@ fn main() {
 
     #[test]
     fn rejected_completion_offers_recovery_without_exposing_payload_fields() {
-        let source = r#"
-            actor Worker { receive fn echo(value: string) -> string { value } }
-            fn main() {
-                let worker = policy(spawn Worker(), on_full: .Reject);
-                let result = worker.echo("hello");
-                match result {
-                    .Err(ActorError.Rejected(failure)) => {
-                        let _ = failure.message./*cursor*/retry();
-                    },
-                    _ => {},
-                }
-            }
-        "#;
+        let source = r#"actor Worker {
+    receive fn echo(value: string) -> string {
+        value
+    }
+}
+
+fn main() {
+    let worker = policy(spawn Worker(), on_full: .Reject);
+    let result = worker.echo("hello");
+    match result {
+        .Err(ActorError.Rejected(failure)) => {
+            let _ = failure.message. /*cursor*/ retry();
+        }
+        _ => {}
+    }
+}
+"#;
         let tc = type_check(&source.replace(CURSOR, ""));
         assert!(tc.errors.is_empty(), "{:?}", tc.errors);
         let items = items_at_cursor(source, Some(&tc));

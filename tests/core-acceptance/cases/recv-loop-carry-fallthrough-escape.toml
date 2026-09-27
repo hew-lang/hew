@@ -1,0 +1,10 @@
+[[case]]
+id = "recv-loop-carry-fallthrough-escape"
+intent = "Per-iteration recv-result drop on the loop back-edge. Shape `carry_fallthrough_escape` (carry fallthrough payload escape no uaf) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/recv-loop-carry-fallthrough-escape.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "before\nescaped\nafter\n"
+exit = 0

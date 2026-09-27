@@ -46,7 +46,7 @@ fn pointer_type_spelling_accepts_const_and_mut() {
         } => {
             assert!(!is_mutable, "*const T should be immutable");
             match pointee.0 {
-                TypeExpr::Named { ref name, .. } if name == "u8" => {}
+                TypeExpr::Named { ref path, .. } if path.to_string() == "u8" => {}
                 other => panic!("expected u8 pointee, got {other:?}"),
             }
         }

@@ -1,0 +1,10 @@
+[[case]]
+id = "match-payload-reassign-while-let-borrow"
+intent = "Projected-payload move-out UAF / double-free oracle (issue #2523). Shape `while_let_borrow` (while let borrow only keeps scrutinee live) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-payload-reassign-while-let-borrow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 12

@@ -10,7 +10,7 @@
 fn parse_digits(s: string) -> i64 {
     var acc: i64 = 0;
     let zero: i64 = '0' as i64;
-    for i in 0..s.len() {
+    for i in 0 .. s.len() {
         let digit: i64 = (s[i] as i64) - zero;
         acc = acc * 10 + digit;
     }

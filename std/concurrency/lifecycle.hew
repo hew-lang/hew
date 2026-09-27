@@ -2,7 +2,7 @@
 
 /// Opaque lifecycle failure payload.
 pub enum Error {
-    Code(i64),
+    Code(i64);
 }
 
 impl Display for Error {
@@ -15,20 +15,20 @@ impl Display for Error {
 
 pub machine Lifecycle<T> {
     events {
-        Initialise,
-        Started { handle: T, },
-        Stop,
-        Crashed { error: Error, },
+        Initialise;
+        Started { handle: T; }
+        Stop;
+        Crashed { error: Error; }
     }
 
-    state Created,
-    state Initialising,
-    state Running { handle: T, },
-    state Stopping,
-    state Stopped,
-    state Faulted { error: Error, },
+    state Created;
+    state Initialising;
+    state Running { handle: T; }
+    state Stopping;
+    state Stopped;
+    state Faulted { error: Error; }
 
-    on Initialise: Created => Initialising,
+    on Initialise: Created => Initialising;
     on Initialise: _ => _ {
         state
     }
@@ -36,8 +36,8 @@ pub machine Lifecycle<T> {
     on Started: _ => _ {
         state
     }
-    on Stop: Running => Stopping,
-    on Stop: Stopping => Stopped,
+    on Stop: Running => Stopping;
+    on Stop: Stopping => Stopped;
     on Stop: _ => _ {
         state
     }
@@ -54,7 +54,7 @@ fn lifecycle_i64_happy_path_state_names() {
     assert(lifecycle.state_name() == "Created");
     lifecycle.step(.Initialise);
     assert(lifecycle.state_name() == "Initialising");
-    lifecycle.step(LifecycleEvent.Started { handle: 42 });
+    lifecycle.step(Lifecycle.Event.Started { handle: 42 });
     assert(lifecycle.state_name() == "Running");
     lifecycle.step(.Stop);
     assert(lifecycle.state_name() == "Stopping");
@@ -68,6 +68,6 @@ fn lifecycle_string_faulted_path_state_names() {
     assert(lifecycle.state_name() == "Created");
     lifecycle.step(.Initialise);
     assert(lifecycle.state_name() == "Initialising");
-    lifecycle.step(LifecycleEvent.Crashed { error: Error.Code(7) });
+    lifecycle.step(Lifecycle.Event.Crashed { error: Error.Code(7) });
     assert(lifecycle.state_name() == "Faulted");
 }

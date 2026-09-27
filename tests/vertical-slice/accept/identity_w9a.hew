@@ -1,0 +1,24 @@
+machine Slot {
+    events {
+        Fill;
+    }
+
+    state Idle;
+    state Filling;
+
+    on Fill: Idle => Filling;
+
+    default { state }
+}
+
+type SlotEvent {
+    n: i64;
+}
+
+fn main() {
+    let user = SlotEvent { n: 4 };
+    var slot = Slot.Idle;
+    let _ = slot.step(Slot.Event.Fill);
+    println(user.n);
+    println(slot.state_name());
+}

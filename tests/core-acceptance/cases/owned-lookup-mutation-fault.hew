@@ -1,10 +1,16 @@
-type Store<T> { values: Vec<T> }
+type Store<T> {
+    values: Vec<T>;
+}
+
 impl<T: Clone> Store<T> {
     fn fail(var self, value: T) {
         let snapshot = self.values.get(0);
-        if snapshot.is_some() { self.values.set(9, value); }
+        if snapshot.is_some() {
+            self.values.set(9, value);
+        }
     }
 }
+
 fn main() {
     var store = Store { values: ["kept".to_upper()] };
     let alias = store;

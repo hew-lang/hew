@@ -13,7 +13,7 @@
 
 use hew_hir::{HirExprKind, HirItem, HirStmtKind};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 use crate::support;
 
@@ -21,16 +21,15 @@ use crate::support;
 /// `Toggle` machine and a root module whose `main` references it via the
 /// qualified `Toggle::Off` ctor and the bare `Flip` event.
 fn build_cross_module_program() -> Program {
-    let imported_src = r"
-pub machine Toggle {
+    let imported_src = r"pub machine Toggle {
     events {
-        Flip,
+        Flip;
     }
 
-    state Off,
-    state On,
-    on Flip: Off => On,
-    on Flip: On => Off,
+    state Off;
+    state On;
+    on Flip: Off => On;
+    on Flip: On => Off;
 }
 ";
     let root_src = r"
@@ -54,12 +53,8 @@ fn main() {
     );
 
     // Build the module graph: root depends on `std::machines::toggle`.
-    let imported_id = ModuleId::new(vec![
-        "std".to_string(),
-        "machines".to_string(),
-        "toggle".to_string(),
-    ]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["std", "machines", "toggle"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program
@@ -171,16 +166,19 @@ fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
 
 #[test]
 fn private_imported_machine_retains_runtime_layout() {
-    let imported_src = r"
-machine RunLifecycle {
-    events { Finish, }
-    state Running,
-    state Completed,
-    on Finish: Running => Completed,
+    let imported_src = r"machine RunLifecycle {
+    events {
+        Finish;
+    }
+    state Running;
+    state Completed;
+    on Finish: Running => Completed;
     default { state }
 }
 
-pub fn initial() -> RunLifecycle { RunLifecycle.Running }
+pub fn initial() -> RunLifecycle {
+    RunLifecycle.Running
+}
 ";
     let root_src = "import m; fn main() {}";
     let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);

@@ -9,9 +9,14 @@
 //! sibling example and ecosystem checkouts, as a platform path list; each
 //! named root must exist.
 //!
-//! A workspace file that does not parse is not formatter input. Those files
-//! are listed in `fmt_unparsed_files.txt`, and the list only shrinks: a new
-//! unparsable file, or a listed file that now parses, fails the test.
+//! A workspace file that does not parse is not formatter input. A path under
+//! a `reject/` directory is exempt outright: those fixtures exist to prove a
+//! refusal and are never meant to parse. Every other unparsable file is
+//! listed in `fmt_unparsed_files.txt` (the ledger's `Expect` enum has no
+//! `skip`/`unparsed` kind yet, so these rows cannot move into
+//! `tests/expected-failures.tsv`); the list is checked for exact equality
+//! against the observed unparsable files, so a new unparsable file or a
+//! listed file that now parses fails the test.
 
 use hew_parser::fmt::{fidelity, format_source};
 use hew_parser::{parse, Severity};
@@ -22,10 +27,27 @@ use walkdir::WalkDir;
 /// A walk that finds fewer files than this has lost a root.
 const MIN_WORKSPACE_FILES: usize = 2000;
 
+/// A path under a `reject/` directory is a deliberate parse-refusal fixture,
+/// not formatter input; it needs no ledger row.
+fn is_reject_fixture(shown: &str) -> bool {
+    shown.split('/').any(|segment| segment == "reject")
+}
+
+/// Workspace files allowed to stay unparsable, outside `reject/` directories.
 fn unparsed_list_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fmt_unparsed_files.txt")
+}
+
+fn fmt_ledger_ids() -> BTreeSet<String> {
+    std::fs::read_to_string(unparsed_list_path())
+        .expect("read the unparsed-file list")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect()
 }
 
 fn workspace_root() -> PathBuf {
@@ -123,7 +145,7 @@ fn every_hew_file_reprints_faithfully() {
                 Outcome::Faithful => checked += 1,
                 Outcome::Unparsed => {
                     unparsed += 1;
-                    if dir == &root {
+                    if dir == &root && !is_reject_fixture(&shown) {
                         workspace_unparsed.insert(shown);
                     }
                 }
@@ -144,18 +166,13 @@ fn every_hew_file_reprints_faithfully() {
         failures.join("\n")
     );
 
-    let listed: BTreeSet<String> = std::fs::read_to_string(unparsed_list_path())
-        .expect("read the unparsed-file list")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_string)
-        .collect();
+    let listed = fmt_ledger_ids();
     let new: Vec<_> = workspace_unparsed.difference(&listed).collect();
     let gone: Vec<_> = listed.difference(&workspace_unparsed).collect();
     assert!(
         new.is_empty() && gone.is_empty(),
-        "fmt_unparsed_files.txt is out of date.\nNew files that do not parse: {new:?}\n\
+        "fmt_unparsed_files.txt is out of date.\n\
+         New files that do not parse (list them, or a reject/ path needs none): {new:?}\n\
          Listed files that now parse or no longer exist (remove them): {gone:?}"
     );
 }

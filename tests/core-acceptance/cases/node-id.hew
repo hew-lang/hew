@@ -27,11 +27,9 @@ fn main() -> i64 {
     if identified() {
         return 1;
     }
-
     if !starts(configured_at("127.0.0.1:0")) {
         return 2;
     }
-
     if !identified() {
         return 3;
     }
@@ -44,7 +42,6 @@ fn main() -> i64 {
     if Node.identity_key().len() != 64 {
         return 5;
     }
-
     Node.shutdown();
     0
 }

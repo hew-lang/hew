@@ -5,7 +5,7 @@ import nominal.ordinary;
 type NativeHandle = native.Handle;
 
 type Holder {
-    handle: NativeHandle,
+    handle: NativeHandle;
 }
 
 fn use_native() {

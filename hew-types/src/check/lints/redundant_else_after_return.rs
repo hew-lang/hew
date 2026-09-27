@@ -228,9 +228,7 @@ fn pattern_introduces_binding(pat: &Pattern) -> bool {
         // A single named binding.
         Pattern::Identifier(_) => true,
         // Composite patterns: any sub-pattern may bind.
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
-            patterns.iter().any(|(p, _)| pattern_introduces_binding(p))
-        }
+        Pattern::Tuple(patterns) => patterns.iter().any(|(p, _)| pattern_introduces_binding(p)),
         Pattern::NominalPath { payload, .. } => payload
             .as_ref()
             .is_some_and(nominal_payload_introduces_binding),
@@ -238,7 +236,7 @@ fn pattern_introduces_binding(pat: &Pattern) -> bool {
             .payload
             .as_ref()
             .is_some_and(nominal_payload_introduces_binding),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+        Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(struct_field_introduces_binding)
         }
         Pattern::Or(a, b) => pattern_introduces_binding(&a.0) || pattern_introduces_binding(&b.0),

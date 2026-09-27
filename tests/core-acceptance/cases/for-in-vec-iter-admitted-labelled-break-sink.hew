@@ -1,0 +1,19 @@
+fn mk() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("brk" + "-alpha");
+    v.push("brk" + "-beta");
+    v.push("brk" + "-gamma");
+    return v;
+}
+
+fn main() {
+    var sink: HashMap<i64, string> = HashMap.new();
+    @outer: for i in 0 .. 3 {
+        for w in mk() {
+            sink.insert(i, w);
+            break @outer;
+        }
+    }
+    print(sink.len());
+    print("OK");
+}

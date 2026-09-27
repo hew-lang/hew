@@ -93,21 +93,18 @@ Rules:
 
 **Stopping an actor (normative).**
 
-`close(actor)` requests cooperative stop and waits for terminal cleanup.
-`closed(actor)` waits for termination without requesting it. `fork close(actor)`
-starts the same operation concurrently and returns a `Task<()>`; it does not
-remove the task's cleanup obligation. These calls return unit and are
-idempotent for an actor that is already terminal (§4.10).
+`stop(actor)` requests a graceful stop and returns immediately. It closes
+admission, drains queued messages, then runs `#[on(stop)]` and cleanup.
+`terminate(actor)` requests cancellation, discards queued messages, and
+returns immediately. `stopped(actor)` waits for terminal cleanup without
+requesting a stop. All three return unit and are idempotent for an actor that
+is already terminal (§4.10).
 
-`pid.stop()` requests the same cooperative stop without waiting, and returns
-unit; it is idempotent on an actor that has already stopped or crashed.
-Inside the actor, `self.stop()` is not divergence: the handler's remaining
-synchronous statements run and a reply it returns without suspending is
-delivered, then `#[on(stop)]` runs and the actor stops. A suspension after the
-request cancels the rest of the turn. Messages sent after the request fail
-with `SendError`. `stop` is a reserved handler name: `receive fn stop()` is
-`E_RESERVED_HANDLER_NAME`, whose fix-it renames the handler or calls
-`self.stop()`.
+The same verbs apply to `self`. After `stop(self)`, the current handler runs to
+completion before the actor drains its queue. After `terminate(self)`, the
+current handler runs to its next suspension before cancellation. An actor
+cannot wait on itself with `stopped(self)`. `stop` may be a receive-handler
+name; the lifecycle operation is the free function `stop(actor)`.
 
 Inside a named actor body, bare `self` is the actor's own handle, so
 `registry.register(self)` passes that identity. `self.field` still accesses
@@ -183,9 +180,9 @@ and later matching the failure, without relying on the original call site.
 
 The outcome composes like any other `Result`: propagate with `?`, recover
 with `handle` or `match`, or discard deliberately with `let _ = pid.m();`.
-An accidentally discarded actor-call or submission Result is
-`E_SEND_RESULT_DROPPED`. Neither an unbounded mailbox nor a unit-returning
-handler removes the obligation to handle the outcome.
+An accidentally discarded `Result` from any call is `E_RESULT_DROPPED`.
+Neither an unbounded mailbox nor a unit-returning handler removes the
+obligation to handle the outcome.
 
 **Mailbox policy at the sender.** `mailbox(worker)` yields an immutable typed
 one-way view of the same actor and mailbox; a receive call through that view
@@ -230,7 +227,7 @@ cancellation still follows the caller's own cancellation and cleanup edges.
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
+    var count: i64 = 0;
 
     // No return type: the call still waits until the handler has finished
     receive fn increment(n: i64) {
@@ -256,9 +253,7 @@ actor Counter {
 
 **Calling named actors:**
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let counter = spawn Counter(count: 0);
 
 // No return type: the call waits until the handler has finished
@@ -275,9 +270,7 @@ let n = counter.get()?;
 
 Lambda actors receive messages via call-syntax. Named actors expose typed receive methods:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 // Lambda actor: call the handle directly
 let worker = actor |msg: i64| { println(msg * 2); };
 let _ = worker(42);             // wait for completion
@@ -331,9 +324,6 @@ language contracts:
   scope's exit like every fork. Whether Hew needs a true fire-and-forget send
   is an open question: it would make resources, cleanup and control flow less
   deterministic, and nothing in this specification promises it.
-- `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
-  forms, but native supervisor lowering has not adopted them. The current
-  internal stop entry point is not the public language spelling (§5.6).
 - Native `select` realizes task, timer, actor-call and stream receive
   sources. A line, chunk or take adapter over a socket stream, and a file
   stream over a pipe, device or terminal, are not select sources yet
@@ -361,8 +351,10 @@ Actors are instantiated using the `spawn` keyword with constructor arguments mat
 
 ```hew
 actor Counter {
-    var count: i64,
-    receive fn value() -> i64 { count }
+    var count: i64;
+    receive fn value() -> i64 {
+        count
+    }
 }
 
 actor WorkerActor {
@@ -372,12 +364,12 @@ actor WorkerActor {
 fn main() {
     // Spawn with named field arguments
     let counter = spawn Counter(count: 0);
-
     // Spawn with no arguments (if actor has no-arg init or no init block)
     let worker = spawn WorkerActor();
-
-    close(counter);
-    close(worker);
+    stop(counter);
+    stopped(counter);
+    stop(worker);
+    stopped(worker);
 }
 ```
 
@@ -403,8 +395,8 @@ Receive handlers can be annotated with `#[every(duration)]` to create periodic t
 
 ```hew
 actor HealthChecker {
-    let endpoint: string,
-    var failures: i64,
+    let endpoint: string;
+    var failures: i64;
 
     #[every(5s)]
     receive fn check() {
@@ -450,8 +442,10 @@ fn main() {
         println(x * factor);
     };
 
-    close(worker);
-    close(multiplier);
+    stop(worker);
+    stopped(worker);
+    stop(multiplier);
+    stopped(multiplier);
 }
 ```
 
@@ -480,7 +474,7 @@ selects completion admission. There is no lambda-specific `.send()` operation.
 
 A lambda actor lowers to an ordinary actor declaration: captures become state
 fields and its body becomes one receive handler. Its handle supports
-`close(handle)` and `closed(handle)`. A handle can be stored in a record or
+`stop(handle)` and `stopped(handle)`. A handle can be stored in a record or
 collection and called through that place; it cannot be split into pipe
 halves. Copies retain the same actor identity rather than duplicating its state.
 
@@ -492,20 +486,28 @@ that addresses it.
 
 ```hew
 actor Counter {
-    var count: i64,
-    receive fn value() -> i64 { count }
+    var count: i64;
+    receive fn value() -> i64 {
+        count
+    }
 }
 
 fn main() {
     // Spawn a named actor
     let counter = spawn Counter(count: 0);
-
     // A lambda actor expression has the type `actor(M) -> R`
-    let worker: actor(i64) = actor |msg: i64| { println(msg); };          // unit reply
-    let adder: actor(i64) -> i64 = actor |x: i64| -> i64 { x + 1 };       // value reply
-    close(counter);
-    close(worker);
-    close(adder);
+    let worker: actor(i64) = actor |msg: i64| {
+        println(msg);
+    }; // unit reply
+    let adder: actor(i64) -> i64 = actor |x: i64| -> i64 {
+        x + 1
+    }; // value reply
+    stop(counter);
+    stopped(counter);
+    stop(worker);
+    stopped(worker);
+    stop(adder);
+    stopped(adder);
 }
 ```
 
@@ -524,7 +526,8 @@ fn main() {
     let worker = actor |msg: i64| { println(msg); };
     let _ = worker(42);                              // wait for completion
     let _ = mailbox(worker, on_full: .Reject)(43);    // observe submission
-    close(worker);                                  // wait for terminal cleanup
+    stop(worker);
+    stopped(worker);                                  // wait for terminal cleanup
 }
 ```
 
@@ -535,9 +538,9 @@ become a sibling task's fault merely because its handle was created in a
 `scope`. A completion caller receives the actor error envelope. Structured
 child tasks created with `fork` retain their own scope obligations.
 
-Handles follow ordinary ownership cleanup. Use `close(worker)` when the code
-requires the actor's terminal cleanup to complete at a particular point; use
-`closed(worker)` to observe termination without requesting it.
+Handles follow ordinary ownership cleanup. Use `stop(worker)` to request
+termination and `stopped(worker)` when the code requires terminal cleanup to
+complete; use `stopped(worker)` alone to observe an earlier stop request.
 
 **Limitations:**
 
@@ -549,6 +552,11 @@ requires the actor's terminal cleanup to complete at a particular point; use
 
 - Functions do not throw exceptions for control flow.
 - Recoverable failure is modeled as `Result<T, E>`.
+- A bare expression statement whose value is `Result<T, E>` is
+  `E_RESULT_DROPPED`. Use `?`, `match` or `handle` to deal with the error, or
+  `let _ = call();` to record a deliberate discard. This applies to every
+  Result, including actor delivery and standard-library calls. A Result used
+  as a block tail or passed to another expression is not discarded.
 - Unrecoverable failure is modeled as **trap** (panic). A trap:
   - terminates the current actor
   - is observed by its supervisor
@@ -757,7 +765,12 @@ named field takes precedence over the base regardless of where the base
 appears in the field list. The base written first is the taught spelling:
 
 ```hew
-type Point { x: i64, y: i64, label: string, }
+type Point {
+    x: i64;
+    y: i64;
+    label: string;
+}
+
 fn main() {
     let origin = Point { x: 0, y: 0, label: "origin" };
     let shifted = Point { ..origin, x: 3 };
@@ -985,42 +998,40 @@ For type fields:
 
 ```hew
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 fn main() {
     var p = Point { x: 0, y: 0 };
-    p.x = 10;        // OK — p is var-bound, so field mutation is allowed
-
+    p.x = 10; // OK — p is var-bound, so field mutation is allowed
     let q = Point { x: 0, y: 0 };
     // q.x = 10;     // compile error — q is let-bound
-
     println(f"{p.x} {q.x}");
 }
 ```
 
 **Type field syntax:**
 
-Type fields do NOT require a `let`/`var` prefix. Commas separate the fields:
+Type fields do NOT require a `let`/`var` prefix. Semicolons end the fields:
 
 ```hew
 type Point {
-    x: f64,          // field declaration
-    y: f64,          // field declaration
-    label: string,   // field declaration
+    x: f64;          // field declaration
+    y: f64;          // field declaration
+    label: string;   // field declaration
 }
 ```
 
 **Actor field syntax:**
 
 Actor fields use `let` or `var` to distinguish immutable and mutable state.
-Commas separate these structural members, just as in a type declaration:
+Semicolons end these members, just as in a type declaration:
 
 ```hew
 actor Counter {
-    var count: i64 = 0,     // mutable field with default
-    let name: string,       // immutable field, set by init
+    var count: i64 = 0;     // mutable field with default
+    let name: string;       // immutable field, set by init
 }
 ```
 
@@ -1072,10 +1083,10 @@ mailbox submission, the receiver observes a **logical snapshot** — an
 independent value — and the sender's binding stays valid. An affine resource
 instead transfers its sole ownership and cannot be reused by the sender:
 
-<!-- doctest: skip -->
-
-```hew
-type Message { body: string }
+```hew,ignore
+type Message {
+    body: string;
+}
 
 actor Handler {
     receive fn process(message: Message) {
@@ -1085,7 +1096,7 @@ actor Handler {
 
 actor Forwarder {
     receive fn forward(message: Message, target: Handler) {
-        let _ = target.process(message);  // target receives a snapshot of message
+        let _ = target.process(message); // target receives a snapshot of message
     }
 }
 
@@ -1126,10 +1137,10 @@ Hew provides two syntactic forms for duplication:
 Cloning is not required to keep using ordinary sendable data after a call or
 submission. Fan-out to multiple receivers is ordinary code:
 
-<!-- doctest: skip -->
-
-```hew
-type Message { body: string }
+```hew,ignore
+type Message {
+    body: string;
+}
 
 actor Handler {
     receive fn process(message: Message) {
@@ -1140,7 +1151,7 @@ actor Handler {
 actor Broadcaster {
     receive fn broadcast(message: Message, first: Handler, second: Handler) {
         let _ = first.process(message);
-        let _ = second.process(message);   // message still valid — each send snapshots
+        let _ = second.process(message); // message still valid — each send snapshots
     }
 }
 
@@ -1169,7 +1180,8 @@ fn main() {
     };
     println(prefix);                 // the ordinary value remains usable
     let _ = worker("hello");
-    close(worker);
+    stop(worker);
+    stopped(worker);
 }
 ```
 
@@ -1185,7 +1197,7 @@ fn process(items: Vec<i64>) {
 }
 
 actor Example {
-    var data: Vec<i64> = Vec.new(),
+    var data: Vec<i64> = Vec.new();
 
     receive fn demo(incoming: Vec<i64>) {
         // Mutating the actor's own state - ALLOWED, no locks, no ceremony
@@ -1198,7 +1210,7 @@ actor Example {
 
         // Passing a value to a function borrows it - the binding stays valid
         process(incoming);
-        process(incoming);   // ok - calls borrow, they do not consume
+        process(incoming); // ok - calls borrow, they do not consume
     }
 }
 ```
@@ -1211,9 +1223,7 @@ collection loans still enforce ownership boundaries. Mutation uses `var`.
 
 #### 3.4.7 What is NOT Allowed
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 actor Example {
     receive fn bad_examples(other: Other) {
         // Sending a non-Send value - ERROR
@@ -1256,20 +1266,20 @@ Hew uses a file-based module system inspired by Rust:
 // This is module network.tcp
 
 pub type Connection {
-    address: string,       // public fields via pub keyword on type
-    internal_state: i64,   // named fields are separated by commas
+    address: string; // public fields via pub keyword on type
+    internal_state: i64; // named fields end with semicolons
 }
 
 pub enum ConnectError {
-    Refused,
-    TimedOut,
+    Refused;
+    TimedOut;
 }
 
 pub fn connect(addr: string) -> Result<Connection, ConnectError> {
     .Ok(Connection { address: addr, internal_state: 0 })
 }
 
-fn helper() {  // private to this module
+fn helper() { // private to this module
 }
 ```
 
@@ -1288,11 +1298,11 @@ instead.
 
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:
 
-```hew
-import std.net.http;     // Available as "http", not "std.net.http"
-import std.fs;            // Available as "fs"
-import std.io;            // Available as "io"
-import std.text.regex;   // Available as "regex"
+```hew,no_run
+import std.net.http; // Available as "http", not "std.net.http"
+import std.fs; // Available as "fs"
+import std.io; // Available as "io"
+import std.text.regex; // Available as "regex"
 
 fn main() {
     // Call module functions with dot-syntax: module.function(args)
@@ -1300,14 +1310,14 @@ fn main() {
         .Ok(server) => {
             println(f"HTTP server listening on port {http.server_port(server)}");
             server.close(); // Explicitly release the listener on every success path.
-        },
+        }
         .Err(error) => println(error),
     }
     let content = fs.read("config.toml").expect("config.toml must be readable");
-    let exists = fs.exists("output.txt");       // Returns bool
-    let line = io.read_line();                  // Preferred stdin surface
+    let exists = fs.exists("output.txt"); // Returns bool
+    let line = io.read_line(); // Preferred stdin surface
     let re = regex.new("[a-z]+");
-    let matched = re.is_match("example");      // Returns bool
+    let matched = re.is_match("example"); // Returns bool
     re.close();
 }
 ```
@@ -1367,9 +1377,9 @@ myapp/
 
 `main.hew`:
 
-<!-- doctest: skip: needs the sibling `greeting/` directory module shown below; the single-file doc-fence harness cannot resolve it -->
+<!-- Requires the sibling `greeting/` directory module shown below. -->
 
-```hew
+```hew,ignore
 import greeting;
 
 fn main() {
@@ -1459,9 +1469,9 @@ Types defined in different modules are distinct even if they share a name. A
 types; the qualified names `geometry.Point` and `graphics.Point` disambiguate
 them everywhere — in type annotations, `match` patterns, and aggregate literals.
 
-<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
+<!-- `geometry` and `graphics` are illustrative modules outside this standalone fence. -->
 
-```hew
+```hew,ignore
 import geometry;
 import graphics;
 
@@ -1471,9 +1481,9 @@ let sp: graphics.Point = graphics.Point { x: 0,   y: 0   };
 
 **Import aliasing** resolves ambiguity at the module level:
 
-<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
+<!-- `geometry` and `graphics` are illustrative modules outside this standalone fence. -->
 
-```hew
+```hew,ignore
 import geometry as geo;
 import graphics  as gfx;
 
@@ -1488,6 +1498,22 @@ same name; qualifying with the module (or alias) resolves the conflict.
 ---
 
 ### 3.6 Trait System
+
+Names resolve in lexical scope: a local callable shadows a module function,
+and module declarations and imports take precedence over prelude functions.
+Protected prelude type and trait declarations cannot be redeclared. Compiler
+predicate spellings such as `Clone` and `Send` may name user traits; those
+traits impose their declared methods and do not acquire compiler predicate
+semantics from their spelling.
+
+For `value.method()`, an inherent method takes precedence. Otherwise exactly
+one applicable trait method must be available; multiple candidates are an
+ambiguity error. A call through a generic trait bound or `dyn Trait` uses that
+trait's method identity. Structural trait satisfaction selects an inherent
+method first, then a unique compatible trait implementation; it must not choose
+between multiple witnesses by declaration order. Distinct traits retain their
+own method identities and vtable order even when their names or signatures
+match.
 
 Traits define shared behaviour that types can implement. Hew has built-in marker traits and supports user-defined traits.
 
@@ -1515,7 +1541,10 @@ trait PointRenderer {
     fn fmt(self) -> string;
 }
 
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 impl PointRenderer for Point {
     fn fmt(self) -> string {
@@ -1587,7 +1616,10 @@ one member each:
 | `consume self` | consumes the receiver | is dead after the call |
 
 ```hew
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 trait Formattable {
     fn fmt(self) -> string;
@@ -1616,7 +1648,10 @@ collection methods.
 **Calling methods:**
 
 ```hew
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 trait Formattable {
     fn fmt(self) -> string;
@@ -1630,8 +1665,8 @@ impl Formattable for Point {
 
 fn main() {
     let p = Point { x: 1.0, y: 2.0 };
-    p.fmt();    // `self` borrows: p is still valid
-    p.fmt();    // and may be called again
+    p.fmt(); // `self` borrows: p is still valid
+    p.fmt(); // and may be called again
 }
 ```
 
@@ -1665,9 +1700,9 @@ parameter — and the actor persists across handler invocations:
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
+    var count: i64 = 0;
     receive fn increment() {
-        count += 1;  // bare field access — actor persists after handler returns
+        count += 1; // bare field access — actor persists after handler returns
     }
 }
 ```
@@ -1695,9 +1730,13 @@ slot: from outside the actor it is unreachable, and naming it there is
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
-    fn next() -> i64 { count + 1 }
-    receive fn increment() { count = next(); }
+    var count: i64 = 0;
+    fn next() -> i64 {
+        count + 1
+    }
+    receive fn increment() {
+        count = next();
+    }
 }
 ```
 
@@ -1707,7 +1746,7 @@ Hew distinguishes three cases of variable shadowing:
 
 - **Same-scope rebinding** — a **hard error**. Declaring a name that is already bound in the same scope is rejected outright:
 
-  ```hew
+  ```hew,ignore
   fn main() {
       let x = 1;
       let x = 2;  // compile error: variable `x` is already defined in this scope
@@ -1716,14 +1755,14 @@ Hew distinguishes three cases of variable shadowing:
 
 - **Outer-scope shadowing of an actor field** — a **hard error**. Actor fields must have unambiguous bare names; a parameter, local variable, or loop variable that shadows a field is rejected:
 
-  ```hew
-  actor Example {
-      var count: i64 = 0,
+  ```hew,ignore
+actor Example {
+    var count: i64 = 0;
 
-      receive fn update(count: i64) {
-          // compile error: variable `count` shadows a binding in an outer scope
-      }
-  }
+    receive fn update(count: i64) {
+        // compile error: variable `count` shadows a binding in an outer scope
+    }
+}
   ```
 
 - **Outer-scope shadowing of a local variable** — a **warning**. Reusing a name in a nested block is confusing but not ambiguous. The compiler emits a warning and the programmer is encouraged to choose a more descriptive name or prefix the new binding with `_` to suppress the diagnostic:
@@ -1731,7 +1770,7 @@ Hew distinguishes three cases of variable shadowing:
   ```hew
   fn main() {
       let x = 1;
-      if condition {
+      if true {
           let x = 2;  // warning: variable `x` shadows a binding in an outer scope
           println(x);
       }
@@ -1743,10 +1782,10 @@ Hew distinguishes three cases of variable shadowing:
 
 **Trait bounds on generics:**
 
-<!-- doctest: skip -->
-
-```hew
-type Message { body: string }
+```hew,ignore
+type Message {
+    body: string;
+}
 
 actor Receiver {
     receive fn accept(message: Message) {
@@ -1803,17 +1842,21 @@ Within an actor, values follow Hew ownership semantics:
 
 ```hew
 #[resource]
-type Connection { fd: i64, }
+type Connection {
+    fd: i64;
+}
 
 impl Connection {
-    fn open(host: string) -> Connection { Connection { fd: 0 } }
+    fn open(host: string) -> Connection {
+        Connection { fd: 0 }
+    }
     fn close(consume self) {}
 }
 
 fn main() {
     let conn = Connection { fd: 0 };
     // ... use conn ...
-}  // conn.close() runs here automatically (implicit #[resource] drop)
+} // conn.close() runs here automatically (implicit #[resource] drop)
 ```
 
 **Principle 3: No garbage collection.**
@@ -1897,7 +1940,7 @@ etc.):
 ```hew
 #[resource]
 type FileHandle {
-    fd: i32,
+    fd: i32;
 }
 
 impl FileHandle {
@@ -1931,9 +1974,9 @@ Enum types cannot normally reference themselves because inline storage would req
 
 ```hew
 indirect enum Expr {
-    Lit(i64),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Lit(i64);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 ```
 
@@ -1949,9 +1992,9 @@ indirect enum Expr {
 
 ```hew
 indirect enum Expr {
-    Lit(i64),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Lit(i64);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 
 fn main() {
@@ -1964,9 +2007,9 @@ fn main() {
 
 ```hew
 indirect enum Expr {
-    Lit(i64),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Lit(i64);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
 
 fn eval(e: Expr) -> i64 {
@@ -2031,8 +2074,8 @@ fn main() {
 
 ```hew
 type Node {
-    label: string,
-    parent: Option<Weak<Node>>,
+    label: string;
+    parent: Option<Weak<Node>>;
 }
 
 fn main() {
@@ -2115,10 +2158,12 @@ descriptor, socket, allocator handle, GPU context, libc pointer) and
 
 ```hew
 #[resource]
-type File { fd: i64 }
+type File {
+    fd: i64;
+}
 
 impl File {
-    fn close(consume self) {}   // consuming receiver, unit return, sibling impl
+    fn close(consume self) {} // consuming receiver, unit return, sibling impl
 }
 ```
 
@@ -2139,7 +2184,9 @@ Semantics:
 
 ```hew
 #[resource]
-type Session { label: string, }
+type Session {
+    label: string;
+}
 
 impl Session {
     fn close(consume self) {
@@ -2149,7 +2196,7 @@ impl Session {
 
 fn main() {
     let session = Session { label: "example" };
-    session.close();            // early release; no second close at scope exit
+    session.close(); // early release; no second close at scope exit
 }
 ```
 
@@ -2195,8 +2242,7 @@ Semantics:
 A correct use (illustrative — `Database` and `Transaction` are hypothetical
 types showing the `#[linear]` pattern):
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 fn transfer(db: Database, from: AccountId, to: AccountId, amount: Money)
     -> Result<(), DbError>
 {
@@ -2210,8 +2256,7 @@ fn transfer(db: Database, from: AccountId, to: AccountId, amount: Money)
 
 The compile error for forgetting to consume (illustrative):
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 fn forgot_to_commit(db: Database) -> Result<(), DbError> {
     let tx = db.begin_transaction()?;
     tx.debit(account, money)?;
@@ -2276,12 +2321,15 @@ The resource close contract has three requirements:
    block:
 
    ```hew
-   #[resource]
-   type Conn { fd: i64 }
+#[resource]
+type Conn {
+    fd: i64;
+}
 
-   impl Conn {
-       fn close(consume self) { /* release fd */ }
-   }
+impl Conn {
+    fn close(consume self) { /* release fd */
+    }
+}
    ```
 
    Declaring `close` as an inline method inside the type body is rejected
@@ -2442,10 +2490,10 @@ needs an explicit `impl Trait for T` block.
 
 **Inline bounds:**
 
-<!-- doctest: skip -->
-
-```hew
-type Message { body: string }
+```hew,ignore
+type Message {
+    body: string;
+}
 
 actor Receiver {
     receive fn accept(message: Message) {
@@ -2505,8 +2553,8 @@ trait Sequence {
 }
 
 type RangeIter {
-    current: i32,
-    end: i32,
+    current: i32;
+    end: i32;
 }
 
 impl Sequence for RangeIter {
@@ -2534,14 +2582,19 @@ The `Send` and `Frozen` marker traits have special rules for generic types:
 
 ```hew
 // Compiler derives: Point is Send + Frozen + Copy (all fields are)
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
 
 // Compiler derives: Container<T> is Send if T is Send
-type Container<T> { value: T, }
+type Container<T> {
+    value: T;
+}
 
 // MutableContainer has a mutable binding semantics determined by usage
 type MutableContainer<T> {
-    value: T,
+    value: T;
 }
 ```
 
@@ -2559,9 +2612,7 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 
 **Actor boundary enforcement:**
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 // Error: T might not be Send
 receive fn forward_unsafe<T>(message: T, target: Handler<T>) {
     let _ = target.process(message);    // Compile error: T not bounded by Send
@@ -2727,14 +2778,16 @@ Actor message handlers provide rich typing context:
 
 ```hew
 actor Calculator {
-    var result: i64 = 0,
+    var result: i64 = 0;
 
     // receive fn signature provides context for message arguments
     receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
         result = op(result, value);
     }
 
-    receive fn value() -> i64 { result }
+    receive fn value() -> i64 {
+        result
+    }
 }
 
 fn main() {
@@ -2743,7 +2796,8 @@ fn main() {
     calc.apply_operation(|a, b| a + b, 10).expect("add");
     calc.apply_operation(|a, b| a * b, 5).expect("multiply");
     assert(calc.value().expect("read result") == 50);
-    close(calc);
+    stop(calc);
+    stopped(calc);
 }
 ```
 
@@ -2753,7 +2807,7 @@ fn main() {
 
 **Ambiguous cases require annotations:**
 
-```hew
+```hew,ignore
 // ERROR: Cannot infer types for lambda parameters
 let f = |x, y| x + y;  // No context to determine x, y types
 
@@ -2828,9 +2882,13 @@ mailbox protocol or a restart budget.
 
 ```hew
 actor Latest<T> {
-    var value: Option<T> = .None,
-    receive fn put(next: T) { value = .Some(next); }
-    receive fn get() -> Option<T> { value }
+    var value: Option<T> = .None;
+    receive fn put(next: T) {
+        value = .Some(next);
+    }
+    receive fn get() -> Option<T> {
+        value
+    }
 }
 
 fn main() {
@@ -2839,8 +2897,10 @@ fn main() {
     numbers.put(41).expect("put succeeds");
     names.put("hew").expect("put succeeds");
     println(f"{numbers.get().expect("get succeeds").expect("set")} {names.get().expect("get succeeds").expect("set")}");
-    close(numbers);
-    close(names);
+    stop(numbers);
+    stopped(numbers);
+    stop(names);
+    stopped(names);
 }
 ```
 
@@ -2849,12 +2909,16 @@ parameters, they are inferred the way record type arguments are:
 
 ```hew
 actor Cache<K: Hash + Eq, V: Clone> {
-    var entries: HashMap<K, V>,
-    var hits: i64 = 0,
-    receive fn insert(key: K, value: V) { entries.insert(key, value); }
+    var entries: HashMap<K, V>;
+    var hits: i64 = 0;
+    receive fn insert(key: K, value: V) {
+        entries.insert(key, value);
+    }
     receive fn lookup(key: K) -> Option<V> {
         let found = entries.get(key);
-        if found.is_some() { hits = hits + 1; }
+        if found.is_some() {
+            hits = hits + 1;
+        }
         found
     }
 }
@@ -2862,13 +2926,16 @@ actor Cache<K: Hash + Eq, V: Clone> {
 fn main() {
     var seed: HashMap<string, i64> = HashMap.new();
     seed.insert("answer", 42);
-    let cache = spawn Cache(entries: seed);   // K = string, V = i64
-    let found = cache.lookup("answer") handle error { .None };
+    let cache = spawn Cache(entries: seed); // K = string, V = i64
+    let found = cache.lookup("answer") handle error {
+        .None
+    };
     match found {
         .Some(v) => println(v),
         .None => println("miss"),
     }
-    close(cache);
+    stop(cache);
+    stopped(cache);
 }
 ```
 
@@ -2886,21 +2953,25 @@ typed configuration and restart budget:
 
 ```hew
 actor Worker<Job: Send> {
-    var done: i64 = 0,
-    receive fn run(job: Job) -> i64 { done = done + 1; done }
+    var done: i64 = 0;
+    receive fn run(job: Job) -> i64 {
+        done = done + 1;
+        done
+    }
 }
 
 supervisor Pool<Job: Send> {
-    strategy: one_for_one,
-    intensity: 3 within 10s,
-    child worker: Worker<Job>(done: 0),
+    strategy: one_for_one;
+    intensity: 3 within 10s;
+    child worker: Worker<Job>(done: 0);
 }
 
 fn main() {
     let workers = spawn Pool<string>();
     let completed = workers.worker.run("parse").expect("the example worker completes");
     println(completed);
-    close(workers);
+    stop(workers);
+    stopped(workers);
 }
 ```
 
@@ -2917,8 +2988,7 @@ Hew provides FFI capabilities for interoperating with C libraries and system cal
 
 External C functions are declared in `extern` blocks:
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 extern "C" {
     fn malloc(size: usize) -> *mut u8;
     fn free(ptr: *mut u8);
@@ -2960,8 +3030,7 @@ the same `E_OWN_CONSUME_BORROWED` diagnosis, fixed the same way.
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 #[repr(C)]
 type Point {
     x: f64,
@@ -3039,8 +3108,7 @@ fn my_callback(value: i32) -> i32 {
 
 **All FFI calls are `unsafe`:**
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 fn allocate_buffer(size: usize) -> *mut u8 {
     unsafe {
         malloc(size)
@@ -3067,8 +3135,7 @@ fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, string> {
 
 **Safe wrapper pattern:**
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 // Raw FFI (internal, unsafe)
 extern "C" {
     fn open(path: *u8, flags: i32) -> i32;
@@ -3139,18 +3206,23 @@ Destructuring hands the handle out without running `close`:
 
 ```hew
 #[opaque]
-type Handle {}
+type Handle {
+}
 
 extern "C" {
     fn handle_free(consume handle: Handle);
 }
 
 #[resource]
-type Value { handle: Handle }
+type Value {
+    handle: Handle;
+}
 
 impl Value {
     fn close(consume self) {
-        unsafe { handle_free(self.handle) };
+        unsafe {
+            handle_free(self.handle)
+        };
     }
 
     // `self.handle` alone is refused here: `close` would free it again.
@@ -3198,7 +3270,7 @@ Normative in edition 2026:
 - Encoding: `std.encoding.json`, `std.encoding.msgpack`.
 - HTTP: `std.net.http.server` and `std.net.http.client`, at the
   request/response level.
-- Utilities: `std.math`, `std.testing`.
+- Utilities: `std.math`.
 
 See HEW-FUTURE.md §3 for modules that exist in `std/` today but are not yet
 normative — `std.net.dns`, `std.net.tls`, `std.net.quic`,
@@ -3262,17 +3334,17 @@ name is not conforming.
 
 **Option and Result** are first-class generic enums:
 
-<!-- doctest: skip: illustrates the built-in `Option`/`Result` shape; redeclaring them collides with the protected prelude bindings -->
+<!-- Illustrates built-in `Option` and `Result`; these declarations would collide with the prelude. -->
 
-```hew
+```hew,ignore
 enum Option<T> {
-    Some(T),
-    None,
+    Some(T);
+    None;
 }
 
 enum Result<T, E> {
-    Ok(T),
-    Err(E),
+    Ok(T);
+    Err(E);
 }
 ```
 
@@ -3293,12 +3365,12 @@ for propagation. Any error type `E` may be used with `Result<T, E>`. Each module
 
 ```hew
 pub enum IoError {
-    NotFound(i64),
-    PermissionDenied(i64),
-    AlreadyExists(i64),
-    TimedOut(i64),
-    Cancelled(i64),
-    Other(i64),
+    NotFound(i64);
+    PermissionDenied(i64);
+    AlreadyExists(i64);
+    TimedOut(i64);
+    Cancelled(i64);
+    Other(i64);
 }
 ```
 
@@ -3478,14 +3550,13 @@ Available `HashSet<T>` methods (supported element types: `i64` and
 The standard library exposes concrete modules rather than a large trait
 hierarchy. Representative APIs include:
 
-```hew
+```hew,no_run
 import std.deque;
 import std.fmt;
 import std.io;
 import std.iter;
 import std.math;
 import std.sort;
-import std.testing;
 
 fn main() {
     let ints: Vec<i64> = Vec.new();
@@ -3495,7 +3566,7 @@ fn main() {
     println(math.abs(-5));
     println(fmt.to_hex(255));
     println(iter.sum(ints.into_iter()));
-    testing.assert_true(set.len() == 0);
+    assert(set.len() == 0);
     println(io.read_all());
 }
 ```
@@ -3524,17 +3595,16 @@ Important current details:
   `reverse<T>` over `Vec<T>` are the intended surface, preserving an
   independent input value. The current std source still contains specialized
   helpers; generic consolidation is pending, not an implemented API claim
-- `std.testing` is a pure-Hew assertion library layered on top of `panic()`.
-  Its whole surface is `assert(cond, msg)`, `assert_eq<T: Eq + Display>`, and
-  `assert_ne<T: Eq + Display>`; the monomorphic per-type assertion family
-  (`assert_true`, `assert_eq_int`, and the rest) is deleted. A generic
-  assertion needs `Display` to report a mismatch, so comparing an `Option` or
-  a `Result` is done by matching on it until `Display` for those two types
-  lands at v0.7.0
+- Assertions are one prelude builtin, `assert(condition)` or
+  `assert(condition, message)`, desugared once in HIR. A failure reports the
+  condition's source text; a comparison condition (`==`, `!=`, `<`, `<=`, `>`,
+  `>=`) binds each operand once and reports both as `{:?}` renders them, and
+  the message is evaluated only on failure. `assert_eq`, `assert_ne` and the
+  `std.testing` assertion family are deleted
 
 **One form per operation (normative).** Where a generic form compiles, the
 monomorphic twins beside it do not exist: `std.vec`, `std.option`,
-`std.result`, `std.sort`, and `std.testing` expose the generic function and
+`std.result`, and `std.sort` expose the generic function and
 nothing per element type. A module exposes an operation once — a method or a
 free function, never both — and a `#[resource]` type's release is its `close`
 method, so there is no `Closable` trait and no per-type `free` function
@@ -3707,32 +3777,32 @@ owns no thread, mailbox or output queue.
 
 ### 3.11.1 Declaration Syntax
 
-A machine body is a comma-separated list of members: the mandatory `events`
+A machine body contains members: the mandatory `events`
 header, the optional `emits` header, the `state` declarations, the `on` rules,
 and an optional `default`. A rule whose body is braced is self-delimiting; one
-without a body ends with `,`, like every other structural member.
+without a body ends with `;`, like every other bodyless member.
 
 ```hew
 machine Door {
     events {
-        Open { by: string },
-        Close,
+        Open { by: string; }
+        Close;
     }
 
     emits {
-        Announce { text: string },
+        Announce { text: string; }
     }
 
-    state Shut,
+    state Shut;
     state Ajar {
-        by: string,
+        by: string;
         entry {
             emit Announce { text: "opened by " + state.by };
         }
-    },
+    }
 
     on Open(by): Shut => Ajar { by: by }
-    on Close: Ajar => Shut,
+    on Close: Ajar => Shut;
 
     default { state }
 }
@@ -3770,28 +3840,28 @@ MachineDecl    = "machine" Ident MachineParams? WhereClause? "{"
 MachineParams  = "<" [ TypeParam { "," TypeParam } ]
                      { "," "const" Ident ":" "usize" [ "=" ConstExpr ] } ">" ;
 
-EventsHeader   = "events" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
-EventDecl      = Ident [ "{" FieldList "}" ] ;
-FieldList      = [ Ident ":" Type { "," Ident ":" Type } [ "," ] ] ;
-EmitsHeader    = "emits" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
+EventsHeader   = "events" "{" { EventDecl } "}" ;
+EventDecl      = Ident ( ";" | "{" FieldList "}" ) ;
+FieldList      = { Ident ":" Type ";" } ;
+EmitsHeader    = "emits" "{" { EventDecl } "}" ;
 
 StateDecl      = LeafState | CompositeState ;
-LeafState      = "state" Ident [ "{"
-                   { Ident ":" Type "," }          (* field declarations *)
+LeafState      = "state" Ident ( ";" | "{"
+                   { Ident ":" Type ";" }          (* field declarations *)
                    [ "entry" Block ]                (* entry hook *)
                    [ "exit"  Block ]                (* exit hook  *)
-                 "}" ] "," ;
+                 "}" ) ;
 CompositeState = "state" Ident "{"
-                   { Ident ":" Type "," }          (* shared fields *)
+                   { Ident ":" Type ";" }          (* shared fields *)
                    [ "entry" Block ] [ "exit" Block ]
                    { [ "initial" ] LeafState }     (* exactly one initial *)
                    { TransitionDecl }               (* parent-level rules *)
-                 "}" "," ;
+                 "}" ;
 
 TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
                  StatePattern "=>" StatePattern
                  [ "reenter" ] [ "when" Expr ] TransitionBody ;
-TransitionBody = "," | "{" FieldInitList "}" | Block ;
+TransitionBody = ";" | "{" FieldInitList "}" | Block ;
 StatePattern   = Ident | "_" ;
 DefaultArm     = "default" "{" "state" "}" ;
 
@@ -3859,19 +3929,21 @@ only what the head cannot. There are three forms.
 
 ```hew
 machine Switch {
-    events { Toggle }
+    events {
+        Toggle;
+    }
 
-    state Off,
-    state On,
+    state Off;
+    state On;
 
-    on Toggle: Off => On,
-    on Toggle: On => Off,
+    on Toggle: Off => On;
+    on Toggle: On => Off;
 }
 
 fn main() {
     var switch: Switch = .Off;
     let _ = switch.step(.Toggle);
-    println(switch.state_name());   // On
+    println(switch.state_name()); // On
 }
 ```
 
@@ -3881,12 +3953,12 @@ hold field initializers, nothing else:
 ```hew
 machine Elevator {
     events {
-        GoTo { floor: i64 },
-        Arrive,
+        GoTo { floor: i64; }
+        Arrive;
     }
 
-    state Stopped { floor: i64 },
-    state Moving { from: i64, to: i64 },
+    state Stopped { floor: i64; }
+    state Moving { from: i64; to: i64; }
 
     on GoTo: Stopped => Moving { from: state.floor, to: event.floor }
     on Arrive: Moving => Stopped { floor: state.to }
@@ -3897,10 +3969,10 @@ machine Elevator {
 fn main() {
     var lift: Elevator = .Stopped { floor: 1 };
     let _ = lift.step(.GoTo { floor: 4 });
-    println(lift.state_name());     // Moving
+    println(lift.state_name()); // Moving
     let _ = lift.step(.Arrive);
     match lift {
-        .Stopped { floor } => println(f"stopped at {floor}"),   // stopped at 4
+        .Stopped { floor } => println(f"stopped at {floor}"), // stopped at 4
         _ => println("moving"),
     }
 }
@@ -3911,10 +3983,12 @@ what it changes and `..state` carries the rest:
 
 ```hew
 machine Till {
-    events { Sale }
+    events {
+        Sale;
+    }
 
-    state Empty,
-    state Filled { count: i64, label: string },
+    state Empty;
+    state Filled { count: i64; label: string; }
 
     on Sale: Empty => Filled { count: 1, label: "open" }
     on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
@@ -3927,7 +4001,7 @@ fn main() {
     let _ = till.step(.Sale);
     let _ = till.step(.Sale);
     match till {
-        .Filled { count, label } => println(f"{label}={count}"),   // open=2
+        .Filled { count, label } => println(f"{label}={count}"), // open=2
         .Empty => println("empty"),
     }
 }
@@ -3941,16 +4015,22 @@ declares it:
 
 ```hew
 machine Meter {
-    events { Reading { value: i64 } }
-    emits { Alarm { value: i64 } }
+    events {
+        Reading { value: i64; }
+    }
+    emits {
+        Alarm { value: i64; }
+    }
 
-    state Watching { peak: i64 },
+    state Watching { peak: i64; }
 
     on Reading: Watching => Watching when event.value > state.peak {
         emit Alarm { value: event.value };
         Watching { peak: event.value }
     }
-    on Reading: Watching => Watching { state }
+    on Reading: Watching => Watching {
+        state
+    }
 }
 
 fn main() {
@@ -3958,11 +4038,11 @@ fn main() {
     let report = meter.step(.Reading { value: 7 });
     for output in report.outputs {
         match output {
-            .Alarm { value } => println(f"alarm at {value}"),   // alarm at 7
+            .Alarm { value } => println(f"alarm at {value}"), // alarm at 7
         }
     }
     let quiet = meter.step(.Reading { value: 3 });
-    println(f"outputs={quiet.outputs.len()}");                  // outputs=0
+    println(f"outputs={quiet.outputs.len()}"); // outputs=0
 }
 ```
 
@@ -3991,17 +4071,25 @@ identity rule `on E: _ => _ { state }` keeps the current state as a value.
 
 ```hew
 machine Conn {
-    events { Start, Bump, Kill }
+    events {
+        Start;
+        Bump;
+        Kill;
+    }
 
-    state Idle,
-    state Live { hits: i64 },
-    state Dead,
+    state Idle;
+    state Live { hits: i64; }
+    state Dead;
 
     on Start: Idle => Live { hits: 0 }
     on Bump: Live => _ {
-        if state.hits + 1 >= 3 { Dead } else { Live { hits: state.hits + 1 } }
+        if state.hits + 1 >= 3 {
+            Dead
+        } else {
+            Live { hits: state.hits + 1 }
+        }
     }
-    on Kill: _ => Dead,
+    on Kill: _ => Dead;
 
     default { state }
 }
@@ -4011,9 +4099,9 @@ fn main() {
     let _ = conn.step(.Start);
     let _ = conn.step(.Bump);
     let _ = conn.step(.Bump);
-    println(conn.state_name());   // Live
+    println(conn.state_name()); // Live
     let _ = conn.step(.Bump);
-    println(conn.state_name());   // Dead
+    println(conn.state_name()); // Dead
 }
 ```
 
@@ -4072,10 +4160,13 @@ independently of later state changes or the machine's lifetime.
 
 ```hew
 machine Breaker {
-    events { Trip, Reset }
-    state Closed { failures: i64 },
-    state Open,
-    on Trip: Closed => Open,
+    events {
+        Trip;
+        Reset;
+    }
+    state Closed { failures: i64; }
+    state Open;
+    on Trip: Closed => Open;
     on Reset: Open => Closed { failures: 0 }
     default { state }
 }
@@ -4088,8 +4179,8 @@ fn describe(breaker: Breaker) -> string {
 }
 
 fn main() {
-    println(describe(.Closed { failures: 2 }));   // failures = 2
-    println(describe(.Open));                     // open
+    println(describe(.Closed { failures: 2 })); // failures = 2
+    println(describe(.Open)); // open
 }
 ```
 
@@ -4099,21 +4190,24 @@ Machines are values, so they are commonly held as actor fields:
 
 ```hew
 machine Tcp {
-    events { Connect, Close }
+    events {
+        Connect;
+        Close;
+    }
 
-    state Closed,
-    state Established { port: i64 },
+    state Closed;
+    state Established { port: i64; }
 
     on Connect: Closed => Established { port: 8080 }
-    on Close: Established => Closed,
+    on Close: Established => Closed;
 
     default { state }
 }
 
 actor ConnectionManager {
-    var tcp: Tcp = .Closed,
+    var tcp: Tcp = .Closed;
 
-    receive fn handle(event: TcpEvent) {
+    receive fn handle(event: Tcp.Event) {
         let _report = tcp.step(event);
         match tcp {
             .Established { port } => println(f"established on {port}"),
@@ -4124,8 +4218,8 @@ actor ConnectionManager {
 
 fn main() {
     let manager = spawn ConnectionManager();
-    let _ = manager.handle(.Connect);   // established on 8080
-    let _ = manager.handle(.Close);     // closed
+    let _ = manager.handle(.Connect); // established on 8080
+    let _ = manager.handle(.Close); // closed
 }
 ```
 
@@ -4157,15 +4251,15 @@ binding that reuses a const parameter's name is refused rather than shading it.
 ```hew
 machine Retry<const MAX: usize = 3> {
     events {
-        Fail,
+        Fail;
     }
 
-    state Trying { attempts: usize },
-    state Exhausted,
+    state Trying { attempts: usize; }
+    state Exhausted;
 
     on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
-    on Fail: Trying => Exhausted,
-    on Fail: Exhausted => Exhausted reenter,
+    on Fail: Trying => Exhausted;
+    on Fail: Exhausted => Exhausted reenter;
 }
 ```
 
@@ -4190,17 +4284,17 @@ machine, and the composite's own fields are stamped onto each of them.
 ```hew
 machine Session {
     events {
-        Open,
-        Authed,
-        Close,
+        Open;
+        Authed;
+        Close;
     }
 
     emits {
-        Trace { text: string },
+        Trace { text: string; }
     }
 
-    state Closed,
-    state Kicked,
+    state Closed;
+    state Kicked;
 
     state Live {
         entry {
@@ -4209,16 +4303,15 @@ machine Session {
         exit {
             emit Trace { text: "Live.exit" };
         }
+        initial state Authing;
+        state Active;
 
-        initial state Authing,
-        state Active,
+        on Close: _ => Closed;
+    }
 
-        on Close: _ => Closed,
-    },
-
-    on Open: Closed => Live,          // enters Authing
-    on Authed: Authing => Active,     // no composite hook
-    on Close: Active => Kicked,       // beats the parent Close rule
+    on Open: Closed => Live; // enters Authing
+    on Authed: Authing => Active; // no composite hook
+    on Close: Active => Kicked; // beats the parent Close rule
 
     default { state }
 }
@@ -4474,15 +4567,19 @@ the next message turn begins. Results returned to the handler can be used to
 update its state after joining.
 
 ```hew
-fn twice(n: i64) -> i64 { n * 2 }
+fn twice(n: i64) -> i64 {
+    n * 2
+}
 
 actor Counter {
-    var total: i64 = 0,
+    var total: i64 = 0;
     receive fn add_twice(n: i64) {
         let work = fork twice(n);
         total += await work;
     }
-    receive fn get() -> i64 { total }
+    receive fn get() -> i64 {
+        total
+    }
 }
 ```
 
@@ -4498,7 +4595,7 @@ completion envelope follows §2.1.1; submission still requires a mailbox view.
 | Application error | an ordinary Result value | declared `fails` error reaches the completion envelope |
 | Fault | propagates through the owning scope | belongs to the actor and its supervisor |
 | Lifetime | bounded by its parent | independent actor lifetime |
-| Termination wait | task join | `close(actor)` or `closed(actor)` |
+| Termination wait | task join | `stopped(actor)` |
 
 **Historical note.** Earlier drafts exposed a scope handle with separate task
 launch methods. Those drafts are not source syntax for this edition. There is
@@ -4506,19 +4603,20 @@ one `fork` operation; scheduling choices are not public aliases.
 
 ### 4.10 Actor Completion and Termination
 
-`close(pid)` requests cooperative stop and waits for terminal cleanup.
-`closed(pid)` waits for termination without requesting it. Both return unit;
-closing an already terminal actor is idempotent. `fork close(pid)` returns a
-`Task<()>` and starts the same work concurrently.
+`stop(pid)` requests graceful stop and returns at once; `terminate(pid)`
+requests cancellation and returns at once. `stopped(pid)` waits for terminal
+cleanup. To request a graceful stop and wait, write `stop(pid); stopped(pid);`.
+To wait concurrently, `fork stopped(pid)` returns a `Task<()>` that must be
+joined. These operations are idempotent once the actor is terminal.
 
 A call on a receive handler waits for that handler's completion, not the
 actor's entire lifetime. `fork pid.method(args)` runs it concurrently; `await`
 then joins that task. `for item in pid.stream()` waits per item using ordinary
 iteration (§4.12).
 
-A supervisor uses the same `close`/`closed` forms, with `close(sup)` waiting for
-its children's terminal cleanup. That supervisor surface is decided but
-pending implementation; see §2.1.1 and §5.6.
+A supervisor uses the same three verbs. `stop(sup)` requests graceful
+shutdown of its children in reverse declaration order, and `stopped(sup)`
+waits for their cleanup; see §2.1.1 and §5.6.
 
 ### 4.11 Select and Race Expressions
 
@@ -4537,9 +4635,9 @@ user-implementable `Awaitable` trait — the four forms are exhaustive.
 
 **Canonical syntax:**
 
-<!-- doctest: skip: shows all four select arm forms together; native actor-call registration is pending (§2.1.1) -->
+<!-- Illustrates all four select arm forms; native actor-call registration is pending (§2.1.1). -->
 
-```hew
+```hew,ignore
 select {
     reply   from worker.call(x)        => use(reply),     // actor call
     item    from inbox.recv()          => use(item),      // stream receive
@@ -4641,9 +4739,7 @@ complete. Completion is completion: an operand that returns an ordinary
 `Err` wins the race exactly as an `Ok` does, because a result is a result.
 Every loser is cancelled and drained before the expression returns.
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let fastest = race {
     primary.fetch(key),
     replica.fetch(key),
@@ -4681,9 +4777,7 @@ are cancelled and the trap propagates to the enclosing context.
 
 `after` marks the timer arm of a `select`:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 select {
     result from server.fetch() => result,
     after 5s => default_value,
@@ -4693,9 +4787,7 @@ select {
 That is its only position. A deadline over a region of code is a `scope`
 with a `within` clause:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let total = scope within 1s {
     let count = fork counter.get_count();
     await count
@@ -4814,23 +4906,25 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 
 ```hew
 actor Worker {
-    var id: i64,
-    var count: i64,
+    var id: i64;
+    var count: i64;
     receive fn work() {}
 }
 
 actor Logger {
-    var level: i64,
-    receive fn log(msg: string) { let _ = msg; }
+    var level: i64;
+    receive fn log(msg: string) {
+        let _ = msg;
+    }
 }
 
 supervisor MyPool {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child worker1: Worker(id: 1, count: 0),
-    child worker2: Worker(id: 2, count: 0) restart: transient,
-    child logger: Logger(level: 3) restart: temporary shutdown: 10s,
+    child worker1: Worker(id: 1, count: 0);
+    child worker2: Worker(id: 2, count: 0) restart: transient;
+    child logger: Logger(level: 3) restart: temporary stop: 10s;
 }
 ```
 
@@ -4847,15 +4941,15 @@ supervisor MyPool {
 
 - `child <name>: <ActorType>(<field>: <expr>, ...)` — a static supervised child.
   Init args are named (positional args are rejected with a migration diagnostic).
-- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>,` — a pool of `N`
+- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>;` — a pool of `N`
   fungible children (only under `simple_one_for_one`). The parenthesised args
   are the per-spawn template, exactly as for `child`; `count:` is the arity.
 - Per-child suffix clauses, accepted in any order:
   - `restart: permanent | transient | temporary` (optional, default
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
-  - `shutdown: <duration> | brutal_kill | infinity` (optional) — the
-    graceful-stop deadline (default `5s`). See §2.1.1 for current limitations.
+  - `stop: <duration>` (optional) — the graceful-stop deadline (default
+    `5s`). `stop: 0s` terminates immediately.
   - `count: <N>` — pool arity. Required on a `pool` child, rejected on a
     `child` declaration; it has no default, because a pool with a guessed size
     is a guess about capacity.
@@ -4864,7 +4958,7 @@ supervisor MyPool {
 - Child actor types must be declared before the supervisor.
 
 **Pool arity is a clause, not an init field (normative).** `count:` sits
-beside `restart:` and `shutdown:` in the child's clause namespace, and the
+beside `restart:` and `stop:` in the child's clause namespace, and the
 parenthesised argument list stays the actor's own field namespace. An actor
 that happens to declare a field named `count` is therefore poolable like any
 other, and its `count` field is set the same way every other field is. The
@@ -4873,18 +4967,15 @@ user's field.
 
 ### 5.2 Restart Semantics (normative)
 
-Let child exit reason be one of:
-
-- `normal`
-- `shutdown`
-- `{shutdown, term}`
-- `trap` (a language panic or fault; process abort is not supervised recovery)
+Let a child end with one `DownReason`: `Stopped`, `Terminated`, or
+`Crashed(kind)`. Remote monitoring additionally uses `MonitorLost` and
+`LocalShutdown`.
 
 Then:
 
 - `permanent`: always restart
 - `temporary`: never restart
-- `transient`: restart only if exit reason is not `normal`, `shutdown`, `{shutdown, term}` ([Erlang.org][6])
+- `transient`: restart after `Terminated` or `Crashed`, but not `Stopped`
 
 ### 5.3 Restart Strategies
 
@@ -4917,30 +5008,34 @@ The shape is:
 
 ```hew
 actor Worker {
-    let id: i64,
-    var count: i64,
-    receive fn tick() { count += 1; }
+    let id: i64;
+    var count: i64;
+    receive fn tick() {
+        count += 1;
+    }
 }
 
 actor CacheActor {
-    let capacity: i64,
-    receive fn size_limit() -> i64 { capacity }
+    let capacity: i64;
+    receive fn size_limit() -> i64 {
+        capacity
+    }
 }
 
 supervisor Inner {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child w1: Worker(id: 1, count: 0),
-    child w2: Worker(id: 2, count: 0),
+    child w1: Worker(id: 1, count: 0);
+    child w2: Worker(id: 2, count: 0);
 }
 
 supervisor Root {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child workers: Inner(),
-    child cache: CacheActor(capacity: 1000),
+    child workers: Inner();
+    child cache: CacheActor(capacity: 1000);
 }
 ```
 
@@ -4948,9 +5043,7 @@ When a child supervisor's restart budget is exhausted, it escalates to its paren
 
 ### 5.6 Spawning and Accessing Supervised Children
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 fn main() {
     let pool = spawn MyPool();
     sleep(50ms);
@@ -4962,7 +5055,8 @@ fn main() {
     let w2 = pool.worker2;             // ChildRef<Worker>
     let _ = w2.tick();
 
-    close(pool);              // Graceful shutdown
+    stop(pool);               // Request graceful shutdown
+    stopped(pool);            // Wait for child cleanup
 }
 ```
 
@@ -4977,20 +5071,20 @@ fn main() {
   `ChildRef<Actor>` and traps out of range, matching `Vec[i]`; `get(i)` yields
   `Option<ChildRef<Actor>>` instead. A negative index and one at or past the
   count are both out of range.
-- `await_restart sup.child_name` / `await_restart sup.pool_name[i]` — resume
+- `restarted(sup.child_name)` / `restarted(sup.pool_name[i])` — resume
   once that one slot is Live again after a crash, or is permanently gone, with
   the same `ChildRef<Actor>`. A whole pool names many slots and has no single
   restart signal, so it is not an operand. The form resumes when the role holds
   a live incarnation with no crash still awaiting a supervisor's ruling, or when
   the role is permanently gone; a role with nothing pending resumes at once. A
   crash the caller has already observed — its own completion call returned `Err`
-  — is pending by then, so `let _ = child.fail(); await_restart sup.child` waits
+  — is pending by then, so `let _ = child.fail(); restarted(sup.child);` waits
   for the ruling. A crash from a one-way mailbox submission that has not been
-  processed when `await_restart` is entered is not yet pending and is not waited
+  processed when `restarted` is entered is not yet pending and is not waited
   for.
-- `close(sup)` — requests cooperative stop and waits for every child's terminal cleanup.
-- `fork close(sup)` — starts that stop operation as a `Task<()>`.
-- `closed(sup)` — waits for termination without requesting it.
+- `stop(sup)` — requests a graceful stop of every child in reverse declaration order.
+- `terminate(sup)` — requests cancellation of every child in that order.
+- `stopped(sup)` — waits for the whole tree's terminal cleanup.
 
 **Terminal destinations (normative).**
 
@@ -5151,8 +5245,10 @@ Neither changes a completion call into a submission or makes its result unit.
 
 ```hew
 actor Worker {
-    mailbox 1024,
-    receive fn record(value: i64) { println(value); }
+    mailbox 1024;
+    receive fn record(value: i64) {
+        println(value);
+    }
 }
 ```
 
@@ -5260,19 +5356,21 @@ annotation. `open` reads a file as chunks of bytes. `forward` drains
 
 `send` and `recv` are ordinary suspending calls (§4.0); they carry no
 `await`. A `send` result is a delivery outcome: a discarded one is
-`E_SEND_RESULT_DROPPED`, the same rule as a discarded actor delivery.
+`E_RESULT_DROPPED`, the same rule as every discarded `Result`.
 
 ```hew
 import std.stream;
 
 type Order {
-    id: i64,
-    note: string,
+    id: i64;
+    note: string;
 }
 
 fn main() {
-    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) =
-        match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let more = orders.clone();
     orders.send(Order { id: 1, note: "first" }).expect("send");
     more.send(Order { id: 2, note: "second" }).expect("send");
@@ -5426,9 +5524,9 @@ integer keys, and values use the table above.
 ```hew
 #[wire]
 type User {
-    id: u64 @1,
-    name: string @2,
-    email: Option<string> @3 optional,
+    id: u64 @1;
+    name: string @2;
+    email: Option<string> @3 optional;
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
@@ -5456,7 +5554,11 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 
 ```hew
 #[wire]
-enum Status { Pending, Active, Completed, }
+enum Status {
+    Pending;
+    Active;
+    Completed;
+}
 
 // Status.Pending   -> CBOR integer: 0
 // Status.Active    -> CBOR integer: 1
@@ -5470,8 +5572,8 @@ Field presence is independent of `Option<T>`'s null/value representation:
 ```hew
 #[wire]
 type Config {
-    timeout_ms: u64 @1,
-    proxy_url: Option<string> @2 optional,
+    timeout_ms: u64 @1;
+    proxy_url: Option<string> @2 optional;
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:
@@ -5498,8 +5600,8 @@ Lists are encoded as CBOR **arrays**. Each element is encoded according to the e
 ```hew
 #[wire]
 type Data {
-    values: [i64] @1,
-    tags: [string] @2,
+    values: [i64] @1;
+    tags: [string] @2;
 }
 
 // Data { values: [1, 2, 3], tags: ["a", "b"] } encodes as:
@@ -5515,9 +5617,15 @@ Nested `#[wire]` types are encoded recursively as CBOR maps:
 
 ```hew
 #[wire]
-type Inner { x: i32 @1, }
+type Inner {
+    x: i32 @1;
+}
+
 #[wire]
-type Outer { inner: Inner @1, nested_list: [Inner] @2, }
+type Outer {
+    inner: Inner @1;
+    nested_list: [Inner] @2;
+}
 
 // Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
 // CBOR map: {
@@ -5580,9 +5688,9 @@ Per-field override always wins over the type-level convention.
 #[json(camelCase)]
 #[wire]
 type User {
-    user_name: string @1,                       // JSON: "userName"
-    email_address: string @2,                   // JSON: "emailAddress"
-    internal_id: string @3 json("id"),          // JSON: "id"  (override wins)
+    user_name: string @1; // JSON: "userName"
+    email_address: string @2; // JSON: "emailAddress"
+    internal_id: string @3 json("id"); // JSON: "id"  (override wins)
 }
 ```
 
@@ -5601,8 +5709,8 @@ Without the type-level attribute, names are preserved exactly:
 ```hew
 #[wire]
 type User {
-    user_name: string @1,
-    email_address: string @2,
+    user_name: string @1;
+    email_address: string @2;
 }
 ```
 
@@ -5619,7 +5727,11 @@ Wire enums encode as the string name of the variant:
 
 ```hew
 #[wire]
-enum Status { Pending, Active, Completed, }
+enum Status {
+    Pending;
+    Active;
+    Completed;
+}
 ```
 
 ```json
@@ -5643,7 +5755,11 @@ Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or ano
 ```hew
 #[json(camelCase)]
 #[wire]
-enum Status { PendingReview, ActiveNow, Completed, }
+enum Status {
+    PendingReview;
+    ActiveNow;
+    Completed;
+}
 ```
 
 ```json
@@ -5677,15 +5793,15 @@ Explicit format selection:
 ```hew
 #[wire]
 type MyMessage {
-    id: u64 @1,
-    text: string @2,
+    id: u64 @1;
+    text: string @2;
 }
 
 fn main() {
     let msg = MyMessage { id: 1, text: "hello" };
-    let binary = msg.encode();       // CBOR bytes
-    let json_str = msg.to_json();    // JSON string
-    let yaml_str = msg.to_yaml();    // YAML string
+    let binary = msg.encode(); // CBOR bytes
+    let json_str = msg.to_json(); // JSON string
+    let yaml_str = msg.to_yaml(); // YAML string
     println(f"{binary.len()} {json_str} {yaml_str}");
 }
 ```
@@ -5695,8 +5811,8 @@ Decoding:
 ```hew
 #[wire]
 type MyMessage {
-    id: u64 @1,
-    text: string @2,
+    id: u64 @1;
+    text: string @2;
 }
 
 fn main() {
@@ -5704,7 +5820,6 @@ fn main() {
     let binary = msg.encode();
     let json_str = msg.to_json();
     let yaml_str = msg.to_yaml();
-
     let msg1 = MyMessage.decode(binary);
     let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
     let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
@@ -5927,9 +6042,9 @@ Actors start `Idle` after spawn. There is no separate `Blocked` state — actors
 for messages are `Idle` (or `Suspended` during a cooperative suspension) and become
 `Runnable` when a message arrives.
 
-Cooperative termination is requested through `close(pid)` or supervision.
-`closed(pid)` observes that transition without requesting it. A repeated
-close of a terminal actor changes nothing and returns unit (§2.1).
+Cooperative termination is requested through `stop(pid)` or supervision.
+`stopped(pid)` waits for terminal cleanup without requesting termination. A
+repeated stop of a terminal actor changes nothing and returns unit (§2.1).
 
 **Key distinctions from task states (§4.1):**
 
@@ -6163,56 +6278,57 @@ Grammar fragments illustrate the source forms beside their semantic rules.
 The parser and downstream grammars must converge on that same surface. They
 do not establish separate language variants when an implementation lags.
 
-### Structural punctuation
+### Member terminators and list separators
 
-Commas separate structural data members: type and wire fields, enum variants
-and variant fields, record values and patterns, actor state and mailbox config,
-machine events, states and bodyless routes, and supervisor config and children.
-A trailing comma is accepted before a closing brace. Adjacent members require
-a comma; a newline is whitespace, not a separator.
+Inside a declaration body, a member with its own `{ }` body ends at `}`.
+Every other member ends with `;`, including the last before the closing brace.
+This covers type and wire fields, enum variants, actor state and mailbox
+config, machine events and bodyless routes, and supervisor settings and
+children. Actor state fields start with `let` or `var`; bare field declarations
+are invalid there. A newline is whitespace and never ends a member.
 
-Semicolons terminate statements and bodyless declarations, including trait
-method signatures and extern function signatures. Function, method, lifecycle
-and executable blocks do not acquire a terminator just because they occur
-beside structural members. An array's `[T; N]` size syntax is not a member list
-and retains its semicolon.
+Commas separate elements of lists and values: arguments, parameters, tuple and
+array elements, record and map literals, record patterns, import selections,
+and attribute arguments. A trailing comma is optional. Match and select arms
+whose bodies are blocks end at their closing brace; expression arms use commas
+between them. Statements and bodyless signatures still end with `;`.
+An array's `[T; N]` size syntax retains its semicolon.
 
 ```hew
-type Point { x: i64, y: i64 }
-enum Reply { Ready, Value { label: string, count: i64 }, Failed(string) }
+type Point { x: i64; y: i64; }
+enum Reply { Ready; Value { label: string; count: i64; } Failed(string); }
 
 actor Counter {
-    var count: i64 = 0,
-    mailbox 64 overflow drop_new,
+    var count: i64 = 0;
+    mailbox 64 overflow drop_new;
     receive fn bump() { count += 1; }
 }
 
 machine Switch {
-    events { Toggle }
-    state Off,
-    state On,
-    on Toggle: Off => On,
-    on Toggle: On => Off,
+    events { Toggle; }
+    state Off;
+    state On;
+    on Toggle: Off => On;
+    on Toggle: On => Off;
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
-    child counter: Counter() restart: permanent,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child counter: Counter() restart: permanent;
 }
 
 trait Reader { fn read(self) -> i64; }
 extern "C" { fn read_value() -> i64; }
 ```
 
-Declaration context distinguishes an actor's `var count: i64 = 0,` state
-member from an executable block's `var count = 0;` local statement. A machine
-state with a body is still a structural member (`state Active { n: i64 },`);
-its `entry` and `exit` blocks contain ordinary statements. A bodyless route
-ends with a comma, whereas `on Toggle: Off => On { ... }` is self-delimiting.
-The `events { ... }`, `emits { ... }` and `default { ... }` blocks do not take
-an extra terminator. Supervisor child clauses such as `restart:` and
-`shutdown:` remain parts of one child member, whose final separator is a comma.
+An actor's `var count: i64 = 0;` state member and an executable block's
+`var count = 0;` local statement share the same terminator. A machine state
+with a body ends at its brace (`state Active { n: i64; }`); its `entry` and
+`exit` blocks contain ordinary statements. A bodyless route ends with `;`.
+The `events { ... }`, `emits { ... }` and `default { ... }` blocks take no
+extra terminator. Supervisor child clauses such as `restart:` and
+`stop:` remain parts of one child member, which ends with `;`.
 
 **Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
 
@@ -6227,9 +6343,9 @@ downstream highlighters generate from it, not from this section.
 | --- | --- |
 | Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
 | Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
-| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `await`, `await_restart` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `await` |
 | Wire | `reserved`, `optional`, `deprecated` |
-| Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
+| Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
 | Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
 | Literals | `true`, `false` |
 | Other | `dyn`, `unsafe`, `is` |
@@ -6506,9 +6622,7 @@ A select timer and `scope within d` use `duration`. Socket timeout setters
 use their declared API units; current `net.Connection` setters accept an
 integer count of milliseconds. Neither form adds a timeout operator to calls.
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let result = scope within 5s {
     let task = fork calculate(input);
     await task
@@ -6531,7 +6645,9 @@ Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`
 
 **Syntax:**
 
-```hew
+The fixed booleans below illustrate label targets; this loop does not terminate.
+
+```hew,no_run
 fn main() {
     let condition = true;
     let done = false;
@@ -6724,14 +6840,23 @@ refuses the name it does not know rather than dropping it.
 | `#[json(...)]`, `#[yaml(...)]` | type declaration | Per-encoding field-naming case for a `#[wire]` type (§7.3.2, §7.3.2a). |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
-| `#[ignore]` | `#[test]` function | Discovered but not run. |
-| `#[should_panic]` | `#[test]` function | The test passes only if the body traps. |
-| `#[serial]` | `#[test]` function | Runs alone, never concurrently with another test. |
+| `#[ignore]` | `#[test]` function | Discovered but not run; accepts an optional reason string. |
+| `#[should_panic]` | `#[test]` function | Passes on a Hew panic, assertion or checked trap; an optional string must match the fault report. Normal return, error return, process exit and signals do not satisfy it. |
+| `#[timeout(D)]` | `#[test]` function | A positive duration literal sets the per-test wall-clock hang guard. |
+| `#[serial]` | `#[test]` function | Runs mutually exclusively with other serial tests; non-serial tests may run concurrently. |
+| `#[real_time]` | `#[test]` function | Runs on the threaded scheduler with the host clock instead of the deterministic single-thread driver and virtual clock. |
 | `#[on(kind)]` | actor member `fn` | Lifecycle hook; `kind` is one of `start`, `stop`, `crash`, `exit`, `down` (§9.1.2). |
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
 | `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
+
+Testing attribute arguments are positional. `test`, `serial` and `real_time`
+accept no arguments; `ignore` and `should_panic` accept at most one quoted
+string; `timeout` requires one positive duration literal. Named arguments,
+extra arguments and other literal shapes produce `E_ATTRIBUTE_ARGUMENT` with
+an actionable correction. All test modifiers require `#[test]` on the same
+free function.
 
 **Substrate attributes** carry compiler-internal identity and are legal only
 inside `std/`. A program that names one outside the standard library gets

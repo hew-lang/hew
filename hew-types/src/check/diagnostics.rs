@@ -12,7 +12,7 @@ impl Checker {
     /// fix-it names: the contextual `.Variant` where an expected type selects
     /// the enum, the owner-qualified `Type.Variant` where it does not.
     pub(super) fn report_bare_variant_expr(&mut self, name: &str, replacement: &str, span: &Span) {
-        self.report_bare_variant(
+        self.report_migration_diagnostic(
             TypeErrorKind::BareVariantExpr,
             format!(
                 "E_BARE_VARIANT_EXPR: bare variant `{name}` is not an expression; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
@@ -28,7 +28,7 @@ impl Checker {
     /// always available and is the only fix-it offered. A hard error from
     /// v0.6.0, on the same footing as the expression form.
     pub(super) fn report_bare_variant_pattern(&mut self, name: &str, span: &Span) {
-        self.report_bare_variant(
+        self.report_migration_diagnostic(
             TypeErrorKind::BareVariantPattern,
             format!(
                 "E_BARE_VARIANT_PATTERN: bare variant pattern `{name}` is not a pattern; use `.{name}` when the scrutinee type selects the enum, or qualify the variant with its type"
@@ -38,14 +38,13 @@ impl Checker {
         );
     }
 
-    /// One authority for both bare-variant refusals, so the two spellings keep
-    /// the same severity rule and the same machine-applicable fix-it shape.
+    /// One severity rule for mechanically migratable source spellings.
     ///
-    /// The syntax migrator is the sanctioned way past both, and it can only
-    /// rewrite a source the checker resolved, so migration mode reports at
+    /// The syntax migrator can only rewrite a source the checker resolved, so
+    /// migration mode reports at
     /// warning severity — the one entry point allowed to see a legacy source
     /// through. `hew fmt --migrate` reads these warnings to place its edits.
-    fn report_bare_variant(
+    pub(super) fn report_migration_diagnostic(
         &mut self,
         kind: TypeErrorKind,
         message: String,
@@ -646,12 +645,13 @@ impl Checker {
     /// stdlib/builtin handle (drop type / handle type). Used to suppress the
     /// unused-binding lint: such a binding is meaningful even when never read.
     fn is_raii_handle_ty(&self, ty: &Ty) -> bool {
-        let Ty::Named { name, .. } = ty else {
+        let Ty::Named { head, .. } = ty else {
             return false;
         };
-        self.registry.is_resource(name)
-            || self.registry.is_linear(name)
-            || self.canonical_owned_handle_type_name(name).is_some()
+        head.nominal()
+            .is_some_and(|id| self.registry.is_resource(id))
+            || head.nominal().is_some_and(|id| self.registry.is_linear(id))
+            || self.registry.is_owned_handle(*head)
     }
 
     /// A variant carrying an uninhabited payload has no values, so no `match`
@@ -677,9 +677,12 @@ impl Checker {
     fn is_uninhabited(&self, ty: &Ty) -> bool {
         match self.subst.resolve(ty) {
             Ty::Never => true,
-            Ty::Named { ref name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
-                definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
-            }),
+            Ty::Named { head, .. } => {
+                self.lookup_type_def(head.registry_key())
+                    .is_some_and(|definition| {
+                        definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                    })
+            }
             _ => false,
         }
     }

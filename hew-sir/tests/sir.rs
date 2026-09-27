@@ -68,7 +68,7 @@ fn callable_for(function: &SemFunction) -> SemCallable {
     SemCallable {
         id: function.callable,
         function: function.id,
-        declaration: function.declaration.clone(),
+        declaration: function.declaration,
         instance: CallableInstance::Monomorphic,
         symbol: function.name.clone(),
         source_origin: function.source_origin.clone(),
@@ -118,6 +118,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
@@ -132,6 +133,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         root_unit_callables: Vec::new(),
         entry_exit_plan: None,
         entry_callable: None,
+        test_entries: Vec::new(),
         functions,
         aggregate_shapes: Vec::new(),
         variant_shapes: Vec::new(),
@@ -179,12 +181,7 @@ fn unit_function(
 }
 
 fn choice_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Choice".to_string(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_for_test("Choice", Vec::new())
 }
 
 fn empty_choice_block(choice: &ResolvedTy) -> SemBlock {
@@ -240,6 +237,7 @@ fn choice_variant_shape(choice: &ResolvedTy) -> SemVariantShape {
                 fields: Vec::new(),
             },
         ],
+        runtime_tags: Vec::new(),
     }
 }
 
@@ -1979,12 +1977,7 @@ fn verifier_refuses_an_own_kind_the_class_table_contradicts() {
 #[test]
 fn verifier_refuses_a_value_whose_type_the_class_rule_cannot_decide() {
     let mut function = own_kind_function(OwnKind::None, OwnKind::None);
-    let undecidable = ResolvedTy::Named {
-        name: "Conn".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    let undecidable = ResolvedTy::named_for_test("Conn", vec![]);
     function.blocks[0].ops[0].results[0].ty = undecidable.clone();
     function.blocks[1].args[0].ty = undecidable;
     let diagnostics = verify_module(&module(vec![function]));
@@ -2244,14 +2237,16 @@ fn verifier_admits_the_same_header_and_call_with_a_read_only_slot() {
 #[test]
 fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
+    let declaration = DefId::for_test("borrow_template");
     module.generic_templates = vec![hew_sir::SemGenericTemplate {
-        id: GenericTemplateId {
-            declaration: DefId::for_test("borrow_template"),
-        },
+        id: GenericTemplateId { declaration },
         function: ItemId(2),
         symbol: "borrow_template".to_string(),
         source_origin: FunctionSourceOrigin::Unknown,
-        type_params: vec!["T".to_string()],
+        type_params: vec![hew_types::ParamHead::new(
+            hew_types::TypeParamId::new(declaration, 0),
+            hew_parser::ast::Symbol::intern("T"),
+        )],
         signature: SemSignature {
             params: vec![SemAbiParam {
                 ty: ResolvedTy::I64,
@@ -2261,6 +2256,7 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
             return_ty: ResolvedTy::Unit,
         },
     }];
+    module.defs = hew_types::DefTable::fixture();
     let diagnostics = verify_module(&module);
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
@@ -2274,14 +2270,16 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
 #[test]
 fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
+    let declaration = DefId::for_test("read_only_template");
     module.generic_templates = vec![hew_sir::SemGenericTemplate {
-        id: GenericTemplateId {
-            declaration: DefId::for_test("read_only_template"),
-        },
+        id: GenericTemplateId { declaration },
         function: ItemId(2),
         symbol: "read_only_template".to_string(),
         source_origin: FunctionSourceOrigin::Unknown,
-        type_params: vec!["T".to_string()],
+        type_params: vec![hew_types::ParamHead::new(
+            hew_types::TypeParamId::new(declaration, 0),
+            hew_parser::ast::Symbol::intern("T"),
+        )],
         signature: SemSignature {
             params: vec![SemAbiParam {
                 ty: ResolvedTy::I64,
@@ -2291,6 +2289,7 @@ fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
             return_ty: ResolvedTy::Unit,
         },
     }];
+    module.defs = hew_types::DefTable::fixture();
     let diagnostics = verify_module(&module);
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     module.generic_templates[0].signature.params[0].passing = SemParamPassing::Consume;

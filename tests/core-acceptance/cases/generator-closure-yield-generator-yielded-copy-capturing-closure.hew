@@ -1,0 +1,10 @@
+fn main() {
+    var i = 0;
+    while i < 8 {
+        let _g = gen {
+            let captured = i * 2;
+            yield || captured + 1;
+        };
+        i = i + 1;
+    }
+}

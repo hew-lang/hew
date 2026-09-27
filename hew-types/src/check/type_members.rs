@@ -35,19 +35,22 @@ impl Checker {
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
         let Ty::Named {
-            name,
-            builtin: Some(builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result)),
+            head:
+                head @ crate::TypeHead::Builtin(
+                    builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result),
+                ),
             ..
         } = self.subst.resolve(expected)
         else {
             return None;
         };
+        let name = head.registry_key();
         let span = match usage {
             DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
                 *span
             }
         };
-        let Some(variant) = builtin.enum_variant(&context.name) else {
+        let Some(variant) = builtin.enum_variant(context.name.name.as_str()) else {
             self.report_error(
                 TypeErrorKind::PathMemberNotFound,
                 span,
@@ -71,13 +74,13 @@ impl Checker {
             return Some(Ty::Error);
         }
         let head = ResolvedDottedTypeHead {
-            canonical_type: name,
+            canonical_type: name.to_string(),
             builtin: Some(builtin),
             type_args: None,
             span: span.clone(),
         };
         let actual = self
-            .dispatch_builtin_variant_member(&head, &context.name, usage)
+            .dispatch_builtin_variant_member(&head, context.name.name.as_str(), usage)
             .expect("validated builtin variant has a member contract");
         self.expect_type(expected, &actual, span);
         let actual = self.subst.resolve(&actual);
@@ -101,45 +104,62 @@ impl Checker {
         };
 
         let (canonical_type, builtin) = match &target.0 {
-            Expr::Identifier(surface) => {
-                if self.env.lookup_ref(surface).is_some()
-                    || self.module_binding_in_current_file(surface)
+            Expr::Ident(surface) => {
+                if self.env.lookup_ref(surface.name.as_str()).is_some()
+                    || self.module_binding_in_current_file(surface.name.as_str())
                 {
                     return None;
                 }
                 let canonical = self
-                    .source_nominal_declaration(surface)
-                    .or_else(|| self.resolve_nominal_declaration(NominalOrigin::Lexical, surface))
+                    .source_nominal_declaration(surface.name.as_str())
+                    .or_else(|| {
+                        self.resolve_nominal_declaration(
+                            NominalOrigin::Lexical,
+                            surface.name.as_str(),
+                        )
+                    })
                     .filter(|identity| {
                         self.lookup_type_def(identity).is_some()
                             || self.resolved_builtin_type(identity).is_some()
                     })
-                    .or_else(|| self.resolved_builtin_type(surface).map(|_| surface.clone()))
                     .or_else(|| {
-                        self.fn_sigs
-                            .contains_key(&format!("{surface}::{member}"))
-                            .then(|| surface.clone())
+                        self.resolved_builtin_type(surface.name.as_str())
+                            .map(|_| surface.to_string())
+                    })
+                    .or_else(|| {
+                        self.has_fn_sig(&format!("{surface}::{member}"))
+                            .then(|| surface.to_string())
                     })?;
                 let builtin = self.resolved_builtin_type(&canonical);
                 (canonical, builtin)
             }
             Expr::FieldAccess { object, field } => {
-                let Expr::Identifier(module_short) = &object.0 else {
+                if field.0.name == hew_parser::ast::sym::EVENT {
+                    if let Some(canonical_type) = self.machine_event_type_head(object) {
+                        return Some(ResolvedDottedTypeHead {
+                            canonical_type,
+                            builtin: None,
+                            type_args,
+                            span: target.1.clone(),
+                        });
+                    }
+                }
+                let Expr::Ident(module_short) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module_short).is_some() {
+                if self.env.lookup_ref(module_short.name.as_str()).is_some() {
                     return None;
                 }
-                self.resolve_module_type(module_short, field)?;
+                self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
                 self.used_modules.borrow_mut().insert(ImportKey::in_file(
                     self.current_module.clone(),
                     self.current_module_idx,
-                    module_short.clone(),
+                    module_short.to_string(),
                 ));
                 let canonical = format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module_short),
-                    field
+                    self.canonical_module_import_owner(module_short.name.as_str()),
+                    field.0
                 );
                 let builtin = self.resolved_builtin_type(&canonical);
                 (canonical, builtin)
@@ -153,6 +173,49 @@ impl Checker {
             type_args,
             span: target.1.clone(),
         })
+    }
+
+    /// Resolve the machine declaration before selecting its owned event type.
+    /// Whole-module imports are gated through the type export table; a local
+    /// machine follows the same nominal authority as other type heads.
+    fn machine_event_type_head(&mut self, object: &Spanned<Expr>) -> Option<String> {
+        let machine = match &object.0 {
+            Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_none() => self
+                .source_nominal_declaration(name.name.as_str())
+                .or_else(|| {
+                    self.resolve_nominal_declaration(NominalOrigin::Lexical, name.name.as_str())
+                }),
+            Expr::FieldAccess {
+                object,
+                field: machine,
+            } => {
+                let Expr::Ident(module) = &object.0 else {
+                    return None;
+                };
+                if self.env.lookup_ref(module.name.as_str()).is_some() {
+                    return None;
+                }
+                self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    module.to_string(),
+                ));
+                Some(format!(
+                    "{}.{}",
+                    self.canonical_module_import_owner(module.name.as_str()),
+                    machine.0
+                ))
+            }
+            _ => None,
+        }?;
+        let machine = self.defs.lookup_path(&machine)?;
+        let event = self.defs.member_of_kind(
+            machine,
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        )?;
+        Some(self.defs.path(event).to_string())
     }
 
     /// Dispatch a member selected from a resolved type head. The declaration
@@ -188,7 +251,7 @@ impl Checker {
         member: &str,
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
-        let type_def = self.type_defs.get(&head.canonical_type)?;
+        let type_def = self.type_def_at(&head.canonical_type)?;
         if !matches!(
             type_def.kind,
             TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -209,7 +272,10 @@ impl Checker {
                 span,
             } if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) => {
                 let constructor_name = format!("{}::{member}", head.canonical_type);
-                let constructor = (Expr::Identifier(constructor_name), head.span.clone());
+                let constructor = (
+                    Expr::Ident(Ident::new(&constructor_name)), // TRANSITION(P1): deleted by A1 commit 2
+                    head.span.clone(),
+                );
                 let result = expected
                     .filter(|_| head.type_args.is_none())
                     .and_then(|expected| {
@@ -250,8 +316,7 @@ impl Checker {
         let result = match usage {
             DottedTypeMemberUse::Reference { span: _ } if variant.payload_type_args.is_empty() => {
                 Ty::Named {
-                    builtin: Some(builtin),
-                    name: head.canonical_type.clone(),
+                    head: crate::TypeHead::Builtin(builtin),
                     args: (0..expected_arity)
                         .map(|_| Ty::Var(TypeVar::fresh()))
                         .collect(),
@@ -315,8 +380,7 @@ impl Checker {
             .map(|type_arg| self.resolve_type_expr(type_arg))
             .collect::<Vec<_>>();
         let expected = Ty::Named {
-            builtin: Some(builtin),
-            name: head.canonical_type.clone(),
+            head: crate::TypeHead::Builtin(builtin),
             args: resolved_args,
         };
         let span = match usage {
@@ -361,13 +425,18 @@ impl Checker {
             crate::BuiltinType::Vec,
             "from",
         );
-        let checker_member = if self.fn_sigs.contains_key(&internal_member) || is_vec_from {
-            Some(internal_member.clone())
-        } else {
-            None
-        };
+        // A declared user type may use a runtime spelling such as
+        // `Node::shutdown`; its impl owns the call. Compiler builtin types
+        // retain their runtime methods even when std/builtins provides source
+        // signatures for those operations.
+        let checker_member = ((head.builtin.is_some()
+            || !self
+                .impl_method_declaration_ids
+                .contains_key(&internal_member))
+            && (self.has_fn_sig(&internal_member) || is_vec_from))
+            .then_some(internal_member.clone());
         if let Some(checker_member) = checker_member {
-            let function = (Expr::Identifier(checker_member.clone()), head.span.clone());
+            let function = (Expr::Ident(Ident::new(&checker_member)), head.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(result) = expected.and_then(|expected| {
                 self.check_call_against_expected_constructor(
                     &function,
@@ -385,7 +454,7 @@ impl Checker {
             return Some(result);
         }
 
-        let type_def = self.type_defs.get(&head.canonical_type).cloned()?;
+        let type_def = self.type_def_at(&head.canonical_type).cloned()?;
         let raw_sig = type_def.methods.get(method).cloned()?;
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {
             if type_args.len() != type_def.type_params.len() {
@@ -433,7 +502,7 @@ impl Checker {
         let declaration = self
             .impl_method_declaration_ids
             .get(&internal_member)
-            .cloned()
+            .copied()
             .map_or_else(
                 || CallTarget::Unsupported {
                     reason: format!(

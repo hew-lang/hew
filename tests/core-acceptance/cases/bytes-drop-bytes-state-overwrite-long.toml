@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-drop-bytes-state-overwrite-long"
+intent = "Bytes ownership leak oracles: sender-local scope-exit drop and actor-state-field overwrite drop. Shape `bytes_state_overwrite_long_high` (bytes state overwrite long run holds flat, bytes state overwrite no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/bytes-drop-bytes-state-overwrite-long.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 23

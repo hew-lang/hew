@@ -9,18 +9,17 @@ pub(crate) use crate::ast::{
     ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
     CallArg, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
     ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
-    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName,
-    ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent,
-    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, Ident, ImplDecl, ImplTypeAlias, ImportDecl,
+    ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl,
+    MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
     NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
-    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField,
-    RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireFieldMeta, WireMetadata,
+    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
 };
-pub(crate) use hew_lexer::Token;
+pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -59,7 +58,11 @@ pub(crate) use attributes::AttrPosition;
 mod tests;
 
 pub(crate) type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
-pub(crate) type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
+pub(crate) type StructInitFields = (
+    Vec<(Ident, Spanned<Expr>)>,
+    Vec<Span>,
+    Option<Box<Spanned<Expr>>>,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeParseContext {
@@ -743,12 +746,26 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum ParseDiagnosticKind {
+    /// A reserved keyword was used as a declaration name.
+    ReservedName,
+    /// A declaration member needs a semicolon.
+    MemberTerminator,
+    /// A mark follows a body that already ends its member or arm.
+    SeparatorAfterBody,
+    /// A list element needs a comma.
+    ListSeparator,
+    /// Actor state needs an explicit immutable or mutable binding.
+    ActorFieldBinding,
     /// A legacy `::` separator was used where dotted path syntax is required.
     LegacyPathSeparator,
     /// Rust-style `::<...>` generic application was used instead of Hew syntax.
     LegacyTurbofish,
     /// A removed glob import was used instead of an explicit selection.
     ImportGlobRemoved,
+    /// Retired `await_restart role` keyword form.
+    AwaitRestartRetired,
+    /// Retired supervisor child `shutdown:` clause.
+    SupervisorStopClauseRetired,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -780,6 +797,8 @@ pub enum ParseDiagnosticKind {
     ForAwait,
     /// A record literal named more than one `..base`.
     DuplicateRecordBase,
+    /// A testing attribute has an invalid literal, arity or named argument.
+    AttributeArgument,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -789,9 +808,15 @@ impl ParseDiagnosticKind {
     #[must_use]
     pub fn as_kind_str(&self) -> &'static str {
         match self {
+            Self::MemberTerminator => "E_MEMBER_TERMINATOR",
+            Self::SeparatorAfterBody => "E_SEPARATOR_AFTER_BODY",
+            Self::ListSeparator => "E_LIST_SEPARATOR",
+            Self::ActorFieldBinding => "E_ACTOR_FIELD_BINDING",
             Self::LegacyPathSeparator => "E_PATH_LEGACY_SEPARATOR",
             Self::LegacyTurbofish => "E_LEGACY_TURBOFISH",
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
+            Self::AwaitRestartRetired => "E_AWAIT_RESTART_RETIRED",
+            Self::SupervisorStopClauseRetired => "E_SUPERVISOR_STOP_CLAUSE",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",
@@ -802,6 +827,8 @@ impl ParseDiagnosticKind {
             Self::NoAsyncGen => "E_NO_ASYNC_GEN",
             Self::ForAwait => "E_FOR_AWAIT",
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
+            Self::ReservedName => "E_RESERVED_NAME",
+            Self::AttributeArgument => "E_ATTRIBUTE_ARGUMENT",
             Self::Other => "Other",
         }
     }

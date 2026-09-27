@@ -1,0 +1,13 @@
+fn main() {
+    var v: Vec<Vec<string>> = [];
+    var row: Vec<string> = [];
+    row.push("orig-aaa");
+    row.push("orig-bbb");
+    v.push(row);
+    var w = v.clone();
+    var extra: Vec<string> = [];
+    extra.push("clone-ccc");
+    w.push(extra);
+    print(f"v{v.len()}r{v[0].len()}c;w{w.len()}r;");
+    print("OK");
+}

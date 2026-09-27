@@ -1,0 +1,10 @@
+[[case]]
+id = "pipeline-stdlib-pipeline-owned-cancellation"
+intent = "Ownership gates for the concrete `std::pipeline` S1 chain. Shape `pipeline_owned_cancellation_high` (pipeline owned payload cancellation completes, pipeline owned payload cancellation has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/pipeline-stdlib-pipeline-owned-cancellation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "cancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\ncancelled\n"
+exit = 0

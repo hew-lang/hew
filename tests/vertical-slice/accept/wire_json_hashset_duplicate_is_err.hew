@@ -2,7 +2,7 @@
 // String elements exercise the owned-key cleanup path.
 #[wire]
 type DuplicateSet {
-    values: HashSet<string> @1,
+    values: HashSet<string> @1;
 }
 
 fn main() -> i64 {

@@ -1,0 +1,10 @@
+[[case]]
+id = "imported_actor_msg_discriminants"
+intent = "an actor with multiple receive handlers, imported via a file import, collapsed every handler's message-kind discriminant to the i32::MAX unknown-message sentinel — LLVM verify rejected the module with \"Duplicate integer as switch case\"."
+source = "../vertical-slice/accept/imported_actor_msg_discriminants.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "add=5\nscale=20\nread=0\n"
+exit = 0

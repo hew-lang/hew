@@ -4,7 +4,7 @@
 // code; full success returns 42.
 #[wire]
 type Names {
-    items: Vec<string> @1,
+    items: Vec<string> @1;
 }
 
 fn main() -> i64 {
@@ -13,10 +13,16 @@ fn main() -> i64 {
     xs.push("World");
     let h = Names { items: xs };
     let back = Names.decode(h.encode());
-    if back.items.len() != 2 { return 1; }
+    if back.items.len() != 2 {
+        return 1;
+    }
     let a = back.items[0];
     let b = back.items[1];
-    if a != "Hello" { return 2; }
-    if b != "World" { return 3; }
+    if a != "Hello" {
+        return 2;
+    }
+    if b != "World" {
+        return 3;
+    }
     42
 }

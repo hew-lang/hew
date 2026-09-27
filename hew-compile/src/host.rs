@@ -1,6 +1,7 @@
 //! Explicit source selection for the experimental synchronous C host boundary.
 
 use crate::{Session, SessionError, SessionOutput};
+use hew_parser::ast::Ident;
 
 impl Session {
     /// Compile exactly one public monomorphic function and its dependencies.
@@ -28,7 +29,7 @@ impl Session {
             .enumerate()
             .find_map(|(ordinal, (item, span))| match item {
                 hew_parser::ast::Item::Function(function)
-                    if function.name == name
+                    if function.name == Ident::new(name)
                         && function.visibility.is_pub()
                         && function.type_params.as_ref().is_none_or(Vec::is_empty) =>
                 {
@@ -42,13 +43,13 @@ impl Session {
                 ))
             })?;
         let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
-            tco.identity.root_module(),
+            tco.defs.root_module(),
             span,
             ordinal,
             hew_types::DeclarationKind::Function,
             0,
         );
-        let declaration = tco.identity.declaration(occurrence).ok_or_else(|| {
+        let declaration = tco.defs.declaration(occurrence).ok_or_else(|| {
             unsupported(format!(
                 "C export `{name}` has no checked declaration identity"
             ))
@@ -63,6 +64,6 @@ impl Session {
                 "C export input must be a library without a process entry".into(),
             ));
         }
-        self.lower_hir_module(&lowered.module, tco, std::slice::from_ref(declaration))
+        self.lower_hir_module(&lowered.module, tco, std::slice::from_ref(&declaration))
     }
 }

@@ -1779,6 +1779,7 @@ dependencies = [
  "hew-sir",
  "hew-testutil",
  "hew-types",
+ "hew-wasm",
  "libc",
  "notify",
  "object 0.39.1",
@@ -1840,6 +1841,7 @@ name = "hew-lexer"
 version = "0.6.0-rc4"
 dependencies = [
  "logos",
+ "serde",
  "serde_json",
 ]
 
@@ -1862,6 +1864,7 @@ dependencies = [
  "hew-lexer",
  "hew-parser",
  "hew-types",
+ "serde",
  "serde_json",
  "tokio",
  "tower-lsp-server",
@@ -1983,7 +1986,6 @@ dependencies = [
 name = "hew-sir"
 version = "0.6.0-rc4"
 dependencies = [
- "heck",
  "hew-hir",
  "hew-parser",
  "hew-types",
@@ -2046,9 +2048,11 @@ dependencies = [
 name = "hew-types"
 version = "0.6.0-rc4"
 dependencies = [
+ "heck",
  "hew-cabi",
  "hew-parser",
  "hew-runtime",
+ "hew-types",
  "regex",
  "serde",
  "serde_json",

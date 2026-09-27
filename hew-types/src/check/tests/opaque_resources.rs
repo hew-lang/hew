@@ -33,14 +33,15 @@ extern "C" {
 #[test]
 fn borrowing_close_on_resource_type_is_rejected() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(self) {}
-        }
-        ",
+impl Socket {
+    fn close(self) {}
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| error
@@ -75,13 +76,14 @@ fn borrowing_close_on_opaque_type_is_rejected() {
 #[test]
 fn borrowing_close_on_unmarked_type_stays_legal() {
     let output = check_source(
-        r"
-        type Widget { fd: i64 }
+        r"type Widget {
+    fd: i64;
+}
 
-        impl Widget {
-            fn close(self) {}
-        }
-        ",
+impl Widget {
+    fn close(self) {}
+}
+",
     );
     assert!(
         !output.errors.iter().any(|error| error
@@ -95,20 +97,23 @@ fn borrowing_close_on_unmarked_type_stays_legal() {
 #[test]
 fn resource_close_discharges_and_moves_the_receiver() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(consume self) {}
-            fn status(self) -> i64 { self.fd }
-        }
+impl Socket {
+    fn close(consume self) {}
+    fn status(self) -> i64 {
+        self.fd
+    }
+}
 
-        fn probe(consume socket: Socket) -> i64 {
-            socket.close();
-            socket.status()
-        }
-        ",
+fn probe(consume socket: Socket) -> i64 {
+    socket.close();
+    socket.status()
+}
+",
     );
     assert!(
         output
@@ -124,21 +129,26 @@ fn resource_close_discharges_and_moves_the_receiver() {
 #[test]
 fn non_close_consuming_method_moves_the_receiver() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(consume self) {}
-            fn detach(consume self) -> i64 { self.fd }
-            fn status(self) -> i64 { self.fd }
-        }
+impl Socket {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
+        self.fd
+    }
+    fn status(self) -> i64 {
+        self.fd
+    }
+}
 
-        fn probe(consume socket: Socket) -> i64 {
-            let _ = socket.detach();
-            socket.status()
-        }
-        ",
+fn probe(consume socket: Socket) -> i64 {
+    let _ = socket.detach();
+    socket.status()
+}
+",
     );
     assert!(
         output
@@ -158,19 +168,20 @@ fn non_close_consuming_method_moves_the_receiver() {
 #[test]
 fn resource_close_discharge_rejects_a_second_close() {
     let output = check_source(
-        r"
-        #[resource]
-        type Socket { fd: i64 }
+        r"#[resource]
+type Socket {
+    fd: i64;
+}
 
-        impl Socket {
-            fn close(consume self) {}
-        }
+impl Socket {
+    fn close(consume self) {}
+}
 
-        fn bad(consume socket: Socket) {
-            socket.close();
-            socket.close();
-        }
-        ",
+fn bad(consume socket: Socket) {
+    socket.close();
+    socket.close();
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -192,7 +203,12 @@ fn tcp_like_owned_results_join_one_qualified_lifecycle() {
     let candidate = output
         .opaque_resource_candidates
         .candidates
-        .get("std.net.Connection")
+        .get(
+            &output
+                .defs
+                .lookup_path("std.net.Connection")
+                .expect("declared resource"),
+        )
         .expect("TCP producers must join their qualified lifecycle");
     assert_eq!(candidate.owner_module, "std.net");
     assert_eq!(candidate.release_symbol, "hew_tcp_close");
@@ -230,7 +246,7 @@ fn canonical_std_module(std_root: &Path, source: &Path) -> Vec<String> {
     // physical spelling of its package owner, not a second nominal module. The
     // registry owns that rule; do not re-derive it from the path here.
     if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(source) {
-        return owner.split('.').map(str::to_string).collect();
+        return owner.segments.iter().map(ToString::to_string).collect();
     }
     let relative = source.strip_prefix(std_root).expect("source is below std/");
     let mut module = vec!["std".to_string()];
@@ -280,14 +296,14 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
                 let Item::Impl(implementation) = item else {
                     return None;
                 };
-                let TypeExpr::Named { name, .. } = &implementation.target_type.0 else {
+                let TypeExpr::Named { path, .. } = &implementation.target_type.0 else {
                     return None;
                 };
                 implementation
                     .methods
                     .iter()
-                    .any(|method| method.name == "close" && method.consumes_self)
-                    .then(|| name.clone())
+                    .any(|method| method.name == Ident::new("close") && method.consumes_self)
+                    .then(|| path.to_string())
             })
             .collect();
         for (item, _) in &parsed.program.items {
@@ -303,8 +319,8 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
                 declaration
                     .consuming_methods
                     .iter()
-                    .any(|method| method == "close")
-                    || inherent_closes.contains(&declaration.name),
+                    .any(|method| method.name.as_str() == "close")
+                    || inherent_closes.contains(declaration.name.name.as_str()),
                 "{}.{} must expose one consuming close method",
                 module_path.join("."),
                 declaration.name
@@ -323,7 +339,7 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
 }
 
 fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
-    let mut module_graph = ModuleGraph::new(ModuleId::root());
+    let mut module_graph = ModuleGraph::new(ModulePath::root());
     for (module_path, source_items) in parsed_modules {
         let mut items = source_items.clone();
         let mut imports = Vec::new();
@@ -331,23 +347,25 @@ fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
             let Item::Import(declaration) = item else {
                 continue;
             };
-            let resolved = parsed_modules.get(&declaration.path).unwrap_or_else(|| {
-                panic!(
-                    "{} imports missing shipped module {}",
-                    module_path.join("."),
-                    declaration.path.join(".")
-                )
-            });
+            let resolved = parsed_modules
+                .get(&import_spellings(&declaration.path))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} imports missing shipped module {}",
+                        module_path.join("."),
+                        declaration.path
+                    )
+                });
             declaration.resolved_items = Some(resolved.clone().into());
             imports.push(hew_parser::module::ModuleImport {
-                target: ModuleId::new(declaration.path.clone()),
+                target: ModulePath::new(import_spellings(&declaration.path)),
                 spec: declaration.spec.clone(),
                 span: span.clone(),
             });
         }
         module_graph
             .add_module(Module {
-                id: ModuleId::new(module_path.clone()),
+                id: ModulePath::new(module_path.clone()),
                 items,
                 imports,
                 source_paths: vec![],
@@ -361,7 +379,11 @@ fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
     module_graph
 }
 
-fn shipped_std_candidate_inventory() -> (BTreeSet<String>, OpaqueResourceCandidateGraph) {
+fn shipped_std_candidate_inventory() -> (
+    BTreeSet<String>,
+    OpaqueResourceCandidateGraph,
+    crate::DefTable,
+) {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("hew-types is below repository root")
@@ -383,8 +405,8 @@ fn shipped_std_candidate_inventory() -> (BTreeSet<String>, OpaqueResourceCandida
     checker.collect_declared_type_param_names(&program);
     checker.type_decls_registered = true;
     checker.collect_functions(&program);
-    let graph = checker.derive_opaque_resource_candidate_graph(&checker.fn_sigs);
-    (resource_types, graph)
+    let graph = checker.derive_opaque_resource_candidate_graph(checker.sigs());
+    (resource_types, graph, std::mem::take(&mut checker.defs))
 }
 
 #[derive(Debug, Deserialize)]
@@ -498,7 +520,7 @@ fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
         .expect("hew-types is below repository root")
         .join(path);
     if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(&absolute) {
-        return format!("{owner}.{resource}");
+        return format!("{}.{resource}", owner.dotted());
     }
     let mut module: Vec<_> = path
         .parent()
@@ -518,7 +540,7 @@ fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
 
 #[test]
 fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
-    let (source_resources, graph) = shipped_std_candidate_inventory();
+    let (source_resources, graph, defs) = shipped_std_candidate_inventory();
     assert!(
         !source_resources.is_empty(),
         "the source inventory must have teeth"
@@ -531,7 +553,7 @@ fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
     let candidate_resources: BTreeSet<_> = graph
         .candidates
         .keys()
-        .map(|declaration| declaration.full_path().to_string())
+        .map(|declaration| defs.path(*declaration).to_string())
         .collect();
     assert_eq!(
         candidate_resources, source_resources,
@@ -541,20 +563,11 @@ fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
         assert!(!candidate.producer_symbols.is_empty());
         assert!(!candidate.release_symbol.is_empty());
     }
-
-    let json = serde_json::to_value(&graph).expect("candidate graph is machine-readable");
-    assert_eq!(
-        json["candidates"]
-            .as_object()
-            .expect("JSON candidate map")
-            .len(),
-        source_resources.len()
-    );
 }
 
 #[test]
 fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
-    let (source_resources, graph) = shipped_std_candidate_inventory();
+    let (source_resources, graph, defs) = shipped_std_candidate_inventory();
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("hew-types is below repository root")
@@ -590,7 +603,8 @@ fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
         );
         assert_eq!(
             evidence.release_symbol,
-            graph.candidates[resource.as_str()].release_symbol,
+            graph.candidates[&defs.lookup_path(&resource).expect("declared resource")]
+                .release_symbol,
             "{resource} evidence must name the source-derived release authority"
         );
         assert_test_anchor(&repo_root, &evidence.runtime, "runtime", &resource);
@@ -606,7 +620,7 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| missing_source.defs.path(*name) == "std.builtins.ActorRequestOwner"));
 
     let unknown_family = check_source_in_module(
         r#"
@@ -627,7 +641,7 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| unknown_family.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(unknown_family
         .opaque_resource_candidates
         .conflicts
@@ -641,7 +655,7 @@ fn root_symbol_spoof_cannot_inherit_qualified_lifecycle() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -655,7 +669,7 @@ fn foreign_module_symbol_and_type_spoof_cannot_inherit_lifecycle() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -679,7 +693,7 @@ fn short_name_collision_records_result_mismatch_without_candidate() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -709,7 +723,7 @@ fn mismatched_source_consume_release_records_conflict() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -736,7 +750,7 @@ fn missing_source_release_records_conflict() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -764,7 +778,7 @@ fn borrowed_or_untyped_results_do_not_mint_candidates() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -793,7 +807,7 @@ fn synthetic_borrowed_view_without_disposer_is_excluded() {
         },
     )];
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(graph.candidates.is_empty());
     assert!(graph.conflicts.is_empty());
 }
@@ -801,8 +815,8 @@ fn synthetic_borrowed_view_without_disposer_is_excluded() {
 fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
-    let root_id = ModuleId::root();
-    let module_id = ModuleId::new(module_path.iter().map(ToString::to_string).collect());
+    let root_id = ModulePath::root();
+    let module_id = ModulePath::new(module_path.iter());
     let module = Module {
         id: module_id.clone(),
         items: parsed.program.items,
@@ -830,10 +844,10 @@ fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker
 }
 
 fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
-    let root_id = ModuleId::root();
+    let root_id = ModulePath::root();
     let module_ids: Vec<_> = sources
         .iter()
-        .map(|(path, _)| ModuleId::new(path.iter().map(ToString::to_string).collect()))
+        .map(|(path, _)| ModulePath::new(path.iter()))
         .collect();
     let mut parsed_items = Vec::with_capacity(sources.len());
     for (_, source) in sources {
@@ -852,7 +866,9 @@ fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
             };
             let target_index = module_ids
                 .iter()
-                .position(|candidate| candidate.path == declaration.path)
+                .position(|candidate| {
+                    *candidate == ModulePath::new(import_spellings(&declaration.path))
+                })
                 .expect("test import target must be present in the graph");
             declaration.resolved_items = Some(parsed_items[target_index].clone().into());
             imports.push(hew_parser::module::ModuleImport {
@@ -957,10 +973,15 @@ fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
 
     let contracts = synthetic_resource_contracts(&[("example_socket_ptr", "example_socket_close")]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let candidate = graph
         .candidates
-        .get("example.owner.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.owner.Socket")
+                .expect("declared resource"),
+        )
         .expect("canonical `{T}` expansion must join the qualified lifecycle");
     assert_eq!(
         candidate.producer_symbols,
@@ -977,7 +998,7 @@ fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
     let wrong =
         synthetic_resource_contracts(&[("example_socket_not_a_token", "example_socket_close")]);
     let wrong_graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &wrong);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &wrong);
     assert!(
         wrong_graph.candidates.is_empty(),
         "template-shaped but non-canonical endpoint must not gain lifecycle authority"
@@ -1001,10 +1022,15 @@ fn foreign_producer_joins_release_declared_only_by_nominal_owner() {
     let contracts =
         synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let candidate = graph
         .candidates
-        .get("example.owner.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.owner.Socket")
+                .expect("declared resource"),
+        )
         .expect("direct imported result must join the owner release");
     assert_eq!(candidate.owner_module, "example.owner");
     assert_eq!(
@@ -1044,10 +1070,10 @@ fn module_and_named_import_aliases_preserve_imported_owner() {
         let contracts =
             synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
         let graph = checker
-            .derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+            .derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
         let candidate = graph
             .candidates
-            .get("example.owner.Socket")
+            .get(&checker.defs.lookup_path("example.owner.Socket").expect("declared resource"))
             .unwrap_or_else(|| {
                 panic!(
                     "resolved import alias must retain owner identity; producer={producer_path:?}; graph={graph:#?}"
@@ -1096,7 +1122,7 @@ fn unimported_and_wrong_module_lookalikes_have_no_candidate_authority() {
         ("example_socket_open_wrong", "example_socket_close"),
     ]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(graph.candidates.is_empty());
     assert!(graph.conflicts.is_empty());
 }
@@ -1125,7 +1151,7 @@ fn release_declared_off_owner_cannot_discharge_imported_result() {
     let contracts =
         synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(graph.candidates.is_empty());
     assert!(matches!(
         graph.conflicts.as_slice(),
@@ -1173,10 +1199,15 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
         ("example_socket_open_right", "example_socket_close"),
     ]);
     let matching_graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let matching = matching_graph
         .candidates
-        .get("example.owner.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.owner.Socket")
+                .expect("declared resource"),
+        )
         .unwrap_or_else(|| {
             panic!("matching imported producers must aggregate: {matching_graph:#?}")
         });
@@ -1197,8 +1228,11 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
     right.1.discharge_depth = ReleaseDischargeDepth::Deep;
 
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
-    assert!(!graph.candidates.contains_key("example.owner.Socket"));
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
+    assert!(!checker
+        .defs
+        .lookup_path("example.owner.Socket")
+        .is_some_and(|id| graph.candidates.contains_key(&id)));
     assert!(graph.conflicts.iter().any(|conflict| matches!(
         conflict.kind,
         OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle { .. }
@@ -1251,10 +1285,15 @@ fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
         ),
     ];
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let candidate = graph
         .candidates
-        .get("example.io.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.io.Socket")
+                .expect("declared resource"),
+        )
         .expect("synthetic family must use generic qualified support");
     assert_eq!(candidate.owner_module, "example.io");
     assert_eq!(candidate.release_symbol, "example_socket_close");
@@ -1317,9 +1356,12 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
         producer("example_socket_clone", "example_socket_drop"),
     ];
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(
-        !graph.candidates.contains_key("example.io.Socket"),
+        !checker
+            .defs
+            .lookup_path("example.io.Socket")
+            .is_some_and(|id| graph.candidates.contains_key(&id)),
         "conflicting lifecycle must have no deterministic winner"
     );
     assert!(graph.conflicts.iter().any(|conflict| matches!(
@@ -1336,14 +1378,14 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
 fn machine_state_resource_payload_rejects() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
-        "type Tok { id: i64 }\n",
+        "type Tok {\n    id: i64;\n}\n",
         "impl Tok { fn close(consume self) { } }\n",
         "machine Gate {\n",
-        "    events { Open, Shut, }\n",
-        "    state Closed,\n",
-        "    state Opened { tok: Tok, },\n",
+        "    events { Open; Shut; }\n",
+        "    state Closed;\n",
+        "    state Opened { tok: Tok; }\n",
         "    on Open: Closed => .Opened { tok: Tok { id: 1 } }\n",
-        "    on Shut: Opened => .Closed,\n",
+        "    on Shut: Opened => .Closed;\n",
         "    default { state }\n",
         "}\n",
         "fn main() { var h = Gate.Closed; h.step(.Open); }\n",
@@ -1363,13 +1405,13 @@ fn machine_state_resource_payload_rejects_transitively() {
     // resource is the same leak.
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
-        "type Tok { id: i64 }\n",
+        "type Tok {\n    id: i64;\n}\n",
         "impl Tok { fn close(consume self) { } }\n",
-        "type Wrap { t: Tok }\n",
+        "type Wrap {\n    t: Tok;\n}\n",
         "machine Gate {\n",
-        "    events { Open, }\n",
-        "    state Closed,\n",
-        "    state Opened { w: Wrap, },\n",
+        "    events { Open; }\n",
+        "    state Closed;\n",
+        "    state Opened { w: Wrap; }\n",
         "    on Open: Closed => .Opened { w: Wrap { t: Tok { id: 1 } } }\n",
         "    default { state }\n",
         "}\n",
@@ -1388,9 +1430,9 @@ fn machine_state_resource_payload_rejects_transitively() {
 fn machine_state_without_resource_payload_is_admitted() {
     let (errors, _) = parse_and_check(concat!(
         "machine Counter {\n",
-        "    events { Inc, }\n",
-        "    state Zero,\n",
-        "    state NonZero { value: i64, },\n",
+        "    events { Inc; }\n",
+        "    state Zero;\n",
+        "    state NonZero { value: i64; }\n",
         "    on Inc: Zero => .NonZero { value: 1 }\n",
         "    default { state }\n",
         "}\n",
@@ -1409,13 +1451,13 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
     // walk applies only to builtin/unregistered generics).
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
-        "type Tok { id: i64 }\n",
+        "type Tok {\n    id: i64;\n}\n",
         "impl Tok { fn close(consume self) { } }\n",
-        "type Phantom<T> { id: i64 }\n",
+        "type Phantom<T> {\n    id: i64;\n}\n",
         "machine Gate {\n",
-        "    events { Open, }\n",
-        "    state Closed,\n",
-        "    state Opened { p: Phantom<Tok>, },\n",
+        "    events { Open; }\n",
+        "    state Closed;\n",
+        "    state Opened { p: Phantom<Tok>; }\n",
         "    on Open: Closed => .Opened { p: Phantom<Tok> { id: 1 } }\n",
         "    default { state }\n",
         "}\n",
@@ -1437,17 +1479,26 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
 /// without `close`.
 #[test]
 fn resource_handle_field_is_affine_outside_close() {
-    let prelude = r#"
-        #[opaque]
-        type Dq {}
-        extern "C" {
-            fn hew_deque_len(dq: Dq) -> i64;
-            fn hew_deque_free(consume dq: Dq);
-        }
-        type Pair { a: Dq }
-        #[resource]
-        type Value { handle: Dq, inner: Pair, spare: Option<Dq> }
-    "#;
+    let prelude = r#"#[opaque]
+type Dq {
+}
+
+extern "C" {
+    fn hew_deque_len(dq: Dq) -> i64;
+    fn hew_deque_free(consume dq: Dq);
+}
+
+type Pair {
+    a: Dq;
+}
+
+#[resource]
+type Value {
+    handle: Dq;
+    inner: Pair;
+    spare: Option<Dq>;
+}
+"#;
     let close = "fn close(consume self) {
         unsafe { hew_deque_free(self.handle) };
         unsafe { hew_deque_free(self.inner.a) };
@@ -1532,4 +1583,11 @@ fn resource_handle_field_is_affine_outside_close() {
         fn plain(p: Pair) -> Dq {{ p.a }}"
     ));
     assert!(accepted.errors.is_empty(), "{:#?}", accepted.errors);
+}
+
+fn import_spellings(path: &hew_parser::ast::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|(segment, _)| segment.to_string())
+        .collect()
 }

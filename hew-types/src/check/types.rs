@@ -7,8 +7,9 @@ use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::{BuiltinType, WasmUnsupportedFeature};
+use hew_parser::ast::Symbol;
 use hew_parser::ast::{
-    ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
+    ImportSpec, Literal, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -102,7 +103,7 @@ pub(super) struct ActorInitParamInfo {
 /// The fact is derived exclusively by joining generated producer contracts to
 /// exact source extern declarations and their consuming release declaration.
 /// Downstream stages may consume it; they must not rebuild it from names.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueResourceLifecycleCandidate {
     /// Canonical identity of the opaque nominal declaration.
     pub resource_declaration: crate::DefId,
@@ -131,7 +132,7 @@ pub struct OpaqueResourceLifecycleCandidate {
 }
 
 /// Why an otherwise provenance-matched producer failed lifecycle admission.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpaqueResourceLifecycleConflictKind {
     ProducerResultMismatch {
         actual: String,
@@ -148,7 +149,7 @@ pub enum OpaqueResourceLifecycleConflictKind {
 }
 
 /// Structured conflict retained for source diagnostics in the next stage.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueResourceLifecycleConflict {
     pub resource_type: String,
     pub producer_symbol: String,
@@ -157,7 +158,7 @@ pub struct OpaqueResourceLifecycleConflict {
 }
 
 /// Checker-authoritative candidate graph for closeable opaque lifecycles.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpaqueResourceCandidateGraph {
     pub candidates: BTreeMap<crate::DefId, OpaqueResourceLifecycleCandidate>,
     pub conflicts: Vec<OpaqueResourceLifecycleConflict>,
@@ -340,7 +341,7 @@ pub enum VecCursorMode {
 }
 
 /// Result of type-checking a program.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
@@ -355,6 +356,9 @@ pub struct TypeCheckOutput {
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
     pub interpolation_display_types: HashMap<SpanKey, Ty>,
+    /// Compared operands of an `assert` whose type has no structural
+    /// rendering; the failure report names the type instead of the value.
+    pub unrendered_assertion_operands: HashSet<SpanKey>,
     /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions whose operand type has
     /// a user-provided `impl` overriding the derived comparison (D340). See
     /// [`UserComparisonDispatch`].
@@ -424,6 +428,10 @@ pub struct TypeCheckOutput {
     /// (zero behaviour change). Phase 2 promotes this to the primary read path;
     /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    /// Resolved source annotations, keyed by their defining file and span.
+    pub declaration_type_parameters:
+        HashMap<crate::DefId, (crate::ModuleId, Span, Vec<crate::ParamHead>)>,
+    pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
     /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
     /// [`TypeInstanceKey`].
@@ -515,6 +523,9 @@ pub struct TypeCheckOutput {
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
+    /// Coalescing members and their key parameter slots, selected by exact
+    /// checker declaration identity.
+    pub actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
     /// Checker-owned machine method dispatch decisions keyed by the method call span.
     ///
     /// Populated for every accepted `.step()` / `.state_name()` call on a
@@ -565,7 +576,7 @@ pub struct TypeCheckOutput {
     ///
     /// Duplicates are harmless (the seed collector deduplicates).
     pub user_clone_record_seeds: Vec<String>,
-    pub type_defs: HashMap<String, TypeDef>,
+    pub type_defs: HashMap<crate::NominalId, TypeDef>,
     /// Fully expanded alias targets keyed by their source declaration.
     pub resolved_type_aliases: HashMap<crate::DefId, TypeAliasDef>,
     /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
@@ -586,36 +597,66 @@ pub struct TypeCheckOutput {
     /// catalog consumed by MIR's
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
-    /// The compile's single module and source-declaration identity authority.
-    /// Root, import, and alias routes converge before later stages look up an
-    /// exact declaration occurrence; no downstream canonical-string alias is
-    /// published.
-    pub identity: crate::IdentityView,
+    /// The compile's declaration table: the single module and declaration
+    /// identity authority. Root, import, and alias routes converge before
+    /// later stages look up an exact declaration occurrence; every `DefId` in
+    /// this output indexes it.
+    pub defs: std::sync::Arc<crate::DefTable>,
+    /// Every path segment the checker resolved, keyed by the segment's span:
+    /// the identity `Scope::resolve` answered. HIR and tooling read it rather
+    /// than resolving a spelling again.
+    pub resolutions: HashMap<SpanKey, super::scope::Resolution>,
+    /// The compilation's hygiene contexts (identity plan §3.8).
+    pub contexts: super::scope::SyntaxContexts,
     /// The checker-selected process entry and its complete exit contract.
     pub entry_exit_plan: Option<EntryExitPlan>,
+    /// Ordered checker-selected test entries and their complete exit contracts.
+    pub test_entry_plans: Vec<EntryExitPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
     /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
     /// minted at the first declaration; later declarations must agree and
     /// adopt the established contract. Also the `unsafe`-gating declaration
     /// index (replaces the former `unsafe_functions` side registry).
     pub extern_contracts: crate::extern_table::ExternTable,
-    /// Function signatures keyed by declaration identity. Impl methods retain
-    /// their exact `DefId` path as well as their receiver/method lookup spelling,
-    /// so trait and inherent declarations sharing a name remain distinct.
+    /// Function signatures keyed by declaration identity.
+    pub fn_sigs: HashMap<crate::DefId, FnSig>,
+    /// Source-declared methods by receiver declaration and owner.
+    pub dispatch: super::dispatch_table::DispatchTable,
+    /// The signature keys the checker's callers spell, each naming one
+    /// declaration of `fn_sigs`.
     ///
-    /// Key shapes: `{module}.{name}` for source free functions — the module
-    /// being the identity table's render, so a module reached under two import
-    /// spellings keys one namespace — `Type::method` for methods, and bare
-    /// names for compiler builtins and `extern "C"` symbols, whose namespace is
-    /// the linker's rather than a module's. No source declaration is reachable
-    /// under a bare name: explicit imports publish only exact per-file bindings
-    /// in `import_fn_name_aliases`, leaving the canonical declaration signature
-    /// and ambient builtin signatures unchanged.
-    pub fn_sigs: HashMap<String, FnSig>,
+    /// TRANSITION(A1 commit 4): WHY callers still spell `Type::method` and
+    /// `{module}.{name}` keys. WHEN call resolution goes through `Scope` and
+    /// the dispatch table, callers hold the id and this index is deleted.
+    /// WHAT: every caller reads `fn_sigs` by the `DefId` it resolved.
+    pub fn_sig_keys: HashMap<String, crate::DefId>,
+    /// Compiler builtin function signatures by name.
+    ///
+    /// TRANSITION(A1 commit 3): the catalog move keys these by
+    /// `CatalogEntryId`.
+    pub builtin_fn_sigs: HashMap<Symbol, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
     pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Checked impl bodies keyed by their declaration. Each signature is
+    /// finalised by the checker, and callees retain selected declaration IDs.
+    /// Imported-body lowering consumes this fact instead of scanning names.
+    pub imported_impl_body_facts: HashMap<crate::DefId, ImportedImplBodyFact>,
+    /// Exact possible callees for an accepted indirect call. Unknown origins
+    /// remain explicit even when other branches have known candidates.
+    pub indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
+    /// Exact actual-to-formal callable flow at each checked direct call.
+    pub callable_argument_flows: HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+    /// Positional actual values at generic static-trait dispatch sites. The
+    /// selected concrete impl may depend on type substitution downstream.
+    pub generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
+    /// Binder identities of each checked callable body, in parameter order.
+    pub callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    /// Exact field writes of an authored aggregate constructor.
+    pub aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    /// Symbolic return origins of checker-owned function bodies.
+    pub callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
@@ -646,7 +687,7 @@ pub struct TypeCheckOutput {
     /// Struct type names whose fields directly or transitively contain opaque
     /// handle values. Used to enforce owned-handle accessor restrictions and
     /// to thread proven-safe field-drop metadata into codegen.
-    pub handle_bearing_structs: HashSet<String>,
+    pub handle_bearing_structs: HashSet<crate::NominalId>,
     /// Actor type names that participate in reference cycles.
     pub cycle_capable_actors: HashSet<String>,
     /// Module short names for user (non-stdlib) imports that have resolved items.
@@ -918,14 +959,23 @@ pub struct WireFieldLayout {
     pub name: String,
     /// Numeric wire tag (`@N`), the compatibility authority.
     pub tag: u32,
-    /// Explicit JSON key override, if provided (`json_name = "..."`).
-    pub json_name: Option<String>,
-    /// Explicit YAML key override, if provided (`yaml_name = "..."`).
-    pub yaml_name: Option<String>,
+    /// Final JSON key selected by the checker.
+    pub json_name: String,
+    /// Final YAML key selected by the checker.
+    pub yaml_name: String,
     /// Whether the enclosing map key is required or optional.
     pub presence: WireFieldPresence,
     /// Whether this field is repeated (maps to `Vec<T>`).
     pub repeated: bool,
+}
+
+/// Checker-selected wire names and tag for one enum variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireVariantLayout {
+    pub name: String,
+    pub tag: u32,
+    pub json_name: String,
+    pub yaml_name: String,
 }
 
 /// Wire layout metadata for a single type (struct or enum).
@@ -933,19 +983,15 @@ pub struct WireFieldLayout {
 pub struct WireLayoutEntry {
     /// True for `#[wire] type`, false for `#[wire] enum`.
     pub is_struct: bool,
-    /// Type-level JSON casing override.
-    pub json_case: Option<NamingCase>,
-    /// Type-level YAML casing override.
-    pub yaml_case: Option<NamingCase>,
     /// Wire schema version (from `#[wire(version = N)]`).
     pub version: Option<u32>,
     /// Minimum compatible reader version.
     pub min_version: Option<u32>,
     /// Ordered fields (structs). Empty for enums.
     pub fields: Vec<WireFieldLayout>,
-    /// Enum variant tags. Each entry is `(variant_name, discriminant_tag)`.
+    /// Enum variant tags and final text names.
     /// Empty for structs.
-    pub variants: Vec<(String, u32)>,
+    pub variants: Vec<WireVariantLayout>,
 }
 
 /// All wire types registered during type-checking, keyed by canonical type name.
@@ -980,9 +1026,12 @@ pub struct ClosureCaptureFact {
 /// Escape classification for one closure literal.
 ///
 /// Conservative by default: a closure is `Escapes` unless the classifier
-/// can positively prove `Local` or `Forked`.
+/// can positively prove `NeverInvoked`, `Local` or `Forked`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureEscapeKind {
+    /// The introducing let binding has no use in its remaining lexical scope,
+    /// including nested closure bodies. Its body cannot be invoked.
+    NeverInvoked,
     /// All use-sites are direct calls within the closure's introducing
     /// lexical scope; the environment never outlives that scope.
     Local,
@@ -998,12 +1047,15 @@ pub enum ClosureEscapeKind {
 
 /// Which inference rule fired to produce a [`ClosureEscapeKind`].
 ///
-/// `Local` and `Forked` carry the positive rule that classified them;
+/// `NeverInvoked`, `Local` and `Forked` carry their positive rule;
 /// `Escapes` carries the conservative-default rule that rejected
 /// `Local`/`Forked`. The rule remains part of the checker-owned fact so
 /// downstream consumers can inspect why the closure may escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureEscapeRule {
+    /// The bound closure name is absent from every later expression in its
+    /// introducing block and nested closure bodies.
+    NoUsesInScope,
     /// Every use of the closure-bound name is a direct call `f(args)`.
     DirectCallOnly,
     /// Closure literal sits directly inside a `fork { ... }` body, OR
@@ -1038,6 +1090,102 @@ pub struct ClosureEscapeFact {
     pub rule: ClosureEscapeRule,
 }
 
+/// One exact source of a function value selected at an indirect call.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CallableCandidate {
+    /// An authored callable declaration, including one in an imported module.
+    Declaration(crate::DefId),
+    /// A closure literal in the checked source module.
+    Closure(SpanKey),
+    /// A checker-bound formal supplied by a caller at the selected call site.
+    Formal(TypeBindingId),
+    /// Intermediate value origin: an authored aggregate constructor.
+    Aggregate(SpanKey),
+    /// Intermediate value origin: the result of a selected call.
+    CallResult(SpanKey),
+    /// Intermediate value origin: a checker-selected field of a receiver.
+    Field {
+        receiver: Box<Self>,
+        owner: crate::NominalId,
+        index: u32,
+    },
+}
+
+/// One checker-selected field write in a record initializer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableFieldFlow {
+    pub owner: crate::NominalId,
+    pub index: u32,
+    pub candidates: IndirectCallCandidates,
+}
+
+/// One checked actual-to-formal edge at a selected direct call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableArgumentFlow {
+    pub callee: crate::DefId,
+    pub formal: TypeBindingId,
+    pub candidates: IndirectCallCandidates,
+}
+
+/// One authored actual at a generic static-trait call, indexed by the
+/// selected concrete implementation's parameter slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableDispatchActual {
+    pub slot: usize,
+    pub candidates: IndirectCallCandidates,
+}
+
+/// Exact checked facts needed to decide whether an imported impl body can be
+/// lowered in another module. Source names do not participate in eligibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedImplBodyFact {
+    pub receiver: Option<crate::NominalId>,
+    pub params: Vec<ResolvedTy>,
+    pub return_type: ResolvedTy,
+    /// Direct declaration calls selected inside this method body. A caller is
+    /// skipped only when one of these exact identities cannot emit a body.
+    pub callees: Vec<crate::DefId>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingCallableArguments {
+    pub(super) callee: crate::DefId,
+    pub(super) receiver: Option<IndirectCallCandidates>,
+    pub(super) arguments: Vec<IndirectCallCandidates>,
+}
+
+/// Possible indirect callees and whether an opaque source may also arrive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndirectCallCandidates {
+    pub known: Vec<CallableCandidate>,
+    pub may_be_unknown: bool,
+}
+
+impl IndirectCallCandidates {
+    pub(super) fn unknown() -> Self {
+        Self {
+            known: Vec::new(),
+            may_be_unknown: true,
+        }
+    }
+
+    pub(super) fn single(candidate: CallableCandidate) -> Self {
+        Self {
+            known: vec![candidate],
+            may_be_unknown: false,
+        }
+    }
+
+    pub(super) fn join(&mut self, other: Self) {
+        for candidate in other.known {
+            if !self.known.contains(&candidate) {
+                self.known.push(candidate);
+            }
+        }
+        self.may_be_unknown |= other.may_be_unknown;
+    }
+}
+
 /// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
 ///
 /// Populated by the checker for every accepted coercion of a concrete
@@ -1066,6 +1214,9 @@ pub struct DynAssocBinding {
 pub struct DynVtableKey {
     /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
     pub trait_name: String,
+    /// Exact bound declarations in source order. A compiler predicate has no
+    /// declaration and keeps `None` in its position.
+    pub trait_ids: Vec<Option<crate::DefId>>,
     /// Resolved concrete `Self` type at the coercion site.
     pub concrete_type: Ty,
     /// Canonical associated-type bindings sorted by `(trait_name, assoc_name)`.
@@ -1099,6 +1250,10 @@ pub struct DynVtableEntry {
 pub struct DynCoercion {
     /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
     pub trait_name: String,
+    /// Ordered checker-resolved bounds of the target trait object. Each
+    /// declared trait carries its exact declaration identity, including when
+    /// it has no methods and therefore contributes no vtable entry.
+    pub trait_bounds: Vec<crate::ty::TraitObjectBound>,
     /// Resolved concrete `Self` type at the coercion site.
     pub concrete_type: Ty,
     /// Canonical vtable key used to distinguish projections such as
@@ -1418,6 +1573,52 @@ pub struct ArmResolution {
 }
 
 impl TypeCheckOutput {
+    /// The type definitions, read by declaration.
+    #[must_use]
+    pub fn types(&self) -> TypeDefView<'_> {
+        TypeDefView::new(&self.defs, &self.type_defs)
+    }
+
+    /// The type definition filed under a declaration path.
+    ///
+    /// TRANSITION(B1, B3): see [`Self::type_defs_by_path`].
+    #[must_use]
+    pub fn type_def_at_path(&self, path: &str) -> Option<&TypeDef> {
+        self.types().at_path(path)
+    }
+
+    /// The type definitions keyed by their rendered declaration path.
+    ///
+    /// TRANSITION(B1, B3): deleted when HIR and tooling read definitions by
+    /// declaration.
+    #[must_use]
+    pub fn type_defs_by_path(&self) -> HashMap<String, TypeDef> {
+        self.type_defs
+            .iter()
+            .map(|(id, type_def)| {
+                (
+                    self.defs.path(id.declaration()).to_string(),
+                    type_def.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// The function signatures, read by the keys callers spell.
+    #[must_use]
+    pub fn sigs(&self) -> FnSigView<'_> {
+        FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+    }
+
+    /// The function signatures keyed by every spelling the checker published.
+    ///
+    /// TRANSITION(B1, B3): deleted when HIR and tooling read signatures by
+    /// declaration.
+    #[must_use]
+    pub fn fn_sigs_by_path(&self) -> HashMap<String, FnSig> {
+        self.sigs().by_key()
+    }
+
     /// Record an expression's checker type, keeping the `Ty`-typed
     /// `expr_types` side-table and the typed `resolved_expr_types` handoff
     /// map (W4.047) in sync.
@@ -1436,100 +1637,6 @@ impl TypeCheckOutput {
             self.resolved_expr_types.insert(span.clone(), resolved);
         }
         self.expr_types.insert(span, ty);
-    }
-}
-
-impl Default for TypeCheckOutput {
-    /// Produce an empty `TypeCheckOutput` with no resolved types, rewrites, or
-    /// diagnostics. Useful in tests that exercise HIR lowering without
-    /// invoking the full type-checker (e.g. programs that contain no method
-    /// calls and therefore need no `method_call_rewrites` entries).
-    fn default() -> Self {
-        Self {
-            normalized_machines: None,
-            recovery_kinds: HashMap::new(),
-            call_argument_slots: HashMap::new(),
-            expr_types: HashMap::new(),
-            interpolation_display_types: HashMap::new(),
-            user_comparison_dispatch: HashMap::new(),
-            numeric_operand_coercions: HashMap::new(),
-            extern_method_signatures: HashMap::new(),
-            actor_self_state_fields: HashSet::new(),
-            actor_deferred_field_decls: HashSet::new(),
-            actor_init_first_stores: HashSet::new(),
-            borrowed_element_for_loops: HashSet::new(),
-            borrowed_element_index_reads: HashSet::new(),
-            owning_take_vec_cursors: HashSet::new(),
-            borrowed_element_option_reads: HashSet::new(),
-            resolved_expr_types: HashMap::new(),
-            type_facts: BTreeMap::new(),
-            type_fact_context: TypeFactContext::default(),
-            is_type_patterns: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            method_call_consumes_receiver: HashSet::default(),
-            method_call_discharges_receiver: HashSet::default(),
-            method_call_preserves_receiver_identity: HashSet::default(),
-            opaque_resource_candidates: OpaqueResourceCandidateGraph::default(),
-            lowering_facts: HashMap::new(),
-            actor_handler_state_guards: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
-            width_cast_lowerings: HashMap::new(),
-            try_width_cast_lowerings: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            indexed_place_operations: HashMap::new(),
-            errors: Vec::new(),
-            warnings: Vec::new(),
-            user_clone_record_seeds: Vec::new(),
-            type_defs: HashMap::new(),
-            resolved_type_aliases: HashMap::new(),
-            internal_builtin_enum_names: HashSet::new(),
-            identity: crate::IdentityView::default(),
-            entry_exit_plan: None,
-            extern_contracts: crate::extern_table::ExternTable::new(),
-            fn_sigs: HashMap::new(),
-            suspension_effects: super::effects::SuspensionEffects::default(),
-            direct_call_targets: HashMap::new(),
-            trait_method_ids: HashMap::new(),
-            trait_bindings: HashMap::new(),
-            trait_defaults: HashMap::new(),
-            trait_method_ids_by_binding: HashMap::new(),
-            impl_method_declaration_ids: HashMap::new(),
-            consuming_inherent_methods: HashSet::new(),
-            root_value_bindings: HashSet::new(),
-            handle_bearing_structs: HashSet::default(),
-            cycle_capable_actors: HashSet::default(),
-            user_modules: HashSet::default(),
-            call_type_args: HashMap::new(),
-            vec_generic_element_abi: HashMap::new(),
-            record_init_type_args: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_max_heap: HashMap::new(),
-            supervisor_child_slots: HashMap::new(),
-            pool_accessor_sites: HashMap::new(),
-            actor_method_dispatch: HashMap::new(),
-            actor_delivery_calls: HashMap::new(),
-            machine_method_dispatch: HashMap::new(),
-            tail_ok_coercions: HashSet::new(),
-            result_return_coercions: HashMap::new(),
-            dyn_trait_coercions: HashMap::new(),
-            dyn_trait_method_calls: HashMap::new(),
-            closure_capture_facts: HashMap::new(),
-            select_sources: HashMap::new(),
-            closure_escape_facts: HashMap::new(),
-            actor_protocol_descriptors: HashMap::new(),
-            lambda_actor_declarations: HashMap::new(),
-            intrinsic_declarations: HashMap::new(),
-            pattern_resolutions: HashMap::new(),
-            pattern_plans: HashMap::new(),
-            lang_items: crate::LangItemRegistry::new(),
-            resolved_calls: HashMap::new(),
-            import_type_name_aliases: HashMap::new(),
-            module_import_bindings: HashMap::new(),
-            published_bare_const_owners: HashMap::new(),
-            import_fn_name_aliases: HashMap::new(),
-        }
     }
 }
 
@@ -1988,7 +2095,7 @@ pub enum MethodCallRewrite {
         /// The type-parameter name on the enclosing function that carries the bound
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
-        receiver_type_param: String,
+        receiver_type_param: crate::ParamHead,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
         /// Checker-owned receiver ownership bit from the declaring trait.
@@ -2285,13 +2392,52 @@ pub(super) struct DeferredBuiltinCloneAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// An associated type bound by a specific generic impl receiver.
+#[derive(Debug, Clone)]
+pub(super) struct ImplAssociatedType {
+    pub(super) ty: Ty,
+    pub(super) receiver: Ty,
+    pub(super) parameters: Vec<crate::ParamHead>,
+}
+
+impl ImplAssociatedType {
+    pub(super) fn instantiate(&self, receiver: &Ty) -> Option<Ty> {
+        let variables: Vec<_> = self
+            .parameters
+            .iter()
+            .map(|_| crate::ty::TypeVar::fresh())
+            .collect();
+        let fresh: HashMap<_, _> = self
+            .parameters
+            .iter()
+            .copied()
+            .zip(variables.iter().copied().map(Ty::Var))
+            .collect();
+        let pattern = self.receiver.substitute_type_params_parallel(&fresh);
+        let mut inference = crate::ty::Substitution::new();
+        crate::unify::unify_exact(&mut inference, &pattern, receiver).ok()?;
+        let instantiated = inference.resolve(&self.ty.substitute_type_params_parallel(&fresh));
+        // Receiver-independent binders remain abstract until the impl's
+        // associated-type constraints determine them. Never publish the
+        // temporary inference variables used to match the receiver.
+        Some(
+            variables
+                .into_iter()
+                .zip(&self.parameters)
+                .fold(instantiated, |ty, (variable, parameter)| {
+                    ty.substitute(variable, &Ty::param(*parameter))
+                }),
+        )
+    }
+}
+
 /// An equality demand in the existing generic instantiation graph.
 /// Concrete comparisons are checked after registration and inference; generic
 /// comparisons use the same selected Eq authority after substitution.
 #[derive(Debug, Clone)]
 pub(super) struct EqRequirement {
     pub(super) ty: Ty,
-    pub(super) owner_type_params: Vec<String>,
+    pub(super) owner_type_params: Vec<crate::ParamHead>,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
 }
@@ -2302,14 +2448,14 @@ pub(super) struct EqRequirement {
 #[derive(Debug, Clone)]
 pub(super) struct GenericFnInstantiationSite {
     pub(super) caller: Option<String>,
-    pub(super) caller_type_params: Vec<String>,
+    pub(super) caller_type_params: Vec<crate::ParamHead>,
     pub(super) callee: String,
     /// Partial, name-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
     /// [`Checker::finalize_eq_requirements`] walk generic → generic call
     /// edges from a concrete root instead of stopping at the first hop.
-    pub(super) substitution: HashMap<String, Ty>,
+    pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
 }
@@ -2350,14 +2496,14 @@ pub(super) enum GenericCallee<'a> {
 #[derive(Debug, Clone)]
 pub(super) struct GenericCallEdge {
     pub(super) callee: String,
-    pub(super) substitution: HashMap<String, Ty>,
+    pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
 /// One instantiation queued for structural-equality discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
     pub(super) callee: String,
-    pub(super) substitution: HashMap<String, Ty>,
+    pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     /// Span and module of the CONCRETE application the diagnostic points at —
     /// carried unchanged along every edge so a nested obligation still reports
     /// where the program pinned the type arguments.
@@ -2378,32 +2524,183 @@ impl PendingLoweringFact {
     }
 }
 
-/// Look up a type definition under either spelling `type_defs` is keyed by.
-///
-/// A qualified declaration is registered under its full path and under the
-/// twin one segment shorter, so a resolved type may carry either. Splitting on
-/// the first dot maps `std.stream.Sink` to `stream.Sink` and
-/// `stream.Sink` to `Sink`, which is the twin in both cases.
-#[must_use]
-#[expect(
-    clippy::implicit_hasher,
-    reason = "mirrors the concrete HashMap the checker and TypeCheckOutput store"
-)]
-pub fn type_def_for_spelling<'a>(
-    type_defs: &'a HashMap<String, TypeDef>,
-    name: &str,
-) -> Option<&'a TypeDef> {
-    type_defs.get(name).or_else(|| {
-        name.split_once('.')
-            .and_then(|(_, twin)| type_defs.get(twin))
-    })
+/// The type definitions of one compilation, read by the declaration a type
+/// head names.
+#[derive(Debug, Clone, Copy)]
+pub struct TypeDefView<'a> {
+    pub defs: &'a crate::DefTable,
+    pub type_defs: &'a HashMap<crate::NominalId, TypeDef>,
+}
+
+impl<'a> TypeDefView<'a> {
+    #[must_use]
+    pub fn new(
+        defs: &'a crate::DefTable,
+        type_defs: &'a HashMap<crate::NominalId, TypeDef>,
+    ) -> Self {
+        Self { defs, type_defs }
+    }
+
+    /// The definition of the declaration `head` names.
+    #[must_use]
+    pub fn of(self, head: crate::TypeHead) -> Option<&'a TypeDef> {
+        self.type_defs.get(&head.declaration(self.defs)?)
+    }
+
+    /// The definition of the named type `ty`.
+    #[must_use]
+    pub fn of_ty(self, ty: &Ty) -> Option<&'a TypeDef> {
+        self.of(ty.head()?)
+    }
+
+    /// A view over hand-built fixture definitions, keyed by
+    /// [`crate::NominalId::for_test`] identities.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(type_defs: &'a HashMap<crate::NominalId, TypeDef>) -> Self {
+        static TABLE: std::sync::OnceLock<crate::DefTable> = std::sync::OnceLock::new();
+        Self {
+            defs: TABLE.get_or_init(crate::DefTable::new),
+            type_defs,
+        }
+    }
+
+    /// The definition filed under a declaration path.
+    ///
+    /// TRANSITION(A2): deleted when the class and fact tables are keyed by
+    /// declaration instead of by rendered path.
+    #[must_use]
+    pub fn at_path(self, path: &str) -> Option<&'a TypeDef> {
+        self.type_defs.get(&self.defs.lookup_nominal(path)?)
+    }
+}
+
+/// The function signatures of one compilation, read by declaration or, until
+/// callers hold ids, by the keys they spell.
+#[derive(Debug, Clone, Copy)]
+pub struct FnSigView<'a> {
+    pub sigs: &'a HashMap<crate::DefId, FnSig>,
+    pub keys: &'a HashMap<String, crate::DefId>,
+    pub builtins: &'a HashMap<Symbol, FnSig>,
+}
+
+impl<'a> FnSigView<'a> {
+    #[must_use]
+    pub fn new(
+        sigs: &'a HashMap<crate::DefId, FnSig>,
+        keys: &'a HashMap<String, crate::DefId>,
+        builtins: &'a HashMap<Symbol, FnSig>,
+    ) -> Self {
+        Self {
+            sigs,
+            keys,
+            builtins,
+        }
+    }
+
+    /// The signature of a declaration.
+    #[must_use]
+    pub fn of(self, declaration: crate::DefId) -> Option<&'a FnSig> {
+        self.sigs.get(&declaration)
+    }
+
+    /// The signature a key spells: a declaration's key, else a builtin name.
+    ///
+    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
+    #[must_use]
+    pub fn get(self, key: &str) -> Option<&'a FnSig> {
+        self.keys
+            .get(key)
+            .and_then(|id| self.sigs.get(id))
+            .or_else(|| self.builtins.get(&Symbol::intern(key)))
+    }
+
+    #[must_use]
+    pub fn contains(self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Every spelled key with its signature.
+    pub fn entries(self) -> impl Iterator<Item = (&'a str, &'a FnSig)> + 'a {
+        self.keys
+            .iter()
+            .filter_map(move |(key, id)| Some((key.as_str(), self.sigs.get(id)?)))
+            .chain(self.builtins.iter().map(|(name, sig)| (name.as_str(), sig)))
+    }
+
+    /// TRANSITION(B1, B3): see [`TypeCheckOutput::fn_sigs_by_path`].
+    #[must_use]
+    pub fn by_key(self) -> HashMap<String, FnSig> {
+        self.entries()
+            .map(|(key, sig)| (key.to_string(), sig.clone()))
+            .collect()
+    }
+}
+
+impl<Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for FnSigView<'_> {
+    type Output = FnSig;
+
+    /// The signature a key spells.
+    ///
+    /// # Panics
+    ///
+    /// When no signature answers to the key.
+    fn index(&self, key: &Q) -> &FnSig {
+        let key = key.as_ref();
+        self.get(key)
+            .unwrap_or_else(|| panic!("no signature answers to `{key}`"))
+    }
+}
+
+/// Hand-built signatures keyed by fixture declarations, for tests of the
+/// functions that read a [`FnSigView`].
+#[cfg(any(test, feature = "test"))]
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct FnSigFixture {
+    sigs: HashMap<crate::DefId, FnSig>,
+    keys: HashMap<String, crate::DefId>,
+    builtins: HashMap<Symbol, FnSig>,
+}
+
+#[cfg(any(test, feature = "test"))]
+impl FnSigFixture {
+    #[must_use]
+    pub fn new(sigs: impl IntoIterator<Item = (String, FnSig)>) -> Self {
+        let mut fixture = Self::default();
+        for (key, sig) in sigs {
+            let declaration = crate::DefId::for_test(&key);
+            fixture.keys.insert(key, declaration);
+            fixture.sigs.insert(declaration, sig);
+        }
+        fixture
+    }
+
+    #[must_use]
+    pub fn view(&self) -> FnSigView<'_> {
+        FnSigView::new(&self.sigs, &self.keys, &self.builtins)
+    }
+
+    /// The `fn_sigs`, `fn_sig_keys` and `builtin_fn_sigs` of a hand-built
+    /// [`TypeCheckOutput`].
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        HashMap<crate::DefId, FnSig>,
+        HashMap<String, crate::DefId>,
+        HashMap<Symbol, FnSig>,
+    ) {
+        (self.sigs, self.keys, self.builtins)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TypeDef {
     pub kind: TypeDefKind,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub bounds: HashMap<String, Vec<String>>,
     pub fields: HashMap<String, Ty>,
     /// Field names in **declaration order** (source order as written by the user).
@@ -2428,7 +2725,7 @@ pub struct TypeDef {
 #[derive(Debug, Clone)]
 pub struct TypeAliasDef {
     pub declaration: crate::DefId,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub target: Ty,
     pub source_module: Option<String>,
     pub file_index: u32,
@@ -2442,10 +2739,10 @@ impl TypeAliasDef {
         let substitutions = self
             .type_params
             .iter()
-            .cloned()
+            .copied()
             .zip(args.iter().cloned())
             .collect();
-        Some(self.target.substitute_named_params_parallel(&substitutions))
+        Some(self.target.substitute_type_params_parallel(&substitutions))
     }
 }
 
@@ -2464,7 +2761,7 @@ pub(super) struct TraitInfo {
     pub(super) file_index: u32,
     pub(super) methods: Vec<TraitMethod>,
     pub(super) associated_types: Vec<TraitAssociatedTypeInfo>,
-    pub(super) type_params: Vec<String>,
+    pub(super) type_params: Vec<crate::ParamHead>,
 }
 
 #[derive(Debug, Clone)]
@@ -2537,6 +2834,9 @@ pub struct ImplMethodProvenance {
     pub declaration: crate::DefId,
     /// Nominal declaration, absent for primitive receiver types.
     pub receiver: Option<crate::DefId>,
+    /// Resolved impl receiver arguments and the binders they instantiate.
+    pub receiver_args: Vec<Ty>,
+    pub receiver_parameters: Vec<crate::ParamHead>,
     pub name: String,
     pub is_inherent: bool,
     pub span: Span,
@@ -2552,8 +2852,10 @@ pub struct ImplMethodProvenance {
 )]
 pub struct FnSig {
     pub impl_method: Option<ImplMethodProvenance>,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<crate::ParamHead>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
+    /// Associated-type constraints owned by this selected callable signature.
+    pub type_param_assoc_bindings: HashMap<(String, String, String), Ty>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
     /// Ownership explicitly declared for each parameter, aligned with `params`.
@@ -2635,6 +2937,7 @@ impl Default for FnSig {
             impl_method: None,
             type_params: vec![],
             type_param_bounds: HashMap::new(),
+            type_param_assoc_bindings: HashMap::new(),
             param_names: vec![],
             params: vec![],
             param_ownership: vec![],
@@ -2773,7 +3076,9 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) annotation_types: HashMap<SpanKey, (Ty, Option<String>)>,
     pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
+    pub(super) unrendered_assertion_operands: HashSet<SpanKey>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::user_comparison_dispatch`].
     pub(super) user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
@@ -2819,6 +3124,10 @@ pub struct Checker {
     pub(super) current_item_ordinal: usize,
     /// Exact source occurrence selected as process entry by a file frontend.
     pub(super) entry_selection: Option<crate::DeclarationOccurrence>,
+    /// Explicit test mode, with selected root functions in discovery order.
+    pub(super) test_entry_selections: Option<Vec<crate::DeclarationOccurrence>>,
+    /// Source module whose tests a file frontend selected before graph rewriting.
+    pub(super) test_entry_module: Option<hew_parser::module::ModulePath>,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority
     /// behind extern-signature nominal identity: a bare name in an extern
@@ -2945,6 +3254,7 @@ pub struct Checker {
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     pub(super) actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
+    pub(super) actor_coalesce_keys: HashMap<crate::DefId, Vec<(crate::DefId, u32)>>,
     /// Mailbox overflow policy keyed by the actor's canonical declaration
     /// identity. Absence means an unbounded mailbox. A bounded declaration
     /// with no explicit policy is recorded as `Block`.
@@ -2972,8 +3282,13 @@ pub struct Checker {
     /// Surfaced through `TypeCheckOutput::stack_hints` and consumed by the CLI's
     /// `--show-stack-hints` printer. See [`StackHint`].
     pub(super) stack_hints: Vec<StackHint>,
-    pub(super) type_defs: HashMap<String, TypeDef>,
-    pub(super) fn_sigs: HashMap<String, FnSig>,
+    pub(super) type_defs: HashMap<crate::NominalId, TypeDef>,
+    /// Function signatures keyed by declaration identity.
+    pub(super) fn_sigs: HashMap<crate::DefId, FnSig>,
+    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
+    pub(super) fn_sig_keys: HashMap<String, crate::DefId>,
+    /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::builtin_fn_sigs`].
+    pub(super) builtin_fn_sigs: HashMap<Symbol, FnSig>,
     /// Closed runtime call families published by compiler builtin
     /// registration.  This is deliberately distinct from `fn_sigs`: a
     /// signature name is an open-set source lookup key, whereas this table is
@@ -3008,6 +3323,13 @@ pub struct Checker {
     pub(super) named_argument_calls: HashSet<SpanKey>,
     pub(super) effect_graph: super::effects::EffectGraph,
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    pub(super) indirect_call_candidates: HashMap<SpanKey, IndirectCallCandidates>,
+    pub(super) callable_binding_candidates: HashMap<TypeBindingId, IndirectCallCandidates>,
+    pub(super) callable_formals: HashMap<crate::DefId, Vec<TypeBindingId>>,
+    pub(super) generic_trait_call_arguments: HashMap<SpanKey, Vec<CallableDispatchActual>>,
+    pub(super) pending_callable_arguments: HashMap<SpanKey, PendingCallableArguments>,
+    pub(super) aggregate_field_candidates: HashMap<SpanKey, Vec<CallableFieldFlow>>,
+    pub(super) callable_return_candidates: HashMap<crate::DefId, IndirectCallCandidates>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
@@ -3025,14 +3347,13 @@ pub struct Checker {
     pub(super) impl_method_declaration_ids: HashMap<String, crate::DefId>,
     pub(super) consuming_inherent_methods: HashSet<crate::DefId>,
     pub(super) root_value_bindings: HashSet<String>,
-    pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
-    pub(super) handle_bearing_structs: HashSet<String>,
+    pub(super) handle_bearing_structs: HashSet<crate::NominalId>,
     /// Names of every user-declared `#[opaque]` type in this module.
     /// Populated by `register_type_decl` whenever `td.is_opaque` is true.
     /// Consumed by `record_clone_admissibility` to detect opaque fields in
     /// record types the user attempts to clone — these are ALWAYS non-cloneable
     /// because a shallow copy aliases the runtime handle.
-    pub(super) user_opaque_type_names: HashSet<String>,
+    pub(super) opaque_type_ids: HashSet<crate::NominalId>,
     /// `#[wire]` struct type names that carry the binary CBOR codec methods
     /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
     /// — which lower to the `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*`
@@ -3209,9 +3530,24 @@ pub struct Checker {
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
     pub(super) type_aliases: HashMap<String, TypeAliasDef>,
-    pub(super) trait_defs: HashMap<String, TraitInfo>,
+    /// Source-declared methods by receiver declaration and owner.
+    pub(super) dispatch: super::dispatch_table::DispatchTable,
+    /// The impl method whose body is being checked, so its own signature is
+    /// read rather than the last one filed under its `Type::method` spelling.
+    pub(super) checking_declaration: Option<crate::DefId>,
+    /// Trait declarations by declaration identity.
+    pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
+    /// The trait spellings callers use, each naming one declaration.
+    ///
+    /// TRANSITION(A1 commit 4): WHY bounds and impls still carry trait
+    /// spellings. WHEN they carry `TraitRef`s resolved through `Scope`, this
+    /// index is deleted. WHAT: every reader holds the trait's `DefId`.
+    pub(super) trait_def_keys: HashMap<String, crate::DefId>,
     /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
-    pub(super) trait_super: HashMap<String, Vec<String>>,
+    ///
+    /// Keyed by the trait's declaration; the super-trait spellings stay
+    /// strings until bounds carry `TraitRef`s (TRANSITION(A1 commit 4)).
+    pub(super) trait_super: HashMap<crate::DefId, Vec<String>>,
     /// A declaring module's trait import bindings:
     /// `(declaring_module_short, name_as_spelled)` → owner-qualified SOURCE
     /// identity (`{owner_short}.{Source}`), always a registered `trait_defs` key.
@@ -3242,7 +3578,8 @@ pub struct Checker {
     pub(super) trait_impl_method_names: HashMap<(String, String), HashSet<String>>,
     /// Resolver-minted implementation method identities keyed by the exact
     /// implemented type, trait, and method selected during type checking.
-    pub(super) trait_impl_method_declaration_ids: HashMap<(String, String, String), crate::DefId>,
+    pub(super) trait_impl_method_declaration_ids:
+        HashMap<crate::type_facts::ImplMethodKey, crate::DefId>,
     pub(super) trait_impl_method_binders:
         HashMap<crate::DefId, crate::type_facts::ImplMethodBinders>,
     /// Trait impls keyed by canonical receiver kind for primitives and
@@ -3557,11 +3894,16 @@ pub struct Checker {
     pub(super) current_module: Option<String>,
     /// The compile's identity interner (rc1-F1 stage A). Minted once in
     /// `check_program` from the module graph before any registration pass;
-    /// moved into [`TypeCheckOutput::identity`] at publication. The root
+    /// moved into [`TypeCheckOutput::defs`] at publication. The root
     /// compilation unit's canonical identity (when it has a source) lives
-    /// here — `identity.root_module_path()` — and is the authority the
+    /// here — `defs.root_module_path()` — and is the authority the
     /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
-    pub(super) identity: crate::identity::IdentityTable,
+    pub(super) defs: crate::DefTable,
+    /// The spelling boundary: every module, file and prelude scope.
+    pub(super) scopes: super::scope::Scopes,
+    /// The table the next `check_program` mints into instead of a fresh one;
+    /// set only by [`crate::Checker::check_embedded_builtins`].
+    pub(super) seed_defs: Option<crate::DefTable>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B).
     /// The ONE authority for extern symbol identity and `unsafe` gating:
     /// contracts are minted at `register_extern_block`, contract-less extern
@@ -3590,7 +3932,7 @@ pub struct Checker {
     /// declaration spellings: the identity table never resolves them, and
     /// they exist so two declarations sharing one namespace name are reported
     /// as a duplicate definition.
-    pub(super) nominal_namespace_claims: HashMap<String, crate::identity::DeclarationOccurrence>,
+    pub(super) nominal_namespace_claims: HashMap<String, crate::def_table::DeclarationOccurrence>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3627,6 +3969,8 @@ pub struct Checker {
     pub(super) current_self_binding_ty: Option<Ty>,
     /// The actor type currently being checked (for `this` keyword resolution).
     pub(super) current_actor_type: Option<Ty>,
+    /// Handler-local checker bindings that name one authored actor field.
+    pub(super) actor_field_binding_ids: HashMap<TypeBindingId, (crate::NominalId, u32)>,
     /// State fields of the current actor: name, declared mutability, and
     /// declaration site. Drives the purity checks on bare field assignment
     /// and the immutable-field assignment diagnostic (a `let` or bare field
@@ -3694,7 +4038,7 @@ pub struct Checker {
     ///
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
-    pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
+    pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), ImplAssociatedType>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -3885,12 +4229,12 @@ pub struct Checker {
     /// instantiate the impl parameters from the receiver's type arguments and
     /// leave method-level parameters (`map<U>`) generic.
     pub(super) builtin_result_option_method_sigs:
-        HashMap<(crate::BuiltinType, String), (Vec<String>, FnSig)>,
+        HashMap<(crate::BuiltinType, String), (Vec<crate::ParamHead>, FnSig)>,
     /// Canonical runtime-backed `Vec<T>` method signatures parsed from the
     /// compiled-in `std/builtins.hew` inherent impl, paired with the impl's
     /// type parameters. Kept origin-separated from user `Vec` declarations so
     /// builtin dispatch cannot be shadowed.
-    pub(super) builtin_vec_method_sigs: HashMap<String, (Vec<String>, FnSig)>,
+    pub(super) builtin_vec_method_sigs: HashMap<String, (Vec<crate::ParamHead>, FnSig)>,
     /// Resolved reporting level for every semantic lint (see [`super::run_lints`]).
     ///
     /// Defaults to [`super::LintLevels::from_defaults`]; the CLI layer threads
@@ -3986,7 +4330,9 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            annotation_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
+            unrendered_assertion_operands: HashSet::new(),
             user_comparison_dispatch: HashMap::new(),
             numeric_operand_coercions: HashMap::new(),
             extern_method_origins: HashMap::new(),
@@ -3999,6 +4345,8 @@ impl Checker {
             current_item_source: None,
             current_item_ordinal: 0,
             entry_selection: None,
+            test_entry_selections: None,
+            test_entry_module: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             protected_prelude_declaration_collisions: HashSet::new(),
@@ -4041,6 +4389,7 @@ impl Checker {
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_delivery_calls: HashMap::new(),
+            actor_coalesce_keys: HashMap::new(),
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
@@ -4052,6 +4401,8 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            fn_sig_keys: HashMap::new(),
+            builtin_fn_sigs: HashMap::new(),
             builtin_call_targets: HashMap::new(),
             import_fn_name_aliases: HashMap::new(),
             published_bare_function_owners: HashMap::new(),
@@ -4062,15 +4413,21 @@ impl Checker {
             named_argument_calls: HashSet::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
+            indirect_call_candidates: HashMap::new(),
+            callable_binding_candidates: HashMap::new(),
+            callable_formals: HashMap::new(),
+            generic_trait_call_arguments: HashMap::new(),
+            pending_callable_arguments: HashMap::new(),
+            aggregate_field_candidates: HashMap::new(),
+            callable_return_candidates: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_bindings: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
-            fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
-            user_opaque_type_names: HashSet::new(),
+            opaque_type_ids: HashSet::new(),
             wire_struct_types: HashSet::new(),
             wire_enum_types: HashSet::new(),
             handle_bearing_dirty: false,
@@ -4115,7 +4472,10 @@ impl Checker {
             modules: HashSet::new(),
             known_types: HashSet::new(),
             type_aliases: HashMap::new(),
+            dispatch: super::dispatch_table::DispatchTable::default(),
+            checking_declaration: None,
             trait_defs: HashMap::new(),
+            trait_def_keys: HashMap::new(),
             trait_super: HashMap::new(),
             trait_import_bindings: HashMap::new(),
             trait_impls_set: HashSet::new(),
@@ -4175,7 +4535,9 @@ impl Checker {
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,
-            identity: crate::identity::IdentityTable::new(),
+            defs: crate::DefTable::new(),
+            scopes: super::scope::Scopes::new(),
+            seed_defs: None,
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
             reported_declaration_collisions: std::collections::HashSet::new(),
@@ -4189,6 +4551,7 @@ impl Checker {
             current_impl_surface_target: None,
             current_self_binding_ty: None,
             current_actor_type: None,
+            actor_field_binding_ids: HashMap::new(),
             current_actor_fields: Vec::new(),
             actor_consumed_state: HashMap::new(),
             crash_hook_consumed_fields: HashMap::new(),

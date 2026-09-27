@@ -9,7 +9,7 @@
 //
 // Exercises the write-back on the heap allocation strategy (not just the stack
 // env) and confirms the heap env is freed exactly once when the closure drops
-// (see closure_env_drop_leak_oracle: zero leaks, no double-free).
+// (the `closure-env-drop-*` safety cases: zero leaks, no double free).
 fn make_counter() -> fn[var]() -> i64 {
     let count: i64 = 0;
     capture(var count) || {

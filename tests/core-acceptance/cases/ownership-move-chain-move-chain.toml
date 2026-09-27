@@ -1,0 +1,10 @@
+[[case]]
+id = "ownership-move-chain-move-chain"
+intent = "Hard-cutover ownership regression: an owned `VecIter` yield obligation follows whole-local moves and is destroyed exactly once. Shape `move_chain` (moved yield owner is clean on every output path) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/ownership-move-chain-move-chain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1"
+exit = 0

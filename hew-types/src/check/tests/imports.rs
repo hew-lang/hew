@@ -9,7 +9,7 @@ fn selected_import(names: &[&str]) -> ImportSpec {
         names
             .iter()
             .map(|name| ImportName {
-                name: (*name).to_string(),
+                name: Ident::new(name),
                 alias: None,
             })
             .collect(),
@@ -30,8 +30,8 @@ fn selected_actor_import(path: &[&str], alias: Option<&str>, actor_source: &str)
     make_user_import(
         path,
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Worker".to_string(),
-            alias: alias.map(str::to_string),
+            name: Ident::new("Worker"),
+            alias: alias.map(Ident::new),
         }])),
         parsed_import_items(actor_source),
     )
@@ -42,8 +42,8 @@ fn colliding_import_publishes_none_of_its_other_bindings() {
     let first = make_user_import(
         &["left"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "first".to_string(),
-            alias: Some("shared".to_string()),
+            name: Ident::new("first"),
+            alias: Some(Ident::new("shared")),
         }])),
         vec![(Item::Function(make_pub_fn("first", vec![], None)), 0..5)],
     );
@@ -51,11 +51,11 @@ fn colliding_import_publishes_none_of_its_other_bindings() {
         &["right"],
         Some(ImportSpec::Names(vec![
             ImportName {
-                name: "second".to_string(),
-                alias: Some("shared".to_string()),
+                name: Ident::new("second"),
+                alias: Some(Ident::new("shared")),
             },
             ImportName {
-                name: "only_second".to_string(),
+                name: Ident::new("only_second"),
                 alias: None,
             },
         ])),
@@ -90,11 +90,11 @@ fn prelude_collision_rejects_the_entire_import() {
         &["user", "helpers"],
         Some(ImportSpec::Names(vec![
             ImportName {
-                name: "custom_print".to_string(),
-                alias: Some("Iterator".to_string()),
+                name: Ident::new("custom_print"),
+                alias: Some(Ident::new("Iterator")),
             },
             ImportName {
-                name: "safe_helper".to_string(),
+                name: Ident::new("safe_helper"),
                 alias: None,
             },
         ])),
@@ -115,7 +115,7 @@ fn prelude_collision_rejects_the_entire_import() {
         .errors
         .iter()
         .any(|error| error.kind == TypeErrorKind::ImportPreludeCollision));
-    assert!(!output.fn_sigs.contains_key("safe_helper"));
+    assert!(!output.sigs().contains("safe_helper"));
 }
 
 #[test]
@@ -148,8 +148,8 @@ fn peer_files_resolve_same_module_alias_from_their_own_imports() {
         import.resolved_items = Some(resolved.into());
     }
 
-    let root_id = ModuleId::root();
-    let shared_id = ModuleId::new(vec!["shared".to_string()]);
+    let root_id = ModulePath::root();
+    let shared_id = ModulePath::new(["shared"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     let mut shared_items = left.program.items;
     let left_count = shared_items.len();
@@ -214,10 +214,10 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
     let failure_path: std::path::PathBuf = "std/failure.hew".into();
     let first_peer: std::path::PathBuf = "consumer/first.hew".into();
     let second_peer: std::path::PathBuf = "consumer/second.hew".into();
-    let failure = hew_parser::parse("pub enum CrashKind { Crashed, }");
+    let failure = hew_parser::parse("pub enum CrashKind {\n    Crashed;\n}\n");
     let first = hew_parser::parse("pub fn untouched() {}");
     let mut second = hew_parser::parse(
-        "import std.failure.{ CrashKind as Kind }; pub type Holder { kind: Kind, }",
+        "import std.failure.{CrashKind as Kind};\n\npub type Holder {\n    kind: Kind;\n}\n",
     );
     for parsed in [&failure, &first, &second] {
         assert!(
@@ -240,9 +240,9 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
         std::iter::repeat_n(failure_path.clone(), failure.program.items.len()).collect();
     import.resolved_source_paths = vec![failure_path.clone()];
 
-    let root_id = ModuleId::root();
-    let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
-    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let root_id = ModulePath::root();
+    let failure_id = ModulePath::new(["std", "failure"]);
+    let consumer_id = ModulePath::new(["consumer"]);
     let mut consumer_items = first.program.items;
     let first_count = consumer_items.len();
     consumer_items.extend(second.program.items);
@@ -263,8 +263,8 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
             imports: vec![hew_parser::module::ModuleImport {
                 target: failure_id.clone(),
                 spec: Some(ImportSpec::Names(vec![ImportName {
-                    name: "CrashKind".to_string(),
-                    alias: Some("Kind".to_string()),
+                    name: Ident::new("CrashKind"),
+                    alias: Some(Ident::new("Kind")),
                 }])),
                 span: 0..45,
             }],
@@ -329,24 +329,33 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
 fn resolved_module_copy_reenters_declaring_file_import_scope() {
     let color_path: std::path::PathBuf = "pkgs/aliassrc.hew".into();
     let consumer_path: std::path::PathBuf = "pkgs/deepalias.hew".into();
-    let mut color = hew_parser::parse("pub enum Color { Blue(i64), }");
+    let mut color = hew_parser::parse("pub enum Color {\n    Blue(i64);\n}\n");
     let mut consumer = hew_parser::parse(
-        r"
-        import hew.aliassrc.{ Color as Hue };
-        pub type AliasBox { item: Hue, }
-        pub enum AliasWrap { Has(Hue), }
-        pub fn make() -> Hue { Hue.Blue(7) }
-        pub fn score() -> i64 {
-            let boxed: AliasBox = AliasBox { item: make() };
-            let wrapped: AliasWrap = AliasWrap.Has(boxed.item);
-            match wrapped {
-                AliasWrap.Has(color) => match color {
-                    Hue.Blue(value) => value,
-                    _ => 0,
-                },
-            }
+        r"import hew.aliassrc.{Color as Hue};
+
+pub type AliasBox {
+    item: Hue;
+}
+
+pub enum AliasWrap {
+    Has(Hue);
+}
+
+pub fn make() -> Hue {
+    Hue.Blue(7)
+}
+
+pub fn score() -> i64 {
+    let boxed: AliasBox = AliasBox { item: make() };
+    let wrapped: AliasWrap = AliasWrap.Has(boxed.item);
+    match wrapped {
+        AliasWrap.Has(color) => match color {
+            Hue.Blue(value) => value,
+            _ => 0,
         }
-        ",
+    }
+}
+",
     );
     let mut root = hew_parser::parse("import hew.deepalias;");
     for parsed in [&color, &consumer, &root] {
@@ -387,9 +396,9 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
         std::iter::repeat_n(consumer_path.clone(), consumer_item_count).collect();
     root_import.resolved_source_paths = vec![consumer_path.clone()];
 
-    let root_id = ModuleId::root();
-    let color_id = ModuleId::new(vec!["hew".to_string(), "aliassrc".to_string()]);
-    let consumer_id = ModuleId::new(vec!["hew".to_string(), "deepalias".to_string()]);
+    let root_id = ModulePath::root();
+    let color_id = ModulePath::new(["hew", "aliassrc"]);
+    let consumer_id = ModulePath::new(["hew", "deepalias"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -441,10 +450,10 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.deepalias.make")
             .map(|sig| &sig.return_type),
-        Some(&Ty::named("hew.aliassrc.Color", vec![]))
+        Some(&Ty::named_for_test("hew.aliassrc.Color", vec![]))
     );
 }
 
@@ -527,13 +536,11 @@ fn check_resolved_closableerr_import(
         let Item::Import(import) = item else {
             continue;
         };
-        match import.path.as_slice() {
-            [package, module] if package == "hew" && module == "closableerr" => {
+        match import.path.to_string().as_str() {
+            "hew.closableerr" => {
                 import.resolved_items = Some(primary.program.items.clone().into());
             }
-            [package, module]
-                if include_second_owner && package == "hew" && module == "closableerr2" =>
-            {
+            "hew.closableerr2" if include_second_owner => {
                 import.resolved_items = Some(secondary.program.items.clone().into());
             }
             _ => {}
@@ -544,9 +551,9 @@ fn check_resolved_closableerr_import(
     // method signature is collected from its declaring module. Mirror the
     // package loader's graph so the conformance check reads
     // `hew.closableerr.Closable::close`, never an importer-local placeholder.
-    let root_id = ModuleId::root();
-    let primary_id = ModuleId::new(vec!["hew".to_string(), "closableerr".to_string()]);
-    let secondary_id = ModuleId::new(vec!["hew".to_string(), "closableerr2".to_string()]);
+    let root_id = ModulePath::root();
+    let primary_id = ModulePath::new(["hew", "closableerr"]);
+    let secondary_id = ModulePath::new(["hew", "closableerr2"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {
@@ -612,21 +619,19 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
-            Ty::Named {
-                builtin: None,
-                name: "hew.closableerr.CloseError".to_string(),
-                args: vec![],
-            },
+            Ty::named_for_test("hew.closableerr.CloseError", vec![]),
         )),
         "the nested impl return must retain the exact source owner"
     );
     assert!(
-        checker.type_defs.contains_key("hew.closableerr.CloseError"),
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("hew.closableerr.CloseError")
+            .is_some(),
         "source declaration must be registered under its canonical owner"
     );
 }
@@ -654,16 +659,12 @@ fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
-            Ty::Named {
-                builtin: None,
-                name: "hew.closableerr.CloseError".to_string(),
-                args: vec![],
-            },
+            Ty::named_for_test("hew.closableerr.CloseError", vec![]),
         )),
         "the qualified sibling must resolve through its source owner"
     );
@@ -710,7 +711,11 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
         "imported i32 actor ask must typecheck: {:#?}",
         output.errors
     );
-    assert!(checker.type_defs.contains_key("hew.testffi.Db"));
+    assert!(
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("hew.testffi.Db")
+            .is_some()
+    );
     assert!(checker
         .module_type_exports
         .get("hew.testffi")
@@ -726,7 +731,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.testffi.Db::count32")
             .map(|sig| &sig.return_type),
         Some(&Ty::I32)
@@ -742,7 +747,7 @@ fn supervisor_actor_named_and_aliased_imports_publish_exact_identity() {
             "pub actor Worker { receive fn identify() -> i64 { 17 } }",
         );
         let supervisor = hew_parser::parse(&format!(
-            "supervisor App {{ child worker: {binding} restart: temporary, }}"
+            "supervisor App {{ child worker: {binding} restart: temporary; }}"
         ));
         assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
         let mut items = vec![(Item::Import(import), 0..1)];
@@ -773,8 +778,9 @@ fn supervisor_actor_whole_module_import_uses_exact_identity() {
         None,
         parsed_import_items("pub actor Worker { receive fn identify() -> i64 { 17 } }"),
     );
-    let supervisor =
-        hew_parser::parse("supervisor App { child worker: worker.Worker restart: temporary, }");
+    let supervisor = hew_parser::parse(
+        "supervisor App {\n    child worker: worker.Worker restart: temporary;\n}\n",
+    );
     assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
     items.extend(supervisor.program.items);
@@ -795,7 +801,7 @@ fn selected_actor_alias_does_not_authorize_unbound_canonical_path() {
         "pub actor Worker { receive fn identify() -> i64 { 17 } }",
     );
     let supervisor = hew_parser::parse(
-        "supervisor App { child worker: support.worker.Worker restart: temporary, }",
+        "supervisor App {\n    child worker: support.worker.Worker restart: temporary;\n}\n",
     );
     assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
@@ -835,11 +841,10 @@ fn local_actor_shadows_same_leaf_import_for_supervisor_child() {
     let import = selected_actor_import(
         &["foreign", "workers"],
         None,
-        "pub actor Worker { let label: string, }",
+        "pub actor Worker {\n    let label: string;\n}\n",
     );
     let root = hew_parser::parse(
-        "actor Worker { receive fn identify() -> i64 { 9 } }\n\
-         supervisor App { child worker: Worker, }",
+        "actor Worker {\n    receive fn identify() -> i64 {\n        9\n    }\n}\n\nsupervisor App {\n    child worker: Worker;\n}\n",
     );
     assert!(root.errors.is_empty(), "{:#?}", root.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
@@ -861,8 +866,7 @@ fn local_non_actor_shadow_is_not_replaced_by_imported_actor() {
         "pub actor Worker { receive fn identify() -> i64 { 17 } }",
     );
     let root = hew_parser::parse(
-        "type Worker { value: i64, }\n\
-         supervisor App { child worker: Worker, }",
+        "type Worker {\n    value: i64;\n}\n\nsupervisor App {\n    child worker: Worker;\n}\n",
     );
     assert!(root.errors.is_empty(), "{:#?}", root.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
@@ -895,7 +899,7 @@ fn colliding_actor_import_bindings_stop_before_supervisor_lowering() {
         None,
         "pub actor Worker { receive fn identify() -> i64 { 2 } }",
     );
-    let supervisor = hew_parser::parse("supervisor App { child worker: Worker, }");
+    let supervisor = hew_parser::parse("supervisor App {\n    child worker: Worker;\n}\n");
     assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
     let mut items = vec![(Item::Import(left), 0..1), (Item::Import(right), 2..3)];
     items.extend(supervisor.program.items);
@@ -917,7 +921,7 @@ fn colliding_actor_import_bindings_stop_before_supervisor_lowering() {
 
 #[test]
 fn unknown_supervisor_child_actor_is_rejected_before_mir() {
-    let output = check_source("supervisor App { child missing: Missing, }");
+    let output = check_source("supervisor App {\n    child missing: Missing;\n}\n");
     assert!(output.errors.iter().any(|error| matches!(
         error.kind,
         TypeErrorKind::SupervisorError {
@@ -932,13 +936,9 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
         "../../../../tests/pkg-import/imported_actor_ask_record.hew"
     ));
 
-    let result_ty = Ty::Named {
-        builtin: None,
-        name: "hew.testffi.TestResult".to_string(),
-        args: vec![],
-    };
+    let result_ty = Ty::named_in(&output.defs, "hew.testffi.TestResult", vec![]);
     assert!(
-        checker.registry.has_type_markers("hew.testffi.TestResult"),
+        checker.registry.has_type_markers(result_ty.head().unwrap()),
         "canonical record marker metadata must be published"
     );
     assert!(
@@ -954,22 +954,23 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.testffi.Db::query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.testffi.hew_testffi_query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
-    assert!(checker
-        .type_defs
-        .get("hew.testffi.TestResult")
-        .is_some_and(|result| result.methods.contains_key("echo_len")));
+    assert!(
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("hew.testffi.TestResult")
+            .is_some_and(|result| result.methods.contains_key("echo_len"))
+    );
     let echo_id = output
         .impl_method_declaration_ids
         .get("hew.testffi.TestResult::echo_len")
@@ -982,8 +983,9 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
                     .collect::<Vec<_>>()
             )
         });
-    assert!(echo_id
-        .full_path()
+    assert!(output
+        .defs
+        .path(*echo_id)
         .starts_with("hew.testffi.TestResult::<impl "));
 }
 
@@ -1006,7 +1008,7 @@ fn module_private_extern_call_publishes_exact_executable_target() {
                     declaration,
                     endpoint,
                     ..
-                } if declaration.full_path() == "hew.testffi.hew_testffi_query"
+                } if output.defs.path(*declaration) == "hew.testffi.hew_testffi_query"
                     && endpoint == "hew_testffi_query"
             )
         }),
@@ -1018,20 +1020,28 @@ fn module_private_extern_call_publishes_exact_executable_target() {
 #[test]
 fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     let left = hew_parser::parse(
-        r"
-        pub type CollisionResult { left: i64, }
-        impl CollisionResult {
-            fn echo(self) -> i64 { self.left }
-        }
-        ",
+        r"pub type CollisionResult {
+    left: i64;
+}
+
+impl CollisionResult {
+    fn echo(self) -> i64 {
+        self.left
+    }
+}
+",
     );
     let right = hew_parser::parse(
-        r"
-        pub type CollisionResult { right: string, }
-        impl CollisionResult {
-            fn echo(self) -> string { self.right }
-        }
-        ",
+        r"pub type CollisionResult {
+    right: string;
+}
+
+impl CollisionResult {
+    fn echo(self) -> string {
+        self.right
+    }
+}
+",
     );
     assert!(left.errors.is_empty());
     assert!(right.errors.is_empty());
@@ -1048,7 +1058,12 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
             continue;
         };
         import.resolved_items = Some(
-            if import.path.first().is_some_and(|part| part == "left") {
+            if import
+                .path
+                .segments
+                .first()
+                .is_some_and(|part| part.0.name.as_str() == "left")
+            {
                 left.program.items.clone()
             } else {
                 right.program.items.clone()
@@ -1073,11 +1088,13 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
         .get("right.render.CollisionResult::echo")
         .expect("right emitted impl symbol");
     assert_ne!(left_id, right_id);
-    assert!(left_id
-        .full_path()
+    assert!(output
+        .defs
+        .path(*left_id)
         .starts_with("left.render.CollisionResult::<impl "));
-    assert!(right_id
-        .full_path()
+    assert!(output
+        .defs
+        .path(*right_id)
         .starts_with("right.render.CollisionResult::<impl "));
 }
 
@@ -1087,10 +1104,14 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
 #[test]
 fn user_channel_lookalike_keeps_its_own_sender_and_receiver_identity() {
     let user_module = hew_parser::parse(
-        r"
-        pub type Sender { marker: i64, }
-        pub type Receiver { marker: i64, }
-        ",
+        r"pub type Sender {
+    marker: i64;
+}
+
+pub type Receiver {
+    marker: i64;
+}
+",
     );
     assert!(
         user_module.errors.is_empty(),
@@ -1126,22 +1147,16 @@ fn user_channel_lookalike_keeps_its_own_sender_and_receiver_identity() {
         "type errors: {:#?}",
         output.errors
     );
-    let params = &output.fn_sigs["probe"].params;
+    let params = &output.sigs()["probe"].params;
     assert!(matches!(
         &params[0],
-        Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } if name == "std.channel.Sender" && args.is_empty()
+        Ty::Named { head: head @ crate::TypeHead::Nominal(_), args }
+            if head.spelling() == "std.channel.Sender" && args.is_empty()
     ));
     assert!(matches!(
         &params[1],
-        Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } if name == "std.channel.Receiver" && args.is_empty()
+        Ty::Named { head: head @ crate::TypeHead::Nominal(_), args }
+            if head.spelling() == "std.channel.Receiver" && args.is_empty()
     ));
 }
 
@@ -1149,11 +1164,11 @@ fn user_channel_lookalike_keeps_its_own_sender_and_receiver_identity() {
 fn should_import_name_named_match() {
     let spec = Some(ImportSpec::Names(vec![
         ImportName {
-            name: "helper".to_string(),
+            name: Ident::new("helper"),
             alias: None,
         },
         ImportName {
-            name: "parse".to_string(),
+            name: Ident::new("parse"),
             alias: None,
         },
     ]));
@@ -1170,7 +1185,7 @@ fn bare_import_registers_qualified_name() {
         "helper",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -1182,11 +1197,11 @@ fn bare_import_registers_qualified_name() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.fn_sigs.contains_key("utils.helper"),
+        output.sigs().contains("utils.helper"),
         "bare import should register qualified name 'utils.helper'"
     );
     assert!(
-        !output.fn_sigs.contains_key("helper"),
+        !output.sigs().contains("helper"),
         "bare import should NOT register unqualified name 'helper'"
     );
 }
@@ -1206,14 +1221,14 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: field.to_string(),
+            name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    name: "i64".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -1252,11 +1267,11 @@ fn bare_import_type_registers_qualified_only() {
     // Full-owner authority is always published; the lexical module spelling
     // remains a resolver binding, not a second TypeDef identity.
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "bare import should register the canonical type `myapp.mod_a.Reply`"
     );
-    assert!(!output.type_defs.contains_key("mod_a.Reply"));
-    assert!(!output.type_defs.contains_key("Reply"));
+    assert!(output.type_def_at_path("mod_a.Reply").is_none());
+    assert!(output.type_def_at_path("Reply").is_none());
     // The importer-scope binding is not published.
     assert!(
         !checker
@@ -1277,7 +1292,7 @@ fn named_import_type_publishes_bare_binding() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
+            name: Ident::new("Reply"),
             alias: None,
         }])),
         vec![(Item::TypeDecl(reply), 0..0)],
@@ -1290,7 +1305,7 @@ fn named_import_type_publishes_bare_binding() {
     });
 
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "named import should still register the exact source-qualified type"
     );
     assert!(
@@ -1312,8 +1327,8 @@ fn named_import_type_alias_publishes_alias_binding() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
-            alias: Some("R".to_string()),
+            name: Ident::new("Reply"),
+            alias: Some(Ident::new("R")),
         }])),
         vec![(Item::TypeDecl(reply), 0..0)],
     );
@@ -1349,13 +1364,13 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
-            alias: Some("R".to_string()),
+            name: Ident::new("Reply"),
+            alias: Some(Ident::new("R")),
         }])),
         vec![(Item::TypeDecl(reply), 0..0)],
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.check_program(&Program {
+    let output = checker.check_program(&Program {
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1369,7 +1384,9 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     // The reconstructed `myapp.mod_a.R` must never exist as a registered def — the bug
     // was binding it (or failing closed) instead of the real source type.
     assert!(
-        !checker.type_defs.contains_key("myapp.mod_a.R"),
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("myapp.mod_a.R")
+            .is_none(),
         "no `myapp.mod_a.R` def should exist; the alias binds the source `Reply`"
     );
 }
@@ -1386,8 +1403,8 @@ fn alias_import_does_not_conflate_with_same_named_export() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
-            alias: Some("Other".to_string()),
+            name: Ident::new("Reply"),
+            alias: Some(Ident::new("Other")),
         }])),
         vec![(Item::TypeDecl(reply), 0..0), (Item::TypeDecl(other), 0..0)],
     );
@@ -1400,11 +1417,11 @@ fn alias_import_does_not_conflate_with_same_named_export() {
 
     // Both distinct source types keep their own qualified identity.
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "source `Reply` must register its qualified identity"
     );
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Other"),
+        output.type_def_at_path("myapp.mod_a.Other").is_some(),
         "the distinct source `Other` must register its own qualified identity"
     );
     // The bare binding `Other` denotes the ALIASED source
@@ -1441,7 +1458,7 @@ fn glob_import_type_publishes_bare_binding() {
     });
 
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "glob import should still register the qualified type"
     );
     assert!(
@@ -1479,11 +1496,17 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     );
 
     assert!(
-        checker.type_defs.contains_key("std.net.websocket.Server"),
+        checker
+            .type_def_view()
+            .at_path("std.net.websocket.Server")
+            .is_some(),
         "plain stdlib import must register the canonical type `std.net.websocket.Server`"
     );
-    assert!(!checker.type_defs.contains_key("websocket.Server"));
-    assert!(!checker.type_defs.contains_key("Server"));
+    assert!(checker
+        .type_def_view()
+        .at_path("websocket.Server")
+        .is_none());
+    assert!(checker.type_def_view().at_path("Server").is_none());
     assert!(
         checker
             .module_type_exports
@@ -1510,7 +1533,7 @@ fn stdlib_named_import_publishes_bare_type() {
         "std.net.websocket",
         &[(Item::TypeDecl(server), 0..0)],
         StdlibBarePublication::Import(&Some(ImportSpec::Names(vec![ImportName {
-            name: "Server".to_string(),
+            name: Ident::new("Server"),
             alias: None,
         }]))),
     );
@@ -1556,7 +1579,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
     let connection = make_pub_struct("Connection", "fd");
     let resolved_items = vec![(Item::TypeDecl(connection), 0..0)];
     let plain_decl = ImportDecl {
-        path: vec!["std".to_string(), "net".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "net"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -1566,7 +1589,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
         resolved_source_paths: Vec::new(),
     };
     let named_spec = Some(ImportSpec::Names(vec![ImportName {
-        name: "Connection".to_string(),
+        name: Ident::new("Connection"),
         alias: None,
     }]));
     let named_decl = ImportDecl {
@@ -1614,8 +1637,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
 #[test]
 fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     let parsed = hew_parser::parse(
-        "pub enum NetError { Failed(i64), }\n\
-         pub fn net_error() -> NetError { NetError.Failed(1) }\n",
+        "pub enum NetError {\n    Failed(i64);\n}\n\npub fn net_error() -> NetError {\n    NetError.Failed(1)\n}\n",
     );
     assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
 
@@ -1624,14 +1646,10 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     // `std::net` source is registered: the surface module name is not a
     // declaration identity. Source publication must replace it regardless of
     // registration order.
-    checker.fn_sigs.insert(
-        "std.net.net_error".to_string(),
+    checker.test_fn_sig(
+        "std.net.net_error",
         FnSig {
-            return_type: Ty::Named {
-                name: "net.NetError".to_string(),
-                args: vec![],
-                builtin: None,
-            },
+            return_type: Ty::named_for_test("net.NetError", vec![]),
             ..FnSig::default()
         },
     );
@@ -1644,12 +1662,12 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     );
 
     let signature = checker
-        .fn_sigs
+        .sigs()
         .get("std.net.net_error")
         .expect("source declaration must publish its canonical signature");
     assert!(matches!(
         signature.return_type,
-        Ty::Named { ref name, .. } if name == "std.net.NetError"
+        Ty::Named { head, .. } if head.spelling() == "std.net.NetError"
     ));
 }
 
@@ -1683,14 +1701,14 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "Holder".to_string(),
+        name: Ident::new("Holder"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: "wrap".to_string(),
+            name: Ident::new("wrap"),
             ty: (
                 TypeExpr::Named {
-                    name: "Wrap".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrap"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -1714,8 +1732,6 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.net.tls".to_string());
-    checker.register_type_decl(&private_wrap);
-    checker.register_qualified_type_alias("tls", "Wrap");
     checker.register_stdlib_hew_items(
         "tls",
         "std.net.tls",
@@ -1729,12 +1745,13 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         checker.errors
     );
     let holder = checker
-        .type_defs
-        .get("std.net.tls.Holder")
+        .type_def_view()
+        .at_path("std.net.tls.Holder")
         .expect("canonical Holder definition must be registered");
     match holder.fields.get("wrap") {
-        Some(Ty::Named { name, .. }) => assert_eq!(
-            name, "std.net.tls.Wrap",
+        Some(Ty::Named { head, .. }) => assert_eq!(
+            head.spelling(),
+            "std.net.tls.Wrap",
             "the private local member must retain its exact source-qualified type identity"
         ),
         other => panic!("Holder.wrap must be a named type, got {other:?}"),
@@ -1754,8 +1771,7 @@ fn bare_import_type_qualified_alias_has_fields() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     let qualified = output
-        .type_defs
-        .get("myapp.mod_a.Reply")
+        .type_def_at_path("myapp.mod_a.Reply")
         .expect("canonical type `myapp.mod_a.Reply` must be registered");
     assert!(
         qualified.fields.contains_key("code"),
@@ -1784,15 +1800,16 @@ fn assert_same_leaf_canonical_type_defs_keep_distinct_shapes(left_first: bool) {
     };
     let output = check_items(imports);
 
-    let left_def = output.type_defs.get("pkg.left.Shared").unwrap_or_else(|| {
-        panic!(
-            "left module must retain its canonical Shared definition; keys: {:?}",
-            output.type_defs.keys().collect::<Vec<_>>()
-        )
-    });
+    let left_def = output
+        .type_def_at_path("pkg.left.Shared")
+        .unwrap_or_else(|| {
+            panic!(
+                "left module must retain its canonical Shared definition; keys: {:?}",
+                output.type_defs.keys().collect::<Vec<_>>()
+            )
+        });
     let right_def = output
-        .type_defs
-        .get("pkg.right.Shared")
+        .type_def_at_path("pkg.right.Shared")
         .expect("right module must retain its canonical Shared definition");
     assert!(left_def.fields.contains_key("left_only"));
     assert!(!left_def.fields.contains_key("right_only"));
@@ -1844,12 +1861,19 @@ fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
 #[test]
 fn canonical_module_variants_shadow_builtin_variants() {
     let output = check_source_in_module(
-        r"
-        pub enum AppErr { NotFound(string), Timeout, }
+        r"pub enum AppErr {
+    NotFound(string);
+    Timeout;
+}
 
-        pub fn payload(msg: string) -> AppErr { .NotFound(msg) }
-        pub fn unit() -> AppErr { .Timeout }
-        ",
+pub fn payload(msg: string) -> AppErr {
+    .NotFound(msg)
+}
+
+pub fn unit() -> AppErr {
+    .Timeout
+}
+",
         vec!["shadow".to_string()],
     );
 
@@ -1864,8 +1888,8 @@ fn canonical_module_variants_shadow_builtin_variants() {
 fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
     let selected = |alias: &str| {
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Shared".to_string(),
-            alias: Some(alias.to_string()),
+            name: Ident::new("Shared"),
+            alias: Some(Ident::new(alias)),
         }]))
     };
     let left = make_user_import(
@@ -1905,14 +1929,14 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         ("keep_left", "pkg.left.Shared"),
         ("keep_right", "pkg.right.Shared"),
     ] {
-        let signature = output.fn_sigs.get(function).expect("function signature");
+        let signature = output.sigs().get(function).expect("function signature");
         assert!(matches!(
             signature.params.as_slice(),
-            [Ty::Named { name, builtin: None, .. }] if name == expected
+            [Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. }] if head.spelling() == expected
         ));
         assert!(matches!(
             &signature.return_type,
-            Ty::Named { name, builtin: None, .. } if name == expected
+            Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. } if head.spelling() == expected
         ));
     }
 
@@ -1921,10 +1945,9 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         .values()
         .filter_map(|ty| match ty {
             ResolvedTy::Named {
-                name,
-                builtin: None,
+                head: head @ crate::TypeHead::Nominal(_),
                 ..
-            } => Some(name.as_str()),
+            } => Some(head.spelling()),
             _ => None,
         })
         .collect();
@@ -1942,22 +1965,20 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         "right.Shared",
     ] {
         assert!(
-            !output.type_defs.contains_key(alias),
+            output.type_def_at_path(alias).is_none(),
             "TypeDef alias survived: {alias}"
         );
         assert!(
             !checker.type_def_spans.contains_key(alias),
             "declaration-span alias survived: {alias}"
         );
-        assert!(
-            !checker.registry.has_type_markers(alias),
-            "marker-registry alias survived: {alias}"
-        );
     }
     for canonical in ["pkg.left.Shared", "pkg.right.Shared"] {
-        assert!(output.type_defs.contains_key(canonical));
+        assert!(output.type_def_at_path(canonical).is_some());
         assert!(checker.type_def_spans.contains_key(canonical));
-        assert!(checker.registry.has_type_markers(canonical));
+        assert!(checker
+            .registry
+            .has_type_markers(checker.test_named(canonical, vec![]).head().unwrap()));
     }
 }
 
@@ -1978,7 +1999,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
         "visible",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -1993,7 +2014,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.fn_sigs.contains_key("myapp.utils.secret"),
+        output.sigs().contains("myapp.utils.secret"),
         "private function must be registered under its exact source-qualified name for enforcement"
     );
     assert!(
@@ -2002,7 +2023,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
             .contains_key(&(None, 0, "secret".to_string())),
         "private function must NOT receive an unqualified (bare) binding"
     );
-    assert!(output.fn_sigs.contains_key("myapp.utils.visible"));
+    assert!(output.sigs().contains("myapp.utils.visible"));
     assert!(output
         .import_fn_name_aliases
         .contains_key(&(None, 0, "visible".to_string())));
@@ -2016,10 +2037,10 @@ fn user_module_registers_pub_consts() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "MAX_SIZE".to_string(),
+        name: Ident::new("MAX_SIZE"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2029,10 +2050,10 @@ fn user_module_registers_pub_consts() {
     };
     let priv_const = ConstDecl {
         visibility: Visibility::Private,
-        name: "INTERNAL".to_string(),
+        name: Ident::new("INTERNAL"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2082,10 +2103,10 @@ fn user_module_const_bare_import_qualified_only() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "LIMIT".to_string(),
+        name: Ident::new("LIMIT"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2128,10 +2149,10 @@ fn module_qualified_const_field_access_resolves() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "LIMIT".to_string(),
+        name: Ident::new("LIMIT"),
         ty: (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2184,10 +2205,10 @@ fn module_qualified_const_undefined_emits_targeted_diagnostic() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "LIMIT".to_string(),
+        name: Ident::new("LIMIT"),
         ty: (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2251,14 +2272,14 @@ fn user_module_registers_types() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "Config".to_string(),
+        name: Ident::new("Config"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: "value".to_string(),
+            name: Ident::new("value"),
             ty: (
                 TypeExpr::Named {
-                    name: "i32".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -2283,11 +2304,11 @@ fn user_module_registers_types() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.type_defs.contains_key("myapp.config.Config"),
+        output.type_def_at_path("myapp.config.Config").is_some(),
         "user module type should be registered under its full owner"
     );
-    assert!(!output.type_defs.contains_key("Config"));
-    assert!(!output.type_defs.contains_key("config.Config"));
+    assert!(output.type_def_at_path("Config").is_none());
+    assert!(output.type_def_at_path("config.Config").is_none());
 }
 
 // -- user_modules set --
@@ -2298,7 +2319,7 @@ fn user_modules_set_populated() {
         "helper",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -2319,7 +2340,7 @@ fn user_modules_set_populated() {
 fn stdlib_not_in_user_modules() {
     // A stdlib import should NOT appear in user_modules
     let import = ImportDecl {
-        path: vec!["std".to_string(), "fs".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "fs"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2344,10 +2365,14 @@ fn user_module_fn_sig_has_correct_types() {
         "add",
         vec![
             Param {
-                name: "a".to_string(),
+                name: Ident::new("a"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -2356,10 +2381,14 @@ fn user_module_fn_sig_has_correct_types() {
                 is_consume: false,
             },
             Param {
-                name: "b".to_string(),
+                name: Ident::new("b"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -2369,7 +2398,7 @@ fn user_module_fn_sig_has_correct_types() {
             },
         ],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -2381,7 +2410,7 @@ fn user_module_fn_sig_has_correct_types() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("math.add")
         .expect("math.add should be registered");
     assert_eq!(sig.params.len(), 2, "should have 2 params");
@@ -2399,7 +2428,7 @@ fn two_modules_same_fn_name_no_collision() {
         "run",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -2407,7 +2436,7 @@ fn two_modules_same_fn_name_no_collision() {
         "run",
         vec![],
         Some(TypeExpr::Named {
-            name: "string".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("string"), 0..0),
             type_args: None,
         }),
     );
@@ -2426,11 +2455,11 @@ fn two_modules_same_fn_name_no_collision() {
         (Item::Import(import_b), 0..0),
     ]);
 
-    assert!(output.fn_sigs.contains_key("alpha.run"));
-    assert!(output.fn_sigs.contains_key("beta.run"));
+    assert!(output.sigs().contains("alpha.run"));
+    assert!(output.sigs().contains("beta.run"));
     // Both should have different return types
-    assert_eq!(output.fn_sigs["alpha.run"].return_type, Ty::I32);
-    assert_eq!(output.fn_sigs["beta.run"].return_type, Ty::String);
+    assert_eq!(output.sigs()["alpha.run"].return_type, Ty::I32);
+    assert_eq!(output.sigs()["beta.run"].return_type, Ty::String);
 }
 
 // -- Import with no resolved items (stdlib) still works --
@@ -2440,7 +2469,7 @@ fn import_without_resolved_items_emits_unresolved_error() {
     // An import with resolved_items = None and no stdlib match (empty registry)
     // must now emit an UnresolvedImport error rather than silently dropping.
     let import = ImportDecl {
-        path: vec!["unknown".to_string(), "pkg".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["unknown", "pkg"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2480,7 +2509,7 @@ fn import_with_resolved_items_no_error() {
 #[test]
 fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
-        path: vec!["std".to_string(), "stream".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "stream"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2490,7 +2519,7 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
         resolved_source_paths: Vec::new(),
     };
     let fs_import = ImportDecl {
-        path: vec!["std".to_string(), "fs".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "fs"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2511,11 +2540,11 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&program);
     let stream_open = output
-        .fn_sigs
+        .sigs()
         .get("std.stream.open")
         .expect("expected std::stream import to register std.stream.open");
     assert!(
-        !output.fn_sigs.contains_key("stream.open"),
+        !output.sigs().contains("stream.open"),
         "the stdlib function registry must not retain a leaf-qualified declaration identity"
     );
 
@@ -2526,9 +2555,8 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
         stream_open.return_type,
         Ty::result(
             Ty::Named {
-                name: "Stream".to_string(),
                 args: vec![Ty::Bytes],
-                builtin: Some(BuiltinType::Stream),
+                head: crate::TypeHead::Builtin(BuiltinType::Stream)
             },
             Ty::String,
         ),
@@ -2539,7 +2567,7 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
 #[test]
 fn file_import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2574,12 +2602,12 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
         "shared",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
     let import = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2612,7 +2640,7 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
         "duplicate pub name error should mention the colliding binding: {error:?}"
     );
     assert!(
-        !output.fn_sigs.contains_key("shared"),
+        !output.sigs().contains("shared"),
         "an internally-colliding import must publish none of its declarations"
     );
 }
@@ -2621,7 +2649,7 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
 fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items() {
     let shared_source = std::path::PathBuf::from("pkg/pkg.hew");
     let import = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2632,7 +2660,10 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
                     "shared",
                     vec![],
                     Some(TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     }),
                 )),
@@ -2692,8 +2723,8 @@ fn flat_file_imported_pub_fn_publishes_root_call_target() {
         std::iter::repeat_n(helper_path.clone(), helper.program.items.len()).collect();
     import.resolved_source_paths = vec![helper_path.clone()];
 
-    let root_id = ModuleId::root();
-    let helper_id = ModuleId::new(vec!["helper".to_string()]);
+    let root_id = ModulePath::root();
+    let helper_id = ModulePath::new(["helper"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -2734,7 +2765,7 @@ fn flat_file_imported_pub_fn_publishes_root_call_target() {
         output.direct_call_targets.values().any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::User(declaration)
-                if declaration.full_path() == "helper.double"
+                if output.defs.path(*declaration) == "helper.double"
         )),
         "flat imported bare call must retain helper.double: {:#?}",
         output.direct_call_targets
@@ -2757,7 +2788,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
     );
 
     let import = ImportDecl {
-        path: vec!["std".to_string(), "fs".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "fs"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2784,10 +2815,10 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
         output.errors
     );
     assert!(
-        output.type_defs.contains_key("std.fs.IoError"),
+        output.type_def_at_path("std.fs.IoError").is_some(),
         "expected std::fs Hew items to remain registered"
     );
-    assert!(!output.type_defs.contains_key("IoError"));
+    assert!(output.type_def_at_path("IoError").is_none());
 }
 
 // -- Empty module import --
@@ -2817,14 +2848,17 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: field.to_string(),
+            name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    name: field_type.to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new(field_type),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -2843,15 +2877,6 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
     }
 }
 
-/// The canonical `Ty` an aliased member must upgrade to.
-fn named_ty(name: &str) -> Ty {
-    Ty::Named {
-        builtin: None,
-        name: name.to_string(),
-        args: vec![],
-    }
-}
-
 #[test]
 fn import_alias_in_record_field_resolves_to_source_identity() {
     // mod_a exports `pub type Payload { code: i64 }`; root imports it as `Tag`
@@ -2862,8 +2887,8 @@ fn import_alias_in_record_field_resolves_to_source_identity() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -2874,12 +2899,11 @@ fn import_alias_in_record_field_resolves_to_source_identity() {
     ]);
 
     let boxed_def = output
-        .type_defs
-        .get("Boxed")
+        .type_def_at_path("Boxed")
         .expect("`Boxed` must be registered");
     assert_eq!(
         boxed_def.fields.get("item"),
-        Some(&named_ty("myapp.mod_a.Payload")),
+        Some(&Ty::named_in(&output.defs, "myapp.mod_a.Payload", vec![])),
         "field `item: Tag` must resolve to the canonical source identity \
          `myapp.mod_a.Payload`, not the frozen bare alias `Tag`"
     );
@@ -2893,8 +2917,8 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -2902,14 +2926,14 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Enum,
-        name: "Wrap".to_string(),
+        name: Ident::new("Wrap"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
-            name: "Has".to_string(),
+            name: Ident::new("Has"),
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
-                    name: "Tag".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Tag"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -2931,17 +2955,24 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
     ]);
 
     let wrap_def = output
-        .type_defs
-        .get("Wrap")
+        .type_def_at_path("Wrap")
         .expect("`Wrap` must be registered");
     assert_eq!(
         wrap_def.variants.get("Has"),
-        Some(&VariantDef::Tuple(vec![named_ty("myapp.mod_a.Payload")])),
+        Some(&VariantDef::Tuple(vec![Ty::named_in(
+            &output.defs,
+            "myapp.mod_a.Payload",
+            vec![]
+        )])),
         "enum variant payload `Has(Tag)` must resolve to `myapp.mod_a.Payload`"
     );
     assert_eq!(
-        output.fn_sigs.get("Has").map(|sig| sig.params.clone()),
-        Some(vec![named_ty("myapp.mod_a.Payload")]),
+        output.sigs().get("Has").map(|sig| sig.params.clone()),
+        Some(vec![Ty::named_in(
+            &output.defs,
+            "myapp.mod_a.Payload",
+            vec![]
+        )]),
         "the variant constructor `Has` must be re-keyed to take `myapp.mod_a.Payload`"
     );
 }
@@ -2956,14 +2987,17 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Enum,
-        name: "Receive".to_string(),
+        name: Ident::new("Receive"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
-            name: "Message".to_string(),
+            name: Ident::new("Message"),
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
-                    name: "Delivery".to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("Delivery"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -2998,11 +3032,9 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
     ]);
 
     assert_eq!(
-        output
-            .type_defs
-            .get("pkg.Receive")
+        output.type_def_at_path("pkg.Receive")
             .and_then(|receive| receive.variants.get("Message")),
-        Some(&VariantDef::Tuple(vec![named_ty("pkg.Delivery")])),
+        Some(&VariantDef::Tuple(vec![Ty::named_in(&output.defs, "pkg.Delivery", vec![])])),
         "an imported enum payload must retain its defining-module identity, not a same-leaf neighbour or the prelude"
     );
 }
@@ -3016,8 +3048,8 @@ fn local_type_shadows_import_alias_in_member_position() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -3030,12 +3062,11 @@ fn local_type_shadows_import_alias_in_member_position() {
     ]);
 
     let boxed_def = output
-        .type_defs
-        .get("Boxed")
+        .type_def_at_path("Boxed")
         .expect("`Boxed` must be registered");
     assert_eq!(
         boxed_def.fields.get("item"),
-        Some(&named_ty("Tag")),
+        Some(&Ty::named_in(&output.defs, "Tag", vec![])),
         "a local `type Tag` must shadow the import alias `Tag` in member position; \
          the field must NOT upgrade to `mod_a.Payload`"
     );
@@ -3051,8 +3082,8 @@ fn aliased_member_matches_qualified_member_type() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -3065,16 +3096,14 @@ fn aliased_member_matches_qualified_member_type() {
     ]);
 
     let aliased_field = output
-        .type_defs
-        .get("AliasedBox")
+        .type_def_at_path("AliasedBox")
         .and_then(|d| d.fields.get("item"));
     let qualified_field = output
-        .type_defs
-        .get("QualifiedBox")
+        .type_def_at_path("QualifiedBox")
         .and_then(|d| d.fields.get("item"));
     assert_eq!(
         aliased_field,
-        Some(&named_ty("myapp.mod_a.Payload")),
+        Some(&Ty::named_in(&output.defs, "myapp.mod_a.Payload", vec![])),
         "the aliased member must resolve to the canonical `myapp.mod_a.Payload`"
     );
     assert_eq!(
@@ -3092,13 +3121,13 @@ fn import_selected_trait_from_module() {
 
     let trait_decl = TraitDecl {
         visibility: Visibility::Pub,
-        name: "Renderable".to_string(),
+        name: Ident::new("Renderable"),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "display".to_string(),
+            name: Ident::new("display"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -3136,13 +3165,13 @@ fn import_private_trait_not_registered() {
 
     let private_trait = TraitDecl {
         visibility: Visibility::Private,
-        name: "Internal".to_string(),
+        name: Ident::new("Internal"),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "internal_op".to_string(),
+            name: Ident::new("internal_op"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -3174,13 +3203,13 @@ fn orphan_impl_emits_warning() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "SomeTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("SomeTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "SomeType".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("SomeType"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3229,13 +3258,13 @@ fn noncanonical_builtin_spelling_does_not_own_intrinsic_impls() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "ExternalTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "Vec".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Vec"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3305,8 +3334,8 @@ fn check_intrinsic_coherence_source(
         parsed.errors
     );
 
-    let root_id = ModuleId::root();
-    let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
+    let root_id = ModulePath::root();
+    let builtins_id = ModulePath::new(["std", "builtins"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -3424,9 +3453,9 @@ fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
     import.resolved_items = Some(foreign.program.items.clone().into());
     import.resolved_source_paths = vec![foreign_path.clone()];
 
-    let root_id = ModuleId::root();
-    let foreign_id = ModuleId::new(vec!["vendor".to_string()]);
-    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let root_id = ModulePath::root();
+    let foreign_id = ModulePath::new(["vendor"]);
+    let consumer_id = ModulePath::new(["consumer"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -3444,7 +3473,7 @@ fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
             imports: vec![hew_parser::module::ModuleImport {
                 target: foreign_id.clone(),
                 spec: Some(ImportSpec::Names(vec![ImportName {
-                    name: "ForeignTrait".to_string(),
+                    name: Ident::new("ForeignTrait"),
                     alias: None,
                 }])),
                 span: import_span,
@@ -3478,7 +3507,7 @@ fn local_type_impl_no_orphan_warning() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "LocalType".to_string(),
+        name: Ident::new("LocalType"),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -3493,13 +3522,13 @@ fn local_type_impl_no_orphan_warning() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "ExternalTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "LocalType".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("LocalType"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3532,7 +3561,7 @@ fn local_actor_impl_no_orphan_warning() {
     // the actor's name must seed `local_type_defs` like any other type.
     let actor = ActorDecl {
         visibility: Visibility::Pub,
-        name: "Counter".to_string(),
+        name: Ident::new("Counter"),
         type_params: vec![],
         super_traits: None,
         init: None,
@@ -3549,13 +3578,13 @@ fn local_actor_impl_no_orphan_warning() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "ExternalTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "Counter".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Counter"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3593,7 +3622,7 @@ fn test_file_import_private_items_not_visible() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "private_func".to_string(),
+        name: Ident::new("private_func"),
         type_params: None,
         params: vec![],
         return_type: None,
@@ -3611,10 +3640,10 @@ fn test_file_import_private_items_not_visible() {
 
     let private_const = Item::Const(ConstDecl {
         visibility: Visibility::Private,
-        name: "PRIVATE_CONST".to_string(),
+        name: Ident::new("PRIVATE_CONST"),
         ty: (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3633,7 +3662,7 @@ fn test_file_import_private_items_not_visible() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
-        name: "PrivateType".to_string(),
+        name: Ident::new("PrivateType"),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -3653,7 +3682,7 @@ fn test_file_import_private_items_not_visible() {
     ];
 
     let import_decl = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -3673,7 +3702,7 @@ fn test_file_import_private_items_not_visible() {
     let output = checker.check_program(&program);
 
     assert!(
-        !output.fn_sigs.contains_key("private_func"),
+        !output.sigs().contains("private_func"),
         "private function must not be registered from file import"
     );
     assert!(
@@ -3691,20 +3720,20 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A,\n    B,\n    Present(i64),\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T,\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64,\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode.A => 1,\n        Mode.B => 2,\n        Mode.Present(value) => value,\n        Mode.Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode.A == Mode.A);\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64;  }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode.A => 1,\n        Mode.B => 2,\n        Mode.Present(value) => value,\n        Mode.Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode.A == Mode.A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
     assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
-            if import.path.as_slice() == ["m"] {
+            if import.path.to_string() == "m" {
                 import.resolved_items = Some(module.program.items.clone().into());
             }
         }
     }
-    let root_id = ModuleId::root();
-    let m_id = ModuleId::new(vec!["m".to_string()]);
+    let root_id = ModulePath::root();
+    let m_id = ModulePath::new(["m"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {
@@ -3739,20 +3768,20 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
 /// never by calling `.step(...)` or constructing a payload.
 fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckOutput) {
     let module = hew_parser::parse(
-        "machine Light {\n    events {\n        Flip,\n    }\n\n    state On,\n    state Off,\n\n    on Flip: On => Off,\n    on Flip: Off => On,\n}\n",
+        "machine Light {\n    events {\n        Flip;\n    }\n\n    state On;\n    state Off;\n\n    on Flip: On => Off;\n    on Flip: Off => On;\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
     assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
-            if import.path.as_slice() == ["m"] {
+            if import.path.to_string() == "m" {
                 import.resolved_items = Some(module.program.items.clone().into());
             }
         }
     }
-    let root_id = ModuleId::root();
-    let m_id = ModuleId::new(vec!["m".to_string()]);
+    let root_id = ModulePath::root();
+    let m_id = ModulePath::new(["m"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {
@@ -3970,7 +3999,7 @@ fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
 #[test]
 fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Mode {\n    A,\n    Z,\n}\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output
@@ -3987,7 +4016,7 @@ fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
 #[test]
 fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Other {\n    A,\n}\n\nfn main() {\n    let x = m.pick(Other.A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output

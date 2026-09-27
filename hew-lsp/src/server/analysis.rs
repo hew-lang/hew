@@ -22,7 +22,7 @@ use super::{DiagnosticMap, DiagnosticSource, DocumentState};
 
 /// Keep the URI under which the editor opened a source, even when the compiler
 /// reports its canonical filesystem path. Exact spellings take precedence.
-fn open_document_uri(uri: &Url, documents: &DashMap<Url, DocumentState>) -> Url {
+pub(super) fn open_document_uri(uri: &Url, documents: &DashMap<Url, DocumentState>) -> Url {
     if documents.contains_key(uri) {
         return uri.clone();
     }
@@ -79,7 +79,7 @@ pub(super) fn build_module_source_map(
             continue;
         };
         module_sources.insert(
-            module_id.path.join("."),
+            module_id.dotted(),
             DiagnosticSource {
                 uri: open_document_uri(&uri, documents),
                 line_offsets: compute_line_offsets(&source),
@@ -1582,22 +1582,7 @@ pub(super) mod tests {
 
     #[test]
     fn coverage_remote_ask_surface() {
-        let source = "#[wire]\n\
-                      type Job {\n\
-                      \x20   n: i32 @1,\n\
-                      }\n\
-                      actor Worker {\n\
-                      \x20   receive fn run(job: Job) -> i64 { 21 }\n\
-                      }\n\
-                      impl ActorMsg for Worker {\n\
-                      \x20   type Msg = Job;\n\
-                      \x20   type Reply = i64;\n\
-                      }\n\
-                      actor Caller {\n\
-                      \x20   receive fn run(peer: RemotePid<Worker>) {\n\
-                      \x20       let result = peer.ask(Job { n: 9 }, 250);\n\
-                      \x20   }\n\
-                      }\n";
+        let source = "#[wire]\ntype Job {\n    n: i32 @1;\n}\n\nactor Worker {\n    receive fn run(job: Job) -> i64 {\n        21\n    }\n}\n\nimpl ActorMsg for Worker {\n    type Msg = Job;\n    type Reply = i64;\n}\n\nactor Caller {\n    receive fn run(peer: RemotePid<Worker>) {\n        let result = peer.ask(Job { n: 9 }, 250);\n    }\n}\n";
         let doc = analyze_repo_rooted("lsp_cov_remote_ask", source);
 
         assert_eq!(hard_type_diagnostic(&doc), None);

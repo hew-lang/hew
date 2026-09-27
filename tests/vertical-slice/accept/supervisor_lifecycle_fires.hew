@@ -13,7 +13,7 @@
 //   cannot tell init-firing from spawn-argument seeding. This fixture's init()
 //   is the only writer of `value`, so it can.
 //
-// Determinism: the restart is observed with `await_restart`, the cooperative
+// Determinism: the restart is observed with `restarted`, the cooperative
 // barrier that suspends until the named child's slot is Live again. The
 // supervisor's restart counter advances only AFTER restart_child_from_spec +
 // store_child_slot complete, and the lifecycle wrapper fires inside
@@ -26,7 +26,7 @@
 // A run where either hook is skipped reads a different number -- a distinct,
 // visible failure, never a false pass.
 actor Counter {
-    var value: i64,
+    var value: i64;
     init() {
         value = 100;
     }
@@ -43,10 +43,10 @@ actor Counter {
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child counter: Counter,
+    child counter: Counter;
 }
 
 fn main() -> i64 {
@@ -56,19 +56,23 @@ fn main() -> i64 {
         .Ok(v) => v,
         .Err(_) => {
             return 1;
-        },
+        }
     };
     if initial != 110 {
         return initial;
     }
     let _ = c.crash_me();
-    let _ = await_restart sup.counter;
+    let _ = {
+        let __hew_migrated_role_2279 = sup.counter;
+        restarted(__hew_migrated_role_2279);
+        __hew_migrated_role_2279
+    };
     let c2 = sup.counter;
     let after = match c2.get() {
         .Ok(v) => v,
         .Err(_) => {
             return 3;
-        },
+        }
     };
     initial + after
 }

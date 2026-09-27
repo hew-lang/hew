@@ -1,0 +1,10 @@
+[[case]]
+id = "string-payload-handoff"
+intent = "Exact ownership oracle for a retained local copy of a matched enum's `string` payload. Shape `string_payload_handoff_50` (high string payload handoffs do not double free or read poison, low and high string payload handoffs are exactly leak clean) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-payload-handoff.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "generator-env-clone-control"
+intent = "Standalone memory-safety oracle for owned generator environment snapshots. Shape `generator_env_clone_control` (generator env clone direct and control have zero leaks) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/generator-env-clone-control.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "128:128:128:128:OK"
+exit = 0

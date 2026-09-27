@@ -12,11 +12,16 @@ fn take(consume input: Stream<string>, value: i64) {
     println(value);
 }
 
-fn fail() -> i64 { panic("argument"); }
+fn fail() -> i64 {
+    panic("argument");
+}
 
 fn main() {
     var value = 4;
-    defer { println(value); panic("older"); }
+    defer {
+        println(value);
+        panic("older");
+    }
     defer {
         value = 5;
         let input = open();

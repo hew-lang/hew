@@ -1,0 +1,10 @@
+[[case]]
+id = "match-result-record-destructure"
+intent = "Match-result record ownership oracle for the panic-sibling join shape. Shape `match_result_record_destructure_high` (match result record destructure leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-result-record-destructure.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 176

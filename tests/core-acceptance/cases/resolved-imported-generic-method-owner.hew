@@ -1,0 +1,24 @@
+import std.iter;
+
+type Map<T> { value: T; }
+
+impl<T> Iterator for Map<T> {
+    type Item = T;
+    fn next(var self) -> Option<T> { .None }
+}
+
+fn main() {
+    var local = Map<i64> { value: 7 };
+    let exhausted = match local.next() {
+        .None => true,
+        .Some(_) => false,
+    };
+    assert(exhausted);
+    var values: Vec<string> = Vec.new();
+    values.push("first");
+    values.push("second");
+    let mapped = iter.collect(iter.map(values.into_iter(), |value: string| value + "!"));
+    assert(mapped.len() == 2);
+    println(mapped[0]);
+    println(mapped[1]);
+}

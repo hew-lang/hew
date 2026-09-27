@@ -7,7 +7,7 @@ type Handle {
 
 #[resource]
 type Value {
-    handle: Handle,
+    handle: Handle;
 }
 
 trait ValueMethods {
@@ -68,7 +68,7 @@ fn main() {
         .Ok(value) => {
             println("built");
             value.close();
-        },
+        }
         .Err(e) => println(e),
     }
 }

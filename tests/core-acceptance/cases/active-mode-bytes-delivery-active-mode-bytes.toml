@@ -1,0 +1,10 @@
+[[case]]
+id = "active-mode-bytes-delivery-active-mode-bytes"
+intent = "Leak oracle for active-mode TCP `on_data(bytes)` delivery. Shape `active_mode_bytes_low` (active mode bytes delivery is exactly leak free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/active-mode-bytes-delivery-active-mode-bytes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "DATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDATA\nDONE\n"
+exit = 0

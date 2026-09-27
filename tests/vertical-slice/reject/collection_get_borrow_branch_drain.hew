@@ -4,7 +4,7 @@
 // loan instead.
 #[resource]
 type Tok {
-    id: i64,
+    id: i64;
 }
 
 impl Tok {

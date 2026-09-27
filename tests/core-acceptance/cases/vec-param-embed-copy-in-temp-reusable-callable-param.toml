@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-reusable-callable-param"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `reusable_callable_param` (reusable callable parameter invocation compiles native and wasm) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-reusable-callable-param.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "42\n4\n"
+exit = 0

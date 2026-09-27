@@ -36,6 +36,15 @@ pub struct FaultParkId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallableId(pub u32);
 
+/// One selected process entry in a compiled test file. Vector position is the
+/// runtime selection ordinal; a Result action is realized by a SIR adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemTestEntry {
+    pub callable: CallableId,
+    pub declaration: DefId,
+    pub action: hew_types::EntryExitAction,
+}
+
 /// Stable semantic identity for one generic HIR template.
 ///
 /// This deliberately contains the resolver-minted declaration identity only.
@@ -398,7 +407,7 @@ pub struct SemGenericTemplate {
     pub symbol: String,
     pub source_origin: FunctionSourceOrigin,
     /// Canonical source-semantic parameters in substitution order.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Pre-substitution semantic callable signature.
     pub signature: SemSignature,
 }
@@ -469,6 +478,23 @@ pub struct SemAggregateShape {
 /// Module-local identity of one demanded `(dyn Trait, concrete type)` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemVtableId(pub u32);
+
+/// Require exact trait declarations before a dispatch table or dynamic call
+/// crosses into a stage that keys by `ResolvedTy`.
+pub(crate) fn require_dyn_trait_ids(dyn_ty: &ResolvedTy) -> Result<(), String> {
+    let ResolvedTy::TraitObject { traits } = dyn_ty else {
+        return Err("dispatch erasure does not name a trait object".to_string());
+    };
+    for bound in traits {
+        if bound.trait_id.is_none() {
+            return Err(format!(
+                "dispatch erasure of `{}` has no checker-owned trait declaration",
+                bound.trait_name
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// One dispatchable slot of a demanded trait-object table.
 ///
@@ -548,6 +574,53 @@ pub struct SemVariantShape {
     pub enum_ty: ResolvedTy,
     pub is_indirect: bool,
     pub variants: Vec<SemVariant>,
+    /// Closed runtime roles paired with their declaration-order tags.
+    /// Source names are joined once when SIR admits the exact enum shape.
+    pub runtime_tags: Vec<(RuntimeVariantRole, u32)>,
+}
+
+/// Roles for variants the runtime can construct without executing a Hew body.
+/// The role is qualified by its owning enum, so a user's same-named variant
+/// cannot become a runtime result through a spelling collision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeVariantRole {
+    OptionSome,
+    OptionNone,
+    ResultOk,
+    ResultErr,
+    ActorErrorRejected,
+    ActorErrorFailed,
+    ActorErrorTrapped,
+    ActorErrorDead,
+    ActorErrorTimeout,
+    ActorErrorNodeNotRunning,
+    ActorErrorRoutingFailed,
+    ActorErrorEncodeFailed,
+    ActorErrorConnectionDropped,
+    ActorErrorPartition,
+    SendErrorFull,
+    SendErrorClosed,
+    SendErrorNodeRoutingNotWired,
+    SendErrorPartition,
+    SendErrorStaleRef,
+    SendErrorLocalShutdown,
+    SendErrorCancelled,
+    SendErrorVersionMismatch,
+    SendErrorUnauthorized,
+    SendErrorBackpressure,
+    SendErrorDead,
+    DeliveryAccepted,
+    DeliveryDiscarded,
+}
+
+impl SemVariantShape {
+    /// Numeric tag selected from this exact shape for a closed runtime role.
+    #[must_use]
+    pub fn runtime_tag(&self, role: RuntimeVariantRole) -> Option<u32> {
+        self.runtime_tags
+            .iter()
+            .find_map(|(candidate, tag)| (*candidate == role).then_some(*tag))
+    }
 }
 
 /// Module-local descriptor references proven to implement one closed runtime
@@ -556,8 +629,54 @@ pub struct SemVariantShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeVariantShapeRefs {
     pub result: VariantShapeId,
+    pub result_ok: u32,
+    pub result_err: u32,
     pub error: AggregateShapeId,
     pub error_len: VariantShapeId,
+    pub error_len_some: u32,
+    pub error_len_none: u32,
+}
+
+fn runtime_error_len_shape<'a>(
+    error_len: &SemAggregateField,
+    error_ty: &ResolvedTy,
+    variant_shapes: &'a [SemVariantShape],
+) -> Result<&'a SemVariantShape, String> {
+    let ResolvedTy::Named {
+        args,
+        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
+        ..
+    } = &error_len.ty
+    else {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    };
+    if error_len.name != "error_len" || args.as_slice() != [ResolvedTy::I64] {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    }
+    let shape = variant_shapes
+        .iter()
+        .find(|shape| shape.enum_ty == error_len.ty)
+        .ok_or_else(|| "runtime variant error_len has no demanded Option descriptor".to_string())?;
+    let [some, none] = shape.variants.as_slice() else {
+        return Err(
+            "runtime variant error_len Option must have Some and None variants".to_string(),
+        );
+    };
+    if some.name != "Some"
+        || some.fields.len() != 1
+        || some.fields[0].ty != ResolvedTy::I64
+        || none.name != "None"
+        || !none.fields.is_empty()
+    {
+        return Err("runtime variant error_len has a malformed Option descriptor".to_string());
+    }
+    Ok(shape)
 }
 
 /// Validate the demanded descriptors used by a runtime-produced enum value.
@@ -573,6 +692,7 @@ pub struct RuntimeVariantShapeRefs {
 /// descriptor, or any disagreement in canonical variant, field, or payload
 /// shape.
 pub fn runtime_variant_shape_refs(
+    defs: &hew_types::DefTable,
     kind: RuntimeVariantResultKind,
     result_ty: &ResolvedTy,
     aggregate_shapes: &[SemAggregateShape],
@@ -621,7 +741,7 @@ pub fn runtime_variant_shape_refs(
                 error_ty.user_facing()
             )
         })?;
-    if error_ty.nominal_instance().as_ref() != Some(&error.instance) {
+    if error_ty.nominal_instance(defs).as_ref() != Some(&error.instance) {
         return Err(format!(
             "runtime variant error `{}` descriptor has the wrong nominal identity",
             error_ty.user_facing()
@@ -639,45 +759,24 @@ pub fn runtime_variant_shape_refs(
             error_ty.user_facing()
         ));
     }
-    let ResolvedTy::Named {
-        args,
-        builtin: Some(BuiltinType::Option),
-        ..
-    } = &error_len.ty
-    else {
-        return Err(format!(
-            "runtime variant error `{}` error_len field must be Option<i64>",
-            error_ty.user_facing()
-        ));
-    };
-    if error_len.name != "error_len" || args.as_slice() != [ResolvedTy::I64] {
-        return Err(format!(
-            "runtime variant error `{}` error_len field must be Option<i64>",
-            error_ty.user_facing()
-        ));
-    }
-    let error_len_shape = variant_shapes
-        .iter()
-        .find(|shape| shape.enum_ty == error_len.ty)
-        .ok_or_else(|| "runtime variant error_len has no demanded Option descriptor".to_string())?;
-    let [some, none] = error_len_shape.variants.as_slice() else {
-        return Err(
-            "runtime variant error_len Option must have Some and None variants".to_string(),
-        );
-    };
-    if some.name != "Some"
-        || some.fields.len() != 1
-        || some.fields[0].ty != ResolvedTy::I64
-        || none.name != "None"
-        || !none.fields.is_empty()
-    {
-        return Err("runtime variant error_len has a malformed Option descriptor".to_string());
-    }
+    let error_len_shape = runtime_error_len_shape(error_len, error_ty, variant_shapes)?;
 
     Ok(RuntimeVariantShapeRefs {
         result: result.id,
+        result_ok: result
+            .runtime_tag(RuntimeVariantRole::ResultOk)
+            .ok_or_else(|| "runtime Result descriptor has no checked Ok role".to_string())?,
+        result_err: result
+            .runtime_tag(RuntimeVariantRole::ResultErr)
+            .ok_or_else(|| "runtime Result descriptor has no checked Err role".to_string())?,
         error: error.id,
         error_len: error_len_shape.id,
+        error_len_some: error_len_shape
+            .runtime_tag(RuntimeVariantRole::OptionSome)
+            .ok_or_else(|| "runtime error_len descriptor has no checked Some role".to_string())?,
+        error_len_none: error_len_shape
+            .runtime_tag(RuntimeVariantRole::OptionNone)
+            .ok_or_else(|| "runtime error_len descriptor has no checked None role".to_string())?,
     })
 }
 
@@ -743,6 +842,8 @@ pub struct SemModule {
     /// Neither lowering nor the verifier rediscovers an entry from a
     /// declaration path or emitted symbol.
     pub entry_callable: Option<CallableId>,
+    /// Ordered entry points of a compile-once test dispatcher.
+    pub test_entries: Vec<SemTestEntry>,
     pub functions: Vec<SemFunction>,
     /// Demanded trait-object dispatch tables in module-local ID order.
     pub vtables: Vec<SemVtable>,
@@ -765,10 +866,14 @@ pub struct SemModule {
     pub bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
     /// Regex-literal patterns in `literal_id` order, carried straight from
     /// HIR's deduplicated table. Each is compiled once into the module's
-    /// handle array; a `RegexMatch` call selects its slot by index.
+    /// handle array; a `RegexMatch` call selects its slot by index. Native
+    /// module initialization and cleanup own the handles.
     pub regex_patterns: Vec<String>,
     /// Root-unit lexical scopes and site offsets, for native debug metadata.
     pub debug: crate::SemDebugFacts,
+    /// The compilation's declaration table: every `DefId` in the module
+    /// indexes it, and it renders declarations for diagnostics and symbols.
+    pub defs: std::sync::Arc<hew_types::DefTable>,
 }
 
 impl SemModule {
@@ -1050,12 +1155,10 @@ pub fn collection_value_dependencies(
         if matches!(
             &ty,
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorHandle),
+                head: hew_types::TypeHead::Actor(_),
                 ..
             }
-        ) || matches!(&ty, ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::ActorFn), args, ..
-        } if args.len() == 2)
+        ) || matches!(&ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn), args, .. } if args.len() == 2)
         {
             // An actor handle's type arguments are the actor declaration's own,
             // and an anonymous actor's are its protocol: neither is an embedded
@@ -1067,7 +1170,7 @@ pub fn collection_value_dependencies(
             // with no owned fields: a bit copy is its complete recipe.
             continue;
         }
-        if matches!(&ty, ResolvedTy::Named { builtin: Some(kind), .. }
+        if matches!(&ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(kind), .. }
             if kind.is_encoding_value())
         {
             // A managed encoding value carries its own copy and release
@@ -1963,6 +2066,9 @@ pub enum SemTerminator {
     /// The message occupies operand slot zero; cleanup arguments follow it.
     Panic {
         message: BoundaryOperand,
+        /// Operator, rendered left value and rendered right value, when this
+        /// fault came from a compared assertion.
+        assertion: Option<[BoundaryOperand; 3]>,
         cleanup: Edge,
     },
     /// A language-visible trap (§1.6). Unlike [`Self::Unreachable`] this is a
@@ -2021,7 +2127,19 @@ impl SemTerminator {
     /// `u32` operand-slot range can represent.
     pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
         match self {
-            Self::Panic { message, .. } => visit(OperandSlot(0), message),
+            Self::Panic {
+                message, assertion, ..
+            } => {
+                visit(OperandSlot(0), message);
+                if let Some(assertion) = assertion {
+                    for (index, operand) in assertion.iter().enumerate() {
+                        visit(
+                            OperandSlot(u32::try_from(index + 1).expect("assertion operand slot")),
+                            operand,
+                        );
+                    }
+                }
+            }
             Self::Return { value: Some(value) }
             | Self::ResumeUnwind {
                 handback: Some(value),
@@ -2237,13 +2355,26 @@ impl SemTerminator {
                         .expect("terminator operand count exceeds u32");
                 }
             }
-            Self::Panic { message, cleanup } => {
+            Self::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => {
                 visit(OperandSlot(0), &message.operand);
+                if let Some(assertion) = assertion {
+                    for (index, value) in assertion.iter().enumerate() {
+                        visit(
+                            OperandSlot(u32::try_from(index + 1).expect("assertion operand slot")),
+                            &value.operand,
+                        );
+                    }
+                }
+                let offset = if assertion.is_some() { 4 } else { 1 };
                 cleanup.visit_operands(|slot, operand| {
                     visit(
                         OperandSlot(
                             slot.0
-                                .checked_add(1)
+                                .checked_add(offset)
                                 .expect("SIR panic operand count exceeds u32"),
                         ),
                         operand,
@@ -2406,13 +2537,26 @@ impl SemTerminator {
                         .expect("terminator operand count exceeds u32");
                 }
             }
-            Self::Panic { message, cleanup } => {
+            Self::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => {
                 visit(OperandSlot(0), &mut message.operand);
+                if let Some(assertion) = assertion {
+                    for (index, value) in assertion.iter_mut().enumerate() {
+                        visit(
+                            OperandSlot(u32::try_from(index + 1).expect("assertion operand slot")),
+                            &mut value.operand,
+                        );
+                    }
+                }
+                let offset = if assertion.is_some() { 4 } else { 1 };
                 cleanup.visit_operands_mut(|slot, operand| {
                     visit(
                         OperandSlot(
                             slot.0
-                                .checked_add(1)
+                                .checked_add(offset)
                                 .expect("SIR panic operand count exceeds u32"),
                         ),
                         operand,
@@ -2937,6 +3081,15 @@ impl SemTerminator {
     pub fn operand_context(&self, slot: OperandSlot) -> &'static str {
         match self {
             Self::Panic { .. } if slot.0 == 0 => "panic message",
+            Self::Panic {
+                assertion: Some(_), ..
+            } if slot.0 == 1 => "assertion operator",
+            Self::Panic {
+                assertion: Some(_), ..
+            } if slot.0 == 2 => "assertion left operand",
+            Self::Panic {
+                assertion: Some(_), ..
+            } if slot.0 == 3 => "assertion right operand",
             Self::Panic { .. } => "panic cleanup-edge argument",
             Self::Return { .. } => "return value",
             Self::Goto(_) => "goto edge argument",

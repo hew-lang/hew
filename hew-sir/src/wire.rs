@@ -103,7 +103,7 @@ impl SemWirePlan {
             ) => Ok(()),
             (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Vec),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
                     args,
                     ..
                 },
@@ -111,7 +111,7 @@ impl SemWirePlan {
             )
             | (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::HashSet),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashSet),
                     args,
                     ..
                 },
@@ -119,7 +119,7 @@ impl SemWirePlan {
             ) if args.len() == 1 => child(&args[0], value, records, enums),
             (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::HashMap),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashMap),
                     args,
                     ..
                 },
@@ -130,7 +130,7 @@ impl SemWirePlan {
             }
             (
                 ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Option),
+                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Option),
                     args,
                     ..
                 },
@@ -271,56 +271,4 @@ pub struct SemWireTextResult {
     pub shape: VariantShapeId,
     pub ok: u32,
     pub error: u32,
-}
-
-impl SemWirePlan {
-    /// A text mapping must retain every field and variant after applying names.
-    pub(crate) fn verify_text_names(
-        &self,
-        format: hew_types::WireTextFormat,
-    ) -> Result<(), String> {
-        let yaml = format == hew_types::WireTextFormat::Yaml;
-        let format_name = if yaml { "YAML" } else { "JSON" };
-        match &self.kind {
-            SemWireKind::Scalar => {}
-            SemWireKind::Vector(value)
-            | SemWireKind::Set(value)
-            | SemWireKind::Option { value, .. } => value.verify_text_names(format)?,
-            SemWireKind::Map { key, value } => {
-                key.verify_text_names(format)?;
-                value.verify_text_names(format)?;
-            }
-            SemWireKind::Record { fields, .. } => {
-                let mut names = std::collections::HashSet::new();
-                for field in fields {
-                    let name = if yaml {
-                        &field.yaml_name
-                    } else {
-                        &field.json_name
-                    };
-                    if !names.insert(name) {
-                        return Err(format!("wire {format_name} field name `{name}` is ambiguous after naming metadata"));
-                    }
-                    field.value.verify_text_names(format)?;
-                }
-            }
-            SemWireKind::Enum { variants, .. } => {
-                let mut names = std::collections::HashSet::new();
-                for variant in variants {
-                    let name = if yaml {
-                        &variant.yaml_name
-                    } else {
-                        &variant.json_name
-                    };
-                    if !names.insert(name) {
-                        return Err(format!("wire {format_name} variant name `{name}` is ambiguous after naming metadata"));
-                    }
-                    for field in &variant.fields {
-                        field.verify_text_names(format)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 }

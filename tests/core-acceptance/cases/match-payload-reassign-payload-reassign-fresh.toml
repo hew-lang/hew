@@ -1,0 +1,10 @@
+[[case]]
+id = "match-payload-reassign-payload-reassign-fresh"
+intent = "Projected-payload move-out UAF / double-free oracle (issue #2523). Shape `payload_reassign_fresh_high` (fresh scrutinee move reassign flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-payload-reassign-payload-reassign-fresh.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 150

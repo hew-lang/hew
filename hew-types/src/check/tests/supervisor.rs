@@ -7,9 +7,7 @@ pub(super) use super::*;
 #[test]
 fn nested_supervisor_remains_a_valid_child_target() {
     let output = check_source(
-        "actor Worker { receive fn ping() {} }\n\
-         supervisor Inner { child worker: Worker, }\n\
-         supervisor Root { child inner: Inner, }",
+        "actor Worker {\n    receive fn ping() {}\n}\n\nsupervisor Inner {\n    child worker: Worker;\n}\n\nsupervisor Root {\n    child inner: Inner;\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -19,17 +17,47 @@ fn nested_supervisor_remains_a_valid_child_target() {
 }
 
 #[test]
+fn supervisor_stop_clause_checks_a_configured_duration() {
+    let output = check_source(
+        "actor Worker { receive fn ping() {} }\n\
+         supervisor Team(grace: duration) { child worker: Worker() stop: grace; }",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let invalid = check_source(
+        "actor Worker { receive fn ping() {} }\n\
+         supervisor Team { child worker: Worker() stop: \"later\"; }",
+    );
+    assert!(
+        invalid
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "{:#?}",
+        invalid.errors
+    );
+}
+
+#[test]
 fn generic_supervisor_infers_config_and_child_type_before_function_projection() {
     let output = check_source(
-        r#"
-        fn main() {
-            let group = spawn Group(seed: "owned");
-            let value: Result<string, ActorError<Never>> = group.worker.get();
-            close(group);
-        }
-        actor Worker<T> { let value: T, receive fn get() -> T { value } }
-        supervisor Group<T>(seed: T) { child worker: Worker(value: seed), }
-    "#,
+        r#"fn main() {
+    let group = spawn Group(seed: "owned");
+    let value: Result<string, ActorError<Never>> = group.worker.get();
+    stop(group); stopped(group);
+}
+
+actor Worker<T> {
+    let value: T;
+    receive fn get() -> T {
+        value
+    }
+}
+
+supervisor Group<T>(seed: T) {
+    child worker: Worker(value: seed);
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -37,10 +65,17 @@ fn generic_supervisor_infers_config_and_child_type_before_function_projection() 
 #[test]
 fn generic_supervisor_rejects_wrong_child_argument_type() {
     let output = check_source(
-        r"
-        actor Worker<T> { let value: T, receive fn get() -> T { value } }
-        supervisor Group<T>(seed: T) { child worker: Worker<i64>(value: seed), }
-    ",
+        r"actor Worker<T> {
+    let value: T;
+    receive fn get() -> T {
+        value
+    }
+}
+
+supervisor Group<T>(seed: T) {
+    child worker: Worker<i64>(value: seed);
+}
+",
     );
     assert!(
         output
@@ -73,15 +108,23 @@ fn generic_supervisor_rejects_non_send_type_argument_at_spawn() {
 #[test]
 fn generic_supervisor_checks_nested_send_bounds() {
     let output = check_source(
-        r#"
-        actor Worker<T> { let value: T, receive fn get() -> T { value } }
-        supervisor Group<T>(seed: Vec<T>) { child worker: Worker<Vec<T>>(value: seed), }
-        fn main() {
-            let group = spawn Group(seed: ["owned"]);
-            let values: Result<Vec<string>, ActorError<Never>> = group.worker.get();
-            close(group);
-        }
-    "#,
+        r#"actor Worker<T> {
+    let value: T;
+    receive fn get() -> T {
+        value
+    }
+}
+
+supervisor Group<T>(seed: Vec<T>) {
+    child worker: Worker<Vec<T>>(value: seed);
+}
+
+fn main() {
+    let group = spawn Group(seed: ["owned"]);
+    let values: Result<Vec<string>, ActorError<Never>> = group.worker.get();
+    stop(group); stopped(group);
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
@@ -90,21 +133,22 @@ fn generic_supervisor_checks_nested_send_bounds() {
 fn supervisor_init_arg_scalar_config_field_admitted() {
     // Config field access must be typed before constructing the child.
     let output = check_source(
-        r"
-        type AppConfig { size: i64 }
+        r"type AppConfig {
+    size: i64;
+}
 
-        actor Cache {
-            var stored: i64,
-            init(capacity: i64) {
-                stored = capacity;
-            }
-            receive fn noop() {}
-        }
+actor Cache {
+    var stored: i64;
+    init(capacity: i64) {
+        stored = capacity;
+    }
+    receive fn noop() {}
+}
 
-        supervisor App(config: AppConfig) {
-            child cache: Cache(capacity: config.size),
-        }
-        ",
+supervisor App(config: AppConfig) {
+    child cache: Cache(capacity: config.size);
+}
+",
     );
 
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
@@ -115,21 +159,22 @@ fn supervisor_init_arg_config_nonexistent_field_surfaces_error() {
     // Typing the init-arg expr against the config param surfaces a real
     // diagnostic for a missing config field, at the arg-expr span.
     let output = check_source(
-        r"
-        type AppConfig { size: i64 }
+        r"type AppConfig {
+    size: i64;
+}
 
-        actor Cache {
-            var capacity: i64,
-            init(capacity: i64) {
-                capacity = capacity;
-            }
-            receive fn noop() {}
-        }
+actor Cache {
+    var capacity: i64;
+    init(capacity: i64) {
+        capacity = capacity;
+    }
+    receive fn noop() {}
+}
 
-        supervisor App(config: AppConfig) {
-            child cache: Cache(capacity: config.nonexistent),
-        }
-        ",
+supervisor App(config: AppConfig) {
+    child cache: Cache(capacity: config.nonexistent);
+}
+",
     );
 
     assert!(
@@ -149,21 +194,22 @@ fn supervisor_init_arg_config_field_type_mismatch_surfaces_error() {
     // type-mismatch diagnostic (the actor expects i64; the config field is
     // bool). The init-arg-expr typing is what makes this catchable.
     let output = check_source(
-        r"
-        type AppConfig { flag: bool }
+        r"type AppConfig {
+    flag: bool;
+}
 
-        actor Cache {
-            var capacity: i64,
-            init(capacity: i64) {
-                capacity = capacity;
-            }
-            receive fn noop() {}
-        }
+actor Cache {
+    var capacity: i64;
+    init(capacity: i64) {
+        capacity = capacity;
+    }
+    receive fn noop() {}
+}
 
-        supervisor App(config: AppConfig) {
-            child cache: Cache(capacity: config.flag),
-        }
-        ",
+supervisor App(config: AppConfig) {
+    child cache: Cache(capacity: config.flag);
+}
+",
     );
 
     // The arg expr types cleanly to bool; the mismatch against the i64 param is
@@ -181,14 +227,15 @@ fn supervisor_init_arg_config_field_type_mismatch_surfaces_error() {
 #[test]
 fn supervisor_pool_count_missing_is_rejected() {
     let output = check_source(
-        r"
-        actor Worker { receive fn ping() {} }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App {
-            strategy: simple_one_for_one,
-            pool workers: Worker
-        }
-        ",
+supervisor App {
+    strategy: simple_one_for_one;
+    pool workers: Worker;
+}
+",
     );
     assert!(
         output
@@ -203,14 +250,15 @@ fn supervisor_pool_count_missing_is_rejected() {
 #[test]
 fn supervisor_pool_count_zero_literal_is_rejected() {
     let output = check_source(
-        r"
-        actor Worker { receive fn ping() {} }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App {
-            strategy: simple_one_for_one,
-            pool workers: Worker count: 0
-        }
-        ",
+supervisor App {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: 0;
+}
+",
     );
     assert!(
         output
@@ -225,14 +273,15 @@ fn supervisor_pool_count_zero_literal_is_rejected() {
 #[test]
 fn supervisor_pool_count_negative_literal_is_rejected() {
     let output = check_source(
-        r"
-        actor Worker { receive fn ping() {} }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App {
-            strategy: simple_one_for_one,
-            pool workers: Worker count: -3
-        }
-        ",
+supervisor App {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: -3;
+}
+",
     );
     assert!(
         output
@@ -247,14 +296,15 @@ fn supervisor_pool_count_negative_literal_is_rejected() {
 #[test]
 fn supervisor_pool_count_positive_literal_is_accepted() {
     let output = check_source(
-        r"
-        actor Worker { receive fn ping() {} }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App {
-            strategy: simple_one_for_one,
-            pool workers: Worker count: 5
-        }
-        ",
+supervisor App {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: 5;
+}
+",
     );
     assert!(
         !output
@@ -269,14 +319,15 @@ fn supervisor_pool_count_positive_literal_is_accepted() {
 #[test]
 fn supervisor_pool_count_string_literal_is_rejected() {
     let output = check_source(
-        r#"
-        actor Worker { receive fn ping() {} }
+        r#"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App {
-            strategy: simple_one_for_one,
-            pool workers: Worker count: "five"
-        }
-        "#,
+supervisor App {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: "five";
+}
+"#,
     );
     assert!(
         output
@@ -295,16 +346,19 @@ fn supervisor_pool_count_dynamic_config_is_accepted() {
     // rejects it with CodegenError::FailClosed — the dynamic 0..N bootstrap
     // loop is not yet emitted. This test only covers the type-checker accept.
     let output = check_source(
-        r"
-        type AppConfig { workers: i64 }
+        r"type AppConfig {
+    workers: i64;
+}
 
-        actor Worker { receive fn ping() {} }
+actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App(config: AppConfig) {
-            strategy: simple_one_for_one,
-            pool workers: Worker count: config.workers
-        }
-        ",
+supervisor App(config: AppConfig) {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: config.workers;
+}
+",
     );
     assert!(
         !output
@@ -319,23 +373,23 @@ fn supervisor_pool_count_dynamic_config_is_accepted() {
 #[test]
 fn supervisor_wired_cycle_reports_distinct_kind() {
     let output = check_source(
-        r"
-        actor ActorA {
-            init(dep: ActorB) {}
-            receive fn ping() {}
-        }
-        actor ActorB {
-            init(dep: ActorA) {}
-            receive fn ping() {}
-        }
+        r"actor ActorA {
+    init(dep: ActorB) {}
+    receive fn ping() {}
+}
 
-        supervisor CycleApp {
-            strategy: one_for_one,
+actor ActorB {
+    init(dep: ActorA) {}
+    receive fn ping() {}
+}
 
-            child a: ActorA wired_to: { dep: b },
-            child b: ActorB wired_to: { dep: a },
-        }
-        ",
+supervisor CycleApp {
+    strategy: one_for_one;
+
+    child a: ActorA wired_to: { dep: b };
+    child b: ActorB wired_to: { dep: a };
+}
+",
     );
 
     let err = output

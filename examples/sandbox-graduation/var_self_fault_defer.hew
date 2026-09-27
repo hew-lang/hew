@@ -2,8 +2,8 @@
 // caller's variable, capture or field, where a pending defer still reads it.
 // A defer in the method itself reads the receiver on either exit.
 type Counter {
-    n: i64,
-    label: string,
+    n: i64;
+    label: string;
 }
 
 impl Counter {
@@ -16,8 +16,8 @@ impl Counter {
 }
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 impl Point {
@@ -31,8 +31,8 @@ impl Point {
 }
 
 type Shape {
-    origin: Point,
-    name: string,
+    origin: Point;
+    name: string;
 }
 
 fn main() {

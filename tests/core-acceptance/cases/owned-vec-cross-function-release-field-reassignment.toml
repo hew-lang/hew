@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-vec-cross-function-release-field-reassignment"
+intent = "Leak oracle for cross-function `Vec<owned-record>` release. Shape `field_reassignment_df` (affected release paths do not double free, affected release sites emit owned symbol) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-vec-cross-function-release-field-reassignment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,24 +1,24 @@
+use hew_parser::ast::Ident;
 use hew_parser::ast::{Item, TraitItem};
 
 #[test]
 fn parses_trait_defaults_and_impl_type_aliases() {
-    let source = r"
-        trait Iterator {
-            type Item = int;
-            fn next(iter: Self) -> Self.Item;
-        }
+    let source = r"trait Iterator {
+    type Item = int;
+    fn next(iter: Self) -> Self.Item;
+}
 
-        type Counter {
-            value: int,
-        }
+type Counter {
+    value: int;
+}
 
-        impl Iterator for Counter {
-            type Item = int;
-            fn next(c: Counter) -> Self.Item {
-                c.value
-            }
-        }
-    ";
+impl Iterator for Counter {
+    type Item = int;
+    fn next(c: Counter) -> Self.Item {
+        c.value
+    }
+}
+";
 
     let parsed = hew_parser::parse(source);
     assert!(
@@ -49,5 +49,5 @@ fn parses_trait_defaults_and_impl_type_aliases() {
         other => panic!("expected impl item, got {other:?}"),
     };
     assert_eq!(impl_decl.type_aliases.len(), 1);
-    assert_eq!(impl_decl.type_aliases[0].name, "Item");
+    assert_eq!(impl_decl.type_aliases[0].name, Ident::new("Item"));
 }

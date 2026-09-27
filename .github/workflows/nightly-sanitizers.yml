@@ -58,34 +58,11 @@ jobs:
         run: make asan SANITIZER_RUST_TARGET=x86_64-unknown-linux-gnu
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Compiled .hew fixture ASan — leak detection for generated code
-  #
-  # Scope: compiled Hew programs linked against an ASan-instrumented libhew.a.
-  # The `rust-runtime-asan` job above instruments the Rust runtime crate under
-  # test; this job instruments the GENERATED CODE (the LLVM IR + clang-linked
-  # artefact produced by `hew compile`).  These are two different surfaces:
-  # - runtime-asan: cargo test --lib sees Rust-level allocation/free paths
-  # - fixture-asan: a compiled .hew binary running against ASan libhew.a sees
-  #   leaks that only appear in the generated code (e.g. a hew_vec_get_str
-  #   retained node that codegen failed to drop after a string compare)
-  #
-  # Three fixture probes:
-  #   clean-probe (--emit-obj path)
-  #       Exercises the previously-leaky Vec<string> index-into-compare and
-  #       local drop shapes (both fixed); must produce ZERO findings.
-  #   leak-probe (Hew generated-code)
-  #       asan_fixture_leak_probe.hew calls malloc via extern "C" and never frees
-  #       it.  The malloc call is in the LLVM IR produced by hew codegen — a
-  #       genuine generated-code leak, not a standalone C program.  The gate must
-  #       catch it, proving it would have flagged the historical array-repeat
-  #       Vec<string>/Vec<record> leaks that were previously macOS-oracle-only.
-  #   clean-probe (HEW_SANITIZE_ADDRESS=1 hew build path)
-  #       The same clean fixture linked by `hew build` with HEW_SANITIZE_ADDRESS=1
-  #       (the full CLI link step, not manual clang).  Proves the CLI flag
-  #       integration is exercised by this gate; must produce ZERO findings.
+  # Generated-code and runtime ownership cases share the instrumented build.
+  # The explicit safety integrations below exercise the C and host-client edges.
   # ─────────────────────────────────────────────────────────────────────────
-  compiled-fixture-asan:
-    name: Compiled fixture ASan (generated code)
+  core-safety:
+    name: Core safety (generated code and runtime)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -120,186 +97,60 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/sanitizer-fixture-asan/
-          key: fixture-asan-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: fixture-asan-${{ runner.os }}-
+            target/core-safety/
+          key: core-safety-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: core-safety-${{ runner.os }}-
 
-      - name: Run compiled-fixture ASan gate
+      - name: Run native ownership safety cases
         env:
-          LLVM_VERSION: ${{ env.LLVM_VERSION }}
           SANITIZER_RUST_TARGET: x86_64-unknown-linux-gnu
-          CARGO_TERM_COLOR: always
-        run: |
-          # scripts/asan-fixture-check.sh — three probes:
-          #   1. Builds hew CLI + libhew.a with nightly -Zsanitizer=address.
-          #   2. Compiles clean-probe + leak-probe via hew build --emit-obj,
-          #      then links with clang -fsanitize=address.
-          #   3. Also compiles clean-probe via HEW_SANITIZE_ADDRESS=1 hew build
-          #      (the full CLI link path through hew-cli/src/link.rs).
-          #   4. Runs clean-probe (zero findings), leak-probe (must catch the
-          #      Hew generated-code malloc leak), clean-probe CLI-link (zero
-          #      findings).
-          make asan-fixtures
+        run: make core-safety
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Rust runtime TSan — data-race detection for the actor runtime
-  #
-  # Scope: core concurrency primitives (reply-channel, mailbox, scheduler).
-  # Optional features (tokio, quinn, profiler) are excluded to avoid async-
-  # runtime noise and keep the run focused and fast.
-  #
-  # continue-on-error / advisory only — and it MUST stay that way until std can
-  # be instrumented.  -Cunsafe-allow-abi-mismatch lets the instrumented runtime
-  # link against the prebuilt, UNINSTRUMENTED sysroot std.  TSan models
-  # happens-before from instrumented atomics/locks only, so it cannot see the
-  # release/acquire edges inside std::sync::{Mutex,Condvar,mpsc} (futex-based,
-  # uninstrumented).  The result is a flood of false positives on code that is
-  # in fact correctly locked — e.g. ReplyRoutingTable::complete_pending writes
-  # and hew_node_api_ask reads both happen under the same `PendingReply.outcome`
-  # Mutex, yet TSan reports them as a race; the global allocator's dealloc path
-  # races itself for the same reason.  Trustworthy signal needs an instrumented
-  # std via -Zbuild-std, which currently fails with E0152 (duplicate lang item
-  # `sized`) when building std for the host triple — tracked in issue #1825,
-  # out of scope here.
-  # Until then this job is a build/run liveness check; any finding must be
-  # hand-verified for missing synchronisation before it is believed.
-  # ─────────────────────────────────────────────────────────────────────────
-  rust-runtime-tsan:
-    name: Rust runtime TSan (advisory)
+  # C extern byte ownership and compiled Hew host-client ownership are
+  # independent safety gates. Every matrix leg blocks the nightly result.
+  safety-integrations:
+    name: Safety integration (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    continue-on-error: true
-    timeout-minutes: 45
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [test-host-safety, test-extern-bytes-safety]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-
+      - name: Install LLVM and Clang ${{ env.LLVM_VERSION }}
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }} clang-${{ env.LLVM_VERSION }} \
+            libpolly-${{ env.LLVM_VERSION }}-dev libssl-dev pkg-config
+          sudo update-alternatives --install /usr/bin/clang clang \
+            /usr/bin/clang-${{ env.LLVM_VERSION }} 100
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: nightly
-
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/sanitizer-runtime-tsan/
-          key: runtime-tsan-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: runtime-tsan-${{ runner.os }}-
-
-      - name: Run hew-runtime TSan tests
+            target/core-safety/
+          key: safety-${{ matrix.target }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: safety-${{ matrix.target }}-${{ runner.os }}-
+      - name: Run instrumented integration
         env:
-          CARGO_TARGET_DIR: target/sanitizer-runtime-tsan
-          RUSTFLAGS: -Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
           SANITIZER_RUST_TARGET: x86_64-unknown-linux-gnu
-          # halt_on_error=1 surfaces races immediately rather than summarising
-          # them at process exit, which makes CI output easier to triage.
-          TSAN_OPTIONS: halt_on_error=1
-        run: |
-          # -Cunsafe-allow-abi-mismatch=sanitizer silences the hard ABI-mismatch
-          # error between the sanitizer-instrumented hew-runtime crates and the
-          # prebuilt (uninstrumented) sysroot std.  Because std stays
-          # uninstrumented, TSan cannot see std::sync happens-before edges and
-          # this job is advisory only (see the job header comment above).
-          #
-          # --no-default-features excludes the tokio/quinn/profiler optional
-          # features; the core runtime concurrency primitives (reply-channel,
-          # mailbox, scheduler) are exercised by the lib tests without them.
-          # --test-threads=1 avoids two TSan-specific pitfalls: (a) the ~20x
-          # slowdown makes timing-sensitive timer tests unreliable under
-          # parallel load; (b) single-threaded ensures TSan race reports are
-          # isolated to the test that triggered them, not cross-test noise.
-          #
-          # The invocation itself lives in the Makefile's `tsan` target so this
-          # job and a local run cannot drift; TSAN_OPTIONS above overrides the
-          # target's local-friendly default.
-          make tsan
+        run: make ${{ matrix.target }}
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Rust runtime Miri — aliasing / uninit-read / provenance for the runtime
-  #
-  # Scope: hew-runtime's pure-Rust unsafe data structures (send_ptr, rc, arc,
-  # tagged_union, arena, bytes, vecdeque, vec).  Miri interprets MIR, so it is
-  # the only tool in this file that covers Stacked/Tree-Borrows aliasing,
-  # uninitialised reads, and pointer provenance — none of which ASan or TSan
-  # catch.  It is also the only lane that needs no sanitizer-capable target,
-  # because it executes no native code.
-  #
-  # continue-on-error / advisory only — this lane is being grown incrementally
-  # toward a curated green surface (issue #1826).  The FFI / syscall / socket
-  # boundary deliberately stays on ASan: Miri cannot execute foreign functions,
-  # so subprocess death-tests and libc-backed paths are `#[cfg_attr(miri, ignore)]`
-  # and the arena chunk allocator swaps mmap/VirtualAlloc for a `cfg(miri)`
-  # std::alloc shim.  --no-default-features excludes the tokio/quinn/profiler
-  # optional features for the same reason TSan excludes them (async + network FFI
-  # Miri cannot interpret).  Green here means "the curated non-FFI surface is
-  # clean", NOT whole-crate coverage.
-  #
-  # MIRIFLAGS: -Zmiri-disable-isolation lets timer/clock/random read host
-  # time/entropy; -Zmiri-permissive-provenance silences the benign int->ptr cast
-  # warning from cross-thread pointer hand-off in tests without weakening UB
-  # detection.  The toolchain is pinned (nightly + rust-src + miri) so the lane is
-  # reproducible — mirrors the determinism the TSan lane is moving toward.
-  # ─────────────────────────────────────────────────────────────────────────
-  rust-runtime-miri:
-    name: Rust runtime Miri (advisory)
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
-        with:
-          toolchain: nightly-2026-06-14
-          components: miri, rust-src
-
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/miri-runtime/
-          key: runtime-miri-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: runtime-miri-${{ runner.os }}-
-
-      - name: Run hew-runtime Miri allowlist
-        # `make miri` owns the command: the toolchain, MIRIFLAGS, target dir and
-        # the curated GREEN allowlist all live in one place. This step used to
-        # hand-roll a copy with a "keep in sync" comment, which meant the target
-        # ran nowhere in CI and the two could drift silently.
-        run: make miri MIRI_TOOLCHAIN=nightly-2026-06-14
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Parser fuzz smoke — bounded libFuzzer run over the parser fuzz targets
-  #
-  # Scope: fuzz_structured (structured statement/expression generation),
-  # fuzz_mir (typecheck-clean source through HIR/MIR lowering), and
-  # fuzz_check (parse-clean source through the checker). Each runs for a
-  # fixed wall-clock budget (-max_total_time=120) and the job fails on any
-  # crash artifact libFuzzer writes.
-  #
-  # Nightly-only, deliberately: this is a corpus-driven exploratory run, so
-  # its outcome depends on which inputs libFuzzer's mutator happens to try in
-  # the time budget — the same commit can pass one run and trip on another.
-  # That nondeterminism is fine for a nightly signal but is excluded from
-  # ci.yml, whose per-PR gates must be deterministic. Stable regression
-  # programs are covered by core-acceptance.
-  #
-  # `make fuzz-smoke` self-provisions cargo-fuzz on the nightly toolchain
-  # (scripts/fuzz/smoke-bootstrap.sh) the same way `make structural-lint`
-  # self-provisions its pinned ast-grep toolchain: the install is a
-  # prerequisite of the gate target, not a separate manual step, so a warm
-  # cache makes it a fast no-op.
-  # ─────────────────────────────────────────────────────────────────────────
+  # Bounded parser fuzzing remains an independent blocking job.
   parser-fuzz-smoke:
     name: Parser fuzz smoke (libFuzzer, bounded)
     runs-on: ubuntu-24.04

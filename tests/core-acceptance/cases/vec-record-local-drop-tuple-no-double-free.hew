@@ -1,0 +1,9 @@
+fn main() {
+    var pairs: Vec<(i64, i64)> = Vec.new();
+    pairs.push((10, 20));
+    var words: Vec<string> = Vec.new();
+    words.push("hello");
+    let sum = pairs.len() + words.len();
+    print(sum);
+    print("OK");
+}

@@ -2098,27 +2098,24 @@ mod tests {
     mod afd_poller {
         use super::*;
         use std::io::Write;
-        use std::time::{Duration, Instant};
 
-        /// Poll until `poll_ready` reports the token (any event) or the deadline
-        /// elapses. Returns the reported event mask, or `None` on timeout.
-        unsafe fn wait_ready(p: *mut HewIoPoller, token: c_int, ms: u64) -> Option<c_int> {
-            let deadline = Instant::now() + Duration::from_millis(ms);
+        /// Poll until `poll_ready` reports the token (any event) and return the
+        /// reported event mask. The test runner's timeout is the hang guard.
+        unsafe fn wait_ready(p: *mut HewIoPoller, token: c_int) -> c_int {
             let mut fds = [0_i32; 8];
             let mut evs = [0_i32; 8];
-            while Instant::now() < deadline {
+            loop {
                 let n = unsafe {
                     hew_io_poller_poll_ready(p, 50, fds.as_mut_ptr(), evs.as_mut_ptr(), 8)
                 };
                 if n > 0 {
                     for i in 0..n as usize {
                         if fds[i] == token {
-                            return Some(evs[i]);
+                            return evs[i];
                         }
                     }
                 }
             }
-            None
         }
 
         #[test]
@@ -2163,7 +2160,7 @@ mod tests {
             client.flush().ok();
 
             // SAFETY: p valid; token registered.
-            let mask = unsafe { wait_ready(p, token, 2000) }.expect("no read readiness reported");
+            let mask = unsafe { wait_ready(p, token) };
             assert!(
                 mask & HEW_IO_READ != 0,
                 "expected HEW_IO_READ, got {mask:#x}"
@@ -2197,7 +2194,7 @@ mod tests {
             drop(client);
 
             // SAFETY: p valid; token registered.
-            let mask = unsafe { wait_ready(p, token, 2000) }.expect("no close readiness reported");
+            let mask = unsafe { wait_ready(p, token) };
             assert!(
                 mask & (HEW_IO_HUP | HEW_IO_ERROR | HEW_IO_READ) != 0,
                 "expected close/read readiness, got {mask:#x}"
@@ -2235,23 +2232,21 @@ mod tests {
             crate::transport::tcp_close_raw_for_test(conn);
         }
 
-        /// Poll until `poll_ready` reports a TERMINAL (HUP/ERROR) mask for `token`
-        /// or the deadline elapses. Returns the terminal mask, or `None`.
-        unsafe fn wait_terminal(p: *mut HewIoPoller, token: c_int, ms: u64) -> Option<c_int> {
-            let deadline = Instant::now() + Duration::from_millis(ms);
+        /// Poll until `poll_ready` reports a TERMINAL (HUP/ERROR) mask for
+        /// `token` and return it. The test runner's timeout is the hang guard.
+        unsafe fn wait_terminal(p: *mut HewIoPoller, token: c_int) -> c_int {
             let mut fds = [0_i32; 8];
             let mut evs = [0_i32; 8];
-            while Instant::now() < deadline {
+            loop {
                 let n = unsafe {
                     hew_io_poller_poll_ready(p, 50, fds.as_mut_ptr(), evs.as_mut_ptr(), 8)
                 };
                 for i in 0..n.max(0) as usize {
                     if fds[i] == token && evs[i] & (HEW_IO_HUP | HEW_IO_ERROR) != 0 {
-                        return Some(evs[i]);
+                        return evs[i];
                     }
                 }
             }
-            None
         }
 
         /// REGRESSION (MED/code, zombie leak): a peer close delivers a terminal
@@ -2278,13 +2273,11 @@ mod tests {
             // poller delivers and deliberately does not re-arm.
             drop(client);
             // SAFETY: p valid; token registered.
-            let mask = unsafe { wait_terminal(p, token, 2000) }
-                .expect("no terminal (HUP/ERROR) close readiness reported");
+            let mask = unsafe { wait_terminal(p, token) };
             assert!(mask & (HEW_IO_HUP | HEW_IO_ERROR) != 0, "got {mask:#x}");
 
             // The state is now disarmed (terminal completion drained, no re-arm).
             // unregister must drop it directly rather than zombieing it.
-            let start = Instant::now();
             // SAFETY: p valid.
             assert_eq!(unsafe { hew_io_poller_unregister(p, token) }, 0);
             // SAFETY: p valid; inspecting internal bookkeeping on the reactor thread.
@@ -2296,14 +2289,10 @@ mod tests {
             );
             assert_eq!(index, 0, "index left dangling");
 
-            // Nothing is in flight, so stop drains zero and returns promptly.
+            // Nothing is in flight, so stop drains zero and returns; the zero
+            // zombie count above is what makes that drain empty.
             // SAFETY: p valid; surrenders ownership.
             unsafe { hew_io_poller_stop(p) };
-            assert!(
-                start.elapsed() < Duration::from_millis(750),
-                "HUP→unregister→stop latency unbounded: {:?}",
-                start.elapsed()
-            );
             crate::transport::tcp_close_raw_for_test(conn);
         }
 

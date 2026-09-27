@@ -1,4 +1,7 @@
-type Failure { message: string, retained: Vec<string> }
+type Failure {
+    message: string;
+    retained: Vec<string>;
+}
 
 fn invoke(callback: fn() -> i64) -> i64 {
     let local = "invoke owner".to_upper();
@@ -8,10 +11,7 @@ fn invoke(callback: fn() -> i64) -> i64 {
 
 fn main() -> i64 {
     let caller = ["caller owner".to_upper(), "sibling".to_upper()];
-    let failure = Failure {
-        message: "échec\0après".to_upper(),
-        retained: ["callback owner".to_upper()],
-    };
+    let failure = Failure { message: "échec\0après".to_upper(), retained: ["callback owner".to_upper()] };
     let callback = || -> i64 {
         println(failure.retained[0]);
         panic(failure.message);

@@ -6,10 +6,15 @@
 //!
 //! Harness verb: hew check (must fail)
 
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
 
 #[resource]
-type Conn { id: i64, }
+type Conn {
+    id: i64;
+}
 
 impl Conn {
     fn close(consume self) {}

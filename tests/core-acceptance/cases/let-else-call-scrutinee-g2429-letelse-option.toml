@@ -1,0 +1,10 @@
+[[case]]
+id = "let-else-call-scrutinee-g2429-letelse-option"
+intent = "From-call `let … else` scrutinee enum-payload leak oracle (#2429 class). Shape `g2429_letelse_option_high` (letelse option string loop leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/let-else-call-scrutinee-g2429-letelse-option.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

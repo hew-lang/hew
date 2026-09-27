@@ -1,0 +1,11 @@
+[[case]]
+id = "identity_w1b_methods"
+intent = "Trait implementations with the same method name retain their own bodies, including primitive receivers and defaults."
+source = "../vertical-slice/accept/identity_w1b.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "A\nB\nA\nB\nalpha default\nbeta default\nalpha default\n"
+exit = 0

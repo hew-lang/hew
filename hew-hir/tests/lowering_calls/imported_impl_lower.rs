@@ -26,16 +26,20 @@
 
 use hew_hir::{HirDiagnosticKind, HirItem};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 use crate::support;
 
 #[test]
 fn imported_associated_paths_lower_through_canonical_impl_owner() {
-    let imported_src = r"
-pub type Box<T> { value: T, }
+    let imported_src = r"pub type Box<T> {
+    value: T;
+}
+
 impl<T> Box<T> {
-    pub fn make(value: T) -> Box<T> { Box<T> { value: value } }
+    pub fn make(value: T) -> Box<T> {
+        Box<T> { value: value }
+    }
 }
 ";
     for root_src in [
@@ -69,8 +73,9 @@ fn main() -> i64 {
 
 #[test]
 fn imported_dotted_struct_variants_lower_through_canonical_owner() {
-    let imported_src = r"
-pub enum Choice { Named { value: i64 } }
+    let imported_src = r"pub enum Choice {
+    Named { value: i64;  }
+}
 ";
     for root_src in [
         r"
@@ -103,22 +108,29 @@ fn value() -> m.Choice { m.Choice.Named { value: 7 } } fn main() {}
 ///  - `impl Foo { pub fn bar(f: Foo) -> i64 { helper(f.n) } }`
 fn build_imported_impl_program(with_private_helper: bool) -> Program {
     build_imported_impl_program_src(if with_private_helper {
-        r"
-pub type Foo {
-    n: i64,
+        r"pub type Foo {
+    n: i64;
 }
-fn helper(n: i64) -> i64 { n }
+
+fn helper(n: i64) -> i64 {
+    n
+}
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { helper(f.n) }
+    pub fn bar(f: Foo) -> i64 {
+        helper(f.n)
+    }
 }
 "
     } else {
-        r"
-pub type Foo {
-    n: i64,
+        r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { f.n }
+    pub fn bar(f: Foo) -> i64 {
+        f.n
+    }
 }
 "
     })
@@ -128,8 +140,10 @@ impl Foo {
 /// that constructs `Foo { n: 42 }` so the imported `Foo` type is exercised.
 fn build_imported_impl_program_src(imported_src: &str) -> Program {
     let root_src = r"
+import shapes;
+
 fn main() -> i64 {
-    var f = Foo { n: 42 };
+    var f = shapes.Foo { n: 42 };
     f.n
 }
 ";
@@ -143,15 +157,15 @@ fn build_imported_module_program_src(imported_src: &str, root_src: &str) -> Prog
         "imported parse errors: {:?}",
         imported.errors
     );
-    let root = hew_parser::parse(root_src);
+    let mut root = hew_parser::parse(root_src);
     assert!(
         root.errors.is_empty(),
         "root parse errors: {:?}",
         root.errors
     );
 
-    let imported_id = ModuleId::new(vec!["shapes".to_string()]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["shapes"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program
@@ -160,6 +174,11 @@ fn build_imported_module_program_src(imported_src: &str, root_src: &str) -> Prog
         .filter(|(item, _)| !matches!(item, Item::Import(_)))
         .cloned()
         .collect();
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            import.resolved_items = Some(imported_items.clone().into());
+        }
+    }
 
     let imported_module = Module {
         id: imported_id.clone(),
@@ -194,13 +213,14 @@ fn imported_private_struct_typedecl_is_registered_and_emitted() {
     // records private, while their emitted private helpers still field-access
     // those records. The MIR boundary needs the private record TypeDecl so its
     // field order is available downstream.
-    let imported_src = r"
-type FfiResult {
-    status: i32,
+    let imported_src = r"type FfiResult {
+    status: i32;
 }
+
 fn lift(raw: FfiResult) -> i64 {
     raw.status as i64
 }
+
 pub fn status() -> i64 {
     lift(FfiResult { status: 7 })
 }
@@ -254,10 +274,10 @@ fn main() -> i64 {
 fn unused_imported_private_struct_typedecl_is_harmlessly_emitted() {
     // The chosen scope mirrors public imported records: all private imported
     // struct TypeDecls are emitted, even when no emitted body references them.
-    let imported_src = r"
-type UnusedPrivate {
-    status: i32,
+    let imported_src = r"type UnusedPrivate {
+    status: i32;
 }
+
 pub fn ping() -> i64 {
     1
 }
@@ -293,10 +313,10 @@ fn imported_private_generic_struct_typedecl_stays_unemitted() {
     // Generic private handles such as std::stream::Stream<T>/Sink<T> have
     // intrinsic codegen paths. Emitting them as ordinary record TypeDecls would
     // misclassify those handles at the MIR/codegen boundary.
-    let imported_src = r"
-type PrivateBox<T> {
-    value: T,
+    let imported_src = r"type PrivateBox<T> {
+    value: T;
 }
+
 pub fn ping() -> i64 {
     1
 }
@@ -418,7 +438,20 @@ fn main() -> i64 {
         })
         .expect("expected imported opaque `Touch for Handle` impl metadata");
     assert_eq!(impl_block.self_type_name, "shapes.Handle");
-    assert_eq!(impl_block.method_symbols, vec!["shapes.Handle::touch"]);
+    let method = output.module.items.iter().find_map(|item| match item {
+        HirItem::Function(function) if Some(&function.id) == impl_block.method_item_ids.first() => {
+            Some(function)
+        }
+        _ => None,
+    });
+    assert_eq!(
+        method.map(|function| function.name.as_str()),
+        Some("shapes.Handle::touch")
+    );
+    assert_eq!(
+        method.map(|function| function.declaration),
+        impl_block.method_ids[0]
+    );
 
     let result = output.into_result();
     assert!(
@@ -435,20 +468,7 @@ fn imported_impl_body_using_ok_err_ctor_is_not_skipped() {
     // `fn_registry`, so they are not "unresolvable" bare calls. Regression for
     // the over-aggressive body-unresolvable gate that dropped every ADT-
     // returning imported impl method (e.g. `Conn::try_send`, `Url::port`).
-    let imported_src = "
-pub type Foo {
-    n: i64,
-}
-impl Foo {
-    pub fn try_get(f: Foo) -> Result<i64, string> {
-        if f.n < 0 {
-            .Err(\"negative\")
-        } else {
-            .Ok(f.n)
-        }
-    }
-}
-";
+    let imported_src = "pub type Foo {\n    n: i64;\n}\n\nimpl Foo {\n    pub fn try_get(f: Foo) -> Result<i64, string> {\n        if f.n < 0 {\n            .Err(\"negative\")\n        } else {\n            .Ok(f.n)\n        }\n    }\n}\n";
     let program = build_imported_impl_program_src(imported_src);
     let output = support::checker_pipeline::lower_through_checker_from_program(&program);
 
@@ -476,10 +496,10 @@ impl Foo {
 
 #[test]
 fn imported_impl_body_calling_fn_typed_parameter_is_emitted() {
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
     pub fn apply(f: Foo, callback: fn()) {
         callback();
@@ -510,10 +530,10 @@ impl Foo {
 
 #[test]
 fn imported_impl_body_calling_overloaded_source_builtin_is_emitted() {
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
     pub fn report(f: Foo) {
         println(f.n);
@@ -549,20 +569,18 @@ fn imported_impl_signature_returning_same_module_record_is_emitted() {
     // record declared in the same imported module (`CaptureMatches`). Once the
     // imported-module pre-pass has registered that record, the method signature
     // is resolvable at the MIR boundary and must not be skipped.
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 pub type CaptureMatches {
-    groups: Vec<string>,
-    group_count: i64,
+    groups: Vec<string>;
+    group_count: i64;
 }
+
 impl Foo {
     pub fn captures(f: Foo) -> CaptureMatches {
-        CaptureMatches {
-            groups: Vec<string>.new(),
-            group_count: f.n,
-        }
+        CaptureMatches { groups: Vec<string>.new(), group_count: f.n }
     }
 }
 ";
@@ -679,12 +697,14 @@ fn imported_impl_body_with_unresolvable_call_is_skipped_without_module_error() {
     // same-module fn, NOT in the rewrite map, and NOT a builtin variant ctor is
     // genuinely unresolvable cross-module and must still be skipped — not
     // emitted — and importing the module must not raise a module-level error.
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { nonexistent_fn(f.n) }
+    pub fn bar(f: Foo) -> i64 {
+        nonexistent_fn(f.n)
+    }
 }
 ";
     let program = build_imported_impl_program_src(imported_src);
@@ -720,17 +740,21 @@ impl Foo {
 
 #[test]
 fn called_imported_impl_body_with_unresolvable_call_fails_closed() {
-    let imported_src = r"
-pub type Foo {
-    n: i64,
+    let imported_src = r"pub type Foo {
+    n: i64;
 }
+
 impl Foo {
-    pub fn bar(f: Foo) -> i64 { nonexistent_fn(f.n) }
+    pub fn bar(f: Foo) -> i64 {
+        nonexistent_fn(f.n)
+    }
 }
 ";
     let root_src = r"
+import shapes;
+
 fn main() -> i64 {
-    let f = Foo { n: 42 };
+    let f = shapes.Foo { n: 42 };
     f.bar()
 }
 ";

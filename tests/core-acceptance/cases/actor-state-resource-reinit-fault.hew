@@ -1,6 +1,6 @@
 #[resource]
 type Socket {
-    label: string,
+    label: string;
 }
 
 impl Socket {
@@ -15,7 +15,7 @@ impl Socket {
 }
 
 actor Vault {
-    var sock: Socket,
+    var sock: Socket;
 
     receive fn swap(fail: bool) -> string {
         let label = sock.detach(fail);

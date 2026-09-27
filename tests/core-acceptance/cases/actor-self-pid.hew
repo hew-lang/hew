@@ -4,7 +4,7 @@
 // name, so the round trip proves the handle addresses the actor that sent it
 // rather than whichever handle the registry already had.
 actor Worker {
-    var name: string,
+    var name: string;
 
     receive fn register(reg: Registry) {
         let _ = reg.take(self);
@@ -16,7 +16,7 @@ actor Worker {
 }
 
 actor Registry {
-    var target: Worker,
+    var target: Worker;
 
     receive fn take(w: Worker) {
         target = w;

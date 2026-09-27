@@ -86,7 +86,7 @@ pub enum LintId {
     DeadCode,
     /// A discarded machine step report. A statement-position discard loses
     /// the step's typed outputs and disposition; read it or bind `let _ = …`.
-    /// Send and ask outcomes are `E_SEND_RESULT_DROPPED`, not a lint tier.
+    /// Result outcomes are `E_RESULT_DROPPED`, not a lint tier.
     MustUse,
     /// A receive handler contains a `sleep`/`sleep_until` loop whose only obvious
     /// exit is a sibling actor message, but the mailbox is not observed until
@@ -470,7 +470,7 @@ pub(super) fn lint_receive_fn_definition(
     rec: &ReceiveFnDecl,
     out: &mut Vec<TypeError>,
 ) {
-    let Some(shadowed_builtin) = shadowed_actor_handle_builtin(&rec.name) else {
+    let Some(shadowed_builtin) = shadowed_actor_handle_builtin(rec.name.name.as_str()) else {
         return;
     };
     ctx.emit(
@@ -680,7 +680,7 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     visitor.visit_expr(expr, span);
     match expr {
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

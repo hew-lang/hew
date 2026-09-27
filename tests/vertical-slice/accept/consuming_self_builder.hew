@@ -5,9 +5,14 @@
 //
 // Expected stdout:
 //   5
-pub type Builder { n: i64, }
+pub type Builder {
+    n: i64;
+}
+
 impl Builder {
-    fn build(consume self) -> i64 { self.n }
+    fn build(consume self) -> i64 {
+        self.n
+    }
 }
 
 fn main() {

@@ -1,0 +1,10 @@
+[[case]]
+id = "select_recv_guard"
+intent = "Regression guard for select's stream-receive arm: a `select` stream-receive arm (`pat from rx.recv()`) is valid and must keep checking OK independently of batch fork's actor-ask-only branch enforcement."
+source = "../vertical-slice/accept/select_recv_guard.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "a:7\n"
+exit = 0

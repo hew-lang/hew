@@ -14,11 +14,15 @@ fn drive(rounds: i64) -> i64 {
     while i < rounds {
         let tail = string.repeat("owned-heap-payload", 4);
         scope {
-            fork { sink(tail) }
+            fork {
+                sink(tail)
+            }
         };
         let statement = string.repeat("owned-heap-payload", 4);
         scope {
-            fork { sink(statement) };
+            fork {
+                sink(statement)
+            };
         };
         i = i + 1;
     }

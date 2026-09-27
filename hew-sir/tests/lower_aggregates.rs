@@ -43,25 +43,38 @@ fn assert_main_lowered(lowered: &hew_sir::LoweredModule) {
 #[test]
 fn pattern_guard_can_replace_a_sibling_but_not_its_borrowed_field() {
     let mut lowered = lower_source(
-        r"
-        #[resource] type Ticket { id: i64 }
-        impl Ticket { fn close(consume self) {} }
-        type Pair { first: Ticket, second: Ticket }
-        fn main() {
-            var pair = Pair { first: Ticket { id: 1 }, second: Ticket { id: 2 } };
-            match pair {
-                Pair { first: ticket, .. } if { pair.second = Ticket { id: 3 }; true } => ticket.close(),
-                _ => {},
-            }
-        }
-        ",
+        r"#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {}
+}
+
+type Pair {
+    first: Ticket;
+    second: Ticket;
+}
+
+fn main() {
+    var pair = Pair { first: Ticket { id: 1 }, second: Ticket { id: 2 } };
+    match pair {
+        Pair { first: ticket, .. } if {
+            pair.second = Ticket { id: 3 };
+            true
+        } => ticket.close(),
+        _ => {}
+    }
+}
+",
     );
     assert_main_lowered(&lowered);
     let main = lowered
         .module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .unwrap();
     let borrowed = main
         .blocks
@@ -117,7 +130,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
     assert!(main.blocks.iter().flat_map(|block| &block.ops).any(|op| {
         matches!(
@@ -129,6 +142,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         )
     }));
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -165,34 +179,37 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
 #[test]
 fn owned_record_shape_and_field_order_are_exact() {
     let lowered = lower_source(
-        r#"
-        type Packet { label: string, payload: bytes }
+        r#"type Packet {
+    label: string;
+    payload: bytes;
+}
 
-        fn keep_text(value: string) {}
-        fn keep_bytes(value: bytes) {}
+fn keep_text(value: string) {}
 
-        fn main() {
-            let original_label = "label";
-            let original_payload = b"A";
-            let packet = Packet { payload: original_payload, label: original_label };
-            let packet_copy = packet;
-            keep_text(original_label);
-            keep_bytes(original_payload);
-            keep_text(packet.label);
-            keep_text(packet.label);
-            keep_bytes(packet.payload);
-            keep_text(packet_copy.label);
-        }
-        "#,
+fn keep_bytes(value: bytes) {}
+
+fn main() {
+    let original_label = "label";
+    let original_payload = b"A";
+    let packet = Packet { payload: original_payload, label: original_label };
+    let packet_copy = packet;
+    keep_text(original_label);
+    keep_bytes(original_payload);
+    keep_text(packet.label);
+    keep_text(packet.label);
+    keep_bytes(packet.payload);
+    keep_text(packet_copy.label);
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
     // Name the shape this source demands rather than indexing the table.
-    let packets: Vec<_> = lowered
-        .module
+    let module = &lowered.module;
+    let packets: Vec<_> = module
         .aggregate_shapes
         .iter()
-        .filter(|shape| shape.instance.nominal.display_name() == "Packet")
+        .filter(|shape| module.defs.path(shape.instance.nominal.declaration()) == "Packet")
         .collect();
     let [shape] = packets.as_slice() else {
         panic!("one demanded record type must publish exactly one shape")
@@ -210,9 +227,10 @@ fn owned_record_shape_and_field_order_are_exact() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -268,15 +286,18 @@ fn owned_record_shape_and_field_order_are_exact() {
 #[test]
 fn owned_projection_refuses_a_missing_clone_recipe() {
     let mut lowered = lower_source(
-        r#"
-        type Packet { label: string }
-        fn keep_text(value: string) {}
-        fn main() {
-            let packet = Packet { label: "label" };
-            let label = packet.label;
-            keep_text(label);
-        }
-        "#,
+        r#"type Packet {
+    label: string;
+}
+
+fn keep_text(value: string) {}
+
+fn main() {
+    let packet = Packet { label: "label" };
+    let label = packet.label;
+    keep_text(label);
+}
+"#,
     );
     let projection = lowered
         .module
@@ -306,20 +327,28 @@ fn owned_projection_refuses_a_missing_clone_recipe() {
 #[test]
 fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
     let lowered = lower_source(
-        r#"
-        type Packet { label: string, payload: bytes }
+        r#"type Packet {
+    label: string;
+    payload: bytes;
+}
 
-        fn echo(value: Packet) -> Packet { value }
-        fn unused(value: Packet) -> Packet { value }
-        fn keep_text(value: string) {}
+fn echo(value: Packet) -> Packet {
+    value
+}
 
-        fn main() {
-            let original = Packet { label: "label", payload: b"A" };
-            let returned = echo(original);
-            keep_text(original.label);
-            keep_text(returned.label);
-        }
-        "#,
+fn unused(value: Packet) -> Packet {
+    value
+}
+
+fn keep_text(value: string) {}
+
+fn main() {
+    let original = Packet { label: "label", payload: b"A" };
+    let returned = echo(original);
+    keep_text(original.label);
+    keep_text(returned.label);
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -327,7 +356,7 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.declaration.full_path() == "echo")
+        .find(|callable| lowered.module.defs.path(callable.declaration) == "echo")
         .expect("echo must have an exact callable header");
     assert_eq!(echo.signature.params[0].passing, SemParamPassing::Borrow);
     assert_eq!(
@@ -355,7 +384,7 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
     assert!(main.blocks.iter().any(|block| {
         matches!(
@@ -395,35 +424,37 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
 #[test]
 fn aggregate_patterns_read_named_fields_and_preserve_siblings() {
     let lowered = lower_source(
-        r#"
-        type Packet { label: string, payload: bytes }
+        r#"type Packet {
+    label: string;
+    payload: bytes;
+}
 
-        fn make_packet() -> Packet {
-            Packet { label: "label", payload: b"payload" }
-        }
-        fn keep_text(value: string) {}
-        fn keep_bytes(value: bytes) {}
+fn make_packet() -> Packet {
+    Packet { label: "label", payload: b"payload" }
+}
 
-        fn main() {
-            let original = make_packet();
-            let { label, payload } = original;
-            keep_text(original.label);
-            keep_text(label);
-            keep_bytes(payload);
+fn keep_text(value: string) {}
 
-            let nested = (("nested", b"inner"), b"outer");
-            let ((nested_label, nested_payload), outer_payload) = nested;
-            let original_inner = nested.0;
-            keep_text(original_inner.0);
-            keep_text(nested_label);
-            keep_bytes(nested_payload);
-            keep_bytes(outer_payload);
+fn keep_bytes(value: bytes) {}
 
-            let ignored = ("kept", b"discarded");
-            let (kept, _) = ignored;
-            keep_text(kept);
-        }
-        "#,
+fn main() {
+    let original = make_packet();
+    let { label, payload } = original;
+    keep_text(original.label);
+    keep_text(label);
+    keep_bytes(payload);
+    let nested = (("nested", b"inner"), b"outer");
+    let ((nested_label, nested_payload), outer_payload) = nested;
+    let original_inner = nested.0;
+    keep_text(original_inner.0);
+    keep_text(nested_label);
+    keep_bytes(nested_payload);
+    keep_bytes(outer_payload);
+    let ignored = ("kept", b"discarded");
+    let (kept, _) = ignored;
+    keep_text(kept);
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -431,7 +462,7 @@ fn aggregate_patterns_read_named_fields_and_preserve_siblings() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
     let field_reads = main
         .blocks
@@ -461,12 +492,15 @@ fn aggregate_patterns_read_named_fields_and_preserve_siblings() {
 #[test]
 fn aggregate_destructure_refuses_a_result_outside_the_exact_shape() {
     let mut lowered = lower_source(
-        r#"
-        type Packet { label: string, payload: bytes }
-        fn main() {
-            let { label, payload } = Packet { label: "label", payload: b"payload" };
-        }
-        "#,
+        r#"type Packet {
+    label: string;
+    payload: bytes;
+}
+
+fn main() {
+    let { label, payload } = Packet { label: "label", payload: b"payload" };
+}
+"#,
     );
     let destructure = lowered
         .module
@@ -491,23 +525,32 @@ fn aggregate_destructure_refuses_a_result_outside_the_exact_shape() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the nested source and both runtime cleanup edges in one proof"
+)]
 fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
     let lowered = lower_source(
-        r#"
-        type Inner { items: Vec<string> }
-        type Outer { pair: (Inner, string) }
-        fn main() -> i64 {
-            let outer = Outer { pair: (Inner { items: ["first"] }, "sibling") };
-            outer.pair.0.items[0].len()
-        }
-        "#,
+        r#"type Inner {
+    items: Vec<string>;
+}
+
+type Outer {
+    pair: (Inner, string);
+}
+
+fn main() -> i64 {
+    let outer = Outer { pair: (Inner { items: ["first"] }, "sibling") };
+    outer.pair.0.items[0].len()
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let main = lowered
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     let loans: Vec<_> = main
         .blocks
@@ -525,6 +568,7 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
         "the leaf borrows directly from its owning root"
     );
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -594,23 +638,34 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
 #[test]
 fn borrowed_temporary_fields_can_return_an_independent_owner() {
     let lowered = lower_source(
-        r#"
-        type Inner { text: string }
-        type Outer { inner: Inner }
-        fn make() -> Outer { Outer { inner: Inner { text: "kept" } } }
-        fn echo(value: string) -> string { value }
-        fn main() -> i64 {
-            let kept = echo(make().inner.text);
-            kept.len()
-        }
-        "#,
+        r#"type Inner {
+    text: string;
+}
+
+type Outer {
+    inner: Inner;
+}
+
+fn make() -> Outer {
+    Outer { inner: Inner { text: "kept" } }
+}
+
+fn echo(value: string) -> string {
+    value
+}
+
+fn main() -> i64 {
+    let kept = echo(make().inner.text);
+    kept.len()
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let main = lowered
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     assert_eq!(
         main.blocks
@@ -624,7 +679,7 @@ fn borrowed_temporary_fields_can_return_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "echo")
+        .find(|f| lowered.module.defs.path(f.declaration) == "echo")
         .unwrap();
     assert!(
         echo.blocks.iter().flat_map(|b| &b.ops).any(|op| {
@@ -640,7 +695,7 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
     for later in [r#"{ holder.items = ["new"]; 0 }"#, "indices[99]"] {
         let lowered = lower_source(&format!(
             r#"
-            type Holder {{ items: Vec<string> }}
+            type Holder {{ items: Vec<string>; }}
             fn read(items: Vec<string>, index: i64) -> string {{ items[index] }}
             fn main() -> i64 {{
                 var holder = Holder {{ items: ["old"] }};
@@ -655,13 +710,13 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
             .module
             .callables
             .iter()
-            .find(|c| c.declaration.full_path() == "read")
+            .find(|c| lowered.module.defs.path(c.declaration) == "read")
             .unwrap();
         let main = lowered
             .module
             .functions
             .iter()
-            .find(|f| f.declaration.full_path() == "main")
+            .find(|f| lowered.module.defs.path(f.declaration) == "main")
             .unwrap();
         let captured = main
             .blocks
@@ -687,25 +742,35 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
 #[test]
 fn scalar_arguments_copy_the_exact_nested_leaf() {
     let lowered = lower_source(
-        r#"
-        type Inner { items: Vec<string>, count: i64 }
-        type Outer { inner: Inner }
-        fn echo(value: i64) -> i64 { value }
-        fn main() -> i64 {
-            let outer = Outer { inner: Inner { items: ["kept"], count: 7 } };
-            echo(outer.inner.count)
-        }
-        "#,
+        r#"type Inner {
+    items: Vec<string>;
+    count: i64;
+}
+
+type Outer {
+    inner: Inner;
+}
+
+fn echo(value: i64) -> i64 {
+    value
+}
+
+fn main() -> i64 {
+    let outer = Outer { inner: Inner { items: ["kept"], count: 7 } };
+    echo(outer.inner.count)
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let main = lowered
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -750,21 +815,26 @@ fn scalar_arguments_copy_the_exact_nested_leaf() {
 #[test]
 fn runtime_read_keeps_bindings_replaced_by_index_evaluation() {
     let lowered = lower_source(
-        r#"
-        type Holder { items: Vec<string> }
-        fn main() -> i64 {
-            var holder = Holder { items: ["old"] };
-            let kept = holder.items[{ holder.items = ["new"]; 0 }];
-            kept.len() + holder.items[0].len()
-        }
-        "#,
+        r#"type Holder {
+    items: Vec<string>;
+}
+
+fn main() -> i64 {
+    var holder = Holder { items: ["old"] };
+    let kept = holder.items[{
+        holder.items = ["new"];
+        0
+    }];
+    kept.len() + holder.items[0].len()
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let main = lowered
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     assert!(
         main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
@@ -780,7 +850,7 @@ fn function<'a>(lowered: &'a hew_sir::LoweredModule, name: &str) -> &'a hew_sir:
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == name)
+        .find(|function| lowered.module.defs.path(function.declaration) == name)
         .unwrap_or_else(|| panic!("`{name}` must have a body"))
 }
 
@@ -796,21 +866,24 @@ fn count_ops(function: &hew_sir::SemFunction, matches: impl Fn(&SemOpKind) -> bo
 #[test]
 fn functional_update_copies_carried_fields_from_a_live_base() {
     let lowered = lower_source(
-        r#"
-        type Holder { items: Vec<i64>, tag: string, count: i64 }
+        r#"type Holder {
+    items: Vec<i64>;
+    tag: string;
+    count: i64;
+}
 
-        fn keep(value: Holder) {}
+fn keep(value: Holder) {}
 
-        fn main() {
-            var seed: Vec<i64> = Vec.new();
-            let base = Holder { items: seed, tag: "base", count: 1 };
-            let retagged = Holder { tag: "retagged", ..base };
-            let refilled = Holder { count: 2, ..base };
-            keep(retagged);
-            keep(refilled);
-            keep(base);
-        }
-        "#,
+fn main() {
+    var seed: Vec<i64> = Vec.new();
+    let base = Holder { items: seed, tag: "base", count: 1 };
+    let retagged = Holder { ..base, tag: "retagged" };
+    let refilled = Holder { ..base, count: 2 };
+    keep(retagged);
+    keep(refilled);
+    keep(base);
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let main = function(&lowered, "main");
@@ -832,23 +905,27 @@ fn functional_update_copies_carried_fields_from_a_live_base() {
 #[test]
 fn functional_update_consumes_a_temporary_and_a_non_copyable_base() {
     let lowered = lower_source(
-        r#"
-        type Job { name: string, run: fn() -> string }
+        r#"type Job {
+    name: string;
+    run: fn() -> string;
+}
 
-        fn make() -> Job {
-            Job { name: "made", run: || -> string { "answer" } }
-        }
+fn make() -> Job {
+    Job { name: "made", run: || -> string {
+        "answer"
+    } }
+}
 
-        fn keep(value: Job) {}
+fn keep(value: Job) {}
 
-        fn main() {
-            let first = Job { name: "first", ..make() };
-            let seed = make();
-            let second = Job { name: "second", ..seed };
-            keep(first);
-            keep(second);
-        }
-        "#,
+fn main() {
+    let first = Job { ..make(), name: "first" };
+    let seed = make();
+    let second = Job { ..seed, name: "second" };
+    keep(first);
+    keep(second);
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let main = function(&lowered, "main");
@@ -874,24 +951,28 @@ fn functional_update_consumes_a_temporary_and_a_non_copyable_base() {
 #[test]
 fn functional_update_refuses_to_transfer_a_non_copyable_field_from_a_borrowed_base() {
     let lowered = lower_source(
-        r#"
-        type Job { name: string, run: fn() -> string }
+        r#"type Job {
+    name: string;
+    run: fn() -> string;
+}
 
-        fn make() -> Job {
-            Job { name: "made", run: || -> string { "answer" } }
-        }
+fn make() -> Job {
+    Job { name: "made", run: || -> string {
+        "answer"
+    } }
+}
 
-        fn renamed(job: Job) -> Job {
-            Job { name: "renamed", ..job }
-        }
+fn renamed(job: Job) -> Job {
+    Job { ..job, name: "renamed" }
+}
 
-        fn keep(value: Job) {}
+fn keep(value: Job) {}
 
-        fn main() {
-            let job = make();
-            keep(renamed(job));
-        }
-        "#,
+fn main() {
+    let job = make();
+    keep(renamed(job));
+}
+"#,
     );
     let status = lowered
         .statuses

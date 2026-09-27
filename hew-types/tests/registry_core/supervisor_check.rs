@@ -8,28 +8,35 @@ use common::typecheck_isolated as typecheck;
 #[test]
 fn multi_child_with_wired_to_accepted() {
     let output = typecheck(
-        r"
-        actor DbSupervisor {}
-        actor Broadcaster {}
-        actor WorkerPool {}
-        actor ConnectionAcceptor {
-            init(workers: WorkerPool, broadcaster: Broadcaster) {}
-        }
-        actor MessageCache {}
+        r"actor DbSupervisor {
+}
 
-        supervisor ChatApp {
-            strategy: one_for_one,
-            intensity: 5 within 60s,
+actor Broadcaster {
+}
 
-            child db: DbSupervisor,
-            child broadcaster: Broadcaster,
-            child worker_pool: WorkerPool,
-            child acceptor: ConnectionAcceptor wired_to: { workers: worker_pool, broadcaster: broadcaster },
-            child cache: MessageCache restart: transient
-        }
+actor WorkerPool {
+}
 
-        fn main() {}
-        ",
+actor ConnectionAcceptor {
+    init(workers: WorkerPool, broadcaster: Broadcaster) {}
+}
+
+actor MessageCache {
+}
+
+supervisor ChatApp {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child db: DbSupervisor;
+    child broadcaster: Broadcaster;
+    child worker_pool: WorkerPool;
+    child acceptor: ConnectionAcceptor wired_to: { broadcaster: broadcaster, workers: worker_pool };
+    child cache: MessageCache restart: transient;
+}
+
+fn main() {}
+",
     );
     let supervisor_errors: Vec<_> = output
         .errors
@@ -46,18 +53,18 @@ fn multi_child_with_wired_to_accepted() {
 #[test]
 fn simple_one_for_one_with_pool_accepted() {
     let output = typecheck(
-        r"
-        actor Worker {}
+        r"actor Worker {
+}
 
-        supervisor WorkerPool {
-            strategy: simple_one_for_one,
-            intensity: 10 within 60s,
+supervisor WorkerPool {
+    strategy: simple_one_for_one;
+    intensity: 10 within 60s;
 
-            pool worker: Worker count: 3
-        }
+    pool worker: Worker count: 3;
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     let supervisor_errors: Vec<_> = output
         .errors
@@ -70,130 +77,128 @@ fn simple_one_for_one_with_pool_accepted() {
     );
 }
 
-// ── await_restart keyword ────────────────────────────────────────────────────
+// ── Restart wait ────────────────────────────────────────────────────────────
 
-/// `await_restart sup.child` on a STATIC supervised child type-checks cleanly:
-/// the operand is a static child accessor, so the keyword is well-formed and the
+/// `restarted(sup.child)` on a static supervised child type-checks cleanly:
+/// the operand is a static child accessor, so the call is well-formed and the
 /// stable handle keeps the child's `ChildRef<ChildType>` type.
 #[test]
-fn await_restart_on_static_child_accepted() {
+fn restarted_on_static_child_accepted() {
     let output = typecheck(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-        supervisor App {
-            strategy: one_for_one,
-            intensity: 3 within 60s,
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-            child w: Worker
-        }
+    child w: Worker;
+}
 
-        fn main() {
-            let sup = spawn App;
-            let _w: ChildRef<Worker> = await_restart sup.w;
-        }
-        ",
+fn main() {
+    let sup = spawn App;
+    let _w: ChildRef<Worker> = restarted(sup.w);
+}
+",
     );
     let relevant: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| e.message.contains("await_restart"))
+        .filter(|e| e.message.contains("restarted"))
         .collect();
     assert!(
         relevant.is_empty(),
-        "`await_restart sup.w` on a static child must type-check cleanly: {relevant:#?}"
+        "`restarted(sup.w)` on a static child must type-check cleanly: {relevant:#?}"
     );
 }
 
-/// `await_restart` on a WHOLE pool is rejected: a pool names many slots, so it
-/// has no single restart signal. The diagnostic points at the member form.
+/// `restarted` on a whole pool is rejected: a pool names many slots, so it
+/// has no single restart signal.
 #[test]
-fn await_restart_on_whole_pool_rejected() {
+fn restarted_on_whole_pool_rejected() {
+    let output = typecheck(
+        r"actor Worker {
+    receive fn ping() {}
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 10 within 60s;
+
+    pool worker: Worker count: 3;
+}
+
+fn main() {
+    let sup = spawn Pool;
+    let _w = restarted(sup.worker);
+}
+",
+    );
+    let rejected = output
+        .errors
+        .iter()
+        .any(|e| e.message.contains("`restarted` expects a supervised role"));
+    assert!(
+        rejected,
+        "`restarted` on a whole pool must be rejected; \
+         got: {:#?}",
+        output.errors
+    );
+}
+
+/// `restarted(sup.pool[i])` on one pool member type-checks: each member
+/// occupies its own supervised slot, so it has its own restart signal.
+#[test]
+fn restarted_on_pool_member_accepted() {
+    let output = typecheck(
+        r"actor Worker {
+    receive fn ping() {}
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 10 within 60s;
+
+    pool worker: Worker count: 3;
+}
+
+fn main() {
+    let sup = spawn Pool;
+    let _w: ChildRef<Worker> = restarted(sup.worker[0]);
+}
+",
+    );
+    let relevant: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("restarted"))
+        .collect();
+    assert!(
+        relevant.is_empty(),
+        "`restarted(sup.worker[0])` must type-check cleanly: {relevant:#?}"
+    );
+}
+
+/// `restarted` on a non-supervisor-child operand is rejected with a clear
+/// diagnostic — the operand must name a supervisor child slot.
+#[test]
+fn restarted_on_non_child_operand_rejected() {
     let output = typecheck(
         r"
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        supervisor Pool {
-            strategy: simple_one_for_one,
-            intensity: 10 within 60s,
-
-            pool worker: Worker count: 3
-        }
-
         fn main() {
-            let sup = spawn Pool;
-            let _w = await_restart sup.worker;
+            let x = 5;
+            let _y = restarted(x);
         }
         ",
     );
     let rejected = output
         .errors
         .iter()
-        .any(|e| e.message.contains("await_restart") && e.message.contains("sup.pool[i]"));
+        .any(|e| e.message.contains("`restarted` expects a supervised role"));
     assert!(
         rejected,
-        "`await_restart` on a whole pool must be rejected and name the member form; \
-         got: {:#?}",
-        output.errors
-    );
-}
-
-/// `await_restart sup.pool[i]` on ONE pool member type-checks: each member
-/// occupies its own supervised slot, so it has its own restart signal.
-#[test]
-fn await_restart_on_pool_member_accepted() {
-    let output = typecheck(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        supervisor Pool {
-            strategy: simple_one_for_one,
-            intensity: 10 within 60s,
-
-            pool worker: Worker count: 3
-        }
-
-        fn main() {
-            let sup = spawn Pool;
-            let _w: ChildRef<Worker> = await_restart sup.worker[0];
-        }
-        ",
-    );
-    let relevant: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.message.contains("await_restart"))
-        .collect();
-    assert!(
-        relevant.is_empty(),
-        "`await_restart sup.worker[0]` must type-check cleanly: {relevant:#?}"
-    );
-}
-
-/// `await_restart` on a non-supervisor-child operand is rejected with a clear
-/// diagnostic — the operand must name a supervisor child slot.
-#[test]
-fn await_restart_on_non_child_operand_rejected() {
-    let output = typecheck(
-        r"
-        fn main() {
-            let x = 5;
-            let _y = await_restart x;
-        }
-        ",
-    );
-    let rejected = output.errors.iter().any(|e| {
-        e.message.contains("await_restart") && e.message.contains("supervisor child slot")
-    });
-    assert!(
-        rejected,
-        "`await_restart` on a non-supervised-child operand must be rejected; got: {:#?}",
+        "`restarted` on a non-supervised-child operand must be rejected; got: {:#?}",
         output.errors
     );
 }
@@ -204,20 +209,21 @@ fn await_restart_on_non_child_operand_rejected() {
 #[test]
 fn wired_to_unknown_sibling_rejected() {
     let output = typecheck(
-        r"
-        actor ConnectionAcceptor {
-            init(workers: WorkerPool) {}
-        }
-        actor WorkerPool {}
+        r"actor ConnectionAcceptor {
+    init(workers: WorkerPool) {}
+}
 
-        supervisor App {
-            strategy: one_for_one,
+actor WorkerPool {
+}
 
-            child acceptor: ConnectionAcceptor wired_to: { workers: nonexistent_sibling }
-        }
+supervisor App {
+    strategy: one_for_one;
 
-        fn main() {}
-        ",
+    child acceptor: ConnectionAcceptor wired_to: { workers: nonexistent_sibling };
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -235,22 +241,25 @@ fn wired_to_unknown_sibling_rejected() {
 #[test]
 fn wired_to_type_mismatch_rejected() {
     let output = typecheck(
-        r"
-        actor DbPool {}
-        actor WorkerPool {}
-        actor ConnectionAcceptor {
-            init(workers: WorkerPool) {}
-        }
+        r"actor DbPool {
+}
 
-        supervisor App {
-            strategy: one_for_one,
+actor WorkerPool {
+}
 
-            child db_pool: DbPool,
-            child acceptor: ConnectionAcceptor wired_to: { workers: db_pool }
-        }
+actor ConnectionAcceptor {
+    init(workers: WorkerPool) {}
+}
 
-        fn main() {}
-        ",
+supervisor App {
+    strategy: one_for_one;
+
+    child db_pool: DbPool;
+    child acceptor: ConnectionAcceptor wired_to: { workers: db_pool };
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -268,23 +277,23 @@ fn wired_to_type_mismatch_rejected() {
 #[test]
 fn wired_to_cycle_rejected() {
     let output = typecheck(
-        r"
-        actor ActorA {
-            init(dep: ActorB) {}
-        }
-        actor ActorB {
-            init(dep: ActorA) {}
-        }
+        r"actor ActorA {
+    init(dep: ActorB) {}
+}
 
-        supervisor CycleApp {
-            strategy: one_for_one,
+actor ActorB {
+    init(dep: ActorA) {}
+}
 
-            child a: ActorA wired_to: { dep: b },
-            child b: ActorB wired_to: { dep: a }
-        }
+supervisor CycleApp {
+    strategy: one_for_one;
 
-        fn main() {}
-        ",
+    child a: ActorA wired_to: { dep: b };
+    child b: ActorB wired_to: { dep: a };
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -302,19 +311,21 @@ fn wired_to_cycle_rejected() {
 #[test]
 fn simple_one_for_one_with_child_decl_rejected() {
     let output = typecheck(
-        r"
-        actor Worker {}
-        actor Helper {}
+        r"actor Worker {
+}
 
-        supervisor BadPool {
-            strategy: simple_one_for_one,
+actor Helper {
+}
 
-            child helper: Helper,
-            pool worker: Worker count: 3
-        }
+supervisor BadPool {
+    strategy: simple_one_for_one;
 
-        fn main() {}
-        ",
+    child helper: Helper;
+    pool worker: Worker count: 3;
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -332,17 +343,17 @@ fn simple_one_for_one_with_child_decl_rejected() {
 #[test]
 fn one_for_one_with_pool_decl_rejected() {
     let output = typecheck(
-        r"
-        actor Worker {}
+        r"actor Worker {
+}
 
-        supervisor StaticApp {
-            strategy: one_for_one,
+supervisor StaticApp {
+    strategy: one_for_one;
 
-            pool worker: Worker count: 3
-        }
+    pool worker: Worker count: 3;
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -360,18 +371,18 @@ fn one_for_one_with_pool_decl_rejected() {
 #[test]
 fn duplicate_child_name_rejected() {
     let output = typecheck(
-        r"
-        actor Worker {}
+        r"actor Worker {
+}
 
-        supervisor DupApp {
-            strategy: one_for_one,
+supervisor DupApp {
+    strategy: one_for_one;
 
-            child worker: Worker,
-            child worker: Worker
-        }
+    child worker: Worker;
+    child worker: Worker;
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -389,19 +400,18 @@ fn duplicate_child_name_rejected() {
 #[test]
 fn wired_to_self_reference_rejected() {
     let output = typecheck(
-        r"
-        actor LoopActor {
-            init(dep: LoopActor) {}
-        }
+        r"actor LoopActor {
+    init(dep: LoopActor) {}
+}
 
-        supervisor SelfLoop {
-            strategy: one_for_one,
+supervisor SelfLoop {
+    strategy: one_for_one;
 
-            child looper: LoopActor wired_to: { dep: looper }
-        }
+    child looper: LoopActor wired_to: { dep: looper };
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -421,21 +431,22 @@ fn wired_to_self_reference_rejected() {
 #[test]
 fn wired_to_no_init_sibling_accepted() {
     let output = typecheck(
-        r"
-        actor NoInit {}
-        actor Consumer {
-            init(dep: NoInit) {}
-        }
+        r"actor NoInit {
+}
 
-        supervisor App {
-            strategy: one_for_one,
+actor Consumer {
+    init(dep: NoInit) {}
+}
 
-            child no_init: NoInit,
-            child consumer: Consumer wired_to: { dep: no_init }
-        }
+supervisor App {
+    strategy: one_for_one;
 
-        fn main() {}
-        ",
+    child no_init: NoInit;
+    child consumer: Consumer wired_to: { dep: no_init };
+}
+
+fn main() {}
+",
     );
     let supervisor_errors: Vec<_> = output
         .errors
@@ -455,19 +466,21 @@ fn wired_to_no_init_sibling_accepted() {
 #[test]
 fn wired_to_dependent_has_no_init_rejected() {
     let output = typecheck(
-        r"
-        actor Helper {}
-        actor NoInitConsumer {}
+        r"actor Helper {
+}
 
-        supervisor App {
-            strategy: one_for_one,
+actor NoInitConsumer {
+}
 
-            child helper: Helper,
-            child consumer: NoInitConsumer wired_to: { dep: helper }
-        }
+supervisor App {
+    strategy: one_for_one;
 
-        fn main() {}
-        ",
+    child helper: Helper;
+    child consumer: NoInitConsumer wired_to: { dep: helper };
+}
+
+fn main() {}
+",
     );
     assert!(
         output

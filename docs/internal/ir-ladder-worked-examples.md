@@ -1,5 +1,8 @@
 # The ladder, worked: source → SIR → MIR → LLVM for the shapes that keep failing
 
+The source fragments below use historical types and APIs to explain the earlier
+compiler ladder. They are not standalone programs for the current compiler.
+
 > Historical design reference. The revision-specific tables and obligations
 > below describe the earlier ladder program, not current symbol ownership or
 > language support. Use [the current architecture](../diagrams.md),
@@ -64,19 +67,24 @@ the §1.3 op set with no shape-specific rule of its own.
 
 Fixtures named below live under `repros/ladder/worked/` and are `P1-L3`
 deliverables; none exists on `main` today except where marked. Each is
-run by `make asan-fixtures` with its printed output and the zero-leak line
+run by `make core-safety` with its printed output and the zero-leak line
 as the oracle, and its `hew compile --dump-sir` output is diffed against
 the block in this file.
 
 ## W1. Borrowed match on a payload inside a live record (#3226)
 
-```hew
-type Pair { other: Vec<i64>, value: Option<Vec<i64>> }
+```hew,ignore
+type Pair {
+    other: Vec<i64>;
+    value: Option<Vec<i64>>;
+}
 
 fn total(p: Pair) -> i64 {
     var n = 0;
     match p.value {
-        .Some(v) => { n = v.len(); }
+        .Some(v) => {
+            n = v.len();
+        }
         .None => {}
     }
     return n + p.other.len();
@@ -156,7 +164,7 @@ print `5` and exit 0 under ASan with zero leaks.
 
 ## W2. Consuming match on a record that is a last use
 
-```hew
+```hew,ignore
 fn first_len(p: Pair) -> i64 {
     match p.value {
         .Some(v) => v.len(),
@@ -174,7 +182,7 @@ never an operand of a consuming position).
 
 The consuming variant needs the header to say so:
 
-```hew
+```hew,ignore
 fn take_first(consume p: Pair) -> Vec<i64> {
     match p.value {
         .Some(v) => v,
@@ -240,8 +248,11 @@ print `3` for `take_first(consume Pair{other: [1], value: .Some([1,2,3])})
 
 ## W3. Taking one owned field while preserving its siblings
 
-```hew
-type Job { run: fn[once]() -> string, label: string }
+```hew,ignore
+type Job {
+    run: fn[once]() -> string;
+    label: string;
+}
 
 fn dispatch(consume job: Job) {
     println(job.run());
@@ -290,7 +301,7 @@ missing remaining-root cleanup.
 
 ## W4. Match over a fresh call result (#3127)
 
-```hew
+```hew,ignore
 fn drain(rx: Receiver) -> string {
     match rx.recv() {
         .Some(s) => s,
@@ -360,10 +371,19 @@ print the received string and exit 0 under ASan.
 
 ## W5. Block tail versus `return` of a projected field (#3274)
 
-```hew
-type Pair2 { other: Vec<i64>, value: i64 }
-fn take_a(consume p: Pair2) -> Vec<i64> { p.other }
-fn take_b(consume p: Pair2) -> Vec<i64> { return p.other; }
+```hew,ignore
+type Pair2 {
+    other: Vec<i64>;
+    value: i64;
+}
+
+fn take_a(consume p: Pair2) -> Vec<i64> {
+    p.other
+}
+
+fn take_b(consume p: Pair2) -> Vec<i64> {
+    return p.other;
+}
 ```
 
 Both functions produce **the same SIR**. A block tail in return position
@@ -391,7 +411,7 @@ prints `2`, `2`; ASan zero leaks and no abort.
 
 ## W6. An owned value across a loop back edge with `break` and `return` (#3250)
 
-```hew
+```hew,ignore
 fn find(items: Vec<string>, needle: string) -> string {
     var found = "";
     for s in items {
@@ -499,7 +519,7 @@ The full rule set is `ir-ladder.md` §1.3.6; this is the op sequence in one
 place, because it is the only shape in which a field is consumed inside a
 live aggregate, and it is the shape W3's refusal points users to.
 
-```hew
+```hew,ignore
 actor Holder {
     var conn: Conn = Conn.open(1);
     receive fn cycle() -> i64 { conn.close(); conn = Conn.open(2); return conn.fd; }
@@ -551,7 +571,7 @@ double close to `close 1`, `2`, `after`, `close 2`.
   `hew compile --dump-sir` on the fixture and diffs against the block here;
   a mismatch in any ownership op is a defect in the lane, not in the
   example, unless `ir-ladder.md` says otherwise.
-- A validator runs each fixture under `make asan-fixtures` and checks the
+- A validator runs each fixture under `make core-safety` and checks the
   printed output and the zero-leak line.
 - A refuter that finds a shape this file does not cover writes the shape as
   a W8 candidate in its report with the SIR it expects; the architect adds

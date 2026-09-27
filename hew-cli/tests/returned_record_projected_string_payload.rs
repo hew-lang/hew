@@ -17,18 +17,17 @@ use support::leak_slope::{
 };
 use support::{describe_output, require_codegen};
 
-const SOURCE_TEMPLATE: &str = r#"
-enum CleanupError {
-    Dirty(string),
+const SOURCE_TEMPLATE: &str = r#"enum CleanupError {
+    Dirty(string);
 }
 
 type Retirement {
-    blocked: bool,
-    detail: string,
+    blocked: bool;
+    detail: string;
 }
 
 type Outcome {
-    status: string,
+    status: string;
 }
 
 fn persist(value: string) {
@@ -47,7 +46,7 @@ fn retire() -> Result<Retirement, string> {
         .Err(CleanupError.Dirty(message)) => {
             persist(message.clone());
             .Ok(Retirement { blocked: true, detail: __DETAIL__ })
-        },
+        }
     }
 }
 
@@ -56,20 +55,22 @@ fn lifecycle() -> Result<Outcome, string> {
         .Err(message) => return .Err(message),
         .Ok(value) => value,
     };
-    .Ok(Outcome {
-        status: if retirement.blocked { "blocked" } else { "merged" },
-    })
+    .Ok(Outcome { status: if retirement.blocked {
+        "blocked"
+    } else {
+        "merged"
+    } })
 }
 
 fn main() {
-    for _ in 0..64 {
+    for _ in 0 .. 64 {
         match lifecycle() {
             .Err(message) => panic(message),
             .Ok(outcome) => {
                 if outcome.status != "blocked" {
                     panic("wrong outcome");
                 }
-            },
+            }
         }
     }
     println("ok");
@@ -94,10 +95,10 @@ fn repeated_source_with_alias(frames: usize, alias: bool) -> String {
     format!(
         r#"
 enum CleanupError {{ 
-    Dirty(string) }}
+    Dirty(string); }}
 
 type Pair {{ 
-    first: string, second: string }}
+    first: string; second: string; }}
 
 fn cleanup() -> Result<(), CleanupError> {{
     .Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
@@ -109,7 +110,7 @@ fn build() -> Result<Pair, string> {{
         .Err(CleanupError.Dirty(message)) => {{
             {alias_binding}
             .Ok(Pair {{ first: message, second: {second} }})
-        }},
+        }}
     }}
 }}
 
@@ -121,7 +122,7 @@ fn main() {{
                 if pair.first != pair.second {{
                     panic("wrong pair");
                 }}
-            }},
+            }}
         }}
         println("frame");
     }}
@@ -134,12 +135,12 @@ fn overwritten_alias_source(frames: usize) -> String {
     format!(
         r#"
 enum CleanupError {{
-    Dirty(string),
+    Dirty(string);
 }}
 
 type Pair {{
-    first: string,
-    second: string,
+    first: string;
+    second: string;
 }}
 
 fn cleanup() -> Result<(), CleanupError> {{
@@ -154,7 +155,7 @@ fn build(i: i64) -> Result<Pair, string> {{
             let alias = current;
             current = "replacement " + f"{{i}}";
             .Ok(Pair {{ first: current, second: alias }})
-        }},
+        }}
     }}
 }}
 
@@ -166,7 +167,7 @@ fn main() {{
                 if pair.first == pair.second {{
                     panic("wrong generations");
                 }}
-            }},
+            }}
         }}
         println("frame");
     }}
@@ -179,12 +180,12 @@ fn stable_loop_alias_source(frames: usize) -> String {
     format!(
         r#"
 enum CleanupError {{
-    Dirty(string),
+    Dirty(string);
 }}
 
 type Pair {{
-    first: string,
-    second: string,
+    first: string;
+    second: string;
 }}
 
 fn persist(value: string) {{
@@ -206,7 +207,7 @@ fn build() -> Result<Pair, string> {{
                 persist(alias.clone());
             }}
             .Ok(Pair {{ first: message, second: alias }})
-        }},
+        }}
     }}
 }}
 
@@ -218,7 +219,7 @@ fn main() {{
                 if pair.first != pair.second {{
                     panic("wrong pair");
                 }}
-            }},
+            }}
         }}
         println("frame");
     }}
@@ -231,12 +232,12 @@ fn overwritten_before_fork_source(frames: usize) -> String {
     format!(
         r#"
 enum CleanupError {{
-    Dirty(string),
+    Dirty(string);
 }}
 
 type Pair {{
-    first: string,
-    second: string,
+    first: string;
+    second: string;
 }}
 
 fn cleanup() -> Result<(), CleanupError> {{
@@ -251,7 +252,7 @@ fn build(i: i64) -> Result<Pair, string> {{
             current = "replacement " + f"{{i}}";
             let alias = current;
             .Ok(Pair {{ first: current, second: alias }})
-        }},
+        }}
     }}
 }}
 
@@ -263,7 +264,7 @@ fn main() {{
                 if pair.first != pair.second {{
                     panic("wrong pair");
                 }}
-            }},
+            }}
         }}
         println("frame");
     }}
@@ -276,8 +277,8 @@ fn reused_non_returned_alias_source(frames: usize) -> String {
     format!(
         r#"
 type Pair {{
-    first: string,
-    second: string,
+    first: string;
+    second: string;
 }}
 
 fn main() {{

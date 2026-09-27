@@ -12,6 +12,7 @@
 
 use hew_compile::FrontendOptions;
 use hew_hir::{lower_program, ResolutionCtx};
+use hew_parser::ast::{sym, Ident};
 use hew_parser::ast::{Item, MachineDecl};
 
 use crate::args::{MachineDiagramArgs, MachineFormat};
@@ -166,7 +167,7 @@ fn print_list_entry(
             "  Emits: {}",
             emits
                 .iter()
-                .map(|output| output.name.as_str())
+                .map(|output| output.name.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -187,8 +188,12 @@ fn cmd_list(path: &str) {
             .iter()
             .map(|state| {
                 (
-                    state.name.as_str(),
-                    state.fields.iter().map(|(name, _)| name.as_str()).collect(),
+                    state.name.name.as_str(),
+                    state
+                        .fields
+                        .iter()
+                        .map(|(name, _)| name.name.as_str())
+                        .collect(),
                 )
             })
             .collect::<Vec<_>>();
@@ -197,13 +202,17 @@ fn cmd_list(path: &str) {
             .iter()
             .map(|event| {
                 (
-                    event.name.as_str(),
-                    event.fields.iter().map(|(name, _)| name.as_str()).collect(),
+                    event.name.name.as_str(),
+                    event
+                        .fields
+                        .iter()
+                        .map(|(name, _)| name.name.as_str())
+                        .collect(),
                 )
             })
             .collect::<Vec<_>>();
         print_list_entry(
-            &machine.name,
+            machine.name.name.as_str(),
             &states,
             &events,
             machine.transitions.len(),
@@ -233,7 +242,10 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
     }
 
     let filtered: Vec<&MachineDecl> = if let Some(name) = &args.machine_name {
-        let matched: Vec<_> = ast_machines.iter().filter(|m| &m.name == name).collect();
+        let matched: Vec<_> = ast_machines
+            .iter()
+            .filter(|m| m.name.name.as_str() == name)
+            .collect();
         if matched.is_empty() {
             eprintln!("No machine named `{name}` found in {path}");
             std::process::exit(1);
@@ -267,8 +279,8 @@ fn print_mermaid_title(name: &str, type_params: &[String]) {
 }
 
 fn print_mermaid(md: &MachineDecl) {
-    let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
-    print_mermaid_title(&md.name, &type_param_names);
+    let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.to_string()).collect();
+    print_mermaid_title(md.name.name.as_str(), &type_param_names);
     println!("stateDiagram-v2");
 
     if let Some(first) = md.states.first() {
@@ -297,8 +309,11 @@ fn print_mermaid(md: &MachineDecl) {
     }
 
     for state in &md.states {
-        let mut annotations: Vec<String> =
-            state.fields.iter().map(|(name, _)| name.clone()).collect();
+        let mut annotations: Vec<String> = state
+            .fields
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
         if state.entry.is_some() {
             annotations.push("entry".into());
         }
@@ -317,7 +332,7 @@ fn print_mermaid(md: &MachineDecl) {
             "        Emits: {}",
             md.emits
                 .iter()
-                .map(|output| output.name.as_str())
+                .map(|output| output.name.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -358,7 +373,7 @@ fn print_dot(md: &MachineDecl) {
             "    tooltip=\"Emits: {}\";",
             md.emits
                 .iter()
-                .map(|output| output.name.as_str())
+                .map(|output| output.name.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -370,8 +385,11 @@ fn print_dot(md: &MachineDecl) {
     }
 
     for state in &md.states {
-        let mut annotations: Vec<String> =
-            state.fields.iter().map(|(name, _)| name.clone()).collect();
+        let mut annotations: Vec<String> = state
+            .fields
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
         if state.entry.is_some() {
             annotations.push("entry".into());
         }
@@ -405,7 +423,7 @@ fn print_dot(md: &MachineDecl) {
 fn visible_rules(machine: &MachineDecl) -> Vec<(&str, &hew_parser::ast::MachineTransition)> {
     let mut rules = Vec::new();
     for rule in &machine.transitions {
-        if rule.source_state == "_" {
+        if rule.source_state.name == sym::UNDERSCORE {
             for state in &machine.states {
                 let covered = machine.transitions.iter().any(|specific| {
                     specific.source_state == state.name
@@ -413,22 +431,22 @@ fn visible_rules(machine: &MachineDecl) -> Vec<(&str, &hew_parser::ast::MachineT
                         && specific.guard.is_none()
                 });
                 if !covered {
-                    rules.push((state.name.as_str(), rule));
+                    rules.push((state.name.name.as_str(), rule));
                 }
             }
         } else {
-            rules.push((rule.source_state.as_str(), rule));
+            rules.push((rule.source_state.name.as_str(), rule));
         }
     }
     rules
 }
 
 fn rule_label(rule: &hew_parser::ast::MachineTransition) -> String {
-    let mut label = rule.event_name.clone();
+    let mut label = rule.event_name.to_string();
     if rule.guard.is_some() {
         label.push_str(" [guard]");
     }
-    if rule.target_state == "_" {
+    if rule.target_state.name == sym::UNDERSCORE {
         label.push_str(" [external]");
     } else if rule.reenter {
         label.push_str(" [reenter]");
@@ -437,27 +455,27 @@ fn rule_label(rule: &hew_parser::ast::MachineTransition) -> String {
 }
 
 fn print_json_ast(machine: &MachineDecl) {
-    let fields = |fields: &[(String, hew_parser::ast::Spanned<hew_parser::ast::TypeExpr>)]| {
+    let fields = |fields: &[(Ident, hew_parser::ast::Spanned<hew_parser::ast::TypeExpr>)]| {
         fields
             .iter()
-            .map(|(name, _)| name.clone())
+            .map(|(name, _)| name.to_string())
             .collect::<Vec<_>>()
     };
     let value = serde_json::json!({
-        "name": machine.name,
+        "name": machine.name.to_string(),
         "hasDefault": machine.has_default,
-        "emits": machine.emits.iter().map(|output| &output.name).collect::<Vec<_>>(),
-        "outputs": machine.emits.iter().map(|output| serde_json::json!({"name": output.name, "fields": fields(&output.fields)})).collect::<Vec<_>>(),
-        "typeParams": machine.type_params.iter().map(|param| &param.name).collect::<Vec<_>>(),
-        "states": machine.states.iter().map(|state| serde_json::json!({"name": state.name, "fields": fields(&state.fields), "hasEntry": state.entry.is_some(), "hasExit": state.exit.is_some()})).collect::<Vec<_>>(),
-        "events": machine.events.iter().map(|event| serde_json::json!({"name": event.name, "fields": fields(&event.fields)})).collect::<Vec<_>>(),
+        "emits": machine.emits.iter().map(|output| output.name.to_string()).collect::<Vec<_>>(),
+        "outputs": machine.emits.iter().map(|output| serde_json::json!({"name": output.name.to_string(), "fields": fields(&output.fields)})).collect::<Vec<_>>(),
+        "typeParams": machine.type_params.iter().map(|param| param.name.to_string()).collect::<Vec<_>>(),
+        "states": machine.states.iter().map(|state| serde_json::json!({"name": state.name.to_string(), "fields": fields(&state.fields), "hasEntry": state.entry.is_some(), "hasExit": state.exit.is_some()})).collect::<Vec<_>>(),
+        "events": machine.events.iter().map(|event| serde_json::json!({"name": event.name.to_string(), "fields": fields(&event.fields)})).collect::<Vec<_>>(),
         "transitions": visible_rules(machine).into_iter().map(|(source, rule)| serde_json::json!({
-            "event": rule.event_name, "from": source, "to": rule.target_state,
-            "selfTransition": source == rule.target_state,
+            "event": rule.event_name.to_string(), "from": source, "to": rule.target_state.to_string(),
+            "selfTransition": source == rule.target_state.name.as_str(),
             "guarded": rule.guard.is_some(), "reenter": rule.reenter,
-            "external": rule.reenter || rule.target_state != source,
+            "external": rule.reenter || rule.target_state != Ident::new(source),
         })).collect::<Vec<_>>(),
-        "composites": machine.composite_groups.iter().map(|group| serde_json::json!({"name": group.name, "initial": group.initial, "members": group.members})).collect::<Vec<_>>(),
+        "composites": machine.composite_groups.iter().map(|group| serde_json::json!({"name": group.name.to_string(), "initial": group.initial.to_string(), "members": group.members.iter().map(ToString::to_string).collect::<Vec<_>>()})).collect::<Vec<_>>(),
     });
     println!("{value}");
 }

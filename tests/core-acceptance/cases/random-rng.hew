@@ -31,7 +31,6 @@ fn main() {
         let x = f.next_f64();
         assert(x >= 0.0 && x < 1.0);
     }
-
     // range(lo, hi) always lands in [lo, hi) and hi <= lo returns lo.
     let g = random.Rng.new(7);
     for i in 0 .. 1000 {
@@ -53,7 +52,6 @@ fn main() {
         assert(!seen[v]);
         seen[v] = true;
     }
-
     // crypto_bytes(n) returns exactly n bytes; two draws differ.
     let cb1 = random.crypto_bytes(16);
     let cb2 = random.crypto_bytes(16);
@@ -64,6 +62,5 @@ fn main() {
 
     // crypto_u64 draws differ across calls.
     assert(random.crypto_u64() != random.crypto_u64());
-
     println("Rng matches the independent xoshiro256++ reference and crypto draws are well-formed");
 }

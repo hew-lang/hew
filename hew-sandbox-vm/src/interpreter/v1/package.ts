@@ -66,6 +66,51 @@ export interface VariantShape {
   id: number;
   name: string;
   cases: VariantCase[];
+  runtime_tags?: Partial<Record<RuntimeVariantRole, number>>;
+}
+
+export type RuntimeVariantRole =
+  | "OptionSome"
+  | "OptionNone"
+  | "ResultOk"
+  | "ResultErr"
+  | "ActorErrorRejected"
+  | "ActorErrorFailed"
+  | "ActorErrorTrapped"
+  | "ActorErrorDead"
+  | "ActorErrorTimeout"
+  | "ActorErrorNodeNotRunning"
+  | "ActorErrorRoutingFailed"
+  | "ActorErrorEncodeFailed"
+  | "ActorErrorConnectionDropped"
+  | "ActorErrorPartition"
+  | "SendErrorFull"
+  | "SendErrorClosed"
+  | "SendErrorNodeRoutingNotWired"
+  | "SendErrorPartition"
+  | "SendErrorStaleRef"
+  | "SendErrorLocalShutdown"
+  | "SendErrorCancelled"
+  | "SendErrorVersionMismatch"
+  | "SendErrorUnauthorized"
+  | "SendErrorBackpressure"
+  | "SendErrorDead"
+  | "DeliveryAccepted"
+  | "DeliveryDiscarded";
+
+export function runtimeTag(
+  shape: VariantShape,
+  role: RuntimeVariantRole,
+): number {
+  const tag = shape.runtime_tags?.[role];
+  if (
+    tag === undefined ||
+    !Number.isInteger(tag) ||
+    tag < 0 ||
+    tag >= shape.cases.length
+  )
+    throw new Error(`variant shape ${shape.id} has no checked ${role} tag`);
+  return tag;
 }
 
 /// One entry per distinct runtime-call family the instruction stream reaches.
@@ -423,7 +468,12 @@ export type TermV1 =
       })
   | (TermBase &
       CallShape & { op: "wire.codec"; direction: string; plan: number })
-  | (TermBase & { op: "panic"; message: BoundaryOperand; cleanup: Edge })
+  | (TermBase & {
+      op: "panic";
+      message: BoundaryOperand;
+      assertion?: [BoundaryOperand, BoundaryOperand, BoundaryOperand] | null;
+      cleanup: Edge;
+    })
   | (TermBase & { op: "trap"; trap: TrapName })
   | (TermBase & { op: "checked_raise"; trap: TrapName; cleanup: Edge })
   | (TermBase & { op: "cleanup.dispatch"; normal: Edge; fault: Edge })
@@ -469,28 +519,34 @@ export interface ActorProtocol {
 }
 
 export type ActorOperation =
-  | { op: "spawn" | "self_handle" | "close" | "await_closed"; actor: number }
+  | {
+      op:
+        | "spawn"
+        | "self_handle"
+        | "stop"
+        | "terminate"
+        | "await_stopped"
+        | "await_restarted";
+      actor: number;
+    }
   | { op: "call_start" | "call_take"; protocol: ActorProtocol }
   | { op: "submit"; actor: number; policy: ActorProtocol["policy"] }
   | { op: "stream_start"; actor: number; message: number }
   | { op: "local_observation"; kind: string }
   | {
-      op: "supervisor_spawn" | "supervisor_stop" | "supervisor_await_closed";
+      op:
+        | "supervisor_spawn"
+        | "stop"
+        | "terminate"
+        | "await_stopped"
+        | "await_restarted";
       supervisor: number;
     }
   | {
-      op:
-        | "supervisor_child"
-        | "supervisor_await_restart"
-        | "supervisor_pool_view";
+      op: "supervisor_child" | "supervisor_pool_view";
       supervisor: number;
       child: number;
       owner_is_role: boolean;
-    }
-  | {
-      op: "supervisor_role_await_closed";
-      supervisor: number;
-      closing: boolean;
     };
 
 export interface ActorShape {
@@ -532,6 +588,7 @@ export interface SupervisorShape {
     name: string;
     role: { actor: number } | { supervisor: number };
     restart: string;
+    stop_ns?: number | null;
     pool_count?: number;
     spawn: number;
   }>;
@@ -541,6 +598,7 @@ export interface PackageV1 {
   resources?: Array<{
     kind: string;
     ty?: string;
+    shape?: number;
     close?: number;
     release?: string;
   }>;

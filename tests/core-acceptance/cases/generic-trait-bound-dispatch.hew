@@ -8,7 +8,7 @@ trait Shape {
 }
 
 type Square {
-    side: i64,
+    side: i64;
 }
 
 impl Shape for Square {
@@ -21,8 +21,8 @@ impl Shape for Square {
 }
 
 type Rect {
-    width: i64,
-    height: i64,
+    width: i64;
+    height: i64;
 }
 
 impl Shape for Rect {
@@ -36,18 +36,15 @@ impl Shape for Rect {
 
 // One generic body, two instances: the bound selects `Square::area` in one and
 // `Rect::area` in the other.
-fn report<S>(shape: S) -> string
-where
-    S: Shape,
-{
+fn report<S>(shape: S) -> string where S: Shape {
     f"{shape.label()} = {shape.area()}"
 }
 
 // A third implementation whose receiver owns a heap value, so the bound-driven
 // call transfers an owned receiver rather than a bit-copied one.
 type Tag {
-    text: string,
-    weight: i64,
+    text: string;
+    weight: i64;
 }
 
 impl Shape for Tag {
@@ -63,8 +60,8 @@ impl Shape for Tag {
 // order to its self type. Selecting the instance positionally would bind `A`
 // and `B` the wrong way round and give the receiver the wrong type.
 type Pair<L, R> {
-    left: L,
-    right: R,
+    left: L;
+    right: R;
 }
 
 impl<A, B> Shape for Pair<B, A> {
@@ -78,11 +75,7 @@ impl<A, B> Shape for Pair<B, A> {
 
 // A second bound-driven body, so the resolution is proven for more than one
 // generic caller shape.
-fn combined_area<A, B>(first: A, second: B) -> i64
-where
-    A: Shape,
-    B: Shape,
-{
+fn combined_area<A, B>(first: A, second: B) -> i64 where A: Shape, B: Shape {
     first.area() + second.area()
 }
 

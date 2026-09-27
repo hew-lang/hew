@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-string-concat-temp-nested-concat-no-record"
+intent = "Leak / double-free oracle for the #2434 root-cause split. Shape `nested_concat_no_record_df` (nested concat without record freed exactly once under malloc scribble, nested concat without record has no per iteration leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-string-concat-temp-nested-concat-no-record.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "Ada Lovelace\n"
+exit = 0

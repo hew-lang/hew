@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-vec-cross-function-release-owned-vec-generator-yield"
+intent = "Leak oracle for cross-function `Vec<owned-record>` release. Shape `owned_vec_generator_yield_high` (affected release paths do not double free, affected release sites emit owned symbol) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-vec-cross-function-release-owned-vec-generator-yield.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

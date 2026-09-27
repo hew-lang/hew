@@ -1,0 +1,10 @@
+[[case]]
+id = "match-skipped-field-drop-skip-record-field-loop"
+intent = "Skipped-field drop oracle for partial match destructures — the empirical (compiled-binary) half of the exact-drop-op matrix whose MIR side lives in `tests/core-acceptance/cases/match_skip_*.hew`. Shape `skip_record_field_loop_high` (skipped record field loop leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-skipped-field-drop-skip-record-field-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

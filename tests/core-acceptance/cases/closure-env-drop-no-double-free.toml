@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-env-drop-no-double-free"
+intent = "Closure-environment scope-exit drop oracles: per-iteration leak slope plus poisoned-allocator no-double-free pins for the heap-env closure shapes this lane completes (nested env-of-env, type-parameterised owned capture, and the `BorrowMut`… Shape `no_double_free` (closure env shapes run clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/closure-env-drop-no-double-free.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "125OK"
+exit = 0

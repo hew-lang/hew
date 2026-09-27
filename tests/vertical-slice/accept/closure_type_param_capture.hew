@@ -12,7 +12,7 @@
 // Instantiated at two concrete types so two distinct monomorphised invoke
 // shims are emitted: `i64` (a `BitCopy` capture, copied into the env) and
 // `string` (an OWNED capture, whose heap buffer the escaping env free thunk
-// must release — see closure_env_drop_leak_oracle).
+// must release — see the `closure-env-drop-*` safety cases).
 //
 // A capture with no independent snapshot operation needs `move`, and moving
 // out of a parameter needs the parameter declared `consume`.

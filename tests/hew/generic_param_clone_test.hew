@@ -20,8 +20,6 @@
 //! not implement trait Clone required by T`), identically to a `T: Send` bound;
 //! that is an orthogonal generic-marker-satisfaction gap, not a clone gap.
 
-import std.testing;
-
 fn dup<T: Clone>(x: T) -> T {
     x.clone()
 }
@@ -33,15 +31,15 @@ fn test_generic_param_clone_scalar_independence() {
     var n = 10;
     let c = dup(n);
     n = 99;
-    testing.assert_eq(c, 10);
-    testing.assert_eq(n, 99);
+    assert(c == 10);
+    assert(n == 99);
 }
 
 // Scalar `T = bool`.
 #[test]
 fn test_generic_param_clone_bool() {
-    testing.assert_true(dup(true));
-    testing.assert_false(dup(false));
+    assert(dup(true));
+    assert(!dup(false));
 }
 
 // `T = string`: clone is a `hew_string_clone` `+1` owner. The source stays
@@ -51,8 +49,8 @@ fn test_generic_param_clone_bool() {
 fn test_generic_param_clone_string() {
     let s = "hello";
     let t = dup(s);
-    testing.assert_eq_str(t, "hello");
-    testing.assert_eq_str(s, "hello");
+    assert(t == "hello");
+    assert(s == "hello");
 }
 
 // Two distinct instantiations of the same generic clone in one program
@@ -62,6 +60,6 @@ fn test_generic_param_clone_string() {
 fn test_generic_param_clone_multi_instantiation() {
     let a = dup(7);
     let b = dup("world");
-    testing.assert_eq(a, 7);
-    testing.assert_eq_str(b, "world");
+    assert(a == 7);
+    assert(b == "world");
 }

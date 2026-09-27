@@ -4,7 +4,7 @@
 // teardown closes the resource exactly once.
 #[resource]
 type Conn {
-    fd: i64,
+    fd: i64;
 }
 
 impl Conn {
@@ -21,8 +21,8 @@ impl Conn {
 }
 
 type Counter {
-    hits: i64,
-    label: string,
+    hits: i64;
+    label: string;
 }
 
 impl Counter {
@@ -32,8 +32,8 @@ impl Counter {
 }
 
 actor Holder {
-    var conn: Conn = Conn { fd: 10 },
-    var counter: Counter = Counter { hits: 0, label: "hits" },
+    var conn: Conn = Conn { fd: 10 };
+    var counter: Counter = Counter { hits: 0, label: "hits" };
 
     receive fn poke(fail: bool) -> i64 {
         counter.hit();

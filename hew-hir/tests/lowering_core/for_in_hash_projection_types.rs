@@ -103,10 +103,9 @@ fn assert_hashset_vec_iter(
     assert_eq!(
         vec.ty,
         ResolvedTy::Named {
-            name: "Vec".into(),
             args: vec![elem_ty.clone()],
-            builtin: Some(hew_types::BuiltinType::Vec),
-            is_opaque: false,
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
+            is_opaque: false
         },
         "`HashSet::to_vec` must carry its checker-authored Vec result type"
     );
@@ -127,10 +126,9 @@ fn assert_hashset_vec_iter(
     assert_eq!(
         receiver.ty,
         ResolvedTy::Named {
-            name: "HashSet".into(),
             args: vec![elem_ty],
-            builtin: Some(hew_types::BuiltinType::HashSet),
-            is_opaque: false,
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashSet),
+            is_opaque: false
         },
         "the projection receiver must retain the real iterable HashSet type"
     );
@@ -211,7 +209,7 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
         assert!(matches!(
             receiver.ty,
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::HashMap),
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashMap),
                 ..
             }
         ));
@@ -228,30 +226,50 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
 #[test]
 fn hashset_for_in_preserves_receiver_and_projection_types_across_place_shapes() {
     let output = lower(
-        r"
-type SetBox { s: HashSet<i64>, }
-type Outer { inner: SetBox, }
-type OwnedBox { s: HashSet<string>, }
-type MapBox { m: HashMap<i64, i64>, }
+        r"type SetBox {
+    s: HashSet<i64>;
+}
+
+type Outer {
+    inner: SetBox;
+}
+
+type OwnedBox {
+    s: HashSet<string>;
+}
+
+type MapBox {
+    m: HashMap<i64, i64>;
+}
 
 fn direct(s: HashSet<i64>) {
-    for x in s { let _ = x; }
+    for x in s {
+        let _ = x;
+    }
 }
 
 fn field(b: SetBox) {
-    for x in b.s { let _ = x; }
+    for x in b.s {
+        let _ = x;
+    }
 }
 
 fn nested(o: Outer) {
-    for x in o.inner.s { let _ = x; }
+    for x in o.inner.s {
+        let _ = x;
+    }
 }
 
 fn tuple_field(pair: (HashSet<i64>, i64)) {
-    for x in pair.0 { let _ = x; }
+    for x in pair.0 {
+        let _ = x;
+    }
 }
 
 fn owned_field(b: OwnedBox) {
-    for x in b.s { let _ = x.len(); }
+    for x in b.s {
+        let _ = x.len();
+    }
 }
 
 fn map_into_iter_field(b: MapBox) {

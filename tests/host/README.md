@@ -19,9 +19,10 @@ through C. The client can inspect the error after another successful call.
 
 The input is a library without `main`. Selection is explicit: other public
 functions do not become C exports. This initial boundary admits scalar/string
-execution and direct Hew calls. Actors, asynchronous work, callbacks, resource
-handles and other runtime operations are not yet admitted. Calls require one
-host thread and no scheduler setup. All owners must be released before unloading
+execution, direct Hew calls and checked regex matching. Actors, asynchronous
+work, callbacks, resource handles and other runtime operations are not yet
+admitted. Calls require one host thread and no scheduler setup. All owners must
+be released before unloading
 the code. There is no cross-version binary compatibility promise.
 
 Run the complete C11 and C++17 client at Hew O0 and O2 with:

@@ -655,7 +655,7 @@ mod wasm_rejects {
             );
             if binding == "read_handle" {
                 assert!(
-                    !output.fn_sigs.contains_key("try_read"),
+                    !output.sigs().contains("try_read"),
                     "a renamed import must not publish the original bare name"
                 );
             }
@@ -965,8 +965,10 @@ mod wasm_rejects {
         // guard because receiver_is_binding=true for local variables — the type
         // checker records a type for the object and check_field_access takes the
         // normal path.
-        let source = r"
-type Conn { connect: i64, }
+        let source = r"type Conn {
+    connect: i64;
+}
+
 fn main() {
     let net = Conn { connect: 42 };
     println(net.connect);
@@ -991,11 +993,14 @@ fn main() {
     #[test]
     fn wasm_admits_function_param_named_stream() {
         // A function parameter named `stream` must NOT trigger the guard.
-        let source = r"
-type Packet { value: i64, }
+        let source = r"type Packet {
+    value: i64;
+}
+
 fn process(stream: Packet) -> i64 {
     stream.value
 }
+
 fn main() {
     let p = Packet { value: 7 };
     println(process(p));
@@ -1170,44 +1175,42 @@ fn main() {
     fn supervisor_calls_source() -> &'static str {
         // `pool` is a reserved keyword from S-A (supervisor `pool` child decls).
         // Use `wp` for the local WorkerPool ref to avoid the keyword conflict.
-        r"
-            actor Worker {
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-            supervisor WorkerPool {
-                strategy: one_for_one,
-                intensity: 1 within 10s,
-                child w1: Worker
-            }
+supervisor WorkerPool {
+    strategy: one_for_one;
+    intensity: 1 within 10s;
+    child w1: Worker;
+}
 
-            fn main() {
-                let wp = spawn WorkerPool;
-                let worker = supervisor_child(wp, 0);
-                supervisor_stop(wp);
-                worker.ping();
-            }
-        "
+fn main() {
+    let wp = spawn WorkerPool;
+    let worker = supervisor_child(wp, 0);
+    supervisor_stop(wp);
+    worker.ping();
+}
+"
     }
 
     fn link_monitor_calls_source() -> &'static str {
-        r"
-            actor Worker {
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-            fn register() {
-                let worker = spawn Worker;
-                let result = monitor(worker);
-                link(worker);
-                match result {
-                    .Ok(m) => {
-                        let _ = m.close();
-                    },
-                    .Err(_) => {},
-                }
-            }
-        "
+fn register() {
+    let worker = spawn Worker;
+    let result = monitor(worker);
+    let _ = link(worker);
+    match result {
+        .Ok(m) => {
+            let _ = m.close();
+        }
+        .Err(_) => {}
+    }
+}
+"
     }
 
     fn monitor_result_is_not_int_source() -> &'static str {
@@ -1226,41 +1229,39 @@ fn main() {
     }
 
     fn monitor_ref_use_after_close_source() -> &'static str {
-        r"
-            actor Worker {
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-            fn register() {
-                let worker = spawn Worker;
-                match monitor(worker) {
-                    .Ok(m) => {
-                        let _ = m.close();
-                        let _ = m.close();
-                    },
-                    .Err(_) => {},
-                }
-            }
-        "
+fn register() {
+    let worker = spawn Worker;
+    match monitor(worker) {
+        .Ok(m) => {
+            let _ = m.close();
+            let _ = m.close();
+        }
+        .Err(_) => {}
+    }
+}
+"
     }
 
     fn remote_monitor_returns_typed_result_source() -> &'static str {
-        r"
-            actor Worker {
-                receive fn ping() {}
-            }
+        r"actor Worker {
+    receive fn ping() {}
+}
 
-            fn register() {
-                let remote: RemotePid<Worker>;
-                let result: Result<MonitorRef, MonitorError> = monitor(remote);
-                match result {
-                    .Ok(m) => {
-                        m.close();
-                    },
-                    .Err(_) => {},
-                }
-            }
-        "
+fn register() {
+    let remote: RemotePid<Worker>;
+    let result: Result<MonitorRef, MonitorError> = monitor(remote);
+    match result {
+        .Ok(m) => {
+            m.close();
+        }
+        .Err(_) => {}
+    }
+}
+"
     }
 
     fn structured_concurrency_scope_source() -> &'static str {
@@ -1312,19 +1313,18 @@ fn main() {
     #[test]
     fn wasm_rejects_supervisor_declaration() {
         let output = check_wasm(
-            r"
-            actor Worker {
-                receive fn ping() {}
-            }
+            r"actor Worker {
+    receive fn ping() {}
+}
 
-            supervisor WorkerPool {
-                strategy: one_for_one,
-                intensity: 1 within 10s,
-                child w1: Worker
-            }
+supervisor WorkerPool {
+    strategy: one_for_one;
+    intensity: 1 within 10s;
+    child w1: Worker;
+}
 
-            fn main() {}
-        ",
+fn main() {}
+",
         );
         assert!(
             has_platform_limitation_error(&output),
@@ -1395,24 +1395,23 @@ fn main() {
     #[test]
     fn wasm_rejects_supervisor_with_crash_hook() {
         let output = check_wasm(
-            r"
-            import std.failure;
+            r"import std.failure;
 
-            actor Crasher {
-                #[on(crash)]
-                fn on_crash(info: CrashInfo) -> CrashAction {
-                    CrashAction.Restart
-                }
-            }
+actor Crasher {
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        CrashAction.Restart
+    }
+}
 
-            supervisor App {
-                strategy: one_for_one,
-                intensity: 1 within 10s,
-                child c: Crasher
-            }
+supervisor App {
+    strategy: one_for_one;
+    intensity: 1 within 10s;
+    child c: Crasher;
+}
 
-            fn main() {}
-        ",
+fn main() {}
+",
         );
         assert!(
             has_platform_limitation_error(&output)
@@ -1585,7 +1584,7 @@ fn main() {
 
     fn remote_pid_send_source() -> &'static str {
         concat!(
-            "#[wire] type Ping { n: i64 @1 }\n",
+            "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n",
             "actor Worker { receive fn ping(msg: Ping) {} }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
             "fn main() {\n",
@@ -1597,7 +1596,7 @@ fn main() {
 
     fn remote_pid_ask_source() -> &'static str {
         concat!(
-            "#[wire] type Ping { n: i64 @1 }\n",
+            "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n",
             "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
             "fn main() {\n",
@@ -1665,8 +1664,8 @@ fn main() {
         let source = concat!(
             "fn main() {\n",
             "    let config = NodeConfig.at(\"127.0.0.1:9000\");\n",
-            "    Node.start(config);\n",
-            "    Node.connect(\"1@127.0.0.1:9001\");\n",
+            "    let _ = Node.start(config);\n",
+            "    let _ = Node.connect(\"1@127.0.0.1:9001\");\n",
             "}\n",
         );
         let output = check_native(source);
@@ -1733,26 +1732,31 @@ fn main() {
         // that a select emitted no spurious warning on wasm32, and the reject
         // that replaced that claim does not read the timeout expression at all.
         let output = check_wasm(
-            r"
-            actor Responder {
-                let value: i64,
-                receive fn get() -> i64 {
-                    value
-                }
-            }
+            r"actor Responder {
+    let value: i64;
+    receive fn get() -> i64 {
+        value
+    }
+}
 
-            fn main() {
-                let a = spawn Responder(value: 1);
-                let b = spawn Responder(value: 2);
-                let timeout = 1ms;
-                let result = select {
-                    x from a.get() => match x { .Ok(value) => value, .Err(_) => -2 },
-                    y from b.get() => match y { .Ok(value) => value, .Err(_) => -2 },
-                    after timeout => -1,
-                };
-                println(result);
-            }
-        ",
+fn main() {
+    let a = spawn Responder(value: 1);
+    let b = spawn Responder(value: 2);
+    let timeout = 1ms;
+    let result = select {
+        x from a.get() => match x {
+            .Ok(value) => value,
+            .Err(_) => -2,
+        }
+        y from b.get() => match y {
+            .Ok(value) => value,
+            .Err(_) => -2,
+        }
+        after timeout => -1,
+    };
+    println(result);
+}
+",
         );
         // A select builds its readiness waitset in the task-scope runtime, which
         // wasm32 does not compile, so the reject is the select itself and does

@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-record-local-drop-tuple-no-double-free"
+intent = "Constant-leak oracle for `Vec<record>` and `Vec<tuple>` (`BitCopy` value-aggregate element) scope-exit release. Shape `tuple_no_double_free` (vec tuple release is exactly once under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-record-local-drop-tuple-no-double-free.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "2OK"
+exit = 0

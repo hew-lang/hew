@@ -1,0 +1,10 @@
+[[case]]
+id = "stream_state_field_drain_asan"
+intent = "ASan fixture gate: an actor-state `Stream<T>` field drained by its handler is closed exactly once (#3218)."
+source = "../vertical-slice/accept/stream_state_field_drain_asan.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "drained\ndone\n"
+exit = 0

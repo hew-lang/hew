@@ -1,5 +1,5 @@
 //! Type-checker fixtures for actor lifecycle hooks
-//! (`#[on(start)]` / `#[on(stop)]` / `#[on(crash)]` / `#[on(exit)]` /
+//! (`#[on(start)]` / `#[on(stop)]` / `#[on(crash)]` / `#[on(link)]` /
 //! `#[on(down)]`). `upgrade` is no longer a hook kind (HEW-SPEC-2026 §12.6);
 //! `#[on(upgrade)]` is exercised here only as an unrecognised-kind case.
 //!
@@ -10,10 +10,11 @@
 //! a reject twin so the rule is observable from both sides).
 
 use crate::common;
+use hew_parser::ast::Ident;
 
 use common::typecheck_isolated as typecheck;
 use hew_parser::ast::Item;
-use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
+use hew_parser::module::{Module, ModuleGraph, ModuleImport, ModulePath};
 use hew_types::error::TypeErrorKind;
 
 /// The isolated lifecycle tests intentionally exercise the no-search-path
@@ -27,8 +28,9 @@ fn typecheck_with_resolved_std(source: &str) -> hew_types::TypeCheckOutput {
             };
             let source = match decl
                 .path
+                .segments
                 .iter()
-                .map(String::as_str)
+                .map(|(segment, _)| segment.name.as_str())
                 .collect::<Vec<_>>()
                 .as_slice()
             {
@@ -62,12 +64,9 @@ fn typecheck_with_resolved_std(source: &str) -> hew_types::TypeCheckOutput {
 /// the authority boundary under test.
 fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::TypeCheckOutput {
     let module_source = match owner {
-        "failure" => "pub type CrashNotification { actor_id: u64, }\npub enum CrashKind { Crashed, }",
+        "failure" => "pub type CrashNotification {\n    actor_id: u64;\n}\n\npub enum CrashKind {\n    Crashed;\n}\n",
         "link_monitor" => {
-            "pub type MonitorId { value: u64, }\n\
-             pub enum DownTarget { Local(u64), }\n\
-             pub enum DownReason { Exited, }\n\
-             pub type DownNotification { monitor: MonitorId, target: DownTarget, reason: DownReason, }"
+            "pub type MonitorId {\n    value: u64;\n}\n\npub enum DownTarget {\n    Local(u64);\n}\n\npub enum DownReason {\n    Exited;\n}\n\npub type DownNotification {\n    monitor: MonitorId;\n    target: DownTarget;\n    reason: DownReason;\n}\n"
         }
         _ => panic!("unsupported lifecycle owner fixture: {owner}"),
     };
@@ -76,7 +75,7 @@ fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::Ty
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", owner] {
+        if decl.path.to_string() == format!("std.{owner}") {
             decl.resolved_items = Some(common::parse_program(module_source).items.into());
             decl.resolved_source_paths =
                 vec![common::repo_root().join(format!("tests/fixtures/spoofed-{owner}.hew"))];
@@ -87,13 +86,8 @@ fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::Ty
 }
 
 fn typecheck_module_body(module_path: &[&str], source: &str) -> hew_types::TypeCheckOutput {
-    let root_id = ModuleId::root();
-    let module_id = ModuleId::new(
-        module_path
-            .iter()
-            .map(|segment| (*segment).to_string())
-            .collect(),
-    );
+    let root_id = ModulePath::root();
+    let module_id = ModulePath::new(module_path.iter());
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -134,14 +128,18 @@ fn typecheck_with_transitive_std(owner: &str, root_source: &str) -> hew_types::T
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path.last().is_some_and(|segment| segment == owner) {
+        if decl
+            .path
+            .last()
+            .is_some_and(|segment| segment == Ident::new(owner))
+        {
             let mut imported = common::parse_program(std_source).items;
             if owner == "link_monitor" {
                 for (nested, _) in &mut imported {
                     let Item::Import(nested_decl) = nested else {
                         continue;
                     };
-                    if nested_decl.path == ["std", "failure"] {
+                    if nested_decl.path.to_string() == "std.failure" {
                         nested_decl.resolved_items = Some(
                             common::parse_program(include_str!("../../../std/failure.hew"))
                                 .items
@@ -159,7 +157,7 @@ fn typecheck_with_transitive_std(owner: &str, root_source: &str) -> hew_types::T
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["app", "helper"] {
+        if decl.path.to_string() == "app.helper" {
             decl.resolved_items = Some(helper.items.clone().into());
         }
     }
@@ -171,18 +169,13 @@ fn typecheck_link_monitor_import_edge(
     target_path: &[&str],
     target_source: &str,
 ) -> hew_types::TypeCheckOutput {
-    let root_id = ModuleId::root();
-    let target_id = ModuleId::new(
-        target_path
-            .iter()
-            .map(|segment| (*segment).to_string())
-            .collect(),
-    );
-    let consumer_id = ModuleId::new(vec!["std".to_string(), "link_monitor".to_string()]);
+    let root_id = ModulePath::root();
+    let target_id = ModulePath::new(target_path.iter());
+    let consumer_id = ModulePath::new(["std", "link_monitor"]);
     let target_items = common::parse_program(target_source).items;
     let mut consumer = common::parse_program(&format!(
         "import {}.{{CrashKind}};\n\
-         pub enum ImportedReason {{ Crashed(CrashKind), }}",
+         pub enum ImportedReason {{ Crashed(CrashKind); }}",
         target_path.join(".")
     ));
     for (item, _) in &mut consumer.items {
@@ -246,7 +239,7 @@ fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
         import std.failure.{CrashNotification};
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
                 let _id = note.actor_id;
             }
@@ -272,7 +265,7 @@ fn aliased_imported_exit_payload_keeps_canonical_lifecycle_identity() {
         import std.failure.{CrashNotification as ExitNote};
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: ExitNote) {
                 let _id = note.actor_id;
             }
@@ -292,7 +285,7 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         import std.link_monitor as lm;
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: f.CrashNotification) {
                 let _id = note.actor_id;
             }
@@ -304,9 +297,9 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         }
 
         fn main() {
-            let _kind = f.CrashKind.Crashed;
+            let _kind = f.CrashKind.Fault;
             let _target = lm.DownTarget.Local(7);
-            let _reason = lm.DownReason.Exited;
+            let _reason = lm.DownReason.Stopped;
         }
         ",
     );
@@ -340,7 +333,7 @@ fn user_backed_std_module_ids_do_not_grant_lifecycle_authority() {
             &["std", "failure"][..],
             r"
             actor Watcher {
-                #[on(exit)]
+                #[on(link)]
                 fn on_peer_exit(note: failure.CrashNotification) {}
             }
             ",
@@ -422,7 +415,7 @@ fn single_segment_owner_module_ids_do_not_grant_lifecycle_authority() {
             &["failure"][..],
             r"
             actor Watcher {
-                #[on(exit)]
+                #[on(link)]
                 fn on_peer_exit(note: failure.CrashNotification) {}
             }
             ",
@@ -462,8 +455,10 @@ fn canonical_std_module_named_import_is_seeded_before_member_resolution() {
         output.errors
     );
 
-    let spoof =
-        typecheck_link_monitor_import_edge(&["app", "failure"], "pub enum CrashKind { Crashed, }");
+    let spoof = typecheck_link_monitor_import_edge(
+        &["app", "failure"],
+        "pub enum CrashKind {\n    Crashed;\n}\n",
+    );
     assert!(
         spoof
             .errors
@@ -481,7 +476,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.failure.{CrashAction};
         fn main() {
-            let _kind = failure.CrashKind.Crashed;
+            let _kind = failure.CrashKind.Fault;
         }
         ",
             None,
@@ -490,7 +485,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.failure.{CrashKind};
         fn main() {
-            let _kind = failure.CrashKind.Crashed;
+            let _kind = failure.CrashKind.Fault;
         }
         ",
             Some("std.failure.CrashKind"),
@@ -499,7 +494,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.link_monitor.{MonitorId};
         fn main() {
-            let _reason = link_monitor.DownReason.Exited;
+            let _reason = link_monitor.DownReason.Stopped;
         }
         ",
             None,
@@ -508,7 +503,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.link_monitor.{DownReason};
         fn main() {
-            let _reason = link_monitor.DownReason.Exited;
+            let _reason = link_monitor.DownReason.Stopped;
         }
         ",
             Some("std.link_monitor.DownReason"),
@@ -539,11 +534,11 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
     for source in [
         r"
             import std.failure;
-            actor Watcher { #[on(exit)] fn on_peer_exit(note: CrashNotification) {} }
+            actor Watcher { #[on(link)] fn on_peer_exit(note: CrashNotification) {} }
             fn main() {}
         ",
         r"
-            actor Watcher { #[on(exit)] fn on_peer_exit(note: CrashNotification) {} }
+            actor Watcher { #[on(link)] fn on_peer_exit(note: CrashNotification) {} }
             fn main() {}
         ",
     ] {
@@ -562,7 +557,7 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
         r"
         import std.failure;
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: failure.CrashNotification) { let _id = note.actor_id; }
         }
         fn main() {}
@@ -594,7 +589,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", "failure"] {
+        if decl.path.to_string() == "std.failure" {
             decl.resolved_items = Some(
                 common::parse_program(include_str!("../../../std/failure.hew"))
                     .items
@@ -608,7 +603,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
         import app.helper;
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: failure.CrashNotification) {}
         }
 
@@ -619,7 +614,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["app", "helper"] {
+        if decl.path.to_string() == "app.helper" {
             decl.resolved_items = Some(helper.items.clone().into());
         }
     }
@@ -650,7 +645,8 @@ fn named_imported_down_payload_and_nested_types_consume_import() {
                     DownTarget.Remote(location) => { let _location = location; }
                 }
                 match note.reason {
-                    DownReason.Exited => {}
+                    DownReason.Stopped => {}
+                    DownReason.Terminated => {}
                     DownReason.Crashed(kind) => { let _kind = kind; }
                     DownReason.MonitorLost => {}
                     DownReason.LocalShutdown => {}
@@ -726,7 +722,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", "failure"] {
+        if decl.path.to_string() == "std.failure" {
             decl.resolved_items = Some(
                 common::parse_program(include_str!("../../../std/failure.hew"))
                     .items
@@ -740,7 +736,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", "link_monitor"] {
+        if decl.path.to_string() == "std.link_monitor" {
             decl.resolved_items = Some(monitor.items.clone().into());
         }
     }
@@ -759,7 +755,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["app", "helper"] {
+        if decl.path.to_string() == "app.helper" {
             decl.resolved_items = Some(helper.items.clone().into());
         }
     }
@@ -859,18 +855,21 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
 #[test]
 fn local_lifecycle_shadow_does_not_forge_imported_payload() {
     let output = typecheck_with_resolved_std(
-        r"
-        import std.failure.{CrashNotification};
+        r"import std.failure.{CrashNotification};
 
-        type CrashNotification { value: i64, }
+type CrashNotification {
+    value: i64;
+}
 
-        actor Watcher {
-            #[on(exit)]
-            fn on_peer_exit(note: CrashNotification) { let _value = note.value; }
-        }
+actor Watcher {
+    #[on(link)]
+    fn on_peer_exit(note: CrashNotification) {
+        let _value = note.value;
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -886,18 +885,17 @@ fn local_lifecycle_shadow_does_not_forge_imported_payload() {
 #[test]
 fn accept_on_start_only() {
     let output = typecheck(
-        r"
-        actor Cache {
-            let entries: i32,
+        r"actor Cache {
+    let entries: i32;
 
-            #[on(start)]
-            fn warm() {
-                entries
-            }
-        }
+    #[on(start)]
+    fn warm() {
+        entries
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -909,18 +907,17 @@ fn accept_on_start_only() {
 #[test]
 fn accept_on_stop_only() {
     let output = typecheck(
-        r"
-        actor Cache {
-            let entries: i32,
+        r"actor Cache {
+    let entries: i32;
 
-            #[on(stop)]
-            fn flush() {
-                entries
-            }
-        }
+    #[on(stop)]
+    fn flush() {
+        entries
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -935,24 +932,23 @@ fn accept_multiple_on_stop_in_declared_order() {
     // order (HEW-SPEC-2026 §9.1.2 rule 6). The type-checker accepts
     // them without complaint.
     let output = typecheck(
-        r"
-        actor Cache {
-            let entries: i32,
-            let socket: i32,
+        r"actor Cache {
+    let entries: i32;
+    let socket: i32;
 
-            #[on(stop)]
-            fn flush_cache() {
-                entries
-            }
+    #[on(stop)]
+    fn flush_cache() {
+        entries
+    }
 
-            #[on(stop)]
-            fn close_socket() {
-                socket
-            }
-        }
+    #[on(stop)]
+    fn close_socket() {
+        socket
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -987,20 +983,19 @@ fn accept_typed_on_down_hook() {
 #[test]
 fn reject_user_down_notification_collision_in_typed_hook() {
     let output = typecheck(
-        r"
-        type DownNotification {
-            value: i64,
-        }
+        r"type DownNotification {
+    value: i64;
+}
 
-        actor Watcher {
-            #[on(down)]
-            fn on_down(note: DownNotification) {
-                let _value = note.value;
-            }
-        }
+actor Watcher {
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        let _value = note.value;
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -1115,18 +1110,17 @@ fn reject_hook_with_parameters() {
     // name. A parameter list (e.g. attempting `self`-style receivers,
     // imported from other ecosystems) is rejected.
     let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32,
+        r"actor Worker {
+    let count: i32;
 
-            #[on(stop)]
-            fn shutdown(unused: i32) {
-                count
-            }
-        }
+    #[on(stop)]
+    fn shutdown(unused: i32) {
+        count
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.iter().any(|e| e.message.contains("must take")
@@ -1143,23 +1137,22 @@ fn reject_duplicate_on_start() {
     // `#[on(start)]` is at-most-once per actor (rule 6). Declaring two
     // is a structural error.
     let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32,
+        r"actor Worker {
+    let count: i32;
 
-            #[on(start)]
-            fn first() {
-                count
-            }
+    #[on(start)]
+    fn first() {
+        count
+    }
 
-            #[on(start)]
-            fn second() {
-                count
-            }
-        }
+    #[on(start)]
+    fn second() {
+        count
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -1177,18 +1170,17 @@ fn reject_unknown_hook_kind() {
     // the checker emits a diagnostic listing the valid kinds (start, stop).
     // Uses a plain identifier that is not a reserved keyword.
     let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32,
+        r"actor Worker {
+    let count: i32;
 
-            #[on(restart)]
-            fn setup() {
-                count
-            }
-        }
+    #[on(restart)]
+    fn setup() {
+        count
+    }
+}
 
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -1218,18 +1210,17 @@ fn on_crash_still_works() {
     // `CrashAction`-return path is fail-closed (see
     // `reject_crash_action_return_not_yet_wired`).
     let output = typecheck(
-        r#"
-        actor Worker {
-            let count: i32,
+        r#"actor Worker {
+    let count: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                panic("handled")
-            }
-        }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        panic("handled")
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1243,18 +1234,17 @@ fn on_upgrade_attribute_compile_errors() {
     // `upgrade` left the `#[on(..)]` hook-kind list (HEW-SPEC-2026 §12.6):
     // `#[on(upgrade)]` is rejected the same way as any other unrecognised
     // hook kind, not through a bespoke reserved-attribute diagnostic.
-    let source = r"
-        actor Worker {
-            let count: i32,
+    let source = r"actor Worker {
+    let count: i32;
 
-            #[on(upgrade)]
-            fn on_upgrade() {
-                count
-            }
-        }
+    #[on(upgrade)]
+    fn on_upgrade() {
+        count
+    }
+}
 
-        fn main() {}
-        ";
+fn main() {}
+";
     let output = typecheck(source);
     let error = output
         .errors
@@ -1467,21 +1457,20 @@ fn accept_crash_action_return_inside_if_then_more_code() {
     // A `return CrashAction::Escalate;` inside an `if` branch, with a diverging
     // fallthrough, type-checks: every return position is a valid CrashAction
     // return now that the fail-closed gate is removed.
-    let source = r"
-        actor Worker {
-            let flag: i32,
+    let source = r"actor Worker {
+    let flag: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                if flag == 1 {
-                    return CrashAction.Escalate;
-                }
-                CrashAction.Kill
-            }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        if flag == 1 {
+            return CrashAction.Escalate;
         }
+        CrashAction.GiveUp
+    }
+}
 
-        fn main() {}
-        ";
+fn main() {}
+";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
@@ -1495,22 +1484,21 @@ fn accept_crash_hook_with_if_and_diverging_body() {
     // Accept twin: an `#[on(crash)]` hook that uses an `if` branch with a
     // diverging expression (`panic(...)`) in each arm still type-checks cleanly.
     let output = typecheck(
-        r#"
-        actor Worker {
-            let flag: i32,
+        r#"actor Worker {
+    let flag: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                if flag == 1 {
-                    panic("restart path")
-                } else {
-                    panic("kill path")
-                }
-            }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        if flag == 1 {
+            panic("restart path")
+        } else {
+            panic("kill path")
         }
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1532,21 +1520,20 @@ fn accept_closure_inside_crash_hook_returning_crash_action() {
     // closure is a valid closure return statement; the hook body itself diverges
     // via `panic(...)`. Both type-check cleanly.
     let output = typecheck(
-        r#"
-        actor Worker {
-            let flag: i32,
+        r#"actor Worker {
+    let flag: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                let handler = || -> CrashAction {
-                    return CrashAction.Restart;
-                };
-                panic("diverging hook body")
-            }
-        }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        let handler = || -> CrashAction {
+            return CrashAction.Restart;
+        };
+        panic("diverging hook body")
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1555,7 +1542,7 @@ fn accept_closure_inside_crash_hook_returning_crash_action() {
     );
 }
 
-// ── M-7-R: `#[on(exit)]` linked-actor exit hook ──────────────────────
+// ── M-7-R: `#[on(link)]` linked-actor exit hook ──────────────────────
 //
 // The exit hook fires when an actor THIS actor is linked to crashes/exits,
 // delivering a typed `CrashNotification { actor_id, kind }`. Signature:
@@ -1566,7 +1553,7 @@ fn accept_on_exit_hook_canonical_shape() {
     let output = typecheck(
         r"
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
                 let _id = note.actor_id;
             }
@@ -1577,7 +1564,7 @@ fn accept_on_exit_hook_canonical_shape() {
     );
     assert!(
         output.errors.is_empty(),
-        "`#[on(exit)] fn on_peer_exit(note: CrashNotification)` should type-check cleanly: {:?}",
+        "`#[on(link)] fn on_peer_exit(note: CrashNotification)` should type-check cleanly: {:?}",
         output.errors
     );
 }
@@ -1587,7 +1574,7 @@ fn reject_on_exit_hook_wrong_param_type() {
     let output = typecheck(
         r"
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashInfo) {
             }
         }
@@ -1600,7 +1587,7 @@ fn reject_on_exit_hook_wrong_param_type() {
             matches!(&e.kind, TypeErrorKind::InvalidOperation)
                 && e.message.contains("CrashNotification")
         }),
-        "`#[on(exit)]` with a non-CrashNotification param must reject: {:?}",
+        "`#[on(link)]` with a non-CrashNotification param must reject: {:?}",
         output.errors
     );
 }
@@ -1610,7 +1597,7 @@ fn reject_on_exit_hook_nonunit_return() {
     let output = typecheck(
         r"
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashNotification) -> i64 {
                 42
             }
@@ -1624,7 +1611,7 @@ fn reject_on_exit_hook_nonunit_return() {
             matches!(&e.kind, TypeErrorKind::InvalidOperation)
                 && e.message.contains("must return `()`")
         }),
-        "`#[on(exit)]` with a non-unit return must reject: {:?}",
+        "`#[on(link)]` with a non-unit return must reject: {:?}",
         output.errors
     );
 }
@@ -1645,18 +1632,17 @@ fn on_crash_signature_pinned() {
     // `crash_action_variants_recognised_by_type_checker` test for the
     // non-diverging case).
     let output = typecheck(
-        r#"
-        actor Worker {
-            let count: i32,
+        r#"actor Worker {
+    let count: i32;
 
-            #[on(crash)]
-            fn on_crash(info: CrashInfo) -> CrashAction {
-                panic("crash")
-            }
-        }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        panic("crash")
+    }
+}
 
-        fn main() {}
-        "#,
+fn main() {}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1764,10 +1750,10 @@ fn reject_on_crash_wrong_return_type() {
 #[test]
 fn crash_action_variants_recognised_by_type_checker() {
     // The `CrashAction` enum carries three variants per Q46/A23:
-    // `Restart | Escalate | Kill`. The type-checker recognises each variant as
+    // `Restart | Escalate | GiveUp`. The type-checker recognises each variant as
     // a valid `CrashAction` expression and (M-4) accepts it as the hook return
     // — no signature mismatch, no fail-closed gate, no error at all.
-    for variant in ["Restart", "Escalate", "Kill"] {
+    for variant in ["Restart", "Escalate", "GiveUp"] {
         let src = format!(
             "
             actor Worker {{

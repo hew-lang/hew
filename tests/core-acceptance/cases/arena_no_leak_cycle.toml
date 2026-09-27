@@ -1,0 +1,10 @@
+[[case]]
+id = "arena_no_leak_cycle"
+intent = "Arena<string>: an insert/remove cycle over a heap-owning element type must not leak the taken value nor double-free it."
+source = "../vertical-slice/accept/arena_no_leak_cycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1\nsurvivor\n"
+exit = 0

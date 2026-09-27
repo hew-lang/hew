@@ -5,9 +5,11 @@ use tower_lsp_server::lsp_types::{
     WorkspaceSymbolParams,
 };
 
+use super::super::uri::FileUriExt;
+use super::super::workspace::build_code_lenses_with_seeds;
+use super::super::workspace::normalize_workspace_path;
 use super::super::{
-    build_code_lenses, collect_project_workspace_symbols, non_empty, HewLanguageServer,
-    RUN_TEST_COMMAND,
+    collect_project_workspace_symbols, non_empty, HewLanguageServer, RUN_TEST_COMMAND,
 };
 
 pub(crate) fn extract_run_test_name(arguments: &[Value]) -> Option<String> {
@@ -23,6 +25,10 @@ pub(crate) fn extract_run_test_name(arguments: &[Value]) -> Option<String> {
     }
 }
 
+fn extract_run_test_seed(arguments: &[Value]) -> Option<&str> {
+    arguments.first()?.get("seed")?.as_str()
+}
+
 pub(crate) fn code_lens(
     server: &HewLanguageServer,
     params: &CodeLensParams,
@@ -30,7 +36,15 @@ pub(crate) fn code_lens(
     let uri = &params.text_document.uri;
     let doc = server.documents.get(uri)?;
 
-    let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result);
+    let path = uri.to_file_path()?;
+    let file = normalize_workspace_path(&path).display().to_string();
+    let lenses = build_code_lenses_with_seeds(
+        &doc.source,
+        &doc.line_offsets,
+        &doc.parse_result,
+        &file,
+        Some(&server.test_seeds),
+    );
     non_empty(lenses)
 }
 
@@ -62,7 +76,9 @@ pub(crate) async fn execute_command(
                     .await;
                 return Ok(None);
             };
-            server.run_test_command(&test_name).await
+            server
+                .run_test_command(&test_name, extract_run_test_seed(&params.arguments))
+                .await
         }
         other => {
             server

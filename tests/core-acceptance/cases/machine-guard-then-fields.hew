@@ -6,10 +6,10 @@ const threshold: i64 = 0;
 
 machine Counter {
     events {
-        Inc,
+        Inc;
     }
 
-    state Active { n: i64, },
+    state Active { n: i64; }
 
     on Inc: Active => Active when state.n >= threshold { n: state.n + 1 }
 

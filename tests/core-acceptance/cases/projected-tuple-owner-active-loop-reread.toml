@@ -1,0 +1,10 @@
+[[case]]
+id = "projected-tuple-owner-active-loop-reread"
+intent = "Ownership oracle for reading a heap leaf out of a still-live tuple owner. Shape `loop_reread` (loop backedge rereads the cloned field every iteration) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/projected-tuple-owner-active-loop-reread.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 3

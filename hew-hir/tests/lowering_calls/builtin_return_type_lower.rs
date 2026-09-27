@@ -130,15 +130,14 @@ fn expression_return_option_still_lowers_cleanly() {
 #[test]
 fn user_type_in_return_position_not_mis_stamped_as_builtin() {
     let output = lower(
-        r"
-        pub type Wrapper {
-            v: i64,
-        }
+        r"pub type Wrapper {
+    v: i64;
+}
 
-        fn make() -> Wrapper {
-            return Wrapper { v: 42 };
-        }
-        ",
+fn make() -> Wrapper {
+    return Wrapper { v: 42 };
+}
+",
     );
     // A user type must not produce ReturnTypeMismatch from mis-stamping.
     assert!(
@@ -164,7 +163,8 @@ fn user_type_in_return_position_not_mis_stamped_as_builtin() {
     // The return type on the HIR function must have `builtin: None` —
     // i.e. it resolved to `named_user`, NOT `named_builtin`.
     match &make_fn.return_ty {
-        hew_types::ResolvedTy::Named { builtin, .. } => {
+        hew_types::ResolvedTy::Named { head, .. } => {
+            let builtin = head.builtin();
             assert!(
                 builtin.is_none(),
                 "user type `Wrapper` must have `builtin: None` on its HIR return type; \

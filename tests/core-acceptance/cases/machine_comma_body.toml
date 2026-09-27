@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_comma_body"
+intent = "A comma after a bodyless machine state is rejected with the member-terminator diagnostic."
+source = "../vertical-slice/reject/machine_comma_body.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_MEMBER_TERMINATOR"
+line = 4
+column = 14
+message = "a state declaration member ends with `;`"

@@ -1,4 +1,5 @@
 import std.metrics;
+
 import std.observe;
 
 fn record_request() {
@@ -7,11 +8,9 @@ fn record_request() {
     requests.add(4);
     let same = metrics.counter("app.requests").expect("reuse counter");
     same.inc();
-
     let active = metrics.gauge("app.active").expect("register gauge");
     active.set(3);
     active.dec();
-
     let duration = metrics.histogram("app.duration").expect("register histogram");
     duration.observe(2.5);
     duration.observe(1.5);

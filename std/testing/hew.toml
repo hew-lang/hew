@@ -2,6 +2,6 @@
 name = "std::testing"
 edition = "2026"
 version = "0.1.0"
-description = "Hew std::testing package"
+description = "Hew deterministic testing controls"
 authors = ["Hew Contributors"]
 license = "MIT OR Apache-2.0"

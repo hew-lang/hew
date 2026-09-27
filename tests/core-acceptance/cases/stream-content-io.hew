@@ -1,18 +1,23 @@
 import std.fs;
+
 import std.os;
+
 import std.stream;
 
 fn main() {
     let path = f"{os.temp_dir()}/hew-stream-content-{os.pid()}.bin";
     fs.write(path, "first\0last 🌲").expect("write input");
     assert(fs.read(path).expect("read input") == "first\0last 🌲");
-
     let input = stream.open(path).expect("open input").lines();
     var content = "";
     loop {
         match input.recv() {
-            .Some(chunk) => { content = content + chunk; },
-            .None => { break; },
+            .Some(chunk) => {
+                content = content + chunk;
+            }
+            .None => {
+                break;
+            }
         }
     }
     assert(content == "first\0last 🌲");

@@ -29,7 +29,7 @@ pub fn probe(module: &mut SemModule) -> &mut SemFunction {
     module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "probe")
+        .find(|function| module.defs.path(function.declaration) == "probe")
         .unwrap()
 }
 
@@ -141,7 +141,7 @@ pub enum Case {
 pub fn module(case: Case) -> SemModule {
     let mut module = source(match case {
         Case::ZeroSized => "type Empty {} fn probe(owner: Empty, flag: bool) {} fn main() {}",
-        Case::LinearTrap => "type Token { payload: string } fn probe(consume owner: Token, flag: bool) {} fn main() {}",
+        Case::LinearTrap => "type Token {\n    payload: string;\n}\n\nfn probe(consume owner: Token, flag: bool) {}\n\nfn main() {}\n",
         _ => "fn probe(consume owner: string, flag: bool) {} fn main() {}",
     });
     let function = probe(&mut module);

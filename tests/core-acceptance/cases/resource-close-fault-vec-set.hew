@@ -2,7 +2,9 @@
 // that fails there is the frame's failure and the vector it still owns is
 // released before the failure leaves.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {

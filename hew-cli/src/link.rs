@@ -168,7 +168,7 @@ pub(crate) fn link_executable_with_hew_lib(
 
     // ── Coverage instrumentation (opt-in via HEW_COVERAGE=1) ──────────
     // When the program is built against an `instrument-coverage` libhew.a (see
-    // `make coverage-combined`), the runtime object code carries LLVM counter
+    // `make coverage-runtime`), the runtime object code carries LLVM counter
     // and coverage-map sections but references the profiler runtime as an
     // *undefined* symbol — rustc bundles that runtime only when *it* links the
     // final artifact, never into a `staticlib`. Hew links the final binary with
@@ -1823,8 +1823,8 @@ mod tests {
 
     // ── has_tool ──────────────────────────────────────────────────────
 
-    // WINDOWS-TODO: true command does not exist on Windows.
-    #[cfg_attr(windows, ignore)]
+    // `true` does not exist on Windows; the probe itself is Unix-only.
+    #[cfg(unix)]
     #[test]
     fn has_tool_finds_true_command() {
         // `true` is a standard Unix utility that always succeeds
@@ -2490,8 +2490,9 @@ mod tests {
         assert_eq!(WASM_RUNTIME_ARCHIVE, "libhew_runtime.a");
     }
 
-    // WINDOWS-TODO: wasm lib candidate path logic differs on Windows.
-    #[cfg_attr(windows, ignore)]
+    // The fixture path is a POSIX absolute path; it does not exercise
+    // Windows path semantics, so this test does not apply there.
+    #[cfg(unix)]
     #[test]
     fn wasm_lib_candidates_reject_flat_host_fallbacks() {
         let exe_dir = std::path::Path::new("/repo/target/debug");
@@ -2538,7 +2539,6 @@ mod tests {
     /// under `<root>/<triple>/debug/` rather than beside the driver. Resolving
     /// it from the target-specific directory is what makes the wasm link line
     /// work at all.
-    #[cfg_attr(windows, ignore)]
     #[test]
     fn a_wasm_runtime_archive_resolves_from_the_target_directory() {
         let (root, exe_dir) = wasm_archive_fixture(WASM_RUNTIME_ARCHIVE, b"archive bytes");
@@ -2559,7 +2559,6 @@ mod tests {
     /// "Optional" governs whether the archive has to exist. One that does exist
     /// must reach the link line — skipping it would hand the program a link
     /// line silently missing the stdlib.
-    #[cfg_attr(windows, ignore)]
     #[test]
     fn a_present_optional_wasm_archive_is_not_skipped() {
         let (_root, exe_dir) = wasm_archive_fixture("libhew_std.a", b"archive bytes");
@@ -2570,7 +2569,6 @@ mod tests {
     }
 
     /// An absent optional archive is still absent, not an error.
-    #[cfg_attr(windows, ignore)]
     #[test]
     fn a_missing_optional_wasm_archive_is_not_an_error() {
         let root = tempfile::tempdir().expect("temp dir");

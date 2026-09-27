@@ -27,7 +27,6 @@ fn main() {
     };
     let _r1 = b(true);
     let _r2 = b(false);
-
     let n32 = actor |n: i32| -> i64 {
         println(f"i32 got {n}");
         n as i64

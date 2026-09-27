@@ -5,6 +5,7 @@ mod convert;
 mod handlers;
 mod hierarchy;
 mod navigation;
+mod testing;
 mod uri;
 mod workspace;
 
@@ -20,7 +21,10 @@ use self::handlers::text_sync::build_initialize_result_from_caps_json;
 #[cfg(test)]
 use self::handlers::workspace::extract_run_test_name;
 // Items used by the LanguageServer impl handlers.
-use self::analysis::{close_document_and_dependents, refresh_document_and_dependents};
+use self::analysis::{
+    close_document_and_dependents, collect_published_diagnostics, open_document_uri,
+    refresh_document_and_dependents,
+};
 use self::convert::{analysis_tokens_to_lsp, symbol_info_to_doc_symbol, to_lsp_completion};
 use self::hierarchy::{
     collect_subtypes, collect_supertypes, find_callable_at, find_incoming_calls,
@@ -33,20 +37,21 @@ use self::navigation::{
     collect_import_items, find_cross_file_definition, find_definition_in_ast,
     find_stdlib_definition, plan_workspace_rename,
 };
+use self::testing::failure_from_event;
 use self::uri::FileUriExt;
 #[cfg(test)]
+use self::workspace::build_code_lenses;
+#[cfg(test)]
 use self::workspace::collect_workspace_symbols;
-use self::workspace::{build_code_lenses, collect_project_workspace_symbols};
+use self::workspace::{collect_project_workspace_symbols, test_inventory};
 
 // Items additionally needed by the test module (only compiled in test builds).
 #[cfg(test)]
 use self::analysis::{analyze_document, diagnostic_data};
 #[cfg(test)]
 use self::convert::analysis_symbol_kind_to_lsp;
-#[cfg(test)]
-use self::workspace::has_test_attribute;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 #[cfg(test)]
@@ -59,9 +64,9 @@ use hew_analysis::references::count_all_references;
 #[cfg(test)]
 use hew_analysis::util::compute_line_offsets;
 use hew_analysis::util::{non_empty, offset_to_line_col, word_at_offset};
-use hew_parser::ast::Span;
 #[cfg(test)]
-use hew_parser::ast::{Attribute, Item};
+use hew_parser::ast::Item;
+use hew_parser::ast::Span;
 use hew_parser::ParseResult;
 #[cfg(test)]
 use hew_types::error::TypeErrorKind;
@@ -81,7 +86,7 @@ use tower_lsp_server::lsp_types::{
 use tower_lsp_server::lsp_types::{
     CodeActionContext, CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol,
     InlayHintTooltip, InsertTextFormat, PartialResultParams, SemanticToken, SymbolKind,
-    TextDocumentIdentifier, WorkDoneProgressParams,
+    WorkDoneProgressParams,
 };
 use tower_lsp_server::lsp_types::{
     CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
@@ -93,9 +98,18 @@ use tower_lsp_server::lsp_types::{
     MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
     SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri as Url, WorkDoneProgressOptions, WorkspaceEdit,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentIdentifier,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri as Url,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
+
+/// Parameters for the `hew/tests` editor request. Omitting the document lists
+/// tests across the open workspace.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestsParams {
+    text_document: Option<TextDocumentIdentifier>,
+}
 use tower_lsp_server::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp_server::lsp_types::{
     InlayHint, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, SignatureHelp,
@@ -302,6 +316,34 @@ where
     Ok(())
 }
 
+async fn read_test_events<R>(reader: R) -> std::io::Result<Vec<Value>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    let mut events = Vec::new();
+    while let Some(line) = lines.next_line().await? {
+        if let Ok(event) = serde_json::from_str::<Value>(&line) {
+            if event.get("event").is_some() {
+                events.push(event);
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn with_test_diagnostics(
+    mut published: Vec<(Url, Vec<Diagnostic>)>,
+    tests: &DashMap<Url, Vec<Diagnostic>>,
+) -> Vec<(Url, Vec<Diagnostic>)> {
+    for (uri, diagnostics) in &mut published {
+        if let Some(failures) = tests.get(uri) {
+            diagnostics.extend(failures.iter().cloned());
+        }
+    }
+    published
+}
+
 async fn wait_for_output_task(
     task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
     stream_name: &str,
@@ -333,17 +375,24 @@ fn hew_cli_executable() -> PathBuf {
     PathBuf::from(format!("hew{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf, Vec<String>) {
+fn build_run_test_invocation(selector: &str) -> (PathBuf, Vec<String>) {
     (
         hew_cli_executable(),
         vec![
             "test".to_string(),
-            "--no-color".to_string(),
-            "--filter".to_string(),
-            test_name.to_string(),
-            workspace_root.display().to_string(),
+            selector.to_string(),
+            "--format".to_string(),
+            "json".to_string(),
         ],
     )
+}
+
+fn build_seeded_test_invocation(selector: &str, seed: Option<&str>) -> (PathBuf, Vec<String>) {
+    let (program, mut args) = build_run_test_invocation(selector);
+    if let Some(seed) = seed {
+        args.extend(["--seed".to_string(), seed.to_string()]);
+    }
+    (program, args)
 }
 
 // ── Server ───────────────────────────────────────────────────────────
@@ -359,6 +408,13 @@ type AnalysisVersions = Arc<DashMap<Url, u64>>;
 /// typical files while coalescing rapid-fire keystrokes into a single run.
 const DEBOUNCE_MS: u64 = 100;
 
+struct TestRunState {
+    affected: HashSet<Url>,
+    target_uri: Option<Url>,
+    run_version: Option<u64>,
+    edit_version: Option<u64>,
+}
+
 /// Hew language server providing IDE features via LSP.
 #[derive(Debug)]
 pub struct HewLanguageServer {
@@ -368,6 +424,11 @@ pub struct HewLanguageServer {
     workspace_roots: RwLock<Vec<PathBuf>>,
     /// Per-URI generation counters used by the debounced analysis path.
     analysis_versions: AnalysisVersions,
+    /// Failures from the CLI test stream, kept separate from source diagnostics.
+    test_diagnostics: Arc<DashMap<Url, Vec<Diagnostic>>>,
+    /// A failed deterministic test's last seed, keyed by its exact selector.
+    test_seeds: Arc<DashMap<String, String>>,
+    test_run_versions: Arc<DashMap<Url, u64>>,
     /// Extra package-search directories passed via `--pkg-path` (or the
     /// `hew.pkgPath` vscode setting).  Appended to the default search roots
     /// so that `hew check --pkg-path DIR` and editor diagnostics agree on
@@ -388,6 +449,9 @@ impl HewLanguageServer {
             documents: Arc::new(DashMap::new()),
             workspace_roots: RwLock::new(Vec::new()),
             analysis_versions: Arc::new(DashMap::new()),
+            test_diagnostics: Arc::new(DashMap::new()),
+            test_seeds: Arc::new(DashMap::new()),
+            test_run_versions: Arc::new(DashMap::new()),
             extra_pkg_paths,
         }
     }
@@ -415,6 +479,28 @@ impl HewLanguageServer {
         })
     }
 
+    /// Return stable identities and ranges from the same discovery used by
+    /// `hew test`. An omitted document requests the workspace inventory.
+    ///
+    /// # Errors
+    ///
+    /// The LSP request signature returns `Result`; discovery itself cannot fail.
+    #[expect(
+        clippy::unused_async,
+        reason = "custom_method requires an async handler"
+    )]
+    pub async fn tests(&self, params: TestsParams) -> Result<Value> {
+        let roots = self
+            .workspace_roots
+            .read()
+            .map_or_else(|_| Vec::new(), |roots| roots.clone());
+        Ok(Value::Array(test_inventory(
+            &self.documents,
+            &roots,
+            params.text_document.as_ref().map(|document| &document.uri),
+        )))
+    }
+
     /// Re-lex, re-parse, and re-typecheck the document and any open importers,
     /// then publish diagnostics.
     ///
@@ -427,6 +513,12 @@ impl HewLanguageServer {
     /// The function itself is synchronous — analysis runs in a `tokio::spawn`
     /// task so the handler path returns immediately.
     fn reanalyze(&self, uri: &Url, source: &str) {
+        self.test_diagnostics.remove(uri);
+        if let Some(path) = uri.to_file_path() {
+            let prefix = format!("{}::", workspace::normalize_workspace_path(&path).display());
+            self.test_seeds
+                .retain(|selector, _| !selector.starts_with(&prefix));
+        }
         // Increment the generation counter for this URI and capture the new value.
         let version = {
             let mut entry = self.analysis_versions.entry(uri.clone()).or_insert(0);
@@ -437,6 +529,7 @@ impl HewLanguageServer {
         // Clone the shared state the spawned task needs.
         let client = self.client.clone();
         let documents = Arc::clone(&self.documents);
+        let test_diagnostics = Arc::clone(&self.test_diagnostics);
         let versions = Arc::clone(&self.analysis_versions);
         let uri = uri.clone();
         let source = source.to_owned();
@@ -451,9 +544,9 @@ impl HewLanguageServer {
                 return;
             }
 
-            for (updated_uri, diagnostics) in
-                refresh_document_and_dependents(&uri, &source, &documents, &extra_pkg_paths)
-            {
+            let published =
+                refresh_document_and_dependents(&uri, &source, &documents, &extra_pkg_paths);
+            for (updated_uri, diagnostics) in with_test_diagnostics(published, &test_diagnostics) {
                 client
                     .publish_diagnostics(updated_uri, diagnostics, None)
                     .await;
@@ -461,7 +554,81 @@ impl HewLanguageServer {
         });
     }
 
-    async fn run_test_command(&self, test_name: &str) -> Result<Option<Value>> {
+    async fn publish_test_diagnostics_for(&self, uris: &HashSet<Url>) {
+        let published = collect_published_diagnostics(&self.documents, uris.clone());
+        for (uri, diagnostics) in with_test_diagnostics(published, &self.test_diagnostics) {
+            if uris.contains(&uri) {
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
+            }
+        }
+    }
+
+    async fn begin_test_run(&self, test_name: &str) -> TestRunState {
+        let file = test_name
+            .rsplit_once("::")
+            .map_or(test_name, |(file, _)| file);
+        let target_uri = Url::from_file_path(Path::new(file))
+            .map(|uri| open_document_uri(&uri, &self.documents));
+        let mut affected = HashSet::new();
+        let run_version = target_uri.as_ref().map(|uri| {
+            let mut version = self.test_run_versions.entry(uri.clone()).or_insert(0);
+            *version += 1;
+            *version
+        });
+        let edit_version = target_uri
+            .as_ref()
+            .and_then(|uri| self.analysis_versions.get(uri).map(|version| *version));
+        if let Some(uri) = &target_uri {
+            affected.insert(uri.clone());
+            if let Some(mut diagnostics) = self.test_diagnostics.get_mut(uri) {
+                if test_name.contains("::") {
+                    diagnostics.retain(|diagnostic| {
+                        diagnostic
+                            .data
+                            .as_ref()
+                            .and_then(|data| data.get("selector"))
+                            .and_then(Value::as_str)
+                            != Some(test_name)
+                    });
+                } else {
+                    diagnostics.clear();
+                }
+            }
+        }
+        if test_name.contains("::") {
+            self.test_seeds.remove(test_name);
+        } else {
+            let prefix = format!("{test_name}::");
+            self.test_seeds
+                .retain(|selector, _| !selector.starts_with(&prefix));
+        }
+        self.publish_test_diagnostics_for(&affected).await;
+        TestRunState {
+            affected,
+            target_uri,
+            run_version,
+            edit_version,
+        }
+    }
+
+    fn record_test_failures(&self, events: &[Value], affected: &mut HashSet<Url>) {
+        for event in events {
+            if let Some(failure) = failure_from_event(event, &self.documents) {
+                affected.insert(failure.uri.clone());
+                self.test_diagnostics
+                    .entry(failure.uri)
+                    .or_default()
+                    .push(failure.diagnostic);
+                if let Some(seed) = failure.seed {
+                    self.test_seeds.insert(failure.selector, seed);
+                }
+            }
+        }
+    }
+
+    async fn run_test_command(&self, test_name: &str, seed: Option<&str>) -> Result<Option<Value>> {
         let Some(workspace_root) = self.workspace_root() else {
             self.client
                 .show_message(
@@ -472,7 +639,14 @@ impl HewLanguageServer {
             return Ok(None);
         };
 
-        let (program, args) = build_run_test_invocation(test_name, &workspace_root);
+        let TestRunState {
+            mut affected,
+            target_uri,
+            run_version,
+            edit_version,
+        } = self.begin_test_run(test_name).await;
+
+        let (program, args) = build_seeded_test_invocation(test_name, seed);
         self.client
             .show_message(
                 MessageType::INFO,
@@ -488,10 +662,10 @@ impl HewLanguageServer {
             .spawn()
         {
             Ok(mut child) => {
-                let stdout_task = child.stdout.take().map(|stdout| {
-                    let client = self.client.clone();
-                    tokio::spawn(stream_command_output(client, stdout, MessageType::INFO))
-                });
+                let stdout_task = child
+                    .stdout
+                    .take()
+                    .map(|stdout| tokio::spawn(read_test_events(stdout)));
                 let stderr_task = child.stderr.take().map(|stderr| {
                     let client = self.client.clone();
                     tokio::spawn(stream_command_output(client, stderr, MessageType::ERROR))
@@ -499,8 +673,31 @@ impl HewLanguageServer {
                 let status = child.wait().await.map_err(|error| {
                     internal_error(format!("failed to wait for test process: {error}"))
                 })?;
-                wait_for_output_task(stdout_task, "stdout").await?;
+                let events = if let Some(task) = stdout_task {
+                    task.await
+                        .map_err(|error| {
+                            internal_error(format!("failed to join test stream: {error}"))
+                        })?
+                        .map_err(|error| {
+                            internal_error(format!("failed to read test stream: {error}"))
+                        })?
+                } else {
+                    Vec::new()
+                };
                 wait_for_output_task(stderr_task, "stderr").await?;
+                if let (Some(uri), Some(run_version)) = (&target_uri, run_version) {
+                    if self.test_run_versions.get(uri).map(|version| *version) != Some(run_version)
+                        || self.analysis_versions.get(uri).map(|version| *version) != edit_version
+                    {
+                        return Ok(None);
+                    }
+                }
+                self.record_test_failures(&events, &mut affected);
+                self.publish_test_diagnostics_for(&affected).await;
+                let client = self.client.clone();
+                tokio::spawn(async move {
+                    let _ = client.code_lens_refresh().await;
+                });
                 let level = if status.success() {
                     MessageType::INFO
                 } else {
@@ -1015,7 +1212,7 @@ mod tests {
 
     #[test]
     fn semantic_tokens_mark_function_and_type_declarations() {
-        let source = "type Point { x: i32 }\ntrait Stream { type Item; fn next() -> i32; }\nfn calc(v: i32) -> i32 { v }";
+        let source = "type Point {\n    x: i32;\n}\n\ntrait Stream {\n    type Item;\n    fn next() -> i32;\n}\n\nfn calc(v: i32) -> i32 {\n    v\n}\n";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
         let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
@@ -1085,7 +1282,7 @@ mod tests {
         // Place the cursor right after the dot (before the field name) to simulate
         // the user typing `p.` and requesting completions.
         let source =
-            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1209,7 +1406,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![repo_root]);
         let source = concat!(
             "actor Counter {\n",
-            "    count: i64,\n",
+            "    var count: i64;\n",
             "    receive fn increment(n: i64) { count = count + n; }\n",
             "}\n",
             "fn main() {\n",
@@ -1265,7 +1462,7 @@ mod tests {
 
     #[test]
     fn completions_enum_variant_after_dot() {
-        let source = "enum Color { Blue, Point { x: i32, y: i32 }, Rgb(u8, u8, u8), }\nfn main() { let color = Color.Blue; }";
+        let source = "enum Color {\n    Blue;\n    Point { x: i32; y: i32;  }\n    Rgb(u8, u8, u8);\n}\n\nfn main() {\n    let color = Color.Blue;\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1464,9 +1661,15 @@ mod tests {
 
     #[test]
     fn completions_cover_type_impl_methods_if_else_match_and_patterns() {
-        let source = r"
-type Point { x: i32, y: i32, }
-enum Result { Ok(i32), Err(i32), }
+        let source = r"type Point {
+    x: i32;
+    y: i32;
+}
+
+enum Result {
+    Ok(i32);
+    Err(i32);
+}
 
 type Worker {
     fn process(input: i32, point: Point, result: Result) -> i32 {
@@ -1482,10 +1685,10 @@ type Worker {
                     let Point { x, y: y_value } = point;
                     let match_local = ok_value + x + y_value;
                     match_local
-                },
+                }
                 Result.Err(err_a) | Result.Err(err_b) => {
                     err_a + err_b
-                },
+                }
             }
         }
     }
@@ -1563,7 +1766,7 @@ impl Worker {
 
     #[test]
     fn goto_def_receive_method() {
-        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\nfn main() { let c = spawn Counter(count: 0); c.increment(1); }";
+        let source = "actor Counter {\n    let count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    c.increment(1);\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let call_offset = source.rfind("increment").unwrap();
@@ -1579,9 +1782,9 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_local_binding_fallback() {
+    fn goto_def_resolves_checked_local_binding() {
         let source = "fn main() {\n    let result = 41;\n    result + 1\n}";
-        let doc = make_doc(source);
+        let doc = make_typed_doc(source);
         let offset = source.rfind("result + 1").unwrap();
         let word = word_at_offset(source, offset).unwrap();
 
@@ -1589,18 +1792,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify local binding");
-        let (_, span) = resolution
-            .def_location()
-            .expect("local binding should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-local.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve local binding")
+                .range;
         let expected_start = source.find("let result").unwrap() + 4;
         let expected = offset_range_to_lsp(
             source,
@@ -1612,9 +1808,9 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_struct_field_access_fallback() {
+    fn goto_def_resolves_checked_struct_field_access() {
         let source =
-            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let doc = make_typed_doc(source);
         let offset = source.rfind("p.x").unwrap() + 2;
         let word = word_at_offset(source, offset).unwrap();
@@ -1624,18 +1820,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify field access");
-        let (_, span) = resolution
-            .def_location()
-            .expect("field access should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-field.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve field access")
+                .range;
         let expected_start = source.find("x: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,
@@ -1647,43 +1836,367 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_resolves_nominal_type_name_to_declaration_span() {
-        let source =
-            "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
+    fn checked_field_navigation_and_references_keep_nominal_owners_distinct() {
+        let source = "type A {\n    x: i64;\n}\n\ntype B {\n    x: i64;\n}\n\nfn main() {\n    let a = A { x: 1 };\n    let b = B { x: 2 };\n    println(a.x);\n    println(b.x);\n}\n";
         let doc = make_typed_doc(source);
-        let offset = source.find("-> Point").unwrap() + "-> ".len();
-
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
+        let uri = make_test_uri("/identity-fields.hew");
+        let a_use = source.find("a.x").unwrap() + 2;
+        let b_use = source.find("b.x").unwrap() + 2;
+        let expected_b = source.find("type B {\n    x:").unwrap() + "type B {\n    ".len();
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, b_use, &DashMap::new())
+                .expect("B.x must resolve through checker identity");
+        assert_eq!(location.uri, uri);
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(source, &doc.line_offsets, expected_b, expected_b + 1)
+        );
+        let at_declaration = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
+            expected_b,
+            &DashMap::new(),
         )
-        .expect("resolver should classify nominal type use");
-        match resolution {
-            hew_analysis::resolver::Resolution::TypeDef { name, def_span, .. } => {
-                assert_eq!(name, "Point");
-                assert_eq!(&source[def_span.start..def_span.end], "Point");
-                assert_eq!(def_span.start, source.find("Point").unwrap());
-                let range =
-                    offset_range_to_lsp(source, &doc.line_offsets, def_span.start, def_span.end);
-                let expected = offset_range_to_lsp(
-                    source,
-                    &doc.line_offsets,
-                    source.find("Point").unwrap(),
-                    source.find("Point").unwrap() + "Point".len(),
-                );
-                assert_eq!(range, expected);
-            }
-            other => panic!("expected nominal TypeDef, got {other:?}"),
-        }
+        .expect("B.x declaration keeps its checker owner");
+        assert_eq!(at_declaration, location);
+        let refs = super::navigation::identity_reference_locations(
+            &uri,
+            &doc,
+            b_use,
+            true,
+            &DashMap::new(),
+        )
+        .expect("checked B.x references");
+        assert!(refs.iter().any(|site| site.range == location.range));
+        assert!(refs
+            .iter()
+            .any(|site| site.range
+                == offset_range_to_lsp(source, &doc.line_offsets, b_use, b_use + 1)));
+        assert!(!refs
+            .iter()
+            .any(|site| site.range
+                == offset_range_to_lsp(source, &doc.line_offsets, a_use, a_use + 1)));
     }
 
     #[test]
-    fn goto_def_resolves_param_fallback() {
+    fn checked_var_navigation_uses_only_the_name_token() {
+        let source = "fn main() { var value = 1; println(value); }";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-var.hew");
+        let declared = source.find("var value").unwrap() + 4;
+        let used = source.rfind("value").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, declared, declared + 5);
+        for offset in [declared, used] {
+            let location = super::navigation::identity_definition_location(
+                &uri,
+                &doc,
+                offset,
+                &DashMap::new(),
+            )
+            .expect("var binding should resolve to its name token");
+            assert_eq!(location.range, expected);
+            let refs = super::navigation::identity_reference_locations(
+                &uri,
+                &doc,
+                offset,
+                true,
+                &DashMap::new(),
+            )
+            .expect("var references should use token spans");
+            assert_eq!(refs.len(), 2);
+            assert!(refs.iter().all(|reference| reference.range.end.character
+                - reference.range.start.character
+                == 5));
+        }
+        let initializer = source.find("= 1").unwrap() + 2;
+        assert!(
+            super::navigation::identity_definition_location(
+                &uri,
+                &doc,
+                initializer,
+                &DashMap::new(),
+            )
+            .is_none(),
+            "initializer is not the var binder"
+        );
+    }
+
+    #[test]
+    fn checked_field_rename_edits_only_the_selected_owner() {
+        let source = "type A {\n    x: i64;\n}\n\ntype B {\n    x: i64;\n}\n\nfn main() {\n    let a = A { x: 1 };\n    let b = B { x: 2 };\n    println(a.x);\n    println(b.x);\n}\n";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-rename.hew");
+        let offset = source.find("b.x").unwrap() + 2;
+        let prepared =
+            super::navigation::build_prepare_rename_response(&uri, &doc, offset, &DashMap::new())
+                .expect("checked field should be preparable for rename");
+        assert!(matches!(prepared, PrepareRenameResponse::Range(range)
+            if range == offset_range_to_lsp(source, &doc.line_offsets, offset, offset + 1)));
+        let edit =
+            super::navigation::plan_workspace_rename(&uri, &doc, offset, "value", &DashMap::new())
+                .expect("field rename should be safe")
+                .expect("field rename should produce edits");
+        let changes = edit.changes.unwrap();
+        let edits = &changes[&uri];
+        let positions: Vec<_> = edits.iter().map(|edit| edit.range.start).collect();
+        let expected = [
+            source.find("type B {\n    x:").unwrap() + "type B {\n    ".len(),
+            source.find("B { x: 2 }").unwrap() + "B { ".len(),
+            offset,
+        ];
+        assert_eq!(edits.len(), expected.len(), "{edits:?}");
+        for start in expected {
+            assert!(positions
+                .contains(&offset_range_to_lsp(source, &doc.line_offsets, start, start + 1).start));
+        }
+        assert!(edits.iter().all(|edit| edit.new_text == "value"));
+    }
+
+    #[test]
+    fn checked_field_rename_rejects_an_existing_field() {
+        let source =
+            "type B {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let b = B { x: 1, y: 2 };\n    println(b.x);\n}\n";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-field-conflict.hew");
+        let offset = source.find("b.x").unwrap() + 2;
+        let error =
+            super::navigation::plan_workspace_rename(&uri, &doc, offset, "y", &DashMap::new())
+                .expect_err("renaming x to existing y must be refused");
+        assert!(
+            matches!(error, hew_analysis::RenameError::Conflicts { conflicts }
+            if conflicts.iter().any(|conflict| conflict.kind == hew_analysis::RenameConflictKind::ShadowsField))
+        );
+    }
+
+    #[test]
+    fn checked_method_navigation_selects_second_impl() {
+        let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\ntype B {\n    x: i64;\n}\n\nimpl B {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\nfn main() {\n    let b = B { x: 2 };\n    println(b.get());\n}\n";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-methods.hew");
+        let call = source.rfind("b.get").unwrap() + 2;
+        let expected = source.rfind("fn get").unwrap() + 3;
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
+                .expect("B.get must resolve through checker identity");
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(source, &doc.line_offsets, expected, expected + 3)
+        );
+    }
+
+    #[test]
+    fn checked_trait_bound_call_navigates_to_trait_method() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-trait-bound.hew");
+        let call = source.find("item.describe()").unwrap() + "item.".len();
+        let declared = source.find("fn describe(value").unwrap() + "fn ".len();
+        let location =
+            super::navigation::identity_definition_location(&uri, &doc, call, &DashMap::new())
+                .expect("bounded call should resolve to its trait method");
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "describe".len()
+            )
+        );
+    }
+
+    #[test]
+    fn checked_call_hierarchy_incoming_keeps_same_named_methods_separate() {
+        let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\ntype B {\n    x: i64;\n}\n\nimpl B {\n    fn get(self) -> i64 {\n        self.x\n    }\n}\n\nfn main() {\n    let a = A { x: 1 };\n    let b = B { x: 2 };\n    println(a.get());\n    println(b.get());\n}\n";
+        let doc = make_typed_doc(source);
+        let uri = make_test_uri("/identity-call-hierarchy.hew");
+        let declaration = source.rfind("fn get").unwrap() + 3;
+        let item = super::hierarchy::find_callable_at_offset(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            declaration,
+        )
+        .expect("B.get callable item");
+        let calls = find_incoming_calls(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            "get",
+            Some(&item),
+            doc.type_output.as_ref(),
+        );
+        let from_ranges: Vec<_> = calls.iter().flat_map(|call| &call.from_ranges).collect();
+        let b_call = source.rfind("b.get()").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, b_call, b_call + 7);
+        assert_eq!(from_ranges, vec![&expected]);
+
+        let main_declaration = source.find("fn main").unwrap() + 3;
+        let main_item = super::hierarchy::find_callable_at_offset(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            main_declaration,
+        )
+        .expect("main callable item");
+        let outgoing = find_outgoing_calls(
+            &uri,
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            "main",
+            Some(&main_item),
+            doc.type_output.as_ref(),
+        );
+        let gets: Vec<_> = outgoing
+            .iter()
+            .filter(|call| call.to.name == "get")
+            .collect();
+        assert_eq!(gets.len(), 2, "A.get and B.get are separate targets");
+        assert_ne!(gets[0].to.selection_range, gets[1].to.selection_range);
+    }
+
+    #[test]
+    fn checked_signature_help_selects_overloaded_method_identity() {
+        let source = "type A {\n    x: i64;\n}\n\nimpl A {\n    fn pick(self, first: i64) -> i64 {\n        first\n    }\n}\n\ntype B {\n    x: i64;\n}\n\nimpl B {\n    fn pick(self, second: bool) -> bool {\n        second\n    }\n}\n\nfn main() {\n    let b = B { x: 2 };\n    println(b.pick(true));\n}\n";
+        let doc = make_typed_doc(source);
+        let offset = source.find("b.pick(true)").unwrap() + "b.pick(".len();
+        let help = hew_analysis::signature_help::build_signature_help(
+            source,
+            doc.type_output.as_ref().unwrap(),
+            offset,
+        )
+        .expect("checked B.pick signature help");
+        let label = &help.signatures[0].label;
+        assert!(label.contains("second: bool"), "{label}");
+        assert!(!label.contains("first: i64"), "{label}");
+    }
+
+    #[test]
+    fn checked_imported_type_navigation_uses_its_source_module() {
+        let main_source =
+            "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { x: 1 }; println(shape.x); }";
+        let imported_source = "pub type Shape {\n    x: i64;\n}\n";
+        let other_source = "pub type Shape {\n    x: bool;\n}\n";
+        let main_uri = make_test_uri("/fake/identity/main.hew");
+        let imported_uri = make_test_uri("/fake/identity/ma.hew");
+        let other_uri = make_test_uri("/fake/identity/mb.hew");
+        let documents = DashMap::new();
+        documents.insert(imported_uri.clone(), make_doc(imported_source));
+        documents.insert(other_uri.clone(), make_doc(other_source));
+        let doc = analyze_document(&main_uri, main_source, &documents, &[]);
+        let errors = published_errors(&doc, &main_uri);
+        assert!(errors.is_empty(), "imported type should check: {errors:?}");
+        let offset = main_source.find("ma.Shape").unwrap() + 3;
+        let location =
+            super::navigation::identity_definition_location(&main_uri, &doc, offset, &documents)
+                .expect("ma.Shape must resolve through checker identity");
+        let expected = imported_source.find("Shape").unwrap();
+        assert_eq!(location.uri, imported_uri);
+        assert_eq!(
+            location.range,
+            offset_range_to_lsp(
+                imported_source,
+                &compute_line_offsets(imported_source),
+                expected,
+                expected + 5
+            )
+        );
+        let field_use = main_source.find("shape.x").unwrap() + "shape.".len();
+        let refs = super::navigation::identity_reference_locations(
+            &main_uri, &doc, field_use, true, &documents,
+        )
+        .expect("imported field references should be checker-owned");
+        let field_decl = imported_source.find("x:").unwrap();
+        assert!(refs.iter().any(|reference| reference.uri == imported_uri
+            && reference.range
+                == offset_range_to_lsp(
+                    imported_source,
+                    &compute_line_offsets(imported_source),
+                    field_decl,
+                    field_decl + 1
+                )));
+        assert!(refs.iter().any(|reference| reference.uri == main_uri
+            && reference.range
+                == offset_range_to_lsp(main_source, &doc.line_offsets, field_use, field_use + 1)));
+        assert!(!refs.iter().any(|reference| reference.uri == other_uri));
+    }
+
+    #[test]
+    fn checked_imported_record_completion_uses_the_selected_module() {
+        let main_source = "import ma;\nimport mb;\nfn main() { let shape = ma.Shape { width: 1 }; println(shape.width); }";
+        let selected_source = "pub type Shape {\n    width: i64;\n}\n";
+        let other_source = "pub type Shape {\n    colour: i64;\n}\n";
+        let main_uri = make_test_uri("/fake/identity-completion/main.hew");
+        let documents = DashMap::new();
+        documents.insert(
+            make_test_uri("/fake/identity-completion/ma.hew"),
+            make_doc(selected_source),
+        );
+        documents.insert(
+            make_test_uri("/fake/identity-completion/mb.hew"),
+            make_doc(other_source),
+        );
+        let doc = analyze_document(&main_uri, main_source, &documents, &[]);
+        let errors = published_errors(&doc, &main_uri);
+        assert!(
+            errors.is_empty(),
+            "qualified record should check: {errors:?}"
+        );
+        let offset = main_source.find("ma.Shape {").unwrap() + "ma.Shape {".len();
+        let items = hew_analysis::completions::complete(
+            main_source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"width"), "{labels:?}");
+        assert!(!labels.contains(&"colour"), "{labels:?}");
+    }
+
+    #[test]
+    fn user_stream_completion_excludes_builtin_stream_methods() {
+        let source = "type Stream {\n    value: i64;\n}\n\nimpl Stream {\n    fn own(self) -> i64 {\n        self.value\n    }\n}\n\nfn main() {\n    let stream = Stream { value: 1 };\n    println(stream.own());\n}\n";
+        let doc = make_typed_doc(source);
+        let offset = source.find("stream.own").unwrap() + "stream.".len();
+        let items = hew_analysis::completions::complete(
+            source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"own"), "{labels:?}");
+        assert!(labels.contains(&"value"), "{labels:?}");
+        assert!(!labels.contains(&"recv"), "{labels:?}");
+        assert!(!labels.contains(&"try_recv"), "{labels:?}");
+    }
+
+    #[test]
+    fn goto_def_resolves_nominal_type_name_to_declaration_span() {
+        let source =
+            "type Point {\n    x: i64;\n    y: i64;\n}\n\nfn origin() -> Point {\n    Point { x: 0, y: 0 }\n}\n";
+        let doc = make_typed_doc(source);
+        let offset = source.find("-> Point").unwrap() + "-> ".len();
+
+        let uri = make_test_uri("/identity-nominal.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve nominal type use")
+                .range;
+        let start = source.find("Point").unwrap();
+        let expected = offset_range_to_lsp(source, &doc.line_offsets, start, start + "Point".len());
+        assert_eq!(range, expected);
+    }
+
+    #[test]
+    fn goto_def_resolves_checked_param() {
         let source = "fn add(value: i32) -> i32 {\n    value + 1\n}";
-        let doc = make_doc(source);
+        let doc = make_typed_doc(source);
         let offset = source.rfind("value + 1").unwrap();
         let word = word_at_offset(source, offset).unwrap();
 
@@ -1691,18 +2204,11 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            "file:///test.hew",
-            offset,
-        )
-        .expect("resolver should classify param");
-        let (_, span) = resolution
-            .def_location()
-            .expect("param should carry def_location");
-        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
+        let uri = make_test_uri("/identity-param.hew");
+        let range =
+            super::navigation::identity_definition_location(&uri, &doc, offset, &DashMap::new())
+                .expect("checker should resolve parameter")
+                .range;
         let expected_start = source.find("value: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,
@@ -1795,7 +2301,7 @@ impl Worker {
     #[test]
     fn hover_on_type_name() {
         let source =
-            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let parse_result = hew_parser::parse(source);
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
@@ -1858,14 +2364,15 @@ impl Worker {
     #[test]
     fn folding_ranges_for_actor() {
         let source = r"actor Counter {
-    count: i32,
+    let count: i32;
     receive fn increment(n: i32) {
         count = count + n;
     }
     receive fn get() -> i32 {
         count
     }
-}";
+}
+";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1942,7 +2449,7 @@ impl Worker {
 
     #[test]
     fn type_hierarchy_item_for_struct() {
-        let source = "type Point { x: i32, y: i32 }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -1991,7 +2498,7 @@ impl Worker {
 
     #[test]
     fn subtypes_via_impl_for() {
-        let source = "trait Drawable { fn draw() -> i32; }\ntype Circle { r: i32 }\nimpl Drawable for Circle { fn draw() -> i32 { 0 } }";
+        let source = "trait Drawable {\n    fn draw() -> i32;\n}\n\ntype Circle {\n    r: i32;\n}\n\nimpl Drawable for Circle {\n    fn draw() -> i32 {\n        0\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2002,7 +2509,7 @@ impl Worker {
 
     #[test]
     fn supertypes_via_impl_for() {
-        let source = "trait Drawable { fn draw() -> i32; }\ntype Circle { r: i32 }\nimpl Drawable for Circle { fn draw() -> i32 { 0 } }";
+        let source = "trait Drawable {\n    fn draw() -> i32;\n}\n\ntype Circle {\n    r: i32;\n}\n\nimpl Drawable for Circle {\n    fn draw() -> i32 {\n        0\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2082,7 +2589,7 @@ impl Worker {
         );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_incoming_calls(&uri, source, &lo, &parse_result, "helper");
+        let calls = find_incoming_calls(&uri, source, &lo, &parse_result, "helper", None, None);
         assert_eq!(
             calls.len(),
             1,
@@ -2103,7 +2610,7 @@ impl Worker {
         );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "main");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "main", None, None);
         assert_eq!(
             calls.len(),
             1,
@@ -2119,7 +2626,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "leaf");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "leaf", None, None);
         assert!(
             calls.is_empty(),
             "leaf function should have no outgoing calls"
@@ -2143,7 +2650,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "on_msg");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "on_msg", None, None);
         let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
         assert!(
             callee_names.contains(&"target_a"),
@@ -2170,7 +2677,7 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "alpha");
+        let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "alpha", None, None);
         let callee_names: Vec<&str> = calls.iter().map(|c| c.to.name.as_str()).collect();
         assert!(
             callee_names.contains(&"alpha_target"),
@@ -2189,7 +2696,7 @@ impl Worker {
         let source = "fn foo() -> i32 { 0 }\nfn bar() -> i32 { foo() }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let lenses = build_code_lenses(source, &lo, &parse_result);
+        let lenses = build_code_lenses(source, &lo, &parse_result, "sample.hew");
         assert!(
             lenses.len() >= 2,
             "expected at least 2 code lenses (one per function), got {}",
@@ -2206,7 +2713,7 @@ impl Worker {
         let source = "fn helper() -> i32 { 42 }\nfn main() { helper() }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let lenses = build_code_lenses(source, &lo, &parse_result);
+        let lenses = build_code_lenses(source, &lo, &parse_result, "sample.hew");
         let helper_lens = lenses
             .iter()
             .find(|l| {
@@ -2233,7 +2740,7 @@ impl Worker {
         let source = "#[test]\nfn test_add() { 0 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let lenses = build_code_lenses(source, &lo, &parse_result);
+        let lenses = build_code_lenses(source, &lo, &parse_result, "sample.hew");
         let run_test_lens = lenses.iter().find(|l| {
             l.command
                 .as_ref()
@@ -2242,6 +2749,119 @@ impl Worker {
         assert!(
             run_test_lens.is_some(),
             "expected a 'Run test' code lens for #[test] function"
+        );
+        assert!(lenses
+            .iter()
+            .any(|lens| lens.command.as_ref().is_some_and(|command| {
+                command.title.contains("Run file")
+                    && command
+                        .arguments
+                        .as_ref()
+                        .is_some_and(|args| args[0] == "sample.hew")
+            })));
+        assert_eq!(
+            run_test_lens
+                .and_then(|lens| lens.command.as_ref())
+                .and_then(|command| command.arguments.as_ref())
+                .and_then(|args| args.first()),
+            Some(&json!("sample.hew::test_add"))
+        );
+    }
+
+    #[test]
+    fn failed_test_event_uses_fault_site_operands_and_seed_lens() {
+        let source = "#[test]\nfn fails() { assert(1 == 2); }\n";
+        let file = std::env::temp_dir().join("hew-lsp-fault-site.hew");
+        let uri = Url::from_file_path(&file).unwrap();
+        let documents = DashMap::new();
+        documents.insert(uri.clone(), make_doc(source));
+        let site = source.find("assert").unwrap();
+        let event = json!({
+            "event": "test_finished",
+            "selector": format!("{}::fails", file.display()),
+            "outcome": "failed",
+            "kind": "assertion",
+            "message": "assertion failed",
+            "report": {
+                "site_offset": site,
+                "seed": "18446744073709551615",
+                "assertion": { "operator": "==", "left": "1", "right": "2" }
+            }
+        });
+        let failure = failure_from_event(&event, &documents).expect("test failure diagnostic");
+        assert_eq!(failure.uri, uri);
+        assert_eq!(failure.diagnostic.range.start.line, 1);
+        assert_eq!(failure.diagnostic.range.start.character, 13);
+        assert_eq!(failure.diagnostic.source.as_deref(), Some("hew test"));
+        assert!(failure.diagnostic.message.contains("left: 1\nright: 2"));
+        assert_eq!(failure.seed.as_deref(), Some("18446744073709551615"));
+
+        let seeds = DashMap::new();
+        seeds.insert(failure.selector.clone(), failure.seed.unwrap());
+        let doc = documents.get(&uri).unwrap();
+        let lenses = workspace::build_code_lenses_with_seeds(
+            source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            &file.display().to_string(),
+            Some(&seeds),
+        );
+        let rerun = lenses
+            .iter()
+            .filter_map(|lens| lens.command.as_ref())
+            .find(|command| command.title.contains("Rerun with seed"))
+            .expect("seeded rerun lens");
+        assert_eq!(
+            rerun.arguments.as_ref().unwrap()[0]["seed"],
+            "18446744073709551615"
+        );
+    }
+
+    #[test]
+    fn test_inventory_uses_open_document_and_exact_identity() {
+        let root = std::env::temp_dir().join("hew-lsp-inventory-project");
+        let file = root.join("cart_test.hew");
+        let uri = Url::from_file_path(&file).unwrap();
+        let documents = DashMap::new();
+        documents.insert(uri.clone(), make_doc("#[test]\nfn totals() {}\n"));
+        let entries = test_inventory(&documents, &[root], Some(&uri));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["identity"], "cart_test.hew::totals");
+        assert_eq!(
+            entries[0]["selector"],
+            format!("{}::totals", file.display())
+        );
+        assert_eq!(entries[0]["uri"], uri.as_str());
+        assert_eq!(entries[0]["ignored"], false);
+    }
+
+    #[test]
+    fn test_inventory_keeps_same_named_tests_in_two_roots_distinct() {
+        let first_root = std::env::temp_dir().join("hew-lsp-inventory-first");
+        let second_root = std::env::temp_dir().join("hew-lsp-inventory-second");
+        let first_file = first_root.join("cart_test.hew");
+        let second_file = second_root.join("cart_test.hew");
+        let first = Url::from_file_path(&first_file).unwrap();
+        let second = Url::from_file_path(&second_file).unwrap();
+        let documents = DashMap::new();
+        documents.insert(first.clone(), make_doc("#[test]\nfn totals() {}\n"));
+        documents.insert(second.clone(), make_doc("#[test]\nfn totals() {}\n"));
+        let roots = [first_root, second_root];
+        let left = test_inventory(&documents, &roots, Some(&first));
+        let right = test_inventory(&documents, &roots, Some(&second));
+        assert_eq!(
+            left[0]["selector"],
+            format!("{}::totals", first_file.display())
+        );
+        assert_eq!(
+            right[0]["selector"],
+            format!("{}::totals", second_file.display())
+        );
+        assert_ne!(left[0]["selector"], right[0]["selector"]);
+        assert_eq!(left[0]["identity"], "cart_test.hew::totals");
+        assert_eq!(
+            right[0]["identity"],
+            format!("{}::totals", second_file.display()).replace('\\', "/")
         );
     }
 
@@ -2280,17 +2900,15 @@ impl Worker {
 
     #[test]
     fn build_run_test_invocation_uses_cli_test_runner() {
-        let root = Path::new("workspace-root");
-        let (program, args) = build_run_test_invocation("test_add", root);
+        let (program, args) = build_run_test_invocation("/workspace-root/cart_test.hew::test_add");
         assert!(program.ends_with(Path::new(&format!("hew{}", std::env::consts::EXE_SUFFIX))));
         assert_eq!(
             args,
             vec![
                 "test".to_string(),
-                "--no-color".to_string(),
-                "--filter".to_string(),
-                "test_add".to_string(),
-                "workspace-root".to_string(),
+                "/workspace-root/cart_test.hew::test_add".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
             ]
         );
     }
@@ -2315,7 +2933,7 @@ impl Worker {
 
     #[test]
     fn workspace_symbols_finds_functions_and_types() {
-        let source = "fn compute() -> i32 { 0 }\ntype Widget { w: i32 }\nconst MAX: i32 = 100;";
+        let source = "fn compute() -> i32 {\n    0\n}\n\ntype Widget {\n    w: i32;\n}\n\nconst MAX: i32 = 100;\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2343,7 +2961,7 @@ impl Worker {
 
     #[test]
     fn workspace_symbols_filters_by_query() {
-        let source = "fn compute() -> i32 { 0 }\nfn render() -> i32 { 0 }\ntype Widget { w: i32 }";
+        let source = "fn compute() -> i32 {\n    0\n}\n\nfn render() -> i32 {\n    0\n}\n\ntype Widget {\n    w: i32;\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2406,17 +3024,18 @@ impl Worker {
     #[test]
     fn workspace_symbols_include_fields_states_and_events() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 machine Traffic {
     events {
-        Start,
+        Start;
     }
 
-    state Idle,
-    on Start: Idle => .Idle,
-}";
+    state Idle;
+    on Start: Idle => .Idle;
+}
+";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2787,7 +3406,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_actor_with_receive() {
-        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) { count = count + n; }\n}";
+        let source = "actor Counter {\n    let count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2803,7 +3422,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_enum() {
-        let source = "enum Colour { Red, Green, Blue, }";
+        let source = "enum Colour {\n    Red;\n    Green;\n    Blue;\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2819,7 +3438,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_with_children() {
-        let source = "type Point { x: i32, y: i32, fn distance() -> i32 { 0 } }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n    fn distance() -> i32 {\n        0\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2843,17 +3462,18 @@ machine Traffic {
     #[test]
     fn document_symbols_use_child_definition_ranges() {
         let source = r"type Point {
-    x: i32,
+    x: i32;
 }
 
 machine Traffic {
     events {
-        Start,
+        Start;
     }
 
-    state Idle,
-    on Start: Idle => .Idle,
-}";
+    state Idle;
+    on Start: Idle => .Idle;
+}
+";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -3083,14 +3703,17 @@ machine Traffic {
     #[test]
     fn code_actions_for_non_exhaustive_match() {
         use hew_analysis::code_actions::{build_code_actions, DiagnosticInfo};
-        let source = r#"
-            enum Colour { Red, Blue, }
-            fn label(colour: Colour) -> string {
-                match colour {
-                    .Red => "red",
-                }
-            }
-        "#;
+        let source = r#"enum Colour {
+    Red;
+    Blue;
+}
+
+fn label(colour: Colour) -> string {
+    match colour {
+        .Red => "red",
+    }
+}
+"#;
         let uri = Url::parse("file:///test.hew").unwrap();
         let lo = compute_line_offsets(source);
         let diag = analyzed_diagnostics(&uri, source)
@@ -3353,33 +3976,6 @@ machine Traffic {
             logs.is_empty(),
             "expected no warnings for a normal empty code-action response, got: {logs}"
         );
-    }
-
-    // ── has_test_attribute tests ─────────────────────────────────────
-
-    #[test]
-    fn has_test_attribute_true() {
-        let attrs = vec![Attribute {
-            name: "test".to_string(),
-            args: vec![],
-            span: 0..0,
-        }];
-        assert!(has_test_attribute(&attrs));
-    }
-
-    #[test]
-    fn has_test_attribute_false() {
-        let attrs = vec![Attribute {
-            name: "inline".to_string(),
-            args: vec![],
-            span: 0..0,
-        }];
-        assert!(!has_test_attribute(&attrs));
-    }
-
-    #[test]
-    fn has_test_attribute_empty() {
-        assert!(!has_test_attribute(&[]));
     }
 
     // ── count_all_references tests ──────────────────────────────────
@@ -3955,7 +4551,7 @@ machine Traffic {
     }
 
     #[test]
-    fn plan_workspace_rename_rejects_rename_to_builtin() {
+    fn plan_workspace_rename_allows_prelude_shadowing() {
         let source = "fn main() { let x = 1; }";
         let uri = make_test_uri("/project/main.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();
@@ -3963,12 +4559,13 @@ machine Traffic {
 
         let doc = documents.get(&uri).unwrap();
         let offset = source.find("let x").unwrap() + 4;
-        let err = plan_workspace_rename(&uri, &doc, offset, "println", &documents)
-            .expect_err("renaming to println must fail");
-        match err {
-            hew_analysis::RenameError::Builtin { ref name, .. } => assert_eq!(name, "println"),
-            other => panic!("expected Builtin, got {other:?}"),
-        }
+        let edit = plan_workspace_rename(&uri, &doc, offset, "println", &documents)
+            .expect("prelude names are lexical and may be shadowed")
+            .expect("local rename should produce an edit");
+        let changes = edit.changes.expect("workspace edit should contain changes");
+        let edits = &changes[&uri];
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "println");
     }
 
     #[test]
@@ -4293,7 +4890,7 @@ machine Traffic {
     fn cross_file_goto_named_import_resolves_to_open_document() {
         // `main.hew` imports `Counter` from `counter.hew` (open in the editor).
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4327,7 +4924,7 @@ machine Traffic {
         // span.
         let main_source =
             "import counter.{ Counter };\nfn main() -> Counter { Counter { value: 1 } }";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4388,7 +4985,7 @@ machine Traffic {
     fn cross_file_goto_aliased_import_resolves_by_alias() {
         // `import counter::{ Counter as Cnt }` — cursor on `Cnt` in usage.
         let main_source = "import counter.{ Counter as Cnt };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4409,7 +5006,7 @@ machine Traffic {
     #[test]
     fn cross_file_goto_selected_import_resolves_to_open_document() {
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4430,7 +5027,7 @@ machine Traffic {
     fn cross_file_goto_absent_name_returns_none() {
         // `NotDefined` is not in counter.hew.
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4448,7 +5045,7 @@ machine Traffic {
     fn cross_file_goto_name_not_in_explicit_imports_returns_none() {
         // `Bar` is not in the explicit import list even though counter.hew defines it.
         let main_source = "import counter.{ Counter };\nfn main() {}";
-        let counter_source = "type Counter { value: i32 }\ntype Bar { x: i32 }";
+        let counter_source = "type Counter {\n    value: i32;\n}\n\ntype Bar {\n    x: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let counter_uri = make_test_uri("/project/counter.hew");
@@ -4469,7 +5066,7 @@ machine Traffic {
     fn cross_file_goto_transitive_import_resolves_one_hop_deeper() {
         let main_source = "import middle.{ Counter };\nfn main() {}";
         let middle_source = "import leaf.{ Counter };\nfn helper() {}";
-        let leaf_source = "type Counter { value: i32 }";
+        let leaf_source = "type Counter {\n    value: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let middle_uri = make_test_uri("/project/middle.hew");
@@ -4515,7 +5112,8 @@ machine Traffic {
     #[test]
     fn cross_file_goto_multiple_imports_from_same_file_do_not_leak_seen() {
         let main_source = "import middle.{ Timer };\nimport middle.{ Counter };\nfn main() {}";
-        let middle_source = "type Counter { value: i32 }\ntype Timer { ticks: i32 }";
+        let middle_source =
+            "type Counter {\n    value: i32;\n}\n\ntype Timer {\n    ticks: i32;\n}\n";
 
         let main_uri = make_test_uri("/project/main.hew");
         let middle_uri = make_test_uri("/project/middle.hew");
@@ -6321,8 +6919,8 @@ machine Traffic {
     /// Check the `gotoDefinition` LSP surface for a v0.5 fixture probe.
     ///
     /// Uses the last occurrence of `probe_name` in `source` as the request
-    /// offset.  Asserts that either the resolver or the AST-walk fallback
-    /// returns a definition location.
+    /// offset and checks either the checker identity or a source declaration
+    /// that predates its remaining generated/builtin rows.
     ///
     /// Failure messages identify: surface, fixture name, probe name, and byte
     /// offset.
@@ -6332,16 +6930,14 @@ machine Traffic {
         let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
             panic!("surface=gotoDefinition fixture={fixture_name}: missing probe {probe_name:?}")
         });
-        let resolver_has_definition = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
+        let checked_location = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             probe_offset,
-        )
-        .is_some_and(|resolution| resolution.def_location().is_some());
+            &DashMap::new(),
+        );
         assert!(
-            resolver_has_definition
+            checked_location.is_some()
                 || find_definition_in_ast(
                     &doc.source,
                     &doc.line_offsets,
@@ -6350,7 +6946,7 @@ machine Traffic {
                 )
                 .is_some(),
             "surface=gotoDefinition fixture={fixture_name} probe={probe_name:?} \
-             offset={probe_offset}: no definition found via resolver or AST walk"
+             offset={probe_offset}: no checked or source declaration found"
         );
     }
 
@@ -6682,22 +7278,7 @@ machine Traffic {
     /// the hew-corpus gate compiles every tracked `.hew` in the tree, and a
     /// refused program there would need a ratchet row it has not earned. The
     /// accepted `Worker` actor-handle value form lives in the fixture instead.
-    const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n\
-         First,\n\
-         Second,\n\
-         }\n\
-         \n\
-         fn is_probe() -> i32 {\n\
-         7\n\
-         }\n\
-         \n\
-         fn is_operator(value: Payload) -> i32 {\n\
-         if value is Payload {\n\
-         is_probe()\n\
-         } else {\n\
-         0\n\
-         }\n\
-         }\n";
+    const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n    First;\n    Second;\n}\n\nfn is_probe() -> i32 {\n    7\n}\n\nfn is_operator(value: Payload) -> i32 {\n    if value is Payload {\n        is_probe()\n    } else {\n        0\n    }\n}\n";
 
     #[test]
     fn v05_is_operator_value_form_fixture_is_accepted() {
@@ -6762,20 +7343,24 @@ machine Traffic {
         );
 
         let rhs_offset = source.find("is Payload").expect("is type pattern") + "is ".len();
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
+        let definition = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             rhs_offset,
+            &DashMap::new(),
         )
-        .expect("RHS type pattern should resolve");
-        let def = resolution
-            .def_location()
-            .expect("RHS type pattern should jump to type declaration");
-        assert!(
-            def.1.start < source.find("fn is_probe").expect("probe fn"),
-            "`is` RHS definition should point at Payload type declaration, got {def:?}"
+        .map(|location| location.range)
+        .or_else(|| find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, "Payload"))
+        .expect("RHS type pattern should jump to its source declaration");
+        let declared = source.find("Payload").unwrap();
+        assert_eq!(
+            definition,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "Payload".len()
+            )
         );
 
         assert_v05_semantic_token_at(
@@ -6829,20 +7414,27 @@ machine Traffic {
         let doc = make_typed_doc(source);
         assert_no_hard_type_errors("v05_extern_unsafe", &doc);
         let call_offset = source.rfind("raw_number").expect("raw_number call");
-        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            &v05_fixture_path("v05_extern_unsafe"),
+        let uri = Url::parse(&v05_fixture_path("v05_extern_unsafe")).unwrap();
+        let definition = super::navigation::identity_definition_location(
+            &uri,
+            &doc,
             call_offset,
+            &DashMap::new(),
         )
-        .expect("extern raw_number call should resolve");
-        let def = resolution
-            .def_location()
-            .expect("extern raw_number should have a definition");
-        assert!(
-            def.1.start < source.find("fn extern_unsafe_probe").expect("probe fn"),
-            "extern definition should point at the extern declaration, got {def:?}"
+        .map(|location| location.range)
+        .or_else(|| {
+            find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, "raw_number")
+        })
+        .expect("extern raw_number should have a source definition");
+        let declared = source.find("raw_number").unwrap();
+        assert_eq!(
+            definition,
+            offset_range_to_lsp(
+                source,
+                &doc.line_offsets,
+                declared,
+                declared + "raw_number".len()
+            )
         );
     }
 
@@ -7013,13 +7605,15 @@ machine Traffic {
             .as_ref()
             .expect("cross-module machine fixture should be type checked");
         assert!(
-            type_output.type_defs.contains_key("machines.toggle.Toggle"),
+            type_output
+                .type_def_at_path("machines.toggle.Toggle")
+                .is_some(),
             "imported machine type should retain its canonical owner in type defs"
         );
         assert!(
             type_output
-                .type_defs
-                .contains_key("machines.toggle.ToggleEvent"),
+                .type_def_at_path("machines.toggle.Toggle.Event")
+                .is_some(),
             "imported machine event type should retain its canonical owner in type defs"
         );
 

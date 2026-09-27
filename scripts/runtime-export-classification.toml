@@ -651,9 +651,6 @@ stable = [
   "hew_supervisor_is_running",
   "hew_supervisor_new",
   "hew_supervisor_nested_get",
-  "hew_supervisor_restart_await_blocking",
-  "hew_supervisor_restart_await_detach",
-  "hew_supervisor_restart_await_suspend",
   "hew_supervisor_role_ask",
   "hew_supervisor_role_ask_with_channel",
   "hew_supervisor_role_send",
@@ -1223,7 +1220,6 @@ non-declarable = [
   "hew_actor_call_poll",
   "hew_actor_call_resume",
   "hew_actor_call_take",
-  "hew_actor_close_native",
   "hew_actor_coro_set_fault",
   "hew_actor_coro_state_new",
   "hew_actor_dispatch_set_fault",
@@ -1235,11 +1231,15 @@ non-declarable = [
   "hew_actor_send_wait_new",
   "hew_actor_send_wait_poll",
   "hew_actor_spawn_native",
+  "hew_actor_stop_native",
   "hew_actor_submit_native",
   "hew_actor_submit_native_terminal",
+  "hew_actor_terminate",
+  "hew_actor_terminate_native",
   "hew_actor_wait_edge_fault",
   "hew_actor_wait_edge_free",
   "hew_actor_wait_edge_new",
+  "hew_actor_wait_edge_new_for_wait",
   "hew_actor_wait_edge_pending",
   "hew_actor_wait_edge_prepare",
   "hew_actor_wait_free",
@@ -1562,12 +1562,17 @@ non-declarable = [
   # restart path installs the runtime's own system dispatch on each
   # incarnation. It is the whole lowering of a `supervisor` declaration; user
   # code has no way to name it or the child table it reads.
-  "hew_supervisor_native_await_restart",
   "hew_supervisor_native_child",
+  "hew_supervisor_native_restart_wait_free",
+  "hew_supervisor_native_restart_wait_new",
+  "hew_supervisor_native_restart_wait_poll",
   "hew_supervisor_native_role_owner",
+  "hew_supervisor_native_role_request",
   "hew_supervisor_native_role_wait_new",
   "hew_supervisor_native_spawn",
   "hew_supervisor_role_await_send",
+  "hew_supervisor_stop_native",
+  "hew_supervisor_terminate_native",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own
   # `supervisor_sys_dispatch` trampoline on the supervisor's not-yet-published
   # `self_actor`. The installed value is a compile-time constant code address
@@ -1581,6 +1586,7 @@ non-declarable = [
   # is already `non-declarable`.
   "hew_supervisor_start",
   "hew_task_scope_set_current",
+  "hew_test_selected",
   "hew_wasm_register_actor_meta",
   "hew_wire_cbor_to_text",
   "hew_wire_text_to_cbor",
@@ -1699,9 +1705,12 @@ non-declarable = [
   "hew_fault_inject_drop",
   "hew_fault_into_host_error",
   "hew_fault_new",
+  "hew_fault_new_assertion",
   "hew_fault_new_panic",
   "hew_fault_new_unhandled_failure",
   "hew_fault_report",
+  "hew_fault_report_entry",
+  "hew_fault_set_site",
   "hew_fault_trap",
   # The release-fault bracket: generated code arms a sink around a release the
   # runtime performs for it, so a failing `close` reaches that frame's fault
@@ -1876,6 +1885,11 @@ non-declarable = [
   # `.hew` source names it, and `hew_supervisor_stop`, `hew_actor_group_destroy`
   # and `hew_runtime_cleanup` still reclaim supervised children.
   "hew_supervisor_remove_child",
+  # std.testing is the public surface for these driver controls. The raw
+  # process-level hooks are compiler/runtime protocol, not extern "rt" APIs.
+  "hew_test_driver_active",
+  "hew_test_seed",
+  "hew_test_settle",
   "hew_trace_clear",
   "hew_trace_drain",
   "hew_trace_reset",
@@ -1911,11 +1925,20 @@ non-declarable = [
 # reason paragraph makes that authenticated. The gate enforces that directly.
 [sys-lane-closure.authenticated-edges]
 
+"drain_poll -> run_to_quiescence" = """
+On the single-thread driver (always on wasm32, selected natively for \
+deterministic runs) the exit and shutdown drains have no worker to wait for: \
+where the threaded runtime sleeps while workers finish queued work, the \
+exiting thread runs that work itself. It is the driver counterpart of \
+`worker_loop` finishing the same queue during shutdown, and gives the stable \
+symbol that exits no sys-lane capability beyond what exiting already drains."""
+
 "wait -> step" = """
-The wasm32 readiness latch is the process driver. With no worker thread to \
-satisfy it, `wake::blocking::Readiness::wait` advances the process itself: it \
-ticks the timer wheel and runs one queued activation, which is how an actor \
-gets to dispatch at all on that target. The edge is therefore the wasm32 \
+On the single-thread driver (always on wasm32, selected natively for \
+deterministic runs) the readiness latch is the process driver. With no worker \
+thread to satisfy it, `wake::blocking::Readiness::wait` advances the process \
+itself: it ticks the timer wheel and runs one ready participant, which is how \
+an actor gets to dispatch at all there. The edge is therefore the driver \
 counterpart of the native `worker_loop` turning the same crank, not a stable \
 symbol acquiring a sys-lane capability - every caller in the reported closure \
 reaches it by blocking, and blocking is what hands the process back to the \
@@ -1925,7 +1948,8 @@ which calls nothing of the sort."""
 "wait_for_peer -> step" = """
 Same edge as `wait -> step`, for a caller whose condition lives in its own \
 lock rather than in a readiness latch: a producer blocked on a full pipe ring \
-re-checks the ring, and on wasm32 the only thing that can drain it is the \
+re-checks the ring, and on the single-thread driver the only thing that can \
+drain it is the \
 consumer the process driver runs. Releasing the lock and stepping the driver \
 is what native code gets from a worker thread plus `Condvar::wait`; it gives \
 the blocked producer no sys-lane capability it did not already reach by \
@@ -1981,22 +2005,39 @@ direct child token. The receiving parent validates that exact incarnation before
 applying normal-stop policy. Source close can request teardown but cannot supply
 the parent, slot, child event payload or system-message kind."""
 
-"publish_terminal_notification -> hew_supervisor_notify_child_actor_event" = """
-Authenticated producer. The private publisher consumes the terminal notice
-recorded by hew_actor_trap_inner before any observer is woken. The delayed
-notice preserves that exact actor, supervisor, reason and fault record through
-consuming cleanup. hew_actor_trap_inner is NOT user-declarable (private, \
-and reached through hew_actor_trap, whose internal tier is \
-asserted by extern_rt_system_lane_symbols_rejected), which is what makes the \
-rest of this reason true: it was demoted precisely because its `actor` and \
-`error_code` arguments let a caller choose both the subject and the reason of \
-the event. Every remaining caller is a runtime crash path that reports a crash \
-the runtime detected in the trapping actor; the notification goes to that \
-actor's registered parent supervisor, whose identity is runtime state, and the \
-payload is the crash record. Reached transitively by hew_actor_stop / \
-hew_actor_close / hew_actor_group_stop_all via call_terminate_fn -> \
-handle_crash_recovery when a terminate hook panics — those callers name the \
-actor they already own and supply no code at all."""
+"finish_actor_terminal -> notify_child_actor_end_event" = """
+Authenticated normal-end producer. finish_actor_terminal is the sole owner of
+terminal cleanup: it has claimed the exact actor incarnation, run its stop
+hook, released owned state, and read the terminal reason from that actor and
+its mailbox termination latch. The parent supervisor pointer and child slot
+come from the child's runtime registration, not source arguments. The parent
+validates the actor identity when it handles the private system event. A
+source stop request can choose only the actor it already holds, never the
+event kind, parent, slot, or reason."""
+
+"publish_terminal_notification -> notify_child_actor_end_event" = """
+Authenticated crash producer. The terminal notice is recorded by the private
+actor crash path before any observer wakes, then consumed by the actor's sole
+terminal cleanup owner. It carries that exact incarnation's runtime-recorded
+parent, slot, crash reason, code, and fault record. The parent checks the
+incarnation before ruling; source code can neither forge the system-message
+kind nor choose the event payload."""
+
+"wait_for_child_stop_deadline -> step" = """
+The single-thread driver cannot wait on another worker while a supervised
+child finishes its cooperative stop. This private deadline loop advances the
+driver's existing ready queue until the child's completion or the declared
+stop deadline; no source value supplies a system message or dispatch address.
+It is the same scheduler handoff as the authenticated wait -> step edge,
+scoped to the teardown owner of this exact child."""
+
+"progress_supervisor_wait -> step" = """
+The supervisor teardown owner must progress its self actor and pending restart
+timer work while waiting on a single-thread driver. This helper steps only the
+driver's existing ready queue, or yields to scheduler workers on a threaded
+runtime; it cannot construct a system message or supply a dispatch pointer.
+Its source caller gains no private-lane capability beyond waiting for its
+already requested supervisor cleanup."""
 
 "publish_terminal_notification -> propagate_exit_to_links" = """
 Authenticated producer, and see the edge above for why hew_actor_trap_inner \
@@ -2411,6 +2452,29 @@ discharge-depth = "none"
 # nothing owned crosses the boundary.
 [[ownership.contracts]]
 symbol = "hew_runtime_exit_status"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+# Deterministic test-driver queries and quiescence control return only scalars
+# or unit; no owner crosses the std.testing FFI boundary.
+[[ownership.contracts]]
+symbol = "hew_test_driver_active"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_test_seed"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_test_settle"
 result = "none"
 params = []
 release-symbol = ""
@@ -7198,6 +7262,14 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
+symbol = "hew_fault_new_assertion"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_fault_drop"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_fault_new_panic"
 result = "fresh"
 params = ["borrow"]
@@ -7231,6 +7303,20 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_fault_report"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fault_set_site"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fault_report_entry"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

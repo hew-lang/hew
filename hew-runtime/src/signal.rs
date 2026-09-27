@@ -4,8 +4,9 @@
 //! LLVM cleanup landing pads. A synchronous hardware fault can interrupt an
 //! arbitrary ownership operation, so resuming it—especially with longjmp—is
 //! unsound. Unix installs an alternate-stack handler that performs only
-//! async-signal-safe diagnostic output and `_exit`. Other targets retain their
-//! platform default fatal disposition.
+//! async-signal-safe diagnostic output and `_exit`. Windows uses a vectored
+//! exception handler that writes the same diagnostic and terminates the process.
+//! Other targets retain their platform default fatal disposition.
 
 use std::cell::Cell;
 
@@ -150,7 +151,73 @@ mod platform {
     }
 }
 
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
+#[cfg(windows)]
+mod platform {
+    use std::sync::Once;
+
+    use windows_sys::Win32::Foundation::{
+        EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ARRAY_BOUNDS_EXCEEDED, EXCEPTION_BREAKPOINT,
+        EXCEPTION_DATATYPE_MISALIGNMENT, EXCEPTION_FLT_DENORMAL_OPERAND,
+        EXCEPTION_FLT_DIVIDE_BY_ZERO, EXCEPTION_FLT_INEXACT_RESULT,
+        EXCEPTION_FLT_INVALID_OPERATION, EXCEPTION_FLT_OVERFLOW, EXCEPTION_FLT_STACK_CHECK,
+        EXCEPTION_FLT_UNDERFLOW, EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_INT_DIVIDE_BY_ZERO,
+        EXCEPTION_INT_OVERFLOW, EXCEPTION_IN_PAGE_ERROR, EXCEPTION_PRIV_INSTRUCTION,
+    };
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+
+    const FATAL_MESSAGE: &[u8] = b"hew: fatal synchronous hardware fault\n";
+
+    unsafe extern "system" fn fatal_exception_handler(info: *mut EXCEPTION_POINTERS) -> i32 {
+        // SAFETY: Windows provides valid exception records for the callback.
+        let code = unsafe { (*(*info).ExceptionRecord).ExceptionCode };
+        // Match Unix's 128 + signal exit codes. In particular, do not intercept
+        // Rust/C++ unwind exceptions or guard-page notifications used by the OS.
+        let status = match code {
+            EXCEPTION_ILLEGAL_INSTRUCTION | EXCEPTION_PRIV_INSTRUCTION => 132,
+            EXCEPTION_BREAKPOINT => 133,
+            EXCEPTION_DATATYPE_MISALIGNMENT | EXCEPTION_IN_PAGE_ERROR => 135,
+            EXCEPTION_FLT_DENORMAL_OPERAND
+            | EXCEPTION_FLT_DIVIDE_BY_ZERO
+            | EXCEPTION_FLT_INEXACT_RESULT
+            | EXCEPTION_FLT_INVALID_OPERATION
+            | EXCEPTION_FLT_OVERFLOW
+            | EXCEPTION_FLT_STACK_CHECK
+            | EXCEPTION_FLT_UNDERFLOW
+            | EXCEPTION_INT_DIVIDE_BY_ZERO
+            | EXCEPTION_INT_OVERFLOW => 136,
+            EXCEPTION_ACCESS_VIOLATION | EXCEPTION_ARRAY_BOUNDS_EXCEEDED => 139,
+            _ => return EXCEPTION_CONTINUE_SEARCH,
+        };
+        // Avoid Rust formatting, allocation, locks and unwinding on a damaged
+        // thread. TerminateProcess on the current process never returns on
+        // success; abort is only the fail-closed fallback for an API failure.
+        // SAFETY: the diagnostic buffer is static and the pseudo-handle
+        // always identifies the current process.
+        unsafe {
+            crate::trap_code::write_stderr(FATAL_MESSAGE);
+            let _ = TerminateProcess(GetCurrentProcess(), status);
+        }
+        std::process::abort();
+    }
+
+    pub(crate) fn init_crash_handling() {
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
+            // SAFETY: the callback remains resident for the process lifetime.
+            if unsafe { AddVectoredExceptionHandler(1, Some(fatal_exception_handler)) }.is_null() {
+                std::process::abort();
+            }
+        });
+    }
+
+    pub(crate) fn init_worker_recovery(_worker_id: u32) {}
+    pub(crate) fn ignore_sigpipe() {}
+}
+
+#[cfg(all(not(any(unix, windows)), not(target_arch = "wasm32")))]
 mod platform {
     pub(crate) fn init_crash_handling() {}
     pub(crate) fn init_worker_recovery(_worker_id: u32) {}

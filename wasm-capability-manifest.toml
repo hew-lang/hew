@@ -31,6 +31,9 @@
 #   - native_only_modules/native_only_functions are unique and belong only to
 #     reject rows. Function entries use canonical qualified `module.function`
 #     identity (for example `std.fs.read`).
+#   - deterministic = "admit" (default) | "refuse" is independent of WASM.
+#     Refuse rows name exact checker declaration paths and/or trusted endpoint
+#     symbols. They never classify a user declaration by its leaf spelling.
 
 manifest_version = 1
 
@@ -295,6 +298,8 @@ native_only_functions = ["std.fs.read", "std.stream.open"]
 
 [[feature]]
 id = "http-client"
+deterministic = "refuse"
+deterministic_endpoints = ["hew_http_request_hew"]
 enum_variant = "HttpClient"
 label = "std.net.http.http_client operations"
 prose_label = "`std.net.http.http_client.*`, `http_client.Response.*`"
@@ -321,6 +326,15 @@ native_only_functions = [
 
 [[feature]]
 id = "smtp"
+deterministic = "refuse"
+deterministic_endpoints = [
+  "hew_smtp_connect",
+  "hew_smtp_connect_tls",
+  "hew_smtp_send",
+  "hew_smtp_send_html",
+  "hew_smtp_send_once",
+  "hew_smtp_send_html_once",
+]
 enum_variant = "Smtp"
 label = "std.net.smtp operations"
 prose_label = "`std.net.smtp.*`, `smtp.Conn.*`"
@@ -335,6 +349,14 @@ native_only_modules = ["smtp"]
 
 [[feature]]
 id = "websocket"
+deterministic = "refuse"
+deterministic_endpoints = [
+  "hew_ws_connect",
+  "hew_ws_recv",
+  "hew_ws_recv_timeout",
+  "hew_ws_server_new",
+  "hew_ws_server_accept",
+]
 enum_variant = "WebSocket"
 label = "std.net.websocket operations"
 prose_label = "`std.net.websocket.*`, `websocket.Conn.*`, `websocket.Server.*`, `websocket.Message.*`"
@@ -349,6 +371,15 @@ native_only_modules = ["websocket"]
 
 [[feature]]
 id = "http-server"
+deterministic = "refuse"
+deterministic_endpoints = [
+  "hew_http_server_new",
+  "hew_http_server_recv",
+  "hew_http_respond_bridge",
+  "hew_http_respond_text",
+  "hew_http_respond_json",
+  "hew_http_respond_stream",
+]
 enum_variant = "HttpServer"
 label = "HTTP server operations"
 prose_label = "`http.listen`, `http.Server.*`, `http.Request.*`"
@@ -363,6 +394,25 @@ native_only_modules = ["http"]
 
 [[feature]]
 id = "tcp-networking"
+deterministic = "refuse"
+deterministic_functions = [
+  "std.net.listen",
+  "std.net.connect",
+  "std.net.connect_timeout",
+  "std.net.Listener.accept",
+  "std.net.Connection.read",
+  "std.net.Connection.write",
+  "std.net.broadcast_except",
+]
+deterministic_endpoints = [
+  "hew_tcp_listen",
+  "hew_tcp_accept",
+  "hew_tcp_connect",
+  "hew_tcp_connect_timeout",
+  "hew_tcp_read",
+  "hew_tcp_write",
+  "hew_tcp_broadcast_except",
+]
 enum_variant = "TcpNetworking"
 label = "TCP networking operations"
 prose_label = "`net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*`"
@@ -377,6 +427,22 @@ native_only_modules = ["net"]
 
 [[feature]]
 id = "process-execution"
+deterministic = "refuse"
+deterministic_functions = [
+  "std.process.run",
+  "std.process.run_argv",
+  "std.process.run_args",
+  "std.process.start",
+  "std.process.start_argv",
+  "std.process.Child.wait",
+]
+deterministic_endpoints = [
+  "hew_process_run",
+  "hew_process_run_argv",
+  "hew_process_spawn",
+  "hew_process_spawn_argv",
+  "hew_process_wait",
+]
 enum_variant = "ProcessExecution"
 label = "Process execution operations"
 prose_label = "`process.run`, `process.start`, `process.*`, `process.Child.*`"
@@ -391,6 +457,12 @@ native_only_modules = ["process"]
 
 [[feature]]
 id = "tls"
+deterministic = "refuse"
+deterministic_endpoints = [
+  "hew_tls_connect",
+  "hew_tls_read_result",
+  "hew_tls_write_result",
+]
 enum_variant = "Tls"
 label = "std.net.tls operations"
 prose_label = "`std.net.tls.connect/read/write/close`, `tls.TlsStream.*`"
@@ -405,6 +477,21 @@ native_only_modules = ["tls"]
 
 [[feature]]
 id = "quic"
+deterministic = "refuse"
+deterministic_endpoints = [
+  "hew_quic_new_client",
+  "hew_quic_new_client_with_ca",
+  "hew_quic_new_server",
+  "hew_quic_new_server_with_tls",
+  "hew_quic_endpoint_connect",
+  "hew_quic_endpoint_accept",
+  "hew_quic_conn_open_stream",
+  "hew_quic_conn_accept_stream",
+  "hew_quic_stream_send",
+  "hew_quic_stream_recv",
+  "hew_quic_stream_send_timeout_hew",
+  "hew_quic_stream_recv_timeout_hew",
+]
 enum_variant = "Quic"
 label = "std.net.quic operations"
 prose_label = "`std.net.quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`"
@@ -419,6 +506,19 @@ native_only_modules = ["quic"]
 
 [[feature]]
 id = "dns"
+deterministic = "refuse"
+deterministic_functions = [
+  "std.net.dns.resolve",
+  "std.net.dns.lookup_host",
+  "std.net.dns.resolve_timed",
+  "std.net.dns.lookup_host_timed",
+]
+deterministic_endpoints = [
+  "hew_dns_resolve",
+  "hew_dns_lookup_host",
+  "hew_dns_resolve_timed",
+  "hew_dns_lookup_host_timed",
+]
 enum_variant = "Dns"
 label = "std.net.dns resolver operations"
 prose_label = "`std.net.dns.resolve`, `dns.lookup_host`"
@@ -447,6 +547,22 @@ native_only_modules = ["os"]
 
 [[feature]]
 id = "distributed"
+deterministic = "refuse"
+deterministic_endpoints = [
+  "hew_node_api_start_config",
+  "hew_node_api_connect",
+  "hew_node_api_connect_string",
+  "hew_node_set_transport",
+  "hew_node_api_register_by_pid_string",
+  "hew_node_api_lookup_location_string",
+  "hew_node_api_send_location",
+  "hew_node_api_shutdown",
+  "hew_node_monitor_location",
+  "hew_node_link_remote_location",
+  "hew_remote_call_new",
+  "hew_remote_call_poll",
+  "hew_remote_call_take",
+]
 enum_variant = "Distributed"
 label = "Distributed node and remote-actor operations"
 prose_label = "`Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `RemotePid<T>.send` / `.ask`, and remote monitor/link operations"
@@ -457,6 +573,21 @@ runtime_status = "Key-derived identity, durable sessions, authenticated mesh rou
 categories = ["stdlib", "distributed", "actor"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(distributed):"
+
+[[feature]]
+id = "stdin-input"
+label = "Standard input reads"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Native and WASI standard input is host-provided"
+categories = ["stdlib", "io"]
+deterministic = "refuse"
+deterministic_functions = [
+  "std.io.read_line",
+  "std.io.read_all",
+  "std.io.scanner.from_stdin",
+]
+deterministic_endpoints = ["hew_io_read_line", "hew_io_read_all"]
 
 [[feature]]
 id = "crypto-random"

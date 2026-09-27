@@ -27,13 +27,14 @@ fn assert_receiver_return(function: &HirFn, expression: &HirExpr) {
         HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. } if *id == receiver.id));
 }
 
-const COUNTDOWN_SOURCE: &str = r"
-trait Stepper {
+const COUNTDOWN_SOURCE: &str = r"trait Stepper {
     type Item;
     fn next(var self) -> Option<Self.Item>;
 }
 
-type Countdown { n: i64, }
+type Countdown {
+    n: i64;
+}
 
 impl Stepper for Countdown {
     type Item = i64;
@@ -53,6 +54,7 @@ fn step() -> Option<i64> {
     var cd = Countdown { n: 1 };
     cd.next()
 }
+
 fn main() {}
 ";
 
@@ -93,23 +95,31 @@ fn concrete_var_self_next_lowers_to_writeback_call() {
 
 #[test]
 fn generic_var_self_retains_receiver_on_explicit_and_fallthrough_returns() {
-    let source = r#"
-trait Advance {
+    let source = r#"trait Advance {
     fn advance(var self, early: bool) -> i64;
 }
 
-type Holder<T> { payload: T }
+type Holder<T> {
+    payload: T;
+}
+
 impl<T> Advance for Holder<T> {
     fn advance(var self, early: bool) -> i64 {
-        if early { return 1; }
+        if early {
+            return 1;
+        }
         2
     }
 }
+
 fn main() -> i64 {
     var holder = Holder { payload: "owned" };
     holder.advance(false)
 }
-fn pair(value: Holder<string>) -> (i64, Holder<string>) { (0, value) }
+
+fn pair(value: Holder<string>) -> (i64, Holder<string>) {
+    (0, value)
+}
 "#;
     let output = support::checker_pipeline::lower_through_checker(source);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
@@ -122,7 +132,14 @@ fn pair(value: Holder<string>) -> (i64, Holder<string>) { (0, value) }
             _ => None,
         })
         .expect("generic var self method");
-    assert_eq!(method.type_params, ["T"]);
+    assert_eq!(
+        method
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["T"]
+    );
     assert!(matches!(&method.return_ty, ResolvedTy::Tuple(fields)
         if fields[1] == method.params[0].ty));
     assert_receiver_return(method, method.body.tail.as_ref().unwrap());
@@ -181,7 +198,10 @@ fn var_self_verifier_rejects_stale_receiver_bindings_and_types() {
 #[test]
 fn projected_var_self_receiver_preserves_the_writeback_place() {
     let source = COUNTDOWN_SOURCE
-        .replace("fn step()", "type Holder { counter: Countdown }\nfn step()")
+        .replace(
+            "fn step()",
+            "type Holder { counter: Countdown; }\nfn step()",
+        )
         .replace(
             "var cd = Countdown { n: 1 };",
             "var owner = Holder { counter: Countdown { n: 1 } };",
@@ -248,12 +268,22 @@ fn var_self_verifier_rejects_an_endpoint_without_a_declaration_target() {
 #[test]
 fn generic_unit_var_self_wraps_a_bare_return_in_its_tail_once() {
     let output = support::checker_pipeline::lower_through_checker(
-        r#"
-trait Touch { fn touch(var self, early: bool); }
-type Holder<T> { payload: T }
-impl<T> Touch for Holder<T> {
-    fn touch(var self, early: bool) { if early { return; } }
+        r#"trait Touch {
+    fn touch(var self, early: bool);
 }
+
+type Holder<T> {
+    payload: T;
+}
+
+impl<T> Touch for Holder<T> {
+    fn touch(var self, early: bool) {
+        if early {
+            return;
+        }
+    }
+}
+
 fn main() -> i64 {
     var owned = Holder { payload: "kept" };
     owned.touch(true);

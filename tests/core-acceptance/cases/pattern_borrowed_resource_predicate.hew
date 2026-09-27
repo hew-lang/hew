@@ -1,11 +1,18 @@
 #[resource]
-type Token { id: i64 }
-
-impl Token {
-    fn close(consume self) { println(f"closed {self.id}"); }
+type Token {
+    id: i64;
 }
 
-type Packet { tag: string, token: Token }
+impl Token {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+type Packet {
+    tag: string;
+    token: Token;
+}
 
 fn classify(packet: Packet) -> i64 {
     match packet {

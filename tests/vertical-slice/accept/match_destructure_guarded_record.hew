@@ -10,15 +10,12 @@
 //! resolved would print `a-payload` or fail closed.
 
 type Pair {
-    a: string,
-    b: string,
+    a: string;
+    b: string;
 }
 
 fn make_pair() -> Pair {
-    Pair {
-        a: ("a-" + "payload"),
-        b: ("b-" + "payload"),
-    }
+    Pair { a: ("a-" + "payload"), b: ("b-" + "payload") }
 }
 
 fn main() -> i64 {

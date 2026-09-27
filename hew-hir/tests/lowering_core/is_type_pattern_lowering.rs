@@ -73,18 +73,17 @@ fn is_value_pattern_lowers_to_identity_compare() {
     // one shape of `is` this file still has a reachable positive control for
     // (see the module doc comment).
     let output = lower(
-        r"
-        actor Worker {
-            let _id: i64,
-            receive fn ping() {}
-        }
+        r"actor Worker {
+    let _id: i64;
+    receive fn ping() {}
+}
 
-        fn main() {
-            let a = spawn Worker(_id: 1);
-            let b = spawn Worker(_id: 2);
-            let _eq: bool = a is b;
-        }
-        ",
+fn main() {
+    let a = spawn Worker(_id: 1);
+    let b = spawn Worker(_id: 2);
+    let _eq: bool = a is b;
+}
+",
     );
 
     let main_fn = output

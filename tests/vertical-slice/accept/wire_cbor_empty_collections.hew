@@ -4,15 +4,19 @@
 // returns 42.
 #[wire]
 type Empties {
-    items: Vec<i64> @1,
-    label: string @2,
+    items: Vec<i64> @1;
+    label: string @2;
 }
 
 fn main() -> i64 {
     let xs: Vec<i64> = Vec.new();
     let h = Empties { items: xs, label: "" };
     let back = Empties.decode(h.encode());
-    if back.items.len() != 0 { return 1; }
-    if back.label != "" { return 2; }
+    if back.items.len() != 0 {
+        return 1;
+    }
+    if back.label != "" {
+        return 2;
+    }
     42
 }

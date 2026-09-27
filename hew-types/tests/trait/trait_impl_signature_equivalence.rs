@@ -46,8 +46,8 @@ fn impl_with_correct_signature_typechecks_clean() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{
@@ -68,14 +68,13 @@ impl Iterator for Counter {{
 
 #[test]
 fn impl_projects_direct_dotted_associated_return_type() {
-    let src = r"
-pub trait Source {
+    let src = r"pub trait Source {
     type Item;
     fn item(self) -> Self.Item;
 }
 
 pub type Counter {
-    n: i64,
+    n: i64;
 }
 
 impl Source for Counter {
@@ -126,14 +125,13 @@ impl Container for string {
 
 #[test]
 fn impl_projects_associated_type_inside_tuple() {
-    let src = r"
-pub trait Pairing {
+    let src = r"pub trait Pairing {
     type Item;
     fn pair(self) -> (Self.Item, bool);
 }
 
 pub type Counter {
-    n: i64,
+    n: i64;
 }
 
 impl Pairing for Counter {
@@ -153,14 +151,13 @@ impl Pairing for Counter {
 
 #[test]
 fn generic_applied_impl_projects_deeper_generic_composition() {
-    let src = r"
-pub trait Container {
+    let src = r"pub trait Container {
     type Item;
     fn items(self) -> Vec<Option<Self.Item>>;
 }
 
 pub type Boxed<T> {
-    value: T,
+    value: T;
 }
 
 impl<T> Container for Boxed<T> {
@@ -180,14 +177,13 @@ impl<T> Container for Boxed<T> {
 
 #[test]
 fn nested_generic_associated_type_mismatch_is_rejected() {
-    let src = r"
-pub trait Container {
+    let src = r"pub trait Container {
     type Item;
     fn item(self) -> Option<Self.Item>;
 }
 
 pub type Counter {
-    n: i64,
+    n: i64;
 }
 
 impl Container for Counter {
@@ -238,8 +234,8 @@ fn impl_with_wrong_return_type_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{
@@ -278,8 +274,8 @@ fn impl_with_wrong_receiver_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{
@@ -305,8 +301,8 @@ fn impl_with_extra_parameter_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{
@@ -331,14 +327,13 @@ fn impl_with_wrong_parameter_type_rejected_at_impl_site() {
     // A non-self-receiver trait method whose impl supplies a wrong parameter
     // type at a non-receiver position. Uses a two-parameter trait so it has an
     // additional argument beyond the receiver.
-    let src = r"
-pub trait Lookup {
+    let src = r"pub trait Lookup {
     type Output;
     fn at(self, key: i32) -> Self.Output;
 }
 
 pub type Bag {
-    val: i64,
+    val: i64;
 }
 
 impl Lookup for Bag {
@@ -368,13 +363,12 @@ fn impl_with_renamed_method_type_param_is_accepted() {
     // monomorphic). This test pins the legitimacy of method-level type-param
     // renaming on a synthetic trait so the renaming policy is locked
     // independent of trait-method-generic surface evolution.
-    let src = r"
-pub trait Lift {
+    let src = r"pub trait Lift {
     fn lift<T>(self, x: T) -> T;
 }
 
 pub type Box {
-    inner: i64,
+    inner: i64;
 }
 
 impl Lift for Box {

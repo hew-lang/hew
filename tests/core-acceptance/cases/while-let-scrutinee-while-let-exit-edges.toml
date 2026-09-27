@@ -1,0 +1,10 @@
+[[case]]
+id = "while-let-scrutinee-while-let-exit-edges"
+intent = "Leak and exactly-once guards for from-call `while let` scrutinee owners. Shape `while_let_exit_edges` (while let break continue and return release exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/while-let-scrutinee-while-let-exit-edges.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

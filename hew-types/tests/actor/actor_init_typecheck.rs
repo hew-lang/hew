@@ -5,15 +5,15 @@ use common::typecheck_isolated as typecheck;
 #[test]
 fn test_actor_init_type_mismatch_detected() {
     let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32,
-            init() {
-                let x: string = 123;
-            }
-        }
-        fn main() {}
-    ",
+        r"actor Worker {
+    let count: i32;
+    init() {
+        let x: string = 123;
+    }
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -28,15 +28,15 @@ fn test_actor_init_type_mismatch_detected() {
 #[test]
 fn test_actor_init_undefined_var_detected() {
     let output = typecheck(
-        r"
-        actor Worker {
-            let id: i32,
-            init() {
-                nope = 1;
-            }
-        }
-        fn main() {}
-    ",
+        r"actor Worker {
+    let id: i32;
+    init() {
+        nope = 1;
+    }
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -51,17 +51,17 @@ fn test_actor_init_undefined_var_detected() {
 #[test]
 fn test_actor_init_valid_field_access() {
     let output = typecheck(
-        r"
-        actor Worker {
-            let id: i32,
-            init() {
-                println(id);
-            }
-        }
-        fn main() {
-            let _w = spawn Worker(id: 1);
-        }
-    ",
+        r"actor Worker {
+    let id: i32;
+    init() {
+        println(id);
+    }
+}
+
+fn main() {
+    let _w = spawn Worker(id: 1);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -73,15 +73,15 @@ fn test_actor_init_valid_field_access() {
 #[test]
 fn test_actor_init_params_in_scope() {
     let output = typecheck(
-        r"
-        actor Greeter {
-            let name: string,
-            init(prefix: string) {
-                println(prefix);
-            }
-        }
-        fn main() {}
-    ",
+        r"actor Greeter {
+    let name: string;
+    init(prefix: string) {
+        println(prefix);
+    }
+}
+
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -93,17 +93,17 @@ fn test_actor_init_params_in_scope() {
 #[test]
 fn test_actor_no_init_still_works() {
     let output = typecheck(
-        r"
-        actor Counter {
-            var count: i32,
-            receive fn inc() {
-                count = count + 1;
-            }
-        }
-        fn main() {
-            let _c = spawn Counter(count: 0);
-        }
-    ",
+        r"actor Counter {
+    var count: i32;
+    receive fn inc() {
+        count = count + 1;
+    }
+}
+
+fn main() {
+    let _c = spawn Counter(count: 0);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -115,17 +115,16 @@ fn test_actor_no_init_still_works() {
 #[test]
 fn test_actor_method_valid_field_access() {
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i32,
+        r"actor Counter {
+    let count: i32;
 
-            fn current() -> i32 {
-                count
-            }
-        }
+    fn current() -> i32 {
+        count
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -137,17 +136,16 @@ fn test_actor_method_valid_field_access() {
 #[test]
 fn test_actor_receive_self_field_reads_state() {
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i32,
+        r"actor Counter {
+    let count: i32;
 
-            receive fn current() -> i32 {
-                self.count
-            }
-        }
+    receive fn current() -> i32 {
+        self.count
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -159,17 +157,16 @@ fn test_actor_receive_self_field_reads_state() {
 #[test]
 fn test_actor_self_unknown_field_reports_against_state() {
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i32,
+        r"actor Counter {
+    let count: i32;
 
-            receive fn current() -> i32 {
-                self.counts
-            }
-        }
+    receive fn current() -> i32 {
+        self.counts
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     let error = output
         .errors
@@ -194,18 +191,17 @@ fn test_actor_self_unknown_field_reports_against_state() {
 #[test]
 fn test_actor_bare_self_is_the_actor_handle() {
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i32,
+        r"actor Counter {
+    let count: i32;
 
-            receive fn current() -> i32 {
-                let held = self;
-                count
-            }
-        }
+    receive fn current() -> i32 {
+        let held = self;
+        count
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -226,21 +222,20 @@ fn test_actor_init_and_method_self_field_reads_state() {
     // The receiver reaches state from every body that binds the fields, not
     // just from `receive fn`: init and plain actor methods included.
     let output = typecheck(
-        r"
-        actor Counter {
-            var count: i32,
+        r"actor Counter {
+    var count: i32;
 
-            init() {
-                self.count = 1;
-            }
+    init() {
+        self.count = 1;
+    }
 
-            fn current() -> i32 {
-                self.count
-            }
-        }
+    fn current() -> i32 {
+        self.count
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -252,17 +247,16 @@ fn test_actor_init_and_method_self_field_reads_state() {
 #[test]
 fn test_actor_self_field_write_obeys_field_mutability() {
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i32,
+        r"actor Counter {
+    let count: i32;
 
-            receive fn bump() {
-                self.count = 1;
-            }
-        }
+    receive fn bump() {
+        self.count = 1;
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -282,17 +276,16 @@ fn test_actor_self_nested_write_obeys_field_mutability() {
     // below an index or a further projection must still root in the state
     // field, or the write passes on a `let` field.
     let output = typecheck(
-        r"
-        actor Bag {
-            let items: Vec<i64>,
+        r"actor Bag {
+    let items: Vec<i64>;
 
-            receive fn poke() {
-                self.items[0] = 5;
-            }
-        }
+    receive fn poke() {
+        self.items[0] = 5;
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     assert!(
         output
@@ -308,18 +301,17 @@ fn test_actor_self_nested_write_obeys_field_mutability() {
 #[test]
 fn test_actor_on_stop_hook_valid_field_access() {
     let output = typecheck(
-        r"
-        actor Worker {
-            let id: i32,
+        r"actor Worker {
+    let id: i32;
 
-            #[on(stop)]
-            fn flush() {
-                println(id);
-            }
-        }
+    #[on(stop)]
+    fn flush() {
+        println(id);
+    }
+}
 
-        fn main() {}
-    ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -336,16 +328,18 @@ fn test_actor_on_stop_hook_valid_field_access() {
 #[test]
 fn ask_method_form_rejected_by_typechecker() {
     let output = typecheck(
-        r"
-        actor Counter {
-            var count: i32 = 0,
-            receive fn get() -> i32 { count }
-        }
-        fn main() {
-            let c = spawn Counter();
-            let _ = c.ask(1);
-        }
-    ",
+        r"actor Counter {
+    var count: i32 = 0;
+    receive fn get() -> i32 {
+        count
+    }
+}
+
+fn main() {
+    let c = spawn Counter();
+    let _ = c.ask(1);
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -363,18 +357,20 @@ fn ask_method_form_rejected_by_typechecker() {
 #[test]
 fn spawn_arg_name_collision_differing_types_reports_checker_diagnostic() {
     let output = typecheck(
-        r"
-        actor Widget {
-            var n: string,
-            init(n: i32) {
-                let _ = n;
-            }
-            receive fn peek() -> string { n }
-        }
-        fn main() {
-            let _w = spawn Widget(n: 7);
-        }
-    ",
+        r"actor Widget {
+    var n: string;
+    init(n: i32) {
+        let _ = n;
+    }
+    receive fn peek() -> string {
+        n
+    }
+}
+
+fn main() {
+    let _w = spawn Widget(n: 7);
+}
+",
     );
     let hit = output.errors.iter().find(|e| {
         e.message.contains("matches both the `init` parameter") && e.message.contains("state field")
@@ -408,18 +404,20 @@ fn spawn_arg_name_collision_differing_types_reports_checker_diagnostic() {
 #[test]
 fn spawn_arg_name_collision_matching_types_is_accepted() {
     let output = typecheck(
-        r"
-        actor Widget2 {
-            var n: i64,
-            init(n: i64) {
-                let _ = n;
-            }
-            receive fn peek() -> i64 { n }
-        }
-        fn main() {
-            let _w = spawn Widget2(n: 7);
-        }
-    ",
+        r"actor Widget2 {
+    var n: i64;
+    init(n: i64) {
+        let _ = n;
+    }
+    receive fn peek() -> i64 {
+        n
+    }
+}
+
+fn main() {
+    let _w = spawn Widget2(n: 7);
+}
+",
     );
     assert!(
         !output

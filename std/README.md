@@ -24,13 +24,14 @@ fn main() {
 
 All other standard library modules require an explicit import at the top of the file:
 
-```hew
+```hew,no_run
 import std.fs;
 import std.encoding.json;
 
 fn main() {
     let raw = fs.read("data.json").expect("read succeeds");
-    println(json.parse(raw).expect("parse succeeds"));
+    let value = json.parse(raw).expect("parse succeeds");
+    println(value.stringify().expect("encode succeeds"));
 }
 ```
 
@@ -46,8 +47,8 @@ A `scope` produces its body value after child tasks and cleanup finish.
 recovery. Ordinary application `Err` values stay values; structured faults
 and cancellation govern scope failure.
 
-Actor `close(actor)` requests a cooperative stop and waits for terminal
-cleanup; `closed(actor)` observes it. `mailbox` is the submission view and
+Actor `stop(actor)` requests a cooperative stop; `stopped(actor)` waits for
+terminal cleanup. `mailbox` is the submission view and
 `policy` selects completion-call admission. Supervisor lifecycle forms and
 typed request recovery in `ActorError` remain implementation gaps; see
 [builtins](builtins.hew).
@@ -68,7 +69,7 @@ cloneable elements. Iterator adapters consume the iterator they wrap.
 - **Streams and coordination** — [`std.stream`](stream.hew), [`std.semaphore`](semaphore.hew), [`std.concurrency`](concurrency/concurrency.hew)
 - **Data formats and wire protocols** — [`std.encoding.json`](encoding/json/json.hew), [`std.encoding.yaml`](encoding/yaml/yaml.hew), [`std.encoding.toml`](encoding/toml/toml.hew), [`std.encoding.csv`](encoding/csv/csv.hew), [`std.encoding.xml`](encoding/xml/xml.hew)
 - **Networking** — [`std.net`](net/net.hew), [`std.net.http`](net/http/http.hew), [`std.net.dns`](net/dns/dns.hew), [`std.net.tls`](net/tls/tls.hew), [`std.net.quic`](net/quic/quic.hew), [`std.net.url`](net/url/url.hew)
-- **Testing, perf, and observability** — [`std.testing`](testing/testing.hew), [`std.bench`](bench/bench.hew), [`std.observe`](observe.hew)
+- **Perf and observability** — [`std.bench`](bench/bench.hew), [`std.observe`](observe.hew)
 
 ## Shipped module index
 
@@ -176,7 +177,6 @@ Every shipped module under `std/` should appear here.
 
 | Module                           | Import        | Use for                                                              |
 | -------------------------------- | ------------- | -------------------------------------------------------------------- |
-| [`testing`](testing/testing.hew) | `std.testing` | Assertion helpers for Hew tests                                      |
 | [`bench`](bench/bench.hew)       | `std.bench`   | Benchmark harness for measuring function performance                 |
 | [`observe`](observe.hew)         | `std.observe` | Runtime-owned observability reads, series discovery, and scrape text |
 | [`metrics`](metrics/metrics.hew) | `std.metrics` | Application counters, gauges, and histograms                         |

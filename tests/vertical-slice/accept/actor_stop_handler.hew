@@ -1,0 +1,13 @@
+// A message named stop remains callable after lifecycle stop became a built-in
+// request on a handle. The two operations select distinct boundaries.
+actor Worker {
+    receive fn stop() -> string { "message" }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    println(worker.stop().expect("stop message"));
+    stop(worker);
+    stopped(worker);
+    println("stopped");
+}

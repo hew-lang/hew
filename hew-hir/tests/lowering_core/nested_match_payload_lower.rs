@@ -52,15 +52,19 @@ fn find_match_in_fn<'a>(output: &'a hew_hir::LowerOutput, fn_name: &str) -> &'a 
 #[test]
 fn variant_payload_literal_lowers_to_pending_payload_predicate() {
     let output = lower_checked(
-        r"
-enum Maybe { Some(i64), None }
+        r"enum Maybe {
+    Some(i64);
+    None;
+}
+
 fn classify(x: Maybe) -> i64 {
     match x {
         .Some(0) => 1,
         .Some(_) => 2,
         .None => 3,
     }
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -83,14 +87,18 @@ fn classify(x: Maybe) -> i64 {
 #[test]
 fn variant_payload_bindings_still_lower_to_arm_bindings() {
     let output = lower_checked(
-        r"
-enum List { Cons(i64, i64), Nil }
+        r"enum List {
+    Cons(i64, i64);
+    Nil;
+}
+
 fn sum_pair(x: List) -> i64 {
     match x {
         .Cons(h, t) => h + t,
         .Nil => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -184,17 +192,17 @@ fn classify(x: i32) -> i32 {
 #[test]
 fn record_destructure_match_lowers_to_record_project() {
     let output = lower_checked(
-        r"
-type Point {
-    x: i64,
-    y: i64,
+        r"type Point {
+    x: i64;
+    y: i64;
 }
 
 fn sum(p: Point) -> i64 {
     match p {
         Point { x, y } => x + y,
     }
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -208,8 +216,8 @@ fn sum(p: Point) -> i64 {
     assert!(matches!(
         &arms[0].predicate,
         HirMatchArmPredicate::RecordProject {
-            ty: ResolvedTy::Named { name, .. },
-        } if name == "Point"
+            ty: ResolvedTy::Named { head: name_head, .. },
+        } if name_head.spelling() == "Point"
     ));
     assert_eq!(arms[0].bindings.len(), 2);
     assert_eq!(arms[0].bindings[0].name, "x");
@@ -307,15 +315,18 @@ fn assert_arm_tuple_payload(arm: &hew_hir::HirMatchArm, field_idx: u32, names: &
 #[test]
 fn qualified_tuple_variant_aggregate_binds_nested_names() {
     let output = lower_checked(
-        r"
-enum Pair { Both((i64, i64)), None }
+        r"enum Pair {
+    Both((i64, i64));
+    None;
+}
 
 fn sum(pair: Pair) -> i64 {
     match pair {
         Pair.Both((a, b)) => a + b,
         Pair.None => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -338,10 +349,9 @@ fn sum(pair: Pair) -> i64 {
 #[test]
 fn struct_variant_tuple_field_destructure_binds_inner_names() {
     let output = lower_checked(
-        r"
-enum Packet {
-    Data { value: (i64, i64) },
-    Empty,
+        r"enum Packet {
+    Data { value: (i64, i64);  }
+    Empty;
 }
 
 fn sum(p: Packet) -> i64 {
@@ -349,7 +359,8 @@ fn sum(p: Packet) -> i64 {
         .Data { value: (a, b) } => a + b,
         .Empty => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -369,10 +380,9 @@ fn sum(p: Packet) -> i64 {
 #[test]
 fn struct_variant_mixed_and_reordered_fields_all_bind() {
     let output = lower_checked(
-        r"
-enum P {
-    D { p: (i64, i64), q: (i64, i64) },
-    E,
+        r"enum P {
+    D { p: (i64, i64); q: (i64, i64);  }
+    E;
 }
 
 fn sum(v: P) -> i64 {
@@ -380,7 +390,8 @@ fn sum(v: P) -> i64 {
         .D { q: (c, d), p: (a, b) } => a + b + c + d,
         .E => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -402,10 +413,9 @@ fn sum(v: P) -> i64 {
 #[test]
 fn generic_struct_variant_tuple_field_destructure_binds_inner_names() {
     let output = lower_checked(
-        r"
-enum Box<T> {
-    Pair { both: (T, T) },
-    Empty,
+        r"enum Box<T> {
+    Pair { both: (T, T);  }
+    Empty;
 }
 
 fn sum(b: Box<i64>) -> i64 {
@@ -413,7 +423,8 @@ fn sum(b: Box<i64>) -> i64 {
         .Pair { both: (a, c) } => a + c,
         .Empty => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -430,16 +441,18 @@ fn sum(b: Box<i64>) -> i64 {
 #[test]
 fn struct_variant_tuple_field_let_else_binds_inner_names() {
     let output = lower_checked(
-        r"
-enum Packet {
-    Data { pair: (i64, i64) },
-    Empty,
+        r"enum Packet {
+    Data { pair: (i64, i64);  }
+    Empty;
 }
 
 fn sum(value: Packet) -> i64 {
-    let Packet.Data { pair: (a, b) } = value else { return 0 };
+    let Packet.Data { pair: (a, b) } = value else {
+        return 0;
+    };
     a + b
-}",
+}
+",
     );
     assert!(
         output.diagnostics.is_empty(),

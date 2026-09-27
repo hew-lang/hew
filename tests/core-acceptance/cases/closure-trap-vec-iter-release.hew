@@ -6,7 +6,6 @@ actor VecIterCrasher {
         let root = Rc.new(41);
         var values: Vec<Rc<i64>> = Vec.new();
         values.push(root);
-
         let crash = |incoming: VecIter<Rc<i64>>| {
             let _ = incoming;
             panic("vec-iter-closure-trap");
@@ -29,7 +28,6 @@ fn main() -> i64 {
     let crasher = spawn VecIterCrasher;
     let probe = spawn VecIterProbe;
     let _ = crasher.boom();
-    sleep(300ms);
     match probe.ping() {
         .Ok(value) => value,
         .Err(_) => 1,

@@ -8,10 +8,14 @@ trait Show {
     fn show(val: Self) -> string;
 }
 
-type Wrapper<U> { inner: U, }
+type Wrapper<U> {
+    inner: U;
+}
 
 impl<U> Show for Wrapper<U> {
-    fn show(w: Wrapper<U>) -> string { "wrapped" }
+    fn show(w: Wrapper<U>) -> string {
+        "wrapped"
+    }
 }
 
 fn display<T: Show>(item: T) -> string {
@@ -21,5 +25,9 @@ fn display<T: Show>(item: T) -> string {
 fn main() -> i64 {
     let w = Wrapper<i64> { inner: 7 };
     let s = display(w);
-    if s == "wrapped" { 0 } else { 1 }
+    if s == "wrapped" {
+        0
+    } else {
+        1
+    }
 }

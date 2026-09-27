@@ -22,7 +22,7 @@ XML parsing and serialization for Hew.
 import std.encoding.xml;
 
 fn main() {
-    let root = xml.parse("<book lang=\"en\"><title>Hew Guide</title></book>");
+    let root = xml.parse("<book lang=\"en\"><title>Hew Guide</title></book>").expect("XML parses");
     println(root.get_tag());            // book
     println(root.get_attribute("lang")); // en
     let title = root.get_child(0);

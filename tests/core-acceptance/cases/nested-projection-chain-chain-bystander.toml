@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-projection-chain-chain-bystander"
+intent = "Nested-projection-chain ownership oracle — the compiled-binary pins for a MULTI-level field-projection alias chain. Shape `chain_bystander_high` (bystander root leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-projection-chain-chain-bystander.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -47,41 +47,48 @@ fn lower_source(source: &str) -> SemModule {
 #[test]
 fn generic_impl_can_mutate_its_local_record_field() {
     lower_source(
-        r#"
-        type Store<T> { slots: Vec<T>, label: string }
-        impl<T> Store<T> {
-            fn add(self, value: T) -> Store<T> {
-                var updated = self;
-                updated.slots.push(value);
-                updated
-            }
-        }
-        fn main() -> i64 {
-            let original = Store { slots: ["first"], label: "kept" };
-            let updated = original.add("second");
-            original.slots.len() * 10 + updated.slots.len()
-        }
-    "#,
+        r#"type Store<T> {
+    slots: Vec<T>;
+    label: string;
+}
+
+impl<T> Store<T> {
+    fn add(self, value: T) -> Store<T> {
+        var updated = self;
+        updated.slots.push(value);
+        updated
+    }
+}
+
+fn main() -> i64 {
+    let original = Store { slots: ["first"], label: "kept" };
+    let updated = original.add("second");
+    original.slots.len() * 10 + updated.slots.len()
+}
+"#,
     );
 }
 
 #[test]
 fn field_push_transfers_the_leaf_without_copying_its_container() {
     let module = lower_source(
-        r#"
-        type State { xs: Vec<string>, sibling: string }
-        fn main() -> i64 {
-            var state = State { xs: ["first"], sibling: "kept" };
-            state.xs.push("second");
-            state.xs.push(state.xs[0]);
-            state.xs.len() + state.sibling.len()
-        }
-    "#,
+        r#"type State {
+    xs: Vec<string>;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    var state = State { xs: ["first"], sibling: "kept" };
+    state.xs.push("second");
+    state.xs.push(state.xs[0]);
+    state.xs.len() + state.sibling.len()
+}
+"#,
     );
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let initial = main
         .bindings
@@ -108,7 +115,7 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
         ) {
             assert!(operation.results.iter().all(|result| {
                 hew_types::runtime_call::collection_type_arguments(&result.ty).is_none()
-                    && !matches!(&result.ty, hew_types::ResolvedTy::Named { name, .. } if name == "State")
+                    && !matches!(&result.ty, hew_types::ResolvedTy::Named { head, .. } if head.spelling() == "State")
             }), "receiver or its parent was copied: {operation:?}");
         }
     }
@@ -117,33 +124,47 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
 #[test]
 fn nested_fields_and_tuple_segments_share_assignment_reconstruction() {
     lower_source(
-        r#"
-        type Inner { xs: Vec<string>, label: string }
-        type Outer { inner: Inner, sibling: Vec<string> }
-        fn main() -> i64 {
-            var state = Outer { inner: Inner { xs: ["first"], label: "old" }, sibling: ["keep"] };
-            state.inner.xs.push("second");
-            state.inner.label = "new";
-            var pair = (state, "tail");
-            pair.0.inner.xs.push("third");
-            pair.1 = "changed";
-            pair.0.inner.xs.len() + pair.0.sibling.len() + pair.1.len()
-        }
-    "#,
+        r#"type Inner {
+    xs: Vec<string>;
+    label: string;
+}
+
+type Outer {
+    inner: Inner;
+    sibling: Vec<string>;
+}
+
+fn main() -> i64 {
+    var state = Outer { inner: Inner { xs: ["first"], label: "old" }, sibling: ["keep"] };
+    state.inner.xs.push("second");
+    state.inner.label = "new";
+    var pair = (state, "tail");
+    pair.0.inner.xs.push("third");
+    pair.1 = "changed";
+    pair.0.inner.xs.len() + pair.0.sibling.len() + pair.1.len()
+}
+"#,
     );
 }
 
 #[test]
 fn later_argument_updates_are_in_the_receiver_version_taken_by_push() {
     let module = lower_source(
-        r#"
-        type State { xs: Vec<string>, sibling: string }
-        fn main() -> i64 {
-            var state = State { xs: ["first"], sibling: "old" };
-            state.xs.push({ state.sibling = "changed"; state.xs.clear(); "tail" });
-            state.xs.len() + state.sibling.len()
-        }
-    "#,
+        r#"type State {
+    xs: Vec<string>;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    var state = State { xs: ["first"], sibling: "old" };
+    state.xs.push({
+        state.sibling = "changed";
+        state.xs.clear();
+        "tail"
+    });
+    state.xs.len() + state.sibling.len()
+}
+"#,
     );
     assert_receiver_update_order(&module);
 }
@@ -152,7 +173,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let BindingTarget::Place(root) = main
         .bindings
@@ -163,7 +184,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     else {
         panic!("state must retain its local storage")
     };
-    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan_of(module, main);
     let clear = runtime_block(main, RuntimeCallFamily::Vector(VecValueOp::Clear));
     let SemTerminator::RtCall {
         normal,
@@ -250,32 +271,46 @@ fn assert_receiver_update_order(module: &SemModule) {
 #[test]
 fn later_argument_can_replace_the_root_and_source_copies_stay_independent() {
     lower_source(
-        r#"
-        type State { xs: Vec<string>, label: string }
-        fn main() -> i64 {
-            var state = State { xs: ["old"], label: "old label" };
-            let copied = state;
-            state.xs.push({ state = State { xs: ["new"], label: "new label" }; copied.xs[0] });
-            copied.xs.len() * 10 + state.xs.len()
-        }
-    "#,
+        r#"type State {
+    xs: Vec<string>;
+    label: string;
+}
+
+fn main() -> i64 {
+    var state = State { xs: ["old"], label: "old label" };
+    let copied = state;
+    state.xs.push({
+        state = State { xs: ["new"], label: "new label" };
+        copied.xs[0]
+    });
+    copied.xs.len() * 10 + state.xs.len()
+}
+"#,
     );
 }
 
 #[test]
 fn map_and_set_field_mutations_publish_receiver_and_returned_value() {
     let module = lower_source(
-        r#"
-        type State { map: HashMap<i64, string>, set: HashSet<string>, sibling: Vec<string> }
-        fn main() -> i64 {
-            var state = State { map: HashMap.new(), set: HashSet.new(), sibling: ["kept"] };
-            state.map.insert(1, "value");
-            let inserted = state.set.insert("member");
-            let removed = state.map.remove(1);
-            let deleted = state.set.remove("member");
-            if inserted && deleted { state.map.len() + state.set.len() + state.sibling.len() } else { 99 }
-        }
-    "#,
+        r#"type State {
+    map: HashMap<i64, string>;
+    set: HashSet<string>;
+    sibling: Vec<string>;
+}
+
+fn main() -> i64 {
+    var state = State { map: HashMap.new(), set: HashSet.new(), sibling: ["kept"] };
+    state.map.insert(1, "value");
+    let inserted = state.set.insert("member");
+    let removed = state.map.remove(1);
+    let deleted = state.set.remove("member");
+    if inserted && deleted {
+        state.map.len() + state.set.len() + state.sibling.len()
+    } else {
+        99
+    }
+}
+"#,
     );
     let families: Vec<_> = module
         .functions
@@ -304,7 +339,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let (call, moved, cleanup) = main
         .blocks
@@ -329,7 +364,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         }
         _ => cleanup,
     };
-    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan_of(module, main);
     let field = plan.projection(place).unwrap();
     assert_eq!(
         field.path.iter().map(|step| step.field).collect::<Vec<_>>(),
@@ -382,7 +417,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     let function = missing_cleanup
         .functions
         .iter_mut()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     for block in &mut function.blocks {
         if reachable.contains(&block.id) {
@@ -415,14 +450,17 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
 #[test]
 fn bounds_failure_releases_retained_parent_siblings() {
     let module = lower_source(
-        r#"
-        type State { xs: Vec<string>, sibling: Vec<string> }
-        fn main() -> i64 {
-            var state = State { xs: ["first"], sibling: ["kept"] };
-            state.xs.set(7, "outside");
-            state.sibling.len()
-        }
-    "#,
+        r#"type State {
+    xs: Vec<string>;
+    sibling: Vec<string>;
+}
+
+fn main() -> i64 {
+    var state = State { xs: ["first"], sibling: ["kept"] };
+    state.xs.set(7, "outside");
+    state.sibling.len()
+}
+"#,
     );
     assert_retained_sibling_cleanup(&module, RuntimeCallFamily::Vector(VecValueOp::Set));
 }
@@ -430,16 +468,27 @@ fn bounds_failure_releases_retained_parent_siblings() {
 #[test]
 fn callback_failure_releases_retained_parent_siblings() {
     let module = lower_source(
-        r#"
-        type Key { divisor: i64 }
-        impl Hash for Key { fn hash(self) -> i64 { 12 / self.divisor } }
-        type State { values: HashMap<Key, string>, sibling: Vec<string> }
-        fn main() -> i64 {
-            var state = State { values: HashMap.new(), sibling: ["kept"] };
-            state.values.insert(Key { divisor: 0 }, "value");
-            state.sibling.len()
-        }
-    "#,
+        r#"type Key {
+    divisor: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        12 / self.divisor
+    }
+}
+
+type State {
+    values: HashMap<Key, string>;
+    sibling: Vec<string>;
+}
+
+fn main() -> i64 {
+    var state = State { values: HashMap.new(), sibling: ["kept"] };
+    state.values.insert(Key { divisor: 0 }, "value");
+    state.sibling.len()
+}
+"#,
     );
     assert_retained_sibling_cleanup(&module, RuntimeCallFamily::Map(MapValueOp::Insert));
 }
@@ -463,7 +512,7 @@ fn immutable_field_receivers_and_wrong_element_types_remain_rejected() {
             hew_types::error::TypeErrorKind::MutabilityError,
         ),
     ] {
-        let source = format!("type State {{ xs: Vec<i64>, map: HashMap<i64, i64>, set: HashSet<i64> }} fn main() -> i64 {{ {declaration} state = State {{ xs: [1], map: HashMap.new(), set: HashSet.new() }}; {mutation}; 0 }}");
+        let source = format!("type State {{ xs: Vec<i64>; map: HashMap<i64, i64>; set: HashSet<i64>; }} fn main() -> i64 {{ {declaration} state = State {{ xs: [1], map: HashMap.new(), set: HashSet.new() }}; {mutation}; 0 }}");
         let parsed = hew_parser::parse(&source);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
@@ -475,7 +524,16 @@ fn immutable_field_receivers_and_wrong_element_types_remain_rejected() {
         );
     }
     let parsed = hew_parser::parse(
-        r#"type State { xs: Vec<i64> } fn main() -> i64 { var state = State { xs: [1] }; state.xs.push("wrong"); 0 }"#,
+        r#"type State {
+    xs: Vec<i64>;
+}
+
+fn main() -> i64 {
+    var state = State { xs: [1] };
+    state.xs.push("wrong");
+    0
+}
+"#,
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
@@ -491,12 +549,17 @@ fn malformed_mutable_places_cannot_bypass_root_or_projection_checks() {
     use hew_hir::{HirExprKind, HirItem, HirStmtKind};
 
     let parsed = hew_parser::parse(
-        r#"type State { xs: Vec<i64>, sibling: string }
-        fn main() -> i64 {
-            var state = State { xs: [1], sibling: "kept" };
-            state.xs.push(2);
-            state.xs.len()
-        }"#,
+        r#"type State {
+    xs: Vec<i64>;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    var state = State { xs: [1], sibling: "kept" };
+    state.xs.push(2);
+    state.xs.len()
+}
+"#,
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
@@ -510,7 +573,9 @@ fn malformed_mutable_places_cannot_bypass_root_or_projection_checks() {
             .items
             .iter_mut()
             .find_map(|item| match item {
-                HirItem::Function(function) if function.declaration.full_path() == "main" => {
+                HirItem::Function(function)
+                    if invalid.defs.path(function.declaration) == "main" =>
+                {
                     Some(function)
                 }
                 _ => None,
@@ -600,4 +665,17 @@ fn assert_root_cleanup(block: &hew_sir::SemBlock, root: hew_sir::PlaceId) {
         1,
         "each exit cleans up the remaining root exactly once"
     );
+}
+
+fn place_plan_of(
+    module: &hew_sir::SemModule,
+    function: &hew_sir::SemFunction,
+) -> hew_sir::PlacePlan {
+    hew_sir::place_plan(
+        &module.defs,
+        function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap()
 }

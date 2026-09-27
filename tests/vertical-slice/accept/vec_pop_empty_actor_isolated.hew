@@ -16,7 +16,6 @@ fn main() -> i64 {
     let crasher = spawn VecPopCrasher;
     let probe = spawn VecPopProbe;
     let _ = crasher.boom();
-    sleep(300ms);
     match probe.ping() {
         .Ok(v) => v,
         .Err(_) => 1,

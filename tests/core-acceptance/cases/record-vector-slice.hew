@@ -1,5 +1,5 @@
 type Person {
-    name: string,
+    name: string;
 }
 
 fn main() {

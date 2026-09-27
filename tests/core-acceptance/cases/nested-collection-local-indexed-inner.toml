@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-collection-local-indexed-inner"
+intent = "Nested-collection exactly-once ownership oracles for #2545 and #2546. Shape `local_indexed_inner` (local indexed inner iteration frees each vec once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-collection-local-indexed-inner.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 3

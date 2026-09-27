@@ -22,7 +22,7 @@ use hew_hir::{
     dump_hir, lower_program_host_target, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx,
 };
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
@@ -45,7 +45,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
         "root parse errors: {:#?}",
         root.errors
     );
-    let root_id = ModuleId::root();
+    let root_id = ModulePath::root();
     let mut graph = ModuleGraph::new(root_id.clone());
     let mut source_items = std::collections::HashMap::new();
 
@@ -63,7 +63,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
             .filter(|(item, _)| !matches!(item, Item::Import(_)))
             .cloned()
             .collect();
-        let id = ModuleId::new(name.split("::").map(String::from).collect());
+        let id = ModulePath::new(name.split("::"));
         graph
             .add_module(Module {
                 id: id.clone(),
@@ -80,7 +80,13 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
     let mut root_items = root.program.items.clone();
     for (item, _) in &mut root_items {
         if let Item::Import(import) = item {
-            let full_path = import.path.join("::");
+            let full_path = import
+                .path
+                .segments
+                .iter()
+                .map(|(segment, _)| segment.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
             if let Some(items) = source_items.get(&full_path) {
                 import.resolved_items = Some(items.clone().into());
             }
@@ -167,33 +173,55 @@ fn sample() -> string {
         &[
             (
                 "left::render",
-                r#"
-pub trait Render {
+                r#"pub trait Render {
     fn render(value: Self) -> string;
 }
-pub type Box<T> { value: T, }
-pub fn identity() -> string { "left-direct" }
-impl<T> Render for Box<T> {
-    fn render(value: Box<T>) -> string { "left-generic" }
+
+pub type Box<T> {
+    value: T;
 }
+
+pub fn identity() -> string {
+    "left-direct"
+}
+
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string {
+        "left-generic"
+    }
+}
+
 impl Render for Box<i64> {
-    fn render(value: Box<i64>) -> string { "left-i64" }
+    fn render(value: Box<i64>) -> string {
+        "left-i64"
+    }
 }
 "#,
             ),
             (
                 "right::paint",
-                r#"
-pub trait Render {
+                r#"pub trait Render {
     fn render(value: Self) -> string;
 }
-pub type Box<T> { value: T, }
-pub fn identity() -> string { "right-direct" }
-impl<T> Render for Box<T> {
-    fn render(value: Box<T>) -> string { "right-generic" }
+
+pub type Box<T> {
+    value: T;
 }
+
+pub fn identity() -> string {
+    "right-direct"
+}
+
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string {
+        "right-generic"
+    }
+}
+
 impl Render for Box<string> {
-    fn render(value: Box<string>) -> string { "right-string" }
+    fn render(value: Box<string>) -> string {
+        "right-string"
+    }
 }
 "#,
             ),
@@ -231,8 +259,8 @@ impl Render for Box<string> {
                 declaring_trait,
                 method,
             } => Some((
-                declaring_trait.full_path().to_string(),
-                method.full_path().to_string(),
+                output.module.defs.path(declaring_trait).to_string(),
+                output.module.defs.path(method).to_string(),
             )),
             _ => None,
         })
@@ -265,7 +293,7 @@ impl Render for Box<string> {
     let direct_identities: Vec<_> = main_targets
         .into_iter()
         .filter_map(|target| match target {
-            CallTarget::User(id) => Some(id.full_path().to_string()),
+            CallTarget::User(id) => Some(output.module.defs.path(id).to_string()),
             _ => None,
         })
         .collect();
@@ -286,16 +314,16 @@ impl Render for Box<string> {
     let left_specialized = index
         .iter()
         .find(|(key, _)| {
-            key.declaring_trait.full_path() == "left.render.Render"
-                && key.self_type.nominal.declaration().full_path() == "left.render.Box"
+            output.module.defs.path(key.declaring_trait) == "left.render.Render"
+                && output.module.defs.path(key.self_type.nominal.declaration()) == "left.render.Box"
                 && key.self_type.args == vec![hew_types::ResolvedTy::I64]
         })
         .expect("left.render's i64 specialization must be indexed structurally");
     let right_generic = index
         .iter()
         .find(|(key, _)| {
-            key.declaring_trait.full_path() == "right.paint.Render"
-                && key.self_type.nominal.declaration().full_path() == "right.paint.Box"
+            output.module.defs.path(key.declaring_trait) == "right.paint.Render"
+                && output.module.defs.path(key.self_type.nominal.declaration()) == "right.paint.Box"
                 && key.self_type.args.is_empty()
         })
         .expect("right.paint's generic impl must be indexed structurally");
@@ -316,19 +344,19 @@ impl Render for Box<string> {
         &index,
         &left_specialized.0.declaring_trait,
         &hew_types::NominalInstance {
-            nominal: left_specialized.0.self_type.nominal.clone(),
+            nominal: left_specialized.0.self_type.nominal,
             args: vec![hew_types::ResolvedTy::I64],
         },
         &left_specialized.0.method,
     )
     .expect("left i64 dispatch must resolve its specialization");
     assert_eq!(
-        left_specialized.0.method.full_path(),
+        output.module.defs.path(left_specialized.0.method),
         "left.render.Render::render",
         "the static registry key must use the checker-selected trait declaration identity"
     );
     assert_eq!(
-        left_selected.method.full_path(),
+        output.module.defs.path(left_selected.method),
         "left.render.Box::<impl left.render.Render for left.render.Box<i64>>::render",
         "the emitted body keeps its distinct checker implementation declaration identity: {left_selected:?}"
     );
@@ -349,7 +377,7 @@ impl Render for Box<string> {
         &index,
         &right_generic.0.declaring_trait,
         &hew_types::NominalInstance {
-            nominal: right_generic.0.self_type.nominal.clone(),
+            nominal: right_generic.0.self_type.nominal,
             args: vec![hew_types::ResolvedTy::Bool],
         },
         &right_generic.0.method,
@@ -357,7 +385,11 @@ impl Render for Box<string> {
     .expect("right bool dispatch must fall back to its generic impl");
     assert_eq!(right_selected.method_symbol, right_generic.1.method_symbol);
     assert_eq!(
-        right_selected.impl_type_params,
+        right_selected
+            .impl_type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "right bool dispatch must select the generic impl"
     );
@@ -367,17 +399,25 @@ impl Render for Box<string> {
 
 #[test]
 fn v1_basic_static_trait_dispatch_emits_call_trait_method_static() {
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
-type Point { x: i64, y: i64, }
-impl Show for Point {
-    fn show(p: Point) -> string { "Point" }
+
+type Point {
+    x: i64;
+    y: i64;
 }
+
+impl Show for Point {
+    fn show(p: Point) -> string {
+        "Point"
+    }
+}
+
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     let p = Point { x: 1, y: 2 };
     display(p)
@@ -401,11 +441,15 @@ fn example() -> string {
 #[test]
 fn v2_missing_impl_reports_undefined_method() {
     // Calling a method not declared by any bound trait → error
-    let src = r"
-trait Show {
+    let src = r"trait Show {
     fn show(val: Self) -> string;
 }
-type Point { x: i64, y: i64, }
+
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn display<T: Show>(item: T) -> string {
     item.nonexistent()
 }
@@ -422,23 +466,35 @@ fn display<T: Show>(item: T) -> string {
 
 #[test]
 fn v3_multiple_bounds_distinct_methods() {
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
+
 trait Size {
     fn size(val: Self) -> i64;
 }
-type Box { w: i64, h: i64, }
+
+type Box {
+    w: i64;
+    h: i64;
+}
+
 impl Show for Box {
-    fn show(b: Box) -> string { "Box" }
+    fn show(b: Box) -> string {
+        "Box"
+    }
 }
+
 impl Size for Box {
-    fn size(b: Box) -> i64 { b.w * b.h }
+    fn size(b: Box) -> i64 {
+        b.w * b.h
+    }
 }
+
 fn describe<T: Show + Size>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     describe(Box { w: 3, h: 4 })
 }
@@ -460,23 +516,34 @@ fn example() -> string {
 
 #[test]
 fn v4_supertrait_inherited_method() {
-    let src = r#"
-trait Base {
+    let src = r#"trait Base {
     fn name(val: Self) -> string;
 }
+
 trait Extended: Base {
     fn extra(val: Self) -> i64;
 }
-type Widget { label: string, }
+
+type Widget {
+    label: string;
+}
+
 impl Base for Widget {
-    fn name(w: Widget) -> string { w.label }
+    fn name(w: Widget) -> string {
+        w.label
+    }
 }
+
 impl Extended for Widget {
-    fn extra(w: Widget) -> i64 { 42 }
+    fn extra(w: Widget) -> i64 {
+        42
+    }
 }
+
 fn get_name<T: Extended>(item: T) -> string {
     item.name()
 }
+
 fn example() -> string {
     get_name(Widget { label: "ok" })
 }
@@ -501,29 +568,44 @@ fn example() -> string {
 fn v5_supertrait_dedup_same_declaring_trait() {
     // If T: A + B and both A and B inherit from Root which declares `id`,
     // we should NOT reject as ambiguous — the declaring trait is the same (Root).
-    let src = r"
-trait Root {
+    let src = r"trait Root {
     fn id(val: Self) -> i64;
 }
+
 trait A: Root {
     fn a_only(val: Self) -> i64;
 }
+
 trait B: Root {
     fn b_only(val: Self) -> i64;
 }
-type Thing { v: i64, }
+
+type Thing {
+    v: i64;
+}
+
 impl Root for Thing {
-    fn id(t: Thing) -> i64 { t.v }
+    fn id(t: Thing) -> i64 {
+        t.v
+    }
 }
+
 impl A for Thing {
-    fn a_only(t: Thing) -> i64 { 1 }
+    fn a_only(t: Thing) -> i64 {
+        1
+    }
 }
+
 impl B for Thing {
-    fn b_only(t: Thing) -> i64 { 2 }
+    fn b_only(t: Thing) -> i64 {
+        2
+    }
 }
+
 fn get_id<T: A + B>(item: T) -> i64 {
     item.id()
 }
+
 fn main() -> i64 {
     get_id(Thing { v: 99 })
 }
@@ -581,20 +663,30 @@ fn v6b_supertrait_redeclaration_is_ambiguous() {
     // error instead — the rejection site moves, but the program is
     // still rejected. Either form is acceptable for this fail-closed
     // contract; the test currently exercises the V0.5 behaviour.
-    let src = r#"
-trait A {
+    let src = r#"trait A {
     fn describe(val: Self) -> string;
 }
+
 trait B: A {
     fn describe(val: Self) -> string;
 }
-type Thing { x: i64, }
+
+type Thing {
+    x: i64;
+}
+
 impl A for Thing {
-    fn describe(t: Thing) -> string { "A" }
+    fn describe(t: Thing) -> string {
+        "A"
+    }
 }
+
 impl B for Thing {
-    fn describe(t: Thing) -> string { "B" }
+    fn describe(t: Thing) -> string {
+        "B"
+    }
 }
+
 fn report<T: B>(item: T) -> string {
     item.describe()
 }
@@ -612,17 +704,24 @@ fn report<T: B>(item: T) -> string {
 
 #[test]
 fn v7_return_type_flows_through() {
-    let src = r"
-trait Length {
+    let src = r"trait Length {
     fn len(val: Self) -> i64;
 }
-type List { count: i64, }
-impl Length for List {
-    fn len(l: List) -> i64 { l.count }
+
+type List {
+    count: i64;
 }
+
+impl Length for List {
+    fn len(l: List) -> i64 {
+        l.count
+    }
+}
+
 fn get_len<T: Length>(item: T) -> i64 {
     item.len()
 }
+
 fn main() -> i64 {
     get_len(List { count: 5 })
 }
@@ -646,17 +745,24 @@ fn main() -> i64 {
 
 #[test]
 fn v8_trait_method_with_multiple_args() {
-    let src = r"
-trait Adder {
+    let src = r"trait Adder {
     fn add(val: Self, x: i64, y: i64) -> i64;
 }
-type Calc { base: i64, }
-impl Adder for Calc {
-    fn add(c: Calc, x: i64, y: i64) -> i64 { c.base + x + y }
+
+type Calc {
+    base: i64;
 }
+
+impl Adder for Calc {
+    fn add(c: Calc, x: i64, y: i64) -> i64 {
+        c.base + x + y
+    }
+}
+
 fn compute<T: Adder>(item: T, a: i64, b: i64) -> i64 {
     item.add(a, b)
 }
+
 fn main() -> i64 {
     compute(Calc { base: 10 }, 3, 4)
 }
@@ -674,17 +780,24 @@ fn main() -> i64 {
 #[test]
 fn v9_self_substitution_in_return_type() {
     // Trait method returns Self — should substitute the type param.
-    let src = r"
-trait Clone {
+    let src = r"trait Clone {
     fn clone(val: Self) -> Self;
 }
-type Token { id: i64, }
-impl Clone for Token {
-    fn clone(t: Token) -> Token { Token { id: t.id } }
+
+type Token {
+    id: i64;
 }
+
+impl Clone for Token {
+    fn clone(t: Token) -> Token {
+        Token { id: t.id }
+    }
+}
+
 fn dup<T: Clone>(item: T) -> T {
     item.clone()
 }
+
 fn main() -> i64 {
     let t = Token { id: 1 };
     let t2 = dup(t);
@@ -723,23 +836,34 @@ fn display<T: Show>(item: T) -> i64 {
 
 #[test]
 fn v14_nested_supertrait_access() {
-    let src = r#"
-trait Printable {
+    let src = r#"trait Printable {
     fn print_str(val: Self) -> string;
 }
+
 trait Formattable: Printable {
     fn format(val: Self) -> string;
 }
-type Doc { content: string, }
+
+type Doc {
+    content: string;
+}
+
 impl Printable for Doc {
-    fn print_str(d: Doc) -> string { d.content }
+    fn print_str(d: Doc) -> string {
+        d.content
+    }
 }
+
 impl Formattable for Doc {
-    fn format(d: Doc) -> string { d.content }
+    fn format(d: Doc) -> string {
+        d.content
+    }
 }
+
 fn render<T: Formattable>(item: T) -> string {
     item.print_str()
 }
+
 fn example() -> string {
     render(Doc { content: "hello" })
 }
@@ -766,17 +890,24 @@ fn v7b_generic_impl_preserves_impl_level_type_params() {
     // `Wrapper::show.type_params` so that monomorphization can specialize
     // per concrete instantiation. Prior to the W3.022 fix this dropped
     // `U` and emitted an unsubstituted bare symbol.
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
-type Wrapper<U> { inner: U, }
-impl<U> Show for Wrapper<U> {
-    fn show(w: Wrapper<U>) -> string { "wrapped" }
+
+type Wrapper<U> {
+    inner: U;
 }
+
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string {
+        "wrapped"
+    }
+}
+
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     display(Wrapper<i64> { inner: 7 })
 }
@@ -789,7 +920,9 @@ fn example() -> string {
         if let hew_hir::node::HirItem::Function(func) = item {
             if func.name == "Wrapper::show" {
                 assert!(
-                    func.type_params.contains(&"U".to_string()),
+                    func.type_params
+                        .iter()
+                        .any(|parameter| parameter.spelling.as_str() == "U"),
                     "expected impl-level type param `U` in Wrapper::show.type_params, \
                      got {:?}",
                     func.type_params
@@ -812,23 +945,31 @@ fn v15_static_dispatch_monomorphization_keeps_canonical_owner_and_typed_args() {
     // `Wrapper<i64>`. The registry authority is the outer declaration's
     // ItemId plus this typed argument spine; it must not manufacture the
     // legacy leaf-derived `Wrapper::show` string as a second identity.
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
-type Wrapper<U> { inner: U, }
-impl<U> Show for Wrapper<U> {
-    fn show(w: Wrapper<U>) -> string { "wrapped" }
+
+type Wrapper<U> {
+    inner: U;
 }
+
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string {
+        "wrapped"
+    }
+}
+
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     display(Wrapper<i64> { inner: 7 })
 }
 "#;
     let output = lower(src);
-    let expected_args = vec![hew_types::ResolvedTy::named_user(
+    let expected_args = vec![hew_types::ResolvedTy::named_path(
+        &output.module.defs,
         "Wrapper",
         vec![hew_types::ResolvedTy::I64],
     )];
@@ -845,7 +986,7 @@ fn example() -> string {
             .module
             .monomorphisations
             .iter()
-            .all(|mono| mono.key.declaration.full_path() != "Wrapper::show"),
+            .all(|mono| output.module.defs.path(mono.key.declaration) != "Wrapper::show"),
         "static dispatch must retain the checker implementation declaration rather than a leaf-derived `Wrapper::show` identity: {:#?}",
         output.module.monomorphisations
     );

@@ -1,9 +1,128 @@
 use super::*;
 
+fn check_selected_tests(source: &str, names: &[&str]) -> TypeCheckOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let selections = names
+        .iter()
+        .map(|name| {
+            let (index, (_, span)) = parsed
+                .program
+                .items
+                .iter()
+                .enumerate()
+                .find(|(_, (item, _))| {
+                    matches!(item, Item::Function(function) if function.name.name.as_str() == *name)
+                })
+                .expect("selected source function");
+            crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                None,
+                span,
+                index,
+                crate::DeclarationKind::Function,
+                0,
+            )
+        })
+        .collect();
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.set_test_entry_selections(selections);
+    checker.check_program(&parsed.program)
+}
+
+#[test]
+fn selected_tests_publish_ordered_exit_plans_without_main() {
+    let source = "fn first() {} fn second() -> i32 { 7 }";
+    let output = check_selected_tests(source, &["second", "first"]);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.entry_exit_plan.is_none());
+    assert_eq!(output.test_entry_plans.len(), 2);
+    assert_eq!(
+        output.test_entry_plans[0].entry,
+        output.defs.lookup_path("second").unwrap()
+    );
+    assert_eq!(
+        output.test_entry_plans[0].action,
+        EntryExitAction::Integer(EntryIntegerType::I32)
+    );
+    assert_eq!(
+        output.test_entry_plans[1].entry,
+        output.defs.lookup_path("first").unwrap()
+    );
+    assert_eq!(output.test_entry_plans[1].action, EntryExitAction::Unit);
+}
+
+#[test]
+fn selected_result_test_carries_error_display_identity() {
+    let source =
+        app_error_source(".Err(AppError.Failed(\"failed\"))").replace("fn main", "fn result_case");
+    let output = check_selected_tests(&source, &["result_case"]);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.entry_exit_plan.is_none());
+    let [plan] = output.test_entry_plans.as_slice() else {
+        panic!("expected one selected test plan");
+    };
+    assert_eq!(plan.entry, output.defs.lookup_path("result_case").unwrap());
+    assert!(matches!(plan.action, EntryExitAction::Result { .. }));
+}
+
+#[test]
+fn selected_test_signature_failures_leave_no_partial_dispatch_plan() {
+    for (source, names) in [
+        ("fn good() {} fn bad(value: i64) {}", vec!["good", "bad"]),
+        ("fn bad() -> string { \"bad\" }", vec!["bad"]),
+        ("fn bad<T>() {}", vec!["bad"]),
+        ("fn good() {}", vec!["good", "good"]),
+    ] {
+        let output = check_selected_tests(source, &names);
+        assert!(output.entry_exit_plan.is_none());
+        assert!(output.test_entry_plans.is_empty(), "{source}");
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind.as_kind_str() == "E_TEST_SIGNATURE"),
+            "{source}: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn explicit_empty_test_selection_suppresses_implicit_main() {
+    let output = check_selected_tests("fn main() {}", &[]);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.entry_exit_plan.is_none());
+    assert!(output.test_entry_plans.is_empty());
+}
+
+#[test]
+fn selected_test_occurrence_must_belong_to_the_root_program() {
+    let parsed = hew_parser::parse("fn main() {}");
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.set_test_entry_selections(vec![crate::DeclarationOccurrence::new(
+        None,
+        &(100..110),
+        crate::DeclarationKind::Function,
+        0,
+    )]);
+    let output = checker.check_program(&parsed.program);
+    assert!(output.entry_exit_plan.is_none());
+    assert!(output.test_entry_plans.is_empty());
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::TestSignature
+                && error.message.contains("not a root function")
+        }),
+        "{:#?}",
+        output.errors
+    );
+}
+
 fn app_error_source(main_body: &str) -> String {
     format!(
         r"
-        enum AppError {{ Failed(string), }}
+        enum AppError {{ Failed(string); }}
 
         impl Display for AppError {{
             fn fmt(self) -> string {{
@@ -31,8 +150,8 @@ fn unit_main_produces_unit_entry_exit_plan() {
         .entry_exit_plan
         .expect("unit main must publish an exit plan");
     assert_eq!(
-        Some(&plan.entry),
-        output.identity.declaration_by_path("main"),
+        Some(plan.entry),
+        output.defs.lookup_path("main"),
         "the selected entry must be the checker-minted declaration identity"
     );
     assert_eq!(plan.action, EntryExitAction::Unit);
@@ -79,7 +198,7 @@ fn result_main_carries_resolved_display_declaration() {
     assert!(matches!(
         result_ty,
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Result),
+            head: crate::TypeHead::Builtin(BuiltinType::Result),
             ..
         }
     ));
@@ -104,19 +223,22 @@ fn result_main_carries_resolved_display_declaration() {
 #[test]
 fn result_main_without_error_conformance_is_rejected() {
     let output = check_source(
-        r#"
-        enum NonError { Failed(string), }
+        r#"enum NonError {
+    Failed(string);
+}
 
-        impl Display for NonError {
-            fn fmt(self) -> string {
-                match self { .Failed(message) => message }
-            }
+impl Display for NonError {
+    fn fmt(self) -> string {
+        match self {
+            .Failed(message) => message,
         }
+    }
+}
 
-        fn main() -> Result<(), NonError> {
-            .Err(NonError.Failed("not an Error"))
-        }
-        "#,
+fn main() -> Result<(), NonError> {
+    .Err(NonError.Failed("not an Error"))
+}
+"#,
     );
 
     assert!(

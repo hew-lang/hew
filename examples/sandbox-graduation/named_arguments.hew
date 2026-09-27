@@ -22,7 +22,7 @@ fn span(start: i64, end: i64) -> string {
 }
 
 type Card {
-    h: i64,
+    h: i64;
 }
 
 impl Card {
@@ -36,7 +36,7 @@ trait Shape {
 }
 
 type Square {
-    side: i64,
+    side: i64;
 }
 
 impl Shape for Square {
@@ -66,5 +66,6 @@ fn main() {
     println(math.min(b: trace("b", 1), a: trace("a", 2)));
     let journal = spawn Journal;
     println(journal.pair(second: "b", first: "a").expect("pair"));
-    close(journal);
+    stop(journal);
+    stopped(journal);
 }

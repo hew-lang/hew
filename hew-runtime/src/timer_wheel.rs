@@ -947,9 +947,8 @@ mod tests {
             let tw = hew_timer_wheel_new();
             assert!(!tw.is_null());
             hew_timer_wheel_schedule(tw, 1, test_cb, data);
-            // Wait for the 1ms timer to expire.
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            let fired = hew_timer_wheel_tick(tw);
+            // Tick the wheel past the 1ms deadline.
+            let fired = timer_wheel_tick_to(tw, crate::clock::hew_now_ms().saturating_add(5));
             assert!(fired >= 1);
             assert!(fire_count.load(Ordering::SeqCst) >= 1);
             hew_timer_wheel_free(tw);

@@ -15,28 +15,21 @@ use hew_types::{
 };
 
 pub(super) fn utf8_error_ty(path: &str) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: path.to_string(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::user_for_test(path, Vec::new())
 }
 
 fn option_i64_ty() -> ResolvedTy {
     ResolvedTy::Named {
-        name: "Option".to_string(),
         args: vec![ResolvedTy::I64],
-        builtin: Some(BuiltinType::Option),
+        head: hew_types::TypeHead::Builtin(BuiltinType::Option),
         is_opaque: false,
     }
 }
 
 pub(super) fn decode_result_ty(error: ResolvedTy) -> ResolvedTy {
     ResolvedTy::Named {
-        name: "Result".to_string(),
         args: vec![ResolvedTy::String, error],
-        builtin: Some(BuiltinType::Result),
+        head: hew_types::TypeHead::Builtin(BuiltinType::Result),
         is_opaque: false,
     }
 }
@@ -56,6 +49,7 @@ pub(super) fn facts(class: ValueClass, clone: CloneKind) -> TypeFacts {
     reason = "one complete SIR fixture keeps the runtime result, exact nested descriptors, and cleanup CFG auditable together"
 )]
 pub(super) fn decode_module() -> SemModule {
+    DefId::for_test("std.encoding.utf8.Utf8Error");
     let error_ty = utf8_error_ty("std.encoding.utf8.Utf8Error");
     let option_ty = option_i64_ty();
     let result_ty = decode_result_ty(error_ty.clone());
@@ -148,6 +142,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
@@ -160,7 +155,7 @@ pub(super) fn decode_module() -> SemModule {
         callables: vec![SemCallable {
             id: CallableId(0),
             function: ItemId(0),
-            declaration: function.declaration.clone(),
+            declaration: function.declaration,
             instance: CallableInstance::Monomorphic,
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
@@ -179,13 +174,14 @@ pub(super) fn decode_module() -> SemModule {
         root_unit_callables: vec![CallableId(0)],
         entry_exit_plan: None,
         entry_callable: None,
+        test_entries: Vec::new(),
         functions: vec![function],
         aggregate_shapes: vec![SemAggregateShape {
             id: AggregateShapeId(0),
             aggregate_ty: error_ty.clone(),
             marker: hew_types::DeclarationMarker::None,
             instance: error_ty
-                .nominal_instance()
+                .nominal_instance(&hew_types::DefTable::fixture())
                 .expect("canonical source error must carry nominal identity"),
             fields: vec![
                 SemAggregateField {
@@ -221,6 +217,10 @@ pub(super) fn decode_module() -> SemModule {
                         }],
                     },
                 ],
+                runtime_tags: vec![
+                    (hew_sir::RuntimeVariantRole::ResultOk, 0),
+                    (hew_sir::RuntimeVariantRole::ResultErr, 1),
+                ],
             },
             SemVariantShape {
                 id: VariantShapeId(1),
@@ -240,6 +240,10 @@ pub(super) fn decode_module() -> SemModule {
                         kind: SemVariantKind::Unit,
                         fields: Vec::new(),
                     },
+                ],
+                runtime_tags: vec![
+                    (hew_sir::RuntimeVariantRole::OptionSome, 0),
+                    (hew_sir::RuntimeVariantRole::OptionNone, 1),
                 ],
             },
         ],

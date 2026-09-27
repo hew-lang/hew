@@ -8,7 +8,7 @@
 //     is (20, 22).
 //
 // Order proof: the binding `(ra, rb)` must receive branch 0's reply in
-// `ra` and branch 1's reply in `rb`. `assert_eq` pins each element, so a
+// `ra` and branch 1's reply in `rb`. `assert` pins each element, so a
 // transposed or mismatched tuple materialisation fails the run.
 //
 // Exit-code contract: main returns ra + rb = 42. POSIX exit is 8-bit, so
@@ -31,7 +31,7 @@ fn main() -> i64 {
         .Ok(value) => value,
         .Err(_) => -1,
     };
-    assert_eq(ra, 20);
-    assert_eq(rb, 22);
+    assert(ra == 20);
+    assert(rb == 22);
     ra + rb
 }

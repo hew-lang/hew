@@ -1,0 +1,14 @@
+[[case]]
+id = "wire_text_name_collision"
+intent = "A wire type with colliding final JSON names is rejected during checking, before any codec is selected."
+source = "cases/wire_text_name_collision.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 1
+column = 1
+message = "wire JSON field name `fooBar` is ambiguous after naming metadata"

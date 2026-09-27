@@ -1,0 +1,10 @@
+[[case]]
+id = "generator-enum-overwrite-ordinary-enum-payload-overwrite-control"
+intent = "Generator-local enum overwrite leak oracle. Shape `ordinary_enum_payload_overwrite_control_high` (ordinary enum payload overwrite control stays clean) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/generator-enum-overwrite-ordinary-enum-payload-overwrite-control.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "tick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\ntick\n"
+exit = 0

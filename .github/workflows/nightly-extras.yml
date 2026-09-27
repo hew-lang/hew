@@ -1,0 +1,77 @@
+name: Nightly compiler and runtime checks
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+env:
+  LLVM_VERSION: "22.1.5"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  runtime-unit:
+    name: Runtime unit tests (minimal features)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          tools: nextest@0.9.120
+          cache-shared-key: nightly-runtime-unit
+      - run: make test-runtime-unit
+
+  link-race:
+    name: Native archive link race
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install native link prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: nightly-link-race
+      - run: make libhew-link-race-test
+
+  linear-lowering:
+    name: Linear physical lowering
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install native link prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: nightly-linear-lowering
+      - run: make perf-verify-linear
+
+  ledger-issues:
+    name: Expected-failure issue references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: nightly-ledger-issues
+      - name: Require every ledger issue to resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make ledger-issues

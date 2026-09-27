@@ -1,0 +1,10 @@
+[[case]]
+id = "ownership-balance-rk-noloop"
+intent = "Ownership-balance fixture. Driven 200,000 times, it releases every obligation exactly once with no leak under ASan/LSan."
+source = "fixtures/ownership-balance/rK_noloop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "snap-6\n"
+exit = 0

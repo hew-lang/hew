@@ -7,10 +7,8 @@
 //! re-enqueues until a bound), not a no-op lowering: a no-op would never
 //! advance the counter past its first tick.
 
-import std.testing;
-
 actor Counter {
-    var n: i64 = 0,
+    var n: i64 = 0;
 
     // Each delivery increments and self-sends until the bound is reached.
     // The self-send is `self.go()` — `self` as a method receiver.
@@ -26,7 +24,7 @@ actor Counter {
 }
 
 actor Pump {
-    var n: i64 = 0,
+    var n: i64 = 0;
     receive fn go() {
         if n < 7 {
             n = n + 1;
@@ -38,16 +36,32 @@ actor Pump {
     }
 }
 
+fn total_of_counter(c: Counter) -> i64 {
+    match c.total() {
+        .Ok(n) => n,
+        .Err(_) => panic("total ask failed"),
+    }
+}
+
+fn total_of_pump(p: Pump) -> i64 {
+    match p.total() {
+        .Ok(n) => n,
+        .Err(_) => panic("total ask failed"),
+    }
+}
+
 #[test]
 fn self_send_drives_bounded_recursion_to_exact_terminal() {
     let c = spawn Counter;
     let _ = c.go();
-    // The self-sends drain through the mailbox; the ask serialises behind them.
-    // sleep gives the bounded self-send chain time to complete before observing.
-    sleep(100ms);
+    // The self-sends drain through the mailbox. Once the count reaches the
+    // bound no further self-send is queued, so an overshoot shows here.
+    while total_of_counter(c) < 3 {
+        sleep(1ms);
+    }
     match c.total() {
-        .Ok(n) => testing.assert_eq(n, 3),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 3),
+        .Err(_) => assert(false),
     }
 }
 
@@ -55,9 +69,11 @@ fn self_send_drives_bounded_recursion_to_exact_terminal() {
 fn self_send_with_higher_bound_reaches_that_bound() {
     let p = spawn Pump;
     let _ = p.go();
-    sleep(100ms);
+    while total_of_pump(p) < 7 {
+        sleep(1ms);
+    }
     match p.total() {
-        .Ok(n) => testing.assert_eq(n, 7),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 7),
+        .Err(_) => assert(false),
     }
 }

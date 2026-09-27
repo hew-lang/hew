@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor_childref_value_flow_states"
+intent = "ChildRef carries supervised-role identity through ordinary values."
+source = "../vertical-slice/accept/supervisor_childref_value_flow_states.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "CHILDREF_FLOW_STATE_MATRIX_OK\n"
+stderr = "hew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 3): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 5): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 6): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 7): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 8): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 9): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 11): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 12): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 15): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 17): UserPanic\nhew: failure: UserPanic (212): childref state transition\nhew: actor crash in Worker.crash_me (actor 18): UserPanic\n"
+exit = 1

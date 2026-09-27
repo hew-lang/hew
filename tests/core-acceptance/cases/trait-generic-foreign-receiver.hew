@@ -14,7 +14,9 @@ impl Tagged for json.Value {
     }
 }
 
-type Local { n: i64 }
+type Local {
+    n: i64;
+}
 
 impl Tagged for Local {
     fn tag(self) -> string {

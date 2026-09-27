@@ -106,19 +106,17 @@ const TERMS = new Set([
 const ACTOR_OPS = new Set([
   "spawn",
   "self_handle",
-  "close",
-  "await_closed",
+  "stop",
+  "terminate",
+  "await_stopped",
+  "await_restarted",
   "call_start",
   "call_take",
   "submit",
   "stream_start",
   "supervisor_spawn",
   "supervisor_child",
-  "supervisor_await_restart",
   "supervisor_pool_view",
-  "supervisor_stop",
-  "supervisor_await_closed",
-  "supervisor_role_await_closed",
 ]);
 
 function capabilityMessage(capability: string, native: boolean): string {
@@ -195,6 +193,18 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   }
 
   for (const resource of pkg.resources ?? []) {
+    if (
+      resource.kind === "record" &&
+      (resource.shape === undefined ||
+        !pkg.aggregates.some((shape) => shape.id === resource.shape))
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.resource_shape_missing",
+        capability: null,
+        message: "record resource has no exact aggregate shape",
+        span: null,
+      };
     if (resource.kind === "opaque") return unavailable("resource.opaque_close");
     if (
       resource.kind === "nominal" &&

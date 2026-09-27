@@ -1,7 +1,7 @@
 // ASan fixture gate: clean probe.
 //
-// This fixture is compiled against an ASan/LSan-instrumented libhew.a by
-// `scripts/asan-fixture-check.sh` and run with ASAN_OPTIONS=detect_leaks=1.
+// The core-acceptance `safety` suite (`make core-safety`) runs it under
+// ASan/LSan.
 // It must produce ZERO ASan/LSan findings — any regression in the drop
 // elaboration for these shapes will reopen a leak the gate catches on Linux.
 //

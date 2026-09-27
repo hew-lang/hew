@@ -1,0 +1,11 @@
+[[case]]
+id = "identity_w1a_methods"
+intent = "An inherent method and a trait method on one receiver keep distinct callable bodies."
+source = "../vertical-slice/accept/identity_w1a.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "inherent\nshow\nlabel\n"
+exit = 0

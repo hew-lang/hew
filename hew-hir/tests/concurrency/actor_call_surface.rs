@@ -240,25 +240,23 @@ fn visit_block<'a>(block: &'a hew_hir::HirBlock, out: &mut Vec<&'a HirExpr>) {
 #[test]
 fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
     let output = lower_checked(
-        r"
-        actor Counter {
-            let count: i64,
+        r"actor Counter {
+    let count: i64;
 
-            receive fn increment(n: i64) {
-            }
+    receive fn increment(n: i64) {}
 
-            receive fn print_total() -> i64 {
-                return 1;
-            }
-        }
+    receive fn print_total() -> i64 {
+        return 1;
+    }
+}
 
-        fn main() -> i64 {
-            let c = spawn Counter(count: 0);
-            let _ = c.increment(10);
-            _ = c.print_total();
-            return 0;
-        }
-        ",
+fn main() -> i64 {
+    let c = spawn Counter(count: 0);
+    let _ = c.increment(10);
+    let _ = c.print_total();
+    return 0;
+}
+",
     );
 
     assert!(
@@ -360,11 +358,7 @@ fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
     assert_eq!(value.ty, binding.ty);
     assert!(matches!(
         &value.ty,
-        hew_types::ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Result),
-            args,
-            ..
-        } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
+        hew_types::ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
     ));
     let (method_id, reply_ty) = match &value.kind {
         HirExprKind::ActorAsk {

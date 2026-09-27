@@ -4,6 +4,127 @@ use super::*;
 use hew_runtime::actor_native::HewSubmitStatus;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn emit_actor_await_restarted(
+        &self,
+        source: StorageId,
+        nested: bool,
+        unwind: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("restart wait requires a resumable invocation".into())
+        })?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let wake = coro::external(
+            self.llvm,
+            "hew_coro_state_waker",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let waker = call_value(
+            &self.builder,
+            wake,
+            &[frame.state.into()],
+            "restart.wait.waker",
+        )?;
+        let role = self.load(source, "restart.role")?.into_struct_value();
+        let owner = self
+            .builder
+            .build_extract_value(role, 0, "restart.owner")
+            .llvm_ctx("read the role owner")?;
+        let slot = self
+            .builder
+            .build_extract_value(role, 1, "restart.slot")
+            .llvm_ctx("read the role slot")?;
+        let new = coro::external(
+            self.llvm,
+            "hew_supervisor_native_restart_wait_new",
+            ptr.fn_type(
+                &[
+                    owner.get_type().into(),
+                    slot.get_type().into(),
+                    self.ctx.i32_type().into(),
+                    ptr.into(),
+                ],
+                false,
+            ),
+        )?;
+        let wait = call_value(
+            &self.builder,
+            new,
+            &[
+                owner.into(),
+                slot.into(),
+                self.ctx
+                    .i32_type()
+                    .const_int(u64::from(nested), false)
+                    .into(),
+                waker.into(),
+            ],
+            "restart.wait",
+        )?
+        .into_pointer_value();
+        let poll = self.ctx.append_basic_block(self.value, "restart.wait.poll");
+        let pending = self
+            .ctx
+            .append_basic_block(self.value, "restart.wait.pending");
+        let complete = self
+            .ctx
+            .append_basic_block(self.value, "restart.wait.complete");
+        let cancelled = self
+            .ctx
+            .append_basic_block(self.value, "restart.wait.cancelled");
+        let destroyed = self
+            .ctx
+            .append_basic_block(self.value, "restart.wait.invalid.destroy");
+        self.builder
+            .build_unconditional_branch(poll)
+            .llvm_ctx("poll role restart")?;
+        self.builder.position_at_end(poll);
+        let cancellation = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancelled_now = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                cancellation,
+                self.ctx.i32_type().const_zero(),
+                "restart.wait.cancel.requested",
+            )
+            .llvm_ctx("inspect restart waiter cancellation")?;
+        let inspect = self
+            .ctx
+            .append_basic_block(self.value, "restart.wait.inspect");
+        self.builder
+            .build_conditional_branch(cancelled_now, cancelled, inspect)
+            .llvm_ctx("select restart waiter cancellation")?;
+        self.builder.position_at_end(inspect);
+        let status = self.state_value("hew_supervisor_native_restart_wait_poll", wait)?;
+        let ready = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "restart.wait.ready",
+            )
+            .llvm_ctx("inspect role restart")?;
+        self.builder
+            .build_conditional_branch(ready, complete, pending)
+            .llvm_ctx("select restart wait readiness")?;
+        self.builder.position_at_end(pending);
+        frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
+        self.builder.position_at_end(destroyed);
+        self.reject_invalid_task_state()?;
+        self.builder.position_at_end(cancelled);
+        self.free_handle("hew_supervisor_native_restart_wait_free", wait)?;
+        self.initialize_cancellation_fault()?;
+        if let Some(unwind) = unwind {
+            self.emit_edge(unwind)?;
+        } else {
+            self.emit_propagate_fault()?;
+        }
+        self.builder.position_at_end(complete);
+        self.free_handle("hew_supervisor_native_restart_wait_free", wait)
+    }
+
     pub(super) fn new_actor_wait_edge(
         &self,
         target: BasicMetadataValueEnum<'ctx>,
@@ -90,10 +211,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
     }
 
-    pub(super) fn emit_actor_await_closed(
+    pub(super) fn emit_actor_await_stopped(
         &self,
         source: StorageId,
-        supervisor_role_close: Option<bool>,
+        role_wait: Option<bool>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let frame = self.frame.as_ref().ok_or_else(|| {
@@ -112,7 +233,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "actor.wait.waker",
         )?;
         let target = self.load(source, "actor.wait.target")?;
-        let (target, slot) = if supervisor_role_close.is_some() {
+        let (target, slot) = if role_wait.is_some() {
             let role = target.into_struct_value();
             let owner = self
                 .builder
@@ -126,11 +247,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             (target, None)
         };
-        let edge = self.new_actor_wait_edge(target.into(), 2)?;
         let cycle = self
             .ctx
             .append_basic_block(self.value, "actor.wait.cycle.fault");
-        let (new, arguments) = if let (Some(closing), Some(slot)) = (supervisor_role_close, slot) {
+        let (new, arguments) = if let (Some(nested), Some(slot)) = (role_wait, slot) {
             let new = coro::external(
                 self.llvm,
                 "hew_supervisor_native_role_wait_new",
@@ -152,7 +272,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     waker.into(),
                     self.ctx
                         .i32_type()
-                        .const_int(u64::from(closing), false)
+                        .const_int(u64::from(nested), false)
                         .into(),
                 ],
             )
@@ -165,6 +285,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             (new, vec![target.into(), waker.into()])
         };
         let wait = call_value(&self.builder, new, &arguments, "actor.wait")?.into_pointer_value();
+        let edge_new = coro::external(
+            self.llvm,
+            "hew_actor_wait_edge_new_for_wait",
+            ptr.fn_type(&[ptr.into(), ptr.into(), self.ctx.i32_type().into()], false),
+        )?;
+        let edge = call_value(
+            &self.builder,
+            edge_new,
+            &[
+                frame.state.into(),
+                wait.into(),
+                self.ctx.i32_type().const_int(2, false).into(),
+            ],
+            "actor.wait.edge",
+        )?
+        .into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "actor.wait.poll");
         let inspect = self
             .ctx

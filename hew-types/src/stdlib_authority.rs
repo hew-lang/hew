@@ -316,20 +316,11 @@ pub enum OverloadGroup {
     Println,
     Print,
     ToString,
-    AssertEq,
-    AssertNe,
     Len,
 }
 
 impl OverloadGroup {
-    pub const ALL: [Self; 6] = [
-        Self::Println,
-        Self::Print,
-        Self::ToString,
-        Self::AssertEq,
-        Self::AssertNe,
-        Self::Len,
-    ];
+    pub const ALL: [Self; 4] = [Self::Println, Self::Print, Self::ToString, Self::Len];
 
     #[must_use]
     pub const fn key(self) -> &'static str {
@@ -337,8 +328,6 @@ impl OverloadGroup {
             Self::Println => "println",
             Self::Print => "print",
             Self::ToString => "to_string",
-            Self::AssertEq => "assert_eq",
-            Self::AssertNe => "assert_ne",
             Self::Len => "len",
         }
     }
@@ -591,9 +580,12 @@ fn load_source(
         match item {
             Item::TypeDecl(decl) => {
                 if let Some(key) = decl.lang_item.as_deref() {
-                    ensure_known_root(source, &decl.name, "lang_item")?;
-                    let type_binding =
-                        make_binding(source, decl.name.clone(), AuthorityDeclarationKind::Type)?;
+                    ensure_known_root(source, decl.name.name.as_str(), "lang_item")?;
+                    let type_binding = make_binding(
+                        source,
+                        decl.name.to_string(),
+                        AuthorityDeclarationKind::Type,
+                    )?;
                     register_lang_item(authority, source, &type_binding, key)?;
                 }
                 if let (TypeDeclKind::Enum, Some(root)) = (decl.kind, source.root) {
@@ -601,16 +593,16 @@ fn load_source(
                         .body
                         .iter()
                         .filter_map(|item| match item {
-                            TypeBodyItem::Variant(variant) => Some(variant.name.clone()),
+                            TypeBodyItem::Variant(variant) => Some(variant.name.to_string()),
                             _ => None,
                         })
                         .collect();
-                    let qualified = qualified(source, &decl.name);
+                    let qualified = qualified(source, decl.name.name.as_str());
                     authority.enum_variant_orders.insert(
                         qualified,
                         EnumVariantOrder {
                             root,
-                            declaration: decl.name.clone(),
+                            declaration: decl.name.to_string(),
                             variants,
                         },
                     );
@@ -631,9 +623,12 @@ fn load_source(
             }
             Item::Trait(decl) => {
                 if let Some(key) = decl.lang_item.as_deref() {
-                    ensure_known_root(source, &decl.name, "lang_item")?;
-                    let trait_binding =
-                        make_binding(source, decl.name.clone(), AuthorityDeclarationKind::Trait)?;
+                    ensure_known_root(source, decl.name.name.as_str(), "lang_item")?;
+                    let trait_binding = make_binding(
+                        source,
+                        decl.name.to_string(),
+                        AuthorityDeclarationKind::Trait,
+                    )?;
                     register_lang_item(authority, source, &trait_binding, key)?;
                 }
                 for item in decl.items {
@@ -666,30 +661,31 @@ fn load_source(
                 }
             }
             Item::Function(function) => {
-                let declaration = function.name.clone();
+                let declaration = function.name;
                 load_function_attributes(
                     authority,
                     source,
                     &function,
-                    declaration,
+                    declaration.to_string(),
                     AuthorityDeclarationKind::Function,
                     true,
                 )?;
             }
             Item::ExternBlock(block) => {
                 for function in block.functions {
-                    let declaration = function.name.clone();
+                    let declaration = function.name;
                     for attr in &function.attributes {
-                        ensure_substrate_attribute(source, &declaration, attr)?;
+                        ensure_substrate_attribute(source, declaration.name.as_str(), attr)?;
                         match attr.name.as_str() {
                             "abi" => {
-                                let facts = parse_abi_facts(source, &declaration, attr)?;
+                                let facts =
+                                    parse_abi_facts(source, declaration.name.as_str(), attr)?;
                                 let binding = make_binding(
                                     source,
-                                    declaration.clone(),
+                                    declaration.to_string(),
                                     AuthorityDeclarationKind::ExternFunction,
                                 )?;
-                                let key = qualified(source, &declaration);
+                                let key = qualified(source, declaration.name.as_str());
                                 if authority
                                     .extern_abi
                                     .insert(key.clone(), ExternAbiEntry { binding, facts })
@@ -697,7 +693,7 @@ fn load_source(
                                 {
                                     return Err(error(
                                         source,
-                                        Some(declaration),
+                                        Some(declaration.to_string()),
                                         AuthorityErrorKind::DuplicateBinding {
                                             family: "extern ABI".to_string(),
                                             key,
@@ -706,12 +702,12 @@ fn load_source(
                                 }
                             }
                             "runtime_capability" => {
-                                let key = positional_key(source, &declaration, attr)?;
+                                let key = positional_key(source, declaration.name.as_str(), attr)?;
                                 let capability = ExternRuntimeCapability::from_key(key)
                                     .ok_or_else(|| {
                                         error(
                                             source,
-                                            Some(declaration.clone()),
+                                            Some(declaration.to_string()),
                                             AuthorityErrorKind::UnknownRuntimeCapability {
                                                 key: key.to_string(),
                                             },
@@ -719,10 +715,10 @@ fn load_source(
                                     })?;
                                 let binding = make_binding(
                                     source,
-                                    declaration.clone(),
+                                    declaration.to_string(),
                                     AuthorityDeclarationKind::ExternFunction,
                                 )?;
-                                let qualified = qualified(source, &declaration);
+                                let qualified = qualified(source, declaration.name.as_str());
                                 if authority
                                     .extern_runtime_capabilities
                                     .insert(
@@ -736,7 +732,7 @@ fn load_source(
                                 {
                                     return Err(error(
                                         source,
-                                        Some(declaration),
+                                        Some(declaration.to_string()),
                                         AuthorityErrorKind::DuplicateBinding {
                                             family: "extern runtime capability".to_string(),
                                             key: qualified,
@@ -747,7 +743,7 @@ fn load_source(
                             "lang_item" | "intrinsic" | "diagnostic_item" | "overload" => {
                                 return Err(error(
                                     source,
-                                    Some(declaration),
+                                    Some(declaration.to_string()),
                                     AuthorityErrorKind::InvalidAttributePlacement {
                                         attribute: attr.name.clone(),
                                     },
@@ -1060,7 +1056,7 @@ fn qualified(source: AuthoritySource<'_>, declaration: &str) -> String {
 
 fn type_name(ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Named { name, .. } => name.clone(),
+        TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
         _ => "<unnamed>".to_string(),
     }
 }
@@ -1075,15 +1071,15 @@ fn collect_prelude_export(
     exports: &mut Vec<PreludeExport>,
     import: hew_parser::ast::ImportDecl,
 ) -> Result<(), AuthorityErrorKind> {
-    let module = import.path.join(".");
+    let module = import.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
     match import.spec {
         None => Err(AuthorityErrorKind::PreludeModuleImport { module }),
         Some(ImportSpec::Names(names)) => {
             for name in names {
                 exports.push(PreludeExport {
                     module: module.clone(),
-                    name: name.name,
-                    alias: name.alias,
+                    name: name.name.to_string(),
+                    alias: name.alias.map(|alias| alias.to_string()),
                 });
             }
             Ok(())
@@ -1172,12 +1168,15 @@ mod tests {
             AuthoritySource::embedded(
                 StdlibRoot::Builtins,
                 "std/builtins.hew",
-                r#"
-#[lang_item("option")]
-pub enum Maybe<T> { Some(T), None, }
+                r#"#[lang_item("option")]
+pub enum Maybe<T> {
+    Some(T);
+    None;
+}
 
 #[intrinsic("math.sqrt")]
-pub fn sqrt(x: f64) -> f64;
+pub fn sqrt(x: f64) -> f64 {
+}
 
 #[diagnostic_item("fs")]
 pub fn read_file() {}
@@ -1188,7 +1187,6 @@ pub fn println_i64(value: i64) {}
 extern "C" {
     #[abi(ret = bytes_triple, bytes_param = ptr, drop = cow_null_tolerant)]
     fn hew_bytes();
-
     #[runtime_capability("blocking_offload")]
     fn hew_connect();
 }

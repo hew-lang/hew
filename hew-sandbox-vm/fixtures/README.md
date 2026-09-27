@@ -39,5 +39,5 @@ executable fixture is generated from its source; there are no hand-authored
 actor or scheduler packages.
 
 ```json sandbox-fixtures-deferred
-{ "deferred": [] }
+{"deferred": []}
 ```

@@ -323,11 +323,15 @@ fn ordinary_decode_lookalike_remains_a_user_call() {
 #[test]
 fn malformed_canonical_utf8_decode_signature_is_not_admitted() {
     let output = check_source_in_canonical_std_module(
-        r#"
-        pub type Utf8Error { valid_up_to: i64, error_len: Option<i64> }
-        #[intrinsic("utf8.decode")]
-        pub fn decode(data: string) -> string;
-        "#,
+        r#"pub type Utf8Error {
+    valid_up_to: i64;
+    error_len: Option<i64>;
+}
+
+#[intrinsic("utf8.decode")]
+pub fn decode(data: string) -> string {
+}
+"#,
         &[
             "std".to_string(),
             "encoding".to_string(),
@@ -546,12 +550,8 @@ fn utf8_module_with_another_floors_source_path_is_rejected() {
     "#,
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let root = ModuleId::root();
-    let utf8 = ModuleId::new(vec![
-        "std".to_string(),
-        "encoding".to_string(),
-        "utf8".to_string(),
-    ]);
+    let root = ModulePath::root();
+    let utf8 = ModulePath::new(["std", "encoding", "utf8"]);
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(Module {

@@ -5,7 +5,7 @@ trait MutOnly {
     fn bump(var self) -> i64;
 }
 
-type Box { v: i64 }
+type Box { v: i64; }
 
 impl MutOnly for Box {
     fn bump(self) -> i64 {

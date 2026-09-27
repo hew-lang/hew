@@ -1,0 +1,13 @@
+[[case]]
+id = "ownership-balance-retained-hard-refusal"
+intent = "A retained call-carrier that reads a field after moving it out is refused as a use after move, so no unbalanced release reaches code generation."
+source = "fixtures/ownership-balance/retained_hard_refusal.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 32
+column = 24
+message = "use of moved place `booking.ticket`"

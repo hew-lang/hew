@@ -7,15 +7,15 @@ for the full contract.
 
 An actor gets its own handle by writing `self`, so it can hand another actor a way to call back:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 actor Worker {
-    var registry: Registry,
+    var registry: Registry;
     receive fn enrol() {
-        let _ = registry.take(self);   // `self` is this worker, of type `Worker`
+        let _ = registry.take(self); // `self` is this worker, of type `Worker`
     }
-    receive fn done() { println("called back"); }
+    receive fn done() {
+        println("called back");
+    }
 }
 ```
 
@@ -72,8 +72,8 @@ for the documented resolver precedence.
 - `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. Both accessors work for `Vec<enum>` too.
 - Build maps/sets with `Type.new()` + `.insert()`; bind with `var`, since `.insert()` mutates the receiver.
 - Use `.get` for optional collection reads and `match`, `??`, `?` or expression-local `handle` as appropriate. Use `expect(reason)` for a deliberate invariant assertion.
-- Commas separate record fields and enum variants in declarations and values. Semicolons terminate executable statements and bodyless function declarations.
-- Declare records with `type Name { field: T, }` and enums with `enum Choice { First, Second, }`.
+- Semicolons end bodyless declaration members and statements. Members with their own `{ }` body end at `}`. Commas separate values and list elements; newlines are whitespace.
+- Declare records with `type Name { field: T; }` and enums with `enum Choice { First; Second; }`. Actor fields start with `let` or `var`.
 - Inside an actor body, `self` as a value is its handle, of type `Self`, which is the actor itself; `self.field` accesses state, and bare field names also work. `this` is not a keyword.
 - Every actor call waits for completion, including a void handler. Use `mailbox(target)` for submission-only delivery; handle its outcome.
 - Ask (request-reply) is `ref.method(arg)` and returns `Result<R, ActorError>` — match `Ok`/`Err`. The call waits; `fork` runs it concurrently.
@@ -136,7 +136,10 @@ use an explicit Display implementation to choose the user-facing text.
 ### Structural rendering with `:?`
 
 ```hew
-type Point { x: i64, label: string }
+type Point {
+    x: i64;
+    label: string;
+}
 
 fn main() {
     let point = Point { x: 7, label: "west" };
@@ -347,7 +350,9 @@ fn classify(n: i64) -> string {
     match n {
         x if x < 0 => "negative",
         0 => "zero",
-        x if x % 2 == 0 => { "even" },
+        x if x % 2 == 0 => {
+            "even"
+        }
         _ => "odd",
     }
 }
@@ -358,7 +363,12 @@ Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` sti
 ### match on enum variants binding payloads
 
 ```hew
-enum Event { Number(i64), Text(string), Empty, }
+enum Event {
+    Number(i64);
+    Text(string);
+    Empty;
+}
+
 fn describe(e: Event) -> string {
     match e {
         .Number(n) if n > 100 => "big number",
@@ -369,14 +379,24 @@ fn describe(e: Event) -> string {
 }
 ```
 
-Variant arms bind their payload positionally. Construct values with dotted variant names (`.Number(5)`, `.Empty`). Enum variants are separated by commas.
+Variant arms bind their payload positionally. Construct values with dotted variant names (`.Number(5)`, `.Empty`). Enum variants end with semicolons.
 
 ### match exhaustiveness is enforced
 
 ```hew
-enum Colour { Red, Green, Blue, }
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
 // match c { .Red => 1, .Green => 2 }  // compile error: non-exhaustive match: missing Blue
-fn code(c: Colour) -> i64 { match c { .Red => 1, .Green => 2, .Blue => 3 } }
+fn code(c: Colour) -> i64 {
+    match c {
+        .Red => 1,
+        .Green => 2,
+        .Blue => 3,
+    }
+}
 ```
 
 Omit `_` when matching a closed enum so the compiler forces every variant. A missing variant is a hard error naming it. The same rule covers tuple and record scrutinees (D464): a match that does not cover every combination of a slot's constructors, literals, wildcards and bindings is a compile error naming the missing case, never a runtime fallthrough.
@@ -384,7 +404,11 @@ Omit `_` when matching a closed enum so the compiler forces every variant. A mis
 ### Full-field record pattern
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn sum(p: Point) -> i64 {
     match p {
         Point { x, y } => x + y,
@@ -538,13 +562,17 @@ Annotate the binding type so the element type is inferred. `.len()` returns `i64
 ### v[i] — trapping element accessor
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn main() {
     var v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let p = v[1];
-    println(p.x);  // 3
+    println(p.x); // 3
 }
 ```
 
@@ -625,7 +653,12 @@ observes the mutation.
 ### Index-loop with v[i] or .get(i)
 
 ```hew
-enum Colour { Red, Green, Blue, }
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
 fn main() {
     var v: Vec<Colour> = Vec.new();
     v.push(Colour.Red);
@@ -770,7 +803,10 @@ fn main() {
 ### Supported HashMap value types
 
 ```hew
-type User { name: string, score: i64, }
+type User {
+    name: string;
+    score: i64;
+}
 
 fn main() {
     // Scalar values
@@ -810,11 +846,10 @@ fn main() {
     // Increment alice's score
     match scores.get("alice") {
         .Some(v) => scores.insert("alice", v + 5),
-        .None => {},
+        .None => {}
     }
-
     match scores.get("alice") {
-        .Some(v) => println(f"alice={v}"),   // alice=15
+        .Some(v) => println(f"alice={v}"), // alice=15
         .None => println("missing"),
     }
 }
@@ -967,7 +1002,7 @@ fn main() -> i32 {
 }
 ```
 
-```hew
+```hew,no_run
 // Pattern 3: exit() builtin from a unit main
 fn main() {
     println("something failed");
@@ -1105,15 +1140,14 @@ Use `Weak<T>` for graph back-edges so the graph does not form a strong cycle:
 
 ```hew
 type Node {
-    label: string,
-    parent: Option<Weak<Node>>,
+    label: string;
+    parent: Option<Weak<Node>>;
 }
 
 fn main() {
     let root = Rc.new(Node { label: "root", parent: .None });
     let weak = root.downgrade();
     root.set(Node { label: "child", parent: .Some(weak.clone()) });
-
     match weak.upgrade() {
         .Some(owner) => println(owner.strong_count()),
         .None => println("payload already released"),
@@ -1137,15 +1171,20 @@ deref/borrow access to the payload, and cross-actor transfer are not supported.
 ### Record parameters and return values
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn translate(p: Point, dx: i64, dy: i64) -> Point {
     Point { x: p.x + dx, y: p.y + dy }
 }
+
 fn main() {
     let p = Point { x: 1, y: 2 };
     let q = translate(p, 10, 20);
-    println(q.x);   // 11
-    println(p.x);   // 1 (original still usable)
+    println(q.x); // 11
+    println(p.x); // 1 (original still usable)
 }
 ```
 
@@ -1154,13 +1193,22 @@ For transformations, return a new record value or mutate a `var` binding. Immuta
 ### Snapshot-on-send: the sender keeps its value
 
 ```hew
-actor Sink { let id: i64, receive fn take(data: string) -> i64 { data.len() } }
+actor Sink {
+    let id: i64;
+    receive fn take(data: string) -> i64 {
+        data.len()
+    }
+}
+
 fn main() {
     let s = spawn Sink(id: 0);
     let msg: string = "hello";
-    let n = s.take(msg);         // receiver gets a snapshot of msg
-    match n { .Ok(len) => println(len), .Err(_) => println("ask failed") }
-    println(msg.len());   // 5 — msg still valid after the send
+    let n = s.take(msg); // receiver gets a snapshot of msg
+    match n {
+        .Ok(len) => println(len),
+        .Err(_) => println("ask failed"),
+    }
+    println(msg.len()); // 5 — msg still valid after the send
 }
 ```
 
@@ -1188,7 +1236,11 @@ Pass strings and scalars without ceremony and keep using them. Concatenation wit
 ### Record declaration, construction, field access
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn main() {
     let p = Point { x: 3, y: 4 };
     println(p.x);
@@ -1196,17 +1248,21 @@ fn main() {
 }
 ```
 
-Record fields use `name: T,` with commas and no `let`/`var` prefix. A `let`
+Record fields use `name: T;` with semicolons and no `let`/`var` prefix. A `let`
 binding is immutable; a `var` binding permits field updates.
 
 ### Mutable record via var binding
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn main() {
     var p = Point { x: 1, y: 2 };
     p.x = 10;
-    println(p.x);   // 10
+    println(p.x); // 10
 }
 ```
 
@@ -1215,19 +1271,22 @@ Bind with `var` to reassign fields; `let` is immutable. Immutability is on the b
 ### Spread in literals
 
 ```hew
-type Point { x: i64, y: i64, label: string, }
+type Point {
+    x: i64;
+    y: i64;
+    label: string;
+}
 
 fn main() {
     let low: Vec<i64> = [1, 2];
     let high: Vec<i64> = [8, 9];
     let all = [..low, 5, ..high];
-    println(all.len());       // 5
-
+    println(all.len()); // 5
     let origin = Point { x: 0, y: 0, label: "origin" };
     let shifted = Point { ..origin, x: 3 };
-    println(shifted.x);       // 3
-    println(shifted.label);   // origin
-    println(origin.x);        // 0 — the base is still usable
+    println(shifted.x); // 3
+    println(shifted.label); // origin
+    println(origin.x); // 0 — the base is still usable
 }
 ```
 
@@ -1239,18 +1298,21 @@ A transition's field list is a record literal's field list, so it takes the same
 
 ```hew
 machine Till {
-    events { Sale, }
-    state Empty,
-    state Filled { count: i64, label: string, },
+    events {
+        Sale;
+    }
+    state Empty;
+    state Filled { count: i64; label: string; }
     on Sale: Empty => Filled { count: 1, label: "open" }
     on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
     default { state }
 }
+
 fn main() {
     var till = Till.Empty;
     let _ = till.step(.Sale);
     let _ = till.step(.Sale);
-    println(till.state_name());   // Filled
+    println(till.state_name()); // Filled
 }
 ```
 
@@ -1259,8 +1321,16 @@ Spread is pure, so it is admitted inside a transition body.
 ### Nested record fields
 
 ```hew
-type Point { x: i64, y: i64, }
-type Line { start: Point, end: Point, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
+type Line {
+    start: Point;
+    end: Point;
+}
+
 fn main() {
     let l = Line { start: Point { x: 0, y: 0 }, end: Point { x: 3, y: 4 } };
     println(l.start.x);
@@ -1276,8 +1346,16 @@ Use commas for record fields, enum variants and actor state fields. Executable
 statements and bodyless function declarations end with semicolons.
 
 ```hew
-type Point { x: i64, y: i64, }
-enum Colour { Red, Green, Blue, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
 
 fn main() {
     let point = Point { x: 1, y: 2 };
@@ -1288,10 +1366,11 @@ fn main() {
 
 ```hew
 enum Shape {
-    Empty,
-    Circle(f64),
-    Rect { w: f64, h: f64 }
+    Empty;
+    Circle(f64);
+    Rect { w: f64; h: f64;  }
 }
+
 fn area(s: Shape) -> f64 {
     match s {
         .Empty => 0.0,
@@ -1299,6 +1378,7 @@ fn area(s: Shape) -> f64 {
         .Rect { w, h } => w * h,
     }
 }
+
 fn main() {
     println(area(.Circle(2.0)));
     println(area(Shape.Rect { w: 3.0, h: 4.0 }));
@@ -1311,10 +1391,11 @@ Mix unit, tuple, and record variants in one enum. Commas separate variants and r
 
 ```hew
 enum Cmd {
-    Move(i64, i64),
-    Stop,
-    Speak { text: string }
+    Move(i64, i64);
+    Stop;
+    Speak { text: string;  }
 }
+
 fn describe(c: Cmd) -> string {
     match c {
         .Move(0, 0) => "noop",
@@ -1330,16 +1411,21 @@ Combine literal patterns for special cases above general binding patterns — or
 ### Qualified variant construction
 
 ```hew
-indirect enum Expr { Lit(i64), Add(Expr, Expr), }
+indirect enum Expr {
+    Lit(i64);
+    Add(Expr, Expr);
+}
+
 fn eval(e: Expr) -> i64 {
     match e {
         .Lit(n) => n,
         .Add(l, r) => eval(l) + eval(r),
     }
 }
+
 fn main() {
     let e = Expr.Add(Expr.Lit(10), Expr.Lit(5));
-    println(eval(e));   // 15
+    println(eval(e)); // 15
 }
 ```
 
@@ -1351,10 +1437,11 @@ The bare spelling — a variant name with neither the dot nor the type qualifier
 
 ```hew
 indirect enum Expr {
-    Lit(i64),
-    Add(Expr, Expr),
-    Neg(Expr),
+    Lit(i64);
+    Add(Expr, Expr);
+    Neg(Expr);
 }
+
 fn eval(e: Expr) -> i64 {
     match e {
         .Lit(n) => n,
@@ -1362,9 +1449,10 @@ fn eval(e: Expr) -> i64 {
         .Neg(inner) => 0 - eval(inner),
     }
 }
+
 fn main() {
     let e = Expr.Add(.Lit(1), .Neg(.Lit(2)));
-    println(eval(e));   // -1
+    println(eval(e)); // -1
 }
 ```
 
@@ -1374,9 +1462,10 @@ Prefix the enum keyword with `indirect` for self-referential variants (AST/tree 
 
 ```hew
 enum MyOpt<T> {
-    Has(T),
-    Empty,
+    Has(T);
+    Empty;
 }
+
 fn main() {
     let a: MyOpt<i64> = .Has(42);
     match a {
@@ -1391,18 +1480,32 @@ Parameterize an enum with `<T>` for container-like sum types; annotate the bindi
 ### Struct or enum as a receive fn message parameter
 
 ```hew
-type Record { key: i64, val: i64, }
-actor Sink {
-    var last: i64,
-    init() { last = 0; }
-    receive fn put(r: Record) { last = r.val; }
-    receive fn get() -> i64 { last }
+type Record {
+    key: i64;
+    val: i64;
 }
+
+actor Sink {
+    var last: i64;
+    init() {
+        last = 0;
+    }
+    receive fn put(r: Record) {
+        last = r.val;
+    }
+    receive fn get() -> i64 {
+        last
+    }
+}
+
 fn main() {
     let s = spawn Sink();
     let _ = s.put(Record { key: 1, val: 99 });
     let r = s.get();
-    match r { .Ok(v) => println(v), .Err(_) => println("err") }
+    match r {
+        .Ok(v) => println(v),
+        .Err(_) => println("err"),
+    }
 }
 ```
 
@@ -1411,25 +1514,33 @@ Structs and enums cross the actor boundary as message payloads — pass them as 
 ### Block-bodied match arms
 
 ```hew
-enum Op { Inc(i64), Reset, }
+enum Op {
+    Inc(i64);
+    Reset;
+}
+
 actor Acc {
-    var total: i64,
-    init() { total = 0; }
+    var total: i64;
+    init() {
+        total = 0;
+    }
     receive fn apply(op: Op) {
         match op {
             .Inc(n) => {
                 total = total + n;
-            },
+            }
             .Reset => {
                 total = 0;
-            },
+            }
         }
     }
-    receive fn value() -> i64 { total }
+    receive fn value() -> i64 {
+        total
+    }
 }
 ```
 
-When a match arm runs statements (e.g. an assignment), wrap the body in `{ ... }` and put a comma after the closing brace. An assignment is not an expression, so a bare arm cannot hold it.
+When a match arm runs statements (e.g. an assignment), wrap the body in `{ ... }`. Its closing brace ends the arm. An assignment is not an expression, so a bare arm cannot hold it.
 
 ## Actors
 
@@ -1437,15 +1548,23 @@ When a match arm runs statements (e.g. an assignment), wrap the body in `{ ... }
 
 ```hew
 actor Bank {
-    var balance: i64 = 0,
-    receive fn deposit(amt: i64) { balance = balance + amt; }
-    receive fn balance_of() -> i64 { balance }
+    var balance: i64 = 0;
+    receive fn deposit(amt: i64) {
+        balance = balance + amt;
+    }
+    receive fn balance_of() -> i64 {
+        balance
+    }
 }
+
 fn main() {
     let acct = spawn Bank(balance: 100);
     let _ = acct.deposit(50);
     let r = acct.balance_of();
-    match r { .Ok(v) => println(f"balance={v}"), .Err(_) => println("ask failed") }
+    match r {
+        .Ok(v) => println(f"balance={v}"),
+        .Err(_) => println("ask failed"),
+    }
 }
 ```
 
@@ -1455,18 +1574,22 @@ Use `var` for fields a handler mutates (give a default), `let` for fields set on
 
 ```hew
 actor Worker {
-    var label: string,
-    let count: i64,
+    var label: string;
+    let count: i64;
     init(name: string, size: i64) {
         label = name.to_upper();
         count = size + 1;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
+
 fn main() {
     let worker = spawn Worker(name: "ready", size: 6);
     println(worker.label().expect("label"));
-    close(worker);
+    stop(worker);
+    stopped(worker);
 }
 ```
 
@@ -1476,9 +1599,13 @@ A field without a default that `init` assigns belongs to `init`: `spawn` cannot 
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
-    receive fn increment(n: i64) { count = count + n; }
-    receive fn total() -> i64 { count }
+    var count: i64 = 0;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+    receive fn total() -> i64 {
+        count
+    }
 }
 ```
 
@@ -1488,48 +1615,64 @@ Reference and assign state fields by bare name — there is no field prefix. Sta
 
 ```hew
 actor Greeter {
-    let name: i64,
-    receive fn greet() -> i64 { name }
+    let name: i64;
+    receive fn greet() -> i64 {
+        name
+    }
 }
+
 fn main() {
     let g: Greeter = spawn Greeter(name: 5);
     let r = g.greet();
-    match r { .Ok(v) => println(f"name={v}"), .Err(_) => println("ask failed") }
+    match r {
+        .Ok(v) => println(f"name={v}"),
+        .Err(_) => println("ask failed"),
+    }
 }
 ```
 
 `spawn Greeter(...)` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
 
-`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_SEND_RESULT_DROPPED`.
+`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_RESULT_DROPPED`.
 
 ### Calling a handler that returns nothing
 
 ```hew
 actor Logger {
-    var n: i64 = 0,
-    receive fn log(msg: i64) { println(f"log: {msg}"); n = n + 1; }
-    receive fn ping() { println("pong"); }
+    var n: i64 = 0;
+    receive fn log(msg: i64) {
+        println(f"log: {msg}");
+        n = n + 1;
+    }
+    receive fn ping() {
+        println("pong");
+    }
 }
+
 fn main() {
     let lg = spawn Logger(n: 0);
-    let _ = lg.log(7);    // waits until the handler has finished
+    let _ = lg.log(7); // waits until the handler has finished
     let _ = lg.ping();
 }
 ```
 
-A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), ActorError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored failure loses work silently.
+A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), ActorError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_RESULT_DROPPED`, because an ignored failure loses work silently.
 
 ### Submitting without waiting
 
 ```hew
 actor Logger {
-    var n: i64 = 0,
-    receive fn log(msg: i64) { println(f"log: {msg}"); n = n + 1; }
+    var n: i64 = 0;
+    receive fn log(msg: i64) {
+        println(f"log: {msg}");
+        n = n + 1;
+    }
 }
+
 fn main() {
     let lg = spawn Logger(n: 0);
     let inbox = mailbox(lg);
-    let _ = inbox.log(7);    // accepted, not processed
+    let _ = inbox.log(7); // accepted, not processed
 }
 ```
 
@@ -1564,15 +1707,25 @@ is waiting needs submission semantics to avoid a completion-call cycle.
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
-    receive fn increment(n: i64) { count = count + n; }
-    receive fn total() -> i64 { count }
+    var count: i64 = 0;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+    receive fn total() -> i64 {
+        count
+    }
 }
+
 fn main() {
     let c = spawn Counter(count: 0);
-    let _ = c.increment(10); let _ = c.increment(20); let _ = c.increment(12);
+    let _ = c.increment(10);
+    let _ = c.increment(20);
+    let _ = c.increment(12);
     let r = c.total();
-    match r { .Ok(v) => println(f"total={v}"), .Err(_) => println("ask failed") }
+    match r {
+        .Ok(v) => println(f"total={v}"),
+        .Err(_) => println("ask failed"),
+    }
 }
 ```
 
@@ -1589,9 +1742,9 @@ that result remains an ordinary value. Other waiting operations are calls:
 | --------------------------------- | ------------------------------------ |
 | a reply from an actor             | `pid.method(args)`                   |
 | that reply concurrently           | `let t = fork pid.method(args);` then `await t` |
-| an actor to stop, and to wait     | `close(pid)`                         |
-| an actor to stop, without waiting | `fork close(pid)`                    |
-| to wait for a stop someone else asked for | `closed(pid)`                |
+| an actor to stop, and to wait     | `stop(pid); stopped(pid);`           |
+| an actor to stop, without waiting | `stop(pid)`                          |
+| to wait for a stop someone else asked for | `stopped(pid)`               |
 | each item of another actor's stream | `for x in pid.stream()`            |
 
 Do not put `await` on an actor call, actor handle or generator operation.
@@ -1622,20 +1775,34 @@ can recover only after that cleanup. Parent cancellation continues outward.
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
-    receive fn bump() -> i64 { count = count + 1; count }
+    var count: i64 = 0;
+    receive fn bump() -> i64 {
+        count = count + 1;
+        count
+    }
 }
+
 fn run() -> i64 fails string {
     let c = spawn Counter(count: 0);
     match c.bump() {
         .Ok(v) => match c.bump() {
             .Ok(w) => v + w,
-            .Err(_) => { return error "call failed"; },
-        },
-        .Err(_) => { return error "call failed"; },
+            .Err(_) => {
+                return error "call failed";
+            }
+        }
+        .Err(_) => {
+            return error "call failed";
+        }
     }
 }
-fn main() { match run() { .Ok(t) => println(f"total={t}"), .Err(_) => println("failed") } }
+
+fn main() {
+    match run() {
+        .Ok(t) => println(f"total={t}"),
+        .Err(_) => println("failed"),
+    }
+}
 ```
 
 A completion call returns `Result<R, ActorError<E>>` in this build. Match or
@@ -1648,15 +1815,28 @@ request-recovery contract above before writing explicit envelope types.
 
 ```hew
 actor Boot {
-    var ready: i64 = 0,
-    #[on(start)] fn boot() { ready = 99; println("started"); }
-    #[on(stop)] fn done() { println("stopped"); }
-    receive fn status() -> i64 { ready }
+    var ready: i64 = 0;
+    #[on(start)]
+    fn boot() {
+        ready = 99;
+        println("started");
+    }
+    #[on(stop)]
+    fn done() {
+        println("stopped");
+    }
+    receive fn status() -> i64 {
+        ready
+    }
 }
+
 fn main() {
     let b = spawn Boot(ready: 0);
     let r = b.status();
-    match r { .Ok(v) => println(f"ready={v}"), .Err(_) => println("ask failed") }
+    match r {
+        .Ok(v) => println(f"ready={v}"),
+        .Err(_) => println("ask failed"),
+    }
 }
 ```
 
@@ -1672,7 +1852,7 @@ the actor handle instead.
 ```hew
 actor FileWriter {
     // Stand-in for the private descriptor of a file or socket.
-    var descriptor: i64 = -1,
+    var descriptor: i64 = -1;
 
     #[on(start)]
     fn open() {
@@ -1704,18 +1884,30 @@ open, use, and close the real resource.
 ### #[on(crash)] hook
 
 ```hew
-import std.failure.{ CrashInfo, CrashAction };
+import std.failure.{CrashInfo, CrashAction};
 
 actor Risky {
-    var n: i64 = 0,
-    #[on(start)] fn boot() { n = 1; }
-    #[on(crash)] fn on_fail(info: CrashInfo) -> CrashAction { panic("crash observed") }
-    receive fn value() -> i64 { n }
+    var n: i64 = 0;
+    #[on(start)]
+    fn boot() {
+        n = 1;
+    }
+    #[on(crash)]
+    fn on_fail(info: CrashInfo) -> CrashAction {
+        panic("crash observed")
+    }
+    receive fn value() -> i64 {
+        n
+    }
 }
+
 fn main() {
     let r = spawn Risky(n: 0);
     let v = r.value();
-    match v { .Ok(x) => println(f"n={x}"), .Err(_) => println("failed") }
+    match v {
+        .Ok(x) => println(f"n={x}"),
+        .Err(_) => println("failed"),
+    }
 }
 ```
 
@@ -1724,15 +1916,25 @@ Declare `#[on(crash)]` as `fn name(info: CrashInfo) -> CrashAction` and satisfy 
 ### Free functions callable from receive fns
 
 ```hew
-fn double(x: i64) -> i64 { x * 2 }
-actor Calc {
-    var acc: i64 = 0,
-    receive fn apply(n: i64) -> i64 { acc = acc + double(n); acc }
+fn double(x: i64) -> i64 {
+    x * 2
 }
+
+actor Calc {
+    var acc: i64 = 0;
+    receive fn apply(n: i64) -> i64 {
+        acc = acc + double(n);
+        acc
+    }
+}
+
 fn main() {
     let calc = spawn Calc(acc: 0);
     let r = calc.apply(5);
-    match r { .Ok(v) => println(f"acc={v}"), .Err(_) => println("ask failed") }
+    match r {
+        .Ok(v) => println(f"acc={v}"),
+        .Err(_) => println("ask failed"),
+    }
 }
 ```
 
@@ -1744,9 +1946,13 @@ A plain `fn` in an actor body is an actor method: a helper over that actor's own
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
-    fn next() -> i64 { count + 1 }
-    receive fn increment() { count = next(); }
+    var count: i64 = 0;
+    fn next() -> i64 {
+        count + 1
+    }
+    receive fn increment() {
+        count = next();
+    }
 }
 ```
 
@@ -1756,21 +1962,31 @@ An actor method has no mailbox slot, so it is unreachable from outside the actor
 
 ```hew
 actor Worker {
-    let id: i64,
-    receive fn work(n: i64) -> i64 { n * id }
-}
-actor Manager {
-    var worker: Worker,
-    receive fn dispatch(n: i64) -> i64 {
-        let r = worker.work(n);
-        match r { .Ok(v) => v, .Err(_) => -1 }
+    let id: i64;
+    receive fn work(n: i64) -> i64 {
+        n * id
     }
 }
+
+actor Manager {
+    var worker: Worker;
+    receive fn dispatch(n: i64) -> i64 {
+        let r = worker.work(n);
+        match r {
+            .Ok(v) => v,
+            .Err(_) => -1,
+        }
+    }
+}
+
 fn main() {
     let w = spawn Worker(id: 3);
     let m = spawn Manager(worker: w);
     let r = m.dispatch(7);
-    match r { .Ok(v) => println(f"result={v}"), .Err(_) => println("failed") }
+    match r {
+        .Ok(v) => println(f"result={v}"),
+        .Err(_) => println("failed"),
+    }
 }
 ```
 
@@ -1792,7 +2008,8 @@ fn main() {
         .Ok(v) => println(v),
         .Err(_) => println("the call failed"),
     }
-    close(scale);
+    stop(scale);
+    stopped(scale);
 }
 ```
 
@@ -1803,8 +2020,8 @@ multi-parameter lambda is called with one argument per parameter.
 An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
 `Vec` and call it where it is stored; a handle read out of a collection is
 borrowed, and the call addresses the actor through the borrow without taking
-it. `close(handle)` stops the actor and waits for its terminal cleanup, and
-`closed(handle)` observes a stop someone else requested.
+it. `stop(handle)` requests its termination, and `stopped(handle)` waits for
+terminal cleanup, including a stop someone else requested.
 
 Both delivery views apply to a lambda handle. `mailbox(handle)` submits one
 way, so it accepts only a lambda that owes its caller nothing; a lambda that
@@ -1820,7 +2037,8 @@ fn main() {
     };
     let inbox = mailbox(log);
     let _ = inbox("queued");
-    close(log);
+    stop(log);
+    stopped(log);
 }
 ```
 
@@ -1871,7 +2089,8 @@ actor Ticker {
 fn main() {
     let t = spawn Ticker;
     let _ = t.run(3);
-    close(t);
+    stop(t);
+    stopped(t);
     // tick 0
     // tick 1
     // tick 2
@@ -1939,7 +2158,7 @@ handlers can run between ticks.
 
 ```hew
 actor Pulse {
-    var count: i64 = 0,
+    var count: i64 = 0;
 
     #[every(50ms)]
     receive fn tick() {
@@ -1981,8 +2200,8 @@ the loop exits. Use a periodic receive handler and a flag instead:
 
 ```hew
 actor Worker {
-    var running: bool = true,
-    var ticks: i64 = 0,
+    var running: bool = true;
+    var ticks: i64 = 0;
 
     #[every(25ms)]
     receive fn tick() {
@@ -2020,13 +2239,12 @@ hook, which is a plain `fn` invoked when the actor is tearing down. The
 `sleep_loop_blocks_mailbox` lint warns on the mailbox starvation shape where a
 receive handler loops around `sleep`/`sleep_until` without an in-loop exit path.
 
-`stop` is a reserved handler name, so the handler above is `halt`, not `stop`.
-Stopping is a method with one signature: inside the actor, `self.stop()`
-lets the handler's remaining synchronous work run, then runs `#[on(stop)]` and
-stops (a suspension after the request cancels the rest of the turn); from
-outside, `pid.stop()` requests the same and returns `()`, doing nothing if the
-actor has already stopped or crashed. A `receive fn stop()` is `E_RESERVED_HANDLER_NAME`,
-whose fix-it is to rename the handler or to call `self.stop()`.
+The handler above is named `halt` for its application-level flag change. A
+`receive fn stop()` is also allowed; the lifecycle operation is `stop(actor)`.
+It requests a graceful stop and returns immediately, whether called inside or
+outside the actor. `stopped(actor)` waits for terminal cleanup, while
+`terminate(actor)` requests cancellation. After `stop(self)`, the current
+handler finishes and queued messages drain before `#[on(stop)]` runs.
 
 ### Accepting connections and reading in a handler
 
@@ -2043,19 +2261,19 @@ See [the network module](../std/net/net.hew) for the current operations and
 ### Declaring a machine: events, states, transitions
 
 A machine holds one state from a closed set and evaluates typed events against
-transition rules. The body is a comma-separated list of members: the `events`
+transition rules. The body contains members: the `events`
 header, the `state` declarations, the `on` rules, and an optional `default`.
 
 ```hew
 machine Counter {
-    events { Inc, Reset }
+    events { Inc; Reset; }
 
-    state Zero,
-    state NonZero { value: i64 },
+    state Zero;
+    state NonZero { value: i64; }
 
     on Inc: Zero => NonZero { value: 1 }
     on Inc: NonZero => NonZero reenter { value: state.value + 1 }
-    on Reset: NonZero => Zero,
+    on Reset: NonZero => Zero;
 
     default { state }
 }
@@ -2121,19 +2339,21 @@ its `state` declarations. It is not an enum variant, so it takes no dot:
 
 ```hew
 machine Switch {
-    events { Toggle }
+    events {
+        Toggle;
+    }
 
-    state Off,
-    state On,
+    state Off;
+    state On;
 
-    on Toggle: Off => On,
-    on Toggle: On => Off,
+    on Toggle: Off => On;
+    on Toggle: On => Off;
 }
 
 fn main() {
     var switch: Switch = .Off;
     let _ = switch.step(.Toggle);
-    println(switch.state_name());   // On
+    println(switch.state_name()); // On
 }
 ```
 
@@ -2168,17 +2388,19 @@ Repeating the target inside its own body — `=> NonZero { NonZero { value: 1 } 
 
 ```hew
 machine Acc {
-    events { Add { n: i64 } }
+    events {
+        Add { n: i64; }
+    }
 
-    state Seed,
-    state Total { sum: i64 },
+    state Seed;
+    state Total { sum: i64; }
 
     on Add(n): Seed => Total { sum: n }
     on Add: Total => Total reenter { sum: state.sum + event.n }
 }
 
-fn make_add(n: i64) -> AccEvent {
-    AccEvent.Add { n: n }
+fn make_add(n: i64) -> Acc.Event {
+    Acc.Event.Add { n: n }
 }
 
 fn main() {
@@ -2187,15 +2409,15 @@ fn main() {
     let _ = acc.step(make_add(7));
     match acc {
         .Seed => println("seed"),
-        .Total { sum } => println(f"sum={sum}"),   // sum=12
+        .Total { sum } => println(f"sum={sum}"), // sum=12
     }
 }
 ```
 
 The head binding `on Add(n): ...` names the payload fields at the rule site;
 `event.n` is the equivalent spelling without it. The compiler generates a
-companion enum `{MachineName}Event` you can name in signatures and construct
-with `AccEvent.Add { n: 1 }`.
+companion event type `{MachineName}.Event` you can name in signatures and construct
+with `Acc.Event.Add { n: 1 }`.
 
 ### State field holding a Vec
 
@@ -2204,10 +2426,13 @@ on it, and produce the new state:
 
 ```hew
 machine Log {
-    events { Append { item: i64 }, Clear }
+    events {
+        Append { item: i64; }
+        Clear;
+    }
 
-    state Empty,
-    state Filled { items: Vec<i64> },
+    state Empty;
+    state Filled { items: Vec<i64>; }
 
     on Append(item): Empty => Filled { items: [item] }
     on Append(item): Filled => Filled reenter {
@@ -2215,7 +2440,7 @@ machine Log {
         next.push(item);
         Filled { items: next }
     }
-    on Clear: Filled => Empty,
+    on Clear: Filled => Empty;
 
     default { state }
 }
@@ -2227,9 +2452,9 @@ fn main() {
     match log {
         .Empty => println("empty"),
         .Filled { items } => {
-            println(f"count={items.len()}");   // count=2
-            println(f"first={items[0]}");      // first=10
-        },
+            println(f"count={items.len()}"); // count=2
+            println(f"first={items[0]}"); // first=10
+        }
     }
 }
 ```
@@ -2242,16 +2467,22 @@ interprets them and does the actual work, since a transition body is pure.
 
 ```hew
 machine Meter {
-    events { Reading { value: i64 } }
-    emits { Alarm { value: i64 } }
+    events {
+        Reading { value: i64; }
+    }
+    emits {
+        Alarm { value: i64; }
+    }
 
-    state Watching { peak: i64 },
+    state Watching { peak: i64; }
 
     on Reading: Watching => Watching when event.value > state.peak {
         emit Alarm { value: event.value };
         Watching { peak: event.value }
     }
-    on Reading: Watching => Watching { state }
+    on Reading: Watching => Watching {
+        state
+    }
 }
 
 fn main() {
@@ -2259,11 +2490,11 @@ fn main() {
     let report = meter.step(.Reading { value: 7 });
     for output in report.outputs {
         match output {
-            .Alarm { value } => println(f"alarm at {value}"),   // alarm at 7
+            .Alarm { value } => println(f"alarm at {value}"), // alarm at 7
         }
     }
     let quiet = meter.step(.Reading { value: 3 });
-    println(f"outputs={quiet.outputs.len()}");                  // outputs=0
+    println(f"outputs={quiet.outputs.len()}"); // outputs=0
 }
 ```
 
@@ -2276,17 +2507,25 @@ body, then entry; a fixed same-state rule runs only its body unless it says
 
 ```hew
 machine Conn {
-    events { Start, Bump, Kill }
+    events {
+        Start;
+        Bump;
+        Kill;
+    }
 
-    state Idle,
-    state Live { hits: i64 },
-    state Dead,
+    state Idle;
+    state Live { hits: i64; }
+    state Dead;
 
     on Start: Idle => Live { hits: 0 }
     on Bump: Live => _ {
-        if state.hits + 1 >= 3 { Dead } else { Live { hits: state.hits + 1 } }
+        if state.hits + 1 >= 3 {
+            Dead
+        } else {
+            Live { hits: state.hits + 1 }
+        }
     }
-    on Kill: _ => Dead,
+    on Kill: _ => Dead;
 
     default { state }
 }
@@ -2296,9 +2535,9 @@ fn main() {
     let _ = conn.step(.Start);
     let _ = conn.step(.Bump);
     let _ = conn.step(.Bump);
-    println(conn.state_name());   // Live
+    println(conn.state_name()); // Live
     let _ = conn.step(.Bump);
-    println(conn.state_name());   // Dead
+    println(conn.state_name()); // Dead
 }
 ```
 
@@ -2310,13 +2549,16 @@ explicit cell rule always wins over a wildcard.
 
 ```hew
 machine Door {
-    events { Open, Close }
+    events {
+        Open;
+        Close;
+    }
 
-    state Shut,
-    state Ajar { angle: i64 },
+    state Shut;
+    state Ajar { angle: i64; }
 
     on Open: Shut => Ajar { angle: 90 }
-    on Close: Ajar => Shut,
+    on Close: Ajar => Shut;
 
     default { state }
 }
@@ -2328,18 +2570,18 @@ fn drive(door: Door) -> string {
 }
 
 actor Porter {
-    var door: Door = .Shut,
+    var door: Door = .Shut;
 
-    receive fn accept(event: DoorEvent) {
+    receive fn accept(event: Door.Event) {
         let _report = door.step(event);
         println(door.state_name());
     }
 }
 
 fn main() {
-    println(drive(.Shut));            // Ajar
+    println(drive(.Shut)); // Ajar
     let porter = spawn Porter();
-    let _ = porter.accept(.Open);     // Ajar
+    let _ = porter.accept(.Open); // Ajar
 }
 ```
 
@@ -2359,12 +2601,18 @@ targeting the group by name lands.
 
 ```hew
 machine Session {
-    events { Open, Authed, Close }
+    events {
+        Open;
+        Authed;
+        Close;
+    }
 
-    emits { Trace { text: string } }
+    emits {
+        Trace { text: string; }
+    }
 
-    state Closed,
-    state Kicked,
+    state Closed;
+    state Kicked;
 
     state Live {
         entry {
@@ -2373,16 +2621,15 @@ machine Session {
         exit {
             emit Trace { text: "done" };
         }
+        initial state Authing;
+        state Active;
 
-        initial state Authing,
-        state Active,
+        on Close: _ => Closed;
+    }
 
-        on Close: _ => Closed,
-    },
-
-    on Open: Closed => Live,
-    on Authed: Authing => Active,
-    on Close: Active => Kicked,
+    on Open: Closed => Live;
+    on Authed: Authing => Active;
+    on Close: Active => Kicked;
 
     default { state }
 }
@@ -2390,11 +2637,11 @@ machine Session {
 fn main() {
     var session: Session = .Closed;
     let _ = session.step(.Open);
-    println(session.state_name());    // Authing
+    println(session.state_name()); // Authing
     let _ = session.step(.Authed);
-    println(session.state_name());    // Active
+    println(session.state_name()); // Active
     let _ = session.step(.Close);
-    println(session.state_name());    // Kicked
+    println(session.state_name()); // Kicked
 }
 ```
 
@@ -2420,24 +2667,27 @@ declaration, readable in guards, transition bodies and hooks.
 
 ```hew
 machine Retry<const MAX: usize = 3> {
-    events { Fail, Reset }
+    events {
+        Fail;
+        Reset;
+    }
 
-    state Trying { attempts: usize },
-    state Exhausted,
+    state Trying { attempts: usize; }
+    state Exhausted;
 
     on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
-    on Fail: Trying => Exhausted,
+    on Fail: Trying => Exhausted;
     on Reset: Trying => Trying { attempts: 0 }
     on Reset: Exhausted => Trying { attempts: 0 }
-    on Fail: Exhausted => Exhausted reenter,
+    on Fail: Exhausted => Exhausted reenter;
 }
 
 fn main() {
     var retry: Retry = .Trying { attempts: 0 };
-    for _ in 0..3 {
+    for _ in 0 .. 3 {
         let _ = retry.step(.Fail);
     }
-    println(retry.state_name());      // Exhausted
+    println(retry.state_name()); // Exhausted
 }
 ```
 
@@ -2450,11 +2700,27 @@ is declared, and rebinding the name inside a machine body is refused too.
 ### Generic function with a trait bound
 
 ```hew
-trait Named { fn name(self) -> string; }
-type User { name: string, }
-impl Named for User { fn name(self) -> string { self.name } }
-fn announce<T: Named>(item: T) { println(item.name()); }
-fn main() { announce(User { name: "Bob" }); }   // Bob
+trait Named {
+    fn name(self) -> string;
+}
+
+type User {
+    name: string;
+}
+
+impl Named for User {
+    fn name(self) -> string {
+        self.name
+    }
+}
+
+fn announce<T: Named>(item: T) {
+    println(item.name());
+}
+
+fn main() {
+    announce(User { name: "Bob" });
+} // Bob
 ```
 
 Declare the impl as `impl Trait for Type`, bound the parameter `<T: Trait>`, and call the method on the param. Monomorphized per concrete type. A bare `impl Type { ... }` does not satisfy the bound — always write `impl Trait for Type`.
@@ -2462,15 +2728,40 @@ Declare the impl as `impl Trait for Type`, bound the parameter `<T: Trait>`, and
 ### Multi-bound and where-clause functions
 
 ```hew
-trait HasName { fn name(self) -> string; }
-trait HasScore { fn score(self) -> i64; }
-type Player { name: string, score: i64, }
-impl HasName for Player { fn name(self) -> string { self.name } }
-impl HasScore for Player { fn score(self) -> i64 { self.score } }
-fn report<T: HasName + HasScore>(item: T) {
-    print(item.name()); print(": "); println(item.score());
+trait HasName {
+    fn name(self) -> string;
 }
-fn main() { report(Player { name: "Zoe", score: 42 }); }   // Zoe: 42
+
+trait HasScore {
+    fn score(self) -> i64;
+}
+
+type Player {
+    name: string;
+    score: i64;
+}
+
+impl HasName for Player {
+    fn name(self) -> string {
+        self.name
+    }
+}
+
+impl HasScore for Player {
+    fn score(self) -> i64 {
+        self.score
+    }
+}
+
+fn report<T: HasName + HasScore>(item: T) {
+    print(item.name());
+    print(": ");
+    println(item.score());
+}
+
+fn main() {
+    report(Player { name: "Zoe", score: 42 });
+} // Zoe: 42
 ```
 
 Use `<T: A + B>` for inline multi-bounds; the `where T: A,` form is equivalent and reads better with several params. Each concrete type needs explicit `impl Trait for Type`.
@@ -2487,9 +2778,19 @@ Unbounded `<T>` works when you only move/return the value. To call any method or
 ### Generic free function over a generic record
 
 ```hew
-type Pair<A, B> { first: A, second: B, }
-fn fst<A, B>(p: Pair<A, B>) -> A { p.first }
-fn main() { let p = Pair { first: 100, second: 2.5 }; println(fst(p)); }   // 100
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn fst<A, B>(p: Pair<A, B>) -> A {
+    p.first
+}
+
+fn main() {
+    let p = Pair { first: 100, second: 2.5 };
+    println(fst(p));
+} // 100
 ```
 
 Read fields of a generic record inside a generic free function — prefer a free `fn fst<A,B>(p: Pair<A,B>)` over a generic impl method.
@@ -2497,7 +2798,11 @@ Read fields of a generic record inside a generic free function — prefer a free
 ### Generic record type with all-bitcopy fields
 
 ```hew
-type Pair<A, B> { first: A, second: B, }
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
 fn main() {
     let p = Pair { first: 10, second: 3.5 };
     println(p.first);
@@ -2510,8 +2815,15 @@ Use generic records as lightweight bitcopy containers over scalar types (`i64`, 
 ### Generic record type with an owned field
 
 ```hew
-type Pair<A, B> { first: A, second: B, }
-fn make() -> Pair<i64, string> { Pair { first: 1, second: "owned" } }
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn make() -> Pair<i64, string> {
+    Pair { first: 1, second: "owned" }
+}
+
 fn main() {
     let p = make();
     println(p.first);
@@ -2542,12 +2854,16 @@ Accept `Vec<T>` in a generic function and use `.len()`/`v[i]`.
 ### Vec of a concrete enum (including string payload)
 
 ```hew
-enum Shape { Circle(f64), Named(string), }
+enum Shape {
+    Circle(f64);
+    Named(string);
+}
+
 fn main() {
     var v: Vec<Shape> = Vec.new();
     v.push(Shape.Circle(1.5));
     v.push(Shape.Named("square"));
-    println(v.len());   // 2
+    println(v.len()); // 2
 }
 ```
 
@@ -2556,14 +2872,18 @@ A monomorphic enum, even one carrying a string payload, is a valid Vec element. 
 ### Vec of a concrete record
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn main() {
     var v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let got = v[1];
-    println(got.x);   // 3
-    println(got.y);   // 4
+    println(got.x); // 3
+    println(got.y); // 4
 }
 ```
 
@@ -2588,17 +2908,21 @@ fn main() {
 **An explicit type argument is one way to pin a generic constructor's type argument, not the only one.** The checker also resolves `T` from the **expected return type** at the call site — a `let` binding's declared type, a function's declared return type, or an argument position — without an explicit type argument:
 
 ```hew
-type Stack<T> { items: Vec<T>, }
+type Stack<T> {
+    items: Vec<T>;
+}
 
-fn new_empty<T>() -> Stack<T> { Stack { items: Vec.new() } }
+fn new_empty<T>() -> Stack<T> {
+    Stack { items: Vec.new() }
+}
 
 fn make_i64_stack() -> Stack<i64> {
-    new_empty()                    // return-position inference — no explicit type argument
+    new_empty() // return-position inference — no explicit type argument
 }
 
 fn main() {
-    let s: Stack<i64> = new_empty();      // let-annotation inference — no explicit type argument
-    let s2 = new_empty<i64>();          // explicit type argument
+    let s: Stack<i64> = new_empty(); // let-annotation inference — no explicit type argument
+    let s2 = new_empty<i64>(); // explicit type argument
     let s3 = make_i64_stack();
     println(s.items.len());
     println(s2.items.len());
@@ -2613,7 +2937,9 @@ Only a **genuinely unconstrained** call — no explicit type argument, no annota
 Methods on a generic record need the impl itself to carry the type parameter — `impl<T> Stack<T> { ... }`, not `impl Stack<T> { ... }`. The bare form leaves `T` unbound inside the impl body and every use of `T` fails with `unknown type 'T'`.
 
 ```hew
-type Stack<T> { items: Vec<T> }
+type Stack<T> {
+    items: Vec<T>;
+}
 
 impl<T> Stack<T> {
     fn push_item(consume self, consume v: T) -> Stack<T> {
@@ -2634,7 +2960,7 @@ fn main() {
     let s = new_stack<i64>();
     let s2 = s.push_item(1);
     let s3 = s2.push_item(2);
-    println(s3.len());   // 2
+    println(s3.len()); // 2
 }
 ```
 
@@ -2647,9 +2973,7 @@ mutable local, and returns the rebuilt stack. The old stack is no longer usable;
 A monomorphic function exported from another module can be passed as a
 first-class value; its type is recovered from the declared signature.
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 import math_utils;
 
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
@@ -2668,9 +2992,7 @@ fn main() {
 
 Where `math_utils.hew` exports:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 pub fn add_one(x: i64) -> i64 { x + 1 }
 pub fn square(x: i64) -> i64 { x * x }
 pub fn identity<T>(x: T) -> T { x }
@@ -2696,7 +3018,9 @@ currently supported)``. From the current module it is rejected earlier, as a
 interpolation:
 
 ```hew
-type Celsius { degrees: f64, }
+type Celsius {
+    degrees: f64;
+}
 
 impl Display for Celsius {
     fn fmt(self) -> string {
@@ -2710,11 +3034,11 @@ fn show<T: Display>(label: string, value: T) {
 }
 
 fn main() {
-    show("int", 42);               // int: 42
-    show("float", 2.718);          // float: 2.718
-    show("str", "Hew");            // str: Hew
+    show("int", 42); // int: 42
+    show("float", 2.718); // float: 2.718
+    show("str", "Hew"); // str: Hew
     let temp = Celsius { degrees: 36.6 };
-    show("temp", temp);            // temp: 36.6°C
+    show("temp", temp); // temp: 36.6°C
 }
 ```
 
@@ -2868,10 +3192,15 @@ fn main() {
 ```hew
 fn classify(o: Option<i64>) -> string {
     match o {
-        .Some(v) => if v > 0 { "positive" } else { "non-positive" },
+        .Some(v) => if v > 0 {
+            "positive"
+        } else {
+            "non-positive"
+        }
         .None => "missing",
     }
 }
+
 fn main() {
     println(classify(.Some(5)));
     println(classify(.Some(-1)));
@@ -2908,16 +3237,19 @@ concrete error into `dyn Error`:
 import std.fs;
 
 enum PortError {
-    NotANumber(string),
+    NotANumber(string);
 }
 
 impl Display for PortError {
     fn fmt(self) -> string {
-        match self { .NotANumber(s) => f"NotANumber: {s} is not a port number" }
+        match self {
+            .NotANumber(s) => f"NotANumber: {s} is not a port number",
+        }
     }
 }
 
-impl Error for PortError {}
+impl Error for PortError {
+}
 
 fn parse_port(text: string) -> Result<i64, PortError> {
     .Err(PortError.NotANumber(text))
@@ -3077,16 +3409,21 @@ Build strings with `+`. `char_at` returns `Option<char>` — `Some` of the Unico
 trait Greet {
     fn greet(self) -> string;
 }
-type Person { name: string }
+
+type Person {
+    name: string;
+}
+
 impl Greet for Person {
     fn greet(self) -> string {
         f"Hello, {self.name}!"
     }
 }
+
 fn main() {
     let p = Person { name: "Ada" };
-    println(p.greet());   // Hello, Ada!
-    println(p.greet());   // still valid — `self` borrows
+    println(p.greet()); // Hello, Ada!
+    println(p.greet()); // still valid — `self` borrows
 }
 ```
 
@@ -3105,18 +3442,124 @@ trait with a `var self` receiver and implement that trait for your type.
 
 A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm.{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
 
+### Choosing between methods with the same name
+
+A dot-call prefers the type's inherent method. A generic bound or `dyn` view
+selects the method belonging to that trait:
+
+```hew
+trait Show {
+    fn show(self) -> string;
+}
+
+trait Label {
+    fn show(self) -> string;
+}
+
+type Item {
+    value: i64;
+}
+
+impl Item {
+    fn show(self) -> string {
+        "inherent"
+    }
+}
+
+impl Show for Item {
+    fn show(self) -> string {
+        "show"
+    }
+}
+
+impl Label for Item {
+    fn show(self) -> string {
+        "label"
+    }
+}
+
+fn via_show<T: Show>(value: T) -> string {
+    value.show()
+}
+
+fn via_label(value: dyn Label) -> string {
+    value.show()
+}
+
+fn main() {
+    let item = Item { value: 1 };
+    println(item.show()); // inherent
+    println(via_show(item)); // show
+    println(via_label(item)); // label
+}
+```
+
+Without an inherent `show`, a bare `item.show()` would be ambiguous between
+`Show` and `Label`. Declaration order does not choose a method. Structural
+satisfaction uses the same order: an inherent method, then a unique compatible
+trait method. Two traits imported from different modules stay distinct even
+when they have the same name.
+
+A user trait named `Clone` is an ordinary trait whose declared methods must be
+satisfied:
+
+```hew
+trait Clone {
+    fn dup(self) -> i64;
+}
+
+type Number {
+    value: i64;
+}
+
+impl Clone for Number {
+    fn dup(self) -> i64 {
+        self.value
+    }
+}
+
+fn duplicate<T: Clone>(value: T) -> i64 {
+    value.dup()
+}
+
+fn main() {
+    println(duplicate(Number { value: 7 }));
+}
+```
+
+The spelling does not grant automatic cloning or sending capabilities.
+Protected prelude declarations such as `Display` cannot be redeclared.
+
+### Lexical callable names
+
+A local callable shadows a module function. A module function can also shadow
+a prelude function such as `len` or `println`:
+
+```hew
+fn helper(value: i64) -> i64 { 10 }
+fn main() {
+    let helper = |value: i64| -> i64 { value + 1 };
+    println(helper(1)); // 2
+}
+```
+
 ### Display trait (fmt) for f-string interpolation
 
 ```hew
-type Point { x: f64, y: f64 }
+type Point {
+    x: f64;
+    y: f64;
+}
+
 impl Display for Point {
     fn fmt(self) -> string {
         f"({self.x}, {self.y})"
     }
 }
+
 fn main() {
     let pt = Point { x: 1.0, y: 2.0 };
-    println(f"point = {pt}");   // point = (1, 2)
+    println(f"point = {pt}"); // point = (1, 2)
 }
 ```
 
@@ -3125,16 +3568,20 @@ Implement `Display` via the `fmt` method and interpolate with f-strings. To prin
 ### Calling a Display fmt method directly
 
 ```hew
-type Tag { id: i64 }
+type Tag {
+    id: i64;
+}
+
 impl Display for Tag {
     fn fmt(self) -> string {
         f"#{self.id}"
     }
 }
+
 fn main() {
     let t = Tag { id: 7 };
     let s = t.fmt();
-    println(s);   // #7
+    println(s); // #7
 }
 ```
 
@@ -3147,16 +3594,21 @@ trait Counter {
     type Item;
     fn next_val(self) -> Self.Item;
 }
-type Ticker { current: i64 }
+
+type Ticker {
+    current: i64;
+}
+
 impl Counter for Ticker {
     type Item = i64;
     fn next_val(self) -> i64 {
         self.current + 1
     }
 }
+
 fn main() {
     let t = Ticker { current: 41 };
-    println(t.next_val());   // 42
+    println(t.next_val()); // 42
 }
 ```
 
@@ -3490,9 +3942,7 @@ for constructors and collection operations.
 
 ### Importing your own modules
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 import "helpers.hew";
 
 fn main() {
@@ -3604,13 +4054,16 @@ type participate — integers, `bool`, `char`, `string`, `duration`, nested
 records/enums, and **floating-point** fields (`f64`/`f32`, see below).
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
 
 enum Color {
-    Red,
-    Green,
-    Blue,
-    Custom(i64),
+    Red;
+    Green;
+    Blue;
+    Custom(i64);
 }
 
 fn main() {
@@ -3618,18 +4071,18 @@ fn main() {
     let a = Point { x: 1, y: 2 };
     let b = Point { x: 1, y: 2 };
     let c = Point { x: 1, y: 3 };
-    println(a == b);   // true
-    println(a == c);   // false
-    println(a != c);   // true
+    println(a == b); // true
+    println(a == c); // false
+    println(a != c); // true
 
     // Enum equality — unit variants
-    println(Color.Red == Color.Red);     // true
-    println(Color.Red == Color.Green);   // false
+    println(Color.Red == Color.Red); // true
+    println(Color.Red == Color.Green); // false
 
     // Enum equality — payload-bearing variants
-    println(Color.Custom(42) == Color.Custom(42));   // true
-    println(Color.Custom(42) == Color.Custom(99));   // false
-    println(Color.Custom(42) != Color.Red);           // true
+    println(Color.Custom(42) == Color.Custom(42)); // true
+    println(Color.Custom(42) == Color.Custom(99)); // false
+    println(Color.Custom(42) != Color.Red); // true
 }
 ```
 
@@ -3639,36 +4092,44 @@ fn main() {
 so records and enums with payloads work transparently:
 
 ```hew
-type Point { x: i64, y: i64, }
+type Point {
+    x: i64;
+    y: i64;
+}
 
-enum Tag { A, B(i64), }
+enum Tag {
+    A;
+    B(i64);
+}
 
 fn main() {
     // Primitive and string elements
     var nums: Vec<i64> = Vec.new();
-    nums.push(10); nums.push(20); nums.push(30);
-    println(nums.contains(20));   // true
-    println(nums.contains(99));   // false
-
+    nums.push(10);
+    nums.push(20);
+    nums.push(30);
+    println(nums.contains(20)); // true
+    println(nums.contains(99)); // false
     var words: Vec<string> = Vec.new();
-    words.push("hello"); words.push("world");
-    println(words.contains("hello"));   // true
-    println(words.contains("bye"));     // false
+    words.push("hello");
+    words.push("world");
+    println(words.contains("hello")); // true
+    println(words.contains("bye")); // false
 
     // Record elements
     var pts: Vec<Point> = Vec.new();
     pts.push(Point { x: 1, y: 2 });
     pts.push(Point { x: 3, y: 4 });
-    println(pts.contains(Point { x: 1, y: 2 }));   // true
-    println(pts.contains(Point { x: 5, y: 6 }));   // false
+    println(pts.contains(Point { x: 1, y: 2 })); // true
+    println(pts.contains(Point { x: 5, y: 6 })); // false
 
     // Payload enum elements
     var tags: Vec<Tag> = Vec.new();
     tags.push(Tag.A);
     tags.push(Tag.B(7));
-    println(tags.contains(Tag.A));      // true
-    println(tags.contains(Tag.B(7)));   // true
-    println(tags.contains(Tag.B(8)));   // false
+    println(tags.contains(Tag.A)); // true
+    println(tags.contains(Tag.B(7))); // true
+    println(tags.contains(Tag.B(8))); // false
 }
 ```
 
@@ -3686,23 +4147,24 @@ This is deliberately different from the IEEE numeric `==` you get on a bare
 `f64`/`f32` expression, where `NaN != NaN` and `+0.0 == -0.0`:
 
 ```hew
-type Vec2 { x: f64, y: f64 }
+type Vec2 {
+    x: f64;
+    y: f64;
+}
 
 fn main() {
     let nan = 0.0 / 0.0;
-
     // Scalar `==` is IEEE numeric.
-    println(nan == nan);   // false  (NaN != NaN)
-    println(0.0 == -0.0);  // true   (signed zeros compare equal)
+    println(nan == nan); // false  (NaN != NaN)
+    println(0.0 == -0.0); // true   (signed zeros compare equal)
 
     // Structural `==` over a record is bitwise/total.
     let a = Vec2 { x: nan, y: 1.0 };
     let b = Vec2 { x: nan, y: 1.0 };
-    println(a == b);       // true   (identical bit patterns, reflexive)
-
+    println(a == b); // true   (identical bit patterns, reflexive)
     let pz = Vec2 { x: 0.0, y: 0.0 };
     let nz = Vec2 { x: -0.0, y: 0.0 };
-    println(pz == nz);     // false  (+0.0 and -0.0 differ in bits)
+    println(pz == nz); // false  (+0.0 and -0.0 differ in bits)
 }
 ```
 
@@ -3722,14 +4184,17 @@ implies an equal hash and a float-bearing `record` is a sound `HashMap` key.
 > expression keeps IEEE semantics.
 
 ```hew
-type Coord { x: f64, y: f64 }
+type Coord {
+    x: f64;
+    y: f64;
+}
 
 fn main() {
     var m: HashMap<Coord, i64> = HashMap.new();
     m.insert(Coord { x: 1.5, y: 2.5 }, 42);
     let v = m.get(Coord { x: 1.5, y: 2.5 });
     match v {
-        .Some(n) => println(n),   // 42 — structurally equal key round-trips
+        .Some(n) => println(n), // 42 — structurally equal key round-trips
         .None => println(-1),
     }
 }
@@ -3745,10 +4210,10 @@ contains a `bytes` field. The checker emits a diagnostic rather than
 comparing raw buffer bytes, which would produce unreliable results for
 refcounted heap handles:
 
-<!-- doctest: skip -->
-
-```hew
-type Packet { data: bytes, }
+```hew,ignore
+type Packet {
+    data: bytes;
+}
 // Packet { data: bytes } == Packet { data: bytes }
 // ^^^ rejected: `==` on record type `Packet` is not supported because a
 //     field or payload contains layout-managed/non-Copy data `bytes`
@@ -3769,16 +4234,16 @@ surface lives under [`examples/v05/surfaces/`](../examples/v05/surfaces)
 ```hew
 #[wire]
 type UserCreated {
-    id: u64 @1,
-    name: string @2,
+    id: u64 @1;
+    name: string @2;
 }
 
 fn main() {
     let e = UserCreated { id: 42, name: "ada" };
     let j = e.to_json();
-    println(j);                          // {"id":42,"name":"ada"}
+    println(j); // {"id":42,"name":"ada"}
     match UserCreated.from_json(j) {
-        .Ok(back) => println(back.name),  // ada
+        .Ok(back) => println(back.name), // ada
         .Err(_) => println("parse failed"),
     }
 }
@@ -3813,13 +4278,12 @@ import std.encoding.wire;
 
 #[wire]
 type Feature {
-    enabled: bool @1,
+    enabled: bool @1;
 }
 
 fn main() {
     var features: HashMap<string, Feature> = HashMap.new();
     features.insert("preview", Feature { enabled: true });
-
     let json = wire.to_json(features);
     let parsed = wire.from_json<HashMap<string, Feature>>(json) handle error {
         println(f"decode failed: {error}");
@@ -3851,8 +4315,9 @@ Full example: [`examples/playground/types/wire_types.hew`](../examples/playgroun
 ```hew
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
+
 impl Conn {
     fn close(consume self) {
         println(f"closing fd {self.fd}");
@@ -3868,15 +4333,22 @@ fn main() {
 
 ```hew
 #[linear]
-type Tx { id: i64 }
+type Tx {
+    id: i64;
+}
+
 impl Tx {
-    fn commit(consume self) { println(f"commit {self.id}"); }
-    fn rollback(consume self) { println(f"rollback {self.id}"); }
+    fn commit(consume self) {
+        println(f"commit {self.id}");
+    }
+    fn rollback(consume self) {
+        println(f"rollback {self.id}");
+    }
 }
 
 fn main() {
     let t = Tx { id: 1 };
-    t.commit();   // commit 1
+    t.commit(); // commit 1
 }
 ```
 
@@ -3936,12 +4408,12 @@ the handles, and they move between actors as messages or state fields.
 import std.stream;
 
 type Order {
-    id: i64,
-    note: string,
+    id: i64;
+    note: string;
 }
 
 actor Producer {
-    out: stream.Sink<Order>,
+    let out: stream.Sink<Order>;
 
     receive fn emit(id: i64, note: string) {
         self.out.send(Order { id: id, note: note }).expect("send");
@@ -3953,8 +4425,10 @@ actor Producer {
 }
 
 fn main() {
-    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) =
-        match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let producer = spawn Producer(out: orders);
     let _ = producer.emit(1, "first");
     let _ = producer.emit(2, "second");
@@ -3967,7 +4441,7 @@ fn main() {
 
 `sink.send(x)` waits for capacity and returns `Result<(), SendError>`:
 `Err(SendError.Closed)` once the reader is gone. Discarding that result is
-a compile error (`E_SEND_RESULT_DROPPED`); handle it, or write `let _ =`.
+a compile error (`E_RESULT_DROPPED`); handle it, or write `let _ =`.
 `try_send` never waits and adds `Err(SendError.Full)`. `stream.recv()`
 yields `Option<T>` and `None` is end of data only; `for item in input`
 drains to the end. A zero-length `bytes` or empty `string` is an item.
@@ -4184,7 +4658,9 @@ non-zero program exit status is preserved.
 
 ```hew
 actor Echo {
-    receive fn handle(req: i64) -> i64 { req }
+    receive fn handle(req: i64) -> i64 {
+        req
+    }
 }
 
 impl ActorMsg for Echo {
@@ -4202,7 +4678,7 @@ actor Client {
                     .Ok(n) => println(f"answer={n}"),
                     .Err(_) => println("ask failed"),
                 }
-            },
+            }
             .Err(_) => println("lookup failed"),
         }
     }
@@ -4265,9 +4741,7 @@ it never becomes the peer's identity and may differ on every node.
 Starting a node is one call, and it returns `Result<(), NodeError>`, so a
 refused start stops the program instead of printing and carrying on:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 var config = NodeConfig.at("0.0.0.0:9000");
 config.transport = "quic-mesh";
 config.key = "node.key";
@@ -4293,9 +4767,7 @@ A client selects its local pin when connecting. The slot it names is the
 server's position in the client's own `NodeConfig.peers`, so a client that
 lists the server first dials slot `1`:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 match Node.connect("1@127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),
@@ -4333,9 +4805,7 @@ publishes cluster-wide once one has.
 
 Remote monitors deliver one typed notification through `#[on(down)]`:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 import std.link_monitor.{DownNotification, DownReason};
 
 actor Watcher {
@@ -4361,7 +4831,7 @@ surfaces.
 
 ### TLS client — free-function surface
 
-```hew
+```hew,no_run
 import std.net.tls;
 
 fn main() {
@@ -4394,7 +4864,7 @@ Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 
 ### `process.run` vs `process.run_argv` — shell vs no-shell
 
-```hew
+```hew,no_run
 import std.process;
 
 fn main() {
@@ -4432,7 +4902,7 @@ fn add(a: i64, b: i64) -> i64 { a + b }
 
 #[test]
 fn add_two_positive_numbers_returns_sum() {
-    assert_eq(add(2, 3), 5);
+    assert(add(2, 3) == 5);
 }
 ```
 
@@ -4463,25 +4933,68 @@ test` — no warning, no error, it's simply never found. If a suite's pass
 > count looks lower than expected, run `hew test <path> --list` first to see
 > exactly what was discovered before debugging individual tests.
 
-### Assertions: `assert`, `assert_eq`, `assert_ne`
+### Assertions: `assert`
 
-`assert(condition: bool)` panics when `condition` is `false`. `assert_eq(a,
-b)` and `assert_ne(a, b)` compare with the same equality `==` uses and panic
-with both values on failure — prefer them over `assert(a == b)` for the
-readable failure message. Both operands share one type `T: Eq + Display`, so a
-value has to be comparable and able to print itself. `Option` and `Result` gain
-`Display` at v0.7.0, and until then a test compares one by matching on it:
+`assert(condition)` panics when `condition` is `false`, and
+`assert(condition, message)` adds a `string` that is evaluated only when the
+assertion fails. The failure names the condition as written. When the
+condition is a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), each operand is
+evaluated exactly once and both are shown, rendered the way `{:?}` renders
+them, so `Option`, `Result`, records, enums and `Vec` values show their
+contents:
+
+```hew
+#[test]
+fn wrong_expectation_fails() {
+    let actual = 2 + 2;
+    assert(actual == 5, "arithmetic still works");
+}
+```
 
 ```
 ---- wrong_expectation_fails ----
-assertion failed: left != right
+hew: failure: UserPanic (212): assertion failed: actual == 5: arithmetic still works
   left: 4
-  right: 5
+ right: 5
 ```
 
-These are the same panic-based builtins used everywhere else in Hew
-(`assert`, `assert_eq`, `assert_ne` — see "Assertions" above); a test
-failure IS a panic, nothing test-framework-specific.
+A value too long or too many lines to compare by eye also gets a line diff
+(`diff (-left +right):`), split field by field for a one-line record or
+collection. Any other condition (`&&`, a method returning `bool`) shows its
+text without operand values. `assert` is the same panic-based builtin used
+everywhere else in Hew; a test failure is a panic, nothing
+test-framework-specific.
+
+### Deterministic execution and `#[real_time]`
+
+Every test runs on a single-thread driver with a virtual clock unless it is
+marked `#[real_time]`. Actors, `fork`ed tasks and the test body take turns on
+one thread in a fixed order, and time moves only when nothing is ready: it
+jumps to the next pending timer, so `sleep(10s)` in a test returns at once and
+a periodic handler ticks an exact number of times. A test that parks with
+nothing runnable and no timer pending fails immediately as a deadlock instead
+of timing out.
+
+```
+hew test ledger_test.hew --schedules 64
+```
+
+The default schedule runs participants in the order they became ready
+(`fifo`). `--schedules N` also runs each test under `N` seeded `random`
+schedules; a failure reports how many schedules failed, the schedule and seed
+of the first, and a command that reproduces it:
+
+```
+failed on 50 of 65 schedules
+schedule random, seed 0x3f9a61c2d4e07b15
+reproduce: hew test ledger_test.hew --filter concurrent_deposits_are_not_lost --schedule random --seed 0x3f9a61c2d4e07b15
+```
+
+`--schedule fifo|random` picks the first run's schedule and `--seed N` (hex or
+decimal) its seed; the default seed is a stable hash of the test's identity.
+Mark a test `#[real_time]` when it needs the host clock and host threads - a
+subprocess, a socket peer or a deadline measured in wall time; it then runs
+on the threaded scheduler and ignores `--schedule` and `--seed`.
 
 ### `#[should_panic]` — tests that must panic
 

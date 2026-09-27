@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-env-drop-closure-counter-factory"
+intent = "Closure-environment scope-exit drop oracles: per-iteration leak slope plus poisoned-allocator no-double-free pins for the heap-env closure shapes this lane completes (nested env-of-env, type-parameterised owned capture, and the `BorrowMut`… Shape `closure_counter_factory_high` (closure counter factory no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/closure-env-drop-closure-counter-factory.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 150

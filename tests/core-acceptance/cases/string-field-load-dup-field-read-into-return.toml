@@ -1,0 +1,10 @@
+[[case]]
+id = "string-field-load-dup-field-read-into-return"
+intent = "Constant-leak / double-free oracle for reading a `string` field out of an owned aggregate (`r.field`, `t.0`). Shape `dup_field_read_into_return` (dup field read into return no double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-field-load-dup-field-read-into-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "OK\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "var-overwrite-string-var-overwrite"
+intent = "`var`-local overwrite leak oracles: reassigning an owned `var` in a loop must release the prior value, not just the final one (#53). Shape `string_var_overwrite_high` (string var overwrite no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/var-overwrite-string-var-overwrite.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 4

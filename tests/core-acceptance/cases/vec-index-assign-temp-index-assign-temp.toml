@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-index-assign-temp-index-assign-temp"
+intent = "Owned-Vec INDEX-ASSIGNMENT (`v[i] = ..`) leak oracles: neither a fresh aggregate RHS nor a consumed bound-local RHS may leak its heap. Shape `index_assign_temp_high` (vec index assign owned temp no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-index-assign-temp-index-assign-temp.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

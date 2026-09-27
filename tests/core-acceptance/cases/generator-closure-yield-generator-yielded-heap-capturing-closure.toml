@@ -1,0 +1,10 @@
+[[case]]
+id = "generator-closure-yield-generator-yielded-heap-capturing-closure"
+intent = "Pending generator output leak oracle for a yielded capturing closure. Shape `generator_yielded_heap_capturing_closure` (pending generator drops yielded heap capturing closure) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/generator-closure-yield-generator-yielded-heap-capturing-closure.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

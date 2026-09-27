@@ -10,30 +10,30 @@
 // transitions-after-subscribe; the owner sends the current state as a
 // self-transition at attach so a watcher joining an already-started
 // machine fires immediately.
-import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
+import std.concurrency.lifecycle.{Lifecycle};
 
 import std.stream;
 
 /// One observed transition, with the previous and next state names.
 type Transition {
-    from_state: string,
-    to_state: string,
+    from_state: string;
+    to_state: string;
 }
 
 actor Owner {
-    var lc: Lifecycle<i64> = .Created,
+    var lc: Lifecycle<i64> = .Created;
     receive fn drive(consume tx: stream.Sink<Transition>) {
 
         // Attach snapshot: a self-transition naming the current state.
         let current = lc.state_name();
         tx.send(Transition { from_state: current, to_state: lc.state_name() }).expect("send");
         let before_init = lc.state_name();
-        lc.step(LifecycleEvent.Initialise);
+        lc.step(Lifecycle.Event.Initialise);
         if before_init != lc.state_name() {
             tx.send(Transition { from_state: before_init, to_state: lc.state_name() }).expect("send");
         }
         let before_start = lc.state_name();
-        lc.step(LifecycleEvent.Started { handle: 7 });
+        lc.step(Lifecycle.Event.Started { handle: 7 });
         if before_start != lc.state_name() {
             tx.send(Transition { from_state: before_start, to_state: lc.state_name() }).expect("send");
         }
@@ -53,19 +53,19 @@ actor Observer {
                             match tr.to_state {
                                 "Running" => println("observer: child is up"),
                                 "Faulted" => println("observer: child faulted"),
-                                _ => {},
+                                _ => {}
                             }
-                        },
+                        }
                         .None => {
                             println("watch closed");
                             waiting = false;
-                        },
+                        }
                     }
-                },
+                }
                 after 2s => {
                     println("observer: watch timed out");
                     waiting = false;
-                },
+                }
             };
         }
         rx.close();
@@ -81,8 +81,9 @@ fn main() {
     // `fork` starts the watcher concurrently: an ordinary call would wait for
     // the handler to finish before `main` reaches the owner below, and the
     // watcher cannot finish until the owner publishes.
-    fork obs.watch(rx);
+    let watching = fork obs.watch(rx);
     let owner = spawn Owner;
     let _ = owner.drive(tx);
-    sleep(300ms);
+    // The watcher reports every transition and the close before `main` ends.
+    let _ = await watching;
 }

@@ -52,7 +52,7 @@ fn main() {
                 SendError.Full => 42,
                 _ => 7,
             }
-        },
+        }
     };
     let _ = peer.close();
     let _ = conn.close();

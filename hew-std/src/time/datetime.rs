@@ -11,6 +11,9 @@ use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc, Weekday};
 
+/// Wall-clock origin for deterministic runs (2026-01-01T00:00:00Z).
+const VIRTUAL_EPOCH_MS: i64 = 1_767_225_600_000;
+
 /// Convert epoch milliseconds to a `DateTime<Utc>`, returning `None` if out of range.
 fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(epoch_ms)
@@ -47,13 +50,18 @@ fn clone_datetime_last_error() -> Option<String> {
 // Current time
 // ---------------------------------------------------------------------------
 
-/// Return the current time as Unix epoch milliseconds.
+/// Return the current time as Unix epoch milliseconds. Deterministic runs use
+/// the virtual clock with a 2026-01-01T00:00:00Z origin.
 ///
 /// # Safety
 ///
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
+    hew_runtime::driver::initialize_clock();
+    if hew_runtime::deterministic::hew_simtime_is_enabled() != 0 {
+        return VIRTUAL_EPOCH_MS.saturating_add(hew_runtime::deterministic::hew_simtime_now_ms());
+    }
     Utc::now().timestamp_millis()
 }
 
@@ -218,16 +226,19 @@ pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i64 {
 /// Return the current monotonic clock time in nanoseconds.
 ///
 /// High-resolution timing suitable for benchmarking; not affected by
-/// wall-clock adjustments. The zero point is the single process-wide
-/// monotonic epoch in `hew_runtime::monotonic`, shared with every runtime
-/// subsystem (timers, supervisor, crash, tracing, SWIM) so this datetime
-/// reading and a runtime timestamp count from the same instant.
+/// wall-clock adjustments. Deterministic runs use the virtual clock. Otherwise
+/// the zero point is the single process-wide monotonic epoch in
+/// `hew_runtime::monotonic`, shared with runtime timers and other subsystems.
 ///
 /// # Safety
 ///
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
+    hew_runtime::driver::initialize_clock();
+    if hew_runtime::deterministic::hew_simtime_is_enabled() != 0 {
+        return hew_runtime::deterministic::hew_simtime_now_ms().saturating_mul(1_000_000);
+    }
     #[expect(
         clippy::cast_possible_wrap,
         reason = "monotonic ns since process start won't exceed i64 (~292 years)"

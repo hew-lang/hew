@@ -49,7 +49,7 @@ fn physical_with_roots(source: &str, roots: &[&str]) -> PhysicalModule {
                 .iter()
                 .find_map(|item| match item {
                     hew_hir::HirItem::Function(function) if function.name == *name => {
-                        Some(function.declaration.clone())
+                        Some(function.declaration)
                     }
                     _ => None,
                 })
@@ -320,6 +320,8 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         fault::hew_fault_combine,
         fault::hew_fault_drop,
         fault::hew_fault_report,
+        fault::hew_fault_report_entry,
+        fault::hew_fault_set_site,
         fault::hew_fault_trap,
         exit_status::hew_process_exit_byte,
     );
@@ -404,14 +406,14 @@ fn aggregate_hash_ignores_padding_and_composes_exact_user_field_methods() {
     for optimized in [false, true] {
         let physical = physical(
             r"
-        type Inner { id: i64 }
+        type Inner { id: i64; }
         impl Hash for Inner { fn hash(self) -> i64 { self.id % 10 } }
         impl Eq for Inner { fn eq(self, other: Inner) -> bool { self.id % 10 == other.id % 10 } }
-        type Outer { tag: u8, inner: Inner }
+        type Outer { tag: u8; inner: Inner; }
         fn main() { let values: HashMap<Outer, i64> = HashMap.new(); }
     ",
         );
-        let outer = ResolvedTy::named_user("Outer", vec![]);
+        let outer = ResolvedTy::named_path(&physical.defs, "Outer", vec![]);
         let ctx = Context::create();
         let llvm = llvm(&ctx, &physical);
         let engine = engine(&llvm, optimized);
@@ -520,13 +522,30 @@ fn counted_strings_and_byte_regions_ignore_owner_identity() {
 fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
     for optimized in [false, true] {
         let physical = physical(
-            r"
-        type Inner { id: i64 }
-        impl Hash for Inner { fn hash(self) -> i64 { 1 } }
-        impl Eq for Inner { fn eq(self, other: Inner) -> bool { true } }
-        type Outer { inner: Inner }
-        fn main() { let values: HashMap<Outer, i64> = HashMap.new(); }
-    ",
+            r"type Inner {
+    id: i64;
+}
+
+impl Hash for Inner {
+    fn hash(self) -> i64 {
+        1
+    }
+}
+
+impl Eq for Inner {
+    fn eq(self, other: Inner) -> bool {
+        true
+    }
+}
+
+type Outer {
+    inner: Inner;
+}
+
+fn main() {
+    let values: HashMap<Outer, i64> = HashMap.new();
+}
+",
         );
         let ctx = Context::create();
         let llvm = ctx.create_module("key_fault");
@@ -580,7 +599,7 @@ fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
         }
         emitter.llvm.verify().unwrap();
         let engine = engine(&emitter.llvm, optimized);
-        let outer = ResolvedTy::named_user("Outer", vec![]);
+        let outer = ResolvedTy::named_path(&physical.defs, "Outer", vec![]);
         let (hash_fn, eq_fn) = callbacks(&engine, &physical, &outer);
         let input = 1i64;
         let mut hash_out = 0xfeed_face_cafe_beefu64;
@@ -619,12 +638,26 @@ fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
 fn owned_user_key_methods_receive_borrowed_slots_and_override_structure() {
     for optimized in [false, true] {
         let physical = physical(
-            r"
-        type Key { name: string }
-        impl Hash for Key { fn hash(self) -> i64 { 55 } }
-        impl Eq for Key { fn eq(self, other: Key) -> bool { true } }
-        fn main() { let values: HashMap<Key, i64> = HashMap.new(); }
-    ",
+            r"type Key {
+    name: string;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        55
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        true
+    }
+}
+
+fn main() {
+    let values: HashMap<Key, i64> = HashMap.new();
+}
+",
         );
         for plan in physical.value_capabilities.values() {
             if let PhysicalValueMethod::User(id) = plan.method {
@@ -637,8 +670,11 @@ fn owned_user_key_methods_receive_borrowed_slots_and_override_structure() {
         let ctx = Context::create();
         let llvm = llvm(&ctx, &physical);
         let engine = engine(&llvm, optimized);
-        let (hash_fn, eq_fn) =
-            callbacks(&engine, &physical, &ResolvedTy::named_user("Key", vec![]));
+        let (hash_fn, eq_fn) = callbacks(
+            &engine,
+            &physical,
+            &ResolvedTy::named_path(&physical.defs, "Key", vec![]),
+        );
         // SAFETY: Key has exactly one managed-string pointer field; both strings
         // outlive the borrowed key callbacks and are released once afterwards.
         unsafe {
@@ -792,7 +828,7 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
 fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
     let mut physical = physical(
         r"
-        type Key { id: i64 }
+        type Key { id: i64; }
         fn main() { let values: HashMap<Key, i64> = HashMap.new(); }
     ",
     );
@@ -815,7 +851,10 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
         .to_string()
         .contains("has no callback"));
     // Malformed physical recipes must refuse even if a table entry exists.
-    let key = (ResolvedTy::named_user("Key", vec![]), ValueCapability::Eq);
+    let key = (
+        ResolvedTy::named_path(&physical.defs, "Key", vec![]),
+        ValueCapability::Eq,
+    );
     for method in [
         PhysicalValueMethod::Map(PhysicalMapId(0)),
         PhysicalValueMethod::Set(PhysicalSetId(0)),
@@ -845,7 +884,7 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
 #[test]
 fn key_callback_layouts_and_private_calls_verify_on_windows_and_macos() {
     let source = r"
-        type Key { name: string }
+        type Key { name: string; }
         impl Hash for Key { fn hash(self) -> i64 { 55 } }
         impl Eq for Key { fn eq(self, other: Key) -> bool { true } }
         fn main() {

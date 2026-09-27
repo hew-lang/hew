@@ -9,8 +9,6 @@
 //! and asserts the stored element is unaffected — the property that fails when
 //! the push aliases instead of copies.
 
-import std.testing;
-
 // ── Vec<Vec<string>>: the canonical CSV row-builder shape ──────────────────
 
 // Reuse-then-`clear()`: the stored first row must keep its own cells after the
@@ -25,14 +23,14 @@ fn test_vec_vec_string_reuse_keeps_each_row() {
     cur.clear();
     cur.push("gamma");
     rows.push(cur);
-    testing.assert_eq(rows.len(), 2);
+    assert(rows.len() == 2);
     let r0 = rows[0];
-    testing.assert_eq(r0.len(), 2);
-    testing.assert_eq_str(r0[0], "alpha");
-    testing.assert_eq_str(r0[1], "beta");
+    assert(r0.len() == 2);
+    assert(r0[0] == "alpha");
+    assert(r0[1] == "beta");
     let r1 = rows[1];
-    testing.assert_eq(r1.len(), 1);
-    testing.assert_eq_str(r1[0], "gamma");
+    assert(r1.len() == 1);
+    assert(r1[0] == "gamma");
 }
 
 // Pushing the SAME accumulator twice must yield two independent rows, so a
@@ -45,13 +43,13 @@ fn test_vec_vec_string_push_same_source_twice_is_independent() {
     rows.push(cur);
     rows.push(cur);
     cur.push("two");
-    testing.assert_eq(rows.len(), 2);
-    testing.assert_eq(rows[0].len(), 1);
-    testing.assert_eq(rows[1].len(), 1);
-    testing.assert_eq_str(rows[0][0], "one");
-    testing.assert_eq_str(rows[1][0], "one");
+    assert(rows.len() == 2);
+    assert(rows[0].len() == 1);
+    assert(rows[1].len() == 1);
+    assert(rows[0][0] == "one");
+    assert(rows[1][0] == "one");
     // Source kept growing without disturbing the stored copies.
-    testing.assert_eq(cur.len(), 2);
+    assert(cur.len() == 2);
 }
 
 // ── Vec<HashMap<string, i64>> ──────────────────────────────────────────────
@@ -66,11 +64,11 @@ fn test_vec_hashmap_push_is_copy_in() {
     rows.push(m);
     m.insert("beta", 2);
     let stored = rows[0];
-    testing.assert_eq(stored.len(), 1);
-    testing.assert_true(stored.contains_key("alpha"));
-    testing.assert_false(stored.contains_key("beta"));
+    assert(stored.len() == 1);
+    assert(stored.contains_key("alpha"));
+    assert(!stored.contains_key("beta"));
     // Source still carries both keys.
-    testing.assert_eq(m.len(), 2);
+    assert(m.len() == 2);
 }
 
 // ── Vec<HashSet<string>> ───────────────────────────────────────────────────
@@ -84,10 +82,10 @@ fn test_vec_hashset_push_is_copy_in() {
     rows.push(s);
     s.insert("beta");
     let stored = rows[0];
-    testing.assert_eq(stored.len(), 1);
-    testing.assert_true(stored.contains("alpha"));
-    testing.assert_false(stored.contains("beta"));
-    testing.assert_eq(s.len(), 2);
+    assert(stored.len() == 1);
+    assert(stored.contains("alpha"));
+    assert(!stored.contains("beta"));
+    assert(s.len() == 2);
 }
 
 // ── Vec<Vec<Vec<string>>>: deeper nesting still owns each level ─────────────
@@ -102,11 +100,11 @@ fn test_vec_vec_vec_string_deep_nesting() {
     outer.push(mid);
     // Mutate the inner accumulator after both pushes; the stored grid is fixed.
     inner.clear();
-    testing.assert_eq(outer.len(), 1);
+    assert(outer.len() == 1);
     let stored_mid = outer[0];
-    testing.assert_eq(stored_mid.len(), 1);
+    assert(stored_mid.len() == 1);
     let stored_inner = stored_mid[0];
-    testing.assert_eq(stored_inner.len(), 2);
-    testing.assert_eq_str(stored_inner[0], "alpha");
-    testing.assert_eq_str(stored_inner[1], "beta");
+    assert(stored_inner.len() == 2);
+    assert(stored_inner[0] == "alpha");
+    assert(stored_inner[1] == "beta");
 }

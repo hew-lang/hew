@@ -1,0 +1,10 @@
+[[case]]
+id = "on-start-suspension-high"
+intent = "Lifecycle-hook suspend/resume coro-frame reclamation (#2269). Shape `high` (suspending on start no per actor coro frame leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/on-start-suspension-high.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

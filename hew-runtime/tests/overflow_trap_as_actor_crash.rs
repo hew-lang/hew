@@ -10,6 +10,8 @@
 //! - x86-64 (Linux + macOS): `llvm.trap` → `ud2` → SIGILL (signal 4).
 //! - aarch64: `llvm.trap` → `brk #1` → SIGILL or SIGTRAP (signals 4/5),
 //!   according to the host kernel/debug environment.
+//! - Windows: the vectored exception handler maps illegal instructions and
+//!   breakpoints to the same process-fatal status and diagnostic.
 //!
 //! SIGTRAP is registered alongside SIGILL in `signal.rs::init_crash_handling`.
 //! This death test exercises whichever signal the platform delivers and proves
@@ -148,10 +150,6 @@ unsafe extern "C-unwind" fn counting_dispatch(
 /// The child continues through the historical restart assertions only if the
 /// process-fatal handler fails to terminate it; that counterfactual exits zero,
 /// which the parent rejects just as strongly as an unexpected signal/status.
-// WINDOWS-TODO: install a VEH fatal boundary that emits the same stable
-// diagnostic/status contract as the Unix async-signal-safe handler; until then
-// the platform-default termination cannot satisfy this exact death-test oracle.
-#[cfg_attr(windows, ignore)]
 #[test]
 #[allow(
     clippy::too_many_lines,

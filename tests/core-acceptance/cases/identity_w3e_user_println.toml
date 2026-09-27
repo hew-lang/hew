@@ -1,0 +1,10 @@
+[[case]]
+id = "identity_w3e_user_println"
+intent = "A user function named println takes precedence over the prelude overload."
+source = "../vertical-slice/accept/identity_w3e.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

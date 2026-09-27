@@ -4,9 +4,9 @@
 
 fn main() -> i64 {
     let x: i64 = 5;
-    let y = x.clone();   // warn: cloning a Copy type is redundant
+    let y = x.clone(); // warn: cloning a Copy type is redundant
     let b: bool = true;
-    let c = b.clone();   // warn: same
+    let c = b.clone(); // warn: same
     if c {
         println(y);
     }

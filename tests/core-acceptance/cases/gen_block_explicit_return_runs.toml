@@ -1,0 +1,10 @@
+[[case]]
+id = "gen_block_explicit_return_runs"
+intent = "A non-yielding generator remains lazy and exhausts with correct output ownership."
+source = "../vertical-slice/accept/gen_block_explicit_return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "started\nfinished\n"
+exit = 0

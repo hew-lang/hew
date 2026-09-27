@@ -1,0 +1,14 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var v: Vec<i64> = Vec.new();
+        v.push(i);
+        v.push(i * 2);
+        for x in v {
+            total = total + x;
+        }
+        i = i + 1;
+    }
+    total
+}

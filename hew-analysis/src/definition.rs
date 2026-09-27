@@ -1,11 +1,36 @@
 //! Go-to-definition analysis: find the definition site of an identifier in the AST.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::{FnDecl, Item, Param, Span, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
 use hew_types::{Ty, TypeCheckOutput};
 
 use crate::ast_visit::{self, BindingKind};
 use crate::OffsetSpan;
+
+/// The source span of a named import binding visible in this module.
+/// Import bindings are syntax sites, so this lookup does not assign them a
+/// declaration identity or guess which imported declaration they name.
+#[must_use]
+pub fn find_matching_import(parse_result: &ParseResult, word: &str) -> Option<OffsetSpan> {
+    for (item, span) in &parse_result.program.items {
+        let Item::Import(import) = item else { continue };
+        if let Some(hew_parser::ast::ImportSpec::Names(names)) = &import.spec {
+            for name in names {
+                let visible = name
+                    .alias
+                    .map_or(name.name.name.as_str(), |alias| alias.name.as_str());
+                if visible == word {
+                    return Some(OffsetSpan {
+                        start: span.start,
+                        end: span.end,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
 
 /// Search for a definition matching `word` in the AST, including nested items.
 ///
@@ -24,12 +49,12 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         // Search inside actors for fields, receive methods, and methods.
         if let Item::Actor(a) = item {
             for field in &a.fields {
-                if field.name == word {
+                if field.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(source, span.start, word));
                 }
             }
             for recv in &a.receive_fns {
-                if recv.name == word {
+                if recv.name == Ident::new(word) {
                     // Use the receive fn's own span when available; fall back to
                     // the enclosing item span.
                     let search_from = if recv.span.is_empty() {
@@ -41,7 +66,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
                 }
             }
             for method in &a.methods {
-                if method.name == word {
+                if method.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(
                         source,
                         method.decl_span.start,
@@ -55,13 +80,13 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         if let Item::TypeDecl(td) = item {
             for body_item in &td.body {
                 match body_item {
-                    TypeBodyItem::Field { name, .. } if name == word => {
+                    TypeBodyItem::Field { name, .. } if name.name.as_str() == word => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
-                    TypeBodyItem::Variant(v) if v.name == word => {
+                    TypeBodyItem::Variant(v) if v.name == Ident::new(word) => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
-                    TypeBodyItem::Method(m) if m.name == word => {
+                    TypeBodyItem::Method(m) if m.name == Ident::new(word) => {
                         return Some(crate::util::find_name_span(source, m.decl_span.start, word));
                     }
                     _ => {}
@@ -73,10 +98,10 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         if let Item::Trait(t) = item {
             for trait_item in &t.items {
                 match trait_item {
-                    TraitItem::Method(m) if m.name == word => {
+                    TraitItem::Method(m) if m.name == Ident::new(word) => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
-                    TraitItem::AssociatedType { name, .. } if name == word => {
+                    TraitItem::AssociatedType { name, .. } if name.name.as_str() == word => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
                     _ => {}
@@ -87,7 +112,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         // Search inside Impl for methods.
         if let Item::Impl(i) = item {
             for method in &i.methods {
-                if method.name == word {
+                if method.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(source, span.start, word));
                 }
             }
@@ -96,7 +121,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         // Search inside extern blocks for function declarations.
         if let Item::ExternBlock(extern_block) = item {
             for function in &extern_block.functions {
-                if function.name == word {
+                if function.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(source, span.start, word));
                 }
             }
@@ -222,13 +247,13 @@ fn find_param_in_decl(
     }
     params
         .iter()
-        .find(|param| param.name == word)
+        .find(|param| param.name == Ident::new(word))
         .map(param_name_span)
 }
 
 fn param_name_span(param: &Param) -> OffsetSpan {
     let end = param.ty.1.start.saturating_sub(2);
-    let start = end.saturating_sub(param.name.len());
+    let start = end.saturating_sub(param.name.name.as_str().len());
     OffsetSpan { start, end }
 }
 
@@ -248,6 +273,7 @@ pub fn find_field_definition(
     let resolved_type_name = type_output
         .type_defs
         .keys()
+        .map(|id| type_output.defs.path(id.declaration()))
         .find(|name| Ty::names_match_qualified(name, receiver_type_name))?;
     find_type_field_definition(source, parse_result, resolved_type_name, &field_name)
 }
@@ -271,22 +297,26 @@ fn find_type_field_definition(
         let Item::TypeDecl(type_decl) = item else {
             continue;
         };
-        if !Ty::names_match_qualified(type_name, &type_decl.name) {
+        if !Ty::names_match_qualified(type_name, type_decl.name.name.as_str()) {
             continue;
         }
         let mut search_from = item_span.start;
         for body_item in &type_decl.body {
             match body_item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let span = crate::util::find_name_span(source, search_from, name);
-                    if name == field_name {
+                    let span = crate::util::find_name_span(source, search_from, name.name.as_str());
+                    if name.name.as_str() == field_name {
                         return Some(span);
                     }
                     search_from = ty.1.end.max(span.end);
                 }
                 TypeBodyItem::Variant(variant) => {
-                    search_from =
-                        crate::util::find_name_span(source, search_from, &variant.name).end;
+                    search_from = crate::util::find_name_span(
+                        source,
+                        search_from,
+                        variant.name.name.as_str(),
+                    )
+                    .end;
                 }
                 TypeBodyItem::Method(method) => {
                     search_from = search_from.max(method.decl_span.end);
@@ -307,7 +337,7 @@ mod tests {
 
     #[test]
     fn definition_finds_machine_type() {
-        let source = "machine TrafficLight { state Green, state Red, }";
+        let source = "machine TrafficLight {\n    state Green;\n    state Red;\n}\n";
         let pr = parse(source);
         let result = find_definition(source, &pr, "TrafficLight");
         assert!(
@@ -321,7 +351,7 @@ mod tests {
 
     #[test]
     fn definition_machine_name_not_confused_with_state() {
-        let source = "machine TrafficLight { state Green, state Red, }";
+        let source = "machine TrafficLight {\n    state Green;\n    state Red;\n}\n";
         let pr = parse(source);
         // State names are not top-level items; only the machine name resolves.
         let result = find_definition(source, &pr, "Green");
@@ -375,7 +405,7 @@ mod tests {
 
     #[test]
     fn definition_type_method_uses_decl_span() {
-        let source = "type Counter { value: i32 ,fn foo(value: i32) -> i32 { value } }";
+        let source = "type Counter {\n    value: i32;\n    fn foo(value: i32) -> i32 {\n        value\n    }\n}\n";
         let pr = parse(source);
         let result = find_definition(source, &pr, "foo").expect("should find type method");
         let method_start = source.rfind("fn foo").expect("method should exist") + 3;
@@ -386,7 +416,7 @@ mod tests {
     #[test]
     fn definition_finds_struct_field_from_field_access() {
         let source =
-            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let pr = parse(source);
         let mut checker =
             hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
@@ -404,7 +434,7 @@ mod tests {
 
     #[test]
     fn definition_finds_struct_field_declaration() {
-        let source = "type Point { x: i32, y: i32 }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n}\n";
         let pr = parse(source);
         let result = find_definition(source, &pr, "x").expect("should find field declaration");
         let expected_start = source
@@ -416,7 +446,7 @@ mod tests {
 
     #[test]
     fn definition_ignores_struct_init_field_names() {
-        let source = "type Point { x: i32 }\nfn main() { Point { x: 1 } }";
+        let source = "type Point {\n    x: i32;\n}\n\nfn main() {\n    Point { x: 1 }\n}\n";
         let pr = parse(source);
         let mut checker =
             hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
@@ -535,7 +565,7 @@ mod tests {
         // Actor fields are top-level names inside the actor; find_definition must
         // resolve them so that detect_conflicts can produce ShadowsTopLevel when a
         // rename target collides with a field name.
-        let source = "actor Counter { count: i64, receive fn inc() {} }";
+        let source = "actor Counter {\n    let count: i64;\n    receive fn inc() {}\n}\n";
         let pr = parse(source);
         let result = find_definition(source, &pr, "count").expect("should find actor field");
         assert_eq!(&source[result.start..result.end], "count");

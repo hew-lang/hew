@@ -1,0 +1,11 @@
+[[case]]
+id = "wire-cbor-codec-wire-cbor-decode-failure"
+intent = "Wire CBOR codec ownership leak oracles: decode-owned field drop and the decode-failure partial free-on-error path. Shape `wire_cbor_decode_failure` (decode failure frees partials no double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/wire-cbor-codec-wire-cbor-decode-failure.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: WireDecodeFailed (210)\n"
+exit = 1

@@ -63,25 +63,34 @@ impl Parser<'_> {
     }
 
     /// Parse zero or more `#[name]` or `#[name(arg1, arg2)]` attributes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "attribute token forms and error recovery share one parsing loop"
+    )]
     pub(crate) fn parse_attributes(&mut self) -> Vec<Attribute> {
         let mut attrs = Vec::new();
         while self.peek() == Some(&Token::HashBracket) {
             let start = self.peek_span().start;
             self.advance(); // consume `#[`
-            let Some(name) = self.expect_ident() else {
+            let Some(name) = self.expect_ident().map(|ident| ident.to_string()) else {
                 break;
             };
             let mut args = Vec::new();
+            let mut argument_count = 0;
+            let mut quoted_arguments = true;
             if self.eat(&Token::LeftParen) {
                 while self.peek() != Some(&Token::RightParen) && !self.at_end() {
+                    argument_count += 1;
+                    quoted_arguments &=
+                        matches!(self.peek(), Some(Token::StringLit(_) | Token::RawString(_)));
                     if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                         // Safe to call: we know the token is identifier-like
-                        let key = self.expect_ident().unwrap_or_default();
+                        let key = self.expect_word();
                         // Check for key = value syntax
                         if self.eat(&Token::Equal) {
                             let value = if self.peek().is_some_and(|tok| Self::is_ident_token(tok))
                             {
-                                Some(self.expect_ident().unwrap_or_default())
+                                Some(self.expect_word())
                             } else if let Some(Token::StringLit(s) | Token::RawString(s)) =
                                 self.peek()
                             {
@@ -143,7 +152,7 @@ impl Parser<'_> {
                             Self::is_ident_token(tok)
                                 && !matches!(tok, Token::RightParen | Token::Comma)
                         }) {
-                            let unit = self.expect_ident().unwrap_or_default();
+                            let unit = self.expect_word();
                             args.push(AttributeArg::Positional(unit));
                         }
                     } else {
@@ -163,6 +172,7 @@ impl Parser<'_> {
                 args,
                 span: start..end,
             };
+            self.validate_test_attribute_arguments(&attr, argument_count, quoted_arguments);
             self.validate_authority_attribute_shape(&attr);
             attrs.push(attr);
         }
@@ -656,6 +666,10 @@ impl Parser<'_> {
         // not allow `self` receivers (a free function), falls through to the
         // regular param path and is rejected there.
         let consuming_self_span = self.peek_span();
+        let consuming_self_name_span = self
+            .tokens
+            .get(self.pos + 1)
+            .map_or_else(|| consuming_self_span.clone(), |(_, span)| span.clone());
         let consumes_self = self.allow_implicit_self_params && self.eat_consume_self_receiver();
         let mut params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
         // A `consume self` receiver is materialised as a leading by-value
@@ -667,10 +681,14 @@ impl Parser<'_> {
             params.insert(
                 0,
                 Param {
-                    name: "self".to_string(),
+                    name: Ident::from_symbol(sym::SELF_VALUE),
+                    name_span: consuming_self_name_span,
                     ty: (
                         TypeExpr::Named {
-                            name: "Self".to_string(),
+                            path: Path::single(
+                                Ident::from_symbol(sym::SELF_TYPE),
+                                consuming_self_span.clone(),
+                            ),
                             type_args: None,
                         },
                         consuming_self_span,
@@ -913,7 +931,7 @@ impl Parser<'_> {
                 if has_consuming_self {
                     // Record the method name so the checker can validate ownership rules.
                     if let TypeBodyItem::Method(ref m) = item {
-                        consuming_methods.push(m.name.clone());
+                        consuming_methods.push(m.name);
                     }
                 }
                 body.push(item);
@@ -966,107 +984,30 @@ impl Parser<'_> {
         let type_params = self.parse_opt_type_params()?;
         let where_clause = self.parse_opt_where_clause()?;
 
-        if self.eat(&Token::LeftParen) {
-            // Tuple-positional form: `type Name(T1, T2, ...) ;`
-            let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
-
-            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                let ty = self.parse_type()?;
-                field_types.push(ty);
-
-                if self.peek() == Some(&Token::Comma) {
-                    self.advance();
-                } else {
-                    break;
-                }
+        self.expect(&Token::LeftParen)?;
+        let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
+        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+            field_types.push(self.parse_type()?);
+            if !self.eat(&Token::Comma) {
+                break;
             }
-
-            if field_types.is_empty() {
-                self.error("tuple type must have at least one positional field".to_string());
-                return None;
-            }
-
-            let end = self.peek_span().start;
-            self.expect(&Token::RightParen)?;
-            self.expect(&Token::Semicolon)?;
-
-            Some(RecordDecl {
-                visibility,
-                name,
-                type_params,
-                where_clause,
-                kind: RecordKind::Tuple(field_types),
-                doc_comment: None,
-                span: start..end,
-            })
-        } else {
-            // This parser is selected only for tuple-form `type` declarations.
-            self.expect(&Token::LeftBrace)?;
-
-            let mut fields: Vec<RecordField> = Vec::new();
-            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                let field_start = self.peek_span().start;
-
-                // Field name
-                let field_name = if let Some(Token::Identifier(_)) = self.peek() {
-                    self.expect_ident()?
-                } else {
-                    let found = match self.peek() {
-                        Some(tok) => format!("{tok}"),
-                        None => "end of file".to_string(),
-                    };
-                    self.error(format!("expected field name, found {found}"));
-                    return None;
-                };
-
-                self.expect(&Token::Colon)?;
-
-                let ty = self.parse_type()?;
-                let field_end = self.peek_span().start;
-
-                fields.push(RecordField {
-                    name: field_name,
-                    ty,
-                    doc_comment: None,
-                    span: field_start..field_end,
-                });
-
-                // Comma or end of body. Semicolons are common when users
-                // switch from `type` fields; keep them invalid but recover
-                // with a targeted hint instead of cascading item-level errors.
-                if self.peek() == Some(&Token::Comma) {
-                    self.advance();
-                } else if self.peek() == Some(&Token::Semicolon) {
-                    let semi_span = self.peek_span();
-                    self.error_at_with_hint(
-                        "expected `,` or `}` after record field, found `;`".to_string(),
-                        semi_span,
-                        "record fields use commas; write `field: Type,` instead of `field: Type;`",
-                    );
-                    self.advance();
-                } else {
-                    break;
-                }
-            }
-
-            if fields.is_empty() {
-                self.error("record body must contain at least one field".to_string());
-                return None;
-            }
-
-            let end = self.peek_span().start;
-            self.expect(&Token::RightBrace)?;
-
-            Some(RecordDecl {
-                visibility,
-                name,
-                type_params,
-                where_clause,
-                kind: RecordKind::Named(fields),
-                doc_comment: None,
-                span: start..end,
-            })
         }
+        if field_types.is_empty() {
+            self.error("tuple type must have at least one positional field".to_string());
+            return None;
+        }
+        let end = self.peek_span().start;
+        self.expect(&Token::RightParen)?;
+        self.expect(&Token::Semicolon)?;
+        Some(RecordDecl {
+            visibility,
+            name,
+            type_params,
+            where_clause,
+            kind: RecordKind::Tuple(field_types),
+            doc_comment: None,
+            span: start..end,
+        })
     }
 
     /// Extract `ResourceMarker` from a pre-parsed attribute slice.
@@ -1184,6 +1125,7 @@ impl Parser<'_> {
                     let (mut method, has_consuming_self) =
                         self.parse_type_method(fn_start, attributes)?;
                     method.doc_comment = doc_comment;
+                    self.refuse_mark_after_body();
                     Some((TypeBodyItem::Method(method), has_consuming_self))
                 } else {
                     self.validate_attributes_for(&attributes, AttrPosition::Field);
@@ -1191,7 +1133,7 @@ impl Parser<'_> {
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     // peek_span().start is now the first token after the `,`,
                     // which captures any trailing comment on this field's line in the
                     // range item_start..item_end (comments are skipped by the lexer,
@@ -1229,7 +1171,7 @@ impl Parser<'_> {
                         self.expect(&Token::Colon)?;
                         let ty = self.parse_type()?;
                         fields.push((field_name, ty));
-                        self.expect_structural_separator();
+                        self.expect_member_terminator("field");
                     }
                     self.expect(&Token::RightBrace)?;
                     VariantKind::Struct(fields)
@@ -1237,7 +1179,11 @@ impl Parser<'_> {
                     VariantKind::Unit
                 };
 
-                self.expect_structural_separator();
+                if matches!(kind, VariantKind::Struct(_)) {
+                    self.refuse_mark_after_body();
+                } else {
+                    self.expect_member_terminator("variant");
+                }
                 // peek_span() is now the position after the trailing `,`
                 let item_end = self.peek_span().start;
                 Some((
@@ -1318,26 +1264,7 @@ impl Parser<'_> {
                 let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
-                let consuming_self_span = self.peek_span();
-                let consumes_self = self.eat_consume_self_receiver();
-                let mut params = self.parse_params_with_implicit_self(true);
-                if consumes_self {
-                    params.insert(
-                        0,
-                        Param {
-                            name: "self".to_string(),
-                            ty: (
-                                TypeExpr::Named {
-                                    name: "Self".to_string(),
-                                    type_args: None,
-                                },
-                                consuming_self_span,
-                            ),
-                            is_mutable: false,
-                            is_consume: false,
-                        },
-                    );
-                }
+                let (params, consumes_self) = self.parse_trait_method_params();
                 self.expect(&Token::RightParen)?;
 
                 let return_type = self.parse_opt_return_type()?;
@@ -1370,31 +1297,7 @@ impl Parser<'_> {
                     consumes_self,
                 }))
             }
-            Some(Token::Type) => {
-                let type_start = self.peek_span().start;
-                self.advance();
-                let name = self.expect_ident()?;
-
-                let bounds = if self.eat(&Token::Colon) {
-                    self.parse_trait_bound_list()?
-                } else {
-                    Vec::new()
-                };
-
-                let default = if self.eat(&Token::Equal) {
-                    Some(self.parse_type()?)
-                } else {
-                    None
-                };
-
-                let semi_span = self.expect(&Token::Semicolon)?;
-                Some(TraitItem::AssociatedType {
-                    name,
-                    bounds,
-                    default,
-                    span: type_start..semi_span.end,
-                })
-            }
+            Some(Token::Type) => self.parse_trait_associated_type(),
             _ => {
                 let found = match self.peek() {
                     Some(tok) => format!("{tok}"),
@@ -1407,6 +1310,63 @@ impl Parser<'_> {
                 None
             }
         }
+    }
+
+    fn parse_trait_associated_type(&mut self) -> Option<TraitItem> {
+        let type_start = self.peek_span().start;
+        self.advance();
+        let name = self.expect_ident()?;
+
+        let bounds = if self.eat(&Token::Colon) {
+            self.parse_trait_bound_list()?
+        } else {
+            Vec::new()
+        };
+        let default = if self.eat(&Token::Equal) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let semi_span = self.expect(&Token::Semicolon)?;
+        Some(TraitItem::AssociatedType {
+            name,
+            bounds,
+            default,
+            span: type_start..semi_span.end,
+        })
+    }
+
+    fn parse_trait_method_params(&mut self) -> (Vec<Param>, bool) {
+        let consuming_self_span = self.peek_span();
+        let consuming_self_name_span = self
+            .tokens
+            .get(self.pos + 1)
+            .map_or_else(|| consuming_self_span.clone(), |(_, span)| span.clone());
+        let consumes_self = self.eat_consume_self_receiver();
+        let mut params = self.parse_params_with_implicit_self(true);
+        if consumes_self {
+            params.insert(
+                0,
+                Param {
+                    name: Ident::from_symbol(sym::SELF_VALUE),
+                    name_span: consuming_self_name_span,
+                    ty: (
+                        TypeExpr::Named {
+                            path: Path::single(
+                                Ident::from_symbol(sym::SELF_TYPE),
+                                consuming_self_span.clone(),
+                            ),
+                            type_args: None,
+                        },
+                        consuming_self_span,
+                    ),
+                    is_mutable: false,
+                    is_consume: false,
+                },
+            );
+        }
+        (params, consumes_self)
     }
 
     pub(crate) fn parse_impl_decl(&mut self) -> Option<ImplDecl> {
@@ -1610,7 +1570,9 @@ impl Parser<'_> {
             self.expect(&Token::Semicolon)?;
             let file_path = unquote_str(raw).to_owned();
             return Some(ImportDecl {
-                path: Vec::new(),
+                path: Path {
+                    segments: Vec::new(),
+                },
                 spec: None,
                 selection_trailing_comma: false,
                 module_alias: None,
@@ -1721,7 +1683,7 @@ impl Parser<'_> {
         self.expect(&Token::Semicolon)?;
 
         Some(ImportDecl {
-            path,
+            path: Path { segments: path },
             spec,
             selection_trailing_comma,
             module_alias,
@@ -1732,12 +1694,12 @@ impl Parser<'_> {
         })
     }
 
-    fn diagnose_hyphenated_import_package(&mut self, path: &[String]) -> bool {
+    fn diagnose_hyphenated_import_package(&mut self, path: &[Spanned<Ident>]) -> bool {
         if path.len() != 1 || self.peek() != Some(&Token::Minus) {
             return false;
         }
 
-        let mut invalid_name = path[0].clone();
+        let mut invalid_name = path[0].0.to_string();
         let mut lookahead = 0;
         while self.peek_at(self.pos + lookahead) == Some(&Token::Minus) {
             let Some(segment) = self

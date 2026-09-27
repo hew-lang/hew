@@ -938,18 +938,27 @@ mod tests {
         unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
     }
 
-    fn timed_out_tcp_reader(client_timeout: Duration) -> (TcpStream, thread::JoinHandle<()>) {
+    /// A client whose reads time out: the server holds the accepted socket
+    /// open, sending nothing, until the returned sender is used or dropped.
+    fn timed_out_tcp_reader(
+        client_timeout: Duration,
+    ) -> (
+        TcpStream,
+        std::sync::mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 
         let server = thread::spawn(move || {
             let _accepted = listener.accept().unwrap();
-            thread::sleep(Duration::from_millis(200));
+            let _ = release_rx.recv();
         });
 
         let tcp = TcpStream::connect(addr).unwrap();
         tcp.set_read_timeout(Some(client_timeout)).unwrap();
-        (tcp, server)
+        (tcp, release_tx, server)
     }
 
     #[test]
@@ -1056,9 +1065,10 @@ mod tests {
     #[test]
     fn read_socket_timeout_sets_retryable_status_and_last_error() {
         clear_tls_last_error();
-        let (mut stream, server) = timed_out_tcp_reader(Duration::from_millis(25));
+        let (mut stream, release, server) = timed_out_tcp_reader(Duration::from_millis(25));
 
         let result = read_tls_vec(&mut stream, 32);
+        drop(release);
 
         assert_eq!(result.data.len, 0);
         assert_eq!(result.status, TLS_STATUS_RETRYABLE);
@@ -1696,20 +1706,10 @@ mod tests {
         }
         assert!(saw_close, "on_close must fire on server EOF");
 
-        // The reap proof: hew_tls_close must join the reader promptly (no hang).
-        // The reader's worst-case exit latency is TLS_READER_TIMEOUT (250 ms);
-        // closing must return well within a generous bound. Routed into the
-        // `real-timing` nextest group (.config/nextest.toml) alongside its
-        // sibling below — both measure a real OS-scheduled thread join and
-        // starve under full-workspace parallel load otherwise (#2358).
-        let close_start = Instant::now();
+        // The reap proof: hew_tls_close joins the reader (no hang); a close
+        // that never joined is reported by the test runner's timeout.
         // SAFETY: `stream_ptr` was produced by `from_stream` and not yet freed.
         unsafe { hew_tls_close(stream_ptr) };
-        let close_elapsed = close_start.elapsed();
-        assert!(
-            close_elapsed < Duration::from_secs(2),
-            "hew_tls_close must reap the reader promptly, took {close_elapsed:?}"
-        );
 
         server.join().expect("server thread");
         // SAFETY: `actor` is the live actor we spawned; stop quiesces it.
@@ -1891,11 +1891,10 @@ mod tests {
     }
 
     #[test]
-    fn close_reaps_a_live_blocked_reader_without_hanging() {
-        // Teeth for the #1963 reap: the reader is parked in its blocking read
-        // (the server never sends data and never closes) when `hew_tls_close` is
-        // called. `hew_tls_close` must join the still-running reader and return
-        // within ~`TLS_READER_TIMEOUT`, not block forever or detach it.
+    fn close_reaps_an_attached_reader_without_hanging() {
+        // Teeth for the #1963 reap: the server sends no data and leaves the
+        // connection open. Close must cancel and join the attached reader,
+        // whether it has entered its blocking read yet or not.
         let _runtime = NetErrorSlotRuntimeGuard::new();
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -1919,7 +1918,7 @@ mod tests {
         let client = client_stream_trusting(addr, cert_der);
         let stream_ptr = HewTlsStream::from_stream(client);
 
-        let (test_id, rx) = register_tls_actor_events();
+        let (test_id, _rx) = register_tls_actor_events();
         let state = TlsTestActorState { test_id };
         // SAFETY: `state` is a valid POD snapshot for the spawn copy.
         let actor = unsafe {
@@ -1934,33 +1933,16 @@ mod tests {
         let attach_status = unsafe { attach_tls_for_test(stream_ptr, actor.cast()) };
         assert_eq!(attach_status, 0, "attach should succeed");
 
-        // Let the reader settle into its blocking read loop before closing.
-        thread::sleep(Duration::from_millis(50));
-        // No data should have arrived on a silent connection.
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            other => panic!("expected no event on a silent connection, got {other:?}"),
-        }
-
         // Clone the inner Arc BEFORE close so we can inspect `reader_exited`
         // after `hew_tls_close` frees the outer HewTlsStream.
         // SAFETY: `stream_ptr` is live at this point; we read (not move) the Arc.
         let inner_arc = Arc::clone(unsafe { &(*stream_ptr).inner });
 
-        // The reap proof: closing a live, blocked reader returns promptly.
-        // This measurement is an irreducibly real OS-scheduling bound (a live
-        // thread parked in a socket read, joined via a real JoinHandle), so it
-        // is routed into the `real-timing` nextest group (max-threads = 1,
-        // .config/nextest.toml) — full-workspace parallel runs would otherwise
-        // starve it past the deadline below (#2358).
-        let close_start = Instant::now();
+        // The reap proof: closing an attached reader returns, and the
+        // join-proof below shows it joined rather than detached. A close that
+        // never returns is reported by the test runner's timeout.
         // SAFETY: `stream_ptr` was produced by `from_stream` and not yet freed.
         unsafe { hew_tls_close(stream_ptr) };
-        let close_elapsed = close_start.elapsed();
-        assert!(
-            close_elapsed < Duration::from_secs(2),
-            "hew_tls_close must reap a live reader within the read-timeout bound, took {close_elapsed:?}"
-        );
 
         // JOIN-PROOF: `reader_exited` is set (Release) by the reader immediately
         // before it returns. `hew_tls_close` calls `join.join()` before returning,

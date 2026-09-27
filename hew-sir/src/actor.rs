@@ -102,11 +102,7 @@ impl SemActorHandler {
             return true;
         }
         self.failure_display.is_some()
-            && matches!(&self.return_ty, ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Result),
-                args,
-                ..
-            } if matches!(args.as_slice(), [ResolvedTy::Unit, _]))
+            && matches!(&self.return_ty, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result), args, .. } if matches!(args.as_slice(), [ResolvedTy::Unit, _]))
     }
 }
 
@@ -225,7 +221,7 @@ pub(crate) fn local_actor_instance(
         return Some(instance);
     }
     let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::ChildRef),
+        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
         args,
         ..
     } = ty
@@ -244,7 +240,6 @@ impl SemActor {
     #[must_use]
     pub fn child_ref_ty(&self) -> ResolvedTy {
         ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ChildRef.canonical_name(),
             hew_types::BuiltinType::ChildRef,
             vec![self.handle_ty.clone()],
         )
@@ -259,7 +254,7 @@ impl SemActor {
         matches!(
             self.handle_ty,
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorFn),
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
                 ..
             }
         )
@@ -293,6 +288,7 @@ impl SemActor {
     /// Rejects an unknown protocol member or an unresolved reply type.
     pub fn ask_signature(
         &self,
+        defs: &hew_types::DefTable,
         message: u32,
         target: &ResolvedTy,
         result_ty: ResolvedTy,
@@ -312,10 +308,7 @@ impl SemActor {
             caller_visible_projection: false,
         }];
         let request_params = if sealed {
-            vec![ResolvedTy::named_opaque(
-                "std.builtins.ActorRequestOwner",
-                Vec::new(),
-            )]
+            vec![hew_types::runtime_call::actor_request_owner_ty()]
         } else {
             handler.params.clone()
         };
@@ -339,13 +332,13 @@ impl SemActor {
         if !matches_protocol {
             return Err("ask reply differs from its receive protocol".into());
         }
-        let ResolvedTy::Named { name, args, .. } = error else {
+        let ResolvedTy::Named { head, args, .. } = error else {
             return Err("ask lacks its completion envelope".into());
         };
         let [failure, request] = args.as_slice() else {
             return Err("ask envelope lacks its failure and request parameters".into());
         };
-        if name != hew_types::actor_delivery::ACTOR_ERROR_TYPE {
+        if *head != hew_types::KnownDecl::ActorError.head() {
             return Err("ask must return the checked ActorError envelope".into());
         }
         if request.to_ty() != hew_types::Ty::never_type() {
@@ -358,9 +351,10 @@ impl SemActor {
                     .ok_or("ask rejection lacks its sealed handler protocol")?;
             if *request_target != target.to_ty()
                 || policy != hew_types::actor_delivery::SendPolicy::Reject
-                || (method != handler.declaration.full_path()
+                || (method.spelling.as_str() != defs.path(handler.declaration)
                     && !(self.is_lambda()
-                        && method == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID))
+                        && method.spelling.as_str()
+                            == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID))
                 || *parameters
                     != hew_types::Ty::Tuple(handler.params.iter().map(ResolvedTy::to_ty).collect())
                 || *success != reply.to_ty()
@@ -398,11 +392,7 @@ impl SemActor {
         let [msg] = handler.params.as_slice() else {
             return Err("a remote member takes exactly its message".into());
         };
-        let addressed = matches!(target, ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::RemotePid),
-            args,
-            ..
-        } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
+        let addressed = matches!(target, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid), args, .. } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
         if !addressed {
             return Err("remote call target is not this actor's RemotePid".into());
         }
@@ -445,19 +435,19 @@ impl SemActor {
         // protocol it must agree with is its single handler's.
         match &self.handle_ty {
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorHandle),
+                head: hew_types::TypeHead::Actor(_),
                 ..
             } => {
                 if self
                     .handle_ty
                     .actor_handle_instance()
-                    .is_none_or(|instance| instance.nominal.declaration() != &self.declaration)
+                    .is_none_or(|instance| instance.nominal.declaration() != self.declaration)
                 {
                     return Err("actor handle refers to another declaration".into());
                 }
             }
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorFn),
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
                 args,
                 ..
             } => {
@@ -483,6 +473,7 @@ impl SemActor {
 
     fn validate_lifecycle_signature(
         &self,
+        defs: &hew_types::DefTable,
         body: crate::CallableId,
         callable: &crate::SemCallable,
     ) -> Result<(), String> {
@@ -506,11 +497,9 @@ impl SemActor {
         };
         let expected_params = usize::from(typed.is_some()) + 1;
         let expected_return = match typed {
-            Some((_, hew_types::BuiltinType::CrashAction)) => ResolvedTy::named_builtin(
-                "std.failure.CrashAction",
-                hew_types::BuiltinType::CrashAction,
-                Vec::new(),
-            ),
+            Some((_, hew_types::BuiltinType::CrashAction)) => {
+                ResolvedTy::named_builtin(hew_types::BuiltinType::CrashAction, Vec::new())
+            }
             _ => ResolvedTy::Unit,
         };
         let payload_matches = typed.is_none_or(|(expected, _)| {
@@ -518,7 +507,7 @@ impl SemActor {
                 parameter.ty.is_builtin(expected)
                     && parameter
                         .ty
-                        .nominal_instance()
+                        .nominal_instance(defs)
                         .is_some_and(|instance| instance.args.is_empty())
             })
         });
@@ -600,7 +589,7 @@ impl SemActor {
                     return Err("actor init must return unit".into());
                 }
             } else if hooks.clone().any(|hook| *hook == body) {
-                self.validate_lifecycle_signature(body, callable)?;
+                self.validate_lifecycle_signature(&module.defs, body, callable)?;
             }
             let lends = self.methods.contains(&body);
             for parameter in callable.signature.params.iter().skip(1) {
@@ -778,7 +767,7 @@ pub(crate) fn verify_operation(
     })())
 }
 
-/// Actor boundary selected from an exact demanded protocol.
+/// Exact actor, supervisor or stable role selected for a lifecycle operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorCallProtocol {
     pub actor: ActorId,
@@ -794,11 +783,7 @@ impl ActorCallProtocol {
     /// The operation is an affine owner, distinct from a scope-owned task.
     #[must_use]
     pub fn operation_ty(&self) -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ActorCall.canonical_name(),
-            hew_types::BuiltinType::ActorCall,
-            vec![self.result.clone()],
-        )
+        ResolvedTy::named_builtin(hew_types::BuiltinType::ActorCall, vec![self.result.clone()])
     }
 }
 
@@ -902,6 +887,48 @@ impl RemoteObservationKind {
 }
 
 /// Actor boundary selected from an exact demanded protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleTarget {
+    Actor(ActorId),
+    ActorRole(ActorId),
+    Supervisor(crate::SupervisorId),
+    SupervisorRole(crate::SupervisorId),
+}
+
+impl LifecycleTarget {
+    fn handle_ty(
+        self,
+        actors: &[SemActor],
+        supervisors: &[crate::SemSupervisor],
+    ) -> Result<ResolvedTy, String> {
+        match self {
+            Self::Actor(id) | Self::ActorRole(id) => {
+                let actor = actors
+                    .get(id.0 as usize)
+                    .filter(|actor| actor.id == id)
+                    .ok_or("unknown lifecycle actor identity")?;
+                Ok(if matches!(self, Self::ActorRole(_)) {
+                    actor.child_ref_ty()
+                } else {
+                    actor.handle_ty.clone()
+                })
+            }
+            Self::Supervisor(id) | Self::SupervisorRole(id) => {
+                let supervisor = supervisors
+                    .get(id.0 as usize)
+                    .filter(|supervisor| supervisor.id == id)
+                    .ok_or("unknown lifecycle supervisor identity")?;
+                Ok(if matches!(self, Self::SupervisorRole(_)) {
+                    supervisor.child_ref_ty()
+                } else {
+                    supervisor.handle_ty.clone()
+                })
+            }
+        }
+    }
+}
+
+/// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
     LocalObservation {
@@ -913,8 +940,10 @@ pub enum ActorOperation {
     CallStart(ActorCallProtocol),
     /// Consume an operation selected as ready, materializing its checked result.
     CallTake(ActorCallProtocol),
-    Close(ActorId),
-    AwaitClosed(ActorId),
+    Stop(LifecycleTarget),
+    Terminate(LifecycleTarget),
+    AwaitStopped(LifecycleTarget),
+    AwaitRestarted(LifecycleTarget),
     Spawn(ActorId),
     /// The running actor's own handle — bare `self` in an actor body. Takes no
     /// operands: the handle is the actor the boundary already runs inside.
@@ -957,25 +986,6 @@ pub enum ActorOperation {
         child: u32,
         owner_is_role: bool,
     },
-    /// Stop the supervisor and every child; each child's stop hooks run before
-    /// its terminal cleanup.
-    SupervisorStop(crate::SupervisorId),
-    /// Observe supervisor reclamation without requesting shutdown.
-    SupervisorAwaitClosed(crate::SupervisorId),
-    /// Observe the incarnation selected from a supervisor role once; close
-    /// additionally requests its stop after retaining completion.
-    SupervisorRoleAwaitClosed {
-        supervisor: crate::SupervisorId,
-        closing: bool,
-    },
-    /// Wait until one declared child is Live again after a crash, or is
-    /// permanently gone, then produce its role. The restart barrier: without
-    /// it a caller cannot tell a pre-crash incarnation from its replacement.
-    SupervisorAwaitRestart {
-        supervisor: crate::SupervisorId,
-        child: u32,
-        owner_is_role: bool,
-    },
     /// Produce a `pool` child's view: the owning supervisor and the first of
     /// the pool's consecutive member slots. The member count is a declaration
     /// fact, so the view carries only what varies at runtime.
@@ -1004,11 +1014,7 @@ impl ActorOperation {
     ) -> Result<crate::SemSignature, String> {
         let (Self::SupervisorSpawn(id)
         | Self::SupervisorChild { supervisor: id, .. }
-        | Self::SupervisorAwaitRestart { supervisor: id, .. }
-        | Self::SupervisorPoolView { supervisor: id, .. }
-        | Self::SupervisorStop(id)
-        | Self::SupervisorAwaitClosed(id)
-        | Self::SupervisorRoleAwaitClosed { supervisor: id, .. }) = self
+        | Self::SupervisorPoolView { supervisor: id, .. }) = self
         else {
             return Err("operation is not a supervisor boundary".into());
         };
@@ -1035,11 +1041,6 @@ impl ActorOperation {
                 child,
                 owner_is_role,
                 ..
-            }
-            | Self::SupervisorAwaitRestart {
-                child,
-                owner_is_role,
-                ..
             } => consume(
                 vec![if *owner_is_role {
                     supervisor.child_ref_ty()
@@ -1060,14 +1061,15 @@ impl ActorOperation {
                 }],
                 supervisor.pool_view_ty(*child as usize, actors, supervisors)?,
             ),
-            Self::SupervisorRoleAwaitClosed { .. } => {
-                consume(vec![supervisor.child_ref_ty()], ResolvedTy::Unit)
-            }
             _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
         })
     }
 
-    fn completion_signature(&self, actors: &[SemActor]) -> Result<crate::SemSignature, String> {
+    fn completion_signature(
+        &self,
+        defs: &hew_types::DefTable,
+        actors: &[SemActor],
+    ) -> Result<crate::SemSignature, String> {
         let (Self::CallStart(protocol) | Self::CallTake(protocol)) = self else {
             return Err("operation is not a completion boundary".into());
         };
@@ -1077,6 +1079,7 @@ impl ActorOperation {
             .ok_or("unknown completion actor identity")?;
         let sealed = matches!(self, Self::CallStart(_)) && protocol.sealed;
         let mut signature = actor.ask_signature(
+            defs,
             protocol.message,
             &protocol.target,
             protocol.result.clone(),
@@ -1116,12 +1119,35 @@ impl ActorOperation {
     )]
     pub fn signature(
         &self,
+        defs: &hew_types::DefTable,
         actors: &[SemActor],
         supervisors: &[crate::SemSupervisor],
         callable: impl Fn(crate::CallableId) -> Option<crate::SemSignature>,
     ) -> Result<crate::SemSignature, String> {
         if matches!(self, Self::CallStart(_) | Self::CallTake(_)) {
-            return self.completion_signature(actors);
+            return self.completion_signature(defs, actors);
+        }
+        if let Self::Stop(target)
+        | Self::Terminate(target)
+        | Self::AwaitStopped(target)
+        | Self::AwaitRestarted(target) = self
+        {
+            if matches!(self, Self::AwaitRestarted(_))
+                && !matches!(
+                    target,
+                    LifecycleTarget::ActorRole(_) | LifecycleTarget::SupervisorRole(_)
+                )
+            {
+                return Err("restart wait requires a supervised role".into());
+            }
+            return Ok(crate::SemSignature {
+                params: vec![crate::SemAbiParam {
+                    ty: target.handle_ty(actors, supervisors)?,
+                    passing: crate::SemParamPassing::Borrow,
+                    caller_visible_projection: false,
+                }],
+                return_ty: ResolvedTy::Unit,
+            });
         }
         if let Self::LocalObservation {
             kind,
@@ -1154,12 +1180,14 @@ impl ActorOperation {
             Self::LocalObservation { .. }
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
-            | Self::CallTake(_) => {
+            | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             Self::Spawn(id)
-            | Self::Close(id)
-            | Self::AwaitClosed(id)
             | Self::SelfHandle(id)
             | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. } => *id,
@@ -1176,11 +1204,9 @@ impl ActorOperation {
             }
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
-            | Self::SupervisorAwaitRestart { .. }
-            | Self::SupervisorPoolView { .. }
-            | Self::SupervisorAwaitClosed(_)
-            | Self::SupervisorRoleAwaitClosed { .. }
-            | Self::SupervisorStop(_) => return self.supervisor_signature(actors, supervisors),
+            | Self::SupervisorPoolView { .. } => {
+                return self.supervisor_signature(actors, supervisors)
+            }
         };
         let actor = actors
             .get(id.0 as usize)
@@ -1191,6 +1217,10 @@ impl ActorOperation {
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_)
             | Self::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }
@@ -1210,15 +1240,9 @@ impl ActorOperation {
                     ResolvedTy::Unit,
                 )
             }
-            Self::Close(_) => (vec![actor.handle_ty.clone()], actor.handle_ty.clone()),
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
-            | Self::SupervisorAwaitRestart { .. }
-            | Self::SupervisorPoolView { .. }
-            | Self::SupervisorAwaitClosed(_)
-            | Self::SupervisorRoleAwaitClosed { .. }
-            | Self::SupervisorStop(_) => unreachable!("supervisor boundaries return above"),
-            Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
+            | Self::SupervisorPoolView { .. } => unreachable!("supervisor boundaries return above"),
             Self::SelfHandle(_) => (Vec::new(), actor.handle_ty.clone()),
             // Deferred fields (D447) receive their value inside init.
             Self::Spawn(_) => (
@@ -1265,7 +1289,7 @@ impl ActorOperation {
 /// The `Ok` and `Err` arms of a checked `Result`.
 fn result_parts(ty: &ResolvedTy) -> Option<[&ResolvedTy; 2]> {
     let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::Result),
+        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Result),
         args,
         ..
     } = ty

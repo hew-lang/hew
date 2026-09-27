@@ -73,7 +73,7 @@ impl Checker {
             Expr::Call { .. } if self.call_can_fail(&key) => "this call".to_string(),
             Expr::MethodCall {
                 receiver, method, ..
-            } if self.method_call_can_fail(&key, receiver) => format!("`{method}(...)`"),
+            } if self.method_call_can_fail(&key, receiver) => format!("`{}(...)`", method.0),
             Expr::Binary { op, .. } if checked_integer_op(*op, &self.subst.resolve(ty)) => {
                 "this arithmetic".to_string()
             }
@@ -153,7 +153,7 @@ impl Checker {
         let released: Vec<(String, Span)> = self
             .env
             .current_scope_bindings()
-            .filter(|(name, _)| *name != receiver)
+            .filter(|(name, _)| name.name.as_str() != receiver)
             .filter_map(|(name, _)| {
                 let binding = self.env.lookup_ref(name)?;
                 self.release_may_run_close(&self.subst.resolve(&binding.ty))
@@ -237,15 +237,16 @@ impl Checker {
     fn release_may_run_close_guarded(
         &self,
         ty: &Ty,
-        visiting: &mut std::collections::HashSet<String>,
+        visiting: &mut std::collections::HashSet<crate::TypeHead>,
     ) -> bool {
         match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                if self.registry.is_resource(name) || self.registry.is_linear(name) {
+            Ty::Named { head, args, .. } => {
+                let builtin = head.builtin();
+                if head
+                    .nominal()
+                    .is_some_and(|id| self.registry.is_resource(id))
+                    || head.nominal().is_some_and(|id| self.registry.is_linear(id))
+                {
                     return true;
                 }
                 if args
@@ -257,21 +258,21 @@ impl Checker {
                 if builtin.is_some() {
                     return false;
                 }
-                match self.registry.member_types(name) {
+                match self.registry.member_types(*head) {
                     Some(members) => {
-                        if !visiting.insert(name.clone()) {
+                        if !visiting.insert(*head) {
                             return false;
                         }
                         let members = members.to_vec();
                         let may = members
                             .iter()
                             .any(|member| self.release_may_run_close_guarded(member, visiting));
-                        visiting.remove(name);
+                        visiting.remove(head);
                         may
                     }
                     // A name with no registered members and no declaration is
                     // an abstract type parameter.
-                    None => !self.type_defs.contains_key(name) && !self.known_types.contains(name),
+                    None => matches!(head, crate::TypeHead::Param(_)),
                 }
             }
             Ty::Tuple(elements) => elements

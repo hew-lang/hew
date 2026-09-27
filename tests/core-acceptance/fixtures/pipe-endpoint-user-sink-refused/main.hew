@@ -6,7 +6,7 @@
 import std.stream as pipes;
 
 pub type Sink<T> {
-    tag: T,
+    tag: T;
 }
 
 fn wants_endpoint(tx: pipes.Sink<i64>) {

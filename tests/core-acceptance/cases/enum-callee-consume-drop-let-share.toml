@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-callee-consume-drop-let-share"
+intent = "Leak oracle for the callee-side drop of a CONSUMED by-value enum param (#2732). Shape `let_share_df` (move out via let share does not double free, move out via let share leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-callee-consume-drop-let-share.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

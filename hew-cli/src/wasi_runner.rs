@@ -28,13 +28,20 @@ pub(crate) fn run_module(
     module_path: &Path,
     program_args: &[String],
     timeout: Option<Duration>,
+    deterministic: Option<&str>,
 ) -> Result<WasiRunOutcome, String> {
     let wasmtime = find_wasmtime().ok_or_else(|| {
         "cannot find wasmtime. Install wasmtime or add it to PATH to use `hew run --target wasm32-wasi`".to_string()
     })?;
 
     let mut command = Command::new(wasmtime);
-    command.arg("run").arg(module_path);
+    command.arg("run");
+    if let Some(config) = deterministic {
+        command
+            .arg("--env")
+            .arg(format!("HEW_DETERMINISTIC={config}"));
+    }
+    command.arg(module_path);
     command.args(program_args);
 
     let mut child = command

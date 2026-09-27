@@ -50,8 +50,8 @@ fn blocked_recv_resolves_to_partition_detected_on_member_dead() {
         std::thread::spawn(move || handle.recv())
     };
 
-    // Give the recv thread time to block.
-    std::thread::sleep(Duration::from_millis(20));
+    // Whether or not the recv has blocked yet, the partition is sticky and
+    // recv checks it before waiting.
 
     // Synthesise the MEMBER_DEAD event through the partition-injection seam.
     // In production, the cluster substrate calls this when phi-accrual or
@@ -129,8 +129,6 @@ fn multiple_queues_for_same_node_all_partitioned() {
         std::thread::spawn(move || d.recv())
     };
 
-    std::thread::sleep(Duration::from_millis(20));
-
     registry.on_member_dead(NODE_ID);
 
     for (i, h) in [h1, h2, h3].into_iter().enumerate() {
@@ -199,23 +197,15 @@ fn cluster_member_dead_fans_out_partition_via_registry() {
         std::thread::spawn(move || handle.recv())
     };
 
-    std::thread::sleep(Duration::from_millis(10));
-
     // Drop the connection — moves peer to SUSPECT.
     // SAFETY: cluster is valid.
     unsafe { hew_cluster_notify_connection_lost(cluster, REMOTE_ID) };
 
-    // Tick repeatedly until SUSPECT→DEAD fires (beyond suspect_timeout_ms).
-    let deadline = std::time::Instant::now() + Duration::from_millis(500);
-    loop {
+    // Tick until SUSPECT→DEAD fires (beyond suspect_timeout_ms) and wakes the
+    // receiver.
+    while !recv_handle.is_finished() {
         // SAFETY: cluster pointer is valid for the loop duration.
         unsafe { hew_cluster_tick(cluster) };
-        if recv_handle.is_finished() {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            break;
-        }
         std::thread::sleep(Duration::from_millis(10));
     }
 

@@ -45,6 +45,8 @@ export interface RuntimeFailure {
   message: string;
   span: TraceSpan | null;
   trap_kind: TrapKind | null;
+  hew_fault?: { code: number; kind: string };
+  assertion?: { operator: string; left: string; right: string };
   unsupported?: UnsupportedDiagnostic;
 }
 
@@ -105,7 +107,8 @@ export interface TraceEvent {
 }
 
 export interface ReplayConfig {
-  seed: number;
+  // Decimal strings preserve the full u64 seed used by `hew test`.
+  seed: number | string;
   step_budget: number;
   virtual_clock: VirtualClock;
   inputs: Array<{ kind: string; data: JsonValue }>;

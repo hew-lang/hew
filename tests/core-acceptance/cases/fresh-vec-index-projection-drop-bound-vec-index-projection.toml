@@ -1,0 +1,10 @@
+[[case]]
+id = "fresh-vec-index-projection-drop-bound-vec-index-projection"
+intent = "Direct projection from a fresh `Vec` composite-index result must release the cloned root once, without changing the bound-index control's ownership. Shape `bound_vec_index_projection_high` (bound fresh vec index control has no per frame leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fresh-vec-index-projection-drop-bound-vec-index-projection.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -250,23 +250,27 @@ fn permanent_index_callback_fault() {
 #[test]
 fn collection_clone_and_set_emptiness_compose_without_new_runtime_operations() {
     let module = lower_source(
-        r#"
-        type Holder { values: HashMap<i64, Vec<string>> }
-        fn main() -> i64 {
-            var values: HashMap<i64, Vec<string>> = HashMap.new();
-            values.insert(7, ["kept"]);
-            let holder = Holder { values: values };
-            let cloned = holder.values.clone();
-            var members: HashSet<string> = HashSet.new();
-            let before = members.is_empty();
-            members.insert("first");
-            let copied = members.clone();
-            members.clear();
-            if before && members.is_empty() && !copied.is_empty() && cloned.contains_key(7) {
-                cloned[7].len()
-            } else { 0 }
-        }
-    "#,
+        r#"type Holder {
+    values: HashMap<i64, Vec<string>>;
+}
+
+fn main() -> i64 {
+    var values: HashMap<i64, Vec<string>> = HashMap.new();
+    values.insert(7, ["kept"]);
+    let holder = Holder { values: values };
+    let cloned = holder.values.clone();
+    var members: HashSet<string> = HashSet.new();
+    let before = members.is_empty();
+    members.insert("first");
+    let copied = members.clone();
+    members.clear();
+    if before && members.is_empty() && !copied.is_empty() && cloned.contains_key(7) {
+        cloned[7].len()
+    } else {
+        0
+    }
+}
+"#,
     );
     let families = operation_families(&module);
     assert!(families.contains(&RuntimeCallFamily::Map(MapValueOp::ContainsKey)));
@@ -308,20 +312,22 @@ fn collection_clone_and_set_emptiness_compose_without_new_runtime_operations() {
 #[test]
 fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     let module = lower_source(
-        r#"
-        type Holder { values: HashMap<i64, string> }
-        fn main() -> i64 {
-            var values: HashMap<i64, string> = HashMap.new();
-            values.insert(1, "present");
-            let holder = Holder { values: values };
-            holder.values[9].len()
-        }
-    "#,
+        r#"type Holder {
+    values: HashMap<i64, string>;
+}
+
+fn main() -> i64 {
+    var values: HashMap<i64, string> = HashMap.new();
+    values.insert(1, "present");
+    let holder = Holder { values: values };
+    holder.values[9].len()
+}
+"#,
     );
     let main = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let (borrowed, fault) = main
         .blocks
@@ -350,8 +356,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
         .flat_map(|b| &b.ops)
         .find_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } if op.results[0].id == borrowed => {
-                let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts)
-                    .unwrap();
+                let plan = place_plan_of(&module, main);
                 let projection = plan.projection(*place).unwrap();
                 assert_eq!(
                     projection
@@ -392,7 +397,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     replaced
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap()
         .blocks
         .iter_mut()
@@ -514,17 +519,32 @@ fn map_emptiness_uses_the_semantic_length_operation() {
 fn collection_keys_demand_selected_methods_even_without_direct_source_calls() {
     use hew_types::{ValueCapability, ValueMethodPlan};
     let module = lower_source(
-        r#"
-        type Key { id: i64 }
-        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
-        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id % 10 == other.id % 10 } }
-        type Outer { key: Key }
-        fn main() -> i64 {
-            var values: HashMap<Outer, string> = HashMap.new();
-            values.insert(Outer { key: Key { id: 7 } }, "kept");
-            values.len()
-        }
-    "#,
+        r#"type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.id % 10 == other.id % 10
+    }
+}
+
+type Outer {
+    key: Key;
+}
+
+fn main() -> i64 {
+    var values: HashMap<Outer, string> = HashMap.new();
+    values.insert(Outer { key: Key { id: 7 } }, "kept");
+    values.len()
+}
+"#,
     );
     let mut selected = Vec::new();
     for capability in [ValueCapability::Hash, ValueCapability::Eq] {
@@ -581,15 +601,22 @@ fn collection_keys_demand_the_exact_generic_impl_specialization() {
     use hew_sir::CallableInstance;
     use hew_types::ValueMethodPlan;
     let module = lower_source(
-        r#"
-        type Key<T> { value: T }
-        impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
-        fn main() -> i64 {
-            var values: HashMap<Key<i64>, string> = HashMap.new();
-            values.insert(Key { value: 7 }, "kept");
-            values.len()
-        }
-    "#,
+        r#"type Key<T> {
+    value: T;
+}
+
+impl<T> Hash for Key<T> {
+    fn hash(self) -> i64 {
+        1
+    }
+}
+
+fn main() -> i64 {
+    var values: HashMap<Key<i64>, string> = HashMap.new();
+    values.insert(Key { value: 7 }, "kept");
+    values.len()
+}
+"#,
     );
     let plan = module
         .value_capabilities
@@ -622,15 +649,25 @@ fn collection_keys_demand_the_exact_generic_impl_specialization() {
 fn selected_key_capabilities_reject_forged_evidence_and_compatible_substitutes() {
     use hew_types::{ValueCapability, ValueMethodPlan};
     let module = lower_source(
-        r"
-        type Key { id: i64 }
-        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
-        fn other_hash(value: Key) -> i64 { value.id }
-        fn main() -> i64 {
-            let values: HashMap<Key, string> = HashMap.new();
-            values.len() + other_hash(Key { id: 7 })
-        }
-        ",
+        r"type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+fn other_hash(value: Key) -> i64 {
+    value.id
+}
+
+fn main() -> i64 {
+    let values: HashMap<Key, string> = HashMap.new();
+    values.len() + other_hash(Key { id: 7 })
+}
+",
     );
     let (user_key, user) = module
         .value_capabilities
@@ -727,13 +764,20 @@ fn collection_construction_requires_both_selected_key_operations() {
 #[test]
 fn borrowed_collection_reads_do_not_demand_key_callbacks() {
     let parsed = hew_parser::parse(
-        r"
-        type Key { id: i64 }
-        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
-        fn size(values: HashMap<Key, string>, keys: HashSet<Key>) -> i64 {
-            values.len() + keys.len()
-        }
-        ",
+        r"type Key {
+    id: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+fn size(values: HashMap<Key, string>, keys: HashSet<Key>) -> i64 {
+    values.len() + keys.len()
+}
+",
     );
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
@@ -746,8 +790,10 @@ fn borrowed_collection_reads_do_not_demand_key_callbacks() {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.declaration.full_path() == "size" => {
-                Some(function.declaration.clone())
+            hew_hir::HirItem::Function(function)
+                if hir.module.defs.path(function.declaration) == "size" =>
+            {
+                Some(function.declaration)
             }
             _ => None,
         })
@@ -768,4 +814,17 @@ fn zero_sized_keys_and_empty_entry_pairs_share_collection_contracts() {
     let families = operation_families(&module);
     assert!(families.contains(&RuntimeCallFamily::Map(MapValueOp::Entries)));
     assert!(families.contains(&RuntimeCallFamily::Set(SetValueOp::Elements)));
+}
+
+fn place_plan_of(
+    module: &hew_sir::SemModule,
+    function: &hew_sir::SemFunction,
+) -> hew_sir::PlacePlan {
+    hew_sir::place_plan(
+        &module.defs,
+        function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap()
 }

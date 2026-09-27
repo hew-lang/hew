@@ -5,15 +5,15 @@ actor SeedChild {
 }
 
 supervisor SeedSupervisor {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child worker: SeedChild,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: SeedChild() restart: temporary;
 }
 
 fn background_task() {}
 
 fn seed_scope_fork() {
     scope {
-        fork child_task = background_task();
+        let child_task = fork background_task();
     };
 }

@@ -1,0 +1,10 @@
+[[case]]
+id = "match-bound-payload-drop-g63-match-bound"
+intent = "Match/if-let-bound owned-payload drop leak oracle (hew-lang/hew gap #63 guard). Shape `g63_match_bound_high` (match bound owned payload leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-bound-payload-drop-g63-match-bound.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 50

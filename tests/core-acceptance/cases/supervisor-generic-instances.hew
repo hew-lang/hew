@@ -1,32 +1,45 @@
 actor Worker<T> {
-    var value: Option<T> = .None,
-    var changes: i64 = 0,
+    var value: Option<T> = .None;
+    var changes: i64 = 0;
 
-    init(seed: T) { value = .Some(seed); }
-    receive fn put(next: T) { value = .Some(next); changes = changes + 1; }
+    init(seed: T) {
+        value = .Some(seed);
+    }
+    receive fn put(next: T) {
+        value = .Some(next);
+        changes = changes + 1;
+    }
     receive fn get() -> T {
         let snapshot = value;
         snapshot.expect("initialized worker")
     }
-    receive fn count() -> i64 { changes }
-    receive fn fail() { panic("restart generic child"); }
+    receive fn count() -> i64 {
+        changes
+    }
+    receive fn fail() {
+        panic("restart generic child");
+    }
 }
 
 supervisor Group<T>(seed: T) {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
-    child worker: Worker<T>(seed: seed),
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child worker: Worker<T>(seed: seed);
 }
 
 supervisor InferredGroup<T>(seed: T) {
-    child worker: Worker(seed: seed),
+    child worker: Worker(seed: seed);
 }
 
 supervisor Batch<T>(items: Vec<T>) {
-    child worker: Worker<Vec<T>>(seed: items),
+    child worker: Worker<Vec<T>>(seed: items);
 }
 
-type Packet { label: string, data: bytes, history: Vec<string> }
+type Packet {
+    label: string;
+    data: bytes;
+    history: Vec<string>;
+}
 
 fn read_number(worker: ChildRef<Worker<i64>>) -> i64 {
     worker.get().expect("number worker")
@@ -35,9 +48,7 @@ fn read_number(worker: ChildRef<Worker<i64>>) -> i64 {
 fn main() {
     let numbers = spawn Group<i64>(seed: 41);
     let words = spawn InferredGroup(seed: "initial\0text".to_upper());
-    let seed = Packet {
-        label: "original".to_upper(), data: "payload\0bytes".to_bytes(), history: ["first".to_upper()],
-    };
+    let seed = Packet { label: "original".to_upper(), data: "payload\0bytes".to_bytes(), history: ["first".to_upper()] };
     let records = spawn Group(seed: seed);
     let batches = spawn Batch(items: ["member".to_upper()]);
     assert(batches.worker.get().expect("batch worker")[0] == "MEMBER");
@@ -49,22 +60,45 @@ fn main() {
     assert(read_number(number_role) == 99);
     assert(words.worker.get().expect("text worker") == "CHANGED");
     assert(record_role.get().expect("record worker").label == "changed");
-
     let _ = number_role.fail();
-    let _ = await_restart numbers.worker;
+    let _ = {
+        let __hew_migrated_role_1908 = numbers.worker;
+        restarted(__hew_migrated_role_1908);
+        __hew_migrated_role_1908
+    };
     assert(read_number(number_role) == 41);
     assert(number_role.count().expect("fresh number") == 0);
     let _ = record_role.fail();
-    let _ = await_restart records.worker;
+    let _ = {
+        let __hew_migrated_role_2087 = records.worker;
+        restarted(__hew_migrated_role_2087);
+        __hew_migrated_role_2087
+    };
     let restarted = record_role.get().expect("restarted record");
     assert(restarted.label == seed.label);
     assert(restarted.data == seed.data);
     assert(restarted.history[0] == seed.history[0]);
     assert(record_role.count().expect("fresh record") == 0);
     assert(words.worker.count().expect("unchanged text instance") == 1);
-    close(batches);
-    close(records);
-    close(words);
-    close(numbers);
+    {
+        let __hew_migrated_actor_2458 = batches;
+        stop(__hew_migrated_actor_2458);
+        stopped(__hew_migrated_actor_2458);
+    };
+    {
+        let __hew_migrated_actor_2478 = records;
+        stop(__hew_migrated_actor_2478);
+        stopped(__hew_migrated_actor_2478);
+    };
+    {
+        let __hew_migrated_actor_2498 = words;
+        stop(__hew_migrated_actor_2498);
+        stopped(__hew_migrated_actor_2498);
+    };
+    {
+        let __hew_migrated_actor_2516 = numbers;
+        stop(__hew_migrated_actor_2516);
+        stopped(__hew_migrated_actor_2516);
+    };
     println("generic supervisor config, roles and restarts");
 }

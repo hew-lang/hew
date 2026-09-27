@@ -44,11 +44,11 @@ fn main() -> i64 {
         reply from fast.compute(42) => match reply {
             .Ok(value) => value,
             .Err(_) => 0,
-        },
+        }
         reply from slow.compute(99) => match reply {
             .Ok(value) => value,
             .Err(_) => 0,
-        },
+        }
         after 100ms => 0,
     };
     // Return the winning value as the process exit code.

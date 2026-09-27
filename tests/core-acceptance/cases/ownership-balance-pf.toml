@@ -1,0 +1,13 @@
+[[case]]
+id = "ownership-balance-pf"
+intent = "Ownership-balance fixture. The ownership checker balances every obligation, so the program checks with no diagnostics."
+source = "fixtures/ownership-balance/pF.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "UnusedImport"
+line = 1
+column = 1

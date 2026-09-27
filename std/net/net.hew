@@ -12,7 +12,7 @@
 //! and `finish()` half-closes. Other protocol modules have their own result
 //! types; check their signatures when handling errors:
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //!
 //! fn dial(addr: string) -> Result<net.Connection, net.NetError> {
@@ -28,14 +28,14 @@
 //!                 NetError.TimedOut(_)          => println("timed out"),
 //!                 _                              => println("network error"),
 //!             }
-//!         },
+//!         }
 //!     }
 //! }
 //! ```
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //!
 //! fn main() {
@@ -65,29 +65,29 @@ import std.stream;
 /// For file-system errors see `fs.IoError`.
 pub enum NetError {
     /// The remote host actively refused the connection (ECONNREFUSED).
-    ConnectionRefused(i64),
+    ConnectionRefused(i64);
     /// The local address is already in use (EADDRINUSE).
-    AddressInUse(i64),
+    AddressInUse(i64);
     /// The address or hostname could not be resolved (EADDRNOTAVAIL).
-    AddressNotAvailable(i64),
+    AddressNotAvailable(i64);
     /// The connection attempt or I/O operation timed out (ETIMEDOUT).
-    TimedOut(i64),
+    TimedOut(i64);
     /// Operation was cancelled (e.g., a deadline expired before the I/O
     /// could complete).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the OS deadline expired;
     /// `Cancelled` means the operation was abandoned for another reason
     /// (e.g. the blocking pool was shut down mid-call).
-    Cancelled(i64),
+    Cancelled(i64);
     /// An argument was rejected before it reached the operating system.
     ///
     /// Carries the rejection detail rather than an errno: no syscall was
     /// made, so there is no platform error code to report. Produced by the
     /// endpoint and duration validation below, which run before every native
     /// call whose C ABI narrows an `i64` to an `i32`.
-    InvalidArgument(string),
+    InvalidArgument(string);
     /// Any other network-level failure.
-    Other(i64),
+    Other(i64);
 }
 
 /// Failure to transfer a TCP connection into active mode.
@@ -96,7 +96,7 @@ pub enum NetError {
 /// receives no connection back and must not attempt a second close.
 pub enum AttachError {
     /// The runtime refused the active-mode registration.
-    Refused,
+    Refused;
 }
 
 impl Display for AttachError {
@@ -214,8 +214,8 @@ pub fn port_arg(context: string, port: i64) -> Result<i64, NetError> {
 /// `host` never carries the IPv6 bracket form: `[::1]:9000` yields host
 /// `::1`, which is what the resolver expects.
 pub type Endpoint {
-    host: string,
-    port: i64,
+    host: string;
+    port: i64;
 }
 
 /// Longest address string the endpoint grammar accepts.
@@ -289,7 +289,7 @@ pub fn parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetErro
             } else {
                 .Ok(Endpoint { host: host, port: port })
             }
-        },
+        }
         .None => .Err(endpoint_reject(context, addr, "missing ':port'")),
     }
 }
@@ -311,7 +311,7 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoin
             }
             let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
             .Ok(Endpoint { host: host, port: port })
-        },
+        }
         .None => .Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
     }
 }
@@ -461,7 +461,7 @@ trait ConnectionMethods {
 ///
 /// # Example
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net;
 ///
 /// actor InboundLogger {
@@ -477,7 +477,7 @@ trait ConnectionMethods {
 ///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 ///     let handler: InboundLogger = spawn InboundLogger;
 ///     match conn.attach(handler) {
-///         .Ok(()) => {},
+///         .Ok(()) => {}
 ///         .Err(net.AttachError.Refused) => println("attach refused"),
 ///     }
 /// }
@@ -612,12 +612,12 @@ impl Connection {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net;
 ///
 /// fn main() {
 ///     match net.listen(":9000") {
-///         .Ok(ln) => { /* accept connections */ },
+///         .Ok(ln) => { /* accept connections */ }
 ///         .Err(net.NetError.AddressInUse(_)) => println("port already taken"),
 ///         .Err(e) => println("bind failed"),
 ///     }
@@ -642,12 +642,12 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net;
 ///
 /// fn main() {
 ///     match net.connect("localhost:9000") {
-///         .Ok(conn) => { /* use conn */ },
+///         .Ok(conn) => { /* use conn */ }
 ///         .Err(net.NetError.ConnectionRefused(_)) => println("nothing listening"),
 ///         .Err(e) => println("connect failed"),
 ///     }

@@ -5,42 +5,41 @@ use common::typecheck;
 #[test]
 fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
     let output = typecheck(
-        r"
-        type Work {
-            id: i32,
-        }
+        r"type Work {
+    id: i32;
+}
 
-        type Local {
-            id: i32,
-        }
+type Local {
+    id: i32;
+}
 
-        trait UserPid {
-            type Msg;
-            fn send(pid: Self, msg: Self.Msg) -> i32;
-        }
+trait UserPid {
+    type Msg;
+    fn send(pid: Self, msg: Self.Msg) -> i32;
+}
 
-        impl UserPid for Local {
-            type Msg = Work;
-            fn send(pid: Local, msg: Work) -> i32 {
-                pid.id + msg.id
-            }
-        }
+impl UserPid for Local {
+    type Msg = Work;
+    fn send(pid: Local, msg: Work) -> i32 {
+        pid.id + msg.id
+    }
+}
 
-        fn relay<P: UserPid>(pid: P, msg: P.Msg) -> i32 {
-            pid.send(msg)
-        }
+fn relay<P: UserPid>(pid: P, msg: P.Msg) -> i32 {
+    pid.send(msg)
+}
 
-        fn relay_dyn(pid: dyn UserPid<Msg = Work>, msg: Work) -> i32 {
-            pid.send(msg)
-        }
+fn relay_dyn(pid: dyn UserPid<Msg = Work>, msg: Work) -> i32 {
+    pid.send(msg)
+}
 
-        fn main() {
-            let local = Local { id: 1 };
-            let _a = relay(local, Work { id: 2 });
-            let local_dyn: dyn UserPid<Msg = Work> = Local { id: 3 };
-            let _b = relay_dyn(local_dyn, Work { id: 4 });
-        }
-        ",
+fn main() {
+    let local = Local { id: 1 };
+    let _a = relay(local, Work { id: 2 });
+    let local_dyn: dyn UserPid<Msg = Work> = Local { id: 3 };
+    let _b = relay_dyn(local_dyn, Work { id: 4 });
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -57,31 +56,30 @@ fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
 #[test]
 fn generic_pid_trait_bound_is_no_longer_nameable() {
     let output = typecheck(
-        r"
-        type Job {
-            n: i32,
-        }
+        r"type Job {
+    n: i32;
+}
 
-        actor Worker {
-            let id: i32,
-            init() {}
-            receive fn run(job: Job) {}
-        }
+actor Worker {
+    let id: i32;
+    init() {}
+    receive fn run(job: Job) {}
+}
 
-        impl ActorMsg for Worker {
-            type Msg = Job;
-            type Reply = ();
-        }
+impl ActorMsg for Worker {
+    type Msg = Job;
+    type Reply = ();
+}
 
-        fn takes_pid<P: Pid>(pid: P, msg: P.Msg) -> Result<(), SendError> {
-            pid.send(msg)
-        }
+fn takes_pid<P: Pid>(pid: P, msg: P.Msg) -> Result<(), SendError> {
+    pid.send(msg)
+}
 
-        fn main() {
-            let worker = spawn Worker(id: 7);
-            let result: Result<(), SendError> = takes_pid(worker, Job { n: 3 });
-        }
-        ",
+fn main() {
+    let worker = spawn Worker(id: 7);
+    let result: Result<(), SendError> = takes_pid(worker, Job { n: 3 });
+}
+",
     );
     assert!(
         output
@@ -102,27 +100,26 @@ fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
     // `MethodCallNoRewrite` diagnostic; now rejected uniformly with the
     // same actionable diagnostic as the no-envelope case.
     let output = typecheck(
-        r"
-        type Job {
-            n: i32,
-        }
+        r"type Job {
+    n: i32;
+}
 
-        actor Worker {
-            let id: i32,
-            init() {}
-            receive fn run(job: Job) {}
-        }
+actor Worker {
+    let id: i32;
+    init() {}
+    receive fn run(job: Job) {}
+}
 
-        impl ActorMsg for Worker {
-            type Msg = Job;
-            type Reply = ();
-        }
+impl ActorMsg for Worker {
+    type Msg = Job;
+    type Reply = ();
+}
 
-        fn main() {
-            let worker = spawn Worker(id: 7);
-            let result = worker.send(Job { n: 3 });
-        }
-        ",
+fn main() {
+    let worker = spawn Worker(id: 7);
+    let result = worker.send(Job { n: 3 });
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -139,28 +136,27 @@ fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
 #[test]
 fn remote_pid_send_returns_typed_send_error_stub() {
     let output = typecheck(
-        r"
-        #[wire]
-        type Job {
-            n: i32 @1,
-        }
+        r"#[wire]
+type Job {
+    n: i32 @1;
+}
 
-        actor Worker {
-            let id: i32,
-            init() {}
-            receive fn run(job: Job) {}
-        }
+actor Worker {
+    let id: i32;
+    init() {}
+    receive fn run(job: Job) {}
+}
 
-        impl ActorMsg for Worker {
-            type Msg = Job;
-            type Reply = ();
-        }
+impl ActorMsg for Worker {
+    type Msg = Job;
+    type Reply = ();
+}
 
-        fn main() {
-            let remote: RemotePid<Worker>;
-            let result: Result<(), SendError> = remote.send(Job { n: 9 });
-        }
-        ",
+fn main() {
+    let remote: RemotePid<Worker>;
+    let result: Result<(), SendError> = remote.send(Job { n: 9 });
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -172,28 +168,29 @@ fn remote_pid_send_returns_typed_send_error_stub() {
 #[test]
 fn remote_pid_ask_returns_typed_reply_or_ask_error() {
     let output = typecheck(
-        r"
-        #[wire]
-        type Job {
-            n: i32 @1,
-        }
+        r"#[wire]
+type Job {
+    n: i32 @1;
+}
 
-        actor Worker {
-            let id: i32,
-            init() {}
-            receive fn run(job: Job) -> i64 { 21 }
-        }
+actor Worker {
+    let id: i32;
+    init() {}
+    receive fn run(job: Job) -> i64 {
+        21
+    }
+}
 
-        impl ActorMsg for Worker {
-            type Msg = Job;
-            type Reply = i64;
-        }
+impl ActorMsg for Worker {
+    type Msg = Job;
+    type Reply = i64;
+}
 
-        fn main() {
-            let remote: RemotePid<Worker>;
-            let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
-        }
-        ",
+fn main() {
+    let remote: RemotePid<Worker>;
+    let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -205,30 +202,31 @@ fn remote_pid_ask_returns_typed_reply_or_ask_error() {
 #[test]
 fn remote_pid_ask_rejects_reply_without_wire_schema() {
     let output = typecheck(
-        r"
-        fn inc(x: i64) -> i64 { x + 1 }
+        r"fn inc(x: i64) -> i64 {
+    x + 1
+}
 
-        #[wire]
-        type Job {
-            n: i32 @1,
-        }
+#[wire]
+type Job {
+    n: i32 @1;
+}
 
-        actor Worker {
-            let id: i32,
-            init() {}
-            receive fn run(job: Job) {}
-        }
+actor Worker {
+    let id: i32;
+    init() {}
+    receive fn run(job: Job) {}
+}
 
-        impl ActorMsg for Worker {
-            type Msg = Job;
-            type Reply = fn(i64) -> i64;
-        }
+impl ActorMsg for Worker {
+    type Msg = Job;
+    type Reply = fn(i64) -> i64;
+}
 
-        fn main() {
-            let remote: RemotePid<Worker>;
-            let result = remote.ask(Job { n: 9 }, 250);
-        }
-        ",
+fn main() {
+    let remote: RemotePid<Worker>;
+    let result = remote.ask(Job { n: 9 }, 250);
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -246,7 +244,7 @@ fn local_pid_remote_conversion_is_not_public() {
     let removed_method = ["to_remote", "_via"].concat();
     let source = r#"
         actor Bot {
-            let n: i32,
+            let n: i32;
             init() {}
         }
         fn main() {

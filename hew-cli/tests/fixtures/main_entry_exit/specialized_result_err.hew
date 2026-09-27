@@ -1,5 +1,5 @@
 enum BoxError<T> {
-    Failed(T),
+    Failed(T);
 }
 
 impl Display for BoxError<string> {
@@ -10,7 +10,8 @@ impl Display for BoxError<string> {
     }
 }
 
-impl Error for BoxError<string> {}
+impl Error for BoxError<string> {
+}
 
 fn main() -> Result<(), BoxError<string>> {
     .Err(BoxError.Failed("specialized failure"))

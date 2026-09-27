@@ -20,7 +20,7 @@ use hew_types::{Ty, TypeCheckOutput};
 fn module_import(path: &[&str], source: &str) -> Spanned<Item> {
     let items = common::parse_program(source).items;
     let decl = ImportDecl {
-        path: path.iter().map(ToString::to_string).collect(),
+        path: hew_parser::ast::Path::from_spellings(path),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -48,25 +48,9 @@ fn typecheck_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> Typ
     checker.check_program(&program)
 }
 
-const BANK_SRC: &str = "
-pub actor Account {
-    var balance: i64 = 0,
-    receive fn deposit(n: i64) -> i64 {
-        balance = balance + n;
-        balance
-    }
-}
-";
+const BANK_SRC: &str = "pub actor Account {\n    var balance: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        balance = balance + n;\n        balance\n    }\n}\n";
 
-const STORE_SRC: &str = "
-pub actor Account {
-    var credit: i64 = 0,
-    receive fn deposit(n: i64) -> bool {
-        credit = credit + n;
-        true
-    }
-}
-";
+const STORE_SRC: &str = "pub actor Account {\n    var credit: i64 = 0;\n    receive fn deposit(n: i64) -> bool {\n        credit = credit + n;\n        true\n    }\n}\n";
 
 /// Collect the actor names of every actor-handle entry in `expr_types`,
 /// sorted and deduplicated.
@@ -74,7 +58,10 @@ fn actor_handle_names(output: &TypeCheckOutput) -> Vec<String> {
     let mut names: Vec<String> = output
         .expr_types
         .values()
-        .filter_map(|t| t.actor_handle_identity().map(|(name, _)| name.to_string()))
+        .filter_map(|t| {
+            t.actor_handle_identity()
+                .map(|(name, _)| name.spelling.to_string())
+        })
         .collect();
     names.sort();
     names.dedup();
@@ -122,11 +109,11 @@ fn main() {
         &[(&["hew", "bank"], BANK_SRC), (&["hew", "store"], STORE_SRC)],
     );
     let bank_sig = output
-        .fn_sigs
+        .sigs()
         .get("hew.bank.Account::deposit")
         .expect("hew.bank.Account::deposit must be registered under the canonical key");
     let store_sig = output
-        .fn_sigs
+        .sigs()
         .get("hew.store.Account::deposit")
         .expect("hew.store.Account::deposit must be registered under the canonical key");
     assert!(
@@ -141,7 +128,7 @@ fn main() {
         store_sig.return_type
     );
     assert!(
-        !output.fn_sigs.contains_key("Account::deposit"),
+        !output.sigs().contains("Account::deposit"),
         "no bare receive-fn key may be written for module actors"
     );
 }
@@ -151,16 +138,7 @@ fn main() {
 #[test]
 fn bare_spawn_resolves_local_actor_over_imported_same_name() {
     let output = typecheck_with_modules(
-        "
-actor Account {
-    var local_n: i64 = 0,
-    receive fn deposit(n: i64) -> i64 { n }
-}
-
-fn main() {
-    let a = spawn Account();
-}
-",
+        "actor Account {\n    var local_n: i64 = 0;\n    receive fn deposit(n: i64) -> i64 {\n        n\n    }\n}\n\nfn main() {\n    let a = spawn Account();\n}\n",
         &[(&["hew", "bank"], BANK_SRC)],
     );
     assert!(

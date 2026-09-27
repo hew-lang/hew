@@ -12,7 +12,7 @@ use hew_hir::{
     ResolutionCtx, ResolvedRef,
 };
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::error::TypeErrorKind;
 use hew_types::{
     module_registry::ModuleRegistry, CallTarget, Checker, MethodCallRewrite, TypeCheckOutput,
@@ -33,8 +33,8 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         root.errors
     );
 
-    let imported_id = ModuleId::new(vec!["m".to_string()]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["m"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program
@@ -45,7 +45,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         .collect();
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
-            if import.path == ["m"] {
+            if import.path.to_string() == "m" {
                 import.resolved_items = Some(imported_items.clone().into());
             }
         }
@@ -200,6 +200,45 @@ fn selected_imported_free_function_call_resolves_to_qualified_symbol() {
             Some("m$entry")
         );
     }
+}
+
+#[test]
+fn module_call_uses_its_declaration_when_abi_spelling_disagrees() {
+    let program = build_program_with_imported_module(
+        "pub fn entry(n: i64) -> i64 { n + 1 }",
+        "import m; fn main() -> i64 { m.entry(41) }",
+    );
+    let mut type_checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut checked = type_checker.check_program(&program);
+    assert!(
+        checked.errors.is_empty(),
+        "type errors: {:#?}",
+        checked.errors
+    );
+    let rewrite = checked
+        .method_call_rewrites
+        .values_mut()
+        .find(|rewrite| {
+            matches!(
+                rewrite,
+                MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target: CallTarget::User(_),
+                    ..
+                }
+            )
+        })
+        .expect("checked module call");
+    let MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. } = rewrite else {
+        unreachable!()
+    };
+    *c_symbol = "wrong$entry".into();
+
+    let output = lower_program_host_target(&program, &checked, &ResolutionCtx);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "main")),
+        Some("m$entry")
+    );
 }
 
 #[test]
@@ -363,6 +402,28 @@ fn main() -> i64 {{
 }
 
 #[test]
+fn root_extern_call_keeps_its_declaration_when_import_shares_c_symbol() {
+    let program = build_program_with_imported_module(
+        "extern \"C\" { fn answer() -> i64; }",
+        r#"import m;
+extern "C" { fn answer() -> i64; }
+fn main() -> i64 { unsafe { answer() } }"#,
+    );
+    let (output, tco) = lower_with_checker(&program);
+
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        output.diagnostics.is_empty(),
+        "root extern call must retain its checked declaration: {:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "main")),
+        Some("answer")
+    );
+}
+
+#[test]
 fn imported_pub_free_fn_body_bare_call_to_private_helper_resolves_qualified() {
     let program = build_program_with_imported_module(
         r"
@@ -485,12 +546,12 @@ fn generic_module_function_values_keep_the_selected_declaration() {
             output.diagnostics
         );
         assert!(
-            output
+            output.module.monomorphisations.iter().any(|mono| output
                 .module
-                .monomorphisations
-                .iter()
-                .any(|mono| mono.key.declaration.full_path() == "m.id"
-                    && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+                .defs
+                .path(mono.key.declaration)
+                == "m.id"
+                && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
             "{root}: {:?}",
             output.module.monomorphisations
         );
@@ -507,12 +568,12 @@ fn generic_function_value_keeps_an_imported_private_helper_reachable() {
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(
-        output
+        output.module.monomorphisations.iter().any(|mono| output
             .module
-            .monomorphisations
-            .iter()
-            .any(|mono| mono.key.declaration.full_path() == "m.id"
-                && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+            .defs
+            .path(mono.key.declaration)
+            == "m.id"
+            && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
         "{:?}",
         output.module.monomorphisations
     );

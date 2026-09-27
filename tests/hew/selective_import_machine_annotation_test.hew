@@ -10,8 +10,6 @@
 
 import tests.hew.imported_machine_support.machine_defs.{PayloadLifecycle, make, bounce};
 
-import std.testing;
-
 fn carry(value: PayloadLifecycle) -> PayloadLifecycle {
     value
 }
@@ -27,12 +25,12 @@ fn label_of(value: PayloadLifecycle) -> string {
 fn selectively_imported_machine_crosses_bare_annotated_parameter() {
     let made = make("bare-annotation".to_upper());
     let carried = carry(made);
-    testing.assert_eq_str(label_of(carried), "BARE-ANNOTATION");
+    assert(label_of(carried) == "BARE-ANNOTATION");
 }
 
 #[test]
 fn selectively_imported_machine_transitions_through_bare_spelling() {
     var value = PayloadLifecycle.Empty;
     value = bounce(value);
-    testing.assert_eq_str(label_of(value), "empty");
+    assert(label_of(value) == "empty");
 }

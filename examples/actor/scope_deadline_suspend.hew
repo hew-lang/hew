@@ -2,7 +2,7 @@
 // Successful work skips recovery. Both waits suspend the actor so another
 // task can run even with HEW_WORKERS=1.
 actor Worker {
-    var fired: i64 = 0,
+    var fired: i64 = 0;
 
     // The scoped child sleeps 500ms; the deadline is 20ms, so the deadline wins
     // and the recovery body runs (fired = 7).
@@ -14,7 +14,7 @@ actor Worker {
             match failure {
                 .Deadline { message } => {
                     fired = 7;
-                },
+                }
                 .Fault { message } => panic(message),
             }
         };
@@ -31,7 +31,7 @@ actor Worker {
             match failure {
                 .Deadline { message } => {
                     fired = 7;
-                },
+                }
                 .Fault { message } => panic(message),
             }
         };

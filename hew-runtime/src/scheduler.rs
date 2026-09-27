@@ -319,6 +319,7 @@ pub(crate) fn drain_is_idle() -> bool {
         return false;
     }
     if !sched.global_queue.is_empty()
+        || crate::driver::has_queued_work()
         || !sched.task_queue.lock_or_recover().is_empty()
         || crate::task_scope::checked::TaskExecution::has_live_tasks()
     {
@@ -500,7 +501,13 @@ fn configured_scheduler_worker_count() -> usize {
 /// printing a diagnostic — scheduler init failure is unrecoverable.
 #[no_mangle]
 pub extern "C" fn hew_sched_init() -> c_int {
-    let worker_count = configured_scheduler_worker_count();
+    // The single-thread driver runs every participant on the process thread:
+    // the runtime is installed with no worker to spawn.
+    let worker_count = if crate::driver::active() {
+        0
+    } else {
+        configured_scheduler_worker_count()
+    };
 
     match std::env::var("HEW_SEED") {
         Ok(seed_str) => {
@@ -893,7 +900,7 @@ fn quiesce_until(timeout: Duration, settled: impl Fn() -> bool) {
         if std::time::Instant::now() >= deadline {
             return;
         }
-        std::thread::sleep(SHUTDOWN_QUIESCE_POLL);
+        crate::driver::drain_poll(SHUTDOWN_QUIESCE_POLL);
     }
 }
 
@@ -924,6 +931,16 @@ pub(crate) fn quiesce_before_exit_status_read() {
 
 pub(crate) fn shutdown_requested() -> bool {
     get_scheduler().is_some_and(|sched| sched.shutdown.load(Ordering::Acquire))
+}
+
+/// Whether a newly queued actor can make progress before runtime cleanup.
+/// Worker-less test runtimes and a scheduler already shutting down need their
+/// existing synchronous terminal path during supervisor reclamation.
+pub(crate) fn actor_progress_available() -> bool {
+    crate::driver::active()
+        || get_scheduler().is_some_and(|sched| {
+            !sched.stealers.is_empty() && !sched.shutdown.load(Ordering::Acquire)
+        })
 }
 
 /// Clean up all remaining runtime resources after shutdown.
@@ -1176,7 +1193,7 @@ fn release_abandoned_global_queue_refs(sched: &Scheduler) {
 /// avoiding always waking the same worker.
 pub fn sched_try_wake() {
     static WAKE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    if let Some(sched) = get_scheduler() {
+    if let Some(sched) = get_scheduler().filter(|sched| sched.worker_count != 0) {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "modulo by worker_count keeps result within usize range"
@@ -3279,6 +3296,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enqueue_resume_rechecks_each_competing_park_cycle() {
+        static RETRIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn another_activation(actor: *mut HewActor) {
+            if RETRIES.fetch_add(1, Ordering::SeqCst) == 0 {
+                // A competing pending-wake drain enqueued and resumed the actor
+                // after our Suspended recheck but before our retry CAS.
+                // SAFETY: the test retains this tracked actor across the hook.
+                let actor = unsafe { &*actor };
+                actor
+                    .actor_state
+                    .store(HewActorState::Idle as i32, Ordering::Release);
+                let _ = crate::coro_exec::take_pending_wake(actor);
+            }
+        }
+        struct ResetRetry;
+        impl Drop for ResetRetry {
+            fn drop(&mut self) {
+                crate::activation::ENQUEUE_RESUME_RETRY_HOOK.access(|hook| *hook = None);
+            }
+        }
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        actor
+            .suspended_cont
+            .store(ptr::dangling_mut::<u8>().cast(), Ordering::Release);
+        actor
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Release);
+        RETRIES.store(0, Ordering::SeqCst);
+        crate::activation::ENQUEUE_RESUME_RETRY_HOOK
+            .access(|hook| *hook = Some(another_activation));
+        let _reset = ResetRetry;
+        let _hook = EnqueueResumeCasFailHookGuard::install(park_completes_inside_cas_fail_gap);
+        // SAFETY: tracked actor; the sentinel continuation is never resumed.
+        unsafe { enqueue_resume_pinned(actor.ptr(), ptr::null_mut()) };
+        assert_eq!(RETRIES.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32
+        );
+        assert_eq!(sched.pop_global(), Some(actor.ptr()));
+        assert_eq!(sched.pop_global(), None);
+        assert!(!crate::coro_exec::take_pending_wake(&actor));
+    }
+
     /// W6.010 waiter-kind: a reply to a channel whose waiter is a PARKED
     /// CONTINUATION wakes the caller actor via `enqueue_resume` (CAS
     /// Suspended -> Runnable + enqueue), NOT the condvar. The resumed
@@ -5169,9 +5232,9 @@ mod tests {
         // read; cleanup detaches and drops it as its final step.
         install_scheduler_for_test(worker_less_scheduler_for_test());
 
-        // Start the global wheel so the ticker is running.
+        // Start the global wheel; the ticker is marked running before this
+        // returns.
         let _tw = crate::timer_periodic::global_wheel();
-        std::thread::sleep(std::time::Duration::from_millis(20));
 
         // The ticker may have been stopped by a parallel test that shares
         // the global wheel.  We can only assert the post-condition.
@@ -5379,7 +5442,6 @@ mod tests {
     #[test]
     fn shutdown_skips_self_join() {
         use std::sync::Arc;
-        use std::time::Instant;
         let _g = SCHED_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5430,15 +5492,11 @@ mod tests {
         // Release the spawned thread to call hew_sched_shutdown.
         barrier.wait();
 
-        // Poll for completion — 2 s timeout detects deadlock.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !done.load(Ordering::Acquire) && Instant::now() < deadline {
+        // Poll for completion; a self-join deadlock never completes, and the
+        // test runner's timeout reports it.
+        while !done.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(
-            done.load(Ordering::Acquire),
-            "hew_sched_shutdown deadlocked on self-join"
-        );
 
         // A later caller owns and joins the finished self handle before freeing
         // the runtime.
@@ -5452,7 +5510,6 @@ mod tests {
     #[test]
     fn shutdown_releases_worker_handles_while_join_pending() {
         use std::sync::Arc;
-        use std::time::Instant;
 
         let _g = SCHED_TEST_MUTEX
             .lock()
@@ -5501,37 +5558,27 @@ mod tests {
             shutdown_done2.store(true, Ordering::Release);
         });
 
-        let deadline = Instant::now() + Duration::from_secs(2);
         while {
             // SAFETY: the scheduler remains installed until cleanup below.
             let sched = unsafe { &*sched_ptr };
             !sched.shutdown.load(Ordering::Acquire)
-        } && Instant::now() < deadline
-        {
+        } {
             thread::sleep(Duration::from_millis(10));
         }
 
-        let touch_succeeded = {
+        // worker_handles must stay accessible while shutdown joins a blocked
+        // worker; a join that held them would keep this poll spinning.
+        {
             // SAFETY: the scheduler remains installed until cleanup below.
             let sched = unsafe { &*sched_ptr };
-            let mut touched = false;
-            while Instant::now() < deadline {
-                if sched
-                    .worker_handles
-                    .try_access(|handles| assert!(handles.is_empty()))
-                    .is_some()
-                {
-                    touched = true;
-                    break;
-                }
+            while sched
+                .worker_handles
+                .try_access(|handles| assert!(handles.is_empty()))
+                .is_none()
+            {
                 thread::sleep(Duration::from_millis(10));
             }
-            touched
-        };
-        assert!(
-            touch_succeeded,
-            "worker_handles must stay accessible while shutdown joins a blocked worker"
-        );
+        }
         assert!(
             !shutdown_done.load(Ordering::Acquire),
             "shutdown should still be waiting on the worker join during the concurrent touch"
@@ -5728,10 +5775,13 @@ mod tests {
             cleanup_done2.store(true, Ordering::Release);
         });
 
-        // Cleanup is blocked inside the runtime-owned sweep joining the gated
-        // reaper: the runtime must still be installed (not detached up-front),
-        // and it must not have been dropped yet.
-        thread::sleep(Duration::from_millis(40));
+        // Cleanup takes the gated reaper's handle before joining it, so once
+        // the registry reads empty cleanup is blocked in that join: the runtime
+        // must still be installed (not detached up-front), and it must not have
+        // been dropped yet.
+        while crate::lifetime::live_actors::deferred_teardown_thread_count() != 0 {
+            thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             !cleanup_done.load(Ordering::Acquire),
             "cleanup must block in the runtime-owned sweep until the reaper is joined"
@@ -5811,9 +5861,12 @@ mod tests {
 
         let cleanup = thread::spawn(|| hew_runtime_cleanup());
 
-        // Cleanup is blocked before the root sweep. The runtime and root remain
-        // installed until the deferred handoff completes.
-        thread::sleep(Duration::from_millis(40));
+        // Cleanup takes the gated reaper's handle before joining it, so once
+        // the registry reads empty cleanup is blocked before the root sweep. The
+        // runtime and root remain installed until the deferred handoff completes.
+        while crate::lifetime::live_actors::deferred_teardown_thread_count() != 0 {
+            thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             !runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
             "runtime must stay installed through the supervisor-roots sweep"

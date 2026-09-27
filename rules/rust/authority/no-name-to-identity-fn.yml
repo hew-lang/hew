@@ -1,0 +1,40 @@
+id: no-name-to-identity-fn
+language: rust
+severity: error
+message: >-
+  A function turns a rendered name/spelling into a semantic identity or
+  decision outside the resolver.
+note: >-
+  Resolved type-fact services, HIR expression consumers and lower IRs consume checker
+  identities. Source scopes, declaration registration, diagnostics and external
+  ABI spelling tables remain lexical inputs outside this boundary.
+files:
+  - "hew-sir/src/**"
+  - "hew-mir/src/**"
+  - "hew-types/src/type_facts.rs"
+  - "hew-types/src/value_class.rs"
+  - "hew-types/src/traits.rs"
+  - "hew-hir/src/lower/types.rs"
+  - "hew-hir/src/lower/expr.rs"
+  - "hew-hir/src/lower/identifiers.rs"
+  - "hew-hir/src/lower/private_refs.rs"
+  - "hew-hir/src/lower/calls.rs"
+  - "hew-hir/src/lower/collections.rs"
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "hew-types/src/check/scope.rs"
+  - "hew-types/src/check/diagnostics.rs"
+rule:
+  kind: function_item
+  regex: 'fn\s+\w+\s*\([^{]*\b\w*(name|key|path|spelling|ident)\w*\s*:\s*(&(\s*''\w+\s*)?str|String|Symbol)\b[^{]*\)\s*->\s*(Option\s*<\s*&?\s*(TypeDef|FnSig|TraitInfo|DefId|NominalId|TypeParamId|ModuleId|CallTarget|MarkerTrait|BuiltinType|Ty|Binding|Resolution))\b'
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

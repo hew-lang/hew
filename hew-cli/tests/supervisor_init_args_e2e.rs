@@ -45,14 +45,20 @@ fn supervisor_child_init_args_seed_actor_state() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let id: i64,
-    receive fn report() -> i64 { print("worker id="); println(id); 0 }
+    let id: i64;
+    receive fn report() -> i64 {
+        print("worker id=");
+        println(id);
+        0
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w1: Worker(id: 7),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w1: Worker(id: 7);
 }
+
 fn main() {
     let sup = spawn Pool;
     let w = sup.w1;
@@ -99,18 +105,27 @@ fn supervisor_child_i32_fields_reversed_arg_order() {
     require_codegen();
 
     let source_natural = r#"actor Worker {
-    let a: i32,
-    let b: i32,
+    let a: i32;
+    let b: i32;
     receive fn report() -> i64 {
-        print("a="); print(a); print(" b="); println(b);
-        if a == 7 && b == 99 { 0 } else { 1 }
+        print("a=");
+        print(a);
+        print(" b=");
+        println(b);
+        if a == 7 && b == 99 {
+            0
+        } else {
+            1
+        }
     }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(a: 7, b: 99),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(a: 7, b: 99);
 }
+
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
@@ -122,18 +137,27 @@ fn main() -> i64 {
 "#;
 
     let source_reversed = r#"actor Worker {
-    let a: i32,
-    let b: i32,
+    let a: i32;
+    let b: i32;
     receive fn report() -> i64 {
-        print("a="); print(a); print(" b="); println(b);
-        if a == 7 && b == 99 { 0 } else { 1 }
+        print("a=");
+        print(a);
+        print(" b=");
+        println(b);
+        if a == 7 && b == 99 {
+            0
+        } else {
+            1
+        }
     }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(b: 99, a: 7),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 99, a: 7);
 }
+
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
@@ -179,18 +203,27 @@ fn supervisor_child_i32_ask_reply_oracle_discriminates_wrong_values() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i32,
-    let b: i32,
+    let a: i32;
+    let b: i32;
     receive fn report() -> i64 {
-        print("a="); print(a); print(" b="); println(b);
-        if a == 7 && b == 99 { 0 } else { 1 }
+        print("a=");
+        print(a);
+        print(" b=");
+        println(b);
+        if a == 7 && b == 99 {
+            0
+        } else {
+            1
+        }
     }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(b: 98, a: 7),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 98, a: 7);
 }
+
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
@@ -235,21 +268,26 @@ fn supervisor_child_mixed_width_fields_reversed_arg_order() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let x: i32,
-    let y: i64,
-    let z: bool,
+    let x: i32;
+    let y: i64;
+    let z: bool;
     receive fn report() -> i64 {
-        print("x="); print(x);
-        print(" y="); print(y);
-        print(" z="); println(z);
+        print("x=");
+        print(x);
+        print(" y=");
+        print(y);
+        print(" z=");
+        println(z);
         0
     }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(z: true, x: 42, y: 1234567890123),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(z: true, x: 42, y: 1234567890123);
 }
+
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
@@ -296,29 +334,44 @@ fn supervisor_child_narrow_and_unsigned_widths_reversed_arg_order() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i8,
-    let b: i16,
-    let c: u8,
-    let d: u16,
-    let e: u32,
-    let f: u64,
+    let a: i8;
+    let b: i16;
+    let c: u8;
+    let d: u16;
+    let e: u32;
+    let f: u64;
     receive fn report() -> i64 {
         var ok: i64 = 0;
-        if a == 120 { ok = ok + 1; }
-        if b == 30000 { ok = ok + 1; }
-        if c == 200 { ok = ok + 1; }
-        if d == 60000 { ok = ok + 1; }
-        if e == 4000000000 { ok = ok + 1; }
-        if f == 18000000000 { ok = ok + 1; }
-        print("ok="); println(ok);
+        if a == 120 {
+            ok = ok + 1;
+        }
+        if b == 30000 {
+            ok = ok + 1;
+        }
+        if c == 200 {
+            ok = ok + 1;
+        }
+        if d == 60000 {
+            ok = ok + 1;
+        }
+        if e == 4000000000 {
+            ok = ok + 1;
+        }
+        if f == 18000000000 {
+            ok = ok + 1;
+        }
+        print("ok=");
+        println(ok);
         ok
     }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(f: 18000000000, e: 4000000000, d: 60000, c: 200, b: 30000, a: 120),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(f: 18000000000, e: 4000000000, d: 60000, c: 200, b: 30000, a: 120);
 }
+
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
@@ -352,14 +405,19 @@ fn supervisor_child_narrow_width_overflow_is_compile_error() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: u8,
-    receive fn report() { print("a="); println(a); }
+    let a: u8;
+    receive fn report() {
+        print("a=");
+        println(a);
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(a: 300),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(a: 300);
 }
+
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
@@ -397,14 +455,19 @@ fn supervisor_stateful_child_without_init_args_fails_at_compile_time() {
     // Worker has a state field `id: i64` but the child declaration provides
     // no init args. This must fail at compile time, not reach the runtime.
     let source = r#"actor Worker {
-    let id: i64,
-    receive fn report() { print("worker id="); println(id); }
+    let id: i64;
+    receive fn report() {
+        print("worker id=");
+        println(id);
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w1: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w1: Worker;
 }
+
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
@@ -453,15 +516,23 @@ fn supervisor_child_declared_default_fills_omitted_field() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i64,
-    let b: i64 = 100,
-    receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
+    let a: i64;
+    let b: i64 = 100;
+    receive fn report() -> i64 {
+        print("a=");
+        print(a);
+        print(" b=");
+        println(b);
+        0
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(a: 7),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(a: 7);
 }
+
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
@@ -495,15 +566,23 @@ fn supervisor_child_all_declared_defaults_no_explicit_args() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let x: i64 = 5,
-    let y: i64 = 9,
-    receive fn report() -> i64 { print("x="); print(x); print(" y="); println(y); 0 }
+    let x: i64 = 5;
+    let y: i64 = 9;
+    receive fn report() -> i64 {
+        print("x=");
+        print(x);
+        print(" y=");
+        println(y);
+        0
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker;
 }
+
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
@@ -538,15 +617,23 @@ fn supervisor_child_explicit_arg_overrides_declared_default() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i64 = 1,
-    let b: i64 = 100,
-    receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
+    let a: i64 = 1;
+    let b: i64 = 100;
+    receive fn report() -> i64 {
+        print("a=");
+        print(a);
+        print(" b=");
+        println(b);
+        0
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(b: 50),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 50);
 }
+
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
@@ -585,15 +672,22 @@ fn supervisor_child_required_field_omitted_is_compile_error() {
 
     // `a` has no default and is not supplied — must be a compile error.
     let source = r#"actor Worker {
-    let a: i64,
-    let b: i64 = 100,
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    let a: i64;
+    let b: i64 = 100;
+    receive fn report() {
+        print("a=");
+        print(a);
+        print(" b=");
+        println(b);
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker;
 }
+
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
@@ -633,15 +727,23 @@ fn supervisor_child_i32_field_with_declared_default() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i32 = 42,
-    let b: i32,
-    receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
+    let a: i32 = 42;
+    let b: i32;
+    receive fn report() -> i64 {
+        print("a=");
+        print(a);
+        print(" b=");
+        println(b);
+        0
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w: Worker(b: 99),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 99);
 }
+
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
@@ -666,7 +768,7 @@ fn main() {
     );
 }
 
-/// `supervisor_stop` on a supervisor with an arg-initialized stateful child
+/// Graceful `stop` on a supervisor with an arg-initialized stateful child
 /// must tear down cleanly. Regression pin for the state-drop double free:
 /// the synthesized `__hew_state_drop_<Actor>` callback freed the state
 /// wrapper itself, but every runtime consumer (`free_actor_resources`,
@@ -678,28 +780,31 @@ fn main() {
 /// poisoned-allocator triple makes a survived double free deterministic on
 /// macOS instead of silent; the env vars are inert elsewhere.
 #[test]
-fn supervisor_stop_with_stateful_child_exits_cleanly() {
+fn stop_supervisor_with_stateful_child_exits_cleanly() {
     require_codegen();
 
     let source = r#"actor Counter {
-    var count: i64 = 0,
+    var count: i64 = 0;
     receive fn increment() -> i64 {
         count = count + 1;
         println(f"Count: {count}");
         count
     }
 }
+
 supervisor CounterGroup {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
-    child c1: Counter(count: 0) restart: permanent,
-    child c2: Counter(count: 0) restart: permanent,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child c1: Counter(count: 0) restart: permanent;
+    child c2: Counter(count: 0) restart: permanent;
 }
+
 fn main() {
     let sup = spawn CounterGroup;
     let _ = sup.c1.increment();
     let _ = sup.c2.increment();
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     println("Stopped");
 }
 "#;
@@ -720,7 +825,7 @@ fn main() {
 
     assert!(
         output.status.success(),
-        "supervisor_stop with stateful children must exit 0 (state-drop \
+        "stopping stateful children must exit 0 (state-drop \
          double-free regression); stderr: {stderr}"
     );
     assert!(
@@ -747,14 +852,16 @@ fn supervisor_missing_field_diagnostic_points_at_child_declaration() {
     require_codegen();
 
     let source = r"actor Worker {
-    let id: i64,
-    receive fn work(x: i64) -> i64 { x }
+    let id: i64;
+    receive fn work(x: i64) -> i64 {
+        x
+    }
 }
 
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child w1: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w1: Worker;
 }
 ";
 
@@ -781,13 +888,13 @@ supervisor Pool {
             panic!("expected a MissingActorSpawnArgument diagnostic; got: {diagnostics:#?}")
         });
 
-    // `child w1: Worker;` is on source line 9 (1-based). The unrelated
+    // `child w1: Worker;` is on source line 11 (1-based). The unrelated
     // `receive fn work(x: i64)` parameter that a SiteId collision previously
     // rendered a caret on lives on line 3 — asserting an exact match (not
     // merely "not line 3") pins the fix to the real declaration rather than
     // any other incidentally-different line.
     assert_eq!(
-        missing["span"]["start_line"], 9,
+        missing["span"]["start_line"], 11,
         "MissingActorSpawnArgument must carry the child declaration's real \
          source line, not a sentinel or an unrelated colliding site; \
          diagnostic: {missing:#?}"

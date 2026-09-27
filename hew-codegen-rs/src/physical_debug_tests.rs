@@ -61,12 +61,12 @@ fn verified(source: &str) -> hew_mir::VerifiedPhysicalModule {
 /// and the enum must select one case, not lay every payload over the same bytes.
 const ENUM: &str = "\
 type Payload {
-    code: i64,
+    code: i64;
 }
 
 enum Status {
-    Idle,
-    Packet(Payload),
+    Idle;
+    Packet(Payload);
 }
 
 fn main() {

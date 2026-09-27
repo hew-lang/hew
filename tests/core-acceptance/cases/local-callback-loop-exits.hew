@@ -26,7 +26,7 @@ fn mutable_exit(enabled: bool) {
 
 fn repeated_replacement() {
     var callback = make_callback("initial");
-    for round in 0..3 {
+    for round in 0 .. 3 {
         println(callback());
         if round == 2 {
             break;
@@ -40,7 +40,7 @@ fn repeated_replacement() {
 }
 
 fn nested_exit(enabled: bool) {
-    for round in 0..2 {
+    for round in 0 .. 2 {
         let callback = make_callback(f"nested {round}");
         while enabled {
             println(callback());

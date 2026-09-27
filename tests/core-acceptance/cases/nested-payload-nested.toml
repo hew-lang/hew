@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-payload-nested"
+intent = "Nested-constructor payload leak oracle: the W5.020 nested-destructure drop-discipline regression. Shape `nested_high` (nested payload no per iter leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-payload-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "21333\n"
+exit = 0

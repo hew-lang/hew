@@ -1,4 +1,5 @@
 import ambiguity.const_left.{CLASH_CONST};
+
 import ambiguity.const_right.{CLASH_CONST};
 
 fn main() {

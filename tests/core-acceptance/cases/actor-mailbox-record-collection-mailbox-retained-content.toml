@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-mailbox-record-collection-mailbox-retained-content"
+intent = "Actor mailbox record-with-collection-field drop canary (hew-lang/hew#2722). Shape `mailbox_retained_content` (mailbox record retained into state keeps exact content) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-mailbox-record-collection-mailbox-retained-content.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 60

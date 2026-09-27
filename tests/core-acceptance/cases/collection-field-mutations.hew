@@ -1,5 +1,5 @@
 type Store<T> {
-    slots: Vec<T>,
+    slots: Vec<T>;
 }
 
 impl<T> Store<T> {
@@ -11,14 +11,14 @@ impl<T> Store<T> {
 }
 
 type Collections {
-    slots: Vec<string>,
-    labels: HashMap<string, string>,
-    members: HashSet<string>,
+    slots: Vec<string>;
+    labels: HashMap<string, string>;
+    members: HashSet<string>;
 }
 
 type Holder {
-    nested: Collections,
-    sibling: string,
+    nested: Collections;
+    sibling: string;
 }
 
 fn main() -> i64 {
@@ -26,14 +26,7 @@ fn main() -> i64 {
     let added = store.add("second".to_upper());
     println(store.slots.len());
     println(added.slots[1]);
-    var holder = Holder {
-        nested: Collections {
-            slots: ["original".to_upper()],
-            labels: HashMap.new(),
-            members: HashSet.new(),
-        },
-        sibling: "sibling".to_upper(),
-    };
+    var holder = Holder { nested: Collections { slots: ["original".to_upper()], labels: HashMap.new(), members: HashSet.new() }, sibling: "sibling".to_upper() };
     let copy = holder;
     holder.nested.slots.push(holder.nested.slots[0]);
     holder.nested.labels.insert("key", holder.sibling);

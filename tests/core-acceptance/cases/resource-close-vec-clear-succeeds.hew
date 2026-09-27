@@ -2,7 +2,9 @@
 // succeeds runs each element's close exactly once, leaves the vector empty and
 // lets the program continue.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {

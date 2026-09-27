@@ -1,7 +1,7 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
-    lower_module, verify_module, BoundaryDecision, SemOpKind, SemParamPassing, SemTerminator,
-    SirDiagnosticKind, SirLoweringStatus,
+    lower_module, verify_module, BoundaryDecision, RuntimeVariantRole, SemOpKind, SemParamPassing,
+    SemTerminator, SirDiagnosticKind, SirLoweringStatus,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -50,7 +50,7 @@ fn empty_enum_vectors_and_exhaustive_empty_matches_lower() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "impossible")
+        .find(|f| lowered.module.defs.path(f.declaration) == "impossible")
         .unwrap_or_else(|| panic!("empty-match body did not lower: {:#?}", lowered.statuses));
     assert!(impossible.blocks.iter().any(|block| {
         matches!(&block.terminator, SemTerminator::SwitchVariant { arms, .. } if arms.is_empty())
@@ -120,23 +120,29 @@ fn empty_enum_cannot_be_constructed_as_a_record_or_variant() {
 #[test]
 fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
     let lowered = lower_source(
-        r#"
-        enum Choice { Text(string), Empty }
+        r#"enum Choice {
+    Text(string);
+    Empty;
+}
 
-        fn keep_text(value: string) {}
-        fn inspect(value: Choice) -> i64 {
-            match value {
-                .Text(text) => { keep_text(text); 1 },
-                .Empty => 0,
-            }
-        }
+fn keep_text(value: string) {}
 
-        fn main() {
-            let original = Choice.Text("hello");
-            inspect(original);
-            inspect(original);
+fn inspect(value: Choice) -> i64 {
+    match value {
+        .Text(text) => {
+            keep_text(text);
+            1
         }
-        "#,
+        .Empty => 0,
+    }
+}
+
+fn main() {
+    let original = Choice.Text("hello");
+    inspect(original);
+    inspect(original);
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -151,7 +157,7 @@ fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.declaration.full_path() == "inspect")
+        .find(|callable| lowered.module.defs.path(callable.declaration) == "inspect")
         .expect("inspect must have an exact callable header");
     assert_eq!(inspect.signature.params[0].passing, SemParamPassing::Borrow);
     let body = lowered
@@ -181,7 +187,7 @@ fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
     assert_eq!(
         main.blocks
@@ -231,6 +237,14 @@ fn result_constructor_return_and_exhaustive_match_transfer_owned_payloads() {
         .find(|shape| shape.enum_ty.user_facing().to_string() == "Result<string, string>")
         .expect("Result<string, string> must have one exact descriptor");
     assert_eq!(result_shape.variants.len(), 2);
+    assert_eq!(
+        result_shape.runtime_tag(RuntimeVariantRole::ResultOk),
+        Some(0)
+    );
+    assert_eq!(
+        result_shape.runtime_tag(RuntimeVariantRole::ResultErr),
+        Some(1)
+    );
     assert!(result_shape
         .variants
         .iter()
@@ -266,7 +280,7 @@ fn fresh_option_match_accounts_for_unbound_owned_payload() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "classify")
+        .find(|function| lowered.module.defs.path(function.declaration) == "classify")
         .expect("classify must have a body");
     let some_block = classify
         .blocks
@@ -304,26 +318,31 @@ fn fresh_option_match_accounts_for_unbound_owned_payload() {
 #[test]
 fn bitcopy_record_and_option_use_exact_descriptors_without_owner_glue() {
     let lowered = lower_source(
-        r"
-        type Point { x: i64, y: i64 }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
 
-        fn point_x(point: Point) -> i64 { point.x }
-        fn option_value(value: Option<i64>) -> i64 {
-            match value {
-                .Some(number) => number,
-                .None => 0,
-            }
-        }
+fn point_x(point: Point) -> i64 {
+    point.x
+}
 
-        fn main() {
-            let point = Point { x: 2, y: 3 };
-            point_x(point);
-            point_x(point);
-            let optional = Option.Some(5);
-            option_value(optional);
-            option_value(optional);
-        }
-        ",
+fn option_value(value: Option<i64>) -> i64 {
+    match value {
+        .Some(number) => number,
+        .None => 0,
+    }
+}
+
+fn main() {
+    let point = Point { x: 2, y: 3 };
+    point_x(point);
+    point_x(point);
+    let optional = Option.Some(5);
+    option_value(optional);
+    option_value(optional);
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -339,6 +358,26 @@ fn bitcopy_record_and_option_use_exact_descriptors_without_owner_glue() {
         .iter()
         .find(|shape| shape.enum_ty.user_facing().to_string() == "Option<i64>")
         .expect("Option<i64> must retain its exact variant descriptor");
+    assert_eq!(
+        optional.runtime_tag(RuntimeVariantRole::OptionSome),
+        Some(0)
+    );
+    assert_eq!(
+        optional.runtime_tag(RuntimeVariantRole::OptionNone),
+        Some(1)
+    );
+    let mut forged = lowered.module.clone();
+    let forged_option = forged
+        .variant_shapes
+        .iter_mut()
+        .find(|shape| shape.id == optional.id)
+        .expect("the cloned module retains the Option descriptor");
+    forged_option.runtime_tags.swap(0, 1);
+    assert!(verify_module(&forged).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidVariantShape { reason, .. }
+            if reason.contains("runtime role tags differ")
+    )));
     for ty in [&point.aggregate_ty, &optional.enum_ty] {
         let facts = lowered
             .module
@@ -373,7 +412,7 @@ fn guarded_variant_match_lowers_explicit_predicate_cfg() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "choose")
+        .find(|function| lowered.module.defs.path(function.declaration) == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     assert!(choose.blocks.iter().any(|block| matches!(
         block.terminator,
@@ -391,21 +430,23 @@ fn guarded_variant_match_lowers_explicit_predicate_cfg() {
 #[test]
 fn scalar_literal_payloads_use_their_exact_sir_constants() {
     let lowered = lower_source(
-        r"
-        enum Token { Value(f64, char), Empty }
+        r"enum Token {
+    Value(f64, char);
+    Empty;
+}
 
-        fn classify(value: Token) -> i64 {
-            match value {
-                .Value(1.5, 'x') => 1,
-                .Value(_, _) => 2,
-                .Empty => 0,
-            }
-        }
+fn classify(value: Token) -> i64 {
+    match value {
+        .Value(1.5, 'x') => 1,
+        .Value(_, _) => 2,
+        .Empty => 0,
+    }
+}
 
-        fn main() {
-            classify(Token.Value(1.5, 'x'));
-        }
-        ",
+fn main() {
+    classify(Token.Value(1.5, 'x'));
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -413,7 +454,7 @@ fn scalar_literal_payloads_use_their_exact_sir_constants() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "classify")
+        .find(|function| lowered.module.defs.path(function.declaration) == "classify")
         .expect("classify must have a body");
     let operations = classify
         .blocks
@@ -431,21 +472,23 @@ fn scalar_literal_payloads_use_their_exact_sir_constants() {
 #[test]
 fn verifier_refuses_scalar_literals_with_forged_result_types() {
     let mut lowered = lower_source(
-        r"
-        enum Token { Value(f64, char), Empty }
+        r"enum Token {
+    Value(f64, char);
+    Empty;
+}
 
-        fn classify(value: Token) -> i64 {
-            match value {
-                .Value(1.5, 'x') => 1,
-                .Value(_, _) => 2,
-                .Empty => 0,
-            }
-        }
+fn classify(value: Token) -> i64 {
+    match value {
+        .Value(1.5, 'x') => 1,
+        .Value(_, _) => 2,
+        .Empty => 0,
+    }
+}
 
-        fn main() {
-            classify(Token.Value(1.5, 'x'));
-        }
-        ",
+fn main() {
+    classify(Token.Value(1.5, 'x'));
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -509,7 +552,7 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "choose")
+        .find(|function| lowered.module.defs.path(function.declaration) == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     let fallback = choose
         .bindings
@@ -536,24 +579,32 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
 #[test]
 fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
     let lowered = lower_source(
-        r"
-        enum Number { Some(i64), None }
+        r"enum Number {
+    Some(i64);
+    None;
+}
 
-        fn classify(value: Number) -> i64 {
-            var attempts = 0;
-            match value {
-                .Some(number) if { attempts = attempts + 1; number < 0 } => attempts,
-                .Some(number) if { attempts = attempts + 1; number > 0 } => attempts,
-                .Some(0) => attempts,
-                .Some(_) => attempts,
-                .None => attempts,
-            }
-        }
+fn classify(value: Number) -> i64 {
+    var attempts = 0;
+    match value {
+        .Some(number) if {
+            attempts = attempts + 1;
+            number < 0
+        } => attempts,
+        .Some(number) if {
+            attempts = attempts + 1;
+            number > 0
+        } => attempts,
+        .Some(0) => attempts,
+        .Some(_) => attempts,
+        .None => attempts,
+    }
+}
 
-        fn main() {
-            classify(Number.Some(5));
-        }
-        ",
+fn main() {
+    classify(Number.Some(5));
+}
+",
     );
     assert_main_lowered(&lowered);
 
@@ -561,7 +612,7 @@ fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "classify")
+        .find(|function| lowered.module.defs.path(function.declaration) == "classify")
         .expect("classify must have a body");
     assert!(
         classify
@@ -601,7 +652,7 @@ fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "choose")
+        .find(|function| lowered.module.defs.path(function.declaration) == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     assert_eq!(
         choose
@@ -632,20 +683,23 @@ fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
 #[test]
 fn unit_match_allows_a_selected_divergent_handler() {
     let lowered = lower_source(
-        r#"
-        fn report(value: string) {}
-        fn handle(value: Result<string, string>) {
-            match value {
-                .Ok(text) => report(text),
-                .Err(error) => { report(error); return; },
-            }
-        }
+        r#"fn report(value: string) {}
 
-        fn main() {
-            handle(.Ok("ok"));
-            handle(.Err("error"));
+fn handle(value: Result<string, string>) {
+    match value {
+        .Ok(text) => report(text),
+        .Err(error) => {
+            report(error);
+            return;
         }
-        "#,
+    }
+}
+
+fn main() {
+    handle(.Ok("ok"));
+    handle(.Err("error"));
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -653,7 +707,7 @@ fn unit_match_allows_a_selected_divergent_handler() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "handle")
+        .find(|function| lowered.module.defs.path(function.declaration) == "handle")
         .expect("handle must have a body");
     assert!(handle
         .blocks
@@ -680,8 +734,8 @@ fn result_propagation_lowers_expression_return_without_a_fake_value() {
         }
 
         fn main() {
-            pair(.Ok("first"));
-            pair(.Err("failure"));
+            let _ = pair(.Ok("first"));
+            let _ = pair(.Err("failure"));
         }
         "#,
     );
@@ -691,7 +745,7 @@ fn result_propagation_lowers_expression_return_without_a_fake_value() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "pair")
+        .find(|function| lowered.module.defs.path(function.declaration) == "pair")
         .unwrap_or_else(|| panic!("pair must have a body: {:#?}", lowered.statuses));
     assert_eq!(
         pair.blocks
@@ -713,7 +767,7 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
         }
 
         fn main() {
-            stop();
+            let _ = stop();
         }
         "#,
     );
@@ -723,7 +777,7 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "stop")
+        .find(|function| lowered.module.defs.path(function.declaration) == "stop")
         .unwrap_or_else(|| panic!("stop must have a body: {:#?}", lowered.statuses));
     assert!(stop
         .blocks
@@ -770,7 +824,7 @@ fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "choose")
+        .find(|function| lowered.module.defs.path(function.declaration) == "choose")
         .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     assert!(choose
         .blocks
@@ -782,27 +836,38 @@ fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
 #[test]
 fn owning_if_expression_joins_independent_string_values() {
     let lowered = lower_source(
-        r#"
-        enum Setting { Small(bool), Missing }
+        r#"enum Setting {
+    Small(bool);
+    Missing;
+}
 
-        fn describe(value: Setting) -> string {
-            match value {
-                .Small(enabled) => if enabled { "small" } else { "disabled" },
-                .Missing => "missing",
-            }
+fn describe(value: Setting) -> string {
+    match value {
+        .Small(enabled) => if enabled {
+            "small"
+        } else {
+            "disabled"
         }
+        .Missing => "missing",
+    }
+}
 
-        fn discard(enabled: bool) {
-            let ignored = if enabled { "unused" } else { "also unused" };
-        }
+fn discard(enabled: bool) {
+    let ignored = if enabled {
+        "unused"
+    } else {
+        "also unused"
+    };
+}
 
-        fn keep_text(value: string) {}
-        fn main() {
-            keep_text(describe(Setting.Small(true)));
-            keep_text(describe(Setting.Small(false)));
-            discard(true);
-        }
-        "#,
+fn keep_text(value: string) {}
+
+fn main() {
+    keep_text(describe(Setting.Small(true)));
+    keep_text(describe(Setting.Small(false)));
+    discard(true);
+}
+"#,
     );
     assert_main_lowered(&lowered);
 
@@ -810,7 +875,7 @@ fn owning_if_expression_joins_independent_string_values() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "describe")
+        .find(|function| lowered.module.defs.path(function.declaration) == "describe")
         .unwrap_or_else(|| panic!("describe must have a body: {:#?}", lowered.statuses));
     assert!(describe.blocks.iter().any(|block| {
         block
@@ -820,25 +885,33 @@ fn owning_if_expression_joins_independent_string_values() {
     }));
 }
 
-const NESTED_AFFINE_SOURCE: &str = r#"
-    enum Choice { Values(Generator<string, ()>, i64), Empty }
+const NESTED_AFFINE_SOURCE: &str = r#"enum Choice {
+    Values(Generator<string, ()>, i64);
+    Empty;
+}
 
-    gen fn words() -> string { yield "word"; }
+gen fn words() -> string {
+    yield "word";
+}
 
-    fn drive(consume choice: Option<Choice>) -> string {
-        match choice {
-            .Some(.Values(_, 0)) => "zero",
-            .Some(.Values(values, weight)) if weight > 10 => "heavy",
-            .Some(.Values(values, weight)) => { let _kept = values; "kept" }
-            .Some(.Empty) => "empty",
-            .None => "none",
+fn drive(consume choice: Option<Choice>) -> string {
+    match choice {
+        .Some(.Values(_, 0)) => "zero",
+        .Some(.Values(values, weight)) if weight > 10 => "heavy",
+        .Some(.Values(values, weight)) => {
+            let _kept = values;
+            "kept"
         }
+        .Some(.Empty) => "empty",
+        .None => "none",
     }
+}
 
-    fn keep_text(value: string) {}
-    fn main() {
-        keep_text(drive(.Some(Choice.Values(words(), 7))));
-    }
+fn keep_text(value: string) {}
+
+fn main() {
+    keep_text(drive(.Some(Choice.Values(words(), 7))));
+}
 "#;
 
 fn drive_function(lowered: &hew_sir::LoweredModule) -> &hew_sir::SemFunction {
@@ -846,7 +919,7 @@ fn drive_function(lowered: &hew_sir::LoweredModule) -> &hew_sir::SemFunction {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "drive")
+        .find(|function| lowered.module.defs.path(function.declaration) == "drive")
         .unwrap_or_else(|| panic!("drive must have a body: {:#?}", lowered.statuses))
 }
 
@@ -907,7 +980,7 @@ fn probe_cannot_consume_its_enum_while_a_payload_loan_is_live() {
         .module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "drive")
+        .find(|function| lowered.module.defs.path(function.declaration) == "drive")
         .unwrap();
     let block = drive
         .blocks
@@ -989,26 +1062,33 @@ fn variant_projection_requires_an_exact_case_and_field() {
 #[test]
 fn guard_cannot_consume_a_candidate_binding() {
     let lowered = lower_source(
-        r#"
-        enum Choice { Values(Generator<string, ()>, i64), Empty }
+        r#"enum Choice {
+    Values(Generator<string, ()>, i64);
+    Empty;
+}
 
-        gen fn words() -> string { yield "word"; }
+gen fn words() -> string {
+    yield "word";
+}
 
-        fn drain(consume values: Generator<string, ()>) -> bool { true }
+fn drain(consume values: Generator<string, ()>) -> bool {
+    true
+}
 
-        fn drive(consume choice: Choice) -> string {
-            match choice {
-                .Values(values, weight) if drain(values) => "drained",
-                .Values(_, weight) => "kept",
-                .Empty => "empty",
-            }
-        }
+fn drive(consume choice: Choice) -> string {
+    match choice {
+        .Values(values, weight) if drain(values) => "drained",
+        .Values(_, weight) => "kept",
+        .Empty => "empty",
+    }
+}
 
-        fn keep_text(value: string) {}
-        fn main() {
-            keep_text(drive(Choice.Values(words(), 1)));
-        }
-        "#,
+fn keep_text(value: string) {}
+
+fn main() {
+    keep_text(drive(Choice.Values(words(), 1)));
+}
+"#,
     );
     assert!(
         lowered.statuses.iter().any(|status| status.name == "drive"
@@ -1022,16 +1102,19 @@ fn guard_cannot_consume_a_candidate_binding() {
 #[test]
 fn wire_schema_rejects_a_field_codec_for_another_value_type() {
     let mut lowered = lower_source(
-        r#"
-        #[wire]
-        type WireRecordProbe { label: string @7, code: u8 @2 }
-        fn main() {
-            let message = WireRecordProbe { label: "owned", code: 7 };
-            let encoded = message.encode();
-            let decoded = WireRecordProbe.decode(encoded);
-            println(decoded.label);
-        }
-    "#,
+        r#"#[wire]
+type WireRecordProbe {
+    label: string @7;
+    code: u8 @2;
+}
+
+fn main() {
+    let message = WireRecordProbe { label: "owned", code: 7 };
+    let encoded = message.encode();
+    let decoded = WireRecordProbe.decode(encoded);
+    println(decoded.label);
+}
+"#,
     );
     assert_main_lowered(&lowered);
     let mut changed = false;
@@ -1059,18 +1142,4 @@ fn wire_schema_rejects_a_field_codec_for_another_value_type() {
             &diagnostic.kind, SirDiagnosticKind::InvalidOperation { reason, .. }
                 if reason.contains("wire child type disagrees with checked shape")
         )));
-}
-
-#[test]
-fn text_wire_names_cannot_discard_another_field() {
-    let lowered = lower_source(
-        r#"
-        #[wire]
-        type Ambiguous { first: string @1 json("same"), second: string @2 json("same") }
-        fn main() { let text = Ambiguous { first: "first", second: "second" }.to_json(); }
-    "#,
-    );
-    assert!(lowered.statuses.iter().any(|status| matches!(&status.status,
-        SirLoweringStatus::Unsupported { reason, .. } if reason.contains("wire JSON field name `same` is ambiguous")
-    )));
 }

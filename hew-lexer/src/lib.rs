@@ -6,6 +6,10 @@
 
 use logos::Logos;
 
+pub mod symbol;
+
+pub use symbol::{sym, Symbol, SyntaxContext};
+
 /// Byte-offset span within source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -232,10 +236,6 @@ pub enum Token<'src> {
     RestForOne,
     #[token("simple_one_for_one")]
     SimpleOneForOne,
-    /// `brutal_kill` shutdown directive on a supervisor child: skip the
-    /// graceful-stop deadline and terminate the child immediately.
-    #[token("brutal_kill")]
-    BrutalKill,
     #[token("scope")]
     Scope,
     #[token("fork")]
@@ -244,8 +244,6 @@ pub enum Token<'src> {
     Spawn,
     #[token("await")]
     Await,
-    #[token("await_restart")]
-    AwaitRestart,
     #[token("receive")]
     Receive,
     #[token("init")]
@@ -654,12 +652,10 @@ define_keywords! {
     OneForAll        => "one_for_all",
     RestForOne       => "rest_for_one",
     SimpleOneForOne  => "simple_one_for_one",
-    BrutalKill       => "brutal_kill",
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
     Await      => "await",
-    AwaitRestart => "await_restart",
     Receive    => "receive",
     Init       => "init",
     Type       => "type",
@@ -1164,33 +1160,6 @@ mod tests {
         assert_eq!(lexer.next().map(|(t, _)| t), Some(Token::Integer("42")));
         assert_eq!(lexer.next().map(|(t, _)| t), Some(Token::Semicolon));
         assert!(lexer.next().is_none());
-    }
-
-    #[test]
-    fn fibonacci_example() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../examples/fibonacci.hew"
-        ))
-        .expect("fibonacci.hew should exist");
-        let toks = lex(&src);
-        // Should produce tokens without errors
-        for (tok, _) in &toks {
-            assert_ne!(
-                *tok,
-                Token::Error,
-                "unexpected error token in fibonacci.hew"
-            );
-        }
-        // Spot-check: skip any leading inner-doc-comment header (a v0.5
-        // convention for example files documenting their status), then the
-        // first significant token should be `fn`.
-        let first_significant = toks
-            .iter()
-            .map(|(t, _)| t)
-            .find(|t| !matches!(t, Token::InnerDocComment(_)))
-            .expect("fibonacci.hew should contain a non-comment token");
-        assert_eq!(*first_significant, Token::Fn);
     }
 
     #[test]

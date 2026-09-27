@@ -5,8 +5,10 @@
 //! with coloured output.
 
 pub mod discovery;
+mod doc_examples;
 pub mod output;
 pub mod runner;
+pub mod vm;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -60,6 +62,9 @@ fn stable_hash(value: &str) -> u64 {
 }
 
 fn test_identity(test: &discovery::TestCase, root: &Path) -> String {
+    if let Some(doc) = &test.doc {
+        return doc.identity.clone();
+    }
     let file = Path::new(&test.file);
     let relative = file.strip_prefix(root).unwrap_or(file);
     format!(
@@ -67,6 +72,13 @@ fn test_identity(test: &discovery::TestCase, root: &Path) -> String {
         relative.to_string_lossy().replace('\\', "/"),
         test.name
     )
+}
+
+fn test_selector(test: &discovery::TestCase) -> String {
+    if let Some(doc) = &test.doc {
+        return doc.selector.clone();
+    }
+    format!("{}::{}", test.file, test.name)
 }
 
 fn parse_partition_argument(value: Option<&str>) -> Option<TestPartition> {
@@ -79,28 +91,82 @@ fn parse_partition_argument(value: Option<&str>) -> Option<TestPartition> {
         })
 }
 
-fn output_test_list(tests: &[discovery::TestCase], filter: Option<&str>, root: &Path) {
+fn output_test_list(
+    tests: &[discovery::TestCase],
+    filter: Option<&str>,
+    root: &Path,
+    format: output::OutputFormat,
+) {
     let mut identities: Vec<_> = tests
         .iter()
-        .filter(|test| filter.is_none_or(|pattern| test.name.contains(pattern)))
-        .map(|test| test_identity(test, root))
+        .filter(|test| filter.is_none_or(|pattern| test_identity(test, root).contains(pattern)))
+        .map(|test| {
+            (
+                test_identity(test, root),
+                test_selector(test),
+                test.ignored,
+                test.ignore_reason.clone(),
+            )
+        })
         .collect();
     identities.sort();
-    for identity in identities {
-        println!("{identity}");
+    for (identity, selector, ignored, ignore_reason) in identities {
+        if format == output::OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({ "event": "test_discovered", "identity": identity, "selector": selector, "ignored": ignored, "ignore_reason": ignore_reason })
+            );
+        } else {
+            match ignore_reason {
+                Some(reason) => println!("{identity} (ignored: {reason})"),
+                None if ignored => println!("{identity} (ignored)"),
+                None => println!("{identity}"),
+            }
+        }
     }
 }
 
-fn requested_test_paths(args: &crate::args::TestArgs) -> Vec<String> {
-    let paths = if args.paths.is_empty() {
+fn requested_test_paths(args: &crate::args::TestArgs) -> (Vec<String>, Vec<Option<String>>) {
+    let paths = if args.rerun_failed {
+        let path = Path::new(".hew/test-runs/last.json");
+        let bytes = std::fs::read(path).unwrap_or_else(|error| {
+            eprintln!("Error: cannot read {}: {error}", path.display());
+            std::process::exit(1);
+        });
+        let failures: Vec<String> = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            eprintln!("Error: invalid {}: {error}", path.display());
+            std::process::exit(1);
+        });
+        if failures.is_empty() {
+            println!("No failed tests to rerun.");
+            std::process::exit(0);
+        }
+        failures.into_iter().map(PathBuf::from).collect()
+    } else if args.paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
         args.paths.clone()
     };
-    canonicalize_test_paths(&paths).unwrap_or_else(|error| {
+    let (paths, names): (Vec<_>, Vec<_>) = paths
+        .into_iter()
+        .map(|path| {
+            let value = path.to_string_lossy();
+            if let Some((file, name)) = value.rsplit_once("::") {
+                if (Path::new(file).extension().is_some_and(|ext| ext == "hew")
+                    || (args.doc && Path::new(file).extension().is_some_and(|ext| ext == "md")))
+                    && !name.is_empty()
+                {
+                    return (PathBuf::from(file), Some(name.to_string()));
+                }
+            }
+            (path, None)
+        })
+        .unzip();
+    let paths = canonicalize_test_paths(&paths).unwrap_or_else(|error| {
         eprintln!("Error: {error}");
         std::process::exit(1);
-    })
+    });
+    (paths, names)
 }
 
 #[allow(
@@ -108,19 +174,49 @@ fn requested_test_paths(args: &crate::args::TestArgs) -> Vec<String> {
     reason = "test discovery, parse-failure handling, partitioning, and stable output form one fail-closed CLI transaction"
 )]
 pub fn cmd_test(args: &crate::args::TestArgs) {
+    use std::io::IsTerminal as _;
+    if args.watch {
+        crate::watch::cmd_test_watch(args);
+        return;
+    }
     let filter = args.filter.as_deref();
     let partition = parse_partition_argument(args.partition.as_deref());
-    let use_color = !args.no_color;
-    let include_ignored = args.include_ignored;
+    let use_color = match args.color {
+        Some(crate::args::TestColour::Always) => true,
+        Some(crate::args::TestColour::Never) => false,
+        None => std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+    };
+    let include_ignored = args.include_ignored || args.ignored;
     let format = match args.format {
         crate::args::TestFormat::Text => output::OutputFormat::Text,
+        crate::args::TestFormat::Json => output::OutputFormat::Json,
         crate::args::TestFormat::Junit => output::OutputFormat::Junit,
     };
+    if args.no_capture && format != output::OutputFormat::Text {
+        eprintln!("Error: --no-capture requires --format text");
+        std::process::exit(2);
+    }
     let timeout = crate::util::parse_timeout(&args.timeout).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
-    let paths = requested_test_paths(args);
+    if let Some(directory) = &args.trace {
+        std::fs::create_dir_all(directory).unwrap_or_else(|error| {
+            eprintln!(
+                "Error: cannot create trace directory {}: {error}",
+                directory.display()
+            );
+            std::process::exit(1);
+        });
+    }
+    let (paths, selected_names) = requested_test_paths(args);
+
+    let doc_sources = args.doc.then(|| {
+        doc_examples::prepare(&paths).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        })
+    });
 
     // Discover test files and test cases.
     let mut all_tests = Vec::new();
@@ -128,6 +224,9 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     let mut had_parse_errors = false;
     let mut seen_files = HashSet::new();
     for path in &paths {
+        if Path::new(path).extension().is_some_and(|ext| ext == "md") {
+            continue;
+        }
         let p = Path::new(path);
         if p.is_file() {
             if !seen_files.insert(path.clone()) {
@@ -169,6 +268,11 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         }
     }
 
+    if let Some(doc_sources) = &doc_sources {
+        discovered_files += doc_sources.tests.len();
+        all_tests.extend(doc_sources.tests.iter().cloned());
+    }
+
     if had_parse_errors {
         std::process::exit(1);
     }
@@ -186,37 +290,158 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     let root = std::env::current_dir()
         .and_then(|path| path.canonicalize())
         .unwrap_or_else(|_| PathBuf::from("."));
+    all_tests.retain(|test| {
+        paths.iter().zip(&selected_names).any(|(path, name)| {
+            Path::new(
+                test.doc
+                    .as_ref()
+                    .map_or(test.file.as_str(), |doc| doc.origin.as_str()),
+            )
+            .starts_with(Path::new(path))
+                && name.as_ref().is_none_or(|name| {
+                    test.name == *name
+                        || test
+                            .doc
+                            .as_ref()
+                            .is_some_and(|doc| doc.identity.ends_with(&format!("::{name}")))
+                })
+        })
+    });
+    if args.ignored {
+        all_tests.retain(|test| test.ignored);
+    }
+    if all_tests.is_empty() {
+        eprintln!("No tests matched the requested selectors.");
+        std::process::exit(i32::from(!args.allow_empty));
+    }
     if let Some(partition) = partition {
         all_tests.retain(|test| partition.contains(&test_identity(test, &root)));
     }
+    if let Some(pattern) = filter {
+        all_tests.retain(|test| test_identity(test, &root).contains(pattern));
+    }
+    if all_tests.is_empty() {
+        eprintln!("No tests matched the requested selection.");
+        std::process::exit(i32::from(!args.allow_empty));
+    }
+
+    if args.no_capture
+        && all_tests.iter().any(|test| {
+            test.doc
+                .as_ref()
+                .is_some_and(|doc| doc.expected_stdout.is_some())
+        })
+    {
+        eprintln!("Error: --no-capture cannot verify a documentation Output block");
+        std::process::exit(2);
+    }
 
     if args.list {
-        output_test_list(&all_tests, filter, &root);
+        output_test_list(&all_tests, None, &root, format);
         return;
     }
 
     let cwd = root.clone();
     let project_dir = find_project_dir(&cwd).unwrap_or_else(|| cwd.clone());
-    let ffi_lib = resolve_ffi_lib(&project_dir);
+    let ffi_lib = (args.engine == crate::args::TestEngine::Native)
+        .then(|| resolve_ffi_lib(&project_dir))
+        .flatten();
+    let compile_paths = (args.engine == crate::args::TestEngine::Native)
+        .then(|| resolve_compile_paths(&project_dir));
+    let vm_runner = (args.engine == crate::args::TestEngine::Vm).then(|| {
+        vm::resolve_runner(&project_dir).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        })
+    });
 
-    let compile_paths = resolve_compile_paths(&project_dir);
-
+    output::run_started(all_tests.len(), format);
+    let output_gate = std::sync::Mutex::new(());
+    let emit = |event| {
+        let _guard = output_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        output::output_event(event, format, &root, use_color, args.show_output);
+    };
     let summary = runner::run_tests(
         &all_tests,
         runner::TestRunOptions {
-            filter,
+            filter: None,
             include_ignored,
             ffi_lib: ffi_lib.as_deref(),
-            compile_paths: &compile_paths,
+            compile_paths: compile_paths.as_ref(),
+            project_dir: &project_dir,
+            engine: args.engine,
+            vm_runner: vm_runner.as_deref(),
+            step_budget: args.step_budget,
+            capture: !args.no_capture,
+            trace_dir: args.trace.as_deref(),
             timeout,
-            jobs: requested_jobs(args.jobs),
+            jobs: if args.no_capture {
+                1
+            } else {
+                requested_jobs(args.jobs)
+            },
+            schedules: runner::ScheduleOptions {
+                schedule: match args.schedule {
+                    crate::args::TestSchedule::Fifo => runner::Schedule::Fifo,
+                    crate::args::TestSchedule::Random => runner::Schedule::Random,
+                },
+                seed: args.seed,
+                explore: args.schedules,
+            },
+            root: &root,
+            on_event: Some(&emit),
         },
     );
+    if let Err(error) = save_failed_tests(&summary, &all_tests, &root) {
+        eprintln!("Warning: cannot save failed test identities: {error}");
+    }
     output::output_results(&summary, use_color, format, &root);
 
     if summary.failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn save_failed_tests(
+    summary: &runner::TestSummary,
+    tests: &[discovery::TestCase],
+    root: &Path,
+) -> Result<(), String> {
+    let mut failures = summary
+        .results
+        .iter()
+        .filter(|result| matches!(result.outcome, runner::TestOutcome::Failed(_)))
+        .map(|result| test_identity(&result.test, root))
+        .collect::<Vec<_>>();
+    for failure in &summary.compile_failures {
+        let doc_failures = tests
+            .iter()
+            .filter(|test| {
+                test.doc.as_ref().is_some_and(|doc| {
+                    doc.origin == failure.file && failure.tests.contains(&doc.identity)
+                })
+            })
+            .collect::<Vec<_>>();
+        if !doc_failures.is_empty() {
+            failures.extend(doc_failures.into_iter().map(test_selector));
+            continue;
+        }
+        let relative = Path::new(&failure.file)
+            .strip_prefix(root)
+            .unwrap_or_else(|_| Path::new(&failure.file));
+        failures.extend(
+            failure
+                .tests
+                .iter()
+                .map(|name| format!("{}::{name}", relative.display())),
+        );
+    }
+    let dir = root.join(".hew/test-runs");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(&failures).map_err(|error| error.to_string())?;
+    std::fs::write(dir.join("last.json"), bytes).map_err(|error| error.to_string())
 }
 
 fn requested_jobs(jobs: Option<std::num::NonZeroUsize>) -> usize {
@@ -363,8 +588,13 @@ mod partition_tests {
             ),
             companion: None,
             ignored: false,
+            ignore_reason: None,
             should_panic: false,
+            should_panic_message: None,
+            timeout_ns: None,
             serial: false,
+            clock: crate::test_runner::discovery::TestClock::Deterministic,
+            doc: None,
         };
         assert_eq!(
             test_identity(&test, Path::new("/repo")),

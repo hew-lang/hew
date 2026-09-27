@@ -63,7 +63,7 @@ use crate::node::{
 /// A generic record declaration's structural shape, indexed by name.
 struct RecordDecl {
     id: ItemId,
-    type_params: Vec<String>,
+    type_params: Vec<hew_types::ParamHead>,
     symbol_class: crate::mono::SymbolClass,
     /// Source-declared field shapes (name, declared type) in order.
     fields: Vec<(String, ResolvedTy)>,
@@ -72,7 +72,7 @@ struct RecordDecl {
 /// A generic enum declaration's structural shape, indexed by name.
 struct EnumDecl {
     id: ItemId,
-    type_params: Vec<String>,
+    type_params: Vec<hew_types::ParamHead>,
     variants: Vec<HirVariant>,
     /// The declaration's `indirect` modifier, carried onto every instantiation
     /// this pass registers so a generic `indirect enum` keeps its heap shape.
@@ -105,7 +105,7 @@ struct Discovery<'a> {
     /// `fn(T) -> Box<T>`. Such a `Box<T>` is NOT an instantiation site and is
     /// skipped silently; only a residual-domain symbol that survives
     /// substitution is a defect (see `classify_args`).
-    all_type_params: &'a HashSet<String>,
+    all_type_params: &'a HashSet<hew_types::ParamHead>,
     /// Keys already present (origin-site registrations + this pass's own
     /// insertions) so a layout discovered both at a concrete site and through
     /// a substituted body is registered once.
@@ -147,6 +147,7 @@ struct Discovery<'a> {
     reason = "single layout-mono discovery pass — mirrors walk_expr in complexity; splitting would need shared Discovery state across fns"
 )]
 pub fn run_layout_mono_pass(
+    defs: &hew_types::DefTable,
     items: &[HirItem],
     extra_decls: &[HirItem],
     monomorphisations: &[MonomorphizedFn],
@@ -165,12 +166,12 @@ pub fn run_layout_mono_pass(
     // `fn(T) -> Box<T>`) and skip them, rather than mistaking the borrowed `T`
     // for a concrete instantiation when the current walk's residual domain
     // doesn't contain it.
-    let mut all_type_params: HashSet<String> = HashSet::new();
+    let mut all_type_params: HashSet<hew_types::ParamHead> = HashSet::new();
 
     for item in items {
         match item {
             HirItem::Record(r) => {
-                all_type_params.extend(r.type_params.iter().cloned());
+                all_type_params.extend(r.type_params.iter().copied());
                 let fields = if r.fields.is_empty() {
                     r.positional_field_tys
                         .iter()
@@ -194,13 +195,13 @@ pub fn run_layout_mono_pass(
                 );
             }
             HirItem::TypeDecl(td) => {
-                all_type_params.extend(td.type_params.iter().cloned());
+                all_type_params.extend(td.type_params.iter().copied());
                 // A struct-kind type decl contributes a record layout; an
                 // enum-kind type decl contributes an enum layout. The two are
                 // disjoint even when an enum has no variants.
                 if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls.insert(
-                        td.qualified_name(),
+                        td.qualified_name(defs),
                         RecordDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -214,7 +215,7 @@ pub fn run_layout_mono_pass(
                     );
                 } else {
                     enum_decls.insert(
-                        td.qualified_name(),
+                        td.qualified_name(defs),
                         EnumDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -225,14 +226,14 @@ pub fn run_layout_mono_pass(
                 }
             }
             HirItem::Function(f) => {
-                all_type_params.extend(f.type_params.iter().cloned());
+                all_type_params.extend(f.type_params.iter().copied());
                 origin_fns.insert(f.id, f);
             }
             // Impl-block type-params join the program-wide abstract domain so
             // an impl-method signature reference (`fn(T) -> Pair<T>`) borrowed
             // into another body is recognised as abstract, not a layout site.
             HirItem::Impl(im) => {
-                all_type_params.extend(im.type_params.iter().cloned());
+                all_type_params.extend(im.type_params.iter().copied());
             }
             // Other item variants contribute no new record/enum decls. Their
             // bodies' reach-throughs are observed through the function-mono
@@ -265,7 +266,7 @@ pub fn run_layout_mono_pass(
     for item in extra_decls {
         match item {
             HirItem::Record(r) => {
-                all_type_params.extend(r.type_params.iter().cloned());
+                all_type_params.extend(r.type_params.iter().copied());
                 record_decls
                     .entry(r.qualified_name())
                     .or_insert_with(|| RecordDecl {
@@ -287,10 +288,10 @@ pub fn run_layout_mono_pass(
                     });
             }
             HirItem::TypeDecl(td) => {
-                all_type_params.extend(td.type_params.iter().cloned());
+                all_type_params.extend(td.type_params.iter().copied());
                 if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls
-                        .entry(td.qualified_name())
+                        .entry(td.qualified_name(defs))
                         .or_insert_with(|| RecordDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -303,7 +304,7 @@ pub fn run_layout_mono_pass(
                         });
                 } else {
                     enum_decls
-                        .entry(td.qualified_name())
+                        .entry(td.qualified_name(defs))
                         .or_insert_with(|| EnumDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -349,11 +350,7 @@ pub fn run_layout_mono_pass(
             .or_insert_with(|| EnumDecl {
                 is_indirect: false,
                 id: spec.item_id,
-                type_params: spec
-                    .type_params
-                    .iter()
-                    .map(|param| (*param).to_string())
-                    .collect(),
+                type_params: spec.parameter_heads(),
                 variants: crate::lower::builtin_enum_hir_variants(spec),
             });
         // Register the type-param names in the program-wide abstract domain
@@ -370,14 +367,19 @@ pub fn run_layout_mono_pass(
     // consumes the same typed catalog as origin-site registration; adding a
     // cursor family in one place automatically closes both paths.
     for spec in crate::lower::SYNTHETIC_CURSOR_LAYOUT_SPECS {
-        let type_params: Vec<String> = spec
+        let type_params: Vec<_> = spec
             .type_params
             .iter()
-            .map(|param| (*param).to_string())
+            .enumerate()
+            .map(|(index, name)| hew_types::DefTable::builtin_parameter(spec.builtin, index, name))
             .collect();
         let type_args: Vec<ResolvedTy> = type_params
             .iter()
-            .map(|param| ResolvedTy::named_user(param, vec![]))
+            .map(|param| ResolvedTy::Named {
+                head: hew_types::TypeHead::param(*param),
+                args: Vec::new(),
+                is_opaque: false,
+            })
             .collect();
         let Some((_, fields)) = crate::lower::synthetic_cursor_layout(spec.builtin, &type_args)
         else {
@@ -399,11 +401,6 @@ pub fn run_layout_mono_pass(
         all_type_params.extend(type_params);
     }
 
-    // A resolved declaration remains concrete even when another declaration
-    // uses the same spelling for a parameter. The walked function's own
-    // residual domain is checked separately before this borrowed-name set.
-    all_type_params
-        .retain(|name| !record_decls.contains_key(name) && !enum_decls.contains_key(name));
     let mut disc = Discovery {
         record_decls: &record_decls,
         enum_decls: &enum_decls,
@@ -420,8 +417,8 @@ pub fn run_layout_mono_pass(
         diagnostics: Vec::new(),
     };
 
-    let empty_subst: HashMap<String, ResolvedTy> = HashMap::new();
-    let empty_domain: HashSet<String> = HashSet::new();
+    let empty_subst: HashMap<hew_types::ParamHead, ResolvedTy> = HashMap::new();
+    let empty_domain: HashSet<hew_types::ParamHead> = HashSet::new();
 
     // ── Walk monomorphic fn bodies (empty subst, empty residual domain). ──
     // Their `expr.ty`s are already concrete by checker authority, so any
@@ -440,13 +437,14 @@ pub fn run_layout_mono_pass(
         let Some(origin) = origin_fns.get(&mono.key.origin).copied() else {
             continue;
         };
-        let subst: HashMap<String, ResolvedTy> = origin
+        let subst: HashMap<hew_types::ParamHead, ResolvedTy> = origin
             .type_params
             .iter()
-            .cloned()
+            .copied()
             .zip(mono.key.type_args.iter().cloned())
             .collect();
-        let residual_domain: HashSet<String> = origin.type_params.iter().cloned().collect();
+        let residual_domain: HashSet<hew_types::ParamHead> =
+            origin.type_params.iter().copied().collect();
         walk_fn(origin, &subst, &residual_domain, &mut disc);
     }
 
@@ -455,8 +453,8 @@ pub fn run_layout_mono_pass(
 
 fn walk_fn(
     f: &HirFn,
-    subst: &HashMap<String, ResolvedTy>,
-    residual_domain: &HashSet<String>,
+    subst: &HashMap<hew_types::ParamHead, ResolvedTy>,
+    residual_domain: &HashSet<hew_types::ParamHead>,
     disc: &mut Discovery,
 ) {
     for p in &f.params {
@@ -468,8 +466,8 @@ fn walk_fn(
 
 fn walk_block(
     block: &HirBlock,
-    subst: &HashMap<String, ResolvedTy>,
-    residual_domain: &HashSet<String>,
+    subst: &HashMap<hew_types::ParamHead, ResolvedTy>,
+    residual_domain: &HashSet<hew_types::ParamHead>,
     disc: &mut Discovery,
 ) {
     for stmt in &block.statements {
@@ -482,8 +480,8 @@ fn walk_block(
 
 fn walk_stmt(
     stmt: &HirStmt,
-    subst: &HashMap<String, ResolvedTy>,
-    residual_domain: &HashSet<String>,
+    subst: &HashMap<hew_types::ParamHead, ResolvedTy>,
+    residual_domain: &HashSet<hew_types::ParamHead>,
     disc: &mut Discovery,
 ) {
     match &stmt.kind {
@@ -527,8 +525,8 @@ fn walk_stmt(
 )]
 fn walk_expr(
     expr: &HirExpr,
-    subst: &HashMap<String, ResolvedTy>,
-    residual_domain: &HashSet<String>,
+    subst: &HashMap<hew_types::ParamHead, ResolvedTy>,
+    residual_domain: &HashSet<hew_types::ParamHead>,
     disc: &mut Discovery,
 ) {
     // Every node carries a checker-resolved type; once substituted it exposes
@@ -782,8 +780,8 @@ impl Discovery<'_> {
         &mut self,
         ty: &ResolvedTy,
         span: &Range<usize>,
-        subst: &HashMap<String, ResolvedTy>,
-        residual_domain: &HashSet<String>,
+        subst: &HashMap<hew_types::ParamHead, ResolvedTy>,
+        residual_domain: &HashSet<hew_types::ParamHead>,
     ) {
         let substituted = substitute_ty(ty, subst);
         let mut worklist = vec![substituted];
@@ -798,15 +796,11 @@ impl Discovery<'_> {
             // Enqueue nested args first so `Box<Pair<i64,bool>>` reaches
             // through both `Box<...>` and `Pair<i64,bool>`.
             collect_named_children(&t, &mut worklist);
-            let ResolvedTy::Named {
-                name,
-                args,
-                builtin,
-                ..
-            } = &t
-            else {
+            let ResolvedTy::Named { head, args, .. } = &t else {
                 continue;
             };
+            let name = head.registry_key();
+            let builtin = head.builtin();
             let decl_key = match builtin {
                 Some(hew_types::BuiltinType::HashMapIter) => "@synthetic.HashMapIter",
                 _ => name,
@@ -836,7 +830,7 @@ impl Discovery<'_> {
                 ArgClass::ResidualDefect(residual) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::UnresolvedLayoutTypeParamPostMono {
-                            type_name: name.clone(),
+                            type_name: name.to_string(),
                             residual_var: residual,
                         },
                         span.clone(),
@@ -951,7 +945,11 @@ impl Discovery<'_> {
     /// - [`ArgClass::ResidualDefect`] — an abstract symbol from the *walked
     ///   fn's own* type-params survived substitution; a function-mono /
     ///   checker-authority defect, surfaced fail-closed.
-    fn classify_args(&self, args: &[ResolvedTy], residual_domain: &HashSet<String>) -> ArgClass {
+    fn classify_args(
+        &self,
+        args: &[ResolvedTy],
+        residual_domain: &HashSet<hew_types::ParamHead>,
+    ) -> ArgClass {
         // Residual-domain symbols are checked first: a symbol that is in the
         // walked fn's own domain AND survived substitution is unambiguously a
         // defect (the closure failed to reach this site concretely).
@@ -1205,7 +1203,10 @@ fn collect_named_children(ty: &ResolvedTy, worklist: &mut Vec<ResolvedTy>) {
 /// `args` (recursively), or `None` if every leaf is concrete. A residual is a
 /// `ResolvedTy::TypeParam` or a bare `Named { args: [] }` whose name is in the
 /// walked fn's own `residual_domain` (per the DI-015 per-walk discipline).
-fn first_residual(args: &[ResolvedTy], residual_domain: &HashSet<String>) -> Option<String> {
+fn first_residual(
+    args: &[ResolvedTy],
+    residual_domain: &HashSet<hew_types::ParamHead>,
+) -> Option<String> {
     args.iter().find_map(|a| residual_in_ty(a, residual_domain))
 }
 
@@ -1215,12 +1216,12 @@ fn first_residual(args: &[ResolvedTy], residual_domain: &HashSet<String>) -> Opt
 /// `expr.ty` of `fn(T) -> Box<T>`) so it is not mistaken for a concrete layout
 /// site. Mirrors `lower::contains_abstract_symbol` (a structural `TypeParam`
 /// is abstract by construction).
-fn abstract_in_ty(ty: &ResolvedTy, all_type_params: &HashSet<String>) -> bool {
+fn abstract_in_ty(ty: &ResolvedTy, all_type_params: &HashSet<hew_types::ParamHead>) -> bool {
     let mut worklist = vec![ty.clone()];
     while let Some(ty) = worklist.pop() {
         if matches!(ty, ResolvedTy::TypeParam { .. })
-            || matches!(&ty, ResolvedTy::Named { name, args, .. }
-                if args.is_empty() && all_type_params.contains(name))
+            || matches!(&ty, ResolvedTy::Named { head: hew_types::TypeHead::Param(parameter), args, .. }
+                if args.is_empty() && all_type_params.contains(parameter))
         {
             return true;
         }
@@ -1229,15 +1230,22 @@ fn abstract_in_ty(ty: &ResolvedTy, all_type_params: &HashSet<String>) -> bool {
     false
 }
 
-fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<String> {
+fn residual_in_ty(
+    ty: &ResolvedTy,
+    residual_domain: &HashSet<hew_types::ParamHead>,
+) -> Option<String> {
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
-            if args.is_empty() && residual_domain.contains(name) {
-                return Some(name.clone());
+        ResolvedTy::Named { head, args, .. } => {
+            if let hew_types::TypeHead::Param(parameter) = head {
+                if args.is_empty() && residual_domain.contains(parameter) {
+                    return Some(parameter.spelling.to_string());
+                }
             }
             args.iter().find_map(|a| residual_in_ty(a, residual_domain))
         }
-        ResolvedTy::TypeParam { name } if residual_domain.contains(name) => Some(name.clone()),
+        ResolvedTy::TypeParam { name } if residual_domain.contains(name) => {
+            Some(name.spelling.to_string())
+        }
         ResolvedTy::Tuple(items) => items
             .iter()
             .find_map(|t| residual_in_ty(t, residual_domain)),
@@ -1290,11 +1298,11 @@ mod tests {
     fn nested_structural_parameters_remain_abstract_without_name_membership() {
         let names = HashSet::new();
         let nested = ResolvedTy::Tuple(vec![ResolvedTy::Task(Box::new(ResolvedTy::TypeParam {
-            name: "Payload".into(),
+            name: hew_types::ParamHead::for_test("Payload"),
         }))]);
         assert!(abstract_in_ty(&nested, &names));
         assert!(!abstract_in_ty(
-            &ResolvedTy::named_user("Payload", vec![]),
+            &ResolvedTy::named_for_test("Payload", vec![]),
             &names,
         ));
     }
@@ -1304,7 +1312,7 @@ mod tests {
     fn empty_discovery<'a>(
         record_decls: &'a HashMap<String, RecordDecl>,
         enum_decls: &'a HashMap<String, EnumDecl>,
-        all_type_params: &'a HashSet<String>,
+        all_type_params: &'a HashSet<hew_types::ParamHead>,
     ) -> Discovery<'a> {
         Discovery {
             record_decls,
@@ -1332,9 +1340,12 @@ mod tests {
             "Holder".to_string(),
             RecordDecl {
                 id: ItemId(1),
-                type_params: vec!["T".to_string()],
+                type_params: vec![hew_types::ParamHead::for_test("T")],
                 symbol_class: crate::mono::SymbolClass::Function,
-                fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
+                fields: vec![(
+                    "item".to_string(),
+                    ResolvedTy::param(hew_types::ParamHead::for_test("T")),
+                )],
             },
         );
         let enum_decls = HashMap::new();
@@ -1343,11 +1354,14 @@ mod tests {
 
         let decl = RecordDecl {
             id: ItemId(1),
-            type_params: vec!["T".to_string()],
+            type_params: vec![hew_types::ParamHead::for_test("T")],
             symbol_class: crate::mono::SymbolClass::Function,
-            fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
+            fields: vec![(
+                "item".to_string(),
+                ResolvedTy::param(hew_types::ParamHead::for_test("T")),
+            )],
         };
-        let qualified_arg = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let qualified_arg = ResolvedTy::named_for_test("lmonobox.Box", vec![]);
         disc.register_record("Holder", &decl, &[qualified_arg], &(0..0));
 
         assert_eq!(disc.new_records.len(), 1, "one layout registered");
@@ -1358,7 +1372,7 @@ mod tests {
         );
         assert_eq!(
             layout.key.type_args,
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
             "the dedup key's type-arg spine must retain canonical names"
         );
         // The field type keeps the substituted canonical payload too.
@@ -1366,7 +1380,7 @@ mod tests {
             layout.fields,
             vec![(
                 "item".to_string(),
-                ResolvedTy::named_user("lmonobox.Box", vec![])
+                ResolvedTy::named_for_test("lmonobox.Box", vec![])
             )],
         );
     }
@@ -1390,13 +1404,15 @@ mod tests {
             },
             HirVariant {
                 name: "Cons".to_string(),
-                kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                kind: HirVariantKind::Tuple(vec![ResolvedTy::param(
+                    hew_types::ParamHead::for_test("T"),
+                )]),
             },
         ];
         for is_indirect in [true, false] {
             let decl = EnumDecl {
                 id: ItemId(3),
-                type_params: vec!["T".to_string()],
+                type_params: vec![hew_types::ParamHead::for_test("T")],
                 is_indirect,
                 variants: variants.clone(),
             };
@@ -1421,12 +1437,14 @@ mod tests {
             "Slot".to_string(),
             EnumDecl {
                 id: ItemId(2),
-                type_params: vec!["T".to_string()],
+                type_params: vec![hew_types::ParamHead::for_test("T")],
                 is_indirect: false,
                 variants: vec![
                     HirVariant {
                         name: "Filled".to_string(),
-                        kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                        kind: HirVariantKind::Tuple(vec![ResolvedTy::param(
+                            hew_types::ParamHead::for_test("T"),
+                        )]),
                     },
                     HirVariant {
                         name: "Empty".to_string(),
@@ -1440,12 +1458,14 @@ mod tests {
 
         let decl = EnumDecl {
             id: ItemId(2),
-            type_params: vec!["T".to_string()],
+            type_params: vec![hew_types::ParamHead::for_test("T")],
             is_indirect: false,
             variants: vec![
                 HirVariant {
                     name: "Filled".to_string(),
-                    kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                    kind: HirVariantKind::Tuple(vec![ResolvedTy::param(
+                        hew_types::ParamHead::for_test("T"),
+                    )]),
                 },
                 HirVariant {
                     name: "Empty".to_string(),
@@ -1453,7 +1473,7 @@ mod tests {
                 },
             ],
         };
-        let qualified_arg = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let qualified_arg = ResolvedTy::named_for_test("lmonobox.Box", vec![]);
         disc.register_enum("Slot", &decl, &[qualified_arg], &(0..0));
 
         assert_eq!(disc.new_enums.len(), 1, "one layout registered");
@@ -1464,13 +1484,13 @@ mod tests {
         );
         assert_eq!(
             layout.key.type_args,
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
             "the dedup key's type-arg spine must retain canonical names"
         );
         // The substituted variant payload keeps the qualified spelling too.
         assert_eq!(
             layout.variants[0].field_tys,
-            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
         );
     }
 }

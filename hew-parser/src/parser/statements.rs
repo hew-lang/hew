@@ -20,14 +20,20 @@ pub(crate) enum BreakValuePosition {
     Expression,
 }
 
+enum BlockExprItem {
+    Statement,
+    Trailing(Spanned<Expr>),
+    Abort,
+}
+
 impl Parser<'_> {
     // ── Statements ──
 
     /// Parses the `'label` suffix shared by `break` and `continue`, in both
     /// statement and expression position.
-    pub(crate) fn parse_control_flow_label(&mut self) -> Option<String> {
+    pub(crate) fn parse_control_flow_label(&mut self) -> Option<Ident> {
         if let Some(Token::Label(l)) = self.peek() {
-            let name = l[1..].to_string();
+            let name = Ident::new(&l[1..]);
             self.advance();
             Some(name)
         } else {
@@ -139,10 +145,21 @@ impl Parser<'_> {
                     self.refuse_statement_block_continuation();
                 }
                 stmts.push(stmt);
+                let mut first_semicolon = true;
                 while self.peek() == Some(&Token::Semicolon) {
                     let span = self.peek_span();
                     self.advance();
-                    self.warning_at("unnecessary semicolon".to_string(), span);
+                    if first_semicolon {
+                        self.warning_at("unnecessary semicolon".to_string(), span);
+                        first_semicolon = false;
+                    } else {
+                        self.error_at_with_kind_and_hint(
+                            "unnecessary second semicolon".to_string(),
+                            span,
+                            "remove this separator",
+                            ParseDiagnosticKind::SeparatorAfterBody,
+                        );
+                    }
                 }
                 continue;
             }
@@ -159,72 +176,13 @@ impl Parser<'_> {
                 continue;
             }
 
-            // Try as expression
-            if let Some(expr) = self.parse_expr() {
-                // Check for assignment
-                if let Some(op) = self.parse_compound_assign_op() {
-                    let value = self.parse_expr()?;
-                    self.expect(&Token::Semicolon)?;
-                    let span = expr.1.start..value.1.end;
-                    stmts.push((
-                        Stmt::Assign {
-                            target: expr,
-                            op: Some(op),
-                            value,
-                        },
-                        span,
-                    ));
-                } else if self.eat(&Token::Equal) {
-                    let value = self.parse_expr()?;
-                    self.expect(&Token::Semicolon)?;
-                    let span = expr.1.start..value.1.end;
-                    // `_ = expr;` is the explicit discard: the same statement as
-                    // `let _ = expr;`, spelled without a binding no one reads.
-                    if matches!(&expr.0, Expr::Identifier(name) if name == "_") {
-                        stmts.push((
-                            Stmt::Let {
-                                pattern: (Pattern::Wildcard, expr.1.clone()),
-                                ty: None,
-                                value: Some(value),
-                                else_block: None,
-                            },
-                            span,
-                        ));
-                    } else {
-                        stmts.push((
-                            Stmt::Assign {
-                                target: expr,
-                                op: None,
-                                value,
-                            },
-                            span,
-                        ));
-                    }
-                } else if self.eat(&Token::Semicolon) {
-                    // Expression statement
-                    while self.peek() == Some(&Token::Semicolon) {
-                        let semi_span = self.peek_span();
-                        self.advance();
-                        self.warning_at("unnecessary semicolon".to_string(), semi_span);
-                    }
-                    let span = expr.1.clone();
-                    stmts.push((Stmt::Expression(expr), span));
-                } else if Self::is_block_expr(&expr.0) && self.peek() != Some(&Token::RightBrace) {
-                    // Block-like expressions (if, match, blocks, loops) don't need semicolons
-                    let span = expr.1.clone();
-                    stmts.push((Stmt::Expression(expr), span));
-                } else {
-                    // Trailing expression (no semicolon)
+            match self.parse_block_expr_item(&mut stmts) {
+                BlockExprItem::Statement => {}
+                BlockExprItem::Trailing(expr) => {
                     trailing_expr = Some(Box::new(expr));
                     break;
                 }
-            } else {
-                let found = match self.peek() {
-                    Some(tok) => format!("{tok}"),
-                    None => "end of file".to_string(),
-                };
-                self.error(format!("unexpected {found} in block"));
-                self.advance();
+                BlockExprItem::Abort => return None,
             }
         }
 
@@ -234,6 +192,88 @@ impl Parser<'_> {
             stmts,
             trailing_expr,
         })
+    }
+
+    /// Parse an expression or assignment in a block.
+    fn parse_block_expr_item(&mut self, stmts: &mut Vec<Spanned<Stmt>>) -> BlockExprItem {
+        let Some(expr) = self.parse_expr() else {
+            let found = match self.peek() {
+                Some(tok) => format!("{tok}"),
+                None => "end of file".to_string(),
+            };
+            self.error(format!("unexpected {found} in block"));
+            self.advance();
+            return BlockExprItem::Statement;
+        };
+
+        if let Some(op) = self.parse_compound_assign_op() {
+            let Some(value) = self.parse_expr() else {
+                return BlockExprItem::Abort;
+            };
+            if self.expect(&Token::Semicolon).is_none() {
+                return BlockExprItem::Abort;
+            }
+            let span = expr.1.start..value.1.end;
+            stmts.push((
+                Stmt::Assign {
+                    target: expr,
+                    op: Some(op),
+                    value,
+                },
+                span,
+            ));
+        } else if self.eat(&Token::Equal) {
+            let Some(value) = self.parse_expr() else {
+                return BlockExprItem::Abort;
+            };
+            if self.expect(&Token::Semicolon).is_none() {
+                return BlockExprItem::Abort;
+            }
+            let span = expr.1.start..value.1.end;
+            // `_ = expr;` is the explicit discard: the same statement as
+            // `let _ = expr;`, spelled without a binding no one reads.
+            if matches!(&expr.0, Expr::Ident(name) if name.name == sym::UNDERSCORE) {
+                stmts.push((
+                    Stmt::Let {
+                        pattern: (Pattern::Wildcard, expr.1.clone()),
+                        ty: None,
+                        value: Some(value),
+                        else_block: None,
+                    },
+                    span,
+                ));
+            } else {
+                stmts.push((
+                    Stmt::Assign {
+                        target: expr,
+                        op: None,
+                        value,
+                    },
+                    span,
+                ));
+            }
+        } else if self.eat(&Token::Semicolon) {
+            while self.peek() == Some(&Token::Semicolon) {
+                let semi_span = self.peek_span();
+                self.advance();
+                self.error_at_with_kind_and_hint(
+                    "unnecessary second semicolon".to_string(),
+                    semi_span,
+                    "remove this separator",
+                    ParseDiagnosticKind::SeparatorAfterBody,
+                );
+            }
+            let span = expr.1.clone();
+            stmts.push((Stmt::Expression(expr), span));
+        } else if Self::is_block_expr(&expr.0) && self.peek() != Some(&Token::RightBrace) {
+            // Block-like expressions don't need semicolons.
+            let span = expr.1.clone();
+            stmts.push((Stmt::Expression(expr), span));
+        } else {
+            return BlockExprItem::Trailing(expr);
+        }
+
+        BlockExprItem::Statement
     }
 
     /// Parse the block-like expression that opens a statement, without the
@@ -567,7 +607,7 @@ impl Parser<'_> {
                         hint,
                     );
 
-                    let name = self.expect_ident()?;
+                    let (name, name_span) = self.expect_ident_spanned()?;
 
                     let ty = if self.eat(&Token::Colon) {
                         Some(self.parse_type()?)
@@ -584,7 +624,15 @@ impl Parser<'_> {
                     self.expect(&Token::Semicolon)?;
 
                     let end = self.peek_span().start;
-                    return Some((Stmt::Var { name, ty, value }, start..end));
+                    return Some((
+                        Stmt::Var {
+                            name,
+                            name_span,
+                            ty,
+                            value,
+                        },
+                        start..end,
+                    ));
                 }
 
                 let pattern = self.parse_pattern()?;
@@ -646,7 +694,7 @@ impl Parser<'_> {
             }
             Some(Token::Var) => {
                 self.advance();
-                let name = self.expect_ident()?;
+                let (name, name_span) = self.expect_ident_spanned()?;
 
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
@@ -662,7 +710,12 @@ impl Parser<'_> {
 
                 self.expect(&Token::Semicolon)?;
 
-                Stmt::Var { name, ty, value }
+                Stmt::Var {
+                    name,
+                    name_span,
+                    ty,
+                    value,
+                }
             }
             // These don't need semicolons (they have blocks)
             Some(Token::If) => {
@@ -875,7 +928,7 @@ impl Parser<'_> {
     pub(crate) fn parse_labeled_stmt(&mut self, start: usize) -> Option<Spanned<Stmt>> {
         let label_tok = self.advance()?;
         let label = if let (Token::Label(l), _) = label_tok {
-            l[1..].to_string()
+            Ident::new(&l[1..])
         } else {
             return None;
         };

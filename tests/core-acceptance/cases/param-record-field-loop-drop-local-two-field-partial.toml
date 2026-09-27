@@ -1,0 +1,10 @@
+[[case]]
+id = "param-record-field-loop-drop-local-two-field-partial"
+intent = "Regression oracle for a `for` loop iterating a field of a BY-VALUE record parameter. Shape `local_two_field_partial` (local two field partial loop releases the non iterated sibling) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/param-record-field-loop-drop-local-two-field-partial.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "kept 2 claims, 1 terminal\n"
+exit = 0

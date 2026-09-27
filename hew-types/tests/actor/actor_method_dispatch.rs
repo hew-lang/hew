@@ -6,25 +6,23 @@ use hew_types::{ActorMethodKind, Ty};
 #[test]
 fn actor_method_dispatch_classifies_message_and_ask_sites() {
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i32,
+        r"actor Counter {
+    let count: i32;
 
-            receive fn increment(n: i32) {
-            }
+    receive fn increment(n: i32) {}
 
-            receive fn print_total() -> i32 {
-                return count;
-            }
-        }
+    receive fn print_total() -> i32 {
+        return count;
+    }
+}
 
-        fn main() -> i32 {
-            let c = spawn Counter(count: 0);
-            let _ = c.increment(10);
-            _ = c.print_total();
-            return 0;
-        }
-        ",
+fn main() -> i32 {
+    let c = spawn Counter(count: 0);
+    let _ = c.increment(10);
+    let _ = c.print_total();
+    return 0;
+}
+",
     );
 
     assert!(

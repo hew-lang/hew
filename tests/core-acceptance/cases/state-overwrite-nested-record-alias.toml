@@ -1,0 +1,10 @@
+[[case]]
+id = "state-overwrite-nested-record-alias"
+intent = "State-field overwrite leak oracles for collection, record, and enum actor state fields, plus alias-shape use-after-free pins. Shape `nested_record_alias_high` (nested record alias emits exact recursive retain and release, nested record alias keeps recursive string leaf alive) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/state-overwrite-nested-record-alias.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 12

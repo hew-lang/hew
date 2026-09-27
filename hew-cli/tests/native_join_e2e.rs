@@ -52,37 +52,56 @@ fn run_join(source: &str, expected: &str, status: i32, diagnostic: &str) {
 #[test]
 fn every_branch_starts_before_waiting_and_actors_progress_with_one_worker() {
     run_join(
-        r#"
-actor Gate {
-    var opened: bool = false,
-    receive fn ready() -> bool { opened }
-    receive fn open() { opened = true; }
+        r#"actor Gate {
+    var opened: bool = false;
+    receive fn ready() -> bool {
+        opened
+    }
+    receive fn open() {
+        opened = true;
+    }
 }
+
 actor Waiter {
     receive fn wait(gate: Gate) -> string {
         loop {
             match gate.ready() {
-                .Ok(opened) => { if opened { return "first".to_upper(); } },
+                .Ok(opened) => {
+                    if opened {
+                        return "first".to_upper();
+                    }
+                }
                 .Err(_) => panic("gate failed"),
             }
         }
     }
 }
+
 actor Opener {
     receive fn open(gate: Gate) -> string {
         let _ = gate.open();
         "second".to_upper()
     }
 }
-fn report(result: string) { println(result); }
+
+fn report(result: string) {
+    println(result);
+}
+
 fn main() {
     let gate = spawn Gate();
     let waiter = spawn Waiter();
     let opener = spawn Opener();
     scope within 1s {
         let (first, second) = await fork (waiter.wait(gate), opener.open(gate));
-        match first { .Ok(value) => report(value), .Err(_) => panic("join failed"), }
-        match second { .Ok(value) => report(value), .Err(_) => panic("join failed"), }
+        match first {
+            .Ok(value) => report(value),
+            .Err(_) => panic("join failed"),
+        }
+        match second {
+            .Ok(value) => report(value),
+            .Err(_) => panic("join failed"),
+        }
     };
 }
 "#,
@@ -95,33 +114,58 @@ fn main() {
 #[test]
 fn owned_results_and_named_arguments_keep_parent_source_order() {
     run_join(
-        r#"
-type Parcel { label: string, notes: Vec<string> }
+        r#"type Parcel {
+    label: string;
+    notes: Vec<string>;
+}
+
 actor Maker {
     receive fn make(first: string, second: string) -> Parcel {
         println("handler");
         Parcel { label: first + ":" + second, notes: ["owned".to_upper()] }
     }
 }
-type ReceiverInput { maker: Maker, label: string }
+
+type ReceiverInput {
+    maker: Maker;
+    label: string;
+}
+
 fn receiver(consume input: ReceiverInput) -> Maker {
     println(input.label);
     input.maker
 }
-fn mark(label: string) -> string { println(label); label.to_upper() }
-fn late(label: string) -> string { println(label); sleep(10ms); label.to_upper() }
-fn report(parcel: Parcel) { println(parcel.label); println(parcel.notes[0]); }
+
+fn mark(label: string) -> string {
+    println(label);
+    label.to_upper()
+}
+
+fn late(label: string) -> string {
+    println(label);
+    sleep(10ms);
+    label.to_upper()
+}
+
+fn report(parcel: Parcel) {
+    println(parcel.label);
+    println(parcel.notes[0]);
+}
+
 fn main() {
     let first = spawn Maker();
     let second = spawn Maker();
     let left_input = ReceiverInput { maker: first, label: "receiver one" };
     let right_input = ReceiverInput { maker: second, label: "receiver two" };
-    let (left, right) = await fork (
-        receiver(left_input).make(second: mark("b"), first: mark("a")),
-        receiver(right_input).make(second: late("d"), first: mark("c")),
-    );
-    match left { .Ok(parcel) => report(parcel), .Err(_) => panic("join failed"), }
-    match right { .Ok(parcel) => report(parcel), .Err(_) => panic("join failed"), }
+    let (left, right) = await fork (receiver(left_input).make(second: mark("b"), first: mark("a")), receiver(right_input).make(second: late("d"), first: mark("c")));
+    match left {
+        .Ok(parcel) => report(parcel),
+        .Err(_) => panic("join failed"),
+    }
+    match right {
+        .Ok(parcel) => report(parcel),
+        .Err(_) => panic("join failed"),
+    }
 }
 "#,
         "receiver one\nb\na\nreceiver two\nd\nc\nhandler\nhandler\nA:B\nOWNED\nC:D\nOWNED\n",
@@ -206,23 +250,30 @@ fn main() {
 #[test]
 fn an_outer_deadline_drains_join_tasks_before_parent_cleanup() {
     run_join(
-        r#"
-#[resource]
-type TaskFrame { id: i64 }
-impl TaskFrame {
-    fn close(consume self) { println("task cleanup"); }
+        r#"#[resource]
+type TaskFrame {
+    id: i64;
 }
+
+impl TaskFrame {
+    fn close(consume self) {
+        println("task cleanup");
+    }
+}
+
 actor Slow {
     receive fn echo(value: string) -> string {
         sleep(100ms);
         value.to_upper()
     }
 }
+
 fn request(receiver: Slow, value: string, consume frame: TaskFrame) -> string {
     let reply = receiver.echo(value).expect("reply");
     assert(frame.id > 0);
     reply
 }
+
 fn main() {
     let first = spawn Slow();
     let second = spawn Slow();
@@ -236,8 +287,10 @@ fn main() {
             .Fault { message } => panic(message),
         }
     };
-    close(first);
-    close(second);
+    stop(first);
+    stopped(first);
+    stop(second);
+    stopped(second);
     println("actors closed");
 }
 "#,

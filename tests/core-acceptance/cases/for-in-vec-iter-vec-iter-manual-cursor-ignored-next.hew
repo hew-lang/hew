@@ -1,0 +1,19 @@
+fn frame() -> i64 {
+    var rows: Vec<Vec<string>> = Vec.new();
+    var row: Vec<string> = Vec.new();
+    row.push("manual" + "-payload");
+    rows.push(row);
+    var cursor = rows.iter();
+    let _ = cursor.next();
+    1
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + frame();
+        i = i + 1;
+    }
+    total % 7
+}

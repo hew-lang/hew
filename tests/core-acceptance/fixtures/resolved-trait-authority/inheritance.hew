@@ -5,11 +5,11 @@ import trait_authority.conflict.{Base};
 import trait_authority.parent.{Base as RequiredBase};
 
 type Item {
-    text: string,
+    text: string;
 }
 
 type Other {
-    value: bool,
+    value: bool;
 }
 
 impl Base for Other {

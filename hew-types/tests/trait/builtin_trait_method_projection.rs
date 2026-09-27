@@ -64,25 +64,32 @@ fn vec_generic_trait_method_projects_output() {
 #[test]
 fn user_record_control_still_projects() {
     assert_clean(
-        r"
-        trait Acc {
-            type Output;
-            fn fetch(self, key: i64) -> Option<Self.Output>;
-        }
-        type Box2<T> { inner: T, }
-        impl<T> Acc for Box2<T> {
-            type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { .Some(self.inner) }
-        }
-        fn takes_int(x: i64) {}
-        fn main() {
-            let b = Box2 { inner: 42 };
-            match b.fetch(0) {
-                .Some(x) => takes_int(x),
-                .None => {}
-            }
-        }
-        ",
+        r"trait Acc {
+    type Output;
+    fn fetch(self, key: i64) -> Option<Self.Output>;
+}
+
+type Box2<T> {
+    inner: T;
+}
+
+impl<T> Acc for Box2<T> {
+    type Output = T;
+    fn fetch(self, key: i64) -> Option<T> {
+        .Some(self.inner)
+    }
+}
+
+fn takes_int(x: i64) {}
+
+fn main() {
+    let b = Box2 { inner: 42 };
+    match b.fetch(0) {
+        .Some(x) => takes_int(x),
+        .None => {}
+    }
+}
+",
         "Box2<i64>.fetch projects Option<i64>",
     );
 }
@@ -146,25 +153,33 @@ fn vec_string_element_projects() {
 #[test]
 fn vec_owned_record_element_projects() {
     assert_clean(
-        r"
-        trait Acc {
-            type Output;
-            fn fetch(self, key: i64) -> Option<Self.Output>;
-        }
-        impl<T> Acc for Vec<T> {
-            type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { .None }
-        }
-        type Point { x: i64, y: i64, }
-        fn takes_int(x: i64) {}
-        fn main() {
-            let pts: Vec<Point> = [Point { x: 1, y: 2 }];
-            match pts.fetch(0) {
-                .Some(p) => takes_int(p.x),
-                .None => {}
-            }
-        }
-        ",
+        r"trait Acc {
+    type Output;
+    fn fetch(self, key: i64) -> Option<Self.Output>;
+}
+
+impl<T> Acc for Vec<T> {
+    type Output = T;
+    fn fetch(self, key: i64) -> Option<T> {
+        .None
+    }
+}
+
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn takes_int(x: i64) {}
+
+fn main() {
+    let pts: Vec<Point> = [Point { x: 1, y: 2 }];
+    match pts.fetch(0) {
+        .Some(p) => takes_int(p.x),
+        .None => {}
+    }
+}
+",
         "Vec<Point>.fetch projects Option<Point>",
     );
 }
@@ -364,35 +379,47 @@ fn overlapping_builtin_impls_rejected() {
     );
 }
 
-/// user-defined record constructors — `impl<T> Acc for Box2<T>` AND
-/// `impl Acc for Box2<i64>` must be rejected (fail-closed), never silently
-/// accepted. User-record impls do NOT flow through the primitive/builtin side
-/// table (where this change's drift fail-open lived), so they are rejected by the
-/// pre-existing impl-coherence path rather than the new `ConflictingTraitImpl`
-/// primitive diagnostic. Either way the overlap must not type-check cleanly.
+/// A user record's concrete impl (`impl Acc for Box2<i64>`) serves exactly
+/// its instance beside the generic impl, and each impl's body is checked
+/// against its own signature (the concrete-specialisation dispatch of #2270).
+/// Whether a trait may be implemented twice for one user type constructor is
+/// an open language question; this pins today's accepted shape, and the
+/// builtin-constructor overlap above stays refused.
 #[test]
-fn overlapping_user_record_impls_rejected() {
+fn concrete_and_generic_user_record_impls_project_per_instance() {
     let output = typecheck(
-        r"
-        trait Acc {
-            type Output;
-            fn fetch(self, key: i64) -> Option<Self.Output>;
-        }
-        type Box2<T> { inner: T, }
-        impl<T> Acc for Box2<T> {
-            type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { .Some(self.inner) }
-        }
-        impl Acc for Box2<i64> {
-            type Output = i64;
-            fn fetch(self, key: i64) -> Option<i64> { .Some(self.inner) }
-        }
-        fn main() {}
-        ",
+        r#"trait Acc {
+    type Output;
+    fn fetch(self, key: i64) -> Option<Self.Output>;
+}
+
+type Box2<T> {
+    inner: T;
+}
+
+impl<T> Acc for Box2<T> {
+    type Output = T;
+    fn fetch(self, key: i64) -> Option<T> {
+        .Some(self.inner)
+    }
+}
+
+impl Acc for Box2<i64> {
+    type Output = i64;
+    fn fetch(self, key: i64) -> Option<i64> {
+        .Some(self.inner)
+    }
+}
+
+fn main() {
+    let wide: Option<i64> = Box2 { inner: 1 }.fetch(0);
+    let text: Option<string> = Box2 { inner: "a" }.fetch(0);
+}
+"#,
     );
     assert!(
-        !output.errors.is_empty(),
-        "expected the overlapping Box2 impls to be rejected (fail-closed), \
-         but type-check was clean",
+        output.errors.is_empty(),
+        "each Box2 instance must reach its own impl: {:#?}",
+        output.errors
     );
 }

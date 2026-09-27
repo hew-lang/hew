@@ -21,7 +21,7 @@
 //! distinct diagnostic code (101/102) so a regression is legible.
 
 type Countdown {
-    n: i64,
+    n: i64;
 }
 
 impl Iterator for Countdown {
@@ -42,8 +42,8 @@ impl Iterator for Countdown {
 /// sites (e.g. `Skip<Countdown, i64>`) can pin the item type and satisfy
 /// associated-type bounds in generic helpers (`fold_i64`).
 type Skip<I, A> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
 impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
@@ -63,11 +63,11 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
             match inner.next() {
                 .Some(_) => {
                     self.remaining = self.remaining - 1;
-                },
+                }
                 .None => {
                     self.iter = inner;
                     return .None;
-                },
+                }
             }
         }
         let result = inner.next();
@@ -82,8 +82,12 @@ fn fold_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
     var iter = it;
     loop {
         match iter.next() {
-            .Some(x) => { acc = acc + x; },
-            .None => { break; },
+            .Some(x) => {
+                acc = acc + x;
+            }
+            .None => {
+                break;
+            }
         }
     }
     acc
@@ -97,13 +101,11 @@ fn main() -> i64 {
     if total != 6 {
         return 101;
     }
-
     // Skip(0) → no items discarded → full stream [3, 2, 1], sum = 6.
     let skipped2: Skip<Countdown, i64> = Skip { iter: Countdown { n: 3 }, remaining: 0 };
     let total2 = fold_i64(skipped2);
     if total2 != 6 {
         return 102;
     }
-
     total
 }

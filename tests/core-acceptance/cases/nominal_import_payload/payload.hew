@@ -1,10 +1,10 @@
 pub type Delivery {
-    payload: string,
+    payload: string;
 }
 
 pub enum Receive {
-    Message(Delivery),
-    Missing,
+    Message(Delivery);
+    Missing;
 }
 
 pub fn next() -> Receive {

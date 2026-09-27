@@ -17,5 +17,4 @@ actor Echo {
 fn main() {
     let e = spawn Echo;
     let _ = e.run(0);
-    sleep(100ms);
 }

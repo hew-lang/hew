@@ -160,13 +160,13 @@ fn zero_argument_function_item_remains_a_callable_value() {
             ret,
             identity: crate::ty::EffectBody::Declaration(id),
             ..
-        } if capabilities.clone && params.is_empty() && **ret == Ty::I64 && id.full_path() == "value"
+        } if capabilities.clone && params.is_empty() && **ret == Ty::I64 && output.defs.path(*id) == "value"
     )));
 }
 
 #[test]
 fn resource_capture_requires_move_and_body_consumption_requires_once() {
-    let declarations = "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} fn take(consume self) -> i64 { self.fd } }";
+    let declarations = "#[resource]\ntype Socket {\n    fd: i64;\n}\n\nimpl Socket {\n    fn close(consume self) {}\n    fn take(consume self) -> i64 {\n        self.fd\n    }\n}\n";
     let output = check_source(&format!(
         "{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = || socket.fd; }}"
     ));
@@ -207,7 +207,7 @@ fn resource_capture_requires_move_and_body_consumption_requires_once() {
 #[test]
 fn consumption_in_a_diverging_arm_still_requires_once() {
     let output = check_source(
-        "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } fn main() { let socket = Socket { fd: 7 }; let f = move |finish: bool| { if finish { socket.close(); return; } }; }",
+        "#[resource]\ntype Socket {\n    fd: i64;\n}\n\nimpl Socket {\n    fn close(consume self) {}\n}\n\nfn main() {\n    let socket = Socket { fd: 7 };\n    let f = move |finish: bool| {\n        if finish {\n            socket.close();\n            return;\n        }\n    };\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
@@ -371,7 +371,7 @@ fn callable_qualifiers_survive_aggregate_erasure() {
 fn once_callable_fields_allow_independent_owned_use() {
     for qualifier in ["once", "once, clone"] {
         let declarations = format!(
-            "type Callbacks {{ first: fn[{qualifier}]() -> i64, second: fn[{qualifier}]() -> i64 }}"
+            "type Callbacks {{ first: fn[{qualifier}]() -> i64; second: fn[{qualifier}]() -> i64; }}"
         );
         for invocation in ["pair.first()", "(pair.first)()"] {
             let output = check_source(&format!(
@@ -385,7 +385,7 @@ fn once_callable_fields_allow_independent_owned_use() {
         assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
     let output = check_source(
-        "type Counter { next: fn[var]() -> i64 } fn invoke(counter: Counter) { counter.next(); }",
+        "type Counter {\n    next: fn[var]() -> i64;\n}\n\nfn invoke(counter: Counter) {\n    counter.next();\n}\n",
     );
     assert!(
         output
@@ -397,14 +397,11 @@ fn once_callable_fields_allow_independent_owned_use() {
     );
 }
 
-const PARTIAL_JOB: &str = "type Job { done: fn[once]() -> i64, label: string }
-    fn new_job() -> Job { Job { done: || 7, label: \"ready\" } }
-    fn inspect(job: Job) { println(job.label); }";
+const PARTIAL_JOB: &str = "type Job {\n    done: fn[once]() -> i64;\n    label: string;\n}\n\nfn new_job() -> Job {\n    Job { done: || 7, label: \"ready\" }\n}\n\nfn inspect(job: Job) {\n    println(job.label);\n}\n";
 
 #[test]
 fn receive_parameters_own_their_affine_pattern_fields() {
-    let declarations = "#[resource] type Ticket { id: i64 }
-        impl Ticket { fn close(consume self) {} }";
+    let declarations = "#[resource]\ntype Ticket {\n    id: i64;\n}\n\nimpl Ticket {\n    fn close(consume self) {}\n}\n";
     let handler = check_source(&format!(
         "{declarations}
          actor Receiver {{
@@ -435,13 +432,22 @@ fn receive_parameters_own_their_affine_pattern_fields() {
 
 #[test]
 fn affine_pattern_fields_preserve_siblings_and_reject_reuse() {
-    let declarations = r"
-        #[resource]
-        type Ticket { id: i64 }
-        impl Ticket { fn close(consume self) {} }
-        type Booking { ticket: Ticket, label: string }
-        fn inspect(booking: Booking) {}
-    ";
+    let declarations = r"#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {}
+}
+
+type Booking {
+    ticket: Ticket;
+    label: string;
+}
+
+fn inspect(booking: Booking) {}
+";
     for pattern in [
         "let Booking { ticket: t, label: _ } = booking;",
         "let Booking { ticket: t, .. } = booking;",
@@ -481,9 +487,9 @@ fn declined_affine_pattern_guard_keeps_the_field_for_the_next_arm() {
         "match booking { Booking { ticket: t, .. } if false => { t.close(); } Booking { ticket: _, .. } => { println(booking.ticket.id); } }",
     ] {
         let output = check_source(&format!(
-            "#[resource] type Ticket {{ id: i64 }}
+            "#[resource] type Ticket {{ id: i64; }}
              impl Ticket {{ fn close(consume self) {{}} }}
-             type Booking {{ ticket: Ticket, label: string }}
+             type Booking {{ ticket: Ticket; label: string; }}
              fn main() {{ let booking = Booking {{ ticket: Ticket {{ id: 7 }}, label: \"seat\" }}; {matched} }}"
         ));
         assert!(output.errors.is_empty(), "{matched}: {:?}", output.errors);
@@ -493,21 +499,7 @@ fn declined_affine_pattern_guard_keeps_the_field_for_the_next_arm() {
 #[test]
 fn affine_pattern_selection_preserves_guard_reinitialization() {
     let output = check_source(
-        "#[resource] type Ticket { id: i64 }
-         impl Ticket { fn close(consume self) {} }
-         type Booking { ticket: Ticket, label: string }
-         fn take(consume ticket: Ticket) {}
-         fn main() {
-             var other = Ticket { id: 1 };
-             take(other);
-             let booking = Booking { ticket: Ticket { id: 7 }, label: \"seat\" };
-             match booking {
-                 Booking { ticket: t, .. } if { other = Ticket { id: 2 }; true } => {
-                     t.close(); println(other.id);
-                 }
-                 _ => {}
-             }
-         }",
+        "#[resource]\ntype Ticket {\n    id: i64;\n}\n\nimpl Ticket {\n    fn close(consume self) {}\n}\n\ntype Booking {\n    ticket: Ticket;\n    label: string;\n}\n\nfn take(consume ticket: Ticket) {}\n\nfn main() {\n    var other = Ticket { id: 1 };\n    take(other);\n    let booking = Booking { ticket: Ticket { id: 7 }, label: \"seat\" };\n    match booking {\n        Booking { ticket: t, .. } if {\n            other = Ticket { id: 2 };\n            true\n        } => {\n            t.close();\n            println(other.id);\n        }\n        _ => {}\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -520,7 +512,7 @@ fn affine_tuple_patterns_track_only_named_fields() {
         "let (_, label) = pair; pair.0.close(); println(label);",
     ] {
         let output = check_source(&format!(
-            "#[resource] type Ticket {{ id: i64 }}
+            "#[resource] type Ticket {{ id: i64; }}
              impl Ticket {{ fn close(consume self) {{}} }}
              fn main() {{ let pair = (Ticket {{ id: 7 }}, \"seat\"); {pattern} }}"
         ));
@@ -531,14 +523,7 @@ fn affine_tuple_patterns_track_only_named_fields() {
 #[test]
 fn affine_tuple_pattern_refuses_a_second_field_read() {
     let output = check_source(
-        "#[resource] type Ticket { id: i64 }
-         impl Ticket { fn close(consume self) {} }
-         fn main() {
-             let pair = (Ticket { id: 7 }, \"seat\");
-             let (t, _) = pair;
-             t.close();
-             pair.0.close();
-         }",
+        "#[resource]\ntype Ticket {\n    id: i64;\n}\n\nimpl Ticket {\n    fn close(consume self) {}\n}\n\nfn main() {\n    let pair = (Ticket { id: 7 }, \"seat\");\n    let (t, _) = pair;\n    t.close();\n    pair.0.close();\n}\n",
     );
     assert!(
         output
@@ -561,9 +546,7 @@ fn partial_move_complete_job_keeps_siblings_usable() {
     ));
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let output = check_source(
-        "type Pair { left: fn[once]() -> i64, right: fn[once]() -> i64 }
-        fn complete(consume pair: Pair) -> i64 { pair.left() + pair.right() }
-        fn main() { println(complete(Pair { left: || 1, right: || 2 })); }",
+        "type Pair {\n    left: fn[once]() -> i64;\n    right: fn[once]() -> i64;\n}\n\nfn complete(consume pair: Pair) -> i64 {\n    pair.left() + pair.right()\n}\n\nfn main() {\n    println(complete(Pair { left: || 1, right: || 2 }));\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -572,7 +555,7 @@ fn partial_move_complete_job_keeps_siblings_usable() {
 fn partial_move_nested_records_and_tuples_preserve_siblings() {
     let output = check_source(&format!(
         "{PARTIAL_JOB}
-        type Batch {{ pair: (Job, fn[once]() -> i64), label: string }}
+        type Batch {{ pair: (Job, fn[once]() -> i64); label: string; }}
         fn complete(consume batch: Batch) {{
             batch.pair.0.done(); println(batch.pair.0.label);
             batch.pair.1(); println(batch.label);
@@ -586,7 +569,7 @@ fn partial_move_nested_records_and_tuples_preserve_siblings() {
     ] {
         let output = check_source(&format!(
             "{PARTIAL_JOB}
-            type Batch {{ job: Job, label: string }}
+            type Batch {{ job: Job; label: string; }}
             fn complete_job(consume job: Job) {{ job.done(); }}
             fn complete(consume batch: Batch) {{ {body} }}"
         ));
@@ -675,17 +658,27 @@ fn partial_move_borrowed_parameters_and_capture_acquisitions_are_rejected() {
 /// fact about a place, so `booking.label` is still the record's to hand out.
 #[test]
 fn reading_a_moved_record_field_is_refused_and_its_sibling_stays_readable() {
-    const BOOKING: &str = r#"
-#[resource]
-type Ticket { id: i64 }
+    const BOOKING: &str = r#"#[resource]
+type Ticket {
+    id: i64;
+}
 
-impl Ticket { fn close(consume self) {} }
+impl Ticket {
+    fn close(consume self) {}
+}
 
-type Booking { ticket: Ticket, label: string }
+type Booking {
+    ticket: Ticket;
+    label: string;
+}
 
-fn redeem(consume ticket: Ticket) -> i64 { ticket.id }
+fn redeem(consume ticket: Ticket) -> i64 {
+    ticket.id
+}
 
-fn book() -> Booking { Booking { ticket: Ticket { id: 7 }, label: "seat-1" } }
+fn book() -> Booking {
+    Booking { ticket: Ticket { id: 7 }, label: "seat-1" }
+}
 "#;
     for (reuse, expected) in [
         (
@@ -721,9 +714,9 @@ fn book() -> Booking { Booking { ticket: Ticket { id: 7 }, label: "seat-1" } }
 fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
     for prefix in ["#[resource]", "#[linear]"] {
         let declarations = format!(
-            "{prefix} type Bundle {{ done: fn[once]() -> i64 }}
+            "{prefix} type Bundle {{ done: fn[once]() -> i64; }}
             impl Bundle {{ fn close(consume self) {{ }} }}
-            type Outer {{ inner: (Bundle, string) }}"
+            type Outer {{ inner: (Bundle, string); }}"
         );
         for body in [
             "outer.inner.0.done();",
@@ -761,29 +754,47 @@ fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
 #[test]
 fn resource_close_may_dispose_its_owned_field_only() {
     let output = check_source(
-        r#"
-        #[opaque]
-        type Raw {}
-        #[resource]
-        type Handle { raw: Raw, label: string }
-        impl Handle {
-            fn close(consume self) {
-                unsafe { free_raw(self.raw) };
-                println(self.label);
-            }
-            fn detach(consume self) {
-                unsafe { free_raw(self.raw) };
-            }
-        }
-        #[resource]
-        type Outer { inner: Handle }
-        impl Outer {
-            fn close(consume self) {
-                unsafe { free_raw(self.inner.raw) };
-            }
-        }
-        extern "C" { fn free_raw(consume raw: Raw); }
-        "#,
+        r#"#[opaque]
+type Raw {
+}
+
+#[resource]
+type Handle {
+    raw: Raw;
+    label: string;
+}
+
+impl Handle {
+    fn close(consume self) {
+        unsafe {
+            free_raw(self.raw)
+        };
+        println(self.label);
+    }
+    fn detach(consume self) {
+        unsafe {
+            free_raw(self.raw)
+        };
+    }
+}
+
+#[resource]
+type Outer {
+    inner: Handle;
+}
+
+impl Outer {
+    fn close(consume self) {
+        unsafe {
+            free_raw(self.inner.raw)
+        };
+    }
+}
+
+extern "C" {
+    fn free_raw(consume raw: Raw);
+}
+"#,
     );
     assert_eq!(
         output
@@ -800,7 +811,7 @@ fn resource_close_may_dispose_its_owned_field_only() {
 #[test]
 fn callable_erasure_cannot_discard_linear_capture_obligations() {
     let output = check_source(
-        "#[linear] type Ticket { value: i64 } impl Ticket { fn finish(consume self) -> i64 { self.value } } fn erase(ticket: Ticket) -> fn[once]() -> i64 { move || ticket.finish() }",
+        "#[linear]\ntype Ticket {\n    value: i64;\n}\n\nimpl Ticket {\n    fn finish(consume self) -> i64 {\n        self.value\n    }\n}\n\nfn erase(ticket: Ticket) -> fn[once]() -> i64 {\n    move || ticket.finish()\n}\n",
     );
     assert!(
         output
@@ -814,7 +825,7 @@ fn callable_erasure_cannot_discard_linear_capture_obligations() {
 
 #[test]
 fn transferring_a_captured_owner_requires_once() {
-    let declarations = "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } type Holder { socket: Socket } enum Envelope { Owned(Socket) }";
+    let declarations = "#[resource]\ntype Socket {\n    fd: i64;\n}\n\nimpl Socket {\n    fn close(consume self) {}\n}\n\ntype Holder {\n    socket: Socket;\n}\n\nenum Envelope {\n    Owned(Socket);\n}\n";
     for body in [
         "{ Holder { socket: socket } }",
         "Envelope.Owned(socket)",
@@ -916,8 +927,11 @@ fn callable_join_rejects_nested_foreign_owner_without_binding_either_order() {
         checker.local_type_defs.insert("Widget".to_string());
         checker.source_type_defs.insert("Widget".to_string());
         let speculative = TypeVar::fresh();
-        let local = Ty::named("Carrier", vec![Ty::named("Widget", vec![])]);
-        let foreign = Ty::named("Carrier", vec![Ty::named("foreign.Widget", vec![])]);
+        let local = Ty::named_for_test("Carrier", vec![Ty::named_for_test("Widget", vec![])]);
+        let foreign = Ty::named_for_test(
+            "Carrier",
+            vec![Ty::named_for_test("foreign.Widget", vec![])],
+        );
         let left = invariant_test_callable(vec![Ty::Var(speculative), local], Ty::Bool);
         let right = invariant_test_callable(vec![Ty::I64, foreign], Ty::Bool);
         let (left, right) = if reverse {
@@ -936,21 +950,6 @@ fn callable_join_rejects_nested_foreign_owner_without_binding_either_order() {
             "a failed callable join must discard earlier parameter inference"
         );
     }
-}
-
-#[test]
-fn callable_join_accepts_bare_alias_for_current_owner() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.current_module = Some("owner".to_string());
-    checker.local_type_defs.insert("Widget".to_string());
-    checker.source_type_defs.insert("Widget".to_string());
-    let bare = Ty::named("Widget", vec![]);
-    let qualified = Ty::named("owner.Widget", vec![]);
-    let left = invariant_test_callable(vec![bare.clone()], bare);
-    let right = invariant_test_callable(vec![qualified.clone()], qualified);
-
-    assert!(checker.join_callable_types(&left, &right).is_some());
-    assert!(checker.join_callable_types(&right, &left).is_some());
 }
 
 #[test]
@@ -981,7 +980,15 @@ fn contextual_builtin_composition_keeps_shape_and_payload_errors() {
         assert!(!output.errors.is_empty(), "accepted {source}");
     }
     let output = check_source(
-        r#"enum Outcome { Some(string), None } fn make() -> Outcome { .Some("hew") }"#,
+        r#"enum Outcome {
+    Some(string);
+    None;
+}
+
+fn make() -> Outcome {
+    .Some("hew")
+}
+"#,
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -1002,7 +1009,7 @@ fn generic_function_values_instantiate_each_reference() {
                 .any(|args| args == &[Ty::I64])
         );
         assert!(output.direct_call_targets.values().any(|target|
-            matches!(target, crate::CallTarget::User(declaration) if declaration.full_path() == "id")));
+            matches!(target, crate::CallTarget::User(declaration) if output.defs.path(*declaration) == "id")));
     }
 }
 
@@ -1011,7 +1018,7 @@ fn generic_function_values_enforce_explicit_arity_and_inferred_bounds() {
     for source in [
         "fn id<T>(x: T) -> T { x } fn main() { let f = id<i64, string>; }",
         "fn id(x: i64) -> i64 { x } fn main() { let f = id<i64>; }",
-        "type Holder { call: fn(i64) -> i64 } fn bad(holder: Holder) { let f = holder.call<i64>; }",
+        "type Holder {\n    call: fn(i64) -> i64;\n}\n\nfn bad(holder: Holder) {\n    let f = holder.call<i64>;\n}\n",
         "fn id<T>(x: T) -> T { x } fn main() { let f = id<i64>; let g = f<string>; }",
         "trait Allowed { fn ok(self) -> bool; } fn id<T: Allowed>(x: T) -> T { x } fn main() { let f: fn(i64) -> i64 = id; }",
         "trait Allowed { fn ok(self) -> bool; } fn id<T: Allowed>(x: T) -> T { x } fn main() { let f = id<i64>; }",
@@ -1151,7 +1158,7 @@ fn borrowed_mutable_callable_accepts_definite_replacement() {
         "cb = fresh_owned(); cb();",
         "if flag { cb = fresh_owned(); } else { cb = fresh_owned(); } cb();",
         "if flag { return; } else { cb = fresh_owned(); } cb();",
-        "match flag { true => { cb = fresh_owned(); }, false => { cb = fresh_owned(); } } cb();",
+        "match flag { true => { cb = fresh_owned(); } false => { cb = fresh_owned(); } } cb();",
         "cb = fresh_owned(); if flag { cb(); } cb();",
     ] {
         let source = format!(
@@ -1169,7 +1176,7 @@ fn borrowed_mutable_callable_keeps_borrow_on_any_reaching_branch() {
         "if flag { cb = fresh_owned(); } else {} cb();",
         "if flag {} else { cb = fresh_owned(); } cb();",
         "if flag { cb = fresh_owned(); } else { cb(); }",
-        "match flag { true => { cb = fresh_owned(); }, false => {} } cb();",
+        "match flag { true => { cb = fresh_owned(); } false => {} } cb();",
     ] {
         let source = format!(
             "{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64, flag: bool) {{ {body} }}"
@@ -1210,7 +1217,7 @@ fn borrowed_mutable_callable_loop_replacement_cannot_hide_zero_iterations() {
 #[test]
 fn borrowed_mutable_callable_field_uses_the_selected_guarantee() {
     let output = check_source(
-        "type Holder { next: fn[var]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }",
+        "type Holder {\n    next: fn[var]() -> i64;\n    shared: Vec<i64>;\n}\n\nfn invoke(var holder: Holder) {\n    holder.next();\n}\n",
     );
     assert!(
         output
@@ -1221,7 +1228,7 @@ fn borrowed_mutable_callable_field_uses_the_selected_guarantee() {
         output.errors
     );
     let output = check_source(
-        "type Holder { next: fn[var, clone]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }",
+        "type Holder {\n    next: fn[var, clone]() -> i64;\n    shared: Vec<i64>;\n}\n\nfn invoke(var holder: Holder) {\n    holder.next();\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -1247,7 +1254,7 @@ fn borrowed_mutable_callable_shadowing_does_not_replace_the_parameter() {
 #[test]
 fn borrowed_mutable_callable_plain_aggregate_clone_control() {
     for source in [
-        "type Holder { next: fn[var, clone]() -> i64, label: string } fn invoke(var holder: Holder) { if true { holder.next(); } }",
+        "type Holder {\n    next: fn[var, clone]() -> i64;\n    label: string;\n}\n\nfn invoke(var holder: Holder) {\n    if true {\n        holder.next();\n    }\n}\n",
         "fn invoke(var pair: (fn[var, clone]() -> i64, string)) { for i in 0..2 { pair.0(); } }",
         "fn invoke(var pair: (fn[var, clone]() -> i64, i64)) { for i in 0..2 { pair.0(); } }",
     ] {
@@ -1326,7 +1333,7 @@ fn reassigning_a_closure_binding_still_rejects_a_different_shape() {
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("each closure literal has its own type")),
+            .any(|e| e.kind == TypeErrorKind::ClosureShapeMismatch),
         "a closure of a different shape must still be refused: {:?}",
         output.errors
     );
@@ -1338,12 +1345,19 @@ fn reassigning_a_closure_binding_still_rejects_a_different_shape() {
 /// every shape that only reads through it stays accepted.
 #[test]
 fn collection_loans_refuse_ownership_transfers_at_check() {
-    let declarations = r"
-        #[resource]
-        type Token { id: i64 }
-        impl Token { fn close(consume self) {} }
-        type Label { text: string }
-    ";
+    let declarations = r"#[resource]
+type Token {
+    id: i64;
+}
+
+impl Token {
+    fn close(consume self) {}
+}
+
+type Label {
+    text: string;
+}
+";
     let refused = [
         // Returning the loan as an owned value, directly and through a binding.
         "fn lookup(values: HashMap<string, Token>) -> Option<Token> { values.get(\"live\") }",

@@ -1,23 +1,27 @@
 actor Source {
-    var base: i64 = 10,
-    var label: string = "item",
+    var base: i64 = 10;
+    var label: string = "item";
     receive gen fn items(count: i64) -> string {
-        for index in 0..count {
+        for index in 0 .. count {
             base = base + 1;
             yield label + ":" + label;
         }
     }
-    receive fn base() -> i64 { base }
+    receive fn base() -> i64 {
+        base
+    }
 }
 
 actor Consumer {
-    var drained: i64 = 0,
+    var drained: i64 = 0;
     receive fn drain(source: Source, count: i64, limit: i64) -> i64 {
         var seen = 0;
         for item in source.items(count) {
             println(item);
             seen = seen + 1;
-            if seen >= limit { break; }
+            if seen >= limit {
+                break;
+            }
         }
         drained = drained + seen;
         drained
@@ -39,7 +43,15 @@ fn main() {
         .Ok(base) => println(base),
         .Err(_) => panic("base failed"),
     }
-    close(source);
-    close(consumer);
+    {
+        let __hew_migrated_actor_1122 = source;
+        stop(__hew_migrated_actor_1122);
+        stopped(__hew_migrated_actor_1122);
+    };
+    {
+        let __hew_migrated_actor_1141 = consumer;
+        stop(__hew_migrated_actor_1141);
+        stopped(__hew_migrated_actor_1141);
+    };
     println("closed");
 }

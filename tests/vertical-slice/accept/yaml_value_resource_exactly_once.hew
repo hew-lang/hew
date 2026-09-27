@@ -49,7 +49,7 @@ fn main() {
     // A parse failure returns an error without an owning value payload.
     match yaml.parse("[") {
         .Ok(_) => panic("malformed YAML unexpectedly parsed"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
     early_exit(true);
 }

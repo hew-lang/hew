@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-vec-iter-nested-cursors-return-sink"
+intent = "`for x in vec` cursor (`VecIter<T>`) scope-exit drop oracles: per-iteration leak slope plus a poisoned-allocator no-use-after-free pin for the place-source reuse shape (issue #1949). Shape `nested_cursors_return_sink` (for in nested cursors return sink runs clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-vec-iter-nested-cursors-return-sink.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "2na-alphanb-alphaOK"
+exit = 0

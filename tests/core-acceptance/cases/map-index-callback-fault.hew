@@ -1,10 +1,10 @@
 type Key {
-    label: string,
-    divisor: i64,
+    label: string;
+    divisor: i64;
 }
 
 type Holder {
-    values: HashMap<Key, Vec<string>>,
+    values: HashMap<Key, Vec<string>>;
 }
 
 impl Hash for Key {

@@ -1,10 +1,12 @@
 // Each level of a two-hop re-export chain uses its own explicit trait impl.
 import hew.reexchaina.{Top};
+
 import hew.reexmid.{Mid};
+
 import hew.reexbase.{Base};
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl Base for W {

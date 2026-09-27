@@ -1,7 +1,7 @@
 // Commit or rollback completes the transaction on every normal branch.
 #[linear]
 type Txn {
-    id: i64,
+    id: i64;
 }
 
 impl Txn {

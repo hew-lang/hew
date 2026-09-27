@@ -7,8 +7,6 @@
 //! make that same defect abort on a corrupted refcount header, so these cases
 //! earn the ownership claim they assert.
 
-import std.testing;
-
 fn mk(s: string) -> string {
     s + "!"
 }
@@ -64,7 +62,7 @@ fn empty_len() -> i64 {
 
 #[test]
 fn test_hashmap_entries_exact_sets_and_empty_map() {
-    testing.assert_eq(scalar_set(), 7);
-    testing.assert_eq(owned_set(), 3);
-    testing.assert_eq(empty_len(), 0);
+    assert(scalar_set() == 7);
+    assert(owned_set() == 3);
+    assert(empty_len() == 0);
 }

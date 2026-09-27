@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-resource-variant-resource-enum"
+intent = " Shape `resource_enum` (resource record enum payload closes exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-resource-variant-resource-enum.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "7CBAD!C7CBAD!C7CBAD!C7CBAD!C7CBAD!C7CBAD!C7CBAD!C7CBAD!C"
+exit = 0

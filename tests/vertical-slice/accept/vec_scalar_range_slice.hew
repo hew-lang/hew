@@ -4,7 +4,6 @@ fn main() {
     xs.push(20);
     xs.push(30);
     xs.push(40);
-
     let head = xs[1..3];
     println(head.len());
     println(head[0]);

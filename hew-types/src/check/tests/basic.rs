@@ -23,11 +23,17 @@ fn contextual_complement_rejects_invalid_operands() {
 #[test]
 fn contextual_variants_resolve_only_from_the_expected_type() {
     let output = check_source(
-        r"
-enum Choice { Some(i64), None }
+        r"enum Choice {
+    Some(i64);
+    None;
+}
 
 fn choose(flag: bool) -> Choice {
-    if flag { .Some(7) } else { .None }
+    if flag {
+        .Some(7)
+    } else {
+        .None
+    }
 }
 
 fn read(value: Choice) -> i64 {
@@ -56,7 +62,8 @@ fn contextual_variant_without_expected_enum_is_rejected() {
 
 #[test]
 fn contextual_variant_missing_from_expected_enum_is_rejected() {
-    let output = check_source("enum Choice { Ready } fn make() -> Choice { .Missing }");
+    let output =
+        check_source("enum Choice {\n    Ready;\n}\n\nfn make() -> Choice {\n    .Missing\n}\n");
     assert!(output.errors.iter().any(|error| {
         error.kind == TypeErrorKind::PathMemberNotFound
             && error.message.contains("E_PATH_MEMBER_NOT_FOUND")
@@ -64,21 +71,23 @@ fn contextual_variant_missing_from_expected_enum_is_rejected() {
 }
 
 #[test]
-fn contextual_variant_reports_ambiguous_expected_owner() {
+fn contextual_variant_keeps_its_resolved_owner() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let parsed = hew_parser::parse("enum State { Ready; }");
+    let output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let expected = checker.named_ty_for_key("State", vec![]);
     checker
         .published_bare_type_owners
         .entry((None, 0, "State".to_string()))
         .or_default()
         .extend(["left.State".to_string(), "right.State".to_string()]);
 
-    assert!(checker
-        .context_variant_expected_owner(&Ty::named("State", vec![]), &(0..6))
-        .is_none());
-    assert!(checker.errors.iter().any(|error| {
-        error.kind == TypeErrorKind::ContextVariantAmbiguous
-            && error.message.contains("E_CONTEXT_VARIANT_AMBIGUOUS")
-    }));
+    assert_eq!(
+        checker.context_variant_expected_owner(&expected, &(0..6)),
+        Some("State".to_string())
+    );
+    assert!(checker.errors.is_empty(), "{:?}", checker.errors);
 }
 
 /// Both spellings are refused since v0.6.0. The pattern form covers every
@@ -87,14 +96,28 @@ fn contextual_variant_reports_ambiguous_expected_owner() {
 #[test]
 fn bare_variant_patterns_error_in_every_pattern_position() {
     let output = check_source(
-        r"
-enum Choice { Present(i64), Absent, Named { value: i64 } }
-fn make() -> Choice { Present(7) }
-fn read(value: Choice) -> i64 {
-    match value { Present(number) => number, Named { value } => value, Absent => 0 }
+        r"enum Choice {
+    Present(i64);
+    Absent;
+    Named { value: i64;  }
 }
+
+fn make() -> Choice {
+    Present(7)
+}
+
+fn read(value: Choice) -> i64 {
+    match value {
+        Present(number) => number,
+        Named { value } => value,
+        Absent => 0,
+    }
+}
+
 fn tag_test(value: Choice) -> i64 {
-    let Absent = value else { return 1 };
+    let Absent = value else {
+        return 1;
+    };
     0
 }
 ",
@@ -134,13 +157,24 @@ fn tag_test(value: Choice) -> i64 {
 #[test]
 fn dotted_variant_patterns_check_in_every_pattern_position() {
     let output = check_source(
-        r"
-enum Choice { Present(i64), Absent, Named { value: i64 } }
-fn read(value: Choice) -> i64 {
-    match value { .Present(number) => number, .Named { value } => value, .Absent => 0 }
+        r"enum Choice {
+    Present(i64);
+    Absent;
+    Named { value: i64;  }
 }
+
+fn read(value: Choice) -> i64 {
+    match value {
+        .Present(number) => number,
+        .Named { value } => value,
+        .Absent => 0,
+    }
+}
+
 fn tag_test(value: Choice) -> i64 {
-    let .Absent = value else { return 1 };
+    let .Absent = value else {
+        return 1;
+    };
     0
 }
 ",
@@ -157,10 +191,15 @@ fn tag_test(value: Choice) -> i64 {
 #[test]
 fn record_destructure_is_not_a_bare_variant_pattern() {
     let output = check_source(
-        r"
-type Point { x: i64, y: i64 }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
+
 fn sum(p: Point) -> i64 {
-    match p { Point { x, y } => x + y }
+    match p {
+        Point { x, y } => x + y,
+    }
 }
 ",
     );
@@ -177,11 +216,20 @@ fn sum(p: Point) -> i64 {
 #[test]
 fn migration_mode_downgrades_both_bare_variant_spellings_to_warnings() {
     let parse_result = hew_parser::parse(
-        r"
-enum Choice { Present(i64), Absent }
-fn contextual() -> Choice { Present(7) }
+        r"enum Choice {
+    Present(i64);
+    Absent;
+}
+
+fn contextual() -> Choice {
+    Present(7)
+}
+
 fn read(value: Choice) -> i64 {
-    match value { Present(number) => number, Absent => 0 }
+    match value {
+        Present(number) => number,
+        Absent => 0,
+    }
 }
 ",
     );
@@ -213,10 +261,17 @@ fn read(value: Choice) -> i64 {
 #[test]
 fn bare_variant_expression_suggestions_preserve_expected_type_context() {
     let output = check_source(
-        r"
-enum Choice { Present(i64) }
-fn contextual() -> Choice { Present(7) }
-fn inferred() { let value = Present(9); }
+        r"enum Choice {
+    Present(i64);
+}
+
+fn contextual() -> Choice {
+    Present(7)
+}
+
+fn inferred() {
+    let value = Present(9);
+}
 ",
     );
     let suggestions = output
@@ -236,10 +291,18 @@ fn inferred() { let value = Present(9); }
 #[test]
 fn dotted_owner_variants_typecheck_in_expression_position() {
     let output = check_source(
-        r"
-enum Choice { Present(i64), Absent }
-fn tuple() -> Choice { Choice.Present(7) }
-fn unit() -> Choice { Choice.Absent }
+        r"enum Choice {
+    Present(i64);
+    Absent;
+}
+
+fn tuple() -> Choice {
+    Choice.Present(7)
+}
+
+fn unit() -> Choice {
+    Choice.Absent
+}
 ",
     );
     assert!(
@@ -252,9 +315,13 @@ fn unit() -> Choice { Choice.Absent }
 #[test]
 fn dotted_struct_variant_typechecks_in_expression_position() {
     let output = check_source(
-        r"
-enum Choice { Named { value: i64 } }
-fn make() -> Choice { Choice.Named { value: 7 } }
+        r"enum Choice {
+    Named { value: i64;  }
+}
+
+fn make() -> Choice {
+    Choice.Named { value: 7 }
+}
 ",
     );
     assert!(
@@ -270,7 +337,7 @@ fn dotted_associated_calls_resolve_without_using_the_head_as_a_value() {
         r#"
 fn main() {
     let values: Vec<i64> = Vec.new();
-    Node.start(NodeConfig.at("127.0.0.1:0"));
+    let _ = Node.start(NodeConfig.at("127.0.0.1:0"));
 }
 "#,
     );
@@ -300,7 +367,7 @@ fn read(value: i64) -> i64 {
 
 #[test]
 fn prelude_declarations_are_protected_before_source_registration() {
-    let output = check_source("type Iterator { value: i64, }");
+    let output = check_source("type Iterator {\n    value: i64;\n}\n");
     assert!(output
         .errors
         .iter()
@@ -310,7 +377,7 @@ fn prelude_declarations_are_protected_before_source_registration() {
 #[test]
 fn non_root_prelude_declarations_are_protected_by_their_owner() {
     let output = check_source_in_module(
-        "type Result { value: i64, }",
+        "type Result {\n    value: i64;\n}\n",
         vec!["hew".to_string(), "fixture".to_string()],
     );
     let collisions = output
@@ -327,7 +394,7 @@ fn non_root_prelude_declarations_are_protected_by_their_owner() {
 
 #[test]
 fn ordinary_builtin_declarations_remain_shadowable() {
-    let output = check_source("type HashMapIter { value: i64, }");
+    let output = check_source("type HashMapIter {\n    value: i64;\n}\n");
     assert!(
         output.errors.is_empty(),
         "an ordinary builtin must remain shadowable: {:#?}",
@@ -371,7 +438,9 @@ fn modules_and_types_are_rejected_in_value_position() {
 
 #[test]
 fn bare_type_remains_rejected_as_a_value_after_dotted_path_dispatch() {
-    let output = check_source("enum Choice { Present(i64) } fn main() { let value = Choice; }");
+    let output = check_source(
+        "enum Choice {\n    Present(i64);\n}\n\nfn main() {\n    let value = Choice;\n}\n",
+    );
     let type_as_value_errors = output
         .errors
         .iter()
@@ -403,7 +472,8 @@ fn module_member_lookup_uses_path_diagnostics() {
 
 #[test]
 fn contextual_variant_constructor_kind_must_match() {
-    let output = check_source("enum State { Ready } fn make() -> State { .Ready(1) }");
+    let output =
+        check_source("enum State {\n    Ready;\n}\n\nfn make() -> State {\n    .Ready(1)\n}\n");
     assert!(output
         .errors
         .iter()
@@ -423,13 +493,10 @@ fn qualified_associated_item_rejects_multiple_trait_owners() {
             _ => None,
         })
         .expect("trait fixture");
-    let info = Checker::trait_info_from_decl(trait_decl, None, 0);
-
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .trait_defs
-        .insert("left.Shared".to_string(), info.clone());
-    checker.trait_defs.insert("right.Shared".to_string(), info);
+    let info = checker.trait_info_from_decl(trait_decl, None, 0);
+    checker.test_trait_def("left.Shared", info.clone());
+    checker.test_trait_def("right.Shared", info);
     checker.published_bare_trait_owners.insert(
         (None, 0, "Shared".to_string()),
         ["left.Shared".to_string(), "right.Shared".to_string()]
@@ -457,7 +524,7 @@ fn test_arity_mismatch_too_many_args() {
     // println_int takes 1 arg; call with 2
     let call = (
         Expr::Call {
-            function: Box::new((Expr::Identifier("println_int".to_string()), 0..11)),
+            function: Box::new((Expr::Ident(Ident::new("println_int")), 0..11)),
             type_args: None,
             args: vec![
                 CallArg::Positional((
@@ -493,7 +560,7 @@ fn test_arity_mismatch_too_few_args() {
     // println_int takes 1 arg; call with 0
     let call = (
         Expr::Call {
-            function: Box::new((Expr::Identifier("println_int".to_string()), 0..11)),
+            function: Box::new((Expr::Ident(Ident::new("println_int")), 0..11)),
             type_args: None,
             args: vec![],
             is_tail_call: false,
@@ -676,15 +743,17 @@ fn typecheck_binary_op_type_mismatch() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
-    assert!(
-        !output.errors.is_empty(),
-        "expected type error for i32 + bool"
-    );
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::BinaryOperandTypes)
+        .expect("incompatible i32 and bool operands");
+    assert_eq!(source[error.span.clone()].trim(), "x");
 }
 
 #[test]
 fn record_equality_comparison_typechecks_when_structurally_eligible() {
-    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}";
+    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}\n";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -699,7 +768,7 @@ fn record_equality_comparison_typechecks_when_structurally_eligible() {
 /// exists for aggregates, so this is a compiler gap, not a program error.
 #[test]
 fn record_inequality_typechecks_and_ordering_is_rejected() {
-    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
+    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}\n";
     let output = check_source(source);
     assert!(
         !output
@@ -726,7 +795,7 @@ fn record_inequality_typechecks_and_ordering_is_rejected() {
 /// structural-equality gate.
 #[test]
 fn enum_equality_not_gated_by_record_comparison_refusal() {
-    let source = "enum Colour {\n    Red,\n    Green,\n}\n\nfn compare() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn compare() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}\n";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -740,7 +809,7 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
 /// `InvalidOperation`.
 #[test]
 fn enum_ordering_reports_checker_diagnostic() {
-    let source = "enum Colour {\n    Red,\n    Green,\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}\n";
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|e| e.kind
@@ -756,7 +825,7 @@ fn enum_ordering_reports_checker_diagnostic() {
 
 #[test]
 fn payload_enum_equality_typechecks_when_structurally_eligible() {
-    let source = "enum Shape {\n    Circle(i64),\n    Empty,\n}\n\nfn main() {\n    let a = Shape.Circle(1);\n    let b = Shape.Circle(1);\n    let _ = a == b;\n}";
+    let source = "enum Shape {\n    Circle(i64);\n    Empty;\n}\n\nfn main() {\n    let a = Shape.Circle(1);\n    let b = Shape.Circle(1);\n    let _ = a == b;\n}\n";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -779,15 +848,19 @@ fn builtin_payload_enum_comparison_typechecks_when_structurally_eligible() {
 #[test]
 fn record_with_bytes_field_eq_and_hash_are_accepted() {
     let output = check_source(
-        r"
-        type Packet { data: bytes }
-        fn same(a: Packet, b: Packet) -> bool { a == b }
-        ",
+        r"type Packet {
+    data: bytes;
+}
+
+fn same(a: Packet, b: Packet) -> bool {
+    a == b
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_for_test(
             "Packet",
             vec![],
         )))
@@ -804,15 +877,20 @@ fn record_with_bytes_field_eq_and_hash_are_accepted() {
 #[test]
 fn record_with_non_hashable_field_is_not_hashable() {
     let output = check_source(
-        r"
-        type Sample { data: bytes, tags: Vec<string> }
-        fn same(a: Sample, b: Sample) -> bool { a == b }
-        ",
+        r"type Sample {
+    data: bytes;
+    tags: Vec<string>;
+}
+
+fn same(a: Sample, b: Sample) -> bool {
+    a == b
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_for_test(
             "Sample",
             vec![],
         )))
@@ -827,13 +905,14 @@ fn record_with_non_hashable_field_is_not_hashable() {
 #[test]
 fn record_with_string_field_eq_is_accepted() {
     let output = check_source(
-        r"
-        type Person { name: string }
+        r"type Person {
+    name: string;
+}
 
-        fn same(a: Person, b: Person) -> bool {
-            a == b
-        }
-        ",
+fn same(a: Person, b: Person) -> bool {
+    a == b
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -856,7 +935,7 @@ fn bytes_payload_enum_eq_is_accepted() {
 /// the record gate must not double-report.
 #[test]
 fn record_comparison_type_mismatch_reports_mismatch_not_refusal() {
-    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() -> bool {\n    let a = Pt { x: 1, y: 2 };\n    a == 5\n}";
+    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() -> bool {\n    let a = Pt { x: 1, y: 2 };\n    a == 5\n}\n";
     let output = check_source(source);
     assert!(
         output
@@ -1295,13 +1374,13 @@ fn for_range_mixed_signedness_bounds_are_rejected() {
         }
     ";
     let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|error| error
-            .message
-            .contains("range bounds require compatible integer types")),
-        "mixed-signedness range must be rejected before MIR: {:#?}",
-        output.errors
-    );
+    let diagnostic = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::RangeBoundTypes)
+        .expect("incompatible range bounds");
+    assert_eq!(source[diagnostic.span.clone()].trim(), "start");
+    assert!(diagnostic.message.contains("i32") && diagnostic.message.contains("u64"));
 }
 
 #[test]
@@ -1658,7 +1737,7 @@ fn typecheck_return_type_mismatch() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     // The function signature should still reflect i32 return type
-    assert_eq!(output.fn_sigs["foo"].return_type, Ty::I32);
+    assert_eq!(output.sigs()["foo"].return_type, Ty::I32);
 }
 
 #[test]
@@ -1843,12 +1922,16 @@ fn typecheck_actor_receive_fn_registered() {
 
     let recv = ReceiveFnDecl {
         is_generator: false,
-        name: "greet".to_string(),
+        name: Ident::new("greet"),
         params: vec![Param {
-            name: "name".to_string(),
+            name: Ident::new("name"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
-                    name: "string".into(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("string"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -1869,7 +1952,7 @@ fn typecheck_actor_receive_fn_registered() {
     };
     let actor = ActorDecl {
         visibility: Visibility::Pub,
-        name: "Greeter".to_string(),
+        name: Ident::new("Greeter"),
         type_params: vec![],
         super_traits: None,
         init: None,
@@ -1890,7 +1973,7 @@ fn typecheck_actor_receive_fn_registered() {
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
-    assert!(output.fn_sigs.contains_key("Greeter::greet"));
+    assert!(output.sigs().contains("Greeter::greet"));
 }
 
 fn span_key_for(source: &str, needle: &str) -> SpanKey {
@@ -2077,8 +2160,8 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     let source = concat!(
         "import ecosystem.db.sqlite;\n",
         "enum Result {\n",
-        "    Ok(i64),\n",
-        "    Err(i64)\n",
+        "    Ok(i64);\n",
+        "    Err(i64);\n",
         "}\n",
         "fn unwrap_or(r: Result, fallback: i64) -> i64 {\n",
         "    match r {\n",
@@ -2108,17 +2191,10 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         "unexpected errors: {non_import_errors:?}"
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("unwrap_or")
         .expect("unwrap_or signature should be registered");
-    assert_eq!(
-        sig.params[0],
-        Ty::Named {
-            builtin: None,
-            name: "Result".to_string(),
-            args: vec![],
-        }
-    );
+    assert_eq!(sig.params[0], Ty::named_in(&output.defs, "Result", vec![]));
 }
 
 #[test]
@@ -2132,7 +2208,7 @@ fn checker_reuse_does_not_leak_result_shadowing_into_stdlib() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root.clone()]));
 
-    let first = hew_parser::parse("pub type Result { handle: i64 }\n");
+    let first = hew_parser::parse("pub type Result {\n    handle: i64;\n}\n");
     assert!(
         first.errors.is_empty(),
         "first parse errors: {:?}",
@@ -2154,8 +2230,8 @@ fn checker_reuse_does_not_leak_result_shadowing_into_stdlib() {
         "std/string.hew parse errors: {:?}",
         parsed.errors
     );
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(vec!["std".to_string(), "string".to_string()]);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(["std", "string"]);
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,
@@ -2184,7 +2260,7 @@ fn checker_reuse_does_not_leak_result_shadowing_into_stdlib() {
 fn checker_reuse_does_not_leak_type_definitions() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-    let first = hew_parser::parse("pub type Stale { value: i64 }\n");
+    let first = hew_parser::parse("pub type Stale {\n    value: i64;\n}\n");
     assert!(
         first.errors.is_empty(),
         "first parse errors: {:?}",
@@ -2243,21 +2319,28 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
     );
 
     let second = hew_parser::parse(
-        r"
-        pub type Listener { value: i64, }
-        impl Listener {
-            fn accept(self) -> i64 { self.value }
-        }
-        fn call(listener: Listener) -> i64 { listener.accept() }
-        ",
+        r"pub type Listener {
+    value: i64;
+}
+
+impl Listener {
+    fn accept(self) -> i64 {
+        self.value
+    }
+}
+
+fn call(listener: Listener) -> i64 {
+    listener.accept()
+}
+",
     );
     assert!(
         second.errors.is_empty(),
         "second parse errors: {:?}",
         second.errors
     );
-    let root_id = ModuleId::root();
-    let module_id = ModuleId::new(vec!["net".to_string()]);
+    let root_id = ModulePath::root();
+    let module_id = ModulePath::new(["net"]);
     let module = Module {
         id: module_id.clone(),
         items: second.program.items,
@@ -2283,8 +2366,7 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
         second_output.errors
     );
     let listener = second_output
-        .type_defs
-        .get("net.Listener")
+        .type_def_at_path("net.Listener")
         .expect("second compile should publish its own net.Listener declaration");
     assert!(
         listener.fields.contains_key("value"),
@@ -2310,23 +2392,23 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
 fn reserved_type_names_fail_closed_across_declaration_kinds() {
     for (source, name) in [
         (
-            "type i64 { value: i64, }\nfn main() -> i64 { return 0; }",
+            "type i64 {\n    value: i64;\n}\n\nfn main() -> i64 {\n    return 0;\n}\n",
             "i64",
         ),
         (
-            "type CancellationToken { value: i64, }\nfn main() -> i64 { return 0; }",
+            "type CancellationToken {\n    value: i64;\n}\n\nfn main() -> i64 {\n    return 0;\n}\n",
             "CancellationToken",
         ),
         (
-            "type tuple<T> { value: T, }\nfn main() -> i64 { return 0; }",
+            "type tuple<T> {\n    value: T;\n}\n\nfn main() -> i64 {\n    return 0;\n}\n",
             "tuple",
         ),
         (
-            "type typeparam<T> { value: T, }\nfn main() -> i64 { return 0; }",
+            "type typeparam<T> {\n    value: T;\n}\n\nfn main() -> i64 {\n    return 0;\n}\n",
             "typeparam",
         ),
         (
-            "type string { value: i64, }\nfn main() -> i64 { return 0; }",
+            "type string {\n    value: i64;\n}\n\nfn main() -> i64 {\n    return 0;\n}\n",
             "string",
         ),
         (
@@ -2336,16 +2418,18 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
         ("type char = i64;", "char"),
         ("trait f32 {}", "f32"),
         (
-            r"
-            machine tuple {
-                events { Toggle, }
-                state Closed,
-                state Open,
-                on Toggle: Closed => .Open,
-                on Toggle: Open => .Closed,
-            }
-            fn main() {}
-            ",
+            r"machine tuple {
+    events {
+        Toggle;
+    }
+    state Closed;
+    state Open;
+    on Toggle: Closed => .Open;
+    on Toggle: Open => .Closed;
+}
+
+fn main() {}
+",
             "tuple",
         ),
     ] {
@@ -2373,12 +2457,7 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
 #[test]
 fn non_reserved_type_names_remain_accepted() {
     let output = check_source(
-        "type Point { x: i64, y: i64, }\n\
-         type Tuple { a: i64, }\n\
-         type MyString { s: i64, }\n\
-         type CancellationTokens { count: i64, }\n\
-         enum Colour { Red, Green, Blue, }\n\
-         fn main() -> i64 { return 0; }",
+        "type Point {\n    x: i64;\n    y: i64;\n}\n\ntype Tuple {\n    a: i64;\n}\n\ntype MyString {\n    s: i64;\n}\n\ntype CancellationTokens {\n    count: i64;\n}\n\nenum Colour {\n    Red;\n    Green;\n    Blue;\n}\n\nfn main() -> i64 {\n    return 0;\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -2448,10 +2527,15 @@ fn selected_eq_admits_bytes_with_hash() {
 #[test]
 fn selected_eq_admits_nested_bytes() {
     let output = check_source(
-        r"
-        type Packet { data: Option<(i32, bytes)>, blocks: Vec<bytes> }
-        fn compare(left: Packet, right: Packet) -> bool { left == right && !(left != right) }
-    ",
+        r"type Packet {
+    data: Option<(i32, bytes)>;
+    blocks: Vec<bytes>;
+}
+
+fn compare(left: Packet, right: Packet) -> bool {
+    left == right && !(left != right)
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -2459,26 +2543,47 @@ fn selected_eq_admits_nested_bytes() {
 #[test]
 fn selected_eq_uses_nested_user_methods_for_otherwise_ineligible_members() {
     let output = check_source(
-        r"
-        type Key { id: i64, values: HashMap<string, i64> }
-        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id == other.id } }
-        type Wrapper { value: Key }
-        fn vectors(left: Vec<Key>, right: Vec<Key>) -> bool { left == right }
-        fn tuples(left: (Key, string), right: (Key, string)) -> bool { left != right }
-        fn records(left: Wrapper, right: Wrapper) -> bool { left == right }
-        fn variants(left: Option<Result<Key, bytes>>, right: Option<Result<Key, bytes>>) -> bool { left != right }
-    ",
+        r"type Key {
+    id: i64;
+    values: HashMap<string, i64>;
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.id == other.id
+    }
+}
+
+type Wrapper {
+    value: Key;
+}
+
+fn vectors(left: Vec<Key>, right: Vec<Key>) -> bool {
+    left == right
+}
+
+fn tuples(left: (Key, string), right: (Key, string)) -> bool {
+    left != right
+}
+
+fn records(left: Wrapper, right: Wrapper) -> bool {
+    left == right
+}
+
+fn variants(left: Option<Result<Key, bytes>>, right: Option<Result<Key, bytes>>) -> bool {
+    left != right
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let expected = output
-        .identity
-        .declaration_by_path("Key::<impl Eq for Key>::eq")
-        .unwrap()
-        .clone();
+        .defs
+        .lookup_path("Key::<impl Eq for Key>::eq")
+        .unwrap();
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
     let selected = service
         .capability_plan(
-            &ResolvedTy::named_user("Key", vec![]),
+            &ResolvedTy::named_for_test("Key", vec![]),
             crate::ValueCapability::Eq,
         )
         .unwrap()
@@ -2494,11 +2599,19 @@ fn selected_eq_uses_nested_user_methods_for_otherwise_ineligible_members() {
 
 #[test]
 fn selected_eq_rejects_nested_members_without_an_eq_implementation() {
-    let source = r"
-        type Key { id: i64, values: HashMap<string, i64> }
-        type Wrapper { value: Key }
-        fn compare(left: Wrapper, right: Wrapper) -> bool { left == right }
-    ";
+    let source = r"type Key {
+    id: i64;
+    values: HashMap<string, i64>;
+}
+
+type Wrapper {
+    value: Key;
+}
+
+fn compare(left: Wrapper, right: Wrapper) -> bool {
+    left == right
+}
+";
     let output = check_source(source);
     assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
     let error = &output.errors[0];
@@ -2564,22 +2677,29 @@ fn selected_eq_does_not_rewrite_ordinary_float_comparisons() {
 #[test]
 fn selected_eq_composes_exact_generic_user_method_for_bytes() {
     let output = check_source(
-        r"
-        type Key<T> { value: T, ignored: HashMap<string, i64> }
-        impl<T: Eq> Eq for Key<T> {
-            fn eq(self, other: Key<T>) -> bool { self.value == other.value }
-        }
-        fn compare(left: Option<Key<bytes>>, right: Option<Key<bytes>>) -> bool { left == right }
-    ",
+        r"type Key<T> {
+    value: T;
+    ignored: HashMap<string, i64>;
+}
+
+impl<T: Eq> Eq for Key<T> {
+    fn eq(self, other: Key<T>) -> bool {
+        self.value == other.value
+    }
+}
+
+fn compare(left: Option<Key<bytes>>, right: Option<Key<bytes>>) -> bool {
+    left == right
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let expected = output
-        .identity
-        .declaration_by_path("Key::<impl Eq for Key<T>>::eq")
-        .unwrap()
-        .clone();
+        .defs
+        .lookup_path("Key::<impl Eq for Key<T>>::eq")
+        .unwrap();
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
-    let key = ResolvedTy::named_user("Key", vec![ResolvedTy::Bytes]);
+    let key = ResolvedTy::named_for_test("Key", vec![ResolvedTy::Bytes]);
     let selected = service
         .capability_plan(&key, crate::ValueCapability::Eq)
         .unwrap()
@@ -2612,10 +2732,15 @@ fn selected_eq_checks_both_result_payload_capabilities() {
 
 #[test]
 fn selected_eq_keeps_aggregate_ordering_gate_during_operand_inference() {
-    let source = r"
-        type Pair { x: i64, y: i64 }
-        fn compare(left: _, right: Pair) -> bool { left < right }
-    ";
+    let source = r"type Pair {
+    x: i64;
+    y: i64;
+}
+
+fn compare(left: _, right: Pair) -> bool {
+    left < right
+}
+";
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|error| {
@@ -2627,4 +2752,86 @@ fn selected_eq_keeps_aggregate_ordering_gate_during_operand_inference() {
         "{:?}",
         output.errors
     );
+}
+
+/// Member rows name the declaration they belong to, so a trait's methods and
+/// an actor's handlers are reachable from the owner's row without a spelling.
+#[test]
+fn member_declarations_record_their_owner() {
+    let parsed = hew_parser::parse(
+        "trait Gate { fn open(self) -> i64; } \
+         actor Door { receive fn knock() {} fn peek() -> i64 { 1 } } fn main() {}",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let defs = &output.defs;
+    let row = |kind: crate::DeclarationKind, name: &str| {
+        defs.declarations()
+            .map(|(_, id)| id)
+            .find(|id| defs.kind(*id) == kind && defs.name(*id) == Symbol::intern(name))
+            .unwrap_or_else(|| panic!("no {kind:?} row named `{name}`"))
+    };
+    let gate = row(crate::DeclarationKind::Trait, "Gate");
+    let door = row(crate::DeclarationKind::Actor, "Door");
+    assert_eq!(defs.owner(gate), None);
+    assert_eq!(
+        defs.owner(row(crate::DeclarationKind::TraitMethod, "open")),
+        Some(gate)
+    );
+    assert_eq!(
+        defs.owner(row(crate::DeclarationKind::ActorReceive, "knock")),
+        Some(door)
+    );
+    assert_eq!(
+        defs.owner(row(crate::DeclarationKind::ActorMethod, "peek")),
+        Some(door)
+    );
+}
+
+#[test]
+fn binary_operand_diagnostics_identify_the_operator_site() {
+    for expression in ["true + false", "true & false", "1.0 &+ 2.0"] {
+        let source = format!("fn main() {{ let value = {expression}; }}");
+        let output = check_source(&source);
+        let diagnostic = output
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::BinaryOperandTypes)
+            .unwrap_or_else(|| panic!("missing operand diagnostic: {:?}", output.errors));
+        assert_eq!(diagnostic.kind.as_kind_str(), "E_BINARY_OPERAND_TYPES");
+        assert_eq!(diagnostic.span.start, source.find(expression).unwrap());
+    }
+}
+
+#[test]
+fn user_ordering_trait_names_do_not_grant_operator_capabilities() {
+    for name in ["Ord", "PartialOrd"] {
+        let source = format!(
+            r"
+            type Item {{ rank: i64; }}
+            trait {name} {{ fn lt(self, other: Self) -> bool; }}
+            impl {name} for Item {{
+                fn lt(self, other: Item) -> bool {{ self.rank > other.rank }}
+            }}
+            fn main() {{
+                let left = Item {{ rank: 1 }};
+                let right = Item {{ rank: 2 }};
+                let explicit = left.lt(right);
+                let comparison = left < right;
+            }}
+        "
+        );
+        let output = check_source(&source);
+        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+        assert!(
+            matches!(
+                output.errors[0].kind,
+                TypeErrorKind::DerivedOrdUnavailable { .. }
+            ),
+            "{:?}",
+            output.errors
+        );
+        assert_eq!(source[output.errors[0].span.clone()].trim(), "left < right");
+    }
 }

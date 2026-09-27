@@ -1,0 +1,11 @@
+[[case]]
+id = "identity_w1b_method_control"
+intent = "A single trait implementation and its defaults retain the original method symbol path."
+source = "../vertical-slice/accept/identity_w1b_control.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "A\nA\nalpha default\nalpha default\n"
+exit = 0

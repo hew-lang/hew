@@ -1,0 +1,14 @@
+[[case]]
+id = "driver-virtual-supervisor-backoff"
+intent = "Repeated supervised crashes advance the deterministic driver's virtual clock through a restart delay beyond the wheel's short-term buckets while fresh children remain available."
+source = "cases/driver-virtual-supervisor-backoff.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "true\n"
+stderr = "hew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 3): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 4): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 5): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 6): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 7): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 8): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 9): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 10): UserPanic\n"
+exit = 0

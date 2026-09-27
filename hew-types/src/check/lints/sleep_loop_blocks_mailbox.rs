@@ -16,6 +16,7 @@
 //! not block the enclosing handler's mailbox when they are spawned or passed
 //! elsewhere.
 
+use hew_parser::ast::Ident;
 use hew_parser::{
     ast::{
         condition_exprs, Block, CallArg, ElseBlock, Expr, Literal, MatchArm, SelectArm, Span, Stmt,
@@ -350,7 +351,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::SpawnLambdaActor { .. }
         | Expr::GenBlock { .. }
         | Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -371,12 +372,12 @@ enum Candidate {
 fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
     match condition {
         Expr::Literal(Literal::Bool(true)) => Some(Candidate::Unconditional),
-        Expr::Identifier(name) => Some(Candidate::Guard(name.clone())),
+        Expr::Ident(name) => Some(Candidate::Guard(name.to_string())),
         Expr::Unary {
             op: UnaryOp::Not,
             operand,
         } => match &operand.0 {
-            Expr::Identifier(name) => Some(Candidate::Guard(name.clone())),
+            Expr::Ident(name) => Some(Candidate::Guard(name.to_string())),
             Expr::Binary { .. }
             | Expr::Coalesce { .. }
             | Expr::Handle { .. }
@@ -481,12 +482,12 @@ fn try_flag(
     ctx: &LintCtx,
     levels: &LintLevels,
     candidate: &Candidate,
-    label: Option<&String>,
+    label: Option<&Ident>,
     body: &Block,
     span: &Span,
     out: &mut Vec<TypeError>,
 ) {
-    if !bounded_contains_sleep(body) || loop_body_has_break(body, label.map(String::as_str)) {
+    if !bounded_contains_sleep(body) || loop_body_has_break(body, label.copied()) {
         return;
     }
     if let Candidate::Guard(name) = candidate {
@@ -598,7 +599,7 @@ fn bounded_call_args_have_sleep(args: &[CallArg]) -> bool {
 fn bounded_expr_has_sleep(expr: &Expr) -> bool {
     match expr {
         Expr::Call { function, args, .. } => {
-            matches!(&function.0, Expr::Identifier(name) if name == "sleep" || name == "sleep_until")
+            matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "sleep" || name.name.as_str() == "sleep_until")
                 || bounded_expr_has_sleep(&function.0)
                 || bounded_call_args_have_sleep(args)
         }
@@ -606,7 +607,7 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::SpawnLambdaActor { .. }
         | Expr::GenBlock { .. }
         | Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -769,7 +770,7 @@ fn assigns_identifier(block: &Block, name: &str) -> bool {
 fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
     match stmt {
         Stmt::Assign { target, value, .. } => {
-            matches!(&target.0, Expr::Identifier(target_name) if target_name == name)
+            matches!(&target.0, Expr::Ident(target_name) if target_name.name.as_str() == name)
                 || expr_assigns_identifier(&target.0, name)
                 || expr_assigns_identifier(&value.0, name)
         }
@@ -1006,7 +1007,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
             .as_ref()
             .is_some_and(|value| expr_assigns_identifier(&value.0, name)),
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

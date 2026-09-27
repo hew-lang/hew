@@ -5,9 +5,34 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
+use hew_parser::module::ModulePath;
 use serde::{de::DeserializeOwned, Deserialize};
 
+mod deterministic_admission;
 mod host;
+
+/// Source entries checked for operations the deterministic driver cannot
+/// schedule. A dispatcher supplies each deterministic test separately so a
+/// real-time sibling does not affect its admission verdict.
+#[derive(Debug, Clone, Default)]
+pub enum DeterministicAdmission {
+    #[default]
+    Off,
+    ProcessEntry,
+    Tests(Vec<hew_types::DeclarationOccurrence>),
+}
+
+fn require_deterministic_typecheck(options: &FrontendOptions) -> Result<(), FrontendFailure> {
+    if options.no_typecheck
+        && !matches!(options.deterministic_admission, DeterministicAdmission::Off)
+    {
+        return Err(FrontendFailure::coded_message(
+            "E_DETERMINISTIC_TYPECHECK_REQUIRED",
+            "deterministic host-operation admission requires type checking",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Default)]
 #[allow(
@@ -60,6 +85,10 @@ pub struct FrontendOptions {
     /// Exact root declaration selected as the process entry. File test
     /// discovery records this occurrence before checker identities exist.
     pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// Exact test roots for one compiled dispatcher, in selection order.
+    pub test_entry_selections: Vec<hew_types::DeclarationOccurrence>,
+    /// Compile-time host-operation admission for selected deterministic roots.
+    pub deterministic_admission: DeterministicAdmission,
     /// The sole deterministic production peer for a selected `_test.hew`
     /// root. Arbitrary sibling discovery is intentionally not supported.
     pub companion: Option<PathBuf>,
@@ -252,12 +281,24 @@ impl Session {
             .normalized_machines
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
-        let lowered =
+        let mut lowered =
             hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
         if !lowered.diagnostics.is_empty() {
             return Err(SessionError::Hir(lowered.diagnostics));
         }
-        let roots = Self::source_roots(program, tco)?;
+        if !tco.test_entry_plans.is_empty() {
+            hew_hir::test_entry::install_test_entry_plans(
+                &mut lowered.module,
+                &tco.test_entry_plans,
+            )
+            .map_err(|message| SessionError::Unsupported {
+                callable: None,
+                message,
+                span: None,
+            })?;
+        }
+        let mut roots = Self::source_roots(program, tco)?;
+        roots.extend(tco.test_entry_plans.iter().map(|plan| plan.entry));
         self.lower_hir_module(&lowered.module, tco, &roots)
     }
 
@@ -300,16 +341,15 @@ impl Session {
                     return None;
                 }
                 let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
-                    tco.identity.root_module(),
+                    tco.defs.root_module(),
                     span,
                     ordinal,
                     hew_types::DeclarationKind::Function,
                     0,
                 );
                 Some(
-                    tco.identity
+                    tco.defs
                         .declaration(occurrence)
-                        .cloned()
                         .ok_or_else(|| SessionError::Unsupported {
                             callable: None,
                             message: format!(
@@ -345,7 +385,7 @@ impl Session {
                 callable: None,
                 message: errors
                     .iter()
-                    .map(ToString::to_string)
+                    .map(|error| error.render(&module.defs))
                     .collect::<Vec<_>>()
                     .join("; "),
                 span: None,
@@ -364,6 +404,20 @@ impl Session {
             return Err(SessionError::Semantic(diagnostics));
         }
         require_complete_semantics(&sir, module.entry_exit_plan.is_some())?;
+        if sir.module.test_entries.len() != module.test_entry_plans.len()
+            || sir
+                .module
+                .test_entries
+                .iter()
+                .zip(&module.test_entry_plans)
+                .any(|(entry, plan)| entry.declaration != plan.entry)
+        {
+            return Err(SessionError::Unsupported {
+                callable: None,
+                message: "semantic test dispatcher does not match checked entry plans".into(),
+                span: None,
+            });
+        }
         let body_index = sir.module.function_index();
         let mut compiled_roots = roots
             .iter()
@@ -385,6 +439,10 @@ impl Session {
             .collect::<Result<Vec<_>, SessionError>>()?;
         if let Some(entry) = sir.module.entry_callable {
             compiled_roots.push(entry);
+        }
+        for entry in &sir.module.test_entries {
+            require_semantic_body(&sir.module, &body_index, entry.callable)?;
+            compiled_roots.push(entry.callable);
         }
         compiled_roots.sort_unstable();
         compiled_roots.dedup();
@@ -673,7 +731,7 @@ mod session_completion_tests {
             .callables
             .iter()
             .filter(|callable| callable.source_origin == hew_sir::FunctionSourceOrigin::RootUnit)
-            .map(|callable| callable.declaration.full_path())
+            .map(|callable| module.defs.path(callable.declaration))
             .collect::<Vec<_>>();
         bodies.sort_unstable();
         assert_eq!(
@@ -1126,15 +1184,16 @@ pub fn validate_imports_against_manifest(
     let mut errors = Vec::new();
     for (item, _) in items {
         let Item::Import(decl) = item else { continue };
-        if decl.file_path.is_some() || decl.path.is_empty() {
+        if decl.file_path.is_some() || decl.path.segments.is_empty() {
             continue;
         }
-        let module_str = decl.path.join("::");
-        let source_module = decl.path.join(".");
+        let segments = import_segments(&decl.path);
+        let module_str = segments.join("::");
+        let source_module = segments.join(".");
         if is_builtin_module(&module_str) {
             continue;
         }
-        if package_name.is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg)) {
+        if package_name.is_some_and(|pkg| segments.first().is_some_and(|seg| *seg == pkg)) {
             continue;
         }
         if !manifest_deps
@@ -1153,11 +1212,6 @@ fn is_builtin_module(module_path: &str) -> bool {
     module_path.starts_with("std::")
         || module_path.starts_with("hew::")
         || module_path.starts_with("ecosystem::")
-}
-
-/// The last dotted segment of a full module path (`std.net.http` -> `http`).
-fn module_leaf(full: &str) -> &str {
-    full.rsplit('.').next().unwrap_or(full)
 }
 
 /// The closest existing `std` module to a mistyped import's last path
@@ -1182,20 +1236,22 @@ fn nearest_std_module(leaf: &str, search_paths: &[PathBuf]) -> Option<String> {
             collect_std_module_names(&std_dir, &mut modules);
         }
     }
-    if let Some(exact) = modules.iter().find(|full| module_leaf(full) == leaf) {
-        return Some(exact.clone());
+    let module_leaf = |module: &ModulePath| module.segments.last().map_or("", |leaf| leaf.as_str());
+    if let Some(exact) = modules.iter().find(|module| module_leaf(module) == leaf) {
+        return Some(exact.dotted());
     }
-    let leaves: Vec<&str> = modules.iter().map(|full| module_leaf(full)).collect();
+    let leaves: Vec<&str> = modules.iter().map(module_leaf).collect();
     let best_leaf = hew_types::error::find_similar(leaf, leaves.iter().copied())
         .into_iter()
         .next()?;
     modules
-        .into_iter()
-        .find(|full| module_leaf(full) == best_leaf)
+        .iter()
+        .find(|module| module_leaf(module) == best_leaf)
+        .map(ModulePath::dotted)
 }
 
-/// Recursively collect every dotted `std.…` module name reachable under
-/// `std_dir` into `out`.
+/// Recursively collect every `std.…` module path reachable under `std_dir`
+/// into `out`.
 ///
 /// Mirrors the two entry-file shapes the import resolver's own per-import
 /// candidate list already assumes (`dir_path`/`rel_path` above: a directory
@@ -1205,12 +1261,12 @@ fn nearest_std_module(leaf: &str, search_paths: &[PathBuf]) -> Option<String> {
 /// candidate list to compare a typo against. Cold path (only runs once
 /// import resolution has already failed), so no caching: the stdlib tree is
 /// a few hundred files, and this only walks it on a diagnostic.
-fn collect_std_module_names(std_dir: &Path, out: &mut Vec<String>) {
+fn collect_std_module_names(std_dir: &Path, out: &mut Vec<ModulePath>) {
     let mut segments = vec!["std".to_string()];
     collect_module_names_at(std_dir, &mut segments, out);
 }
 
-fn collect_module_names_at(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<String>) {
+fn collect_module_names_at(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<ModulePath>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -1229,11 +1285,11 @@ fn collect_module_names_at(dir: &Path, segments: &mut Vec<String>, out: &mut Vec
             };
             if segments.last().map(String::as_str) == Some(stem) {
                 // `<dir>/<dir-name>.hew` — the directory's own canonical entry.
-                out.push(segments.join("."));
+                out.push(ModulePath::new(segments.iter()));
             } else {
                 // A flat file: its own name is the trailing path segment.
                 segments.push(stem.to_string());
-                out.push(segments.join("."));
+                out.push(ModulePath::new(segments.iter()));
                 segments.pop();
             }
         }
@@ -1305,7 +1361,7 @@ fn directory_module_entry_for_peer(
         .items
         .iter()
         .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.as_str()),
+            Item::Trait(decl) => Some(decl.name.name.as_str()),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -1323,7 +1379,7 @@ fn directory_module_entry_for_peer(
         .items
         .iter()
         .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.as_str()),
+            Item::Trait(decl) => Some(decl.name.name.as_str()),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -1332,8 +1388,8 @@ fn directory_module_entry_for_peer(
             return false;
         };
         decl.trait_bound.as_ref().is_some_and(|bound| {
-            entry_traits.contains(bound.name.as_str())
-                && !local_traits.contains(bound.name.as_str())
+            entry_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
+                && !local_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
         })
     });
     if !needs_entry_trait {
@@ -1357,7 +1413,9 @@ fn import_directory_module_entry_for_peer(
 fn file_import(file_path: String) -> Spanned<Item> {
     (
         Item::Import(ImportDecl {
-            path: Vec::new(),
+            path: hew_parser::ast::Path {
+                segments: Vec::new(),
+            },
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -1409,6 +1467,8 @@ fn parse_for_frontend(source: &str, mode: FrontendParseMode) -> hew_parser::Pars
                 error.kind,
                 hew_parser::ParseDiagnosticKind::LegacyPathSeparator
                     | hew_parser::ParseDiagnosticKind::LegacyTurbofish
+                    | hew_parser::ParseDiagnosticKind::AwaitRestartRetired
+                    | hew_parser::ParseDiagnosticKind::SupervisorStopClauseRetired
             ) {
                 error.severity = hew_parser::Severity::Warning;
             }
@@ -1532,13 +1592,13 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
         let Some(path) = module.source_paths.first() else {
             // A prelude module attached without a search path carries its
             // compiled-in source instead.
-            if let [std, leaf] = mod_id.path.as_slice() {
+            if let [std, leaf] = mod_id.segments.as_slice() {
                 if let Some((_, text)) = COMPILED_PRELUDE_STD_SOURCES
                     .iter()
-                    .find(|(name, _)| std == "std" && name == leaf)
+                    .find(|(name, _)| std.as_str() == "std" && *name == leaf.as_str())
                 {
                     map.insert(
-                        mod_id.path.join("."),
+                        mod_id.dotted(),
                         ((*text).to_string(), format!("std/{leaf}.hew")),
                     );
                 }
@@ -1546,7 +1606,7 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
             continue;
         };
         if let Ok(text) = read_source(documents, path) {
-            map.insert(mod_id.path.join("."), (text, display_path(path)));
+            map.insert(mod_id.dotted(), (text, display_path(path)));
         }
         // Per-file routing entries (rc1-F1 stage C): a directory module's
         // item spans are file-relative offsets, so the checker routes a
@@ -1712,7 +1772,12 @@ fn typecheck_program_with_diagnostics(
     if mode == FrontendParseMode::Migration {
         checker.set_migration_mode();
     }
-    if let Some(entry_selection) = entry_selection {
+    if !options.test_entry_selections.is_empty() {
+        checker.set_test_entry_selections(options.test_entry_selections.clone());
+        if let Some(module) = canonical_direct_stdlib_module_for_source(Path::new(input)) {
+            checker.set_test_entry_module(module);
+        }
+    } else if let Some(entry_selection) = entry_selection {
         checker.set_entry_selection(entry_selection);
     }
     checker.set_lint_levels(options.lint_levels.clone());
@@ -1766,7 +1831,8 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
-    let (result, diagnostics) = typecheck_program_with_diagnostics(
+    require_deterministic_typecheck(options)?;
+    let (result, mut diagnostics) = typecheck_program_with_diagnostics(
         program,
         source,
         input,
@@ -1776,6 +1842,16 @@ pub fn typecheck_program(
     );
     if type_check_failed(&result) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
+    }
+    if let Some(output) = result.tco.as_ref() {
+        let refused = deterministic_admission::check(program, output, source, input, options);
+        if !refused.is_empty() {
+            diagnostics.extend(refused);
+            return Err(FrontendFailure::new(
+                "deterministic host operations found",
+                diagnostics,
+            ));
+        }
     }
     Ok(result)
 }
@@ -1808,6 +1884,7 @@ pub fn check_program(
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<CheckOutput, FrontendFailure> {
+    require_deterministic_typecheck(options)?;
     let project = project_context_for_program(source, options)?;
     let mut diagnostics = Vec::new();
 
@@ -1835,6 +1912,17 @@ pub fn check_program(
     if type_check_failed(&tcr) {
         return Err(FrontendFailure::new("type errors found", diagnostics));
     }
+    if let Some(output) = tcr.tco.as_ref() {
+        let refused =
+            deterministic_admission::check(&program, output, source, source_label, options);
+        if !refused.is_empty() {
+            diagnostics.extend(refused);
+            return Err(FrontendFailure::new(
+                "deterministic host operations found",
+                diagnostics,
+            ));
+        }
+    }
     let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
     let stack_hints = tcr
         .tco
@@ -1853,20 +1941,20 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
         .iter()
         .filter_map(|(item, _)| {
             if let Item::Import(decl) = item {
-                if !decl.path.is_empty() {
-                    return Some(decl.path.join("::"));
+                if !decl.path.segments.is_empty() {
+                    return Some(import_segments(&decl.path).join("::"));
                 }
             }
             None
         })
         .collect::<HashSet<_>>();
 
-    let mut needed: Vec<Vec<String>> = Vec::new();
+    let mut needed: Vec<&[&str]> = Vec::new();
     if source_contains_regex_literal(source) {
-        let path = ["std", "text", "regex"];
+        let path: &[&str] = &["std", "text", "regex"];
         let key = path.join("::");
         if !existing.contains(&key) {
-            needed.push(path.iter().map(|segment| (*segment).to_string()).collect());
+            needed.push(path);
         }
     }
 
@@ -1876,7 +1964,7 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
         if seen.insert(key) {
             items.push((
                 Item::Import(ImportDecl {
-                    path,
+                    path: hew_parser::ast::Path::from_spellings(path),
                     spec: None,
                     selection_trailing_comma: false,
                     module_alias: None,
@@ -1904,13 +1992,13 @@ fn inject_prelude_module_loads(items: &mut Vec<Spanned<Item>>, input: &Path) {
     let path = ["std", "link_monitor"];
     let already_imported = items
         .iter()
-        .any(|(item, _)| matches!(item, Item::Import(decl) if decl.path == path));
+        .any(|(item, _)| matches!(item, Item::Import(decl) if import_segments(&decl.path) == path));
     if already_imported {
         return;
     }
     items.push((
         Item::Import(ImportDecl {
-            path: path.iter().map(|segment| (*segment).to_string()).collect(),
+            path: hew_parser::ast::Path::from_spellings(&path),
             spec: Some(hew_parser::ast::ImportSpec::Names(Vec::new())),
             selection_trailing_comma: false,
             module_alias: None,
@@ -1928,7 +2016,7 @@ fn source_contains_regex_literal(source: &str) -> bool {
         .any(|(token, _)| matches!(token, hew_lexer::Token::RegexLiteral(_)))
 }
 
-fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::module::ModuleId {
+fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::module::ModulePath {
     let without_ext = canonical_path.with_extension("");
     let rel = without_ext.strip_prefix(source_dir).unwrap_or(&without_ext);
     let mut segments = rel
@@ -1947,7 +2035,7 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
         );
     }
 
-    hew_parser::module::ModuleId::new(segments)
+    hew_parser::module::ModulePath::new(segments)
 }
 
 /// Resolve a module import of a directory peer through that directory's
@@ -1997,7 +2085,7 @@ enum CandidateForm {
 /// DIRECTORY candidate instead: `std.crypto.crypto` is
 /// `std/crypto/crypto/crypto.hew`, and a module named after its own package
 /// (`probe.probe` at `probe/src/probe/probe.hew`) resolves the same way.
-fn is_directory_module_entry_alias(path: &[String], canonical: &Path, form: CandidateForm) -> bool {
+fn is_directory_module_entry_alias(path: &[&str], canonical: &Path, form: CandidateForm) -> bool {
     let Some((last, rest)) = path.split_last() else {
         return false;
     };
@@ -2006,13 +2094,19 @@ fn is_directory_module_entry_alias(path: &[String], canonical: &Path, form: Cand
         && canonical.file_stem() == canonical.parent().and_then(Path::file_name)
 }
 
+/// The spelled segments of a module import path. Mapping a module path onto
+/// source files is the one place a segment is needed as text.
+fn import_segments(path: &hew_parser::ast::Path) -> Vec<&'static str> {
+    path.segments
+        .iter()
+        .map(|(segment, _)| segment.name.as_str())
+        .collect()
+}
+
 fn canonical_direct_stdlib_module_for_source(
     source_file: &Path,
-) -> Option<hew_parser::module::ModuleId> {
-    let dotted = hew_types::module_registry::canonical_stdlib_module_for_source(source_file)?;
-    Some(hew_parser::module::ModuleId::new(
-        dotted.split('.').map(String::from).collect(),
-    ))
+) -> Option<hew_parser::module::ModulePath> {
+    hew_types::module_registry::canonical_stdlib_module_for_source(source_file)
 }
 
 /// Render a module-graph [`CycleError`](hew_parser::module::CycleError) into a
@@ -2136,7 +2230,7 @@ fn rewrite_direct_stdlib_module_root(
     manifest_project_dir: Option<&Path>,
     documents: &DocumentSet,
 ) -> Result<(), FrontendFailure> {
-    use hew_parser::module::{Module, ModuleId};
+    use hew_parser::module::Module;
 
     let Some(stdlib_id) = canonical_direct_stdlib_module_for_source(source_file) else {
         return Ok(());
@@ -2148,7 +2242,7 @@ fn rewrite_direct_stdlib_module_root(
     };
 
     stdlib_module.id = stdlib_id.clone();
-    module_graph.root = ModuleId::root();
+    module_graph.root = ModulePath::root();
     module_graph.modules.insert(stdlib_id, stdlib_module);
     module_graph
         .add_module(Module {
@@ -2175,7 +2269,7 @@ fn build_module_graph_with_diagnostics(
     diagnostics: &mut Vec<FrontendDiagnostic>,
     mode: FrontendParseMode,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph};
 
     let input_canonical =
         std::fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
@@ -2189,7 +2283,7 @@ fn build_module_graph_with_diagnostics(
 
     let root_id = module_id_from_file(source_dir, &input_canonical);
     let mut graph = ModuleGraph::new(root_id.clone());
-    let mut seen_ids: HashSet<ModuleId> = HashSet::from([root_id.clone()]);
+    let mut seen_ids: HashSet<ModulePath> = HashSet::from([root_id.clone()]);
 
     let root_imports = extract_module_info(
         items,
@@ -2271,9 +2365,9 @@ fn build_module_graph_with_diagnostics(
 /// Never in practice: the root module is added to a freshly created graph,
 /// and the compiled-in prelude sources parse.
 pub fn attach_prelude_std_modules(program: &mut Program) {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph};
     let graph = program.module_graph.get_or_insert_with(|| {
-        let root = ModuleId::root();
+        let root = ModulePath::root();
         let mut graph = ModuleGraph::new(root.clone());
         graph
             .add_module(Module {
@@ -2306,9 +2400,9 @@ fn add_prelude_std_modules(
     graph: &mut hew_parser::module::ModuleGraph,
     mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
 ) -> Result<(), FrontendFailure> {
-    use hew_parser::module::{Module, ModuleId};
+    use hew_parser::module::Module;
     for (name, _) in COMPILED_PRELUDE_STD_SOURCES {
-        let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
+        let id = ModulePath::new(["std", name]);
         if graph.modules.contains_key(&id) {
             continue;
         }
@@ -2340,7 +2434,8 @@ fn add_prelude_std_modules(
                     || matches!(item, Item::Impl(decl) if decl
                         .trait_bound
                         .as_ref()
-                        .is_some_and(|bound| bound.name == "Display"))
+                        .is_some_and(|bound| bound.path.to_string() == "Display"))
+                // TRANSITION(P1): deleted by A1 commit 2
             })
             .collect();
         graph
@@ -2415,16 +2510,15 @@ fn check_ambiguous_module_import_bindings(
             let Item::Import(import) = item else {
                 continue;
             };
-            if import.path.is_empty() || import.spec.is_some() {
+            if import.path.segments.is_empty() || import.spec.is_some() {
                 continue;
             }
-            let source = import.path.join(".");
+            let source = import_segments(&import.path).join(".");
             let binding = import
                 .module_alias
-                .clone()
-                .or_else(|| import.path.last().cloned())
+                .or_else(|| import.path.last())
                 .expect("non-file module imports have a path");
-            if let Some(existing) = seen.insert(binding.clone(), source.clone()) {
+            if let Some(existing) = seen.insert(binding.to_string(), source.clone()) {
                 if existing != source {
                     return Err(format!(
                         "Error: module `{}` imports both `{existing}` and `{source}` \
@@ -2459,7 +2553,7 @@ fn check_duplicate_actor_layout_names(
         let mut seen: HashSet<&str> = HashSet::new();
         for (item, _) in &module.items {
             let Item::Actor(actor) = item else { continue };
-            if !seen.insert(actor.name.as_str()) {
+            if !seen.insert(actor.name.name.as_str()) {
                 let owner = describe_actor_module(mod_id, graph);
                 return Err(format!(
                     "Error: {owner} declares two actors named `{}`; the \
@@ -2477,7 +2571,7 @@ fn check_duplicate_actor_layout_names(
 /// Render a module id for the duplicate-actor diagnostic, naming the root
 /// program explicitly instead of the bare `(root)` placeholder.
 fn describe_actor_module(
-    id: &hew_parser::module::ModuleId,
+    id: &hew_parser::module::ModulePath,
     graph: &hew_parser::module::ModuleGraph,
 ) -> String {
     if *id == graph.root {
@@ -2523,7 +2617,7 @@ fn flatten_file_import_items(program: &mut Program) {
 fn graph_module_for_source(
     graph: &hew_parser::module::ModuleGraph,
     source: &Path,
-) -> Option<hew_parser::module::ModuleId> {
+) -> Option<hew_parser::module::ModulePath> {
     let key = std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
     graph
         .modules
@@ -2548,19 +2642,19 @@ fn extract_module_info(
     current_source: &Path,
     source_dir: &Path,
     root_source: &Path,
-    root_id: &hew_parser::module::ModuleId,
+    root_id: &hew_parser::module::ModulePath,
     documents: &DocumentSet,
     graph: &mut hew_parser::module::ModuleGraph,
-    seen_ids: &mut HashSet<hew_parser::module::ModuleId>,
+    seen_ids: &mut HashSet<hew_parser::module::ModulePath>,
 ) -> Vec<hew_parser::module::ModuleImport> {
-    use hew_parser::module::{Module, ModuleId, ModuleImport};
+    use hew_parser::module::{Module, ModuleImport};
 
     let mut imports = Vec::new();
 
     for (item, span) in items {
         let Item::Import(decl) = item else { continue };
 
-        let (module_id, first_source_path) = if !decl.path.is_empty() {
+        let (module_id, first_source_path) = if !decl.path.segments.is_empty() {
             // One source is one module, however the import spelled it: a
             // package-qualified `probe.lib` and a directory-relative `lib`
             // reach the same file, and a second graph node would have the
@@ -2570,12 +2664,10 @@ fn extract_module_info(
                 .first()
                 .and_then(|source| graph_module_for_source(graph, source));
             let module_id = existing.unwrap_or_else(|| {
-                let requested = decl.path.join(".");
-                let canonical = hew_types::module_registry::canonical_source_module_identity(
-                    &requested,
+                hew_types::module_registry::canonical_source_module_identity(
+                    &ModulePath::new(import_segments(&decl.path)),
                     &decl.resolved_source_paths,
-                );
-                ModuleId::new(canonical.split('.').map(String::from).collect())
+                )
             });
             (module_id, None)
         } else if let Some(file_path) = &decl.file_path {
@@ -2623,10 +2715,9 @@ fn extract_module_info(
                 // resolved items, so record it only when that parallelism
                 // holds (an absent entry means "first source path").
                 if decl.resolved_item_source_paths.len() == resolved.len() {
-                    graph.item_sources.insert(
-                        module_id.path.join("."),
-                        decl.resolved_item_source_paths.clone(),
-                    );
+                    graph
+                        .item_sources
+                        .insert(module_id.dotted(), decl.resolved_item_source_paths.clone());
                 }
                 let module = Module {
                     id: module_id,
@@ -2665,7 +2756,7 @@ fn resolve_file_imports_internal(
         .enumerate()
         .filter_map(|(index, (item, _))| {
             if let Item::Import(decl) = item {
-                if decl.file_path.is_some() || !decl.path.is_empty() {
+                if decl.file_path.is_some() || !decl.path.segments.is_empty() {
                     return Some(index);
                 }
             }
@@ -2678,7 +2769,7 @@ fn resolve_file_imports_internal(
     for idx in &import_indices {
         let is_module_import = matches!(
             &items[*idx].0,
-            Item::Import(decl) if !decl.path.is_empty()
+            Item::Import(decl) if !decl.path.segments.is_empty()
         );
         let canonical = match &items[*idx].0 {
             Item::Import(decl) if decl.file_path.is_some() => {
@@ -2693,9 +2784,10 @@ fn resolve_file_imports_internal(
                     )));
                 }
             }
-            Item::Import(decl) if !decl.path.is_empty() => {
-                let module_str = decl.path.join("::");
-                let source_module = decl.path.join(".");
+            Item::Import(decl) if !decl.path.segments.is_empty() => {
+                let segments = import_segments(&decl.path);
+                let module_str = segments.join("::");
+                let source_module = segments.join(".");
                 // A `std` module resolves only from the standard-library root
                 // (`stdlib_search_paths`), never beside the source or in cwd.
                 let is_std_import = module_str.starts_with("std::");
@@ -2705,17 +2797,16 @@ fn resolve_file_imports_internal(
                 });
                 let is_local = ctx
                     .package_name
-                    .is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg));
+                    .is_some_and(|pkg| segments.first().is_some_and(|seg| *seg == pkg));
                 let rest_path: Vec<&str> = if is_local {
-                    decl.path[1..].iter().map(String::as_str).collect()
+                    segments[1..].to_vec()
                 } else {
                     Vec::new()
                 };
 
-                let rel_path = decl.path.iter().collect::<PathBuf>().with_extension("hew");
-                let last = decl.path.last().expect("path is non-empty");
-                let dir_path = decl
-                    .path
+                let rel_path = segments.iter().collect::<PathBuf>().with_extension("hew");
+                let last = *segments.last().expect("path is non-empty");
+                let dir_path = segments
                     .iter()
                     .collect::<PathBuf>()
                     .join(format!("{last}.hew"));
@@ -2755,10 +2846,9 @@ fn resolve_file_imports_internal(
                     candidates.push((cwd.join(&rel_path), CandidateForm::Flat));
                 }
 
-                let module_dir = decl.path.iter().collect::<PathBuf>();
+                let module_dir = segments.iter().collect::<PathBuf>();
                 if let Some(version) = locked_version.filter(|_| !is_std_import) {
-                    let entry_file =
-                        format!("{}.hew", decl.path.last().expect("path is non-empty"));
+                    let entry_file = format!("{}.hew", segments.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
                     // The version directory sits between the module and its
                     // entry file, so this is a package root, never a flat file.
@@ -2799,12 +2889,12 @@ fn resolve_file_imports_internal(
                 if let Some(pkg) = ctx.extra_pkg_path.filter(|_| !is_std_import) {
                     candidates.push((pkg.join(&dir_path), CandidateForm::Directory));
                     candidates.push((pkg.join(&rel_path), CandidateForm::Flat));
-                    if decl.path.len() > 1 && !is_builtin_module(&module_str) {
-                        let rest_dir = decl.path[1..]
+                    if segments.len() > 1 && !is_builtin_module(&module_str) {
+                        let rest_dir = segments[1..]
                             .iter()
                             .collect::<PathBuf>()
                             .join(format!("{last}.hew"));
-                        let rest_flat = decl.path[1..]
+                        let rest_flat = segments[1..]
                             .iter()
                             .collect::<PathBuf>()
                             .with_extension("hew");
@@ -2813,9 +2903,9 @@ fn resolve_file_imports_internal(
                     }
                 }
 
-                if module_str.starts_with("hew::") && decl.path.len() > 1 {
-                    let tail = decl.path[1..].iter().collect::<PathBuf>();
-                    let tail_last = decl.path.last().expect("path is non-empty");
+                if module_str.starts_with("hew::") && segments.len() > 1 {
+                    let tail = segments[1..].iter().collect::<PathBuf>();
+                    let tail_last = segments.last().expect("path is non-empty");
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
@@ -2824,9 +2914,9 @@ fn resolve_file_imports_internal(
                     }
                 }
 
-                if module_str.starts_with("ecosystem::") && decl.path.len() > 1 {
-                    let tail = decl.path[1..].iter().collect::<PathBuf>();
-                    let tail_last = decl.path.last().expect("path is non-empty");
+                if module_str.starts_with("ecosystem::") && segments.len() > 1 {
+                    let tail = segments[1..].iter().collect::<PathBuf>();
+                    let tail_last = segments.last().expect("path is non-empty");
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
@@ -2887,14 +2977,14 @@ fn resolve_file_imports_internal(
 
                 if let Some((canonical, form)) = resolved.into_iter().next() {
                     if is_module_import
-                        && is_directory_module_entry_alias(&decl.path, &canonical, form)
+                        && is_directory_module_entry_alias(&segments, &canonical, form)
                     {
                         // A directory module is spelled by its directory, and
                         // its entry file adds no second module (spec 3.5.1).
                         // Accepting both spellings would let one compilation
                         // reach one source under two names, so refuse the
                         // longer one and name the module it aliases.
-                        let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                        let directory_module = segments[..segments.len() - 1].join(".");
                         let message = format!(
                             "cannot import `{source_module}`: `{directory_module}` is a directory module and its entry file is not a module of its own; import `{directory_module}` instead"
                         );
@@ -2912,7 +3002,7 @@ fn resolve_file_imports_internal(
                         });
                     } else if is_module_import
                         && canonical_directory_module_entry_source(&canonical) != canonical
-                        && decl.path.len() >= 2
+                        && segments.len() >= 2
                     {
                         // The shipped stdlib's directory peers stay importable
                         // by file (`std.net.http.http_client`, D461); they load
@@ -2938,7 +3028,7 @@ fn resolve_file_imports_internal(
                             // hint that the fix is to import the directory
                             // module instead. Refuse here, before that isolated
                             // module ever gets built.
-                            let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                            let directory_module = segments[..segments.len() - 1].join(".");
                             let message = format!(
                                 "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
                             );
@@ -3130,10 +3220,10 @@ fn build_resolved_import_internal(
 
     if !peer_files.is_empty() {
         let module_str = if let Item::Import(decl) = import_item {
-            if decl.path.is_empty() {
+            if decl.path.segments.is_empty() {
                 canonical.display().to_string()
             } else {
-                decl.path.join(".")
+                import_segments(&decl.path).join(".")
             }
         } else {
             canonical.display().to_string()
@@ -3212,12 +3302,12 @@ fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Resu
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for (item, _) in items {
         let name = match item {
-            Item::Function(f) if f.visibility == Visibility::Pub => Some(f.name.as_str()),
-            Item::TypeAlias(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
-            Item::TypeDecl(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
-            Item::Actor(a) if a.visibility == Visibility::Pub => Some(a.name.as_str()),
-            Item::Trait(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
-            Item::Const(c) if c.visibility == Visibility::Pub => Some(c.name.as_str()),
+            Item::Function(f) if f.visibility == Visibility::Pub => Some(f.name.name.as_str()),
+            Item::TypeAlias(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
+            Item::TypeDecl(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
+            Item::Actor(a) if a.visibility == Visibility::Pub => Some(a.name.name.as_str()),
+            Item::Trait(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
+            Item::Const(c) if c.visibility == Visibility::Pub => Some(c.name.name.as_str()),
             _ => None,
         };
         if let Some(name) = name {
@@ -3384,6 +3474,18 @@ pub fn run_source_frontend(
     run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Strict)
 }
 
+/// Run migration parsing and import resolution against an in-memory source.
+/// The returned state retains its module graph even when old spelling causes
+/// a later type error, so the migrator can prove an edit from declarations.
+#[must_use]
+pub fn run_source_frontend_for_migration(
+    source: &str,
+    label: &str,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
+    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Migration)
+}
+
 fn run_document_frontend_with_mode(
     input: &str,
     source_override: Option<&str>,
@@ -3461,6 +3563,9 @@ fn run_frontend_after_parse(
     mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> DocumentFrontendState {
+    if let Err(failure) = require_deterministic_typecheck(options) {
+        return state.stop(failure);
+    }
     if let Err(failure) = resolve_imports_internal(
         &mut state.program,
         &project.source,
@@ -3493,6 +3598,21 @@ fn run_frontend_after_parse(
                 || !is_stdlib_owned_diagnostic(input, &stdlib_roots, diagnostic)
         });
         return state.stop(FrontendFailure::message_only("type errors found"));
+    }
+
+    if let Some(output) = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+    {
+        let refused =
+            deterministic_admission::check(&state.program, output, &project.source, input, options);
+        if !refused.is_empty() {
+            state.diagnostics.extend(refused);
+            return state.stop(FrontendFailure::message_only(
+                "deterministic host operations found",
+            ));
+        }
     }
 
     if let Some(normalized) = state
@@ -3970,15 +4090,10 @@ mod tests {
         let state = run_file_frontend_to_typecheck(&input, &options)
             .expect("selected-entry fixture must type-check");
 
+        let tco = state.typecheck_result.tco.expect("typecheck output");
         assert_eq!(
-            state
-                .typecheck_result
-                .tco
-                .expect("typecheck output")
-                .entry_exit_plan
-                .expect("selected entry plan")
-                .entry
-                .display_name(),
+            tco.defs
+                .display(tco.entry_exit_plan.expect("selected entry plan").entry),
             "selected_test",
             "a present selection must not fall back to authored main"
         );
@@ -4007,7 +4122,7 @@ mod tests {
             .iter()
             .enumerate()
             .find_map(|(item_ordinal, (item, span))| match item {
-                Item::Function(function) if function.name == "selected_test" => Some(
+                Item::Function(function) if function.name.name.as_str() == "selected_test" => Some(
                     hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
                         None,
                         span,
@@ -4030,17 +4145,62 @@ mod tests {
         )
         .expect("selected occurrence must survive implicit entry import");
 
+        let tco = state.typecheck_result.tco.expect("typecheck output");
         assert_eq!(
-            state
-                .typecheck_result
-                .tco
-                .expect("typecheck output")
-                .entry_exit_plan
-                .expect("selected entry plan")
-                .entry
-                .display_name(),
+            tco.defs
+                .display(tco.entry_exit_plan.expect("selected entry plan").entry),
             "selected_test"
         );
+    }
+
+    #[test]
+    fn selected_stdlib_tests_keep_their_canonical_source_module() {
+        let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("std/concurrency/lifecycle.hew")
+            .display()
+            .to_string();
+        let source = fs::read_to_string(&input).unwrap();
+        let program = parse_source(&source, &input).unwrap();
+        let selection = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(ordinal, (item, span))| {
+                let Item::Function(function) = item else {
+                    return None;
+                };
+                (function.name.name.as_str() == "lifecycle_i64_happy_path_state_names").then(|| {
+                    hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                        None,
+                        span,
+                        ordinal,
+                        hew_types::DeclarationKind::Function,
+                        0,
+                    )
+                })
+            })
+            .expect("inline lifecycle test fixture");
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                test_entry_selections: vec![selection],
+                deterministic_admission: crate::DeterministicAdmission::Tests(vec![selection]),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("inline std test must remain selectable after graph-root rewriting");
+        let output = state.typecheck_result.tco.unwrap();
+        assert_eq!(output.test_entry_plans.len(), 1);
+        assert_eq!(
+            output.defs.path(output.test_entry_plans[0].entry),
+            "std.concurrency.lifecycle_i64_happy_path_state_names"
+        );
+        assert!(output.entry_exit_plan.is_none());
+        Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, &output)
+            .expect("selected private std test and its helpers must lower through SIR");
     }
 
     #[test]
@@ -4086,7 +4246,7 @@ mod tests {
             .tco
             .as_ref()
             .expect("typecheck output")
-            .identity
+            .defs
             .module_for_path("helper")
             .expect("imported helper module identity");
         let program = parse_source(source, &input).expect("parse selected-entry fixture");
@@ -4095,7 +4255,7 @@ mod tests {
             .iter()
             .enumerate()
             .find_map(|(item_ordinal, (item, span))| match item {
-                Item::Function(function) if function.name == "selected_test" => Some(
+                Item::Function(function) if function.name.name.as_str() == "selected_test" => Some(
                     hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
                         Some(helper_module),
                         span,
@@ -4249,6 +4409,36 @@ mod tests {
     }
 
     #[test]
+    fn memory_floor_calls_are_rejected_at_the_source_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = write_source(dir.path(), "main.hew",
+            "import std.mem; fn main() { let pointer = mem.alloc(8, 8); mem.dealloc(pointer, 8, 8); }");
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("raw memory primitives are not a source-language API");
+        assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            FrontendDiagnosticKind::Type(error)
+                if matches!(&error.kind, hew_types::error::TypeErrorKind::IntrinsicOutsideFloor { intrinsic_key, .. }
+                    if intrinsic_key == "mem.alloc")
+        )), "{:?}", failure.diagnostics);
+    }
+
+    #[test]
+    fn direct_memory_floor_intrinsics_remain_declarations() {
+        let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("std/mem/mem.hew");
+        let state =
+            run_file_frontend_to_typecheck(input.to_str().unwrap(), &FrontendOptions::default())
+                .expect("memory floor signatures typecheck");
+        let output = state.typecheck_result.tco.unwrap();
+        Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, &output)
+            .expect("memory floor declarations do not manufacture executable bodies");
+    }
+
+    #[test]
     fn direct_stdlib_check_retains_source_diagnostics() {
         let dir = tempfile::tempdir().expect("create direct stdlib fixture");
         let std_dir = dir.path().join("std");
@@ -4302,7 +4492,7 @@ mod tests {
         let peer = write_source(
             &module_dir,
             "dog.hew",
-            "pub type Dog { label: string, }\nimpl Greeter for Dog {\n    fn name(self) -> string { self.label }\n}\npub fn describe(d: Dog) -> string { d.greet() }\n",
+            "pub type Dog {\n    label: string;\n}\n\nimpl Greeter for Dog {\n    fn name(self) -> string {\n        self.label\n    }\n}\n\npub fn describe(d: Dog) -> string {\n    d.greet()\n}\n",
         );
 
         let result = check_file(
@@ -4359,18 +4549,9 @@ mod tests {
                 &mut ctx,
             )
             .expect("stdlib peer imports should build a module graph");
-            let http_id = hew_parser::module::ModuleId::new(
-                ["std", "net", "http"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-            );
-            let peer_id = hew_parser::module::ModuleId::new(
-                ["std", "net", "http", "http_client"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-            );
+            let http_id = hew_parser::module::ModulePath::new(["std", "net", "http"]);
+            let peer_id =
+                hew_parser::module::ModulePath::new(["std", "net", "http", "http_client"]);
             let http = graph
                 .modules
                 .get(&http_id)
@@ -4397,11 +4578,43 @@ mod tests {
             assert!(
                 http.items.iter().any(|(item, _)| matches!(
                     item,
-                    Item::TypeDecl(decl) if decl.name == "Response"
+                    Item::TypeDecl(decl) if decl.name.name.as_str() == "Response"
                 )),
                 "peer-only imports must load the complete package item set"
             );
         }
+    }
+
+    #[test]
+    fn imported_http_and_json_preserve_checked_return_identity() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root");
+        let dir = tempfile::tempdir().expect("create stdlib return fixture");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.net.http.http_async_server;\nimport std.net.http.http_async_client;\nimport std.encoding.json;\nfn main() {}\n",
+        );
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                module_search_paths: Some(vec![repo_root.to_path_buf()]),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("stdlib imports must type-check");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            state.typecheck_result.tco.as_ref().expect("checked output"),
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "imported return expressions must retain their checked identities: {:#?}",
+            hir.diagnostics
+        );
     }
 
     #[test]
@@ -4505,12 +4718,12 @@ mod tests {
         write_source(
             &module_dir,
             "shapes.hew",
-            "type Point { x: i64, }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point {\n    x: i64;\n}\n\npub fn ax() -> i64 {\n    let p = Point { x: 1 };\n    p.x\n}\n",
         );
         write_source(
             &module_dir,
             "circle.hew",
-            "type Point { y: i64, }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
+            "type Point {\n    y: i64;\n}\n\npub fn by() -> i64 {\n    let p = Point { y: 2 };\n    p.y\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -4567,12 +4780,12 @@ mod tests {
         write_source(
             dir.path(),
             "lib.hew",
-            "type Point { x: i64, }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point {\n    x: i64;\n}\n\npub fn lib_point() -> i64 {\n    let p = Point { x: 1 };\n    p.x\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import \"lib.hew\";\n\ntype Point { y: i64, }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
+            "import \"lib.hew\";\n\ntype Point {\n    y: i64;\n}\n\nfn main() {\n    let p = Point { y: 2 };\n    println(p.y + lib_point());\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -4721,20 +4934,23 @@ mod tests {
         let tco = state.typecheck_result.tco.as_ref().unwrap();
         let roots = Session::source_roots(&state.program, tco).unwrap();
         assert_eq!(roots.len(), 1, "file imports are not implicit root exports");
-        assert!(roots[0].full_path().ends_with(".exported"));
+        assert_eq!(
+            tco.defs.name(roots[0]),
+            hew_types::Symbol::intern("exported")
+        );
         let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
             .lower_program(&state.program, tco)
             .expect("an uncalled root export must retain its imported helper closure");
         let module = &output.semantics().module;
         for leaf in ["exported", "imported", "hidden"] {
             let declaration = tco
-                .identity
+                .defs
                 .declarations()
                 .map(|(_, declaration)| declaration)
-                .find(|declaration| declaration.full_path().ends_with(&format!(".{leaf}")))
+                .find(|declaration| tco.defs.name(*declaration) == hew_types::Symbol::intern(leaf))
                 .unwrap();
             let callable = module
-                .callable_for_declaration(declaration)
+                .callable_for_declaration(&declaration)
                 .expect("export helper must be retained");
             assert!(module.function_index().function(callable.id).is_some());
         }
@@ -4766,7 +4982,7 @@ mod tests {
             .as_ref()
             .expect("type checking was enabled");
 
-        let is_helper = |item: &Item| matches!(item, Item::Function(f) if f.name == "helper_value");
+        let is_helper = |item: &Item| matches!(item, Item::Function(f) if f.name.name.as_str() == "helper_value");
         let in_graph = state.program.module_graph.as_ref().is_some_and(|graph| {
             graph
                 .modules
@@ -4781,15 +4997,11 @@ mod tests {
         );
 
         let minted: Vec<hew_types::DefId> = tco
-            .identity
+            .defs
             .declarations()
-            .map(|(_, declaration)| declaration.clone())
+            .map(|(_, declaration)| declaration)
             .filter(|declaration| {
-                declaration
-                    .full_path()
-                    .rsplit(['.', ':'])
-                    .next()
-                    .is_some_and(|leaf| leaf == "helper_value")
+                tco.defs.name(*declaration) == hew_types::Symbol::intern("helper_value")
             })
             .collect();
         assert_eq!(
@@ -4803,9 +5015,9 @@ mod tests {
             .values()
             .find_map(|target| match target {
                 hew_types::check::CallTarget::User(declaration)
-                    if declaration.full_path().ends_with("helper_value") =>
+                    if tco.defs.name(*declaration) == hew_types::Symbol::intern("helper_value") =>
                 {
-                    Some(declaration.clone())
+                    Some(*declaration)
                 }
                 _ => None,
             })
@@ -4829,14 +5041,14 @@ mod tests {
             .iter()
             .filter_map(|item| match item {
                 hew_hir::HirItem::Function(function) if function.name == "helper_value" => {
-                    Some(function.declaration.clone())
+                    Some(function.declaration)
                 }
                 _ => None,
             })
             .collect();
         assert_eq!(
             lowered,
-            vec![minted[0].clone()],
+            vec![minted[0]],
             "HIR must lower the helper once, under the checker-minted identity"
         );
     }
@@ -4878,7 +5090,10 @@ mod tests {
             "hew_testffi_name",
             "hew_testffi_query",
         ] {
-            let declaration = hew_types::DefId::for_test(format!("hew.testffi.{name}"));
+            let declaration = tco
+                .defs
+                .lookup_path(&format!("hew.testffi.{name}"))
+                .expect("declared extern");
             assert_eq!(
                 symbols.get(&declaration),
                 Some(&name.to_string()),
@@ -4909,8 +5124,8 @@ mod tests {
 
         let source = fs::read_to_string(&input).expect("read mixed-import fixture");
         let reversed_source = source.replacen(
-            "import hew.testffi;\nimport \"mixed_import_impl_collision_lib.hew\";",
-            "import \"mixed_import_impl_collision_lib.hew\";\nimport hew.testffi;",
+            "import hew.testffi;\n\nimport \"mixed_import_impl_collision_lib.hew\";",
+            "import \"mixed_import_impl_collision_lib.hew\";\n\nimport hew.testffi;",
             1,
         );
         assert_ne!(
@@ -4931,12 +5146,6 @@ mod tests {
         )
         .expect("copy mixed-import library");
 
-        let root_tag =
-            hew_types::DefId::for_test("TestResult::<impl TestResultMethods for TestResult>::tag");
-        let package_rows = hew_types::DefId::for_test(
-            "hew.testffi.TestResult::<impl hew.testffi.TestResultMethods for hew.testffi.TestResult>::rows",
-        );
-
         for fixture in [
             input.to_str().expect("fixture path is utf-8"),
             reversed_input.as_str(),
@@ -4954,6 +5163,20 @@ mod tests {
                 .tco
                 .as_ref()
                 .expect("type checking was enabled");
+            let root_tag = tco
+                .defs
+                .lookup_path(
+                    "mixed_import_impl_collision_lib.TestResult::<impl \
+                     mixed_import_impl_collision_lib.TestResultMethods for \
+                     mixed_import_impl_collision_lib.TestResult>::tag",
+                )
+                .expect("declared root impl method");
+            let package_rows = tco
+                .defs
+                .lookup_path(
+                    "hew.testffi.TestResult::<impl hew.testffi.TestResultMethods for hew.testffi.TestResult>::rows",
+                )
+                .expect("declared package impl method");
 
             assert_eq!(
                 tco.impl_method_declaration_ids.get("TestResult::tag"),
@@ -5041,15 +5264,17 @@ mod tests {
         let expected = [
             (
                 "hew.privslot.Store::add",
-                hew_types::DefId::for_test(
-                    "hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::add",
-                ),
+                tco.defs
+                    .lookup_path("hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::add")
+                    .expect("declared impl method"),
             ),
             (
                 "hew.privslot.Store::generation_at",
-                hew_types::DefId::for_test(
-                    "hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::generation_at",
-                ),
+                tco.defs
+                    .lookup_path(
+                        "hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::generation_at",
+                    )
+                    .expect("declared impl method"),
             ),
         ];
         for (symbol, declaration) in &expected {
@@ -5106,19 +5331,26 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            r#"
-            type Holder<T> { value: T }
-            impl<T> Holder<T> { fn get(self) -> T { self.value } }
-            fn main() -> i64 {
-                let numbers = Holder { value: 7 };
-                let words = Holder { value: "kept" };
-                numbers.get() + numbers.get() + words.get().len() + words.get().len()
-            }
-        "#,
+            r#"type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    fn get(self) -> T {
+        self.value
+    }
+}
+
+fn main() -> i64 {
+    let numbers = Holder { value: 7 };
+    let words = Holder { value: "kept" };
+    numbers.get() + numbers.get() + words.get().len() + words.get().len()
+}
+"#,
         );
         let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
         let tco = state.typecheck_result.tco.as_ref().unwrap();
-        let declaration = tco.impl_method_declaration_ids["Holder::get"].clone();
+        let declaration = tco.impl_method_declaration_ids["Holder::get"];
         let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
             .lower_program(&state.program, tco)
             .expect("local generic impl calls must complete shared semantic lowering");
@@ -5136,9 +5368,7 @@ mod tests {
         );
         for argument in [hew_types::ResolvedTy::I64, hew_types::ResolvedTy::String] {
             let key = hew_sir::SirInstanceKey {
-                template: hew_sir::GenericTemplateId {
-                    declaration: declaration.clone(),
-                },
+                template: hew_sir::GenericTemplateId { declaration },
                 type_args: vec![argument.clone()],
             };
             let callable = module.callable_for_instance(&key).expect(
@@ -5241,35 +5471,26 @@ fn main() {
         // bare. Pinning the identity here is what keeps a same-leaf pair from
         // sharing a body symbol.
         let expected = [
-            (hew_types::DefId::for_test("main.root_first"), "root_first"),
+            ("main.root_first", "root_first"),
             // A file import is spliced into the root namespace and lowered
             // once, so its declaration keeps the declaring file's identity
             // while its emitted body carries the root's bare symbol.
-            (
-                hew_types::DefId::for_test("file_helpers.file_first"),
-                "file_first",
-            ),
-            (
-                hew_types::DefId::for_test("hew.genhelpers.first"),
-                "hew$genhelpers$first",
-            ),
-            (hew_types::DefId::for_test("alpha.first"), "alpha$first"),
-            (
-                hew_types::DefId::for_test("beta.alpha.first"),
-                "beta$alpha$first",
-            ),
+            ("file_helpers.file_first", "file_first"),
+            ("hew.genhelpers.first", "hew$genhelpers$first"),
+            ("alpha.first", "alpha$first"),
+            ("beta.alpha.first", "beta$alpha$first"),
         ];
-        for (declaration, symbol) in expected {
+        let declared = |path: &str| tco.defs.lookup_path(path).expect("declared");
+        for (path, symbol) in expected {
             assert_eq!(
-                symbols.get(&declaration),
+                symbols.get(&declared(path)),
                 Some(&symbol.to_string()),
-                "generic declaration `{}` must retain its exact emitted body symbol",
-                declaration.full_path()
+                "generic declaration `{path}` must retain its exact emitted body symbol"
             );
         }
         assert_ne!(
-            symbols.get(&hew_types::DefId::for_test("alpha.first")),
-            symbols.get(&hew_types::DefId::for_test("beta.alpha.first")),
+            symbols.get(&declared("alpha.first")),
+            symbols.get(&declared("beta.alpha.first")),
             "same-leaf generic functions must not share a direct-call symbol"
         );
     }
@@ -5301,15 +5522,15 @@ fn main() {
         let expected = "hew.selfqualtype.Meter";
         assert!(
             matches!(
-                tco.fn_sigs
+                tco.sigs()
                     .get("hew.selfqualtype.read")
                     .expect("checker must retain imported read signature")
                     .params
                     .as_slice(),
-                [hew_types::Ty::Named { name, .. }] if name == expected
+                [hew_types::Ty::Named { head, .. }] if head.spelling() == expected
             ),
             "checker parameter type must be the complete module owner: {:#?}",
-            tco.fn_sigs.get("hew.selfqualtype.read")
+            tco.sigs().get("hew.selfqualtype.read")
         );
 
         let hir = hew_hir::lower_program(
@@ -5328,7 +5549,11 @@ fn main() {
             .items
             .iter()
             .find_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == expected => Some(decl),
+                hew_hir::HirItem::TypeDecl(decl)
+                    if decl.qualified_name(&hir.module.defs) == expected =>
+                {
+                    Some(decl)
+                }
                 _ => None,
             })
             .expect("HIR must retain Meter under its full module owner");
@@ -5342,7 +5567,7 @@ fn main() {
             .iter()
             .find_map(|item| match item {
                 hew_hir::HirItem::Function(function)
-                    if function.declaration.full_path() == "hew.selfqualtype.read" =>
+                    if tco.defs.path(function.declaration) == "hew.selfqualtype.read" =>
                 {
                     Some(function)
                 }
@@ -5350,7 +5575,7 @@ fn main() {
             })
             .expect("HIR must emit the imported read body");
         assert!(
-            matches!(read.params.as_slice(), [param] if param.name == "m" && matches!(&param.ty, hew_types::ResolvedTy::Named { name, .. } if name == expected)),
+            matches!(read.params.as_slice(), [param] if param.name == "m" && matches!(&param.ty, hew_types::ResolvedTy::Named { head, .. } if head.registry_key() == expected)),
             "HIR read parameter must retain the full self-qualified owner: {read:#?}"
         );
     }
@@ -5434,9 +5659,7 @@ fn main() {
              pub fn render(value: Box<T>) -> string { \"generic\" }\n}\n";
         const SPECIALISED_IMPL: &str = "impl Render for Box<i64> {\n    \
              pub fn render(value: Box<i64>) -> string { \"specialised\" }\n}\n";
-        const DECLARATIONS: &str = "pub trait Render {\n    \
-             fn render(value: Self) -> string;\n}\n\n\
-             pub type Box<T> {\n    value: T,\n}\n\n";
+        const DECLARATIONS: &str = "pub trait Render {\n    fn render(value: Self) -> string;\n}\n\npub type Box<T> {\n    value: T;\n}\n";
 
         let mut mismatches: Vec<String> = Vec::new();
         for (order, first, second) in [
@@ -5464,7 +5687,7 @@ fn main() {
             let declaration_for = |key: &str| -> Option<String> {
                 tco.impl_method_declaration_ids
                     .get(key)
-                    .map(|declaration| declaration.full_path().to_string())
+                    .map(|declaration| tco.defs.path(*declaration).to_string())
             };
             // The shared key and the module-canonical key both name the
             // generic declaration; the specialisation owns only its mangled
@@ -5534,10 +5757,18 @@ fn main() {
         );
         let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
         let ids = [
-            hew_types::DefId::for_test("left.render.render_value"),
-            hew_types::DefId::for_test("right.render.render_value"),
-            hew_types::DefId::for_test("left.render.default_value"),
-            hew_types::DefId::for_test("right.render.default_value"),
+            tco.defs
+                .lookup_path("left.render.render_value")
+                .expect("declared"),
+            tco.defs
+                .lookup_path("right.render.render_value")
+                .expect("declared"),
+            tco.defs
+                .lookup_path("left.render.default_value")
+                .expect("declared"),
+            tco.defs
+                .lookup_path("right.render.default_value")
+                .expect("declared"),
         ];
         let projected: Vec<_> = ids
             .iter()
@@ -5545,11 +5776,11 @@ fn main() {
                 symbols.get(id).cloned().unwrap_or_else(|| {
                     panic!(
                         "checker declaration `{}` has no emitted HIR body symbol; \n                         render symbols: {:#?}",
-                        id.full_path(),
+                        tco.defs.path(*id),
                         symbols
                             .iter()
-                            .filter(|(candidate, _)| candidate.full_path().ends_with("render_value")
-                                || candidate.full_path().ends_with("default_value"))
+                            .filter(|(candidate, _)| tco.defs.path(**candidate).ends_with("render_value")
+                                || tco.defs.path(**candidate).ends_with("default_value"))
                             .collect::<Vec<_>>()
                     )
                 })
@@ -5575,14 +5806,14 @@ fn main() {
         );
         assert!(
             defaults.iter().any(|mono| {
-                mono.key.declaration.full_path()
+                tco.defs.path(mono.key.declaration)
                     == "left.render.Box::<default impl left.render.Render for left.render.Box<T>>::provided"
             }),
             "left default body must have its own synthetic implementation identity: {defaults:#?}"
         );
         assert!(
             defaults.iter().any(|mono| {
-                mono.key.declaration.full_path()
+                tco.defs.path(mono.key.declaration)
                     == "right.render.Box::<default impl right.render.Render for right.render.Box<T>>::provided"
             }),
             "right default body must have its own synthetic implementation identity: {defaults:#?}"
@@ -5631,7 +5862,7 @@ fn main() {
             })
             .expect("entry must call the imported body");
         let body = module.function_index().function(callee).unwrap();
-        assert_eq!(body.declaration.full_path(), "library.echo_len");
+        assert_eq!(module.defs.path(body.declaration), "library.echo_len");
         assert!(
             body.blocks
                 .iter()
@@ -5911,8 +6142,9 @@ fn main() {
             .expect("hew-compile lives below the repository root");
         let shipped = repo_root.join("std/stream.hew");
         assert_eq!(
-            super::canonical_direct_stdlib_module_for_source(&shipped).map(|module| module.path),
-            Some(vec!["std".to_string(), "stream".to_string()]),
+            super::canonical_direct_stdlib_module_for_source(&shipped)
+                .map(|module| module.dotted()),
+            Some("std.stream".to_string()),
             "direct compilation of the shipped stream module must retain std.stream identity"
         );
 
@@ -5920,7 +6152,7 @@ fn main() {
         let user_stream = write_source(
             dir.path(),
             "stream.hew",
-            "type Sink<T> { value: T }\ntype Stream<T> { value: T }\n",
+            "type Sink<T> {\n    value: T;\n}\n\ntype Stream<T> {\n    value: T;\n}\n",
         );
         assert!(
             super::canonical_direct_stdlib_module_for_source(Path::new(&user_stream)).is_none(),
@@ -5930,16 +6162,16 @@ fn main() {
         let shipped_net = repo_root.join("std/net/net.hew");
         assert_eq!(
             super::canonical_direct_stdlib_module_for_source(&shipped_net)
-                .map(|module| module.path),
-            Some(vec!["std".to_string(), "net".to_string()]),
+                .map(|module| module.dotted()),
+            Some("std.net".to_string()),
             "direct compilation of the shipped TCP module must retain std.net identity"
         );
 
         let shipped_lifecycle = repo_root.join("std/concurrency/lifecycle.hew");
         assert_eq!(
             super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle)
-                .map(|module| module.path),
-            Some(vec!["std".to_string(), "concurrency".to_string()]),
+                .map(|module| module.dotted()),
+            Some("std.concurrency".to_string()),
             "a direct check of a canonical directory-module peer must retain std.concurrency identity"
         );
         fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
@@ -6261,7 +6493,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["std", "fs"] => Some(import),
+                Item::Import(import) if import.path.to_string() == "std.fs" => Some(import),
                 _ => None,
             })
             .expect("std::fs import should remain in the program");
@@ -6327,7 +6559,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["std", "fs"] => {
+                Item::Import(import) if import.path.to_string() == "std.fs" => {
                     import.resolved_source_paths.first()
                 }
                 _ => None,
@@ -6365,7 +6597,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["mypkg", "fs"] => Some(import),
+                Item::Import(import) if import.path.to_string() == "mypkg.fs" => Some(import),
                 _ => None,
             })
             .expect("mypkg::fs import should remain in the program");
@@ -6410,7 +6642,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["hew", "db", "sqlite"] => Some(import),
+                Item::Import(import) if import.path.to_string() == "hew.db.sqlite" => Some(import),
                 _ => None,
             })
             .expect("hew::db::sqlite import should remain in the program");
@@ -6455,7 +6687,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["ecosystem", "db", "postgres"] => {
+                Item::Import(import) if import.path.to_string() == "ecosystem.db.postgres" => {
                     Some(import)
                 }
                 _ => None,
@@ -6492,7 +6724,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let Item::Import(import) = &state.program.items[0].0 else {
             panic!("expected import item");
         };
-        assert_eq!(import.path, vec!["actor", "monitor"]);
+        assert_eq!(import.path.to_string(), "actor.monitor");
         assert!(import
             .resolved_items
             .as_ref()
@@ -6510,14 +6742,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6539,14 +6769,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import bank;\n\nactor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n\nfn main() -> i64 { 0 }\n",
+            "import bank;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n\nfn main() -> i64 {\n    0\n}\n",
         );
 
         check_file(&input, &FrontendOptions::default())
@@ -6562,10 +6790,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n\
-             pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n\npub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6590,14 +6815,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Register {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n",
+            "pub actor Register {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6620,8 +6843,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "counter.hew",
-            "pub actor Counter {\n    var n: i64 = 0,\n    \
-             receive fn bump() -> i64 { n = n + 1; n }\n}\n",
+            "pub actor Counter {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6649,15 +6871,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "secret.hew",
             // No `pub`: the actor is private to its module.
-            "actor Account {\n    var n: i64 = 0,\n    \
-             receive fn id() -> i64 { 999 }\n}\n",
+            "actor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        999\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
-             receive fn id() -> i64 { 111 }\n}\n\n\
-             fn main() { let a = spawn secret.Account(); }\n",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -6693,14 +6912,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "secret.hew",
             // A public NON-actor type that shares the actor's bare name.
-            "pub type Account {\n    balance: i64,\n}\n",
+            "pub type Account {\n    balance: i64;\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
-             receive fn id() -> i64 { 111 }\n}\n\n\
-             fn main() { let a = spawn secret.Account(); }\n",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -6952,13 +7169,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             &workflow_dir,
             "workflow.hew",
-            "pub type Marker { value: i64, }\n",
+            "pub type Marker {\n    value: i64;\n}\n",
         );
         let peer_source = concat!(
             "pub machine Workflow {\n",
-            "    events { Crash, }\n",
-            "    state Ready,\n",
-            "    state Faulted { code: i64, },\n",
+            "    events { Crash; }\n",
+            "    state Ready;\n",
+            "    state Faulted { code: i64; }\n",
             "    on Crash: Ready => .Faulted {\n",
             "        wrong: 1\n",
             "    }\n",
@@ -7381,6 +7598,47 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
+    fn imported_machine_step_signature_keeps_its_event_declaration() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let source = root.join("tests/core-acceptance/cases/machine-import-values.hew");
+        let state = run_document_frontend(source.to_str().unwrap(), &FrontendOptions::default());
+        let checked = state
+            .typecheck_result
+            .as_ref()
+            .unwrap()
+            .tco
+            .as_ref()
+            .unwrap();
+        assert!(state.stopped.is_none(), "{:?}", state.stopped);
+        let mut event_owners = std::collections::HashSet::new();
+        for sig in checked.fn_sigs.values() {
+            let Some(method) = &sig.impl_method else {
+                continue;
+            };
+            if method.name.as_str() != "step"
+                || method
+                    .receiver
+                    .is_none_or(|id| checked.defs.name(id).as_str() != "Gate")
+            {
+                continue;
+            }
+            let Some(hew_types::Ty::Named { head, .. }) = sig.params.first() else {
+                continue;
+            };
+            let event = head
+                .declaration(&checked.defs)
+                .expect("resolved step event");
+            assert_eq!(checked.defs.owner(event.declaration()), method.receiver);
+            event_owners.insert(event);
+        }
+        assert_eq!(
+            event_owners.len(),
+            2,
+            "the two Gate declarations keep separate events"
+        );
+    }
+
+    #[test]
     fn bundled_type_decls_preserve_qualified_declaration_identity() {
         fn lower_to_hir(input: &str) -> hew_hir::HirModule {
             let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())
@@ -7435,7 +7693,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 pipeline
                     .items
                     .iter()
-                    .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == expected)),
+                    .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&pipeline.defs) == expected)),
                 "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
                 pipeline.items
             );
@@ -7455,7 +7713,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             foreign
                 .items
                 .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "spoofed.ScopeError")),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&foreign.defs) == "spoofed.ScopeError")),
             "foreign declaration must retain its own owner: {:#?}",
             foreign.items
         );
@@ -7463,7 +7721,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             !foreign
                 .items
                 .iter()
-                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "std.concurrency.ScopeError")),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name(&foreign.defs) == "std.concurrency.ScopeError")),
             "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
             foreign.items
         );
@@ -7478,14 +7736,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.pipeline;\n\
-             fn main() {\n\
-                 let chain = pipeline.run(pipeline.from(1));\n\
-                 let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
-                     value: 21, label: \"probe\", crash_stage: false\n\
-                 };\n\
-                 match chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\
-             }\n",
+            "import std.pipeline;\n\nfn main() {\n    let chain = pipeline.run(pipeline.from(1));\n    let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 { value: 21, label: \"probe\", crash_stage: false };\n    match chain.push(item) {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
         );
         let state = run_file_frontend_to_typecheck(
             &input,
@@ -7519,7 +7770,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         ] {
             assert!(
                 hir.module.items.iter().any(|item| matches!(
-                    item, hew_hir::HirItem::Actor(decl) if decl.declaration.full_path() == actor
+                    item, hew_hir::HirItem::Actor(decl) if hir.module.defs.path(decl.declaration) == actor
                 )),
                 "missing imported actor declaration `{actor}`"
             );

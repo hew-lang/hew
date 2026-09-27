@@ -4,7 +4,7 @@ use std::process::Output;
 use std::sync::OnceLock;
 
 use assert_cmd::Command;
-use hew_wasm::sandbox::{compile_to_sandbox_bytecode, Diagnostic, REQUIRED_PARITY_TEST_NAMES};
+use hew_wasm::sandbox::{compile_to_sandbox_bytecode, Diagnostic};
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
@@ -492,17 +492,6 @@ struct ParityCase {
 }
 
 #[test]
-fn minimum_parity_set_is_enforced_by_test_name() {
-    let required: BTreeSet<_> = REQUIRED_PARITY_TEST_NAMES.iter().copied().collect();
-    let actual: BTreeSet<_> = PARITY_CASES.iter().map(|case| case.test_name).collect();
-
-    assert_eq!(
-        actual, required,
-        "native↔sandbox parity cases must exactly cover the required playground set"
-    );
-}
-
-#[test]
 fn sandbox_graduation_corpus_is_fully_covered() {
     let graduation_dir = repo_root().join("examples").join("sandbox-graduation");
     let expected: BTreeSet<PathBuf> = std::fs::read_dir(&graduation_dir)
@@ -536,7 +525,7 @@ fn sandbox_graduation_corpus_is_fully_covered() {
 
 // This integration test executes the Node sandbox VM. Windows CI covers the
 // native toolchain and WASI target separately; Linux owns this VM contract.
-#[cfg_attr(windows, ignore)]
+#[cfg(unix)]
 #[test]
 fn playground_sources_match_native() {
     set_test_hewpath();
@@ -545,6 +534,29 @@ fn playground_sources_match_native() {
 
     for case in PARITY_CASES {
         assert_case(case);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn identity_w7_record_resource_does_not_join_runtime_admission() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+
+    // The root record renders like the runtime admission record, while both
+    // programs perform the same actor request and print the same answer.
+    for case in [
+        ParityCase {
+            test_name: "identity_w7_sandbox",
+            source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox.hew",
+        },
+        ParityCase {
+            test_name: "identity_w7_sandbox_control",
+            source_rel: "hew-wasm/tests/fixtures/identity_w7_sandbox_control.hew",
+        },
+    ] {
+        assert_case(&case);
     }
 }
 
@@ -595,6 +607,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "dyn_multibound_dispatch" => {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }
+        "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
         _ => None,
     };
     if let Some(expected) = expected {

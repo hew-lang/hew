@@ -227,7 +227,7 @@ the precise subset that is actually convertible.
     trailing block value, a `let`/`var` binding and a `match`/`if let` scrutinee are all "used");
     the resolved type must be a declaration the checker registered as a step report. Opt out with
     `let _ = …` or `// hew:allow(must_use)`. Send and ask outcomes are **not** a lint tier:
-    discarding one is `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
+    discarding one is `E_RESULT_DROPPED`, a compile error raised by the statement checker
     (HEW-SPEC-2026 §2.1.1, §5.6).
   - **`sleep_loop_blocks_mailbox`** — an actor `receive fn` contains a `loop`, `while true`,
     `while flag`, or `while !flag` whose body directly reaches `sleep` or `sleep_until`, has no

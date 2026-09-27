@@ -109,8 +109,7 @@ fn eof_when_peer_closes() {
     let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
     assert!(!stream_ptr.is_null());
 
-    // Give the OS a moment to deliver the FIN.
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    // The bridge read blocks until the FIN arrives.
 
     // SAFETY: stream_ptr is valid.
     let received = unsafe { drain_bytes(stream_ptr) };
@@ -169,8 +168,7 @@ fn read_error_sets_last_errno() {
     // Drop the peer — this sends RST because of SO_LINGER{linger=0}.
     drop(peer);
 
-    // Give the OS a moment to deliver the RST.
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // The blocking read below waits for the RST.
 
     // SAFETY: conn is valid.
     let pair = unsafe { hew_tcp_stream_from_conn(conn) };

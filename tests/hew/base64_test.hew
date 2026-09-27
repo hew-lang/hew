@@ -2,12 +2,10 @@
 
 import std.encoding.base64;
 
-import std.testing;
-
 fn assert_bytes_eq(actual: bytes, expected: bytes) {
-    testing.assert_eq(actual.len(), expected.len());
+    assert(actual.len() == expected.len());
     for i in 0 .. expected.len() {
-        testing.assert_eq_u8(actual[i], expected[i]);
+        assert(actual[i] == expected[i]);
     }
 }
 
@@ -18,7 +16,7 @@ fn test_encode_known_value() {
     var data: bytes = bytes.new();
     data.push(72); // 0x48
     data.push(105); // 0x69
-    testing.assert_eq_str(base64.encode(data), "SGk=");
+    assert(base64.encode(data) == "SGk=");
 }
 
 #[test]
@@ -58,7 +56,7 @@ fn test_round_trip_empty() {
 fn test_decode_invalid_returns_empty() {
     // Characters outside the Base64 alphabet → empty bytes
     let result = base64.decode("!!!!");
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }
 
 #[test]
@@ -76,7 +74,7 @@ fn test_encode_url_safe_differs_from_standard() {
     let rt = base64.decode(url_safe);
     assert_bytes_eq(rt, decoded);
     // Sanity: the two encodings differ for inputs that produce '+'/'-' or '/''_'
-    testing.assert_false(standard == url_safe);
+    assert(!(standard == url_safe));
 }
 
 // ── Padding cases ─────────────────────────────────────────────────────
@@ -86,7 +84,7 @@ fn test_encode_1_byte_produces_double_padding() {
     // 0x41 = 'A' (0b01000001): bits 010000 010000 → 'Q','Q','=','='
     var data: bytes = bytes.new();
     data.push(65); // 0x41
-    testing.assert_eq_str(base64.encode(data), "QQ==");
+    assert(base64.encode(data) == "QQ==");
 }
 
 #[test]
@@ -96,7 +94,7 @@ fn test_encode_2_bytes_produces_single_padding() {
     var data: bytes = bytes.new();
     data.push(65); // 0x41
     data.push(66); // 0x42
-    testing.assert_eq_str(base64.encode(data), "QUI=");
+    assert(base64.encode(data) == "QUI=");
 }
 
 #[test]
@@ -107,7 +105,7 @@ fn test_encode_3_bytes_produces_no_padding() {
     data.push(65); // 0x41
     data.push(66); // 0x42
     data.push(67); // 0x43
-    testing.assert_eq_str(base64.encode(data), "QUJD");
+    assert(base64.encode(data) == "QUJD");
 }
 
 #[test]
@@ -229,7 +227,7 @@ fn test_encode_url_safe_known_output() {
     var data: bytes = bytes.new();
     data.push(251); // 0xfb
     data.push(255); // 0xff
-    testing.assert_eq_str(base64.encode_url(data), "-_8=");
+    assert(base64.encode_url(data) == "-_8=");
 }
 
 #[test]
@@ -242,8 +240,8 @@ fn test_encode_url_safe_index_62_is_dash() {
     data.push(251); // 0xfb
     data.push(255); // 0xff
     let encoded = base64.encode_url(data);
-    testing.assert_eq_str(encoded.slice(0, 1), "-");
-    testing.assert_eq_str(encoded, "-_8=");
+    assert(encoded.slice(0, 1) == "-");
+    assert(encoded == "-_8=");
 }
 
 #[test]
@@ -267,11 +265,11 @@ fn test_decode_invalid_single_char_returns_empty() {
     // decoder does not emit — result is empty bytes.
     // Contract: "Q" → strips no '=', 1 value remaining, no output → 0 bytes.
     let result = base64.decode("Q");
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }
 
 #[test]
 fn test_decode_rejects_trailing_single_base64_digit() {
     let result = base64.decode("AAAAA");
-    testing.assert_eq(result.len(), 0);
+    assert(result.len() == 0);
 }

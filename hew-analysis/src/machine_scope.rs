@@ -37,8 +37,8 @@ pub fn scope_at(machine: &MachineDecl, offset: usize) -> Option<MachineScope> {
         if !in_body && !in_guard {
             continue;
         }
-        let source = if transition.source_state == "_" {
-            machine.name.clone()
+        let source = if transition.source_state.name == hew_parser::ast::sym::UNDERSCORE {
+            machine.name.to_string()
         } else {
             format!("{}.{}", machine.name, transition.source_state)
         };
@@ -54,7 +54,11 @@ pub fn scope_at(machine: &MachineDecl, offset: usize) -> Option<MachineScope> {
         ];
         return Some(MachineScope {
             bindings,
-            head_bindings: transition.event_bindings.clone(),
+            head_bindings: transition
+                .event_bindings
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         });
     }
 

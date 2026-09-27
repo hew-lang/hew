@@ -1,0 +1,10 @@
+[[case]]
+id = "param-record-field-loop-drop-iterated-field-push-clear"
+intent = "Regression oracle for a `for` loop iterating a field of a BY-VALUE record parameter. Shape `iterated_field_push_clear` (iterated field push and clear preserve the cursor snapshot) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/param-record-field-loop-drop-iterated-field-push-clear.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "seen=2 total=42 len=0\n"
+exit = 0

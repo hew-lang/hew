@@ -1,0 +1,10 @@
+[[case]]
+id = "wire-cbor-codec-wire-cbor-actor-in-range-enum"
+intent = "Wire CBOR codec ownership leak oracles: decode-owned field drop and the decode-failure partial free-on-error path. Shape `wire_cbor_actor_in_range_enum_high` (actor oob enum tag decode frees reader and shell no excess slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/wire-cbor-codec-wire-cbor-actor-in-range-enum.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 50

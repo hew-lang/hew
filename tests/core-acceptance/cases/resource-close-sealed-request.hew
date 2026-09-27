@@ -8,19 +8,29 @@ actor Audit {
 }
 
 #[resource]
-type Ticket { audit: Audit, id: i64, }
+type Ticket {
+    audit: Audit;
+    id: i64;
+}
+
 impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("audit close"); }
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit close");
+    }
 }
 
 actor Gate {
-    mailbox 1,
+    mailbox 1;
     receive fn hold(started: Sink<i64>) {
         started.send(1).expect("started");
         sleep(1h);
     }
-    receive fn echo(ticket: Ticket) -> i64 { ticket.id }
-    receive fn keep(ticket: Ticket) { println(ticket.id); }
+    receive fn echo(ticket: Ticket) -> i64 {
+        ticket.id
+    }
+    receive fn keep(ticket: Ticket) {
+        println(ticket.id);
+    }
 }
 
 actor Runner {
@@ -36,9 +46,13 @@ actor Runner {
                 .Err(ActorError.Rejected(failure)) => failure.message,
                 _ => panic("full mailbox accepted request"),
             };
-            close(gate);
+            {
+                let __hew_migrated_actor_1237 = gate;
+                terminate(__hew_migrated_actor_1237);
+                stopped(__hew_migrated_actor_1237);
+            };
             println("origin closed");
-        }
+        };
         println("request closed");
     }
 }
@@ -47,6 +61,14 @@ fn main() {
     let audit = spawn Audit;
     let runner = spawn Runner;
     runner.run(audit).expect("request cleanup");
-    close(runner);
-    close(audit);
+    {
+        let __hew_migrated_actor_1468 = runner;
+        stop(__hew_migrated_actor_1468);
+        stopped(__hew_migrated_actor_1468);
+    };
+    {
+        let __hew_migrated_actor_1487 = audit;
+        stop(__hew_migrated_actor_1487);
+        stopped(__hew_migrated_actor_1487);
+    };
 }

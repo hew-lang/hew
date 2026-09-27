@@ -9,22 +9,34 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-const COUNTER: &str = r#"
-actor Counter {
-    var count: i64 = 0,
-    var label: string = "count",
-    fn describe(prefix: string) -> string { prefix + label }
-    fn bump(by: i64) { count = count + by; }
-    receive fn increment(by: i64) { bump(by); println(describe(label)); }
+const COUNTER: &str = r#"actor Counter {
+    var count: i64 = 0;
+    var label: string = "count";
+    fn describe(prefix: string) -> string {
+        prefix + label
+    }
+    fn bump(by: i64) {
+        count = count + by;
+    }
+    receive fn increment(by: i64) {
+        bump(by);
+        println(describe(label));
+    }
     #[on(start)]
-    fn started() { count = 1; }
+    fn started() {
+        count = 1;
+    }
     #[on(stop)]
-    fn stopping() { println(label); }
+    fn stopping() {
+        println(label);
+    }
 }
+
 fn main() {
     let counter = spawn Counter();
     let _ = counter.increment(2);
-    close(counter);
+    stop(counter);
+    stopped(counter);
 }
 "#;
 
@@ -104,20 +116,27 @@ fn methods_and_hooks_are_private_bodies_of_their_actor() {
 
 #[test]
 fn a_body_returning_an_owned_state_field_copies_it_out_of_the_seat() {
-    const SOURCE: &str = r#"
-actor Ledger {
-    var label: string = "ledger",
-    fn describe() -> string { label }
-    receive fn show() -> string { describe() }
-    receive fn raw() -> string { label }
+    const SOURCE: &str = r#"actor Ledger {
+    var label: string = "ledger";
+    fn describe() -> string {
+        label
+    }
+    receive fn show() -> string {
+        describe()
+    }
+    receive fn raw() -> string {
+        label
+    }
 }
+
 fn main() {
     let ledger = spawn Ledger();
     match ledger.show() {
         .Ok(label) => println(label),
         .Err(_) => panic("show failed"),
     }
-    close(ledger);
+    stop(ledger);
+    stopped(ledger);
 }
 "#;
     let module = lower_source(SOURCE);
@@ -217,20 +236,23 @@ fn verifier_refuses_a_method_call_from_another_actor() {
     );
 }
 
-const STREAM: &str = r"
-actor Source {
-    var base: i64 = 10,
+const STREAM: &str = r"actor Source {
+    var base: i64 = 10;
     receive gen fn items(count: i64) -> i64 {
-        for index in 0..count {
+        for index in 0 .. count {
             base = base + 1;
             yield base + index;
         }
     }
 }
+
 fn main() {
     let source = spawn Source();
-    for item in source.items(3) { println(item); }
-    close(source);
+    for item in source.items(3) {
+        println(item);
+    }
+    stop(source);
+    stopped(source);
 }
 ";
 

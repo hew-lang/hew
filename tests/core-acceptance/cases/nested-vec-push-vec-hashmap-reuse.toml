@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-vec-push-vec-hashmap-reuse"
+intent = "Nested-collection `Vec` push ownership oracles (hew-lang/hew#1722). Shape `vec_hashmap_reuse` (vec hashmap reuse exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-vec-push-vec-hashmap-reuse.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "0|7|14|OK"
+exit = 0

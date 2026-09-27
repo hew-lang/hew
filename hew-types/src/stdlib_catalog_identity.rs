@@ -7,6 +7,9 @@
 //! own checked lowering paths.  The HIR inventory gate verifies this stays in
 //! lockstep with every catalog row that the checker can accept monomorphically.
 
+/// The catalog identity of the `assert` builtin, which HIR desugars.
+pub const ASSERT: &str = "assert";
+
 /// Closed identities of catalog callables that are both monomorphic in the
 /// checker and executable as ordinary HIR/MIR calls.
 pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
@@ -15,7 +18,7 @@ pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
     "Node::identity_key",
     "Node::shutdown",
     "Node::start",
-    "assert",
+    ASSERT,
     "bytes::new",
     "exit",
     "panic",

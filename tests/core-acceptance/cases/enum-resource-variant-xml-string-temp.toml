@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-resource-variant-xml-string-temp"
+intent = " Shape `xml_string_temp` (xml string return temporary is released) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-resource-variant-xml-string-temp.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "<a><b>hi</b></a>\n"
+exit = 0

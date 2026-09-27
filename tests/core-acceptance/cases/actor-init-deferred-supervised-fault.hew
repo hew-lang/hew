@@ -1,20 +1,25 @@
 actor Worker {
-    var label: string,
+    var label: string;
     init(name: string) {
         label = name.to_upper();
-        if label == "BROKEN" { panic("worker init failed"); }
+        if label == "BROKEN" {
+            panic("worker init failed");
+        }
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child worker: Worker(name: "broken"),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker(name: "broken");
 }
 
 fn main() {
     let app = spawn App;
     println("unreachable");
-    supervisor_stop(app);
+    stop(app);
+    stopped(app);
 }

@@ -1,0 +1,15 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var v: Vec<Vec<string>> = [];
+        var row: Vec<string> = [];
+        row.push("owned-clone-leak-oracle-cell-one");
+        row.push("owned-clone-leak-oracle-cell-two");
+        v.push(row);
+        let w = v.clone();
+        total = total + v.len() + w.len() + v[0].len();
+        i = i + 1;
+    }
+    total
+}

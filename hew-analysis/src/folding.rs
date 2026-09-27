@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn fold_select_arm_body() {
-        let source = "fn main() {\n    let value = select {\n        msg from inbox.recv() => {\n            msg\n        },\n        after 100ms => -1,\n    };\n}";
+        let source = "fn main() {\n    let value = select {\n        msg from inbox.recv() => {\n            msg\n        }\n        after 100ms => -1,\n    };\n}\n";
         let pr = parse(source);
         let ranges = build_folding_ranges(source, &pr);
         assert!(

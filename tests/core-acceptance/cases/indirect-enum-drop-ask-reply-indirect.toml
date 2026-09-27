@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-ask-reply-indirect"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `ask_reply_indirect` (indirect enum ask reply drop routes through recursive free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-ask-reply-indirect.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "${v}"
+exit = 0

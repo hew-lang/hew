@@ -1,25 +1,10 @@
-//! W5.005 / F1b — HIR lowering of the `#[intrinsic("mem.*")]` memory floor.
-//!
-//! Regression guard for D343: before this fix, `#[intrinsic]` functions
-//! declared in an *imported* floor module (`std.mem`) reached HIR lowering via
-//! the module-graph path (`lower_imported_fn_with_name`), which never consulted
-//! `intrinsic_declarations`. The body-skip only fired on the *root-item* path,
-//! so `mem$alloc` was emitted as a defined empty-body function — a silent
-//! fail-OPEN no-op returning an uninitialised pointer.
-//!
-//! These tests assert the corrected behaviour:
-//!  - a callable `mem.*` floor intrinsic (catalog linkage
-//!    `CalleeNameDispatchOnly`) is still emitted as a `HirItem::Function` (so
-//!    its mangled symbol stays in MIR's `module_fn_names` and calls dispatch to
-//!    it) AND carries `intrinsic_id = Some("mem.*")` so codegen synthesizes the
-//!    body;
-//!  - a numeric `math.*` intrinsic (linkage `CompilerIntrinsic`) is NOT emitted
-//!    as a function (it routes through builtin method-rewrites);
-//!  - an unknown `#[intrinsic("…")]` key fails closed with `UnknownIntrinsic`.
+//! Imported intrinsic declarations retain checked signatures without executable
+//! placeholder bodies. Actual calls require a supported lowering contract;
+//! unknown catalogue keys remain boundary errors.
 
 use hew_hir::{lower_program_host_target, HirDiagnosticKind, HirFn, HirItem, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 /// Build a `Program` with a non-root floor module at `module_path`
@@ -38,8 +23,8 @@ fn build_program_with_floor_module(module_path: &[&str], floor_src: &str) -> Pro
         root.errors
     );
 
-    let floor_id = ModuleId::new(module_path.iter().map(ToString::to_string).collect());
-    let root_id = ModuleId::root();
+    let floor_id = ModulePath::new(module_path.iter());
+    let root_id = ModulePath::root();
 
     let floor_items: Vec<_> = floor
         .program
@@ -110,44 +95,44 @@ pub fn dealloc(ptr: *mut u8, size: u64, align: u64) {}
 "#;
 
 #[test]
-fn imported_mem_intrinsic_is_emitted_and_tagged_with_catalog_id() {
+fn imported_mem_intrinsics_retain_signatures_without_executable_bodies() {
     let program = build_program_with_floor_module(&["std", "mem"], MEM_FLOOR_SRC);
     let (output, tco) = lower_with_checker(&program);
-
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
-
-    // The checker recorded the qualified intrinsic key.
-    assert_eq!(
-        tco.intrinsic_declarations
-            .get("std.mem.alloc")
-            .map(String::as_str),
-        Some("mem.alloc"),
-        "checker must record std.mem.alloc → mem.alloc; got: {:?}",
-        tco.intrinsic_declarations
-    );
-
-    // D343 regression: the callable floor remains emitted under its complete
-    // source-module identity so same-leaf `mem` modules cannot collide in MIR's
-    // module_fn_names.
-    let alloc = function_by_name(&output, "std$mem$alloc")
-        .expect("std$mem$alloc must be emitted as a HirItem::Function");
-    // … and it must be TAGGED so codegen synthesizes the body rather than
-    // lowering the bodyless placeholder into a fail-OPEN empty function.
-    assert_eq!(
-        alloc.intrinsic_id.as_deref(),
-        Some("mem.alloc"),
-        "std$mem$alloc must carry intrinsic_id = Some(\"mem.alloc\")"
-    );
-
-    let dealloc = function_by_name(&output, "std$mem$dealloc")
-        .expect("std$mem$dealloc must be emitted as a HirItem::Function");
-    assert_eq!(dealloc.intrinsic_id.as_deref(), Some("mem.dealloc"));
-
     assert!(
-        function_by_name(&output, "mem$alloc").is_none()
-            && function_by_name(&output, "mem$dealloc").is_none(),
-        "callable floor intrinsics must not be emitted under leaf-only module symbols"
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        output.diagnostics
     );
+
+    for (source, key, parameters) in [
+        ("std.mem.alloc", "mem.alloc", 2),
+        ("std.mem.dealloc", "mem.dealloc", 3),
+    ] {
+        let declaration = tco.defs.lookup_path(source).expect("checked declaration");
+        let signature = &tco.fn_sigs[&declaration];
+        assert_eq!(signature.params.len(), parameters);
+        assert_eq!(
+            tco.intrinsic_declarations.get(source).map(String::as_str),
+            Some(key)
+        );
+        assert!(
+            !output.module.items.iter().any(|item| matches!(item,
+                HirItem::Function(function) if function.declaration == declaration
+            )),
+            "{source} must not acquire an executable placeholder body"
+        );
+    }
+    let alloc = tco.defs.lookup_path("std.mem.alloc").unwrap();
+    assert!(matches!(
+        tco.fn_sigs[&alloc].return_type,
+        hew_types::Ty::Pointer {
+            is_mutable: true,
+            ..
+        }
+    ));
+    let dealloc = tco.defs.lookup_path("std.mem.dealloc").unwrap();
+    assert_eq!(tco.fn_sigs[&dealloc].return_type, hew_types::Ty::Unit);
 }
 
 #[test]
@@ -164,8 +149,8 @@ fn imported_math_intrinsic_is_not_emitted_as_a_function() {
 
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
     assert!(
-        function_by_name(&output, "math$sqrt").is_none(),
-        "math$sqrt must not be emitted as a HirItem::Function"
+        function_by_name(&output, "std$math$sqrt").is_none(),
+        "std$math$sqrt must not be emitted as a HirItem::Function"
     );
 }
 
@@ -189,7 +174,7 @@ fn unknown_intrinsic_key_fails_closed() {
         output.diagnostics
     );
     assert!(
-        function_by_name(&output, "mem$bogus").is_none(),
+        function_by_name(&output, "std$mem$bogus").is_none(),
         "an unknown intrinsic must not be emitted as a callable function"
     );
 }

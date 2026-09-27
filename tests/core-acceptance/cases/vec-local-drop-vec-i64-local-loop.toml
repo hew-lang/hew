@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-local-drop-vec-i64-local-loop"
+intent = "Plain `Vec<T>` local scope-exit drop oracles: per-iteration leak slope plus poisoned-allocator no-double-free pins for the escape shapes. Shape `vec_i64_local_loop_high` (vec i64 local loop no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-local-drop-vec-i64-local-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 45

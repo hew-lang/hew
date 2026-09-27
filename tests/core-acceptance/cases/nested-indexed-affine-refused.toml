@@ -8,11 +8,11 @@ timeout_seconds = 15
 [[case.expected.diagnostics]]
 code = "E_OWN_CONSUME_BORROWED"
 severity = "error"
-line = 7
+line = 20
 column = 5
 
 [[case.expected.diagnostics]]
 code = "E_OWN_CONSUME_BORROWED"
 severity = "error"
-line = 8
+line = 21
 column = 5

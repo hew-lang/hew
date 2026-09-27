@@ -4,15 +4,14 @@
 import hew.affineclone;
 
 fn main() {
-    let r1: affineclone.ResourceToken = ResourceToken { id: 1 };
+    let r1: affineclone.ResourceToken = affineclone.ResourceToken { id: 1 };
     let _r1_copy = r1.clone();
-    let r2: affineclone.ResourceToken = ResourceToken { id: 2 };
+    let r2: affineclone.ResourceToken = affineclone.ResourceToken { id: 2 };
     let _r2_copy = clone r2;
-
-    let l1: affineclone.LinearTicket = LinearTicket { id: 3 };
+    let l1: affineclone.LinearTicket = affineclone.LinearTicket { id: 3 };
     let _l1_copy = l1.clone();
     let _ = l1.redeem();
-    let l2: affineclone.LinearTicket = LinearTicket { id: 4 };
+    let l2: affineclone.LinearTicket = affineclone.LinearTicket { id: 4 };
     let _l2_copy = clone l2;
     let _ = l2.redeem();
 }

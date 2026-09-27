@@ -33,7 +33,6 @@ fn main() -> i64 {
     for k in 0 .. 4 {
         xs.push(f"item{k}"); // heap strings: interpolation allocates a fresh buffer
     }
-
     var sink: i64 = 0;
     for _r in 0 .. 1000 {
         for j in 0 .. 4 {
@@ -44,13 +43,11 @@ fn main() -> i64 {
             sink = sink + xs[j].len();
         }
     }
-
     // `sink` is non-zero iff every index read succeeded (guards the loop ran and
     // the reads are real, not optimised away). It can never be zero here.
     if sink == 0 {
         return 70;
     }
-
     // The Vec must still be intact after 8000 clone-indexes: a double-free or
     // move-out would corrupt these reads.
     let a = xs[0];

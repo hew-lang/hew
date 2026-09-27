@@ -1,0 +1,10 @@
+[[case]]
+id = "match-bound-field-original-bound-string-used"
+intent = "Bound-string original discharge oracle for match destructures that CONSUME the scrutinee root — the empirical (compiled-binary) half of the per-field accounting matrix whose skipped-field sibling lives in… Shape `bound_string_used_scribble` (bound string binder used no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-bound-field-original-bound-string-used.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "k"
+exit = 0

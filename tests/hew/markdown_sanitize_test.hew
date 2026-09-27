@@ -5,8 +5,6 @@
 
 import std.encoding.markdown;
 
-import std.testing;
-
 fn assert_contains(haystack: string, needle: string, what: string) {
     if !haystack.contains(needle) {
         panic(f"expected {what} in: {haystack}");

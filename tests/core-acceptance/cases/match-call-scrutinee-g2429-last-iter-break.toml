@@ -1,0 +1,10 @@
+[[case]]
+id = "match-call-scrutinee-g2429-last-iter-break"
+intent = "From-call match-scrutinee enum-payload leak oracle (#2429 guard). Shape `g2429_last_iter_break_scribble` (last iteration break no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-call-scrutinee-g2429-last-iter-break.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ooo"
+exit = 0

@@ -1,0 +1,11 @@
+fn noisy(label: string) -> string {
+    println(f"message {label}");
+    label
+}
+
+fn main() {
+    assert(1 < 2, noisy("never"));
+    let values = [1, 2];
+    assert(values.len() == 3, noisy("shown"));
+    println("unreachable");
+}

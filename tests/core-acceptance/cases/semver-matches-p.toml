@@ -1,0 +1,10 @@
+[[case]]
+id = "semver-matches-p"
+intent = "Durable leak oracle for `std/text/semver/semver.hew::matches_single`. Shape `p50` (flat leak slope across all operators, zero leaks and deterministic checksum at low and high) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/semver-matches-p.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nchecksum=4369050\n"
+exit = 0

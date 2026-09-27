@@ -12,11 +12,7 @@ import std.net.http.http_async_client;
 
 import std.string;
 
-fn serve(addr: string, requests: i64) {
-    let listener = match net.listen(addr) {
-        .Ok(listener) => listener,
-        .Err(_) => panic(f"network setup failed"),
-    };
+fn serve(consume listener: net.Listener, requests: i64) {
     for r in 0 .. requests {
         let conn = listener.accept();
         var raw = "";
@@ -102,14 +98,17 @@ fn fetch(addr: string, host: string, path: string) {
 }
 
 fn main() {
+    // Bind before starting the server, so the client below can dial at once:
+    // the kernel queues its connection until the accept loop takes it.
+    let listener = match net.listen("127.0.0.1:18234") {
+        .Ok(listener) => listener,
+        .Err(_) => panic(f"network setup failed"),
+    };
     // `fork` starts the accept loop concurrently: an ordinary call would wait
     // for `serve` to finish (it doesn't, until it has served both requests)
     // before the client below ever dials it.
-    fork serve("127.0.0.1:18234", 2);
-    sleep(300ms);
+    fork serve(listener, 2);
     fetch("127.0.0.1:18234", "127.0.0.1", "/hello");
-    sleep(400ms);
     fetch("127.0.0.1:18234", "127.0.0.1", "/health");
-    sleep(600ms);
     println("done");
 }

@@ -1,6 +1,9 @@
 const A: i64 = 10;
+
 const B: i64 = A + 1;
+
 const BASE: i64 = 64;
+
 const LIMIT: i64 = BASE * 1024 + (B - 11);
 
 fn main() -> i64 {

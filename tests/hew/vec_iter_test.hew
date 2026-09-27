@@ -9,15 +9,13 @@
 
 import std.iter;
 
-import std.testing;
-
 #[test]
 fn test_iter_count() {
     var v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
-    testing.assert_eq(iter.count(v.iter()), 3);
+    assert(iter.count(v.iter()) == 3);
 }
 
 #[test]
@@ -28,7 +26,7 @@ fn test_iter_fold_sums_elements() {
     v.push(3);
     v.push(4);
     let total = iter.fold(v.iter(), 0, |acc: i64, x: i64| acc + x);
-    testing.assert_eq(total, 10);
+    assert(total == 10);
 }
 
 #[test]
@@ -39,7 +37,7 @@ fn test_iter_map_then_fold() {
     v.push(3);
     let doubled = iter.map(v.iter(), |x: i64| x * 2);
     let total = iter.fold(doubled, 0, |acc: i64, x: i64| acc + x);
-    testing.assert_eq(total, 12);
+    assert(total == 12);
 }
 
 #[test]
@@ -52,7 +50,7 @@ fn test_iter_for_in_accumulates() {
     for x in v.iter() {
         total = total + x;
     }
-    testing.assert_eq(total, 15);
+    assert(total == 15);
 }
 
 #[test]
@@ -61,11 +59,11 @@ fn test_iter_leaves_source_live() {
     v.push(7);
     v.push(8);
     // Iterating by reference must not consume the source.
-    testing.assert_eq(iter.count(v.iter()), 2);
-    testing.assert_eq(v.len(), 2);
+    assert(iter.count(v.iter()) == 2);
+    assert(v.len() == 2);
     // A second independent iteration still sees every element.
     let total = iter.fold(v.iter(), 0, |acc: i64, x: i64| acc + x);
-    testing.assert_eq(total, 15);
+    assert(total == 15);
 }
 
 #[test]
@@ -79,6 +77,6 @@ fn test_iter_owned_elements() {
     for s in v.iter() {
         total = total + s.len();
     }
-    testing.assert_eq(total, 9);
-    testing.assert_eq(v.len(), 3);
+    assert(total == 9);
+    assert(v.len() == 3);
 }

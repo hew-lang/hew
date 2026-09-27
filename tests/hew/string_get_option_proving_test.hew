@@ -11,26 +11,24 @@
 //! `hew_string_char_at`: codepoint-indexed, `-1` for a negative or
 //! out-of-bounds index.
 
-import std.testing;
-
 #[test]
 fn test_string_get_some_and_oob_none() {
     let s = "hello";
     match s.get(0) {
-        .Some(c) => testing.assert_true(c == 'h'),
-        .None => testing.assert_true(false),
+        .Some(c) => assert(c == 'h'),
+        .None => assert(false),
     }
     match s.get(4) {
-        .Some(c) => testing.assert_true(c == 'o'),
-        .None => testing.assert_true(false),
+        .Some(c) => assert(c == 'o'),
+        .None => assert(false),
     }
     match s.get(5) {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
     match s.get(99) {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }
 
@@ -40,8 +38,8 @@ fn test_string_get_negative_index_is_none() {
     // `hew_string_char_at` rejects a negative index outright and returns its
     // `-1` absent sentinel, which codegen wraps as `None` rather than trapping.
     match s.get(0 - 1) {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }
 
@@ -51,12 +49,12 @@ fn test_string_get_multibyte_codepoint() {
     // by codepoint (rune) offset, not byte offset.
     let s = "héllo";
     match s.get(1) {
-        .Some(c) => testing.assert_true(c == 'é'),
-        .None => testing.assert_true(false),
+        .Some(c) => assert(c == 'é'),
+        .None => assert(false),
     }
     match s.get(4) {
-        .Some(c) => testing.assert_true(c == 'o'),
-        .None => testing.assert_true(false),
+        .Some(c) => assert(c == 'o'),
+        .None => assert(false),
     }
 }
 
@@ -68,15 +66,15 @@ fn test_string_get_does_not_consume_receiver() {
     let _ = s.get(0);
     let _ = s.get(1);
     let _ = s.get(50);
-    testing.assert_eq(s.len(), 3);
-    testing.assert_true(s[2] == 'c');
+    assert(s.len() == 3);
+    assert(s[2] == 'c');
 }
 
 #[test]
 fn test_string_get_empty_is_none() {
     let s = "";
     match s.get(0) {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }

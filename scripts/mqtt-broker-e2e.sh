@@ -305,4 +305,20 @@ fi
 kill -0 "$BROKER_PID" 2>/dev/null ||
     fail "broker exited during the round trip"
 
+# SIGTERM must produce a clean shutdown -- exit 0, not a crash and not a
+# reported fault. `cleanup()` below also signals any still-running processes,
+# but it swallows their exit status; the broker's own shutdown discipline is
+# only real if we check it explicitly. A task cancelled by a requested
+# shutdown is not a fault (the Acceptor's in-flight `accept()` included), so
+# a clean SIGTERM run has nothing left to report.
+kill -TERM "$BROKER_PID"
+broker_status=0
+wait "$BROKER_PID" || broker_status=$?
+BROKER_PID=""
+if [[ "$broker_status" -gt 128 ]]; then
+    fail "broker terminated by signal $((broker_status - 128)) on SIGTERM shutdown (status=$broker_status)"
+elif [[ "$broker_status" != "0" ]]; then
+    fail "broker exited with status $broker_status on SIGTERM shutdown"
+fi
+
 echo "mqtt-broker-e2e: PASS port=$PORT payload=$PAYLOAD"

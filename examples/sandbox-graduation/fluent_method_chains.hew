@@ -1,8 +1,8 @@
 // Option, Result and iterator methods come from std source bodies that every
 // program sees without an import; both engines run the same method bodies.
 type Order {
-    id: i64,
-    note: string,
+    id: i64;
+    note: string;
 }
 
 fn find_note(orders: Vec<Order>, id: i64) -> Option<string> {

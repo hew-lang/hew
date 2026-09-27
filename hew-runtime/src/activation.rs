@@ -684,7 +684,10 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
         }
     };
     // Scale budget by priority: high (0) = 2×, normal (1) = 1×, low (2) = ½×.
+    // The single-thread driver takes one message per turn, so every other
+    // ready participant gets a turn between an actor's messages.
     let budget = match a.priority.load(Ordering::Relaxed) {
+        _ if crate::driver::active() => 1,
         actor::HEW_PRIORITY_HIGH => base_budget.saturating_mul(2),
         actor::HEW_PRIORITY_LOW => (base_budget / 2).max(1),
         _ => base_budget,
@@ -1346,7 +1349,16 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             // run it too.
             if a.native_completion.is_none() {
                 // Native completion publishes DOWN after typed state cleanup.
-                crate::actor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+                crate::actor::notify_monitors_on_death(
+                    a.id,
+                    HewActorState::Stopped as i32,
+                    0,
+                    crate::internal::types::ActorEndReason::from_terminal(
+                        HewActorState::Stopped as i32,
+                        // SAFETY: this terminal actor still owns its mailbox.
+                        unsafe { crate::mailbox::mailbox_terminate_requested(a.mailbox.cast()) },
+                    ),
+                );
             }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
@@ -1429,6 +1441,24 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // SAFETY: mailbox pointer is valid for the actor's lifetime.
                 && unsafe { mailbox::mailbox_is_closed(mailbox) }
             {
+                // A producer admitted before close may still publish after
+                // the empty recheck. Keep the consumer alive until the shared
+                // admission state proves all such producers have exited.
+                // SAFETY: the actor retains its mailbox through dispatch.
+                if !unsafe { mailbox::mailbox_admissions_drained(mailbox) } {
+                    if a.actor_state
+                        .compare_exchange(
+                            HewActorState::Idle as i32,
+                            HewActorState::Runnable as i32,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        sched_enqueue(actor);
+                    }
+                    return;
+                }
                 // Mailbox closed while draining → IDLE → STOPPED.
                 if a.actor_state
                     .compare_exchange(
@@ -1677,12 +1707,22 @@ unsafe fn finish_failed_resume(
             code
         }
     };
-    crate::crash::record_logical_crash(
-        a.id,
-        code,
-        message_type,
-        a.dispatch.map_or(0, |f| f as usize),
-    );
+    // A cancellation reaching here while a requested shutdown is in flight
+    // (SIGTERM/SIGINT or a program-exit drain) is expected termination, not a
+    // fault: `hew_actor_trap_inner` below resolves it to `Stopped`, not
+    // `Crashed`. Reporting it on the crash log/diagnostic line first would
+    // call an expected stop a crash before that resolution ever runs. A
+    // cancellation for any OTHER reason (a deadline, a lost select race, an
+    // actor's own unrelated `.stop()`) still reports normally.
+    let cancelled_by_shutdown = crate::fault::cancelled_by_shutdown(code);
+    if !cancelled_by_shutdown {
+        crate::crash::record_logical_crash(
+            a.id,
+            code,
+            message_type,
+            a.dispatch.map_or(0, |f| f as usize),
+        );
+    }
 
     // Generated dispatch wrappers acquire the actor-state lock before the
     // handler body; the unwind may bypass their explicit release edge, so release any
@@ -1877,7 +1917,16 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             // finalize. See the companion comment in `activate_actor`.
             if a.native_completion.is_none() {
                 // Native completion publishes DOWN after typed state cleanup.
-                crate::actor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+                crate::actor::notify_monitors_on_death(
+                    a.id,
+                    HewActorState::Stopped as i32,
+                    0,
+                    crate::internal::types::ActorEndReason::from_terminal(
+                        HewActorState::Stopped as i32,
+                        // SAFETY: this terminal actor still owns its mailbox.
+                        unsafe { crate::mailbox::mailbox_terminate_requested(a.mailbox.cast()) },
+                    ),
+                );
             }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
@@ -1944,7 +1993,23 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
         } else if !mailbox.is_null()
             // SAFETY: mailbox pointer is valid for the actor's lifetime.
             && unsafe { mailbox::mailbox_is_closed(mailbox) }
-            && a.actor_state
+        {
+            // SAFETY: the actor retains its mailbox through activation.
+            if !unsafe { mailbox::mailbox_admissions_drained(mailbox) } {
+                if a.actor_state
+                    .compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    sched_enqueue(actor);
+                }
+                return;
+            }
+            if a.actor_state
                 .compare_exchange(
                     HewActorState::Idle as i32,
                     HewActorState::Stopped as i32,
@@ -1952,22 +2017,23 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
                     Ordering::Acquire,
                 )
                 .is_ok()
-        {
-            // A producer can have passed the mailbox's open check before close,
-            // then publish its node after our empty recheck but before its own
-            // wake CAS. Winning Idle -> Stopped makes that CAS fail, so this
-            // worker is the last consumer that can retire the node.
-            // SAFETY: this activation owns the mailbox consumer and the actor
-            // remains live until the activation returns.
-            unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
-            crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-            // Terminal, same reasoning as the `Stopping -> Stopped` settle
-            // above: a pump that stops here (mailbox closed while it sat idle
-            // between yields) owes its consumer the stream fault.
-            crate::actor::fault_close_registered_gen_sink(a);
-            crate::actor_group::notify_actor_death(a.id);
-            // SAFETY: actor just transitioned to Stopped; dispatch is finished.
-            unsafe { crate::actor::call_terminate_fn(actor) };
+            {
+                // A producer can have passed the mailbox's open check before close,
+                // then publish its node after our empty recheck but before its own
+                // wake CAS. Winning Idle -> Stopped makes that CAS fail, so this
+                // worker is the last consumer that can retire the node.
+                // SAFETY: this activation owns the mailbox consumer and the actor
+                // remains live until the activation returns.
+                unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
+                crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+                // Terminal, same reasoning as the `Stopping -> Stopped` settle
+                // above: a pump that stops here (mailbox closed while it sat idle
+                // between yields) owes its consumer the stream fault.
+                crate::actor::fault_close_registered_gen_sink(a);
+                crate::actor_group::notify_actor_death(a.id);
+                // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+                unsafe { crate::actor::call_terminate_fn(actor) };
+            }
         }
     }
 }
@@ -2242,10 +2308,9 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
         let queue_entry = unsafe { SchedulerQueueEntry::retain(actor) };
 
         // CAS Suspended → Runnable; only enqueue on success (fail-closed against
-        // a terminal or not-yet-parked actor). The loop runs AT MOST twice: the
-        // second iteration exists only for the mark-after-drain window (see the
-        // `Err(_)` arm) and every second-iteration outcome is terminal.
-        let mut retried = false;
+        // a terminal or not-yet-parked actor). A competing wake can drive a
+        // complete resume/park cycle between attempts, so every failed attempt
+        // must close its own mark-after-drain window.
         loop {
             match a.actor_state.compare_exchange(
                 HewActorState::Suspended as i32,
@@ -2306,21 +2371,15 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
                     // has no second drain; the dispatch park's is equally
                     // one-shot). Re-check: if the state now reads `Suspended`,
                     // retry the CAS ourselves — the `Ok` arm consumes the
-                    // marker, so the retry self-cleans. ONE retry suffices;
-                    // every retry outcome is terminal:
-                    // - `Ok`: delivered, marker consumed;
-                    // - `Err(Runnable)`: another delivery is in flight (the
-                    //   no-mark arm's safety argument applies; the residual
-                    //   marker is at worst one honest respark);
-                    // - `Err(Running|Idle)`: a NEW park cycle began after our
-                    //   mark, so its future drain (which runs after it publishes
-                    //   `Suspended`) is ordered after our mark and consumes it —
-                    //   the strand needs mark-after-drain, and our mark is now
-                    //   provably before that park's drain.
-                    if !retried
-                        && a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32
-                    {
-                        retried = true;
+                    // marker, so the retry self-cleans. A competing delivery can
+                    // run another park cycle before the retry's CAS. If that CAS
+                    // loses, its new mark needs the same post-mark recheck;
+                    // bounding retries can strand Suspended with a set marker.
+                    if a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32 {
+                        #[cfg(test)]
+                        if let Some(hook) = ENQUEUE_RESUME_RETRY_HOOK.access(|hook| *hook) {
+                            hook(actor);
+                        }
                         continue;
                     }
                     break (None, actor_runtime_id);
@@ -2486,6 +2545,10 @@ pub(crate) static ACTIVATE_POST_CAS_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> 
 /// stranding the actor `Suspended` with a set marker.
 #[cfg(test)]
 pub(crate) static ENQUEUE_RESUME_CAS_FAIL_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> =
+    PoisonSafe::new(None);
+/// A competing activation can run after the retry selected Suspended.
+#[cfg(test)]
+pub(crate) static ENQUEUE_RESUME_RETRY_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> =
     PoisonSafe::new(None);
 #[cfg(test)]
 pub(crate) static ACTIVATE_PRE_CLAIM_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =

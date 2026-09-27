@@ -32,22 +32,11 @@ fn ordinary_machine_diagram_retains_typed_outputs_and_dynamic_targets() {
 }
 
 fn machine_fixture() -> &'static str {
-    "machine Light {\n    events {\n        Toggle,\n    }\n    state Off,\n    state On,\n    on Toggle: Off => On,\n    on Toggle: On => Off,\n}\n"
+    "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n"
 }
 
 fn missing_import_fixture() -> &'static str {
-    "machine TrafficLight {\n\
-     \x20   events { Tick, }\n\
-     \x20   state Red,\n\
-     \x20   state Green,\n\
-     \x20   state Yellow,\n\
-     \x20   on Tick: Red => Green,\n\
-     \x20   on Tick: Green => Yellow,\n\
-     \x20   on Tick: Yellow => Red,\n\
-     }\n\
-     fn main() {\n\
-     \x20   let _ = fs.read(\"test.txt\");\n\
-     }\n"
+    "machine TrafficLight {\n    events {\n        Tick;\n    }\n    state Red;\n    state Green;\n    state Yellow;\n    on Tick: Red => Green;\n    on Tick: Green => Yellow;\n    on Tick: Yellow => Red;\n}\n\nfn main() {\n    let _ = fs.read(\"test.txt\");\n}\n"
 }
 
 #[test]
@@ -104,21 +93,7 @@ fn machine_diagram_dot_emits_graphviz_on_stdout() {
 }
 
 fn composite_fixture() -> &'static str {
-    "machine Conn {\n\
-     \x20   events {\n\
-     \x20       Connect,\n\
-     \x20       Disconnect,\n\
-     \x20   }\n\
-     \x20   state Disconnected,\n\
-     \x20   state Connected {\n\
-     \x20       initial state Authenticating,\n\
-     \x20       state Active,\n\
-     \x20       on Disconnect: _ => .Disconnected,\n\
-     \x20   }\n\
-     \x20   ,on Connect: Disconnected => .Authenticating,\n\
-     \x20   on Connect: _ => _ { state }\n\
-     \x20   on Disconnect: _ => _ { state }\n\
-     }\n"
+    "machine Conn {\n    events {\n        Connect;\n        Disconnect;\n    }\n    state Disconnected;\n    state Connected {\n        initial state Authenticating;\n        state Active;\n        on Disconnect: _ => .Disconnected;\n    }\n    on Connect: Disconnected => .Authenticating;\n    on Connect: _ => _ {\n        state\n    }\n    on Disconnect: _ => _ {\n        state\n    }\n}\n"
 }
 
 #[test]
@@ -356,7 +331,7 @@ fn machine_list_fails_closed_on_parse_error() {
         "stderr: {stderr}"
     );
     assert!(
-        stderr.contains("expected `,` between structural members"),
+        stderr.contains("a state declaration member ends with `;`"),
         "stderr: {stderr}"
     );
     assert!(
@@ -407,68 +382,25 @@ fn machine_list_fails_closed_on_zero_machines() {
 
 /// Machine with `default { state }` — unhandled events stay in current state.
 fn default_fixture() -> &'static str {
-    "machine Tank {\n\
-     \x20   events {\n\
-     \x20       Fill,\n\
-     \x20       Drain,\n\
-     \x20   }\n\
-     \x20   state Filling,\n\
-     \x20   state Draining,\n\
-     \x20   on Drain: Filling => Draining,\n\
-     \x20   default { state }\n\
-     }\n"
+    "machine Tank {\n    events {\n        Fill;\n        Drain;\n    }\n    state Filling;\n    state Draining;\n    on Drain: Filling => Draining;\n    default { state }\n}\n"
 }
 
 /// Machine with `reenter` self-transitions.
 fn reenter_fixture() -> &'static str {
-    "machine Counter {\n\
-     \x20   events {\n\
-     \x20       Inc,\n\
-     \x20       Reset,\n\
-     \x20   }\n\
-     \x20   state Zero,\n\
-     \x20   state NonZero { value: i64, }\n\
-     \x20   ,on Inc: Zero => NonZero { value: 1 }\n\
-     \x20   on Inc: NonZero => NonZero reenter { value: state.value + 1 }\n\
-     \x20   on Reset: NonZero => Zero,\n\
-     \x20   on Reset: Zero => Zero reenter,\n\
-     }\n"
+    "machine Counter {\n    events {\n        Inc;\n        Reset;\n    }\n    state Zero;\n    state NonZero { value: i64; }\n    on Inc: Zero => NonZero { value: 1 }\n    on Inc: NonZero => NonZero reenter { value: state.value + 1 }\n    on Reset: NonZero => Zero;\n    on Reset: Zero => Zero reenter;\n}\n"
 }
 
 /// Machine with an `emits { … }` manifest.
 /// Uses `default { state }` to satisfy exhaustiveness so the HIR check path works.
 fn emits_fixture() -> &'static str {
-    "machine Relay {\n\
-     \x20   events {\n\
-     \x20       Trigger,\n\
-     \x20       Signal,\n\
-     \x20   }\n\
-     \x20   emits {\n\
-     \x20       Signal,\n\
-     \x20   }\n\
-     \x20   state Idle,\n\
-     \x20   state Active,\n\
-     \x20   on Trigger: Idle => Active { emit Signal {}; .Active }\n\
-     \x20   on Trigger: Active => Idle,\n\
-     \x20   default { state }\n\
-     }\n"
+    "machine Relay {\n    events {\n        Trigger;\n        Signal;\n    }\n    emits {\n        Signal;\n    }\n    state Idle;\n    state Active;\n    on Trigger: Idle => Active {\n        emit Signal {};\n        .Active\n    }\n    on Trigger: Active => Idle;\n    default { state }\n}\n"
 }
 
 /// Generic machine — the ordinary HIR check path admits it. `default { state }`
 /// satisfies exhaustiveness, which generic machines are checked for like any
 /// other.
 fn generic_fixture() -> &'static str {
-    "machine Box<T> {\n\
-     \x20   events {\n\
-     \x20       Put { value: T, }\n\
-     \x20       ,Take,\n\
-     \x20   }\n\
-     \x20   state Empty,\n\
-     \x20   state Full { value: T, }\n\
-     \x20   ,on Put(value): Empty => Full { value: value }\n\
-     \x20   on Take: Full => Empty,\n\
-     \x20   default { state }\n\
-     }\n"
+    "machine Box<T> {\n    events {\n        Put { value: T; }\n        Take;\n    }\n    state Empty;\n    state Full { value: T; }\n    on Put(value): Empty => Full { value: value }\n    on Take: Full => Empty;\n    default { state }\n}\n"
 }
 
 // ── fix 1: `has_default` arm visible in all renderers ────────────────────────
@@ -819,14 +751,7 @@ fn machine_diagram_json_no_wildcard_rows() {
     let dir = support::tempdir();
     // Minimal wildcard machine: one wildcard source, one named target.
     // `default { state }` satisfies exhaustiveness so the HIR path works.
-    let source = "machine Toggle {\n\
-                  \x20   events { Flip, Reset, }\n\
-                  \x20   state A,\n\
-                  \x20   state B,\n\
-                  \x20   on Flip: A => B,\n\
-                  \x20   on Reset: _ => A,\n\
-                  \x20   default { state }\n\
-                  }\n";
+    let source = "machine Toggle {\n    events {\n        Flip;\n        Reset;\n    }\n    state A;\n    state B;\n    on Flip: A => B;\n    on Reset: _ => A;\n    default { state }\n}\n";
     let input = dir.path().join("toggle.hew");
     std::fs::write(&input, source).unwrap();
 
@@ -882,14 +807,7 @@ fn machine_diagram_json_event_fields_present() {
     // Events with payload fields must carry their field names in the JSON.
     let dir = support::tempdir();
     // `default { state }` satisfies exhaustiveness so the HIR check path works.
-    let source = "machine Sender {\n\
-                  \x20   events { Send { payload: i64, }, Ack, }\n\
-                  \x20   state Idle,\n\
-                  \x20   state Waiting,\n\
-                  \x20   on Send: Idle => Waiting,\n\
-                  \x20   on Ack: Waiting => Idle,\n\
-                  \x20   default { state }\n\
-                  }\n";
+    let source = "machine Sender {\n    events {\n        Send { payload: i64; }\n        Ack;\n    }\n    state Idle;\n    state Waiting;\n    on Send: Idle => Waiting;\n    on Ack: Waiting => Idle;\n    default { state }\n}\n";
     let input = dir.path().join("sender.hew");
     std::fs::write(&input, source).unwrap();
 
@@ -917,31 +835,17 @@ fn machine_diagram_json_event_fields_present() {
 /// A file whose only machine arrives through an import: the machine lives in
 /// `std/machines/toggle.hew` and the root declares none of its own.
 fn imported_only_fixture() -> &'static str {
-    "import std.machines.toggle.{Toggle, ToggleEvent};\n\
+    "import std.machines.toggle.{Toggle};\n\
      fn main() {\n\
      \x20   var t: Toggle = .Off;\n\
-     \x20   t.step(ToggleEvent.Flip);\n\
+     \x20   t.step(Toggle.Event.Flip);\n\
      \x20   println(t.state_name());\n\
      }\n"
 }
 
 /// A root machine beside an imported one, so the command has to render both.
 fn local_and_imported_fixture() -> &'static str {
-    "import std.machines.toggle.{Toggle, ToggleEvent};\n\
-     machine Door {\n\
-     \x20   events { Push, }\n\
-     \x20   state Closed,\n\
-     \x20   state Open,\n\
-     \x20   on Push: Closed => Open,\n\
-     \x20   on Push: Open => Closed,\n\
-     }\n\
-     fn main() {\n\
-     \x20   var d: Door = .Closed;\n\
-     \x20   d.step(.Push);\n\
-     \x20   var t: Toggle = .Off;\n\
-     \x20   t.step(ToggleEvent.Flip);\n\
-     \x20   println(f\"{d.state_name()} {t.state_name()}\");\n\
-     }\n"
+    "import std.machines.toggle.{Toggle};\n\nmachine Door {\n    events {\n        Push;\n    }\n    state Closed;\n    state Open;\n    on Push: Closed => Open;\n    on Push: Open => Closed;\n}\n\nfn main() {\n    var d: Door = .Closed;\n    d.step(.Push);\n    var t: Toggle = .Off;\n    t.step(Toggle.Event.Flip);\n    println(f\"{d.state_name()} {t.state_name()}\");\n}\n"
 }
 
 #[test]

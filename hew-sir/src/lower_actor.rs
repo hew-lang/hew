@@ -19,7 +19,7 @@ pub(super) fn declaration<'a>(
     if matches!(
         ty,
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::ActorFn),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ActorFn),
             ..
         }
     ) {
@@ -31,7 +31,7 @@ pub(super) fn declaration<'a>(
     let instance = crate::actor::local_actor_instance(ty)?;
     module.items.iter().find_map(|item| match item {
         HirItem::Actor(actor)
-            if &actor.declaration == instance.nominal.declaration()
+            if actor.declaration == instance.nominal.declaration()
                 && actor.type_params.len() == instance.args.len() =>
         {
             Some(actor)
@@ -41,6 +41,7 @@ pub(super) fn declaration<'a>(
 }
 
 fn actor_substitution(
+    _defs: &hew_types::DefTable,
     source: &hew_hir::HirActorDecl,
     ty: &ResolvedTy,
 ) -> Result<TypeSubstitution, String> {
@@ -115,22 +116,14 @@ fn actor_coalesce(
         }
     };
     let mut keys = Vec::new();
-    for handler in handlers {
-        let declared = source
-            .receive_handlers
+    for &(declaration, param) in &source.coalesce_keys {
+        let handler = handlers
             .iter()
-            .find(|declared| declared.name == handler.name)
-            .ok_or("a registered handler lost its declaration")?;
-        let Some(param) = declared
-            .params
-            .iter()
-            .position(|param| param.name == *key_field)
-        else {
-            continue;
-        };
+            .find(|handler| handler.declaration == declaration)
+            .ok_or("checked coalesce member has no registered handler")?;
         let ty = handler
             .params
-            .get(param)
+            .get(param as usize)
             .ok_or("coalesce key parameter is absent from the message payload")?;
         let kind = coalesce_key_kind(ty).ok_or_else(|| {
             format!(
@@ -140,7 +133,7 @@ fn actor_coalesce(
         })?;
         keys.push(crate::SemCoalesceKey {
             message: handler.message_id,
-            param: u32::try_from(param).map_err(|_| "coalesce key index exceeds u32")?,
+            param,
             kind,
         });
     }
@@ -174,14 +167,16 @@ impl InstanceService<'_> {
         if let Some(actor) = self.actors.iter().find(|actor| {
             exact.map_or_else(
                 || actor.admits_target(ty),
-                |name| actor.declaration.full_path() == name,
+                |name| self.module.defs.path(actor.declaration) == name,
             )
         }) {
             return Ok(actor.id);
         }
         let source = match exact {
             Some(name) => self.module.items.iter().find_map(|item| match item {
-                HirItem::Actor(actor) if actor.declaration.full_path() == name => Some(actor),
+                HirItem::Actor(actor) if self.module.defs.path(actor.declaration) == name => {
+                    Some(actor)
+                }
                 _ => None,
             }),
             None => declaration(self.module, ty),
@@ -197,14 +192,17 @@ impl InstanceService<'_> {
         } else {
             let instance = crate::actor::local_actor_instance(ty)
                 .ok_or("declaration() matched a local actor reference")?;
-            ResolvedTy::named_builtin(
-                instance.nominal.full_path(),
-                hew_types::BuiltinType::ActorHandle,
-                instance.args.clone(),
-            )
+            ResolvedTy::Named {
+                head: hew_types::TypeHead::Actor(hew_types::NominalHead::new(
+                    instance.nominal,
+                    self.module.defs.path(instance.nominal.declaration()),
+                )),
+                args: instance.args.clone(),
+                is_opaque: false,
+            }
         };
         let ty = &handle_ty;
-        let substitution = actor_substitution(&source, ty)?;
+        let substitution = actor_substitution(&self.module.defs, &source, ty)?;
         for argument in &substitution.args {
             self.require_type_facts(argument)?;
         }
@@ -226,7 +224,7 @@ impl InstanceService<'_> {
         );
         self.actors.push(crate::SemActor {
             id,
-            declaration: source.declaration.clone(),
+            declaration: source.declaration,
             handle_ty: ty.clone(),
             state_ty,
             fields,
@@ -267,19 +265,13 @@ impl InstanceService<'_> {
                 }
                 hew_hir::HirLifecycleHookKind::Crash => (
                     vec![ResolvedTy::named_builtin(
-                        "std.failure.CrashInfo",
                         hew_types::BuiltinType::CrashInfo,
                         Vec::new(),
                     )],
-                    ResolvedTy::named_builtin(
-                        "std.failure.CrashAction",
-                        hew_types::BuiltinType::CrashAction,
-                        Vec::new(),
-                    ),
+                    ResolvedTy::named_builtin(hew_types::BuiltinType::CrashAction, Vec::new()),
                 ),
-                hew_hir::HirLifecycleHookKind::Exit => (
+                hew_hir::HirLifecycleHookKind::Link => (
                     vec![ResolvedTy::named_builtin(
-                        "std.failure.CrashNotification",
                         hew_types::BuiltinType::CrashNotification,
                         Vec::new(),
                     )],
@@ -287,7 +279,6 @@ impl InstanceService<'_> {
                 ),
                 hew_hir::HirLifecycleHookKind::Down => (
                     vec![ResolvedTy::named_builtin(
-                        "std.link_monitor.DownNotification",
                         hew_types::BuiltinType::DownNotification,
                         Vec::new(),
                     )],
@@ -317,7 +308,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                hook.declaration.clone(),
+                hook.declaration,
                 &hook.state_bindings,
                 &hook.params,
                 return_ty,
@@ -334,7 +325,7 @@ impl InstanceService<'_> {
                 hew_hir::HirLifecycleHookKind::Crash => {
                     self.actors[id.0 as usize].crash = Some(body);
                 }
-                hew_hir::HirLifecycleHookKind::Exit => self.actors[id.0 as usize].exit = Some(body),
+                hew_hir::HirLifecycleHookKind::Link => self.actors[id.0 as usize].exit = Some(body),
                 hew_hir::HirLifecycleHookKind::Down => self.actors[id.0 as usize].down = Some(body),
             }
         }
@@ -352,7 +343,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                init.declaration.clone(),
+                init.declaration,
                 &init.state_bindings,
                 &init.params,
                 ResolvedTy::Unit,
@@ -369,7 +360,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                method.declaration.clone(),
+                method.declaration,
                 &method.state_bindings,
                 &method.params,
                 substitution.apply(&method.return_ty),
@@ -415,7 +406,6 @@ impl InstanceService<'_> {
             // body is checked against the element it yields.
             let checked_return = if handler.is_generator {
                 ResolvedTy::named_builtin(
-                    "Stream",
                     hew_types::BuiltinType::Stream,
                     vec![substitution.apply(&handler.return_ty)],
                 )
@@ -446,7 +436,7 @@ impl InstanceService<'_> {
                 .is_generator
                 .then(|| substitution.apply(&handler.return_ty));
             let sink = stream.clone().map(|element| {
-                ResolvedTy::named_builtin("Sink", hew_types::BuiltinType::Sink, vec![element])
+                ResolvedTy::named_builtin(hew_types::BuiltinType::Sink, vec![element])
             });
             let return_ty = if stream.is_some() {
                 ResolvedTy::Unit
@@ -457,7 +447,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                handler.declaration.clone(),
+                handler.declaration,
                 &handler.state_bindings,
                 &handler.params,
                 return_ty.clone(),
@@ -491,7 +481,7 @@ impl InstanceService<'_> {
                         }
                     };
                     Some(crate::SemFailureDisplay::Callable(
-                        self.resolve_entry_display(declaration, &instance)?.id,
+                        self.resolve_entry_display(*declaration, &instance)?.id,
                     ))
                 }
             };
@@ -503,7 +493,7 @@ impl InstanceService<'_> {
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
-                    declaration: handler.declaration.clone(),
+                    declaration: handler.declaration,
                     name: handler.name.clone(),
                     message_id: row.msg_id,
                     every_ns: handler.every_ns,
@@ -542,7 +532,7 @@ impl InstanceService<'_> {
         let function = HirFn {
             id: source.id,
             node: body.node,
-            declaration: declaration.clone(),
+            declaration,
             name: symbol.to_string(),
             type_params: Vec::new(),
             params: params.to_vec(),
@@ -616,12 +606,12 @@ fn lifecycle_types_match(actual: &ResolvedTy, expected: &ResolvedTy) -> bool {
     match (actual, expected) {
         (
             ResolvedTy::Named {
-                builtin: Some(actual_builtin),
+                head: hew_types::TypeHead::Builtin(actual_builtin),
                 args: actual_args,
                 ..
             },
             ResolvedTy::Named {
-                builtin: Some(expected_builtin),
+                head: hew_types::TypeHead::Builtin(expected_builtin),
                 args: expected_args,
                 ..
             },
@@ -724,13 +714,21 @@ impl Builder<'_, '_> {
             descriptor
                 .handlers
                 .iter()
-                .find(|handler| handler.declaration.full_path() == method_id.as_str())
+                .find(|handler| {
+                    self.service.module.defs.path(handler.declaration) == method_id.as_str()
+                })
                 .ok_or("ask has no exact receive protocol member")?
         };
         let message = handler.message_id;
 
         let output = self.ty(&expression.ty);
-        let signature = descriptor.ask_signature(message, &target_ty, output.clone(), false)?;
+        let signature = descriptor.ask_signature(
+            &self.service.module.defs,
+            message,
+            &target_ty,
+            output.clone(),
+            false,
+        )?;
         if signature.return_ty != output || signature.params.len() != args.len() + 1 {
             return Err("ask must return its complete checked Result".into());
         }
@@ -917,37 +915,47 @@ impl Builder<'_, '_> {
                 operation,
             } if matches!(
                 operation,
-                hew_types::actor_delivery::ActorDeliveryCall::Close
-                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitClosed
+                hew_types::actor_delivery::ActorDeliveryCall::Stop
+                    | hew_types::actor_delivery::ActorDeliveryCall::Terminate
+                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitStopped
+                    | hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted
             ) =>
             {
                 if !args.is_empty() {
                     return Err("actor lifecycle boundary has unexpected arguments".into());
                 }
                 let target_ty = self.ty(&receiver.ty);
-                let closing = matches!(
-                    operation,
-                    hew_types::actor_delivery::ActorDeliveryCall::Close
-                );
-                if !closing
-                    && super::supervisor::declaration(self.service.module, &target_ty).is_some()
-                {
-                    let supervisor = self.service.require_supervisor(&target_ty)?;
-                    let operation = if target_ty.is_builtin(hew_types::BuiltinType::ChildRef) {
-                        crate::ActorOperation::SupervisorRoleAwaitClosed {
-                            supervisor,
-                            closing: false,
+                let role = target_ty.is_builtin(hew_types::BuiltinType::ChildRef);
+                let target =
+                    if super::supervisor::declaration(self.service.module, &target_ty).is_some() {
+                        let supervisor = self.service.require_supervisor(&target_ty)?;
+                        if role {
+                            crate::LifecycleTarget::SupervisorRole(supervisor)
+                        } else {
+                            crate::LifecycleTarget::Supervisor(supervisor)
                         }
                     } else {
-                        crate::ActorOperation::SupervisorAwaitClosed(supervisor)
+                        let actor = self.service.require_actor(&target_ty)?;
+                        if role {
+                            crate::LifecycleTarget::ActorRole(actor)
+                        } else {
+                            crate::LifecycleTarget::Actor(actor)
+                        }
                     };
-                    return Ok((operation, vec![(**receiver).clone()], vec![0]));
-                }
-                let actor = self.service.require_actor(&target_ty)?;
-                let boundary = if closing {
-                    crate::ActorOperation::Close(actor)
-                } else {
-                    crate::ActorOperation::AwaitClosed(actor)
+                let boundary = match operation {
+                    hew_types::actor_delivery::ActorDeliveryCall::Stop => {
+                        crate::ActorOperation::Stop(target)
+                    }
+                    hew_types::actor_delivery::ActorDeliveryCall::Terminate => {
+                        crate::ActorOperation::Terminate(target)
+                    }
+                    hew_types::actor_delivery::ActorDeliveryCall::AwaitStopped => {
+                        crate::ActorOperation::AwaitStopped(target)
+                    }
+                    hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted if role => {
+                        crate::ActorOperation::AwaitRestarted(target)
+                    }
+                    _ => return Err("restart wait requires a supervised role".into()),
                 };
                 Ok((boundary, vec![(**receiver).clone()], vec![0]))
             }
@@ -999,21 +1007,14 @@ impl Builder<'_, '_> {
                     .is_builtin(hew_types::BuiltinType::ActorFn)
                     .then_some(actor_name.as_str());
                 let id = self.service.require_actor_declaration(&ty, exact)?;
-                let declaration_path = self.service.actors[id.0 as usize]
-                    .declaration
-                    .full_path()
-                    .to_string();
+                let declaration = self.service.actors[id.0 as usize].declaration;
                 let source = self
                     .service
                     .module
                     .items
                     .iter()
                     .find_map(|item| match item {
-                        HirItem::Actor(actor)
-                            if actor.declaration.full_path() == declaration_path =>
-                        {
-                            Some(actor)
-                        }
+                        HirItem::Actor(actor) if actor.declaration == declaration => Some(actor),
                         _ => None,
                     })
                     .ok_or("spawn lost its actor declaration")?;
@@ -1110,7 +1111,11 @@ impl Builder<'_, '_> {
                     let actor = &self.service.actors[actor.0 as usize];
                     let declaration = declaration(self.service.module, &actor.handle_ty)
                         .ok_or("spawn default lacks its actor declaration")?;
-                    Some(actor_substitution(declaration, &actor.handle_ty)?)
+                    Some(actor_substitution(
+                        &self.service.module.defs,
+                        declaration,
+                        &actor.handle_ty,
+                    )?)
                 }
                 _ => None,
             };
@@ -1184,11 +1189,16 @@ impl Builder<'_, '_> {
         &self,
         operation: &crate::ActorOperation,
     ) -> Result<SemSignature, String> {
-        operation.signature(&self.service.actors, &self.service.supervisors, |id| {
-            self.service
-                .callable(id)
-                .map(|callable| callable.signature.clone())
-        })
+        operation.signature(
+            &self.service.module.defs,
+            &self.service.actors,
+            &self.service.supervisors,
+            |id| {
+                self.service
+                    .callable(id)
+                    .map(|callable| callable.signature.clone())
+            },
+        )
     }
 
     /// Transfer evaluated operands across one actor boundary and continue
@@ -1399,7 +1409,9 @@ impl Builder<'_, '_> {
             descriptor
                 .handlers
                 .iter()
-                .find(|handler| handler.declaration.full_path() == method_id.as_str())
+                .find(|handler| {
+                    self.service.module.defs.path(handler.declaration) == method_id.as_str()
+                })
                 .ok_or("message description has no exact receive member")?
         }
         .clone();
@@ -1495,7 +1507,7 @@ impl Builder<'_, '_> {
                 if !self.is_open() {
                     return Ok(request);
                 }
-                if matches!(&request_ty, ResolvedTy::Named { name, .. } if name == hew_types::actor_delivery::FAILURE_TYPE)
+                if matches!(&request_ty, ResolvedTy::Named { head, .. } if *head == hew_types::KnownDecl::SendFailure.head())
                 {
                     let shape = self.service.require_aggregate_shape(&request_ty)?;
                     let fields = self.emit_destructure_value(
@@ -1534,7 +1546,7 @@ impl Builder<'_, '_> {
                     .handlers
                     .iter()
                     .find(|handler| {
-                        handler.declaration.full_path() == method_id
+                        self.service.module.defs.path(handler.declaration) == method_id
                             || method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID
                     })
                     .ok_or("request recovery lacks its checked handler")?;
@@ -1546,7 +1558,12 @@ impl Builder<'_, '_> {
                     hew_types::actor_delivery::request_parts(payload_ty)
                         .ok_or("recovery input lacks its sealed completion protocol")?;
                 if source_policy != *policy
-                    || source_method.rsplit("::").next() != method_id.rsplit("::").next()
+                    || self
+                        .service
+                        .module
+                        .defs
+                        .name(source_method.id.declaration())
+                        != self.service.module.defs.name(handler.declaration)
                     || *params
                         != hew_types::Ty::Tuple(
                             handler.params.iter().map(ResolvedTy::to_ty).collect(),
@@ -1555,6 +1572,7 @@ impl Builder<'_, '_> {
                     return Err("request recovery changes its checked protocol".into());
                 }
                 self.service.actors[actor.0 as usize].ask_signature(
+                    &self.service.module.defs,
                     handler.message_id,
                     &target_ty,
                     self.ty(&expression.ty),
@@ -1615,14 +1633,16 @@ impl Builder<'_, '_> {
                 };
                 self.make_delivery_record(expression, vec![target, message.id, payload.id])
             }
-            ActorDeliveryCall::Stop => {
-                Err("a stop request reaches SIR only as its close request".into())
-            }
-            ActorDeliveryCall::Submit { .. }
-            | ActorDeliveryCall::Close
-            | ActorDeliveryCall::AwaitClosed => self
+            ActorDeliveryCall::Submit { .. } => self
                 .lower_actor_boundary(expression)?
                 .ok_or_else(|| "submission has no result".into()),
+            ActorDeliveryCall::Stop
+            | ActorDeliveryCall::Terminate
+            | ActorDeliveryCall::AwaitStopped
+            | ActorDeliveryCall::AwaitRestarted => {
+                self.lower_actor_boundary(expression)?;
+                self.emit(expression, SemOpKind::ConstUnit)
+            }
         }
     }
 
@@ -1647,7 +1667,8 @@ impl Builder<'_, '_> {
             .handlers
             .iter()
             .find(|handler| {
-                handler.declaration.full_path() == method.as_str() && handler.stream.is_some()
+                self.service.module.defs.path(handler.declaration) == method.as_str()
+                    && handler.stream.is_some()
             })
             .ok_or("stream request has no exact producer member")?
             .clone();

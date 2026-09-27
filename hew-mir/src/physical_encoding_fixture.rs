@@ -9,9 +9,8 @@ use std::collections::BTreeMap;
 
 pub fn value(format: EncodingFormat) -> ResolvedTy {
     ResolvedTy::Named {
-        name: format.builtin().canonical_name().to_string(),
+        head: hew_types::TypeHead::Builtin(format.builtin()),
         args: vec![],
-        builtin: Some(format.builtin()),
         is_opaque: true,
     }
 }
@@ -48,7 +47,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
     let callable = sir::SemCallable {
         id: sir::CallableId(0),
         function: hew_hir::ItemId(0),
-        declaration: declaration.clone(),
+        declaration,
         instance: sir::CallableInstance::Monomorphic,
         symbol: "encoding_probe".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
@@ -94,6 +93,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         blocks: vec![],
     };
     sir::SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
@@ -108,6 +108,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         root_unit_callables: vec![],
         entry_exit_plan: None,
         entry_callable: None,
+        test_entries: Vec::new(),
         functions: vec![function],
         aggregate_shapes: vec![],
         variant_shapes: vec![],
@@ -117,15 +118,20 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture assembles the whole encoding call and its drop plan"
+)]
 pub fn operation(family: RuntimeCallFamily) -> sir::SemModule {
     let owner = value(family.encoding_format().unwrap());
+    let defs = hew_types::DefTable::new();
     let contract = family.semantic_contract().unwrap();
     let params = contract
         .arguments
         .iter()
-        .map(|arg| arg.ty.resolve(Some(&owner)).unwrap())
+        .map(|arg| arg.ty.resolve(&defs, Some(&owner)).unwrap())
         .collect::<Vec<_>>();
-    let signature = contract.instantiate(&params, &owner).unwrap();
+    let signature = contract.instantiate(&defs, &params, &owner).unwrap();
     let mut module = skeleton(params, signature.result_ty.clone());
     let own = sir::OwnKind::of_class(
         module.type_facts[&hew_types::TypeInstanceKey(signature.result_ty.clone())].class,

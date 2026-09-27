@@ -7,17 +7,19 @@ pub(super) use super::*;
 #[test]
 fn wire_encode_decode_record_binary_codec_rewrite() {
     let output = check_source(
-        r"
-        #[wire]
-        type Point { x: i64 @1, y: i64 @2 }
+        r"#[wire]
+type Point {
+    x: i64 @1;
+    y: i64 @2;
+}
 
-        fn main() -> i64 {
-            let p = Point { x: 1, y: 2 };
-            let b = p.encode();
-            let p2 = Point.decode(b);
-            return p2.x + p2.y;
-        }
-        ",
+fn main() -> i64 {
+    let p = Point { x: 1, y: 2 };
+    let b = p.encode();
+    let p2 = Point.decode(b);
+    return p2.x + p2.y;
+}
+",
     );
 
     assert!(
@@ -60,18 +62,20 @@ fn wire_text_format_methods_record_codec_rewrite() {
     // its text direction so HIR/codegen drive the bridge thunks. (Replaces the
     // historical pin that asserted NO rewrite, from before the text codec landed.)
     let output = check_source(
-        r#"
-        #[wire]
-        type Point { x: i64 @1, y: i64 @2 }
+        r#"#[wire]
+type Point {
+    x: i64 @1;
+    y: i64 @2;
+}
 
-        fn main() {
-            let p = Point { x: 1, y: 2 };
-            let _j: string = p.to_json();
-            let _y: string = p.to_yaml();
-            let _fj: Result<Point, string> = Point.from_json("{}");
-            let _fy: Result<Point, string> = Point.from_yaml("");
-        }
-        "#,
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    let _j: string = p.to_json();
+    let _y: string = p.to_yaml();
+    let _fj: Result<Point, string> = Point.from_json("{}");
+    let _fy: Result<Point, string> = Point.from_yaml("");
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -162,18 +166,18 @@ fn generic_wire_facade_records_all_typed_codec_rewrites() {
 #[test]
 fn generic_wire_facade_admits_owned_key_and_element_shapes() {
     let parsed = hew_parser::parse(
-        r#"
-        import std.encoding.wire;
+        r#"import std.encoding.wire;
 
-        #[wire]
-        type Key { id: i64 @1 }
+#[wire]
+type Key {
+    id: i64 @1;
+}
 
-        fn main() {
-            let _record_keyed =
-                wire.from_json<HashMap<Key, string>>("[]");
-            let _vec_bytes = wire.from_json<Vec<bytes>>("[]");
-        }
-        "#,
+fn main() {
+    let _record_keyed = wire.from_json<HashMap<Key, string>>("[]");
+    let _vec_bytes = wire.from_json<Vec<bytes>>("[]");
+}
+"#,
     );
     assert!(
         parsed.errors.is_empty(),
@@ -217,18 +221,20 @@ fn generic_codec_value_types(output: &TypeCheckOutput) -> Vec<String> {
 #[test]
 fn generic_wire_facade_admits_bare_wire_type() {
     let output = check_wire_program(
-        r#"
-        import std.encoding.wire;
+        r#"import std.encoding.wire;
 
-        #[wire]
-        type Config { name: string @1, port: i64 @2 }
+#[wire]
+type Config {
+    name: string @1;
+    port: i64 @2;
+}
 
-        fn main() {
-            let c = Config { name: "svc", port: 80 };
-            let _text = wire.to_json(c);
-            let _back = wire.from_json<Config>("{}");
-        }
-        "#,
+fn main() {
+    let c = Config { name: "svc", port: 80 };
+    let _text = wire.to_json(c);
+    let _back = wire.from_json<Config>("{}");
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -283,16 +289,16 @@ fn generic_wire_facade_refuses_values_without_a_codec() {
             r"
             import std.encoding.wire;
 
-            type Plain {{ a: i64 }}
+            type Plain {{ a: i64; }}
 
             #[wire]
-            type Outer {{ p: Plain @1 }}
+            type Outer {{ p: Plain @1; }}
 
             #[wire]
-            type Tree {{ v: i64 @1, kids: Vec<Tree> @2 }}
+            type Tree {{ v: i64 @1; kids: Vec<Tree> @2; }}
 
             #[resource]
-            type Handle {{ fd: i64 }}
+            type Handle {{ fd: i64; }}
 
             impl Handle {{
                 fn close(consume self) {{}}
@@ -390,15 +396,17 @@ fn generic_wire_codec_is_not_a_function_value() {
 #[test]
 fn plain_type_has_no_codec_methods() {
     let output = check_wire_program(
-        r#"
-        type Plain { a: i64, b: string }
+        r#"type Plain {
+    a: i64;
+    b: string;
+}
 
-        fn main() {
-            let p = Plain { a: 1, b: "x" };
-            let _text = p.to_json();
-            let _back = Plain.from_json("{}");
-        }
-        "#,
+fn main() {
+    let p = Plain { a: 1, b: "x" };
+    let _text = p.to_json();
+    let _back = Plain.from_json("{}");
+}
+"#,
     );
     assert!(
         output
@@ -425,15 +433,17 @@ fn wire_from_json_returns_result_self_string() {
     // `Result<Self, string>`, matching the non-wire `Encode` path. This pins
     // the ratified return shape on the wire registration path.
     let output = check_source(
-        r#"
-        #[wire]
-        type Point { x: i64 @1, y: i64 @2 }
+        r#"#[wire]
+type Point {
+    x: i64 @1;
+    y: i64 @2;
+}
 
-        fn main() {
-            let _r: Result<Point, string> = Point.from_json("{\"x\":1,\"y\":2}");
-            let _y: Result<Point, string> = Point.from_yaml("x: 1");
-        }
-        "#,
+fn main() {
+    let _r: Result<Point, string> = Point.from_json("{\"x\":1,\"y\":2}");
+    let _y: Result<Point, string> = Point.from_yaml("x: 1");
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -448,14 +458,16 @@ fn wire_from_json_bare_self_is_type_error() {
     // `Result<Self, …>`) must be a type error — the bare-`Self` registration
     // is gone.
     let output = check_source(
-        r#"
-        #[wire]
-        type Point { x: i64 @1, y: i64 @2 }
+        r#"#[wire]
+type Point {
+    x: i64 @1;
+    y: i64 @2;
+}
 
-        fn main() {
-            let _p: Point = Point.from_json("{\"x\":1,\"y\":2}");
-        }
-        "#,
+fn main() {
+    let _p: Point = Point.from_json("{\"x\":1,\"y\":2}");
+}
+"#,
     );
     assert!(
         !output.errors.is_empty(),
@@ -466,10 +478,12 @@ fn wire_from_json_bare_self_is_type_error() {
 #[test]
 fn wire_layout_table_populated_from_wire_struct() {
     let output = check_source(
-        r"
-        #[wire]
-        type Point { x: i64 @1, y: i64 @2 }
-        ",
+        r"#[wire]
+type Point {
+    x: i64 @1;
+    y: i64 @2;
+}
+",
     );
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
@@ -485,10 +499,12 @@ fn wire_layout_table_populated_from_wire_struct() {
 #[test]
 fn wire_layout_table_populated_from_wire_enum() {
     let output = check_source(
-        r"
-        #[wire]
-        enum Status { Active, Inactive, }
-        ",
+        r"#[wire]
+enum Status {
+    Active;
+    Inactive;
+}
+",
     );
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
@@ -500,10 +516,11 @@ fn wire_layout_table_populated_from_wire_enum() {
 #[test]
 fn wire_layout_json_name_override_preserved() {
     let output = check_source(
-        r#"
-        #[wire]
-        type Cfg { host: string @1 json_name="hostname" }
-        "#,
+        r#"#[wire]
+type Cfg {
+    host: string @1 json("hostname");
+}
+"#,
     );
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
@@ -511,24 +528,68 @@ fn wire_layout_json_name_override_preserved() {
         .wire_layouts
         .get("Cfg")
         .expect("Cfg should have a wire layout entry");
-    assert_eq!(entry.fields[0].json_name, Some("hostname".to_string()));
+    assert_eq!(entry.fields[0].json_name, "hostname");
+    assert_eq!(entry.fields[0].yaml_name, "host");
+}
+
+#[test]
+fn wire_text_name_collisions_fail_at_declaration() {
+    let explicit = check_source(
+        r#"#[wire]
+type Cfg {
+    a: string @1 json("x");
+    b: string @2 json("x");
+}
+"#,
+    );
+    assert!(
+        explicit.errors.iter().any(|error| {
+            error.message == "wire JSON field name `x` is ambiguous after naming metadata"
+        }),
+        "{:?}",
+        explicit.errors
+    );
+
+    let cased = check_source(
+        r#"#[wire]
+#[json("camelCase")]
+type Cfg {
+    foo_bar: string @1;
+    fooBar: string @2;
+}
+"#,
+    );
+    assert!(
+        cased.errors.iter().any(|error| {
+            error.message == "wire JSON field name `fooBar` is ambiguous after naming metadata"
+        }),
+        "{:?}",
+        cased.errors
+    );
 }
 
 #[test]
 fn wire_optional_field_requires_semantic_option_type() {
-    let source = r"
-        #[wire]
-        type Invalid { value: string @1 optional }
+    let source = r"#[wire]
+type Invalid {
+    value: string @1 optional;
+}
 
-        #[wire]
-        type RequiredValue { value: string @1 }
+#[wire]
+type RequiredValue {
+    value: string @1;
+}
 
-        #[wire]
-        type RequiredOption { value: Option<string> @1 }
+#[wire]
+type RequiredOption {
+    value: Option<string> @1;
+}
 
-        #[wire]
-        type OptionalOption { value: Option<string> @1 optional }
-    ";
+#[wire]
+type OptionalOption {
+    value: Option<string> @1 optional;
+}
+";
     let output = check_source(source);
     let error = output
         .errors
@@ -540,7 +601,7 @@ fn wire_optional_field_requires_semantic_option_type() {
         error.message,
         "E_WIRE_OPTIONAL_REQUIRES_OPTION: wire field `value` is marked `optional` but must have type `Option<T>`"
     );
-    assert_eq!(error.span, 47..54);
+    assert_eq!(&source[error.span.clone()], "string ");
     assert_eq!(
         output
             .errors
@@ -556,12 +617,13 @@ fn wire_optional_field_requires_semantic_option_type() {
 #[test]
 fn wire_optional_field_accepts_option_alias_after_resolution() {
     let output = check_source(
-        r"
-        type MaybeText = Option<string>;
+        r"type MaybeText = Option<string>;
 
-        #[wire]
-        type Message { body: MaybeText @1 optional }
-        ",
+#[wire]
+type Message {
+    body: MaybeText @1 optional;
+}
+",
     );
 
     assert!(

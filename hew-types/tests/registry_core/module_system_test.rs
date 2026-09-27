@@ -5,12 +5,13 @@
 //! all behave correctly.
 
 use crate::common;
+use hew_parser::ast::Ident;
 use hew_parser::ast::{
     ActorDecl, Block, Expr, FnDecl, ImportDecl, ImportName, ImportSpec, IntRadix, Item, Literal,
     Param, Program, ReceiveFnDecl, Spanned, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
     Visibility,
 };
-use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
+use hew_parser::module::{Module, ModuleGraph, ModuleImport, ModulePath};
 use hew_types::check::{SpanKey, TypeDefKind};
 
 use common::isolated_checker;
@@ -24,12 +25,12 @@ fn make_pub_fn(name: &str) -> FnDecl {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -59,7 +60,7 @@ fn make_user_import(
     items: Vec<Spanned<Item>>,
 ) -> ImportDecl {
     ImportDecl {
-        path: path.iter().map(std::string::ToString::to_string).collect(),
+        path: hew_parser::ast::Path::from_spellings(path),
         spec,
         selection_trailing_comma: false,
         module_alias: None,
@@ -75,7 +76,7 @@ fn selected_import(names: &[&str]) -> ImportSpec {
         names
             .iter()
             .map(|name| ImportName {
-                name: (*name).to_string(),
+                name: Ident::new(name),
                 alias: None,
             })
             .collect(),
@@ -84,12 +85,12 @@ fn selected_import(names: &[&str]) -> ImportSpec {
 
 fn module_node(id: &str, deps: &[&str]) -> Module {
     Module {
-        id: ModuleId::new(vec![id.to_string()]),
+        id: ModulePath::new([id.to_string()]),
         items: vec![],
         imports: deps
             .iter()
             .map(|d| ModuleImport {
-                target: ModuleId::new(vec![d.to_string()]),
+                target: ModulePath::new([d.to_string()]),
                 spec: None,
                 span: 0..0,
             })
@@ -104,8 +105,8 @@ fn module_node(id: &str, deps: &[&str]) -> Module {
 #[test]
 fn test_module_graph_preserved_through_pipeline() {
     // Build a program with an attached module graph (two modules: root + lib)
-    let root_id = ModuleId::new(vec!["root".to_string()]);
-    let _lib_id = ModuleId::new(vec!["lib".to_string()]);
+    let root_id = ModulePath::new(["root"]);
+    let _lib_id = ModulePath::new(["lib"]);
 
     let mut graph = ModuleGraph::new(root_id.clone());
     graph.add_module(module_node("root", &["lib"])).unwrap();
@@ -116,12 +117,12 @@ fn test_module_graph_preserved_through_pipeline() {
     let pos_lib = graph
         .topo_order
         .iter()
-        .position(|id| id.path[0] == "lib")
+        .position(|id| id.segments[0].as_str() == "lib")
         .unwrap();
     let pos_root = graph
         .topo_order
         .iter()
-        .position(|id| id.path[0] == "root")
+        .position(|id| id.segments[0].as_str() == "root")
         .unwrap();
     assert!(
         pos_lib < pos_root,
@@ -165,11 +166,11 @@ fn test_qualified_name_resolution() {
     let output = checker.check_program(&program);
 
     assert!(
-        output.fn_sigs.contains_key("utils.helper"),
+        output.sigs().contains("utils.helper"),
         "bare import should register qualified name 'utils.helper'"
     );
     assert!(
-        !output.fn_sigs.contains_key("helper"),
+        !output.sigs().contains("helper"),
         "bare import must NOT register unqualified 'helper'"
     );
 }
@@ -185,25 +186,24 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
             describe(Label { text: "hello" })
         }
     "#;
-    let module_source = r"
-        pub trait Describable {
-            fn describe(val: Self) -> string;
-        }
+    let module_source = r"pub trait Describable {
+    fn describe(val: Self) -> string;
+}
 
-        pub type Label {
-            text: string,
-        }
+pub type Label {
+    text: string;
+}
 
-        impl Describable for Label {
-            fn describe(label: Label) -> string {
-                label.text
-            }
-        }
+impl Describable for Label {
+    fn describe(label: Label) -> string {
+        label.text
+    }
+}
 
-        pub fn describe<T: Describable>(item: T) -> string {
-            item.describe()
-        }
-    ";
+pub fn describe<T: Describable>(item: T) -> string {
+    item.describe()
+}
+";
 
     let mut root = hew_parser::parse(root_source);
     assert!(
@@ -217,7 +217,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "describe_label" => {
+            Item::Function(fd) if fd.name == Ident::new("describe_label") => {
                 fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
             }
             _ => None,
@@ -251,7 +251,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         output.errors
     );
     assert!(
-        output.fn_sigs.contains_key("myapp.widgets.describe"),
+        output.sigs().contains("myapp.widgets.describe"),
         "module-qualified imported generic should be registered"
     );
 
@@ -266,11 +266,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     // shortens the qualifier back to bare on the non-colliding layout lookup.
     assert_eq!(
         inferred,
-        &vec![Ty::Named {
-            builtin: None,
-            name: "myapp.widgets.Label".to_string(),
-            args: vec![],
-        }]
+        &vec![Ty::named_in(&output.defs, "myapp.widgets.Label", vec![])]
     );
 }
 
@@ -285,7 +281,7 @@ fn test_private_items_not_visible() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private, // private
-        name: "private_fn".to_string(),
+        name: Ident::new("private_fn"),
         type_params: None,
         params: vec![],
         return_type: None,
@@ -329,7 +325,7 @@ fn test_private_items_not_visible() {
     // reference-site enforcement check can emit E_VISIBILITY instead of a
     // generic "unknown function" error.
     assert!(
-        output.fn_sigs.contains_key("mod_a.private_fn"),
+        output.sigs().contains("mod_a.private_fn"),
         "private fn must be registered under its qualified name for enforcement"
     );
     assert!(
@@ -338,7 +334,7 @@ fn test_private_items_not_visible() {
             .contains_key(&(None, 0, "public_fn".to_string())),
         "public fn should be accessible unqualified via glob"
     );
-    assert!(output.fn_sigs.contains_key("mod_a.public_fn"));
+    assert!(output.sigs().contains("mod_a.public_fn"));
 }
 
 // ── type visibility ───────────────────────────────────────────────────────────
@@ -349,7 +345,7 @@ fn test_pub_type_accessible_qualified() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "Config".to_string(),
+        name: Ident::new("Config"),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -376,11 +372,11 @@ fn test_pub_type_accessible_qualified() {
     let output = checker.check_program(&program);
 
     assert!(
-        output.type_defs.contains_key("myapp.config.Config"),
+        output.type_def_at_path("myapp.config.Config").is_some(),
         "pub type should be published under its full owner"
     );
-    assert!(!output.type_defs.contains_key("Config"));
-    assert!(!output.type_defs.contains_key("config.Config"));
+    assert!(output.type_def_at_path("Config").is_none());
+    assert!(output.type_def_at_path("config.Config").is_none());
 }
 
 #[test]
@@ -394,7 +390,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "Config".to_string(),
+        name: Ident::new("Config"),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -410,7 +406,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "Config".to_string(),
+        name: Ident::new("Config"),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -448,14 +444,14 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         output.errors
     );
     assert!(
-        output.type_defs.contains_key("Config"),
+        output.type_def_at_path("Config").is_some(),
         "local type must be reachable bare as `Config`"
     );
     assert!(
-        output.type_defs.contains_key("myapp.config.Config"),
+        output.type_def_at_path("myapp.config.Config").is_some(),
         "imported type must retain canonical owner `myapp.config.Config`"
     );
-    assert!(!output.type_defs.contains_key("config.Config"));
+    assert!(output.type_def_at_path("config.Config").is_none());
 }
 
 // ── per-module type namespacing (R313) ────────────────────────────────────────
@@ -465,7 +461,7 @@ fn pub_struct(name: &str) -> TypeDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -513,11 +509,11 @@ fn two_modules_export_same_type_name_coexist() {
         output.errors
     );
     assert!(
-        output.type_defs.contains_key("pkg.alpha.Value"),
+        output.type_def_at_path("pkg.alpha.Value").is_some(),
         "pkg.alpha.Value must be registered"
     );
     assert!(
-        output.type_defs.contains_key("pkg.beta.Value"),
+        output.type_def_at_path("pkg.beta.Value").is_some(),
         "pkg.beta.Value must be registered"
     );
 }
@@ -579,8 +575,8 @@ fn qualified_same_name_types_resolve_to_own_module_def() {
 
     // Both qualified keys resolve to distinct, present type defs.
     assert!(
-        output.type_defs.contains_key("pkg.alpha.Value")
-            && output.type_defs.contains_key("pkg.beta.Value"),
+        output.type_def_at_path("pkg.alpha.Value").is_some()
+            && output.type_def_at_path("pkg.beta.Value").is_some(),
         "both qualified defs must resolve, got keys: {:?}",
         output.type_defs.keys().collect::<Vec<_>>()
     );
@@ -608,13 +604,17 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "take_alpha".to_string(),
+        name: Ident::new("take_alpha"),
         type_params: None,
         params: vec![Param {
-            name: "v".to_string(),
+            name: Ident::new("v"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
-                    name: "alpha.Value".to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("alpha.Value"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -647,13 +647,16 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
     let output = checker.check_program(&program);
 
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("take_alpha")
         .expect("take_alpha sig must be registered");
     let param = sig.params.first().expect("take_alpha has one param");
     match param {
-        Ty::Named { name, .. } => assert_eq!(
-            name, "pkg.alpha.Value",
+        Ty::Named {
+            head: name_head, ..
+        } => assert_eq!(
+            name_head.spelling(),
+            "pkg.alpha.Value",
             "param type must carry the module qualifier into the resolved sig"
         ),
         other => panic!("expected Ty::Named, got {other:?}"),
@@ -667,14 +670,14 @@ fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDe
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: field.to_string(),
+            name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    name: scalar.to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(scalar), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -701,14 +704,14 @@ fn pub_holder_with_named_field(name: &str, field: &str, member: &str) -> TypeDec
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: field.to_string(),
+            name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    name: member.to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(member), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -743,9 +746,9 @@ fn same_bare_name_member_field_binds_to_own_module_identity() {
     // holders' field types collapse to the same last-writer identity and the
     // exact-string assertions below fail.
     for order in [["alpha", "beta"], ["beta", "alpha"]] {
-        let root_id = ModuleId::new(vec!["myapp".to_string()]);
-        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+        let root_id = ModulePath::new(["myapp"]);
+        let alpha_id = ModulePath::new(["alpha"]);
+        let beta_id = ModulePath::new(["beta"]);
         let alpha_items = vec![
             (
                 Item::TypeDecl(pub_struct_with_scalar_field("Wrap", "a_field", "i64")),
@@ -811,11 +814,12 @@ fn same_bare_name_member_field_binds_to_own_module_identity() {
 
         let field_member = |holder_key: &str| -> String {
             let holder = output
-                .type_defs
-                .get(holder_key)
+                .type_def_at_path(holder_key)
                 .unwrap_or_else(|| panic!("{holder_key} must register its own qualified def"));
             match holder.fields.get("w") {
-                Some(Ty::Named { name, .. }) => name.clone(),
+                Some(Ty::Named {
+                    head: name_head, ..
+                }) => name_head.spelling().to_string(),
                 other => panic!("{holder_key}.w must be a Ty::Named, got {other:?}"),
             }
         };
@@ -870,12 +874,10 @@ fn same_bare_name_types_register_independent_divergent_field_layouts() {
     let output = checker.check_program(&program);
 
     let narrow = output
-        .type_defs
-        .get("pkg.widgeti8.Widget")
+        .type_def_at_path("pkg.widgeti8.Widget")
         .expect("pkg.widgeti8.Widget must register its own canonical def");
     let wide = output
-        .type_defs
-        .get("pkg.widgeti64.Widget")
+        .type_def_at_path("pkg.widgeti64.Widget")
         .expect("pkg.widgeti64.Widget must register its own canonical def");
 
     assert_eq!(
@@ -897,7 +899,7 @@ fn colliding_unqualified_imports_are_typed_error() {
     // an ambiguous binding.
     let value_spec = || {
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Value".to_string(),
+            name: Ident::new("Value"),
             alias: None,
         }]))
     };
@@ -917,13 +919,14 @@ fn colliding_unqualified_imports_are_typed_error() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "use_value".to_string(),
+        name: Ident::new("use_value"),
         type_params: None,
         params: vec![Param {
-            name: "v".to_string(),
+            name: Ident::new("v"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
-                    name: "Value".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Value"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -994,13 +997,14 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "use_value".to_string(),
+        name: Ident::new("use_value"),
         type_params: None,
         params: vec![Param {
-            name: "v".to_string(),
+            name: Ident::new("v"),
+            name_span: 0..0,
             ty: (
                 TypeExpr::Named {
-                    name: "Value".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Value"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -1057,7 +1061,7 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
 fn test_diamond_dependency_topo_order() {
     // A imports B and C; B and C both import D.
     // Topo order must have D before B and C, both before A.
-    let mut g = ModuleGraph::new(ModuleId::new(vec!["a".to_string()]));
+    let mut g = ModuleGraph::new(ModulePath::new(["a"]));
     g.add_module(module_node("a", &["b", "c"])).unwrap();
     g.add_module(module_node("b", &["d"])).unwrap();
     g.add_module(module_node("c", &["d"])).unwrap();
@@ -1067,7 +1071,7 @@ fn test_diamond_dependency_topo_order() {
     let pos = |name: &str| {
         g.topo_order
             .iter()
-            .position(|id| id.path[0] == name)
+            .position(|id| id.segments[0].as_str() == name)
             .unwrap()
     };
     assert!(pos("d") < pos("b"), "d must precede b");
@@ -1081,7 +1085,7 @@ fn test_diamond_dependency_topo_order() {
 #[test]
 fn test_cycle_detection() {
     // A imports B, B imports A → CycleError
-    let mut g = ModuleGraph::new(ModuleId::new(vec!["a".to_string()]));
+    let mut g = ModuleGraph::new(ModulePath::new(["a"]));
     g.add_module(module_node("a", &["b"])).unwrap();
     g.add_module(module_node("b", &["a"])).unwrap();
     let err = g
@@ -1123,8 +1127,8 @@ fn test_two_modules_same_fn_no_collision() {
     let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
-    assert!(output.fn_sigs.contains_key("alpha.run"));
-    assert!(output.fn_sigs.contains_key("beta.run"));
+    assert!(output.sigs().contains("alpha.run"));
+    assert!(output.sigs().contains("beta.run"));
     assert!(
         output.errors.is_empty(),
         "no errors expected: {:?}",
@@ -1138,7 +1142,7 @@ fn test_two_modules_same_fn_no_collision() {
 fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
     ActorDecl {
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: vec![],
         super_traits: None,
         init: None,
@@ -1158,15 +1162,19 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
 fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> ReceiveFnDecl {
     ReceiveFnDecl {
         is_generator: false,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         params: params
             .iter()
             .map(|(pname, ptype)| Param {
-                name: pname.to_string(),
+                name: Ident::new(pname),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        name: ptype.to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new(ptype),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -1178,7 +1186,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
         return_type: ret.map(|r| {
             (
                 TypeExpr::Named {
-                    name: r.to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(r), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -1227,16 +1235,16 @@ fn test_actor_bare_import_registers_type_and_methods() {
     // bare key is never written for module actors so a second same-named
     // import cannot clobber another module's actor.
     assert!(
-        output.type_defs.contains_key("app.mymod.MyActor"),
+        output.type_def_at_path("app.mymod.MyActor").is_some(),
         "qualified 'app.mymod.MyActor' should be registered"
     );
     assert!(
-        !output.type_defs.contains_key("MyActor"),
+        output.type_def_at_path("MyActor").is_none(),
         "bare 'MyActor' must not be registered for a module actor"
     );
 
     // Actor type should have the Actor kind under its qualified identity
-    let def = output.type_defs.get("app.mymod.MyActor").unwrap();
+    let def = output.type_def_at_path("app.mymod.MyActor").unwrap();
     assert!(
         matches!(def.kind, TypeDefKind::Actor),
         "app.mymod.MyActor should be TypeDefKind::Actor, got {:?}",
@@ -1245,11 +1253,11 @@ fn test_actor_bare_import_registers_type_and_methods() {
 
     // Receive fn should be registered under the dotted actor identity
     assert!(
-        output.fn_sigs.contains_key("app.mymod.MyActor::ping"),
+        output.sigs().contains("app.mymod.MyActor::ping"),
         "receive fn should be registered as 'app.mymod.MyActor::ping'"
     );
     assert!(
-        !output.fn_sigs.contains_key("MyActor::ping"),
+        !output.sigs().contains("MyActor::ping"),
         "bare 'MyActor::ping' must not be registered for a module actor"
     );
 }
@@ -1283,10 +1291,10 @@ fn test_actor_selected_import_registers_unqualified() {
     // The dotted key is the actor's identity even under a glob import;
     // unqualified ACCESS resolves through the local-first bare-name
     // resolution at spawn/annotation sites, not a bare registry copy.
-    assert!(output.type_defs.contains_key("app.mymod.Greeter"));
-    assert!(!output.type_defs.contains_key("Greeter"));
-    assert!(output.fn_sigs.contains_key("app.mymod.Greeter::greet"));
-    assert!(!output.fn_sigs.contains_key("Greeter::greet"));
+    assert!(output.type_def_at_path("app.mymod.Greeter").is_some());
+    assert!(output.type_def_at_path("Greeter").is_none());
+    assert!(output.sigs().contains("app.mymod.Greeter::greet"));
+    assert!(!output.sigs().contains("Greeter::greet"));
 }
 
 #[test]
@@ -1299,7 +1307,7 @@ fn test_actor_named_import_selective() {
     let import = make_user_import(
         &["app", "mymod"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Counter".to_string(),
+            name: Ident::new("Counter"),
             alias: None,
         }])),
         vec![
@@ -1325,13 +1333,13 @@ fn test_actor_named_import_selective() {
     // Both actors register under their dotted identity only; the named
     // import binding ("Counter") resolves through `unqualified_to_module`
     // at reference sites rather than a bare registry copy.
-    assert!(output.type_defs.contains_key("app.mymod.Counter"));
-    assert!(!output.type_defs.contains_key("Counter"));
-    assert!(output.fn_sigs.contains_key("app.mymod.Counter::increment"));
-    assert!(!output.fn_sigs.contains_key("Counter::increment"));
+    assert!(output.type_def_at_path("app.mymod.Counter").is_some());
+    assert!(output.type_def_at_path("Counter").is_none());
+    assert!(output.sigs().contains("app.mymod.Counter::increment"));
+    assert!(!output.sigs().contains("Counter::increment"));
 
-    assert!(output.type_defs.contains_key("app.mymod.Timer"));
-    assert!(!output.type_defs.contains_key("Timer"));
+    assert!(output.type_def_at_path("app.mymod.Timer").is_some());
+    assert!(output.type_def_at_path("Timer").is_none());
 }
 
 #[test]
@@ -1362,9 +1370,9 @@ fn test_actor_multiple_receive_fns() {
         output.errors
     );
 
-    assert!(output.fn_sigs.contains_key("app.cache.Cache::get"));
-    assert!(output.fn_sigs.contains_key("app.cache.Cache::set"));
-    assert!(output.fn_sigs.contains_key("app.cache.Cache::delete"));
+    assert!(output.sigs().contains("app.cache.Cache::get"));
+    assert!(output.sigs().contains("app.cache.Cache::set"));
+    assert!(output.sigs().contains("app.cache.Cache::delete"));
 }
 
 #[test]
@@ -1395,14 +1403,14 @@ fn test_actor_and_function_coexist_in_module() {
     );
 
     // Actor registered under its dotted identity
-    assert!(output.type_defs.contains_key("app.workers.Worker"));
-    assert!(output.fn_sigs.contains_key("app.workers.Worker::run"));
+    assert!(output.type_def_at_path("app.workers.Worker").is_some());
+    assert!(output.sigs().contains("app.workers.Worker::run"));
 
     // Function registered (functions keep their bare glob-import binding)
     assert!(output
         .import_fn_name_aliases
         .contains_key(&(None, 0, "create_worker".to_string())));
-    assert!(output.fn_sigs.contains_key("app.workers.create_worker"));
+    assert!(output.sigs().contains("app.workers.create_worker"));
 }
 
 #[test]
@@ -1412,7 +1420,7 @@ fn test_module_graph_same_fn_different_modules_no_collision() {
     let fn_foo_a = make_pub_fn("foo");
     let fn_foo_b = make_pub_fn("foo");
 
-    let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+    let alpha_id = ModulePath::new(["alpha"]);
 
     let mut graph = ModuleGraph::new(alpha_id.clone());
     let mut alpha_mod = module_node("alpha", &[]);
@@ -1449,7 +1457,7 @@ fn test_unresolved_import_fail_closed() {
     use hew_types::error::TypeErrorKind;
 
     let import = ImportDecl {
-        path: vec!["no_such_pkg".to_string(), "missing".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["no_such_pkg", "missing"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,

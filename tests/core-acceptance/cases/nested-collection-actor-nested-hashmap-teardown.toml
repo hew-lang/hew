@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-collection-actor-nested-hashmap-teardown"
+intent = "Nested-collection exactly-once ownership oracles for #2545 and #2546. Shape `actor_nested_hashmap_teardown_high` (actor nested hashmap teardown has no per row leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-collection-actor-nested-hashmap-teardown.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 50

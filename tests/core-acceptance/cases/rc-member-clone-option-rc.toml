@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-member-clone-option-rc"
+intent = "Ownership oracle for `Rc` members under structural clone. Shape `option_rc` (option with rc payload clone balances) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-member-clone-option-rc.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

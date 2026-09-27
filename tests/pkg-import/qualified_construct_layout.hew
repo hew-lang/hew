@@ -25,9 +25,9 @@
 import hew.qualshapes;
 
 fn main() {
-    let p: qualshapes.Point = Point { x: 3, y: 7 };
-    let b: qualshapes.Box = Box { payload: 99 };
-    let h: qualshapes.Holder<qualshapes.Box> = Holder { inner: b, tag: 5 };
+    let p: qualshapes.Point = qualshapes.Point { x: 3, y: 7 };
+    let b: qualshapes.Box = qualshapes.Box { payload: 99 };
+    let h: qualshapes.Holder<qualshapes.Box> = qualshapes.Holder { inner: b, tag: 5 };
     println(f"x={p.x} y={p.y}");
     println(f"tag={h.tag} payload={h.inner.payload}");
 }

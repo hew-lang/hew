@@ -1,0 +1,10 @@
+[[case]]
+id = "actor_state_field_reinit"
+intent = "Re-initialisation is the escape hatch for a consumed actor state field: the handler plugs the hole it made, so the next message finds an owned socket."
+source = "../vertical-slice/accept/actor_state_field_reinit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "first=3\nsecond=4\n"
+exit = 0

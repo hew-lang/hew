@@ -35,8 +35,8 @@ fn read_wide(w: widgeti64.Widget) -> i64 {
 }
 
 fn main() {
-    let a: widgeti8.Widget = Widget { v: 7 };
-    let b: widgeti64.Widget = Widget { v: 1000 };
+    let a: widgeti8.Widget = widgeti8.Widget { v: 7 };
+    let b: widgeti64.Widget = widgeti64.Widget { v: 1000 };
     println(f"a={read_narrow(a)}");
     println(f"b={read_wide(b)}");
 }

@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-in-struct-store-and-drop-struct"
+intent = "Per-iteration leak / double-free oracle for the forwarded-fn-parameter → struct-field store shape (`fn make_handler(consume f: fn(i64)->i64) -> Handler { Handler { action: f } }`). Shape `store_and_drop_struct_high` (store and drop struct leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/closure-in-struct-store-and-drop-struct.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

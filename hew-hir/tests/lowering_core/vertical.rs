@@ -63,12 +63,10 @@ fn unresolved_symbol_rejects_before_mir() {
 }
 
 #[test]
-fn inferred_type_annotation_rejects_at_hir_boundary() {
+fn inferred_type_annotation_consumes_checker_inference() {
     let output = lower("fn main() { let x: _ = 1; }");
-    assert!(output
-        .diagnostics
-        .iter()
-        .any(|diag| matches!(diag.kind, HirDiagnosticKind::UnresolvedInferenceVar)));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(verify_hir(&output.module).is_empty());
 }
 
 #[test]
@@ -535,16 +533,23 @@ fn select_task_and_timer_preserve_typed_binding_and_result() {
 #[test]
 fn select_actor_await_uses_checked_dispatch() {
     let output = lower_checked_task(
-        r"
-        actor Worker { receive fn process(value: i64) -> i64 { value + 1 } }
-        fn main() {
-            let worker = spawn Worker;
-            let result: i64 = select {
-                reply from worker.process(41) => match reply { .Ok(value) => value, .Err(_) => -1 },
-                after 5ms => 0,
-            };
+        r"actor Worker {
+    receive fn process(value: i64) -> i64 {
+        value + 1
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let result: i64 = select {
+        reply from worker.process(41) => match reply {
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
-    ",
+        after 5ms => 0,
+    };
+}
+",
     );
     let select = find_first_select(&output);
     assert!(
@@ -722,14 +727,15 @@ fn scope_deadline_carries_budget_and_child_body() {
 
 #[test]
 fn task_annotation_remains_not_nameable() {
-    let output = lower("fn f() { let t: Task<i64> = 0; }");
+    let (_, checked) =
+        support::checker_pipeline::typecheck_source("fn f() { let t: Task<i64> = 0; }");
     assert!(
-        output
-            .diagnostics
+        checked
+            .errors
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::TaskNotNameable)),
+            .any(|error| matches!(error.kind, hew_types::error::TypeErrorKind::TaskNotNameable)),
         "{:?}",
-        output.diagnostics
+        checked.errors
     );
 }
 
@@ -877,11 +883,15 @@ fn make() {
     };
 }
 ";
-    let output = lower(source);
+    let (_, checked) = support::checker_pipeline::typecheck_source(source);
+    let use_start = source.find("inner;").expect("self reference");
     assert!(
-        !self_capture_refusals(&output).is_empty(),
-        "a self-naming lambda actor must be refused; diagnostics = {:?}",
-        output.diagnostics
+        checked
+            .errors
+            .iter()
+            .any(|error| error.span.start == use_start),
+        "a self-naming lambda actor must be refused by the checker; errors = {:?}",
+        checked.errors
     );
 }
 
@@ -921,14 +931,11 @@ fn a_lambda_actor_declares_its_body_as_one_handler() {
 
 // ── typed-let forward-bind for actor lambdas ────────────────────────────────
 //
-// The forward-bind path in `lower_stmt` pre-allocates the let-binding so the
-// lambda body can name it. That resolution still happens; what the body may
-// then do with the name changed when lambda actors began lowering to real
-// actor declarations, because a capture is state and a lambda cannot hold the
-// handle that addresses it.
+// A typed let does not make its own incomplete actor handle capturable. The
+// checker refuses the reference before HIR receives an executable binding.
 
 #[test]
-fn a_typed_actor_let_resolves_its_own_name_then_refuses_the_capture() {
+fn a_typed_actor_let_refuses_its_own_capture() {
     let source = r"
 fn make() {
     let fib: actor(i64) -> i64 = actor |n: i64| -> i64 {
@@ -937,28 +944,15 @@ fn make() {
     };
 }
 ";
-    let output = lower(source);
-    let unresolved_fib: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| match &d.kind {
-            HirDiagnosticKind::UnresolvedSymbol { name } => name == "fib",
-            _ => false,
-        })
-        .collect();
+    let (_, checked) = support::checker_pipeline::typecheck_source(source);
+    let use_start = source.find("fib;").expect("self reference");
     assert!(
-        unresolved_fib.is_empty(),
-        "the typed actor-let must pre-bind its name so the body's `fib` \
-         resolves rather than reporting an unresolved symbol; diagnostics = {:?}",
-        output.diagnostics
-    );
-    // Resolving it is not accepting it: the capture is refused with the
-    // reason, not silently lowered into the actor's own state.
-    assert!(
-        !self_capture_refusals(&output).is_empty(),
-        "naming the lambda's own handle in its body must be refused; \
-         diagnostics = {:?}",
-        output.diagnostics
+        checked
+            .errors
+            .iter()
+            .any(|error| error.span.start == use_start),
+        "a typed actor let must refuse its own incomplete handle; errors = {:?}",
+        checked.errors
     );
 }
 

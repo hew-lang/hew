@@ -37,15 +37,15 @@ test("serialized bytecode preserves supervisor child i64 bounds", () => {
   const compileOutput = globalThis.__hewSandboxCompileToSandboxBytecode(
     `
 actor Bounds {
-    let max: i64,
-    let min: i64,
+    let max: i64;
+    let min: i64;
     receive fn bounds() -> string { f"{max}|{min}" }
 }
 
 supervisor BoundsTree {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
-    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808),
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808);
 }
 
 fn main() {
@@ -156,9 +156,12 @@ test("runProgram panics map to non-zero exit code and a trap diagnostic", () => 
 });
 
 function buildSandboxWasmBridge() {
+  const mode = process.env.HEW_WASM_PACK_MODE;
+  const args = ["build", path.join(repoRoot, "hew-wasm"), "--target", "nodejs", "--dev", "--out-dir", wasmDir];
+  if (mode) args.push("--mode", mode);
   const result = spawnSync(
     "wasm-pack",
-    ["build", path.join(repoRoot, "hew-wasm"), "--target", "nodejs", "--dev", "--out-dir", wasmDir],
+    args,
     {
       cwd: repoRoot,
       encoding: "utf8"

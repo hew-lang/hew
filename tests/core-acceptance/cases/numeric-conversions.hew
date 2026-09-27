@@ -8,7 +8,6 @@ fn main() -> i64 {
         .Ok(back) => println(back == n),
         .Err(_) => println(false),
     }
-
     let f: f64 = 3.5;
     let f_text = f"{f}";
     println(f_text);
@@ -16,10 +15,8 @@ fn main() -> i64 {
         .Ok(back) => println(back == f),
         .Err(_) => println(false),
     }
-
     let b: u8 = 250;
     println(f"{b}");
-
     match string.to_int("not-a-number") {
         .Ok(_) => println("unexpected ok"),
         .Err(message) => println(message),

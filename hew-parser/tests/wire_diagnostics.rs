@@ -45,8 +45,9 @@ fn optional_wire_field_remains_parser_permissive_for_alias_resolution() {
     let result = parse(
         r"#[wire]
 type Message {
-    body: MaybeText @1 optional,
-}",
+    body: MaybeText @1 optional;
+}
+",
     );
 
     assert!(

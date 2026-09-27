@@ -24,26 +24,25 @@ fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
 #[test]
 fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
     let output = typecheck(
-        r"
-        trait Handler {
-            fn on_data(data: bytes);
-            fn on_close();
-        }
+        r"trait Handler {
+    fn on_data(data: bytes);
+    fn on_close();
+}
 
-        actor Echo {
-            let n: i32,
-            init() {}
-            receive fn on_data(data: bytes) {}
-            receive fn on_close() {}
-        }
+actor Echo {
+    let n: i32;
+    init() {}
+    receive fn on_data(data: bytes) {}
+    receive fn on_close() {}
+}
 
-        fn use_handler(h: Handler) {}
+fn use_handler(h: Handler) {}
 
-        fn main() {
-            let echo = spawn Echo(n: 0);
-            use_handler(echo);
-        }
-        ",
+fn main() {
+    let echo = spawn Echo(n: 0);
+    use_handler(echo);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -60,29 +59,28 @@ fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
 #[test]
 fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
     let output = typecheck(
-        r"
-        trait Handler {
-            fn on_data(data: bytes);
-            fn on_close();
-        }
+        r"trait Handler {
+    fn on_data(data: bytes);
+    fn on_close();
+}
 
-        actor Bare {
-            let n: i32,
-            init() {}
-        }
+actor Bare {
+    let n: i32;
+    init() {}
+}
 
-        impl Handler for Bare {
-            fn on_data(data: bytes) {}
-            fn on_close() {}
-        }
+impl Handler for Bare {
+    fn on_data(data: bytes) {}
+    fn on_close() {}
+}
 
-        fn use_handler(h: Handler) {}
+fn use_handler(h: Handler) {}
 
-        fn main() {
-            let bare = spawn Bare(n: 0);
-            use_handler(bare);
-        }
-        ",
+fn main() {
+    let bare = spawn Bare(n: 0);
+    use_handler(bare);
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -116,7 +114,7 @@ fn user_transport_short_names_keep_user_attach_dispatch() {
             r"
             {module_import}
 
-            type {type_name} {{ value: i64, }}
+            type {type_name} {{ value: i64; }}
 
             impl {type_name} {{
                 fn attach(self, increment: i64) -> i64 {{
@@ -201,7 +199,7 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
             }}
             fn install({parameter}: {alias}.{receiver}) {{
                 let handler = spawn Handler();
-                connection.attach(handler);
+                let _ = connection.attach(handler);
             }}
         "
         );
@@ -227,12 +225,15 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
             .expect("attach must carry a declaration-owned runtime invocation");
         assert_eq!(*selected, family);
         assert_eq!(*receiver_consumed, consumes);
-        assert_eq!(endpoints.actor.full_path(), "Handler");
+        assert_eq!(output.defs.path(endpoints.actor), "Handler");
         assert_eq!(
-            endpoints.data.handler.full_path(),
+            output.defs.path(endpoints.data.handler),
             format!("Handler::{data_handler}")
         );
-        assert_eq!(endpoints.close.handler.full_path(), "Handler::on_close");
+        assert_eq!(
+            output.defs.path(endpoints.close.handler),
+            "Handler::on_close"
+        );
         let protocol = &output.actor_protocol_descriptors["Handler"];
         assert_eq!(
             Some(endpoints.data.msg_id),

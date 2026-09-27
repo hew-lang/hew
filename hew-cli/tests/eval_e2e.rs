@@ -297,7 +297,7 @@ fn eval_std_observe_scrape_and_series_include_actor_attribution() {
         r#"import std.observe;
 
 actor Counter {
-    var count: i64,
+    var count: i64;
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -1580,8 +1580,8 @@ fn eval_wasm_hashmap_record_key_uses_thunk_values_correctly() {
         "wasm_hashmap_point_i64",
         r#"
 type Point {
-    x: i64,
-    y: i64
+    x: i64;
+    y: i64;
 }
 
 {
@@ -2962,20 +2962,7 @@ fn trait_bound_probe1_bounded_machine_runs() {
     let hew_src = dir.path().join("tagger.hew");
     std::fs::write(
         &hew_src,
-        "machine Tagger<T: Display> {\n\
-         \x20   events {\n\
-         \x20       Tag { value: T, }\n\
-         \x20   }\n\
-         \x20   state Empty,\n\
-         \x20   state Tagged { value: T, }\n\
-         \x20   ,on Tag: Empty => Tagged { value: event.value }\n\
-         \x20   on Tag: Tagged => Tagged reenter { value: event.value }\n\
-         }\n\
-         fn main() {\n\
-         \x20   var t: Tagger<i64> = .Empty;\n\
-         \x20   t.step(Tag { value: 42 });\n\
-         \x20   println(t.state_name());\n\
-         }\n",
+        "machine Tagger<T: Display> {\n    events {\n        Tag { value: T; }\n    }\n    state Empty;\n    state Tagged { value: T; }\n    on Tag: Empty => Tagged { value: event.value }\n    on Tag: Tagged => Tagged reenter { value: event.value }\n}\n\nfn main() {\n    var t: Tagger<i64> = .Empty;\n    t.step(Tag { value: 42 });\n    println(t.state_name());\n}\n",
     )
     .unwrap();
 
@@ -3014,23 +3001,7 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
     let hew_src = dir.path().join("pair_machine.hew");
     std::fs::write(
         &hew_src,
-        "machine Pair<A: Display, B: Display> {\n\
-         \x20   events {\n\
-         \x20       Load { first: A, second: B, }\n\
-         \x20       ,Clear,\n\
-         \x20   }\n\
-         \x20   state Empty,\n\
-         \x20   state Full { first: A, second: B, }\n\
-         \x20   ,on Load: Empty => Full { first: event.first, second: event.second }\n\
-         \x20   on Load: Full => Full reenter { first: event.first, second: event.second }\n\
-         \x20   on Clear: Empty => Empty reenter,\n\
-         \x20   on Clear: Full => Empty,\n\
-         }\n\
-         fn main() {\n\
-         \x20   var p: Pair<i64, i64> = .Empty;\n\
-         \x20   p.step(Load { first: 42, second: 99 });\n\
-         \x20   println(p.state_name());\n\
-         }\n",
+        "machine Pair<A: Display, B: Display> {\n    events {\n        Load { first: A; second: B; }\n        Clear;\n    }\n    state Empty;\n    state Full { first: A; second: B; }\n    on Load: Empty => Full { first: event.first, second: event.second }\n    on Load: Full => Full reenter { first: event.first, second: event.second }\n    on Clear: Empty => Empty reenter;\n    on Clear: Full => Empty;\n}\n\nfn main() {\n    var p: Pair<i64, i64> = .Empty;\n    p.step(Load { first: 42, second: 99 });\n    println(p.state_name());\n}\n",
     )
     .unwrap();
 
@@ -3076,20 +3047,7 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
     let hew_src = dir.path().join("pair_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Pair<T> { left: T, right: T, }\n\
-         impl<T> Iterator for Pair<T> where T: Display {\n\
-         \x20   type Item = T;\n\
-         \x20   fn next(var p: Pair<T>) -> Option<T> {\n\
-         \x20       .Some(p.left)\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   var p = Pair { left: 77, right: 88 };\n\
-         \x20   match p.next() {\n\
-         \x20       .Some(x) => println(x),\n\
-         \x20       .None => println(-1),\n\
-         \x20   }\n\
-         }\n",
+        "pub type Pair<T> {\n    left: T;\n    right: T;\n}\n\nimpl<T> Iterator for Pair<T> where T: Display {\n    type Item = T;\n    fn next(var p: Pair<T>) -> Option<T> {\n        .Some(p.left)\n    }\n}\n\nfn main() {\n    var p = Pair { left: 77, right: 88 };\n    match p.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3131,26 +3089,7 @@ fn var_self_concrete_receiver_trait_dispatch_option_abi_and_writeback() {
     let hew_src = dir.path().join("counter_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Counter<T> { current: T, step: T, }\n\
-         impl<T> Iterator for Counter<T> where T: Display {\n\
-         \x20   type Item = T;\n\
-         \x20   fn next(var c: Counter<T>) -> Option<T> {\n\
-         \x20       let out = c.current;\n\
-         \x20       c.current = c.step;\n\
-         \x20       .Some(out)\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   var c = Counter { current: 77, step: 88 };\n\
-         \x20   match c.next() {\n\
-         \x20       .Some(x) => println(x),\n\
-         \x20       .None => println(-1),\n\
-         \x20   }\n\
-         \x20   match c.next() {\n\
-         \x20       .Some(x) => println(x),\n\
-         \x20       .None => println(-1),\n\
-         \x20   }\n\
-         }\n",
+        "pub type Counter<T> {\n    current: T;\n    step: T;\n}\n\nimpl<T> Iterator for Counter<T> where T: Display {\n    type Item = T;\n    fn next(var c: Counter<T>) -> Option<T> {\n        let out = c.current;\n        c.current = c.step;\n        .Some(out)\n    }\n}\n\nfn main() {\n    var c = Counter { current: 77, step: 88 };\n    match c.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n    match c.next() {\n        .Some(x) => println(x),\n        .None => println(-1),\n    }\n}\n",
     )
     .unwrap();
 
@@ -3215,7 +3154,6 @@ fn w4_047_actor_ask_reply_concrete_type_totality() {
          \x20   let w = spawn Doubler;\n\
          \x20   let r = select {\n\
          \x20       reply from w.twice(21) => reply.expect(\"ask reply\"),\n\
-         \x20       after 1000ms => 0,\n\
          \x20   };\n\
          \x20   r\n\
          }\n",
@@ -3237,20 +3175,7 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
 
     let output = run_hew_source(
         "static_valued.hew",
-        "trait Valued {\n\
-         \x20   fn value(val: Self) -> i64;\n\
-         }\n\
-         type Token { id: i64, }\n\
-         impl Valued for Token {\n\
-         \x20   fn value(t: Token) -> i64 { t.id }\n\
-         }\n\
-         fn show<T: Valued>(item: T) -> i64 {\n\
-         \x20   item.value()\n\
-         }\n\
-         fn main() {\n\
-         \x20   let t = Token { id: 42 };\n\
-         \x20   println(f\"{show(t)}\");\n\
-         }\n",
+        "trait Valued {\n    fn value(val: Self) -> i64;\n}\n\ntype Token {\n    id: i64;\n}\n\nimpl Valued for Token {\n    fn value(t: Token) -> i64 {\n        t.id\n    }\n}\n\nfn show<T: Valued>(item: T) -> i64 {\n    item.value()\n}\n\nfn main() {\n    let t = Token { id: 42 };\n    println(f\"{show(t)}\");\n}\n",
     );
 
     assert!(

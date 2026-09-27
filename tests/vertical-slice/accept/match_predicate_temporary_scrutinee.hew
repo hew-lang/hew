@@ -5,7 +5,11 @@
 //!
 //! Observable contract: prints the selected arm's result.
 
-type Pair { tag: i64, a: string, b: string }
+type Pair {
+    tag: i64;
+    a: string;
+    b: string;
+}
 
 fn make() -> Pair {
     Pair { tag: 0, a: "a" + "x", b: "b" + "y" }

@@ -7,7 +7,7 @@
 // ends. A withheld release leaks one heap block per iteration; a second
 // release underflows a refcount the program still reads. Both directions are
 // invisible to stdout, so this fixture exists for the sanitizer gate:
-// `scripts/asan-fixture-check.sh` runs it under LSan.
+// the core-acceptance `safety` suite runs it under LSan.
 //
 // Four shapes, each repeated enough times that one leaked count per iteration
 // is unmissable:
@@ -21,19 +21,19 @@
 import std.stream;
 
 type Frame {
-    name: string,
-    body: string,
+    name: string;
+    body: string;
 }
 
 actor Maker {
     receive gen fn items(count: i64) -> string {
-        for i in 0..count {
+        for i in 0 .. count {
             yield f"frame-{i}-payload";
         }
     }
 
     receive gen fn frames(count: i64) -> Frame {
-        for i in 0..count {
+        for i in 0 .. count {
             yield Frame { name: f"name-{i}", body: f"body-{i}-payload" };
         }
     }
@@ -97,7 +97,7 @@ fn main() {
         .Err(_) => return,
     };
     var seen = 0;
-    for i in 0..500 {
+    for i in 0 .. 500 {
         tx.send(f"channel-frame-{i}-payload").expect("send");
         let got = match rx.recv() {
             .Some(s) => s,

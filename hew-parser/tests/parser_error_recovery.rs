@@ -1,3 +1,4 @@
+use hew_parser::ast::Ident;
 use hew_parser::ast::{CallArg, Expr, Item, Pattern, Stmt};
 
 /// `=~` was removed in v0.5: regex matching now goes through `Pattern.is_match`
@@ -189,7 +190,7 @@ fn positional_after_named_arg_is_skipped() {
     };
     assert_eq!(args.len(), 1, "expected only named args, got {args:?}");
     match &args[0] {
-        CallArg::Named { name, .. } => assert_eq!(name, "a"),
+        CallArg::Named { name, .. } => assert_eq!(*name, Ident::new("a")),
         CallArg::Positional(_) => panic!("expected named argument"),
     }
 }
@@ -370,10 +371,9 @@ fn comparison_full_spaces_parses_normally() {
 ///
 #[test]
 fn struct_rest_pattern_does_not_panic() {
-    let source = r"
-type Point {
-    x: i64,
-    y: i64,
+    let source = r"type Point {
+    x: i64;
+    y: i64;
 }
 
 fn main() -> i64 {
@@ -381,7 +381,8 @@ fn main() -> i64 {
     match p {
         Point { x, .. } => x,
     }
-}";
+}
+";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -394,7 +395,11 @@ fn main() -> i64 {
     let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
         panic!("expected trailing match expression");
     };
-    let Pattern::Struct { fields, rest, .. } = &arms[0].pattern.0 else {
+    let Pattern::NominalPath {
+        payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }),
+        ..
+    } = &arms[0].pattern.0
+    else {
         panic!("expected struct pattern");
     };
     assert_eq!(fields.len(), 1);

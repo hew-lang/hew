@@ -1,0 +1,10 @@
+[[case]]
+id = "while-let-reassign-moved-out"
+intent = "Leak and exactly-once guards for reassigned `BindingRef` while-let scrutinees. Shape `while_let_reassign_moved_out_high` (while let reassigned moved out payload has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/while-let-reassign-moved-out.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

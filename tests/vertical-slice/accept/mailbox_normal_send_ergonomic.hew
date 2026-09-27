@@ -1,5 +1,5 @@
 actor ReliableWorker {
-    var seen: i64 = 0,
+    var seen: i64 = 0;
 
     receive fn work(value: i64) {
         seen = value;
@@ -20,10 +20,10 @@ fn main() -> i64 {
         } else {
             println("NORMAL_SEND_WRONG_VALUE");
             2
-        },
+        }
         _ => {
             println("NORMAL_SEND_FAILED");
             1
-        },
+        }
     }
 }

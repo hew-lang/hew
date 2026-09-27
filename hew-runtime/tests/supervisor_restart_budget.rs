@@ -65,9 +65,7 @@ const OVERFLOW_DROP_NEW: i32 = 1;
 unsafe fn wait_for_child(
     sup: *mut hew_runtime::supervisor::HewSupervisor,
     index: i32,
-    timeout_ms: u64,
 ) -> (*mut hew_runtime::actor::HewActor, u64) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
         // SAFETY: sup is live per fn contract.
         let child = unsafe { hew_runtime::supervisor::hew_supervisor_get_child(sup, index) };
@@ -75,10 +73,6 @@ unsafe fn wait_for_child(
             // SAFETY: child is a runtime-owned actor pointer; reading id is safe.
             return (child, unsafe { (*child).id });
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for child[{index}] to be spawned"
-        );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -145,7 +139,7 @@ fn concurrent_crashes_decrement_budget_correctly() {
         // Wait for all 3 children to be spawned.
         let mut children = Vec::new();
         for i in 0..3 {
-            let (child, _id) = wait_for_child(sup.as_ptr(), i, 2000);
+            let (child, _id) = wait_for_child(sup.as_ptr(), i);
             children.push(child);
         }
 
@@ -169,7 +163,7 @@ fn concurrent_crashes_decrement_budget_correctly() {
 
         // All 3 children should be respawned.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i);
             assert!(!child.is_null(), "child[{i}] should have been restarted");
         }
     }
@@ -222,7 +216,7 @@ fn budget_exhaustion_stops_supervisor() {
         // Crash the child 3 times — the third crash should exhaust the
         // budget (2 restarts) and stop the supervisor.
         for round in 0..3 {
-            let (child, _) = wait_for_child(sup.as_ptr(), 0, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), 0);
             crash_child(child);
 
             // Wait for this restart cycle to complete.
@@ -234,16 +228,8 @@ fn budget_exhaustion_stops_supervisor() {
 
             // After the 3rd crash, the budget is exhausted.
             if round == 2 {
-                // Poll briefly for the supervisor to stop.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                loop {
-                    if !sup.is_running() {
-                        break;
-                    }
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "supervisor should have stopped after exhausting budget"
-                    );
+                // The supervisor stops after exhausting its budget.
+                while sup.is_running() {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             }
@@ -307,14 +293,14 @@ fn delayed_restart_processed_via_mailbox() {
 
         // First crash — sets the initial restart delay (100ms) but
         // restarts immediately.
-        let (child1, _) = wait_for_child(sup.as_ptr(), 0, 2000);
+        let (child1, _) = wait_for_child(sup.as_ptr(), 0);
         crash_child(child1);
         let count = test_wait_for_restart(sup.as_ptr(), 1, 5000);
         assert!(count >= 1, "first restart should complete");
 
         // Second crash — backoff is applied, timer thread is spawned.
         // The restart goes through the HewSysMsg::DelayedRestart path.
-        let (child2, _) = wait_for_child(sup.as_ptr(), 0, 2000);
+        let (child2, _) = wait_for_child(sup.as_ptr(), 0);
         crash_child(child2);
 
         // Allow generous timeout for the delayed restart (backoff delay
@@ -326,7 +312,7 @@ fn delayed_restart_processed_via_mailbox() {
         );
 
         // Child should be alive again.
-        let (child3, _) = wait_for_child(sup.as_ptr(), 0, 2000);
+        let (child3, _) = wait_for_child(sup.as_ptr(), 0);
         assert!(!child3.is_null(), "child should be restarted after delay");
 
         // Supervisor should still be running.
@@ -383,7 +369,7 @@ fn multiple_delayed_restarts_budget_consistent() {
 
         // Round 1: crash all 3 — immediate restarts.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i);
             crash_child(child);
         }
         let count = test_wait_for_restart(sup.as_ptr(), 3, 5000);
@@ -391,7 +377,7 @@ fn multiple_delayed_restarts_budget_consistent() {
 
         // Round 2: crash all 3 again — each enters the delayed restart path.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i);
             crash_child(child);
         }
         let count = test_wait_for_restart(sup.as_ptr(), 6, 10_000);
@@ -402,7 +388,7 @@ fn multiple_delayed_restarts_budget_consistent() {
 
         // All children should be alive.
         for i in 0..3 {
-            let (child, _) = wait_for_child(sup.as_ptr(), i, 2000);
+            let (child, _) = wait_for_child(sup.as_ptr(), i);
             assert!(!child.is_null(), "child[{i}] should be alive after round 2");
         }
 

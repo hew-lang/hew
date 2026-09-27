@@ -1,6 +1,6 @@
 //! Discover `#[test]` functions in Hew source files.
 
-use hew_parser::ast::{Item, Program};
+use hew_parser::ast::Program;
 use hew_parser::ParseError;
 #[cfg(test)]
 use hew_parser::Severity;
@@ -19,10 +19,41 @@ pub struct TestCase {
     pub companion: Option<String>,
     /// Whether the test has `#[ignore]`.
     pub ignored: bool,
+    /// Optional reason attached to `#[ignore]`.
+    pub ignore_reason: Option<String>,
     /// Whether the test has `#[should_panic]`.
     pub should_panic: bool,
+    /// Optional text that the expected fault must contain.
+    pub should_panic_message: Option<String>,
+    /// Per-test timeout override from `#[timeout(D)]`.
+    pub timeout_ns: Option<i64>,
     /// Whether the test must run exclusively with other serial tests.
     pub serial: bool,
+    /// Where the test runs: the deterministic driver, or host threads and the
+    /// host clock for a `#[real_time]` test.
+    pub clock: TestClock,
+    /// Original source identity and output contract for an executable doc fence.
+    pub doc: Option<DocTest>,
+}
+
+/// Metadata retained while a doc fence runs from a generated source file.
+#[derive(Debug, Clone)]
+pub struct DocTest {
+    pub identity: String,
+    pub selector: String,
+    pub origin: String,
+    pub expected_stdout: Option<String>,
+    pub no_run: bool,
+    pub parse_error: Option<String>,
+}
+
+/// The runtime a test executes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestClock {
+    /// The single-thread driver with a seeded schedule and a virtual clock.
+    Deterministic,
+    /// The threaded scheduler and the host clock (`#[real_time]`).
+    RealTime,
 }
 
 /// The result of inspecting a single source file for tests.
@@ -54,30 +85,31 @@ impl DiscoveredTestFile {
 pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
     let mut tests = Vec::new();
     let companion = matched_production_peer(std::path::Path::new(file));
-    for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
-        if let Item::Function(f) = item {
-            let is_test = f.attributes.iter().any(|a| a.name == "test");
-            if is_test {
-                let ignored = f.attributes.iter().any(|a| a.name == "ignore");
-                let should_panic = f.attributes.iter().any(|a| a.name == "should_panic");
-                let serial = f.attributes.iter().any(|a| a.name == "serial");
-                tests.push(TestCase {
-                    name: f.name.clone(),
-                    file: file.to_string(),
-                    occurrence: DeclarationOccurrence::new_with_synthetic_ordinal(
-                        None,
-                        span,
-                        item_ordinal,
-                        DeclarationKind::Function,
-                        0,
-                    ),
-                    companion: companion.clone(),
-                    ignored,
-                    should_panic,
-                    serial,
-                });
-            }
-        }
+    for declaration in hew_analysis::test_discovery::discover_tests(program) {
+        tests.push(TestCase {
+            name: declaration.name,
+            file: file.to_string(),
+            occurrence: DeclarationOccurrence::new_with_synthetic_ordinal(
+                None,
+                &declaration.span,
+                declaration.item_ordinal,
+                DeclarationKind::Function,
+                0,
+            ),
+            companion: companion.clone(),
+            ignored: declaration.ignored,
+            ignore_reason: declaration.ignore_reason,
+            should_panic: declaration.should_panic,
+            should_panic_message: declaration.should_panic_message,
+            timeout_ns: declaration.timeout_ns,
+            serial: declaration.serial,
+            clock: if declaration.real_time {
+                TestClock::RealTime
+            } else {
+                TestClock::Deterministic
+            },
+            doc: None,
+        });
     }
     tests
 }
@@ -107,62 +139,20 @@ pub fn discover_tests_in_file(path: &str) -> Result<DiscoveredTestFile, String> 
     })
 }
 
-/// Recursively discover test files in a directory.
-///
-/// A file is considered a test file if it ends with `_test.hew` or is inside
-/// a `tests/` directory and ends with `.hew`.
+/// Recursively discover Hew sources so inline tests are never missed.
 ///
 /// # Errors
 ///
 /// Returns an error string if directory traversal fails.
 pub fn discover_test_files(dir: &str) -> Result<Vec<String>, String> {
-    let mut files = Vec::new();
-    collect_test_files(std::path::Path::new(dir), &mut files)
-        .map_err(|e| format!("cannot scan {dir}: {e}"))?;
-    files.sort();
-    Ok(files)
-}
-
-fn collect_test_files(dir: &std::path::Path, out: &mut Vec<String>) -> Result<(), std::io::Error> {
-    if !dir.is_dir() {
-        // Single file.
-        if let Some(s) = dir.to_str() {
-            if std::path::Path::new(s)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("hew"))
-            {
-                out.push(s.to_string());
-            }
-        }
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_test_files(&path, out)?;
-        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            // Belt-and-braces: skip any leftover hew_test_*.hew temp files that
-            // survived a killed test run.  The runner now writes them to the OS
-            // temp dir, but a pre-existing stale file should not poison discovery.
-            if name.starts_with("hew_test_") {
-                continue;
-            }
-            let is_hew = std::path::Path::new(name)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("hew"));
-            if name.ends_with("_test.hew") || is_hew {
-                if let Some(s) = path.to_str() {
-                    // Accept files ending with _test.hew, or .hew files inside tests/ dirs.
-                    let in_tests_dir = path.components().any(|c| c.as_os_str() == "tests");
-                    if name.ends_with("_test.hew") || in_tests_dir {
-                        out.push(s.to_string());
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
+    hew_analysis::test_discovery::source_files(std::path::Path::new(dir))
+        .map(|files| {
+            files
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect()
+        })
+        .map_err(|error| format!("cannot scan {dir}: {error}"))
 }
 
 #[cfg(test)]
@@ -227,7 +217,7 @@ fn test_panic() {
     }
 
     #[test]
-    fn discover_test_files_respects_layout_rules() {
+    fn discover_test_files_finds_inline_tests_in_all_sources() {
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join("alpha_test.hew"),
@@ -265,6 +255,7 @@ fn test_panic() {
                     .join("beta_test.hew")
                     .display()
                     .to_string(),
+                dir.path().join("plain.hew").display().to_string(),
                 dir.path()
                     .join("tests")
                     .join("gamma.hew")
@@ -290,34 +281,5 @@ fn test_panic() {
         assert!(discovered.tests.is_empty());
         assert!(discovered.has_parse_errors());
         assert!(!discovered.parse_errors.is_empty());
-    }
-
-    #[test]
-    fn hew_test_prefix_excluded_from_discovery() {
-        // A leftover hew_test_*.hew temp file inside a tests/ dir must NOT be
-        // collected. It is not authored test input and may contain a stale
-        // process entry that competes with the selected test root.
-        let dir = tempdir().unwrap();
-        let tests_dir = dir.path().join("tests");
-        std::fs::create_dir_all(&tests_dir).unwrap();
-
-        // Plant a legitimate test file.
-        std::fs::write(
-            tests_dir.join("real_test.hew"),
-            "#[test]\nfn real() { assert(true); }\n",
-        )
-        .unwrap();
-
-        // Plant the stale temp file that the runner previously left behind.
-        std::fs::write(tests_dir.join("hew_test_xq7r9abc.hew"), "fn main() { }\n").unwrap();
-
-        let files = discover_test_files(dir.path().to_str().unwrap()).unwrap();
-
-        // Only the real fixture — the hew_test_ file must be excluded.
-        assert_eq!(files.len(), 1, "expected exactly 1 file, got: {files:?}");
-        assert!(
-            files[0].ends_with("real_test.hew"),
-            "collected file should be real_test.hew, got: {files:?}",
-        );
     }
 }

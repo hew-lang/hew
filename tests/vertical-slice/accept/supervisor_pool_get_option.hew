@@ -1,5 +1,5 @@
 actor Worker {
-    var value: i64,
+    var value: i64;
 
     receive fn id() -> i64 {
         value
@@ -7,16 +7,15 @@ actor Worker {
 }
 
 supervisor Pool {
-    strategy: simple_one_for_one,
-    intensity: 5 within 60s,
+    strategy: simple_one_for_one;
+    intensity: 5 within 60s;
 
-    pool workers: Worker(value: 7) count: 2,
+    pool workers: Worker(value: 7) count: 2;
 }
 
 fn main() -> i64 {
     let sup = spawn Pool;
     var total = 0;
-
     match sup.workers.get(0) {
         .Some(worker) => {
             match worker.id() {
@@ -25,17 +24,16 @@ fn main() -> i64 {
                         return 1;
                     }
                     total = total + value;
-                },
+                }
                 .Err(_) => {
                     return 2;
-                },
+                }
             }
-        },
+        }
         .None => {
             return 3;
-        },
+        }
     }
-
     match sup.workers.get(1) {
         .Some(worker) => {
             match worker.id() {
@@ -44,35 +42,32 @@ fn main() -> i64 {
                         return 4;
                     }
                     total = total + value;
-                },
+                }
                 .Err(_) => {
                     return 5;
-                },
+                }
             }
-        },
+        }
         .None => {
             return 6;
-        },
+        }
     }
-
     match sup.workers.get(-1) {
         .Some(_) => {
             return 7;
-        },
+        }
         .None => {
             total = total + 30;
-        },
+        }
     }
-
     match sup.workers.get(2) {
         .Some(_) => {
             return 8;
-        },
+        }
         .None => {
             total = total + 40;
-        },
+        }
     }
-
     println(total);
     0
 }

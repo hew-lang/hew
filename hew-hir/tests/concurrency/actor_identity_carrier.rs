@@ -10,7 +10,7 @@
 
 use hew_hir::{lower_program_host_target, HirActorDecl, HirItem, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 /// Build a `Program` containing a non-root module `bank` with arbitrary
@@ -29,8 +29,8 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         root.errors
     );
 
-    let imported_id = ModuleId::new(vec!["bank".to_string()]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["bank"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program
@@ -109,15 +109,8 @@ fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirActorD
 #[test]
 fn imported_actor_carries_defining_module_and_root_actor_carries_none() {
     let program = build_program_with_imported_module(
-        "pub actor Worker {\n\
-         \x20   var count: i64,\n\
-         \x20   receive fn bump(n: i64) { count = count + n; }\n\
-         }\n",
-        "actor Local {\n\
-         \x20   var total: i64,\n\
-         \x20   receive fn poke() { total = total + 1; }\n\
-         }\n\
-         fn main() -> i64 { 0 }",
+        "pub actor Worker {\n    var count: i64;\n    receive fn bump(n: i64) {\n        count = count + n;\n    }\n}\n",
+        "actor Local {\n    var total: i64;\n    receive fn poke() {\n        total = total + 1;\n    }\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
@@ -143,15 +136,8 @@ fn imported_actor_carries_defining_module_and_root_actor_carries_none() {
 #[test]
 fn qualified_name_derives_dotted_for_module_and_bare_for_root() {
     let program = build_program_with_imported_module(
-        "pub actor Worker {\n\
-         \x20   var count: i64,\n\
-         \x20   receive fn bump(n: i64) { count = count + n; }\n\
-         }\n",
-        "actor Local {\n\
-         \x20   var total: i64,\n\
-         \x20   receive fn poke() { total = total + 1; }\n\
-         }\n\
-         fn main() -> i64 { 0 }",
+        "pub actor Worker {\n    var count: i64;\n    receive fn bump(n: i64) {\n        count = count + n;\n    }\n}\n",
+        "actor Local {\n    var total: i64;\n    receive fn poke() {\n        total = total + 1;\n    }\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);

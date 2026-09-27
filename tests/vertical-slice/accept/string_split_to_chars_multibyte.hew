@@ -8,9 +8,9 @@ import std.string;
 
 fn main() {
     let parts = string.split("café", "");
-    assert_eq(parts.len(), 4);
-    assert_eq(parts[0], "c");
-    assert_eq(parts[1], "a");
-    assert_eq(parts[2], "f");
-    assert_eq(parts[3], "é");
+    assert(parts.len() == 4);
+    assert(parts[0] == "c");
+    assert(parts[1] == "a");
+    assert(parts[2] == "f");
+    assert(parts[3] == "é");
 }

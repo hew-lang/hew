@@ -1,0 +1,10 @@
+[[case]]
+id = "http-ws-string-result-retention-websocket-message-text"
+intent = "Darwin leak slopes for shipped HTTP/WebSocket string wrappers. Shape `websocket_message_text_high` (shipped websocket message text wrapper has no per call leak, websocket messages complete across actor round trip) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/http-ws-string-result-retention-websocket-message-text.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n"
+exit = 0

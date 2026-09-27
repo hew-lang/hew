@@ -1,0 +1,13 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-captured"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. The checker refuses the shape (callable storage return and capture stay fail closed on both targets) before it can reach code generation."
+source = "cases/vec-param-embed-copy-in-temp-captured.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ClosureExplicitMoveRequired"
+line = 2
+column = 9
+message = "capture `f` has no independent snapshot operation; use `move` to transfer it into the closure"

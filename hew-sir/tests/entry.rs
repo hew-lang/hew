@@ -34,9 +34,7 @@ fn declaration_of(module: &HirModule, name: &str) -> DefId {
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Function(function) if function.name == name => {
-                Some(function.declaration.clone())
-            }
+            HirItem::Function(function) if function.name == name => Some(function.declaration),
             _ => None,
         })
         .unwrap_or_else(|| panic!("source must define `{name}`"))
@@ -135,11 +133,11 @@ fn removing_the_entry_fact_leaves_no_entry_callable_to_rediscover_by_name() {
     let lowered = lower_module_with_roots(&hir, &type_facts, &[main])
         .expect("an exact monomorphic declaration is selectable as a root");
     assert!(
-        lowered
+        lowered.module.callables.iter().any(|callable| lowered
             .module
-            .callables
-            .iter()
-            .any(|callable| callable.declaration.full_path() == "main"),
+            .defs
+            .path(callable.declaration)
+            == "main"),
         "the fixture must still contain a callable whose declaration is `main`"
     );
     assert_eq!(
@@ -180,27 +178,27 @@ fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
     );
 }
 
-const RESULT_ENTRY: &str = r#"
-    enum AppError {
-        Failed(string),
-    }
+const RESULT_ENTRY: &str = r#"enum AppError {
+    Failed(string);
+}
 
-    impl Display for AppError {
-        fn fmt(self) -> string {
-            match self {
-                AppError.Failed(message) => message,
-            }
+impl Display for AppError {
+    fn fmt(self) -> string {
+        match self {
+            AppError.Failed(message) => message,
         }
     }
+}
 
-    impl Error for AppError {}
+impl Error for AppError {
+}
 
-    fn main() -> Result<(), AppError> {
-        let held = "held";
-        println(held);
-        .Err(AppError.Failed("displayed failure"))
-    }
-    "#;
+fn main() -> Result<(), AppError> {
+    let held = "held";
+    println(held);
+    .Err(AppError.Failed("displayed failure"))
+}
+"#;
 
 /// A `Result` entry exits through a synthesized adapter: the adapter is the
 /// module's entry, the checker's action is consumed and the physical-facing

@@ -1,3 +1,4 @@
+use hew_parser::ast::Ident;
 use hew_parser::ast::{
     Block, ConditionItem, Expr, Item, LambdaParam, MatchArm, Pattern, PatternField, SelectArm,
     Span, Stmt, StringPart, TraitItem, TypeBodyItem,
@@ -66,39 +67,39 @@ pub(crate) struct TopLevelItemInfo<'ast> {
 pub(crate) fn top_level_item_info(item: &Item) -> Option<TopLevelItemInfo<'_>> {
     match item {
         Item::Function(f) => Some(TopLevelItemInfo {
-            name: &f.name,
+            name: f.name.name.as_str(),
             kind: TopLevelItemKind::Function,
         }),
         Item::Actor(a) => Some(TopLevelItemInfo {
-            name: &a.name,
+            name: a.name.name.as_str(),
             kind: TopLevelItemKind::Actor,
         }),
         Item::Supervisor(s) => Some(TopLevelItemInfo {
-            name: &s.name,
+            name: s.name.name.as_str(),
             kind: TopLevelItemKind::Supervisor,
         }),
         Item::Trait(t) => Some(TopLevelItemInfo {
-            name: &t.name,
+            name: t.name.name.as_str(),
             kind: TopLevelItemKind::Trait,
         }),
         Item::Const(c) => Some(TopLevelItemInfo {
-            name: &c.name,
+            name: c.name.name.as_str(),
             kind: TopLevelItemKind::Const,
         }),
         Item::TypeDecl(td) => Some(TopLevelItemInfo {
-            name: &td.name,
+            name: td.name.name.as_str(),
             kind: TopLevelItemKind::TypeDecl,
         }),
         Item::TypeAlias(ta) => Some(TopLevelItemInfo {
-            name: &ta.name,
+            name: ta.name.name.as_str(),
             kind: TopLevelItemKind::TypeAlias,
         }),
         Item::Machine(m) => Some(TopLevelItemInfo {
-            name: &m.name,
+            name: m.name.name.as_str(),
             kind: TopLevelItemKind::Machine,
         }),
         Item::Record(r) => Some(TopLevelItemInfo {
-            name: &r.name,
+            name: r.name.name.as_str(),
             kind: TopLevelItemKind::Record,
         }),
         Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
@@ -229,7 +230,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Item::Function(function) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Function,
-                    name: Some(&function.name),
+                    name: Some(function.name.name.as_str()),
                     span: Some(&function.fn_span),
                 };
                 self.walk_block_body(
@@ -242,7 +243,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 if let Some(init) = &actor.init {
                     let body_info = BodyInfo {
                         kind: BodyKind::ActorInit,
-                        name: Some(&actor.name),
+                        name: Some(actor.name.name.as_str()),
                         span: Some(span),
                     };
                     self.walk_block_body(
@@ -254,7 +255,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 for recv in &actor.receive_fns {
                     let body_info = BodyInfo {
                         kind: BodyKind::ActorReceive,
-                        name: Some(&recv.name),
+                        name: Some(recv.name.name.as_str()),
                         span: Some(&recv.span),
                     };
                     self.walk_block_body(
@@ -266,7 +267,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 for method in &actor.methods {
                     let body_info = BodyInfo {
                         kind: BodyKind::ActorMethod,
-                        name: Some(&method.name),
+                        name: Some(method.name.name.as_str()),
                         span: Some(&method.fn_span),
                     };
                     self.walk_block_body(
@@ -281,7 +282,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     if let TypeBodyItem::Method(method) = body_item {
                         let body_info = BodyInfo {
                             kind: BodyKind::TypeMethod,
-                            name: Some(&method.name),
+                            name: Some(method.name.name.as_str()),
                             span: Some(&method.fn_span),
                         };
                         self.walk_block_body(
@@ -296,7 +297,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 for method in &impl_decl.methods {
                     let body_info = BodyInfo {
                         kind: BodyKind::ImplMethod,
-                        name: Some(&method.name),
+                        name: Some(method.name.name.as_str()),
                         span: Some(&method.fn_span),
                     };
                     self.walk_block_body(
@@ -312,7 +313,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         if let Some(body_block) = &method.body {
                             let body_info = BodyInfo {
                                 kind: BodyKind::TraitMethod,
-                                name: Some(&method.name),
+                                name: Some(method.name.name.as_str()),
                                 span: Some(&method.span),
                             };
                             self.walk_block_body(
@@ -327,7 +328,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Item::Const(const_decl) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Const,
-                    name: Some(&const_decl.name),
+                    name: Some(const_decl.name.name.as_str()),
                     span: Some(span),
                 };
                 self.walk_expr_body(
@@ -340,7 +341,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Item::Supervisor(supervisor) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Supervisor,
-                    name: Some(&supervisor.name),
+                    name: Some(supervisor.name.name.as_str()),
                     span: Some(span),
                 };
                 self.visitor
@@ -358,7 +359,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Item::Machine(machine) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Machine,
-                    name: Some(&machine.name),
+                    name: Some(machine.name.name.as_str()),
                     span: Some(span),
                 };
                 self.visitor
@@ -387,10 +388,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
     )]
     fn walk_named_body(&mut self, item: &'ast Item, body_name: &str) -> bool {
         match item {
-            Item::Function(function) if function.name == body_name => {
+            Item::Function(function) if function.name == Ident::new(body_name) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Function,
-                    name: Some(&function.name),
+                    name: Some(function.name.name.as_str()),
                     span: Some(&function.fn_span),
                 };
                 self.walk_block_body(
@@ -400,19 +401,19 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 );
                 true
             }
-            Item::Const(const_decl) if const_decl.name == body_name => {
+            Item::Const(const_decl) if const_decl.name == Ident::new(body_name) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Const,
-                    name: Some(&const_decl.name),
+                    name: Some(const_decl.name.name.as_str()),
                     span: None,
                 };
                 self.walk_expr_body(&const_decl.value.0, &const_decl.value.1, body_info, Vec::new());
                 true
             }
-            Item::Supervisor(supervisor) if supervisor.name == body_name => {
+            Item::Supervisor(supervisor) if supervisor.name == Ident::new(body_name) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Supervisor,
-                    name: Some(&supervisor.name),
+                    name: Some(supervisor.name.name.as_str()),
                     span: None,
                 };
                 self.visitor.enter_body(body_info, Self::context(Some(body_info)));
@@ -426,10 +427,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor.leave_body(body_info, Self::context(Some(body_info)));
                 true
             }
-            Item::Machine(machine) if machine.name == body_name => {
+            Item::Machine(machine) if machine.name == Ident::new(body_name) => {
                 let body_info = BodyInfo {
                     kind: BodyKind::Machine,
-                    name: Some(&machine.name),
+                    name: Some(machine.name.name.as_str()),
                     span: None,
                 };
                 self.visitor.enter_body(body_info, Self::context(Some(body_info)));
@@ -445,10 +446,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 true
             }
             Item::Actor(actor) => {
-                if let Some(recv) = actor.receive_fns.iter().find(|recv| recv.name == body_name) {
+                if let Some(recv) = actor.receive_fns.iter().find(|recv| recv.name == Ident::new(body_name)) {
                     let body_info = BodyInfo {
                         kind: BodyKind::ActorReceive,
-                        name: Some(&recv.name),
+                        name: Some(recv.name.name.as_str()),
                         span: Some(&recv.span),
                     };
                     self.walk_block_body(
@@ -458,10 +459,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     );
                     return true;
                 }
-                if let Some(method) = actor.methods.iter().find(|method| method.name == body_name) {
+                if let Some(method) = actor.methods.iter().find(|method| method.name == Ident::new(body_name)) {
                     let body_info = BodyInfo {
                         kind: BodyKind::ActorMethod,
-                        name: Some(&method.name),
+                        name: Some(method.name.name.as_str()),
                         span: Some(&method.fn_span),
                     };
                     self.walk_block_body(
@@ -474,11 +475,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 false
             }
             Item::Impl(impl_decl) => {
-                if let Some(method) = impl_decl.methods.iter().find(|method| method.name == body_name)
+                if let Some(method) = impl_decl.methods.iter().find(|method| method.name == Ident::new(body_name))
                 {
                     let body_info = BodyInfo {
                         kind: BodyKind::ImplMethod,
-                        name: Some(&method.name),
+                        name: Some(method.name.name.as_str()),
                         span: Some(&method.fn_span),
                     };
                     self.walk_block_body(
@@ -495,11 +496,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 if let Some(TypeBodyItem::Method(method)) = type_decl
                     .body
                     .iter()
-                    .find(|body_item| matches!(body_item, TypeBodyItem::Method(method) if method.name == body_name))
+                    .find(|body_item| matches!(body_item, TypeBodyItem::Method(method) if method.name == Ident::new(body_name)))
                 {
                     let body_info = BodyInfo {
                         kind: BodyKind::TypeMethod,
-                        name: Some(&method.name),
+                        name: Some(method.name.name.as_str()),
                         span: Some(&method.fn_span),
                     };
                     self.walk_block_body(
@@ -516,11 +517,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 if let Some(TraitItem::Method(method)) = trait_decl
                     .items
                     .iter()
-                    .find(|trait_item| matches!(trait_item, TraitItem::Method(method) if method.name == body_name))
+                    .find(|trait_item| matches!(trait_item, TraitItem::Method(method) if method.name == Ident::new(body_name)))
                 {
                     let body_info = BodyInfo {
                         kind: BodyKind::TraitMethod,
-                        name: Some(&method.name),
+                        name: Some(method.name.name.as_str()),
                         span: Some(&method.span),
                     };
                     self.visitor.enter_body(body_info, Self::context(Some(body_info)));
@@ -597,7 +598,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 }
                 self.add_binding(binding_from_name(
                     self.source,
-                    name,
+                    name.name.as_str(),
                     span,
                     BindingKind::Local,
                 ));
@@ -715,10 +716,14 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
         self.visitor.visit_scope(span, &self.scopes);
         self.visitor.visit_expr(expr, span, Self::context(body));
         match expr {
-            Expr::Identifier(name) => {
-                let binding = self.resolve_binding(name);
-                self.visitor
-                    .visit_identifier(name, span, binding, Self::context(body));
+            Expr::Ident(name) => {
+                let binding = self.resolve_binding(name.name.as_str());
+                self.visitor.visit_identifier(
+                    name.name.as_str(),
+                    span,
+                    binding,
+                    Self::context(body),
+                );
             }
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
@@ -758,7 +763,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&operand.0, &operand.1, body);
                 self.push_scope(vec![BindingInfo {
                     kind: BindingKind::Local,
-                    name: &error.0,
+                    name: error.0.name.as_str(),
                     span: error.1.clone(),
                 }]);
                 self.walk_expr(&handler.0, &handler.1, body);
@@ -1005,7 +1010,7 @@ fn params_to_bindings<'ast>(
         .map(|param| {
             let binding = binding_from_search_from(
                 source,
-                &param.name,
+                param.name.name.as_str(),
                 cursor,
                 &param.ty.1,
                 BindingKind::Param,
@@ -1028,7 +1033,7 @@ fn lambda_params_to_bindings<'ast>(
             let fallback_span = param.ty.as_ref().map_or(outer_span, |(_, span)| span);
             let binding = binding_from_search_from(
                 source,
-                &param.name,
+                param.name.name.as_str(),
                 cursor,
                 fallback_span,
                 BindingKind::Param,
@@ -1112,9 +1117,14 @@ fn collect_pattern_bindings<'ast>(
 ) {
     match pattern {
         Pattern::Identifier(name) => {
-            bindings.push(binding_from_name(source, name, span, BindingKind::Local));
+            bindings.push(binding_from_name(
+                source,
+                name.name.as_str(),
+                span,
+                BindingKind::Local,
+            ));
         }
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+        Pattern::Tuple(patterns) => {
             for (pattern, span) in patterns {
                 collect_pattern_bindings(source, pattern, span, bindings);
             }
@@ -1129,7 +1139,7 @@ fn collect_pattern_bindings<'ast>(
                 collect_nominal_payload_bindings(source, payload, span, bindings);
             }
         }
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+        Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 collect_pattern_field_bindings(source, span, field, bindings);
             }
@@ -1179,7 +1189,7 @@ fn collect_pattern_field_bindings<'ast>(
     } else {
         bindings.push(binding_from_name(
             source,
-            &field.name,
+            field.name.name.as_str(),
             pattern_span,
             BindingKind::Local,
         ));

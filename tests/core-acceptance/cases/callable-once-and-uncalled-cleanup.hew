@@ -5,7 +5,7 @@ fn make_once() -> fn[once, clone]() -> string {
 
 fn main() -> i64 {
     var total = 0;
-    for _index in 0..256 {
+    for _index in 0 .. 256 {
         let once = make_once();
         let uncalled = clone once;
         let result = once();

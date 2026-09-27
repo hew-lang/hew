@@ -20,7 +20,7 @@
 //! distinct diagnostic code (101/102) so a regression is legible.
 
 type Countdown {
-    n: i64,
+    n: i64;
 }
 
 impl Iterator for Countdown {
@@ -41,8 +41,8 @@ impl Iterator for Countdown {
 /// sites (e.g. `Take<Countdown, i64>`) can pin the item type and satisfy
 /// associated-type bounds in generic helpers (`fold_i64`).
 type Take<I, A> {
-    iter: I,
-    remaining: i64,
+    iter: I;
+    remaining: i64;
 }
 
 impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
@@ -73,8 +73,12 @@ fn fold_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
     var iter = it;
     loop {
         match iter.next() {
-            .Some(x) => { acc = acc + x; },
-            .None => { break; },
+            .Some(x) => {
+                acc = acc + x;
+            }
+            .None => {
+                break;
+            }
         }
     }
     acc
@@ -88,13 +92,11 @@ fn main() -> i64 {
     if total != 12 {
         return 101;
     }
-
     // Quota-exhaustion check: take(0) yields nothing, sum = 0.
     let taken2: Take<Countdown, i64> = Take { iter: Countdown { n: 5 }, remaining: 0 };
     let total2 = fold_i64(taken2);
     if total2 != 0 {
         return 102;
     }
-
     total
 }

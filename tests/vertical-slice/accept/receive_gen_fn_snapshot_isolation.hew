@@ -6,7 +6,7 @@
 // see the original snapshot. A second, freshly-started stream sees the new
 // value.
 actor Ticker {
-    var base: i64,
+    var base: i64;
     init(b: i64) {
         base = b;
     }
@@ -26,23 +26,19 @@ actor Ticker {
 fn main() {
     let t = spawn Ticker(b: 100);
     let s1 = t.stream(3);
-
     let head = s1.recv();
     match head {
         .Some(v) => println(f"{v}"),
         .None => println("unexpected-close"),
     }
-
     let updated = t.set_base(500);
     match updated {
         .Ok(_v) => {}
         .Err(_e) => println("set_base failed"),
     }
-
     for v in s1 {
         println(f"{v}");
     }
-
     let s2 = t.stream(3);
     for v in s2 {
         println(f"{v}");

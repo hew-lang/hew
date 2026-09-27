@@ -3,11 +3,11 @@ import constructors.left.shapes as west;
 import constructors.right.shapes as east;
 
 enum Parcel {
-    Full { local: i64 },
+    Full { local: i64;  }
 }
 
 type Gate {
-    local: i64,
+    local: i64;
 }
 
 fn show_west(value: west.Parcel) {

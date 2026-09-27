@@ -1,0 +1,12 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var v: Vec<string> = Vec.new();
+        v.push("per-iteration-element-one");
+        v.push("per-iteration-element-two");
+        total = total + v.len();
+        i = i + 1;
+    }
+    total
+}

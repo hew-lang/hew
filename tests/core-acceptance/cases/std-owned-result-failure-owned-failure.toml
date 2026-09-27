@@ -1,0 +1,10 @@
+[[case]]
+id = "std-owned-result-failure-owned-failure"
+intent = "Failure paths must discharge raw stdlib FFI owners before returning or panicking. Shape `owned_failure` (stdlib raw owned failure handles are released once after detail is copied) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/std-owned-result-failure-owned-failure.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok\n\n0\n0\n"
+exit = 0

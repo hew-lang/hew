@@ -2,7 +2,7 @@
 
 use crate::common;
 use hew_parser::ast::*;
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 use common::{isolated_checker, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
@@ -27,7 +27,7 @@ fn make_machine(
 ) -> MachineDecl {
     MachineDecl {
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: vec![],
         const_params: vec![],
         where_clause: None,
@@ -42,7 +42,7 @@ fn make_machine(
 
 fn unit_state(name: &str) -> MachineState {
     MachineState {
-        name: name.to_string(),
+        name: Ident::new(name),
         fields: vec![],
         entry: None,
         exit: None,
@@ -52,15 +52,18 @@ fn unit_state(name: &str) -> MachineState {
 
 fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
     MachineState {
-        name: name.to_string(),
+        name: Ident::new(name),
         fields: fields
             .into_iter()
             .map(|(fname, tname)| {
                 (
-                    fname.to_string(),
+                    Ident::new(fname),
                     (
                         TypeExpr::Named {
-                            name: tname.to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new(tname),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..0,
@@ -76,7 +79,7 @@ fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
 
 fn unit_event(name: &str) -> MachineEvent {
     MachineEvent {
-        name: name.to_string(),
+        name: Ident::new(name),
         fields: vec![],
         span: 0..0,
     }
@@ -87,9 +90,9 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
     // (MACHINE-SPEC, "Rule selection and coverage"), so the body is the
     // dotted target constructor rather than the source value.
     MachineTransition {
-        event_name: event.to_string(),
-        source_state: source.to_string(),
-        target_state: target.to_string(),
+        event_name: Ident::new(event),
+        source_state: Ident::new(source),
+        target_state: Ident::new(target),
         target_is_contextual: false,
         target_composite: None,
         event_bindings: vec![],
@@ -97,7 +100,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         guard: None,
         body: (
             Expr::ContextVariant(ContextVariantExpr {
-                name: target.to_string(),
+                name: Ident::new(target),
                 record: None,
             }),
             0..0,
@@ -119,13 +122,13 @@ fn payload_transition(
     let mut rule = transition(event, source, target);
     rule.body = (
         Expr::ContextVariant(ContextVariantExpr {
-            name: target.to_string(),
+            name: Ident::new(target),
             record: Some(Box::new(ContextVariantRecord {
                 fields: fields
                     .iter()
                     .map(|field| {
                         (
-                            (*field).to_string(),
+                            Ident::new(field),
                             (
                                 Expr::Literal(Literal::Integer {
                                     value: 0,
@@ -146,15 +149,15 @@ fn payload_transition(
 
 fn wildcard_transition(event: &str) -> MachineTransition {
     MachineTransition {
-        event_name: event.to_string(),
-        source_state: "_".to_string(),
-        target_state: "_".to_string(),
+        event_name: Ident::new(event),
+        source_state: Ident::new("_"),
+        target_state: Ident::new("_"),
         target_is_contextual: false,
         target_composite: None,
         event_bindings: vec![],
         composite_prelude_len: 0,
         guard: None,
-        body: (Expr::Identifier("state".to_string()), 0..0),
+        body: (Expr::Ident(Ident::new("state")), 0..0),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
         span: 0..0,
@@ -255,10 +258,10 @@ fn machine_registers_type_def() {
 
     // Machine should be registered as a type
     assert!(
-        output.type_defs.contains_key("TcpState"),
+        output.type_def_at_path("TcpState").is_some(),
         "machine type not registered"
     );
-    let td = &output.type_defs["TcpState"];
+    let td = output.type_def_at_path("TcpState").unwrap();
     assert!(td.variants.contains_key("Closed"));
     assert!(td.variants.contains_key("Established"));
 
@@ -288,10 +291,10 @@ fn companion_event_enum_generated() {
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     assert!(
-        output.type_defs.contains_key("LightEvent"),
+        output.type_def_at_path("Light.Event").is_some(),
         "companion event type not generated"
     );
-    let event_td = &output.type_defs["LightEvent"];
+    let event_td = output.type_def_at_path("Light.Event").unwrap();
     assert!(event_td.variants.contains_key("Toggle"));
 }
 
@@ -320,7 +323,7 @@ fn state_fields_registered() {
         output.errors
     );
 
-    let td = &output.type_defs["Counter"];
+    let td = output.type_def_at_path("Counter").unwrap();
     match &td.variants["Counting"] {
         hew_types::VariantDef::Struct(fields) => {
             assert_eq!(fields.len(), 1);
@@ -675,11 +678,11 @@ fn transition_count_equals_states_times_events() {
 fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
     MachineDecl {
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: type_params
             .iter()
             .map(|n| TypeParam {
-                name: (*n).to_string(),
+                name: Ident::new(n),
                 bounds: vec![],
             })
             .collect(),
@@ -709,11 +712,13 @@ fn generic_machine_type_params_survive_registration() {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Worker")
+        .type_def_at_path("Worker")
         .expect("Worker should be registered as a type");
     assert_eq!(
-        td.type_params,
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "generic machine type param T must survive into TypeDef"
     );
@@ -729,11 +734,13 @@ fn generic_machine_multi_params_survive_registration() {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Pipeline")
+        .type_def_at_path("Pipeline")
         .expect("Pipeline should be registered as a type");
     assert_eq!(
-        td.type_params,
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["In".to_string(), "Out".to_string()],
         "multi-param generic machine type params must survive into TypeDef"
     );
@@ -750,8 +757,7 @@ fn non_generic_machine_type_params_empty() {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Light")
+        .type_def_at_path("Light")
         .expect("Light should be registered as a type");
     assert!(
         td.type_params.is_empty(),
@@ -763,25 +769,24 @@ fn non_generic_machine_type_params_empty() {
 #[test]
 fn machine_step_dispatch() {
     let output = typecheck_isolated(
-        r"
-        machine Light {
-            events {
-                Toggle,
-            }
+        r"machine Light {
+    events {
+        Toggle;
+    }
 
-            state Off,
-            state On,
-            on Toggle: Off => .On,
-            on Toggle: On => .Off,
-        }
+    state Off;
+    state On;
+    on Toggle: Off => .On;
+    on Toggle: On => .Off;
+}
 
-        fn main() {
-            var light: Light = Light.Off;
-            let _report = light.step(LightEvent.Toggle);
-            let name: string = light.state_name();
-            let _ = name;
-        }
-        ",
+fn main() {
+    var light: Light = Light.Off;
+    let _report = light.step(Light.Event.Toggle);
+    let name: string = light.state_name();
+    let _ = name;
+}
+",
     );
 
     assert!(
@@ -794,23 +799,22 @@ fn machine_step_dispatch() {
 #[test]
 fn machine_step_suppresses_unused_mut_warning() {
     let output = typecheck_isolated(
-        r"
-        machine Light {
-            events {
-                Toggle,
-            }
+        r"machine Light {
+    events {
+        Toggle;
+    }
 
-            state Off,
-            state On,
-            on Toggle: Off => .On,
-            on Toggle: On => .Off,
-        }
+    state Off;
+    state On;
+    on Toggle: Off => .On;
+    on Toggle: On => .Off;
+}
 
-        fn main() {
-            var light: Light = Light.Off;
-            light.step(LightEvent.Toggle);
-        }
-        ",
+fn main() {
+    var light: Light = Light.Off;
+    light.step(Light.Event.Toggle);
+}
+",
     );
 
     assert!(
@@ -831,23 +835,22 @@ fn machine_step_suppresses_unused_mut_warning() {
 #[test]
 fn machine_step_on_let_receiver_is_rejected() {
     let output = typecheck_isolated(
-        r"
-        machine Light {
-            events {
-                Toggle,
-            }
+        r"machine Light {
+    events {
+        Toggle;
+    }
 
-            state Off,
-            state On,
-            on Toggle: Off => .On,
-            on Toggle: On => .Off,
-        }
+    state Off;
+    state On;
+    on Toggle: Off => .On;
+    on Toggle: On => .Off;
+}
 
-        fn main() {
-            let light: Light = Light.Off;
-            light.step(LightEvent.Toggle);
-        }
-        ",
+fn main() {
+    let light: Light = Light.Off;
+    light.step(Light.Event.Toggle);
+}
+",
     );
 
     assert!(
@@ -863,28 +866,27 @@ fn machine_step_on_let_receiver_is_rejected() {
 #[test]
 fn machine_state_pattern_match_uses_variant_infrastructure() {
     let output = typecheck_isolated(
-        r"
-        machine TcpState {
-            events {
-                Connect,
-                Disconnect,
-            }
+        r"machine TcpState {
+    events {
+        Connect;
+        Disconnect;
+    }
 
-            state Closed,
-            state Established { seq: i64, },
-            on Connect: Closed => .Established { seq: 1 }
-            on Connect: Established => .Established { seq: state.seq }
-            on Disconnect: Closed => .Closed,
-            on Disconnect: Established => .Closed,
-        }
+    state Closed;
+    state Established { seq: i64; }
+    on Connect: Closed => .Established { seq: 1 }
+    on Connect: Established => .Established { seq: state.seq }
+    on Disconnect: Closed => .Closed;
+    on Disconnect: Established => .Closed;
+}
 
-        fn seq_or_zero(state: TcpState) -> i64 {
-            match state {
-                TcpState.Closed => 0,
-                TcpState.Established { seq } => seq,
-            }
-        }
-        ",
+fn seq_or_zero(state: TcpState) -> i64 {
+    match state {
+        TcpState.Closed => 0,
+        TcpState.Established { seq } => seq,
+    }
+}
+",
     );
 
     assert!(
@@ -909,31 +911,30 @@ fn machine_state_pattern_match_uses_variant_infrastructure() {
 #[test]
 fn generic_machine_threads_type_params_into_state_event_and_step() {
     let output = typecheck_isolated(
-        r"
-        machine Lifecycle<T> {
-            events {
-                Load { value: T, }
-                ,Reset,
-            }
+        r"machine Lifecycle<T> {
+    events {
+        Load { value: T; }
+        Reset;
+    }
 
-            state Empty,
-            state Loaded { value: T, },
-            on Load: Empty => .Loaded { value: event.value }
-            on Load: Loaded => .Loaded { value: event.value }
-            on Reset: Empty => .Empty,
-            on Reset: Loaded => .Empty,
-        }
+    state Empty;
+    state Loaded { value: T; }
+    on Load: Empty => .Loaded { value: event.value }
+    on Load: Loaded => .Loaded { value: event.value }
+    on Reset: Empty => .Empty;
+    on Reset: Loaded => .Empty;
+}
 
-        fn main() {
-            var lifecycle: Lifecycle<i64> = Lifecycle.Loaded { value: 1 };
-            lifecycle.step(LifecycleEvent.Load { value: 2 });
-            let value: i64 = match lifecycle {
-                Lifecycle.Empty => 0,
-                Lifecycle.Loaded { value } => value,
-            };
-            let _ = value;
-        }
-        ",
+fn main() {
+    var lifecycle: Lifecycle<i64> = Lifecycle.Loaded { value: 1 };
+    lifecycle.step(Lifecycle.Event.Load { value: 2 });
+    let value: i64 = match lifecycle {
+        Lifecycle.Empty => 0,
+        Lifecycle.Loaded { value } => value,
+    };
+    let _ = value;
+}
+",
     );
 
     assert!(
@@ -942,67 +943,66 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         output.errors
     );
 
-    let machine_td = &output.type_defs["Lifecycle"];
-    assert_eq!(machine_td.type_params, vec!["T".to_string()]);
+    let machine_td = output.type_def_at_path("Lifecycle").unwrap();
+    assert_eq!(
+        machine_td
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["T".to_string()]
+    );
     match &machine_td.variants["Loaded"] {
-        hew_types::VariantDef::Struct(fields) => assert_eq!(
-            fields,
-            &vec![(
-                "value".to_string(),
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            )]
-        ),
+        hew_types::VariantDef::Struct(fields) => {
+            assert_eq!(
+                fields,
+                &vec![("value".to_string(), Ty::param(machine_td.type_params[0]),)]
+            );
+        }
         other => panic!("expected Loaded to be a struct variant, got: {other:?}"),
     }
 
-    let event_td = &output.type_defs["LifecycleEvent"];
-    assert_eq!(event_td.type_params, vec!["T".to_string()]);
+    let event_td = output.type_def_at_path("Lifecycle.Event").unwrap();
+    assert_eq!(
+        event_td
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["T".to_string()]
+    );
     match &event_td.variants["Load"] {
-        hew_types::VariantDef::Struct(fields) => assert_eq!(
-            fields,
-            &vec![(
-                "value".to_string(),
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            )]
-        ),
+        hew_types::VariantDef::Struct(fields) => {
+            assert_eq!(
+                fields,
+                &vec![("value".to_string(), Ty::param(event_td.type_params[0]),)]
+            );
+        }
         other => panic!("expected Load to be a struct variant, got: {other:?}"),
     }
 
     assert_eq!(
         machine_td.methods["step"].params,
-        vec![Ty::Named {
-            builtin: None,
-            name: "LifecycleEvent".to_string(),
-            args: vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
-        }]
+        vec![Ty::named_in(
+            &output.defs,
+            "Lifecycle.Event",
+            vec![Ty::param(machine_td.methods["step"].type_params[0])]
+        )]
     );
 }
 
 #[test]
 fn user_defined_type_does_not_inherit_machine_methods() {
     let output = typecheck_isolated(
-        r"
-        type Light {
-            value: i64
-        }
+        r"type Light {
+    value: i64;
+}
 
-        fn main() {
-            let light: Light = Light { value: 1 };
-            light.state_name();
-        }
-        ",
+fn main() {
+    let light: Light = Light { value: 1 };
+    light.state_name();
+}
+",
     );
 
     assert!(
@@ -1020,25 +1020,24 @@ fn user_defined_type_does_not_inherit_machine_methods() {
 #[test]
 fn machine_event_matches_outside_a_transition() {
     let output = typecheck_isolated(
-        r"
-        machine Light {
-            events {
-                Toggle,
-            }
+        r"machine Light {
+    events {
+        Toggle;
+    }
 
-            state Off,
-            state On,
-            on Toggle: Off => .On,
-            on Toggle: On => .Off,
-        }
+    state Off;
+    state On;
+    on Toggle: Off => .On;
+    on Toggle: On => .Off;
+}
 
-        fn main() {
-            let event: LightEvent = LightEvent.Toggle;
-            let _: i64 = match event {
-                LightEvent.Toggle => 1,
-            };
-        }
-        ",
+fn main() {
+    let event: Light.Event = Light.Event.Toggle;
+    let _: i64 = match event {
+        Light.Event.Toggle => 1,
+    };
+}
+",
     );
 
     assert!(
@@ -1060,7 +1059,7 @@ fn machine_event_matches_outside_a_transition() {
 
 fn module_node_with_items(id: &str, items: Vec<Spanned<Item>>) -> Module {
     Module {
-        id: ModuleId::new(vec![id.to_string()]),
+        id: ModulePath::new([id.to_string()]),
         items,
         imports: vec![],
         source_paths: Vec::new(),
@@ -1084,7 +1083,7 @@ fn imported_machine_unit_state_constructor_resolves() {
         ],
     );
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "lights",
@@ -1113,20 +1112,20 @@ fn imported_machine_unit_state_constructor_resolves() {
     // State constructors must be registered in fn_sigs so that transition bodies
     // that reference bare state names can resolve them.
     assert!(
-        output.fn_sigs.contains_key("Red"),
+        output.sigs().contains("Red"),
         "unit state 'Red' constructor must be registered in fn_sigs for the import path"
     );
     assert!(
-        output.fn_sigs.contains_key("Green"),
+        output.sigs().contains("Green"),
         "unit state 'Green' constructor must be registered in fn_sigs for the import path"
     );
 
     // Machine TypeDef must be populated with state variants
     assert!(
-        output.type_defs.contains_key("lights.Traffic"),
+        output.type_def_at_path("lights.Traffic").is_some(),
         "imported machine registration must preserve its exact source owner"
     );
-    let td = &output.type_defs["lights.Traffic"];
+    let td = output.type_def_at_path("lights.Traffic").unwrap();
     assert!(
         td.variants.contains_key("Red"),
         "state variant 'Red' must appear in Traffic TypeDef"
@@ -1138,25 +1137,17 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // Companion event enum must also be registered
     assert!(
-        output.type_defs.contains_key("lights.TrafficEvent"),
+        output.type_def_at_path("lights.Traffic.Event").is_some(),
         "imported event registration must preserve its exact source owner"
     );
     assert_eq!(
-        output.fn_sigs["Red"].return_type,
-        Ty::Named {
-            builtin: None,
-            name: "lights.Traffic".to_string(),
-            args: vec![],
-        },
+        output.sigs()["Red"].return_type,
+        Ty::named_in(&output.defs, "lights.Traffic", vec![]),
         "an imported state constructor must return the exact machine identity"
     );
     assert_eq!(
-        output.type_defs["lights.Traffic"].methods["step"].params,
-        vec![Ty::Named {
-            builtin: None,
-            name: "lights.TrafficEvent".to_string(),
-            args: vec![],
-        }],
+        output.type_def_at_path("lights.Traffic").unwrap().methods["step"].params,
+        vec![Ty::named_in(&output.defs, "lights.Traffic.Event", vec![])],
         "an imported step method must accept the exact companion event identity"
     );
 }
@@ -1184,7 +1175,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
         ],
     );
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "counters",
@@ -1211,8 +1202,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
     );
 
     let td = output
-        .type_defs
-        .get("Counter")
+        .type_def_at_path("counters.Counter")
         .expect("Counter type must be registered in the non-root module path");
     match &td.variants["Counting"] {
         hew_types::VariantDef::Struct(fields) => {
@@ -1241,7 +1231,7 @@ fn imported_machine_exhaustiveness_runs() {
         ],
     );
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "lighting",
@@ -1280,9 +1270,9 @@ fn imported_machine_exhaustiveness_runs() {
 fn imported_generic_machine_type_params_survive_registration() {
     let md = MachineDecl {
         visibility: Visibility::Pub,
-        name: "Worker".to_string(),
+        name: Ident::new("Worker"),
         type_params: vec![TypeParam {
-            name: "T".to_string(),
+            name: Ident::new("T"),
             bounds: vec![],
         }],
         const_params: vec![],
@@ -1300,7 +1290,7 @@ fn imported_generic_machine_type_params_survive_registration() {
         composite_groups: vec![],
     };
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "workers",
@@ -1327,20 +1317,25 @@ fn imported_generic_machine_type_params_survive_registration() {
     );
 
     let td = output
-        .type_defs
-        .get("workers.Worker")
+        .type_def_at_path("workers.Worker")
         .expect("generic machine 'Worker' must be registered via the non-root module path");
     assert_eq!(
-        td.type_params,
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "generic type param T must survive into TypeDef when registered via module graph"
     );
     let event_td = output
-        .type_defs
-        .get("workers.WorkerEvent")
+        .type_def_at_path("workers.Worker.Event")
         .expect("companion event enum 'WorkerEvent' must be registered");
     assert_eq!(
-        event_td.type_params,
+        event_td
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "companion event enum must carry the same type param T"
     );
@@ -1371,7 +1366,7 @@ fn two_modules_with_different_machines_no_collision() {
         ],
     );
 
-    let root_id = ModuleId::new(vec!["root".to_string()]);
+    let root_id = ModulePath::new(["root"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(module_node_with_items(
@@ -1405,19 +1400,19 @@ fn two_modules_with_different_machines_no_collision() {
     );
 
     assert!(
-        output.type_defs.contains_key("Alpha"),
+        output.type_def_at_path("mod_a.Alpha").is_some(),
         "Alpha must be registered"
     );
     assert!(
-        output.type_defs.contains_key("Beta"),
+        output.type_def_at_path("mod_b.Beta").is_some(),
         "Beta must be registered"
     );
     assert!(
-        output.fn_sigs.contains_key("Off"),
+        output.sigs().contains("Off"),
         "Alpha::Off constructor must be registered"
     );
     assert!(
-        output.fn_sigs.contains_key("Idle"),
+        output.sigs().contains("Idle"),
         "Beta::Idle constructor must be registered"
     );
 }
@@ -1428,25 +1423,27 @@ fn two_modules_with_different_machines_no_collision() {
 /// definitions.
 #[test]
 fn machine_with_trait_bound_parses_and_checks() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 ";
     let output = typecheck_isolated(source);
@@ -1456,22 +1453,28 @@ machine Lifecycle<T: Resource> {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Lifecycle")
+        .type_def_at_path("Lifecycle")
         .expect("Lifecycle should be registered as a type");
-    assert_eq!(td.type_params, vec!["T".to_string()]);
+    assert_eq!(
+        td.type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["T".to_string()]
+    );
 }
 
 /// Slice β positive gate: a use site `Lifecycle<File>` where `File: Resource`
 /// satisfies the declared bound — must type-check without bound diagnostics.
 #[test]
 fn machine_generic_use_site_satisfies_bound() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type File { path: i64, }
+type File {
+    path: i64;
+}
 
 impl Resource for File {
     fn close(self) {}
@@ -1479,18 +1482,21 @@ impl Resource for File {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn main() {
@@ -1511,27 +1517,31 @@ fn main() {
 /// naming the trait and the type-param.
 #[test]
 fn machine_generic_use_site_violates_bound_errors() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn main() {
@@ -1563,21 +1573,23 @@ fn main() {
 /// site rather than silently passing through.
 #[test]
 fn machine_generic_unknown_trait_in_bound_errors() {
-    let source = r"
-machine Lifecycle<T: NonExistentTrait> {
+    let source = r"machine Lifecycle<T: NonExistentTrait> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 ";
     let output = typecheck_isolated(source);
@@ -1603,26 +1615,28 @@ machine Lifecycle<T: NonExistentTrait> {
 #[test]
 fn machine_state_entry_exit_well_typed_no_errors() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push,
-                Pull,
-            }
+        r"machine Door {
+    events {
+        Push;
+        Pull;
+    }
 
-            state Closed {
-                entry { let _x: i64 = 1; }
-                exit  { let _y: i64 = 2; }
-            },
-            state Open,
-
-
-            on Push: Closed => .Open,
-            on Push: Open   => .Open,
-            on Pull: Open   => .Closed,
-            on Pull: Closed => .Closed,
+    state Closed {
+        entry {
+            let _x: i64 = 1;
         }
-        ",
+        exit {
+            let _y: i64 = 2;
+        }
+    }
+    state Open;
+
+    on Push: Closed => .Open;
+    on Push: Open => .Open;
+    on Pull: Open => .Closed;
+    on Pull: Closed => .Closed;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1635,28 +1649,26 @@ fn machine_state_entry_exit_well_typed_no_errors() {
 #[test]
 fn machine_state_entry_type_error_reported() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push,
-                Pull,
-            }
+        r"machine Door {
+    events {
+        Push;
+        Pull;
+    }
 
-            state Closed {
-                entry {
-                    // assigning a bool to an i64 — must be a type error
-                    let _x: i64 = true;
-                }
-            },
-            state Open,
-
-
-            on Push: Closed => .Open,
-            on Push: Open   => .Open,
-            on Pull: Open   => .Closed,
-            on Pull: Closed => .Closed,
+    state Closed {
+        entry {
+            // assigning a bool to an i64 — must be a type error
+            let _x: i64 = true;
         }
-        ",
+    }
+    state Open;
+
+    on Push: Closed => .Open;
+    on Push: Open => .Open;
+    on Pull: Open => .Closed;
+    on Pull: Closed => .Closed;
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -1668,28 +1680,26 @@ fn machine_state_entry_type_error_reported() {
 #[test]
 fn machine_state_exit_type_error_reported() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push,
-                Pull,
-            }
+        r"machine Door {
+    events {
+        Push;
+        Pull;
+    }
 
-            state Open {
-                exit {
-                    // assigning a bool to an i64 — must be a type error
-                    let _x: i64 = true;
-                }
-            },
-            state Closed,
-
-
-            on Push: Closed => .Open,
-            on Push: Open   => .Open,
-            on Pull: Open   => .Closed,
-            on Pull: Closed => .Closed,
+    state Open {
+        exit {
+            // assigning a bool to an i64 — must be a type error
+            let _x: i64 = true;
         }
-        ",
+    }
+    state Closed;
+
+    on Push: Closed => .Open;
+    on Push: Open => .Open;
+    on Pull: Open => .Closed;
+    on Pull: Closed => .Closed;
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -1702,29 +1712,27 @@ fn machine_state_exit_type_error_reported() {
 #[test]
 fn machine_state_entry_reads_the_selected_input_payload() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push { force: i64 },
-                Pull,
-            }
-            emits {
-                Note { count: i64 },
-            }
+        r"machine Door {
+    events {
+        Push { force: i64; }
+        Pull;
+    }
+    emits {
+        Note { count: i64; }
+    }
 
-            state Open,
-            state Closed {
-                entry {
-                    emit Note { count: event.force };
-                }
-            },
-
-
-            on Push: Open => .Closed,
-            on Pull: Closed => .Open,
-            default { state }
+    state Open;
+    state Closed {
+        entry {
+            emit Note { count: event.force };
         }
-        ",
+    }
+
+    on Push: Open => .Closed;
+    on Pull: Closed => .Open;
+    default { state }
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1746,21 +1754,21 @@ fn generic_machine_holds_handles_and_refuses_an_unstageable_payload() {
         format!(
             "
         actor Worker {{
-            let id: i64,
+            let id: i64;
 
             receive fn ping() -> i64 {{
                 return self.id;
             }}
         }}
         #[resource]
-        type Conn {{ fd: i64 }}
+        type Conn {{ fd: i64; }}
         impl Conn {{ fn close(consume self) {{}} }}
         machine Slot<T> {{
-            events {{ Put {{ value: T }}, Clear }}
-            state Empty,
-            state Full {{ value: T }},
+            events {{ Put {{ value: T; }} Clear; }}
+            state Empty;
+            state Full {{ value: T; }}
             on Put: Empty => Full {{ value: event.value }}
-            on Clear: Full => Empty,
+            on Clear: Full => Empty;
             default {{ state }}
         }}
         fn main() {{
@@ -1794,20 +1802,23 @@ fn generic_machine_instantiated_with_a_value_type_is_admitted() {
     // Negative control for the refusal above: the same machine at a pure
     // argument carries no diagnostic.
     let output = typecheck_isolated(
-        r"
-        machine Slot<T> {
-            events { Put { value: T }, Clear }
-            state Empty,
-            state Full { value: T },
-            on Put: Empty => Full { value: event.value }
-            on Clear: Full => Empty,
-            default { state }
-        }
-        fn main() {
-            var slot: Slot<i64> = .Empty;
-            let _ = slot.step(.Put { value: 3 });
-        }
-        ",
+        r"machine Slot<T> {
+    events {
+        Put { value: T; }
+        Clear;
+    }
+    state Empty;
+    state Full { value: T; }
+    on Put: Empty => Full { value: event.value }
+    on Clear: Full => Empty;
+    default { state }
+}
+
+fn main() {
+    var slot: Slot<i64> = .Empty;
+    let _ = slot.step(.Put { value: 3 });
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1826,46 +1837,15 @@ fn machine_release_proves_the_resource_close() {
         format!(
             "
         #[resource]
-        type Tag {{ id: i64 }}
+        type Tag {{ id: i64; }}
         impl Tag {{ fn close(consume self) {{ {close} }} }}
         {rest}
         "
         )
     };
-    let helper = "
-        fn weigh(n: i64) -> i64 { let t = Tag { id: n }; t.id + 1 }
-        machine Counter {
-            events { Bump }
-            state Idle,
-            state Live { n: i64 },
-            on Bump: Idle => Live { n: weigh(1) }
-            on Bump: Live => Live reenter { n: state.n + 1 }
-            default { state }
-        }
-        fn main() { var c: Counter = .Idle; let _ = c.step(.Bump); }
-    ";
-    let payload = "
-        machine Link {
-            events { Open { id: i64 }, Shut }
-            state Idle,
-            state Live { tag: Rc<Tag> },
-            on Open(id): Idle => Live { tag: Rc.new(Tag { id: id }) }
-            on Shut: Live => Idle,
-            default { state }
-        }
-        fn main() { var l: Link = .Idle; let _ = l.step(.Open { id: 1 }); }
-    ";
-    let generic = "
-        machine Slot<T> {
-            events { Put { value: T }, Clear }
-            state Empty,
-            state Full { value: T },
-            on Put: Empty => Full { value: event.value }
-            on Clear: Full => Empty,
-            default { state }
-        }
-        fn main() { var slot: Slot<Rc<Tag>> = .Empty; let _ = slot.step(.Clear); }
-    ";
+    let helper = "fn weigh(n: i64) -> i64 {\n    let t = Tag { id: n };\n    t.id + 1\n}\n\nmachine Counter {\n    events {\n        Bump;\n    }\n    state Idle;\n    state Live { n: i64; }\n    on Bump: Idle => Live { n: weigh(1) }\n    on Bump: Live => Live reenter { n: state.n + 1 }\n    default { state }\n}\n\nfn main() {\n    var c: Counter = .Idle;\n    let _ = c.step(.Bump);\n}\n";
+    let payload = "machine Link {\n    events {\n        Open { id: i64; }\n        Shut;\n    }\n    state Idle;\n    state Live { tag: Rc<Tag>; }\n    on Open(id): Idle => Live { tag: Rc.new(Tag { id: id }) }\n    on Shut: Live => Idle;\n    default { state }\n}\n\nfn main() {\n    var l: Link = .Idle;\n    let _ = l.step(.Open { id: 1 });\n}\n";
+    let generic = "machine Slot<T> {\n    events {\n        Put { value: T; }\n        Clear;\n    }\n    state Empty;\n    state Full { value: T; }\n    on Put: Empty => Full { value: event.value }\n    on Clear: Full => Empty;\n    default { state }\n}\n\nfn main() {\n    var slot: Slot<Rc<Tag>> = .Empty;\n    let _ = slot.step(.Clear);\n}\n";
     for rest in [helper, payload, generic] {
         let refused = typecheck_isolated(&source("println(f\"close {self.id}\");", rest));
         assert!(
@@ -1889,27 +1869,29 @@ fn machine_transition_supervisor_spawn_refused_as_impure() {
     // walker's `Item::Machine` arm: a machine that normalizes has no machine
     // item left to walk, and one that does not never reaches HIR.
     let output = typecheck_isolated(
-        r"
-        supervisor Root {
-            strategy: one_for_one,
-            child worker: Worker(),
-        }
-        actor Worker {
-            receive fn work() {}
-        }
-        machine M {
-            events {
-                Tick,
-            }
+        r"supervisor Root {
+    strategy: one_for_one;
+    child worker: Worker();
+}
 
-            state Active,
-            on Tick: Active => Active reenter {
-                let s = spawn Root(value: 1);
-                .Active
-            }
-        }
-        fn main() {}
-        ",
+actor Worker {
+    receive fn work() {}
+}
+
+machine M {
+    events {
+        Tick;
+    }
+
+    state Active;
+    on Tick: Active => Active reenter {
+        let s = spawn Root(value: 1);
+        .Active
+    }
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -1926,28 +1908,30 @@ fn machine_state_entry_supervisor_spawn_refused_as_impure() {
     // The same refusal from a state `entry` hook, the other user-expression
     // position the retired HIR walker covered.
     let output = typecheck_isolated(
-        r"
-        supervisor Root {
-            strategy: one_for_one,
-            child worker: Worker(),
-        }
-        actor Worker {
-            receive fn work() {}
-        }
-        machine M {
-            events {
-                Tick,
-            }
+        r"supervisor Root {
+    strategy: one_for_one;
+    child worker: Worker();
+}
 
-            state Idle {
-                entry {
-                    let s = spawn Root(value: 1);
-                }
-            },
-            on Tick: Idle => Idle reenter,
+actor Worker {
+    receive fn work() {}
+}
+
+machine M {
+    events {
+        Tick;
+    }
+
+    state Idle {
+        entry {
+            let s = spawn Root(value: 1);
         }
-        fn main() {}
-        ",
+    }
+    on Tick: Idle => Idle reenter;
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -1962,29 +1946,27 @@ fn machine_state_entry_supervisor_spawn_refused_as_impure() {
 #[test]
 fn machine_state_entry_unknown_input_field_errors() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push { force: i64 },
-                Pull,
-            }
-            emits {
-                Note { count: i64 },
-            }
+        r"machine Door {
+    events {
+        Push { force: i64; }
+        Pull;
+    }
+    emits {
+        Note { count: i64; }
+    }
 
-            state Open,
-            state Closed {
-                entry {
-                    emit Note { count: event.weight };
-                }
-            },
-
-
-            on Push: Open => .Closed,
-            on Pull: Closed => .Open,
-            default { state }
+    state Open;
+    state Closed {
+        entry {
+            emit Note { count: event.weight };
         }
-        ",
+    }
+
+    on Push: Open => .Closed;
+    on Pull: Closed => .Open;
+    default { state }
+}
+",
     );
     assert!(
         output
@@ -2000,28 +1982,26 @@ fn machine_state_entry_unknown_input_field_errors() {
 #[test]
 fn machine_state_entry_state_binding_in_scope() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push,
-                Pull,
-            }
+        r"machine Door {
+    events {
+        Push;
+        Pull;
+    }
 
-            state Closed {
-                entry {
-                    // `state` is the machine value; discarding it must be fine
-                    let _s = state;
-                }
-            },
-            state Open,
-
-
-            on Push: Closed => .Open,
-            on Push: Open   => .Open,
-            on Pull: Open   => .Closed,
-            on Pull: Closed => .Closed,
+    state Closed {
+        entry {
+            // `state` is the machine value; discarding it must be fine
+            let _s = state;
         }
-        ",
+    }
+    state Open;
+
+    on Push: Closed => .Open;
+    on Push: Open => .Open;
+    on Pull: Open => .Closed;
+    on Pull: Closed => .Closed;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2035,29 +2015,27 @@ fn machine_state_entry_state_binding_in_scope() {
 #[test]
 fn machine_state_entry_payload_field_resolves() {
     let output = typecheck_isolated(
-        r"
-        machine TcpState {
-            events {
-                Connect,
-                Disconnect,
-            }
+        r"machine TcpState {
+    events {
+        Connect;
+        Disconnect;
+    }
 
-            state Closed,
-            state Established {
-                entry {
-                    // `state.seq` must resolve - payload field on the current state
-                    let _n: i64 = state.seq;
-                }
-                seq: i64,
-            },
-
-
-            on Connect:    Closed      => .Established { seq: 0 }
-            on Connect:    Established => .Established { seq: state.seq }
-            on Disconnect: Closed      => .Closed,
-            on Disconnect: Established => .Closed,
+    state Closed;
+    state Established {
+        seq: i64;
+        entry {
+            // `state.seq` must resolve - payload field on the current state
+            let _n: i64 = state.seq;
         }
-        ",
+    }
+
+    on Connect: Closed => .Established { seq: 0 }
+    on Connect: Established => .Established { seq: state.seq }
+    on Disconnect: Closed => .Closed;
+    on Disconnect: Established => .Closed;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2071,29 +2049,27 @@ fn machine_state_entry_payload_field_resolves() {
 #[test]
 fn machine_state_exit_payload_field_resolves() {
     let output = typecheck_isolated(
-        r"
-        machine TcpState {
-            events {
-                Connect,
-                Disconnect,
-            }
+        r"machine TcpState {
+    events {
+        Connect;
+        Disconnect;
+    }
 
-            state Closed,
-            state Established {
-                exit {
-                    // `state.seq` must resolve - payload field on the current state
-                    let _n: i64 = state.seq;
-                }
-                seq: i64,
-            },
-
-
-            on Connect:    Closed      => .Established { seq: 0 }
-            on Connect:    Established => .Established { seq: state.seq }
-            on Disconnect: Closed      => .Closed,
-            on Disconnect: Established => .Closed,
+    state Closed;
+    state Established {
+        seq: i64;
+        exit {
+            // `state.seq` must resolve - payload field on the current state
+            let _n: i64 = state.seq;
         }
-        ",
+    }
+
+    on Connect: Closed => .Established { seq: 0 }
+    on Connect: Established => .Established { seq: state.seq }
+    on Disconnect: Closed => .Closed;
+    on Disconnect: Established => .Closed;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2106,28 +2082,26 @@ fn machine_state_exit_payload_field_resolves() {
 #[test]
 fn machine_state_entry_nonexistent_payload_field_errors() {
     let output = typecheck_isolated(
-        r"
-        machine TcpState {
-            events {
-                Connect,
-                Disconnect,
-            }
+        r"machine TcpState {
+    events {
+        Connect;
+        Disconnect;
+    }
 
-            state Closed,
-            state Established {
-                entry {
-                    let _n: i64 = state.no_such_field;
-                }
-                seq: i64,
-            },
-
-
-            on Connect:    Closed      => .Established { seq: 0 }
-            on Connect:    Established => .Established { seq: state.seq }
-            on Disconnect: Closed      => .Closed,
-            on Disconnect: Established => .Closed,
+    state Closed;
+    state Established {
+        seq: i64;
+        entry {
+            let _n: i64 = state.no_such_field;
         }
-        ",
+    }
+
+    on Connect: Closed => .Established { seq: 0 }
+    on Connect: Established => .Established { seq: state.seq }
+    on Disconnect: Closed => .Closed;
+    on Disconnect: Established => .Closed;
+}
+",
     );
     assert!(
         output
@@ -2144,24 +2118,22 @@ fn machine_state_entry_nonexistent_payload_field_errors() {
 #[test]
 fn machine_transition_guard_type_error_reported() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push,
-                Pull,
-            }
+        r"machine Door {
+    events {
+        Push;
+        Pull;
+    }
 
-            state Closed,
-            state Open,
+    state Closed;
+    state Open;
 
-
-            // guard expects bool, but 42 is i64 — type error
-            on Push: Closed => .Open when 42,
-            on Push: Open   => .Open,
-            on Pull: Open   => .Closed,
-            on Pull: Closed => .Closed,
-        }
-        ",
+    // guard expects bool, but 42 is i64 — type error
+    on Push: Closed => .Open when 42;
+    on Push: Open => .Open;
+    on Pull: Open => .Closed;
+    on Pull: Closed => .Closed;
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -2175,25 +2147,26 @@ fn machine_transition_guard_type_error_reported() {
 #[test]
 fn machine_entry_block_type_error_reported() {
     let output = typecheck_isolated(
-        r"
-        machine Door {
-            events {
-                Push,
-                Pull,
-            }
+        r"machine Door {
+    events {
+        Push;
+        Pull;
+    }
 
-            state Closed {
-                entry { let _x: i64 = true; }   // type error
-            },
-            state Open,
-
-
-            on Push: Closed => .Open,
-            on Push: Open => .Open,
-            on Pull: Open => .Closed,
-            on Pull: Closed => .Closed,
+    state Closed {
+        entry {
+            let _x: i64 = true;
         }
-        ",
+        // type error
+        }
+    state Open;
+
+    on Push: Closed => .Open;
+    on Push: Open => .Open;
+    on Pull: Open => .Closed;
+    on Pull: Closed => .Closed;
+}
+",
     );
     assert!(
         output.errors.iter().any(|e| matches!(
@@ -2216,12 +2189,13 @@ fn machine_entry_block_type_error_reported() {
 /// bound identically to an inline `<T: Resource>`.
 #[test]
 fn machine_where_clause_bound_resolves_and_enforces() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type File { path: i64, }
+type File {
+    path: i64;
+}
 
 impl Resource for File {
     fn close(self) {}
@@ -2229,18 +2203,21 @@ impl Resource for File {
 
 machine Holder<T> where T: Resource {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn main() {
@@ -2262,27 +2239,31 @@ fn main() {
 /// as inline bounds.
 #[test]
 fn machine_where_clause_bound_violation_errors() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T> where T: Resource {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn main() {
@@ -2310,25 +2291,27 @@ fn main() {
 /// ignoring the predicate.
 #[test]
 fn machine_where_clause_undeclared_param_errors() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
 machine Bogus where U: Resource {
     events {
-        Start,
-        Stop,
+        Start;
+        Stop;
     }
 
-    state Idle,
-    state Active,
+    state Idle;
+    state Active;
 
-
-    on Start: Idle => .Active,
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Start: Idle => .Active;
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 ";
     let output = typecheck_isolated(source);
@@ -2350,12 +2333,13 @@ machine Bogus where U: Resource {
 /// `Resource`.
 #[test]
 fn machine_duplicate_inline_and_where_bound_dedups() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type File { path: i64, }
+type File {
+    path: i64;
+}
 
 impl Resource for File {
     fn close(self) {}
@@ -2363,18 +2347,21 @@ impl Resource for File {
 
 machine Twin<T: Resource> where T: Resource {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn main() {
@@ -2407,12 +2394,13 @@ fn main() {
 /// `var x: Holder<File>` with `File: Resource` accepts cleanly.
 #[test]
 fn machine_type_annotation_bound_satisfied_typechecks() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type File { path: i64, }
+type File {
+    path: i64;
+}
 
 impl Resource for File {
     fn close(self) {}
@@ -2420,18 +2408,21 @@ impl Resource for File {
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn use_holder(h: Holder<File>) -> Holder<File> {
@@ -2452,31 +2443,34 @@ fn use_holder(h: Holder<File>) -> Holder<File> {
 /// fires at type-annotation resolution.
 #[test]
 fn machine_type_annotation_bound_violation_errors_at_annotation_site() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
-fn use_holder(h: Holder<Plain>) {
-}
+fn use_holder(h: Holder<Plain>) {}
 ";
     let output = typecheck_isolated(source);
     let bound_errors: Vec<_> = output
@@ -2504,27 +2498,31 @@ fn use_holder(h: Holder<Plain>) {
 /// binding slot.
 #[test]
 fn machine_let_annotation_bound_violation_errors() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn main() {
@@ -2554,8 +2552,9 @@ fn main() {
 /// short-circuits cleanly.
 #[test]
 fn non_machine_annotation_does_not_trigger_machine_bound_check() {
-    let source = r"
-type Box<T> { value: T, }
+    let source = r"type Box<T> {
+    value: T;
+}
 
 fn use_box(b: Box<i64>) -> Box<i64> {
     b
@@ -2583,27 +2582,31 @@ fn use_box(b: Box<i64>) -> Box<i64> {
 /// `BoundsNotSatisfied`. Pins Path-3 wiring.
 #[test]
 fn machine_ctor_coercion_arm_bound_violation_errors() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
 fn build() -> Holder<Plain> {
@@ -2645,30 +2648,36 @@ fn build() -> Holder<Plain> {
 /// instantiation.
 #[test]
 fn machine_nested_in_generic_wrapper_enforces_bound() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
-fn takes(opt: Option<Holder<Plain>>) -> i64 { 0 }
+fn takes(opt: Option<Holder<Plain>>) -> i64 {
+    0
+}
 ";
     let output = typecheck_isolated(source);
     let bound_errors: Vec<_> = output
@@ -2690,30 +2699,36 @@ fn takes(opt: Option<Holder<Plain>>) -> i64 { 0 }
 /// element.
 #[test]
 fn machine_nested_in_tuple_enforces_bound() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
-fn takes(pair: (Holder<Plain>, i64)) -> i64 { 0 }
+fn takes(pair: (Holder<Plain>, i64)) -> i64 {
+    0
+}
 ";
     let output = typecheck_isolated(source);
     let bound_errors: Vec<_> = output
@@ -2734,30 +2749,36 @@ fn takes(pair: (Holder<Plain>, i64)) -> i64 { 0 }
 /// reachable from the original outer `Ty::Named` check.
 #[test]
 fn machine_nested_in_function_type_enforces_bound() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
-fn takes_fn(f: fn(Holder<Plain>) -> i64) -> i64 { 0 }
+fn takes_fn(f: fn(Holder<Plain>) -> i64) -> i64 {
+    0
+}
 ";
     let output = typecheck_isolated(source);
     let bound_errors: Vec<_> = output
@@ -2782,30 +2803,36 @@ fn takes_fn(f: fn(Holder<Plain>) -> i64) -> i64 { 0 }
 /// diagnostic.
 #[test]
 fn machine_multi_resolution_in_one_annotation_dedups() {
-    let source = r"
-trait Resource {
+    let source = r"trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64, }
+type Plain {
+    x: i64;
+}
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Stop,
+        Start { handle: T; }
+        Stop;
     }
 
-    state Idle,
-    state Active { handle: T, },
-
+    state Idle;
+    state Active { handle: T; }
 
     on Start: Idle => .Active { handle: event.handle }
-    on Stop: Active => .Idle,
-    on Start: _ => _ { state }
-    on Stop: _ => _ { state }
+    on Stop: Active => .Idle;
+    on Start: _ => _ {
+        state
+    }
+    on Stop: _ => _ {
+        state
+    }
 }
 
-fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
+fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 {
+    0
+}
 ";
     let output = typecheck_isolated(source);
     let bound_errors: Vec<_> = output
@@ -2828,25 +2855,24 @@ fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
 #[test]
 fn machine_const_param_is_named_in_a_guard() {
     let output = typecheck_isolated(
-        r"
-        machine Retry<const MAX: usize = 3> {
-            events {
-                Fail,
-            }
+        r"machine Retry<const MAX: usize = 3> {
+    events {
+        Fail;
+    }
 
-            state Trying { attempts: usize },
-            state Exhausted,
+    state Trying { attempts: usize; }
+    state Exhausted;
 
-            on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
-            on Fail: Trying => Exhausted,
-            on Fail: Exhausted => Exhausted reenter,
-        }
+    on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
+    on Fail: Trying => Exhausted;
+    on Fail: Exhausted => Exhausted reenter;
+}
 
-        fn main() {
-            var retry: Retry = .Trying { attempts: 0 };
-            let _ = retry.step(.Fail);
-        }
-        ",
+fn main() {
+    var retry: Retry = .Trying { attempts: 0 };
+    let _ = retry.step(.Fail);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2860,20 +2886,19 @@ fn machine_const_param_is_named_in_a_guard() {
 #[test]
 fn machine_const_param_shadowing_is_refused() {
     let output = typecheck_isolated(
-        r"
-        machine Retry<const MAX: usize = 3> {
-            events {
-                Fail,
-            }
+        r"machine Retry<const MAX: usize = 3> {
+    events {
+        Fail;
+    }
 
-            state Trying { attempts: usize },
+    state Trying { attempts: usize; }
 
-            on Fail: Trying => Trying reenter {
-                let MAX = 9;
-                Trying { attempts: state.attempts + MAX }
-            }
-        }
-        ",
+    on Fail: Trying => Trying reenter {
+        let MAX = 9;
+        Trying { attempts: state.attempts + MAX }
+    }
+}
+",
     );
     assert!(
         output
@@ -2890,20 +2915,19 @@ fn machine_const_param_shadowing_is_refused() {
 #[test]
 fn machine_body_binding_beside_a_const_param_is_admitted() {
     let output = typecheck_isolated(
-        r"
-        machine Retry<const MAX: usize = 3> {
-            events {
-                Fail,
-            }
+        r"machine Retry<const MAX: usize = 3> {
+    events {
+        Fail;
+    }
 
-            state Trying { attempts: usize },
+    state Trying { attempts: usize; }
 
-            on Fail: Trying => Trying reenter {
-                let step = MAX - 2;
-                Trying { attempts: state.attempts + step }
-            }
-        }
-        ",
+    on Fail: Trying => Trying reenter {
+        let step = MAX - 2;
+        Trying { attempts: state.attempts + step }
+    }
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2917,17 +2941,16 @@ fn machine_body_binding_beside_a_const_param_is_admitted() {
 #[test]
 fn machine_const_param_without_a_default_is_refused() {
     let output = typecheck_isolated(
-        r"
-        machine Retry<const MAX: usize> {
-            events {
-                Fail,
-            }
+        r"machine Retry<const MAX: usize> {
+    events {
+        Fail;
+    }
 
-            state Trying,
+    state Trying;
 
-            on Fail: Trying => Trying reenter,
-        }
-        ",
+    on Fail: Trying => Trying reenter;
+}
+",
     );
     assert!(
         output
@@ -2945,31 +2968,30 @@ fn machine_const_param_without_a_default_is_refused() {
 #[test]
 fn machine_composite_target_enters_the_initial_substate() {
     let output = typecheck_isolated(
-        r"
-        machine Session {
-            events {
-                Open,
-                Authed,
-            }
+        r"machine Session {
+    events {
+        Open;
+        Authed;
+    }
 
-            state Closed,
+    state Closed;
 
-            state Live {
-                initial state Authing,
-                state Active,
-            },
+    state Live {
+        initial state Authing;
+        state Active;
+    }
 
-            on Open: Closed => Live,
-            on Authed: Authing => Active,
+    on Open: Closed => Live;
+    on Authed: Authing => Active;
 
-            default { state }
-        }
+    default { state }
+}
 
-        fn main() {
-            var session: Session = .Closed;
-            let _ = session.step(.Open);
-        }
-        ",
+fn main() {
+    var session: Session = .Closed;
+    let _ = session.step(.Open);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2984,25 +3006,24 @@ fn machine_composite_target_enters_the_initial_substate() {
 #[test]
 fn machine_composite_parent_rule_covers_every_substate() {
     let output = typecheck_isolated(
-        r"
-        machine Session {
-            events {
-                Close,
-            }
+        r"machine Session {
+    events {
+        Close;
+    }
 
-            state Closed,
+    state Closed;
 
-            state Live {
-                initial state Authing,
-                state Active,
-                state Draining,
+    state Live {
+        initial state Authing;
+        state Active;
+        state Draining;
 
-                on Close: _ => Closed,
-            },
+        on Close: _ => Closed;
+    }
 
-            on Close: Closed => Closed reenter,
-        }
-        ",
+    on Close: Closed => Closed reenter;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -3018,27 +3039,26 @@ fn machine_composite_parent_rule_covers_every_substate() {
 #[test]
 fn machine_substate_rule_after_the_block_beats_the_parent_rule() {
     let output = typecheck_isolated(
-        r"
-        machine Session {
-            events {
-                Close,
-            }
+        r"machine Session {
+    events {
+        Close;
+    }
 
-            state Closed,
-            state Kicked,
+    state Closed;
+    state Kicked;
 
-            state Live {
-                initial state Authing,
-                state Draining,
+    state Live {
+        initial state Authing;
+        state Draining;
 
-                on Close: _ => Closed,
-            },
+        on Close: _ => Closed;
+    }
 
-            on Close: Draining => Kicked,
-            on Close: Closed => Closed reenter,
-            on Close: Kicked => Kicked reenter,
-        }
-        ",
+    on Close: Draining => Kicked;
+    on Close: Closed => Closed reenter;
+    on Close: Kicked => Kicked reenter;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -3053,27 +3073,26 @@ fn machine_substate_rule_after_the_block_beats_the_parent_rule() {
 #[test]
 fn machine_guarded_substate_rule_keeps_the_parent_rule_as_its_fallback() {
     let output = typecheck_isolated(
-        r"
-        machine Session {
-            events {
-                Close,
-            }
+        r"machine Session {
+    events {
+        Close;
+    }
 
-            state Closed,
-            state Kicked,
+    state Closed;
+    state Kicked;
 
-            state Live {
-                initial state Authing { hostile: bool },
-                state Draining { hostile: bool },
+    state Live {
+        initial state Authing { hostile: bool; }
+        state Draining { hostile: bool; }
 
-                on Close: _ => Closed,
-            },
+        on Close: _ => Closed;
+    }
 
-            on Close: Draining => Kicked when state.hostile,
-            on Close: Closed => Closed reenter,
-            on Close: Kicked => Kicked reenter,
-        }
-        ",
+    on Close: Draining => Kicked when state.hostile;
+    on Close: Closed => Closed reenter;
+    on Close: Kicked => Kicked reenter;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -3087,26 +3106,25 @@ fn machine_guarded_substate_rule_keeps_the_parent_rule_as_its_fallback() {
 #[test]
 fn machine_guarded_substate_rule_alone_is_not_coverage() {
     let output = typecheck_isolated(
-        r"
-        machine Session {
-            events {
-                Close,
-            }
+        r"machine Session {
+    events {
+        Close;
+    }
 
-            state Closed,
-            state Kicked,
+    state Closed;
+    state Kicked;
 
-            state Live {
-                initial state Authing { hostile: bool },
-                state Draining { hostile: bool },
-            },
+    state Live {
+        initial state Authing { hostile: bool; }
+        state Draining { hostile: bool; }
+    }
 
-            on Close: Draining => Kicked when state.hostile,
-            on Close: Authing => Closed,
-            on Close: Closed => Closed reenter,
-            on Close: Kicked => Kicked reenter,
-        }
-        ",
+    on Close: Draining => Kicked when state.hostile;
+    on Close: Authing => Closed;
+    on Close: Closed => Closed reenter;
+    on Close: Kicked => Kicked reenter;
+}
+",
     );
     assert!(
         output
@@ -3124,32 +3142,31 @@ fn machine_guarded_substate_rule_alone_is_not_coverage() {
 #[test]
 fn machine_concrete_source_rule_inside_the_block_belongs_to_that_substate() {
     let output = typecheck_isolated(
-        r"
-        machine Session {
-            events {
-                Close,
-            }
+        r"machine Session {
+    events {
+        Close;
+    }
 
-            state Closed,
-            state Kicked,
+    state Closed;
+    state Kicked;
 
-            state Live {
-                initial state Authing,
-                state Draining,
+    state Live {
+        initial state Authing;
+        state Draining;
 
-                on Close: Draining => Kicked,
-                on Close: _ => Closed,
-            },
+        on Close: Draining => Kicked;
+        on Close: _ => Closed;
+    }
 
-            on Close: Closed => Closed reenter,
-            on Close: Kicked => Kicked reenter,
-        }
+    on Close: Closed => Closed reenter;
+    on Close: Kicked => Kicked reenter;
+}
 
-        fn main() {
-            var session: Session = .Closed;
-            let _ = session.step(.Close);
-        }
-        ",
+fn main() {
+    var session: Session = .Closed;
+    let _ = session.step(.Close);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -3194,7 +3211,7 @@ fn machine_composite_depth_two_is_refused() {
 /// A body-less transition (`on E: Src => Tgt;`) whose target is a bare
 /// (non-`.`-prefixed) state name must resolve against the machine's own
 /// `state` declarations and type-check cleanly. Regression for #3264: the
-/// desugared body — a bare `Expr::Identifier(Tgt)` checked against the
+/// desugared body — a bare `Expr::Ident(Tgt)` checked against the
 /// machine's own type — was wrongly routed through the general bare-variant
 /// fallback and rejected with `E_BARE_VARIANT_EXPR`, even though
 /// HEW-SPEC-2026 §3.11.3 states plainly that state names in target position
@@ -3202,26 +3219,25 @@ fn machine_composite_depth_two_is_refused() {
 #[test]
 fn machine_bare_transition_target_resolves_to_declared_state() {
     let output = typecheck_isolated(
-        r"
-        machine Light {
-            events {
-                Go,
-            }
+        r"machine Light {
+    events {
+        Go;
+    }
 
-            state Idle,
-            state Running,
+    state Idle;
+    state Running;
 
-            on Go: Idle => Running,
+    on Go: Idle => Running;
 
-            default { state }
-        }
+    default { state }
+}
 
-        fn main() {
-            var light: Light = .Idle;
-            light.step(.Go);
-            let _ = light.state_name();
-        }
-        ",
+fn main() {
+    var light: Light = .Idle;
+    light.step(.Go);
+    let _ = light.state_name();
+}
+",
     );
 
     assert!(
@@ -3241,26 +3257,25 @@ fn machine_bare_transition_target_resolves_to_declared_state() {
 #[test]
 fn machine_bare_transition_target_unknown_state_is_rejected() {
     let output = typecheck_isolated(
-        r"
-        machine Light {
-            events {
-                Go,
-            }
+        r"machine Light {
+    events {
+        Go;
+    }
 
-            state Idle,
-            state Running,
+    state Idle;
+    state Running;
 
-            on Go: Idle => Bogus,
+    on Go: Idle => Bogus;
 
-            default { state }
-        }
+    default { state }
+}
 
-        fn main() {
-            var light: Light = .Idle;
-            light.step(.Go);
-            let _ = light.state_name();
-        }
-        ",
+fn main() {
+    var light: Light = .Idle;
+    light.step(.Go);
+    let _ = light.state_name();
+}
+",
     );
 
     assert!(

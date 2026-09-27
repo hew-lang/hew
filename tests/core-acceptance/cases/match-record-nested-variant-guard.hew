@@ -6,20 +6,21 @@
 //! release into a leak or abort signal.
 
 enum Slot {
-    Filled(string),
-    Empty,
+    Filled(string);
+    Empty;
 }
 
 type Entry {
-    name: string,
-    slot: Slot,
+    name: string;
+    slot: Slot;
 }
 
 fn entry(k: i64) -> Entry {
-    Entry {
-        name: f"entry{k}",
-        slot: if k % 2 == 0 { .Filled(f"load{k}") } else { .Empty },
-    }
+    Entry { name: f"entry{k}", slot: if k % 2 == 0 {
+        .Filled(f"load{k}")
+    } else {
+        .Empty
+    } }
 }
 
 // A guard on the nested-variant candidate. Rejecting it releases the probed

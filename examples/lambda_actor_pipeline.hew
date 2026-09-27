@@ -17,7 +17,7 @@ fn main() {
         print(doubled);
         print(" -> ");
         match printer.send(doubled) {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => panic("doubler could not send to printer"),
         }
     };
@@ -28,14 +28,14 @@ fn main() {
         print(added);
         print(" -> ");
         match doubler.send(added) {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => panic("adder could not send to doubler"),
         }
     };
     // Start the pipeline
     println("Starting pipeline with input: 10");
     match adder.send(10) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("pipeline rejected input 10"),
     }
     sleep(100ms);
@@ -43,7 +43,7 @@ fn main() {
     // Another pipeline run
     println("Starting pipeline with input: 3");
     match adder.send(3) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("pipeline rejected input 3"),
     }
     sleep(100ms);
@@ -55,27 +55,29 @@ fn main() {
     let squarer = actor move |x: i32| {
         let squared = x * x;
         match formatter.send(squared) {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => panic("squarer could not send to formatter"),
         }
     };
     let incrementer = actor move |x: i32| {
         match squarer.send(x + 1) {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => panic("incrementer could not send to squarer"),
         }
     };
     println("Complex pipeline: increment -> square -> format");
     match incrementer.send(4) { // 4+1=5, 5*5=25, format 25
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("complex pipeline rejected input 4"),
     }
     match incrementer.send(9) { // 9+1=10, 10*10=100, format 100
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("complex pipeline rejected input 9"),
     }
     sleep(100ms);
-    adder.close();
-    incrementer.close();
+    stop(adder);
+    stopped(adder);
+    stop(incrementer);
+    stopped(incrementer);
     println("=== Pipeline Done ===");
 }

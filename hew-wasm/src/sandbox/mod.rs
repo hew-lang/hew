@@ -38,91 +38,6 @@ pub fn canonical_profile(profile: Option<&str>) -> Result<String, Diagnostic> {
 }
 pub use sir_emit::Package as SandboxBytecodePackageV1;
 
-/// Every retained native-versus-VM parity case must remain executable.
-pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
-    "hello_world",
-    "fibonacci",
-    "function_composition",
-    "named_arguments",
-    "pattern_matching",
-    "collections",
-    "record_types",
-    "structural_records",
-    "counter_actor",
-    "actor_pipeline",
-    "supervisor",
-    "traffic_light",
-    "arithmetic_operators",
-    "array_indexing",
-    "string_slicing",
-    "while_loop",
-    "wildcard_match",
-    "float_arithmetic",
-    "f32_arithmetic_precision",
-    "float_division",
-    "float_nonfinite_compare",
-    "mixed_numeric",
-    "stmt_if",
-    "stmt_match",
-    "stmt_if_let",
-    "if_let_value",
-    "fieldless_enum_eq",
-    "match_guard_parity",
-    "match_guard_catch_all_fallthrough",
-    "record_equality",
-    "clone_value",
-    "compound_assign",
-    "f64_nonfinite_render",
-    "f64_finite_render",
-    "tuple_values",
-    "generic_aggregate_eq",
-    "option_result_methods",
-    "display_scalars",
-    "pointer_width_native64",
-    "wire_types_declaration",
-    "vec_operations",
-    "vec_inclusive_slice",
-    "record_clone",
-    "fn_field_call",
-    "vec_f64_nonfinite_contains",
-    "bool_not",
-    "scalar_match_int",
-    "scalar_match_string",
-    "bool_match",
-    "struct_functional_update",
-    "struct_pattern_match",
-    "option_some_none",
-    "var_self_fault_defer",
-    "option_take",
-    "fluent_method_chains",
-    "resource_field_collections",
-    "capture_collections",
-    "const_reference",
-    "logical_binary_operators",
-    "bitwise_binary_operators",
-    "compound_bitwise_assign",
-    "shift_out_of_range",
-    "struct_destructure_let",
-    "record_shorthand_destructure_let",
-    "nested_tuple_destructure_let",
-    "wrapping_binary_operators",
-    "method_clone",
-    "regex_clone",
-    "trap_residual",
-    "structural_rendering",
-    "dyn_multibound_dispatch",
-    "dyn_subtrait_display",
-    "map_literal",
-    "math_intrinsics",
-    "trait_objects",
-    "virtual_sleep",
-    "seeded_random",
-    "closure_values",
-    "defer_order",
-    "result_constructors",
-    "map_reads",
-];
-
 /// Names the editor buffer in frontend diagnostics and anchors its imports.
 const SANDBOX_BUFFER_LABEL: &str = "playground.hew";
 
@@ -260,7 +175,167 @@ pub fn compile_to_sandbox_bytecode(
     source: &str,
     profile: Option<&str>,
 ) -> Result<CompileOutput, CompileError> {
-    compile_from_semantics(source, profile)
+    compile_from_semantics(
+        source,
+        profile,
+        SANDBOX_BUFFER_LABEL,
+        hew_compile::FrontendOptions::default(),
+        &mut Vec::new(),
+    )
+}
+
+/// Compile one test file through the shared frontend and project an executable
+/// package for each selected test. Type checking and SIR lowering happen once;
+/// each package differs only by its checked entry callable.
+///
+/// # Errors
+/// Returns compiler diagnostics in the output, or an internal projection error.
+pub fn compile_tests_to_sandbox_bytecode(
+    source: &str,
+    source_path: &std::path::Path,
+    selections: &[hew_types::DeclarationOccurrence],
+    companion: Option<&std::path::Path>,
+    project_dir: &std::path::Path,
+) -> Result<TestCompileOutput, CompileError> {
+    let label = source_path.to_string_lossy();
+    let mut entries = Vec::new();
+    let output = compile_from_semantics(
+        source,
+        Some(DEFAULT_PROFILE_ALIAS),
+        &label,
+        hew_compile::FrontendOptions {
+            project_dir: Some(project_dir.to_path_buf()),
+            test_entry_selections: selections.to_vec(),
+            deterministic_admission: hew_compile::DeterministicAdmission::Tests(
+                selections.to_vec(),
+            ),
+            companion: companion.map(std::path::Path::to_path_buf),
+            ..Default::default()
+        },
+        &mut entries,
+    )?;
+    let bytecodes = output.bytecode.map_or_else(Vec::new, |package| {
+        entries
+            .into_iter()
+            .map(|entry| {
+                let mut selected = package.clone();
+                selected.entry = Some(entry);
+                selected
+            })
+            .collect()
+    });
+    Ok(TestCompileOutput {
+        diagnostics: output.diagnostics,
+        bytecodes,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct TestCompileOutput {
+    pub diagnostics: Vec<Diagnostic>,
+    pub bytecodes: Vec<SandboxBytecodePackageV1>,
+}
+
+/// Compile every test in one editor buffer once, returning one selected VM
+/// package per discovered declaration. The browser chooses the package by its
+/// returned identity and runs it with `runBytecode` in the sandbox VM.
+#[must_use]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = compileTestsToSandboxBytecode)]
+pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String {
+    let parsed = hew_parser::parse(source);
+    let tests = hew_analysis::test_discovery::discover_tests(&parsed.program);
+    let parse_diagnostics = convert_parse_diagnostics(&parsed.errors);
+    if parse_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error")
+    {
+        return serde_json::json!({"diagnostics": parse_diagnostics, "tests": []}).to_string();
+    }
+    if tests.is_empty() {
+        return serde_json::json!({"diagnostics": parse_diagnostics, "tests": []}).to_string();
+    }
+    let eligible = tests
+        .iter()
+        .filter(|test| !test.real_time)
+        .collect::<Vec<_>>();
+    let selections = eligible
+        .iter()
+        .map(|test| {
+            hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                None,
+                &test.span,
+                test.item_ordinal,
+                hew_types::DeclarationKind::Function,
+                0,
+            )
+        })
+        .collect::<Vec<_>>();
+    let path = std::path::Path::new(file);
+    let project_dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if eligible.is_empty() {
+        return serde_json::json!({
+            "diagnostics": parse_diagnostics,
+            "tests": tests.iter().map(|test| serde_json::json!({
+                "identity": format!("{file}::{}", test.name),
+                "name": test.name,
+                "range": {"start": test.span.start, "end": test.span.end},
+                "ignored": test.ignored,
+                "ignore_reason": test.ignore_reason,
+                "should_panic": test.should_panic,
+                "should_panic_message": test.should_panic_message,
+                "timeout_ns": test.timeout_ns.map(|value| value.to_string()),
+                "real_time": test.real_time,
+                "bytecode": null,
+            })).collect::<Vec<_>>(),
+        })
+        .to_string();
+    }
+    match compile_tests_to_sandbox_bytecode(source, path, &selections, None, project_dir) {
+        Ok(output) => {
+            if output.bytecodes.len() != eligible.len() {
+                if output
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == "error")
+                {
+                    return serde_json::json!({"diagnostics": output.diagnostics, "tests": []})
+                        .to_string();
+                }
+                return serde_json::json!({"error": "compiler emitted an incomplete test package set"}).to_string();
+            }
+            let mut bytecodes = output.bytecodes.into_iter();
+            let packages = tests
+                .into_iter()
+                .map(|test| {
+                    let bytecode = if test.real_time {
+                        None
+                    } else {
+                        bytecodes.next()
+                    };
+                    serde_json::json!({
+                        "identity": format!("{file}::{}", test.name),
+                        "name": test.name,
+                        "range": {"start": test.span.start, "end": test.span.end},
+                        "ignored": test.ignored,
+                        "ignore_reason": test.ignore_reason,
+                        "should_panic": test.should_panic,
+                        "should_panic_message": test.should_panic_message,
+                        "timeout_ns": test.timeout_ns.map(|value| value.to_string()),
+                        "real_time": test.real_time,
+                        "bytecode": bytecode,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({"diagnostics": output.diagnostics, "tests": packages}).to_string()
+        }
+        Err(error) => {
+            serde_json::json!({"error": format!("internal compiler error: {}", error.message)})
+                .to_string()
+        }
+    }
 }
 
 /// Compile Hew source into a sandbox bytecode package and return the result
@@ -304,6 +379,9 @@ fn has_error_diagnostics(diagnostics: &[Diagnostic]) -> bool {
 fn compile_from_semantics(
     source: &str,
     profile: Option<&str>,
+    source_label: &str,
+    mut options: hew_compile::FrontendOptions,
+    test_entries: &mut Vec<sir_emit::Entry>,
 ) -> Result<CompileOutput, CompileError> {
     let canonical_profile = match canonical_profile(profile) {
         Ok(profile) => profile,
@@ -318,14 +396,8 @@ fn compile_from_semantics(
     // The shared frontend, not a second one: it resolves this buffer's imports
     // into the module graph, so an imported declaration reaches HIR with a
     // body instead of an unresolved binding.
-    let state = hew_compile::run_source_frontend(
-        source,
-        SANDBOX_BUFFER_LABEL,
-        &hew_compile::FrontendOptions {
-            documents: embedded_standard_library_documents(),
-            ..Default::default()
-        },
-    );
+    options.documents = embedded_standard_library_documents();
+    let state = hew_compile::run_source_frontend(source, source_label, &options);
     let mut diagnostics = state
         .parse_result
         .as_ref()
@@ -392,6 +464,28 @@ fn compile_from_semantics(
     .map_err(|error| CompileError {
         message: error.message,
     })?;
+    for test in &module.test_entries {
+        let index = module
+            .functions
+            .iter()
+            .position(|function| function.callable == test.callable)
+            .ok_or_else(|| CompileError {
+                message: "checked test entry is absent from sandbox functions".into(),
+            })?;
+        let function = u32::try_from(index).map_err(|_| CompileError {
+            message: "sandbox function table exceeds u32".into(),
+        })?;
+        let exit = match test.action {
+            hew_types::EntryExitAction::Unit => "unit",
+            hew_types::EntryExitAction::Integer(_) | hew_types::EntryExitAction::Result { .. } => {
+                "status"
+            }
+        };
+        test_entries.push(sir_emit::Entry {
+            function,
+            exit: exit.into(),
+        });
+    }
 
     Ok(CompileOutput {
         diagnostics,

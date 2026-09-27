@@ -4,23 +4,31 @@
 // refuses instead of parking and reports `Rejected(SendFailure<Req>)`, which is
 // the one outcome from which the same call may safely be made again. `.Wait`
 // is the bare-handle behaviour and is the control here.
+import std.stream;
+
 actor Gate {
-    mailbox 1,
-    var done: i64 = 0,
+    mailbox 1;
+    var done: i64 = 0;
 
     // A one-way handler the mailbox view can submit to, and a value-returning
-    // one the completion views call.
-    receive fn occupy(ms: i64) {
-        sleep(ms * 1ms);
+    // one the completion views call. `occupy` runs until its gate opens.
+    receive fn occupy(hold: stream.Stream<i64>) {
+        hold.recv();
         done = done + 1;
     }
 
-    receive fn tally() -> i64 { done }
-    receive fn echo(value: string) -> string { value }
+    receive fn tally() -> i64 {
+        done
+    }
+    receive fn echo(value: string) -> string {
+        value
+    }
 }
 
 actor Spare {
-    receive fn echo(value: string) -> string { value }
+    receive fn echo(value: string) -> string {
+        value
+    }
 }
 
 fn describe<Req>(problem: ActorError<Never, Req>) -> string {
@@ -34,15 +42,19 @@ fn main() {
     let gate = spawn Gate();
     let refusing = policy(gate, on_full: .Reject);
     let inbox = mailbox(gate, on_full: .Wait);
-    // Two accepted submissions: one the actor is running for a long turn, one
-    // occupying its single mailbox seat. Both return only once accepted, so
-    // the seat is provably taken before the next call is made.
-    match inbox.occupy(2000) {
+    // Two accepted submissions: one the actor is running for a turn that lasts
+    // until `release` opens its gate, one occupying its single mailbox seat.
+    // Both return only once accepted, so the seat is provably taken before the
+    // next call is made.
+    let (release, hold): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (opened, open): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    opened.send(1).expect("open");
+    match inbox.occupy(hold) {
         .Ok(outcome) => println(f"submitted: {outcome}"),
         .Err(_) => panic("the first submission was refused"),
     }
-    match inbox.occupy(0) {
-        .Ok(_) => {},
+    match inbox.occupy(open) {
+        .Ok(_) => {}
         .Err(_) => panic("the queued submission was refused"),
     }
     // No seat left while the long turn runs, so the refusing view refuses.
@@ -61,7 +73,7 @@ fn main() {
                 .Ok(value) => println(value == "DÉJÀ\0VU"),
                 .Err(_) => panic("redirection failed"),
             }
-        },
+        }
         _ => panic("the full mailbox accepted a request"),
     }
     // Dropping another rejection must release its original owned string.
@@ -74,7 +86,9 @@ fn main() {
         .Err(ActorError.Rejected(failure)) => failure,
         _ => panic("the full mailbox accepted the terminal-origin request"),
     };
-    // A bare-handle call waits for a seat instead, and completes.
+    // A bare-handle call waits for a seat instead, and completes once the long
+    // turn ends.
+    release.send(1).expect("release");
     match gate.tally() {
         .Ok(v) => println(v),
         .Err(problem) => println(describe(problem)),
@@ -89,13 +103,21 @@ fn main() {
         .Ok(value) => println(value == "RETRY\0ME"),
         .Err(_) => panic("retry failed after capacity became available"),
     }
-    close(gate);
+    {
+        let __hew_migrated_actor_4110 = gate;
+        stop(__hew_migrated_actor_4110);
+        stopped(__hew_migrated_actor_4110);
+    };
     // The original destination is terminal. The detached request still owns
     // its payload, and redirection selects Spare.echo's own handler identity.
     match orphaned.to(spare) {
         .Ok(value) => println(value == "TERMINAL\0ORIGIN"),
         .Err(_) => panic("redirection after origin termination failed"),
     }
-    close(spare);
+    {
+        let __hew_migrated_actor_4453 = spare;
+        stop(__hew_migrated_actor_4453);
+        stopped(__hew_migrated_actor_4453);
+    };
     println("closed");
 }

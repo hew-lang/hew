@@ -9,10 +9,12 @@ actor Worker {
 }
 
 fn main() {
-    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     tx.close();
     let w = spawn Worker;
     let _ = w.deliver((rx, 99));
-    sleep(100ms);
     println("done");
 }

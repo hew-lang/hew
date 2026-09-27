@@ -135,7 +135,7 @@ fn len_receiver(expr: &Expr) -> Option<&Spanned<Expr>> {
             receiver,
             method,
             args,
-        } if method == "len" && args.is_empty() => Some(receiver),
+        } if method.0.name.as_str() == "len" && args.is_empty() => Some(receiver),
         _ => None,
     }
 }
@@ -196,7 +196,7 @@ fn type_has_is_empty(ty: &Ty) -> bool {
         || matches!(
             ty,
             Ty::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashSet),
+                head: crate::TypeHead::Builtin(BuiltinType::Vec | BuiltinType::HashSet),
                 ..
             }
         )
@@ -206,9 +206,9 @@ fn type_has_is_empty(ty: &Ty) -> bool {
 /// restricted to identifier / field-path shapes that round-trip cleanly.
 fn render_receiver(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Identifier(name) => Some(name.clone()),
+        Expr::Ident(name) => Some(name.to_string()),
         Expr::FieldAccess { object, field } => {
-            Some(format!("{}.{field}", render_receiver(&object.0)?))
+            Some(format!("{}.{}", render_receiver(&object.0)?, field.0))
         }
         _ => None,
     }

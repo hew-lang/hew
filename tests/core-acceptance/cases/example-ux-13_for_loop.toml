@@ -1,0 +1,13 @@
+[[case]]
+id = "example-ux-13_for_loop"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/ux/13_for_loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout_file = "../../examples/ux/13_for_loop.expected"
+exit = 0

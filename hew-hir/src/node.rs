@@ -43,6 +43,9 @@ pub struct HirModule {
     /// Downstream layers join on the plan's declaration identity and execute
     /// its action without rediscovering either fact.
     pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
+    /// Checker-selected test entries in dispatcher ordinal order. Each entry
+    /// retains its own typed process-exit action.
+    pub test_entry_plans: Vec<hew_types::EntryExitPlan>,
     /// Checker-authored wire layout metadata keyed by canonical type name.
     pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from
@@ -164,6 +167,9 @@ pub struct HirModule {
     /// each entry and stores the `*HewRegex` handle in a global slot indexed
     /// by `literal_id`. Codegen (slice 5) wires the global-slot reference.
     pub regex_literals: Vec<HirRegexLiteral>,
+    /// The compilation's declaration table: every `DefId` in the module
+    /// indexes it, and it is the only renderer of a declaration path.
+    pub defs: Arc<hew_types::DefTable>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -348,7 +354,7 @@ pub struct HirImplBlock {
     pub self_type: Option<hew_types::NominalId>,
     /// Outer type parameters on the impl, e.g. `["T"]` for
     /// `impl<T> Iterator for VecIter<T>`.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Concrete self-type arguments for a concrete specialised impl, e.g.
     /// `[ResolvedTy::I64]` for `impl Describe for Wrapper<i64>`. Always empty
     /// when `type_params` is non-empty (generic impl) or when the target type
@@ -359,17 +365,11 @@ pub struct HirImplBlock {
     /// Associated-type bindings declared on the impl
     /// (e.g. `type Item = T;` → `("Item", ResolvedTy::TypeParam("T"))`).
     pub type_aliases: Vec<(String, ResolvedTy)>,
-    /// Names of the per-method symbols emitted as separate
-    /// `HirItem::Function` entries (`<self_type_name>::<method>`). Order
-    /// matches `impl_decl.methods`.
-    pub method_symbols: Vec<String>,
-    /// Surface method names (e.g. `"show"`), parallel to `method_symbols`
-    /// in length and order. Carried as structured metadata so static-dispatch
-    /// resolution can look up `(declaring_trait, self_type_name, method_name)
-    /// → method_symbol` without reverse-parsing the flattened symbol.
+    /// Surface method names (e.g. `"show"`), parallel to `method_item_ids`.
+    /// The emitted `HirFn` owns each physical symbol.
     pub method_names: Vec<String>,
     /// Declaring trait for each method in `method_names`, parallel to
-    /// `method_symbols`. For an inline supertrait method in `impl Sub for T`,
+    /// `method_item_ids`. For an inline supertrait method in `impl Sub for T`,
     /// this records the supertrait that declared the method, not `Sub`.
     pub method_declaring_traits: Vec<String>,
     /// Checker-published declaring-trait identities, parallel to
@@ -395,11 +395,8 @@ pub struct HirImplBlock {
 }
 
 impl HirImplBlock {
-    /// Build the qualified method symbol used by both the `Impl` metadata
-    /// (in `method_symbols`) and the corresponding flattened
-    /// `HirItem::Function` entry (in `HirFn::name`). Centralised so call-site
-    /// dispatch can re-derive the symbol from the receiver type without
-    /// scanning the impl-block table.
+    /// Build the legacy physical spelling of a uniquely named method.
+    /// Colliding implementations add a declaration-owned suffix in HIR.
     #[must_use]
     pub fn method_symbol(self_type_name: &str, method_name: &str) -> String {
         format!("{self_type_name}::{method_name}")
@@ -442,7 +439,7 @@ pub struct HirActorDecl {
     /// SIR uses these names to specialize the actor's state and member bodies
     /// for each demanded closed handle type. Generic origins remain templates;
     /// only their concrete instances reach physical lowering.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// `let <name>: <ty>;` state fields declared in the actor body. Field
     /// ordering is source order; the runtime layout follows the same order.
     pub state_fields: Vec<HirField>,
@@ -455,6 +452,9 @@ pub struct HirActorDecl {
     /// periodic scheduling (validated by the checker; recorded here as a
     /// structural flag plus the duration in nanoseconds).
     pub receive_handlers: Vec<HirActorReceiveFn>,
+    /// Exact receive declarations and payload slots selected as mailbox
+    /// coalescing keys by the checker.
+    pub coalesce_keys: Vec<(DefId, u32)>,
     /// Plain methods on the actor (not lifecycle hooks). MIR emits one
     /// `{Actor}__fn__{name}` callable per entry, entered from the actor's own
     /// handlers, hooks, `init`, and sibling methods; the body reads and writes
@@ -624,11 +624,11 @@ pub enum HirLifecycleHookKind {
     /// `#[on(crash)]` — runs when the actor body traps. Takes the stdlib
     /// crash-info payload parameter and returns the stdlib crash action enum.
     Crash,
-    /// `#[on(exit)]` — runs when an actor THIS actor is linked to
+    /// `#[on(link)]` — runs when an actor THIS actor is linked to
     /// crashes/exits. Takes the stdlib `CrashNotification { actor_id, kind }`
     /// payload and returns `()`. Fired on the linked actor's own dispatch via
     /// the `HewSysMsg::Exit` delivery (M-7-R, Q210/A211).
-    Exit,
+    Link,
     /// `#[on(down)]` — receives a typed monitor terminal notification.
     Down,
 }
@@ -687,7 +687,7 @@ pub struct HirRecordDecl {
     /// [`Self::qualified_name`] derives the dotted registry key; root records
     /// qualify to their bare name. The decl `name` stays bare in both cases.
     pub defining_module: Option<String>,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Positional payload types in declaration order for tuple-form records
     /// (`record Pair(i64, string)`). Empty for named-form records.
     ///
@@ -733,7 +733,7 @@ pub struct HirSupervisorDecl {
     /// Exact source-owned identity projected by the later bootstrap adapter.
     pub bootstrap_declaration: DefId,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Construction-time config parameters (`supervisor App(config: T)`). Bound
     /// in scope throughout the body so child init-arg exprs can reference them.
     /// Empty when the declaration omits the `(...)` clause. The MIR bootstrap
@@ -789,9 +789,9 @@ pub struct HirSupervisorChild {
     /// into the pool slot. `count` is a reserved arg name on pool declarations,
     /// not a per-member init field, so it is removed from `init_args`.
     pub pool_count: Option<HirExpr>,
-    /// Per-child graceful-stop directive from the `shutdown:` clause.
+    /// Per-child graceful-stop deadline from the `stop:` clause.
     /// `None` means the supervisor default applies.
-    pub shutdown: Option<HirShutdownDirective>,
+    pub stop: Option<HirExpr>,
     /// Real, verifier-registered site for this child declaration, minted from
     /// the same monotonic allocator as every other HIR site
     /// (`self.ids.site()`). MIR diagnostics that have no specific
@@ -819,19 +819,6 @@ pub enum HirRestartPolicy {
     Permanent,
     Transient,
     Temporary,
-}
-
-/// Per-child shutdown directive lowered from the `shutdown:` clause.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HirShutdownDirective {
-    /// Graceful-stop deadline as a raw duration source string (e.g. `"30s"`);
-    /// codegen interprets the unit.
-    Timeout(String),
-    /// Skip the deadline; kill immediately.
-    BrutalKill,
-    /// Wait indefinitely. ACCEPTED-ONLY in v0.5 — there is no per-child
-    /// deadline wheel in the runtime yet, so codegen does not enforce it.
-    Infinity,
 }
 
 /// Semantic declaration kind, including enums with no inhabited variants.
@@ -897,7 +884,7 @@ pub struct HirTypeDecl {
     /// registry to (a) decide whether a `StructInit` site needs a
     /// per-instantiation layout and (b) substitute field types when
     /// constructing one.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     /// Struct-form field types in declaration order. Empty for enum-kind
     /// type decls (enums have no struct fields; their variants are in
     /// `variants`).
@@ -927,8 +914,8 @@ impl HirTypeDecl {
     /// [`crate::mangle_dotted_name`], which maps the root/bare form to itself
     /// — so qualifying is a no-op for single-module programs by construction.
     #[must_use]
-    pub fn qualified_name(&self) -> String {
-        self.declaration.full_path().to_string()
+    pub fn qualified_name(&self, defs: &hew_types::DefTable) -> String {
+        defs.path(self.declaration).to_string()
     }
 }
 
@@ -1036,7 +1023,7 @@ pub struct HirFn {
     /// reconstructing an owner from a presentation name.
     pub declaration: DefId,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<hew_types::ParamHead>,
     pub params: Vec<HirBinding>,
     /// Exact receiver binding transferred into a recognized `var self` body
     /// and returned in the second field of its `(result, Self)` result.
@@ -1190,7 +1177,7 @@ pub enum HirVarSelfMethodTarget {
     /// receiver parameter is substituted.
     StaticTrait {
         /// Type-parameter name that carries the bound (e.g. "T").
-        receiver_type_param: String,
+        receiver_type_param: hew_types::ParamHead,
     },
 }
 
@@ -1766,7 +1753,7 @@ pub enum HirExprKind {
         /// declaring method by leaf-name retry.
         target: hew_types::CallTarget,
         /// Type-parameter name that carries the bound (e.g. "T").
-        receiver_type_param: String,
+        receiver_type_param: hew_types::ParamHead,
         /// Arguments in parameter order.
         args: Vec<HirExpr>,
         /// The index into `args` of each argument in the order the source
@@ -1936,13 +1923,13 @@ pub enum HirExprKind {
     /// Tagged-union variant constructor — shared by machine states and user-defined
     /// enum unit variants.
     ///
-    /// **Machine states**: produced by HIR lowering when an `Expr::Identifier` or
+    /// **Machine states**: produced by HIR lowering when an `Expr::Ident` or
     /// `Expr::StructInit` names a declared state of the enclosing machine — either
     /// a bare state reference like `Green` (unit state, no payload) or a struct-init
     /// form like `SynReceived { remote_port: remote_port }` (state with payload).
     ///
     /// **User-defined enum unit variants**: produced by HIR lowering when an
-    /// `Expr::Identifier` resolves to a unit variant of an enum type declared with
+    /// `Expr::Ident` resolves to a unit variant of an enum type declared with
     /// `type Colour { enum Red; Green; Blue; }`. The same tagged-union substrate
     /// (`Place::MachineTag` / `EnumLayout`) handles both surface forms.
     ///

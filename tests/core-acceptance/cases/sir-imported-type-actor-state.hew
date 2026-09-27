@@ -1,8 +1,8 @@
 import sir_imported_type_actor_state.cfg;
 
 actor Client {
-    let config: cfg.Config,
-    var seen: string,
+    let config: cfg.Config;
+    var seen: string;
 
     receive fn probe() -> string {
         seen = config.host.clone();

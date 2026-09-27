@@ -3,9 +3,8 @@ use encoding_fixture::{op, operand};
 
 fn stream_owner() -> (SemModule, ResolvedTy) {
     let ty = ResolvedTy::Named {
-        name: "Stream".into(),
         args: vec![ResolvedTy::String],
-        builtin: Some(BuiltinType::Stream),
+        head: hew_types::TypeHead::Builtin(BuiltinType::Stream),
         is_opaque: false,
     };
     let mut module = encoding_fixture::skeleton(vec![ty.clone()], ResolvedTy::Unit);

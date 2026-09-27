@@ -7,19 +7,19 @@
 // validate_cstring_header); a message that arrives empty takes the `Kill` arm,
 // leaving the role spent so the read below is `.Err` and the program exits 1.
 // Only a correct clone reaches `Restart`, and only a completed restart makes
-// `await_restart` resolve a Live role.
+// `restarted` resolve a Live role.
 //
 // Exit 42 is the replacement's init value: the supervisor reconstructs every
 // incarnation from the declaration and its config, so a restarted child carries
 // the declared state and never the dead instance's.
 //
 // Verified ASan/guard-malloc clean on the crash+restart path (no double-free,
-// no leak, no OOB) - see the on_crash_action_restart_real_crash gate in
-// scripts/asan-fixture-check.sh (Linux) and the macOS leaks oracle.
+// no leak, no OOB) - the on_crash_action_restart_real_crash case runs in the
+// core-acceptance `safety` suite.
 import std.failure;
 
 actor Worker {
-    var value: i64,
+    var value: i64;
     receive fn get() -> i64 {
         value
     }
@@ -35,16 +35,16 @@ actor Worker {
         if !info.message.is_empty() {
             CrashAction.Restart
         } else {
-            CrashAction.Kill
+            CrashAction.GiveUp
         }
     }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 5 within 60s,
+    strategy: one_for_one;
+    intensity: 5 within 60s;
 
-    child w: Worker(value: 42),
+    child w: Worker(value: 42);
 }
 
 fn main() -> i64 {
@@ -57,7 +57,11 @@ fn main() -> i64 {
     // Suspend until the restarted child's slot is Live again, then re-fetch it.
     // This only completes if on_crash returned Restart AND the runtime survived
     // the crash-message clone/drop without aborting.
-    let w2 = await_restart sup.w;
+    let w2 = {
+        let __hew_migrated_role_2347 = sup.w;
+        restarted(__hew_migrated_role_2347);
+        __hew_migrated_role_2347
+    };
     match w2.get() {
         .Ok(n) => n, // 42 - the replacement re-ran the declared init.
         .Err(_) => 1, // Kill left the role spent: the message did not arrive.

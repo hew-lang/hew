@@ -13,7 +13,7 @@ pub(super) use crate::module_registry::ModuleRegistry;
 pub(super) use crate::BuiltinType;
 pub(super) use hew_parser::ast::IntRadix;
 pub(super) use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
-pub(super) use hew_parser::module::{Module, ModuleGraph, ModuleId};
+pub(super) use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 mod actor_delivery;
 mod actor_fields;
@@ -47,6 +47,7 @@ mod pattern_conditions;
 mod patterns;
 mod race;
 mod records;
+mod result_drop;
 mod supervisor;
 mod suspension_effects;
 mod traits;
@@ -81,8 +82,8 @@ fn check_source_in_module_with_prelude_policy(
         "module source must parse cleanly, got: {:?}",
         parsed.errors
     );
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(module_path);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(module_path);
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,
@@ -117,8 +118,8 @@ pub(super) fn check_source_in_canonical_std_module(
         "module source must parse cleanly: {:?}",
         parsed.errors
     );
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(module_path.to_vec());
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(module_path.to_vec());
     let leaf = module_path.last().expect("canonical std module has a leaf");
     let module_base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -195,7 +196,7 @@ pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>)
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         params,
         return_type: ret.map(|te| (te, 0..0)),
@@ -219,12 +220,12 @@ pub(super) fn make_priv_fn(name: &str) -> FnDecl {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -249,7 +250,7 @@ pub(super) fn make_user_import(
     items: Vec<Spanned<Item>>,
 ) -> ImportDecl {
     ImportDecl {
-        path: path.iter().map(ToString::to_string).collect(),
+        path: hew_parser::ast::Path::from_spellings(path),
         spec,
         selection_trailing_comma: false,
         module_alias: None,
@@ -288,7 +289,7 @@ pub(super) fn make_checker_with_trait(
         .map(|name| {
             let type_params = if with_generic_method {
                 Some(vec![TypeParam {
-                    name: "U".to_string(),
+                    name: Ident::new("U"),
                     bounds: vec![],
                 }])
             } else {
@@ -297,13 +298,17 @@ pub(super) fn make_checker_with_trait(
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: name.to_string(),
+                name: Ident::new(name),
                 type_params,
                 params: vec![Param {
-                    name: "val".to_string(),
+                    name: Ident::new("val"),
+                    name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
-                            name: "Self".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("Self"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..4,
@@ -323,7 +328,7 @@ pub(super) fn make_checker_with_trait(
 
     if with_assoc {
         items.push(TraitItem::AssociatedType {
-            name: "Output".to_string(),
+            name: Ident::new("Output"),
             default: None,
             bounds: vec![],
             span: 0..0,
@@ -332,7 +337,7 @@ pub(super) fn make_checker_with_trait(
 
     let td = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: trait_name.to_string(),
+        name: Ident::new(trait_name),
         type_params: None,
         super_traits: None,
         items,
@@ -340,14 +345,14 @@ pub(super) fn make_checker_with_trait(
         lang_item: None,
     };
 
-    let info = Checker::trait_info_from_decl(&td, None, 0);
-    checker.trait_defs.insert(trait_name.to_string(), info);
+    let info = checker.trait_info_from_decl(&td, None, 0);
+    checker.test_trait_def(trait_name, info);
     checker
 }
 
 pub(super) fn make_test_type_def(
     name: &str,
-    type_params: Vec<String>,
+    type_params: Vec<crate::ParamHead>,
     methods: HashMap<String, FnSig>,
 ) -> TypeDef {
     TypeDef {
@@ -367,8 +372,8 @@ pub(super) fn make_test_type_def(
 /// Build a minimal two-module `Program`: a root module (empty) and a single
 /// non-root module `mymod` containing the supplied items.
 pub(super) fn make_program_with_module_graph(non_root_items: Vec<Spanned<Item>>) -> Program {
-    let root_id = ModuleId::root();
-    let non_root_id = ModuleId::new(vec!["mymod".to_string()]);
+    let root_id = ModulePath::root();
+    let non_root_id = ModulePath::new(["mymod"]);
 
     let root_module = Module {
         id: root_id.clone(),
@@ -441,7 +446,7 @@ fn test_empty_program() {
 #[test]
 fn result_field_access_requires_handling_the_result() {
     let output = check_source(
-        "type Record { value: i64 } fn main() { let result: Result<Record, string> = .Ok(Record { value: 3 }); let _value = result.value; }",
+        "type Record {\n    value: i64;\n}\n\nfn main() {\n    let result: Result<Record, string> = .Ok(Record { value: 3 });\n    let _value = result.value;\n}\n",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -468,17 +473,20 @@ fn tuple_numeric_field_access_out_of_bounds_is_rejected() {
 #[test]
 fn user_impl_drop_rejected_fail_closed() {
     let output = check_source(
-        r"
-        type Token { id: i64 }
-        impl Drop for Token {
-            fn drop(token: Token) {
-                println(token.id);
-            }
-        }
-        fn main() {
-            let _token = Token { id: 1 };
-        }
-        ",
+        r"type Token {
+    id: i64;
+}
+
+impl Drop for Token {
+    fn drop(token: Token) {
+        println(token.id);
+    }
+}
+
+fn main() {
+    let _token = Token { id: 1 };
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -522,6 +530,7 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
     let ty = Ty::TraitObject {
         traits: vec![crate::ty::TraitObjectBound {
             trait_name: "Iterator".to_string(),
+            trait_id: None,
             args: vec![Ty::Var(original)],
             assoc_bindings: vec![],
         }],
@@ -589,4 +598,40 @@ fn cancellation_token_has_no_cancel_method() {
         "CancellationToken.cancel() must remain out of scope: {:#?}",
         output.errors
     );
+}
+
+impl Checker {
+    /// A declaration row in this checker's own table, for tests that register
+    /// definitions by hand.
+    pub(super) fn test_declaration(&mut self, path: &str) -> crate::NominalId {
+        crate::NominalId::from_minted_declaration(self.defs.mint_for_test(path))
+    }
+
+    /// File a hand-built signature under a fresh declaration row spelled
+    /// `key`.
+    pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {
+        let declaration = self.defs.mint_for_test(key);
+        self.insert_fn_sig(key, declaration, sig);
+    }
+
+    /// File a hand-built trait under a fresh declaration row spelled `key`.
+    pub(super) fn test_trait_def(&mut self, key: &str, info: TraitInfo) {
+        let declaration = self.defs.mint_for_test(key);
+        self.trait_def_keys.insert(key.to_string(), declaration);
+        self.trait_defs.insert(declaration, info);
+    }
+
+    /// The named type of a hand-registered declaration (see
+    /// [`Self::test_declaration`]); a path nothing declared is a fixture
+    /// nominal no definition answers to.
+    pub(super) fn test_named(&self, path: &str, args: Vec<Ty>) -> Ty {
+        let id = self
+            .defs
+            .lookup_nominal(path)
+            .unwrap_or_else(|| crate::NominalId::for_test(path));
+        Ty::named_head(
+            crate::TypeHead::Nominal(crate::NominalHead::new(id, path)),
+            args,
+        )
+    }
 }

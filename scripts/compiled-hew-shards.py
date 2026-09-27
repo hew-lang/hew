@@ -176,7 +176,6 @@ def finalize_reports(
     full_inventory: Path,
     expected_failures_path: Path,
     prerequisites_succeeded: bool,
-    strict_recoveries: bool,
 ) -> int:
     """Prepare the JUnit input for GitHub after raw aggregate gates finish."""
     if reports_dir.resolve() == output_dir.resolve():
@@ -240,8 +239,6 @@ def finalize_reports(
                 + ", ".join(sorted(recovered)[:5]),
                 file=sys.stderr,
             )
-            if strict_recoveries:
-                die("finalization found recoveries under strict accounting")
         if nonpassing:
             die(
                 "finalization expected entries did not PASS in both O0 and O2: "
@@ -368,6 +365,50 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
             )
 
 
+def ratchet_platform() -> str:
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform.startswith("freebsd"):
+        return "freebsd"
+    die(f"unsupported ratchet platform: {sys.platform}")
+
+
+def resolve_expected_failures_path(explicit: Path | None) -> Path:
+    """The hew-suite rows of the one unified ledger, read through the shared
+    xtask adapter so this script keeps no ledger format of its own."""
+    if explicit is not None:
+        return explicit
+    result = subprocess.run(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "-p",
+            "xtask",
+            "--",
+            "ratchet",
+            "rows",
+            "--suite",
+            "hew-suite",
+            "--platform",
+            ratchet_platform(),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        die(f"cargo xtask ratchet rows failed: {result.stderr.strip()}")
+    generated = REPO_ROOT / "scripts" / ".hew-suite-expected-failures.generated.txt"
+    generated.write_text(result.stdout, encoding="utf-8")
+    return generated
+
+
 def expected_failures(path: Path, full: set[str]) -> dict[str, str]:
     expected: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -438,7 +479,6 @@ def aggregate(
     full_inventory: Path,
     shard_count: int,
     expected_failures_path: Path,
-    strict_recoveries: bool,
 ) -> None:
     if shard_count < 2:
         die("shard count must be at least two")
@@ -468,8 +508,6 @@ def aggregate(
                 + ", ".join(sorted(recovered)[:5]),
                 file=sys.stderr,
             )
-            if strict_recoveries:
-                die("O0 shard found recoveries under strict accounting")
         if nonpassing:
             die(
                 "O0 shard expected entries did not PASS in both O0 and O2: "
@@ -517,15 +555,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     aggregate_parser.add_argument(
         "--mode", choices=("ratchet", "differential"), required=True
     )
-    aggregate_parser.add_argument("--strict-recoveries", action="store_true")
     aggregate_parser.add_argument("--reports-dir", type=Path, required=True)
     aggregate_parser.add_argument("--full-inventory", type=Path, required=True)
     aggregate_parser.add_argument("--shard-count", type=int, required=True)
-    aggregate_parser.add_argument(
-        "--expected-failures",
-        type=Path,
-        default=REPO_ROOT / "scripts" / "hew-suite-expected-failures.txt",
-    )
+    aggregate_parser.add_argument("--expected-failures", type=Path, default=None)
     report_parser = subcommands.add_parser("report")
     report_parser.add_argument("--reports-dir", type=Path, required=True)
     report_parser.add_argument("--shard-count", type=int, required=True)
@@ -533,12 +566,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     finalize_parser.add_argument("--reports-dir", type=Path, required=True)
     finalize_parser.add_argument("--output-dir", type=Path, required=True)
     finalize_parser.add_argument("--full-inventory", type=Path, required=True)
-    finalize_parser.add_argument(
-        "--expected-failures",
-        type=Path,
-        default=REPO_ROOT / "scripts" / "hew-suite-expected-failures.txt",
-    )
-    finalize_parser.add_argument("--strict-recoveries", action="store_true")
+    finalize_parser.add_argument("--expected-failures", type=Path, default=None)
     finalize_parser.add_argument(
         "--prerequisites-succeeded",
         choices=("true", "false"),
@@ -557,17 +585,15 @@ def main(argv: list[str]) -> int:
             args.reports_dir,
             args.full_inventory,
             args.shard_count,
-            args.expected_failures,
-            args.strict_recoveries,
+            resolve_expected_failures_path(args.expected_failures),
         )
     elif args.action == "finalize":
         return finalize_reports(
             args.reports_dir,
             args.output_dir,
             args.full_inventory,
-            args.expected_failures,
+            resolve_expected_failures_path(args.expected_failures),
             args.prerequisites_succeeded == "true",
-            args.strict_recoveries,
         )
     else:
         report_failures(args.reports_dir, args.shard_count)

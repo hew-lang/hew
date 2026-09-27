@@ -1,0 +1,7 @@
+[[case]]
+id = "ownership-balance-g-rearm-no-predecessor"
+intent = "G: a record var passed through a consuming call in a loop and returned early. The ownership checker balances every obligation, so the program checks with no diagnostics."
+source = "fixtures/ownership-balance/g_rearm_no_predecessor.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"

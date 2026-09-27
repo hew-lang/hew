@@ -1,0 +1,10 @@
+[[case]]
+id = "direct-call-vec-escape-rc"
+intent = "Runtime proof for a direct-call match payload that moves through a vector before a later field return. Shape `rC` (direct call vec escape releases every owner) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/direct-call-vec-escape-rc.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "sec-1\ncred\nskipped\n"
+exit = 0

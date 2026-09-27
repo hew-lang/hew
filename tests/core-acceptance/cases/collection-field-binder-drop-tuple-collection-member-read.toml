@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-field-binder-drop-tuple-collection-member-read"
+intent = "Leak oracle for a heap-owning collection reached as a record FIELD or tuple MEMBER and then read through a BORROWING method (`.len()`, `.get(i)`, …). Shape `tuple_collection_member_read` (tuple collection member read no leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/collection-field-binder-drop-tuple-collection-member-read.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

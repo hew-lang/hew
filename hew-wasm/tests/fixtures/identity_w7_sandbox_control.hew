@@ -1,0 +1,16 @@
+actor Echo {
+    receive fn reply(n: i64) -> i64 {
+        n + 1
+    }
+}
+
+fn main() {
+    println(7);
+    let echo = spawn Echo;
+    match echo.reply(7) {
+        .Ok(value) => println(value),
+        .Err(_) => println(-1),
+    }
+    stop(echo);
+    stopped(echo);
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "string-result-retention-markdown-string-wrapper"
+intent = "Caller-side release oracle for fresh strings returned through shipped Hew standard-library wrappers. Shape `markdown_string_wrapper_high` (shipped markdown string wrapper has no per call leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-result-retention-markdown-string-wrapper.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n30\n"
+exit = 0

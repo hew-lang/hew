@@ -1,11 +1,11 @@
-//! End-to-end behaviour for #3122: the compiler-synthesized `<Machine>Event`
+//! End-to-end behaviour for #3122: the compiler-synthesized `<Machine>.Event`
 //! companion enum goes through the same `Send` classification as an
 //! equivalent hand-written enum — payloads decide, no machine-path blanket
 //! allowance.
 //!
 //! `POSITIVE` is HEW-SPEC-2026 §3.11.7's worked example (an actor with a
 //! machine field whose handler takes the machine's own event enum): every
-//! event is payload-free, so `TcpStateEvent` is trivially `Send` and the
+//! event is payload-free, so `TcpState.Event` is trivially `Send` and the
 //! program must compile and run. `NEGATIVE` is the control: an event
 //! carrying a non-`Send` payload (`Rc<i64>`) must keep the companion enum
 //! non-`Send`, refused with the same diagnostic (`report_invalid_actor_send`)
@@ -19,63 +19,62 @@ use support::{run_hew_in, strip_ansi, tempdir};
 
 const POSITIVE: &str = r"machine TcpState {
     events {
-        Syn,
-        Ack,
-        Reset,
+        Syn;
+        Ack;
+        Reset;
     }
 
-    state Closed,
-    state SynReceived,
-    state Established,
+    state Closed;
+    state SynReceived;
+    state Established;
 
-    on Syn: Closed => SynReceived,
-    on Ack: Closed => Closed reenter,
-    on Syn: SynReceived => SynReceived reenter,
-    on Ack: SynReceived => Established,
-    on Syn: Established => Established reenter,
-    on Ack: Established => Established reenter,
-    on Reset: _ => Closed,
+    on Syn: Closed => SynReceived;
+    on Ack: Closed => Closed reenter;
+    on Syn: SynReceived => SynReceived reenter;
+    on Ack: SynReceived => Established;
+    on Syn: Established => Established reenter;
+    on Ack: Established => Established reenter;
+    on Reset: _ => Closed;
 }
 
 actor ConnectionManager {
-    var tcp: TcpState = TcpState.Closed,
+    var tcp: TcpState = TcpState.Closed;
 
-    receive fn handle(event: TcpStateEvent) {
-        tcp.step(event);
+    receive fn handle(event: TcpState.Event) {
+        let _ = tcp.step(event);
         println(tcp.state_name());
     }
 }
 
 fn main() {
     let cm = spawn ConnectionManager;
-    let _ = cm.handle(TcpStateEvent.Syn);
-    let _ = cm.handle(TcpStateEvent.Ack);
-    sleep(100ms);
+    let _ = cm.handle(TcpState.Event.Syn);
+    let _ = cm.handle(TcpState.Event.Ack);
 }
 ";
 
 const NEGATIVE: &str = r#"machine Sensor {
     events {
-        Reading { value: Rc<i64>, }
-        ,Reset,
+        Reading { value: Rc<i64>; }
+        Reset;
     }
 
-    state Idle,
-    state Active,
+    state Idle;
+    state Active;
 
-    on Reading: _ => Active,
-    on Reset: _ => Idle,
+    on Reading: _ => Active;
+    on Reset: _ => Idle;
 }
 
 actor Collector {
-    receive fn handle(event: SensorEvent) {
+    receive fn handle(event: Sensor.Event) {
         println("handled");
     }
 }
 
 fn main() {
     let c = spawn Collector;
-    c.handle(SensorEvent.Reset);
+    let _ = c.handle(Sensor.Event.Reset);
 }
 "#;
 
@@ -137,7 +136,7 @@ fn machine_event_enum_with_non_send_payload_is_rejected() {
         "an event carrying a non-Send payload must keep the companion enum non-Send:\n{rendered}"
     );
     assert!(
-        rendered.contains("cannot send `SensorEvent` to actor: type is not Send"),
+        rendered.contains("cannot send `Sensor.Event` to actor: type is not Send"),
         "the refusal must name the event enum at the send call site:\n{rendered}"
     );
 }

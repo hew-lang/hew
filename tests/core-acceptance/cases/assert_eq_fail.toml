@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: 4\n  right: 5\n"
+stderr = "hew: failure: UserPanic (212): assertion failed: actual == 5\n  left: 4\n right: 5\n"
 exit = 1

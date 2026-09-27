@@ -11,15 +11,16 @@ pub mod completions;
 pub mod definition;
 pub mod folding;
 pub mod hover;
+pub mod identity;
 pub mod inlay_hints;
 pub mod machine_scope;
 mod method_lookup;
 pub mod references;
 pub mod rename;
-pub mod resolver;
 pub mod semantic_tokens;
 pub mod signature_help;
 pub mod symbols;
+pub mod test_discovery;
 pub mod util;
 
 use serde::{Deserialize, Serialize};
@@ -186,6 +187,8 @@ pub enum RenameConflictKind {
     ShadowsTopLevel,
     /// The new name is already brought into scope by an `import`.
     ShadowsImport,
+    /// The new name already belongs to another field of this type.
+    ShadowsField,
 }
 
 /// Failure modes for a rename request. Returned by
@@ -195,8 +198,7 @@ pub enum RenameConflictKind {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RenameError {
-    /// The new name is a language keyword or a builtin identifier that
-    /// cannot be shadowed by user code.
+    /// The new name is a language keyword that cannot be used as an identifier.
     Builtin { name: String, message: String },
     /// The new name is syntactically invalid (empty, starts with a
     /// digit, contains non-identifier characters).

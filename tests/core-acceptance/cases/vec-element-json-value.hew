@@ -17,26 +17,21 @@ fn main() {
     values.push(json.from_int(1));
     values.push(json.from_string("two"));
     values.push(json.from_bool(true));
-
     let first = values[0];
     println(f"pushed={values.len()} first={describe(first)}");
-
     var copied = values.clone();
     copied.push(json.from_int(4));
     println(f"copy={copied.len()} source={values.len()}");
-
     var seen = "";
     for value in values {
         seen = seen + describe(value) + ";";
     }
     println(f"iterated={seen}");
-
     var index: HashMap<string, json.Value> = HashMap.new();
     index.insert("a", json.from_int(10));
     index.insert("b", json.from_string("beta"));
     let looked_up = index["a"];
     println(f"map={index.len()} a={describe(looked_up)}");
-
     match index.remove("b") {
         .Some(removed) => println(f"removed={describe(removed)} left={index.len()}"),
         .None => println("removed=none"),

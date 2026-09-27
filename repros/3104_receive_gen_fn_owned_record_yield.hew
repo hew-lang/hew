@@ -7,8 +7,8 @@
 // body end through the same thunk. Exact output pins the field values; the
 // per-yield leak slope is pinned by the composite-yield leak oracle.
 type Item {
-    name: string,
-    value: i64,
+    name: string;
+    value: i64;
 }
 
 actor Maker {

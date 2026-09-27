@@ -21,8 +21,7 @@ struct Manifest {
 struct Case {
     id: String,
     intent: String,
-    /// The `.hew` (or, for `kind = "doc"`, the documentation file or
-    /// directory) the case observes, resolved against
+    /// The `.hew` the case observes, resolved against
     /// `tests/core-acceptance/`. A case may point outside that directory —
     /// `../vertical-slice/accept/x.hew`, `../../examples/y.hew` — so a case
     /// names an existing source instead of duplicating it.
@@ -39,10 +38,6 @@ struct Case {
     /// their observed output depends on the scheduler's worker count.
     #[serde(default)]
     env: BTreeMap<String, String>,
-    /// `kind = "doc"` only: how fences are extracted from `source` and how
-    /// each fence's case id is spelled.
-    #[serde(default)]
-    fences: Option<FenceSource>,
     #[serde(default)]
     expected: ExpectedOutcome,
 }
@@ -57,9 +52,6 @@ struct Case {
 ///   that the named diagnostics are among the ones reported. This is the
 ///   vertical-slice reject oracle: it pins the diagnostic that matters
 ///   without freezing every unrelated cascade line around it.
-/// - `Doc` is a fence source, not a single observation: the runner extracts
-///   every fenced hew block from `source` and expands each into its own
-///   case, named by the fence's content, and `hew check`s it.
 ///
 /// Safety (ASan/LSan) stays a suite selected by `suites`, not a case kind —
 /// only a `run` case is ever sanitizer-compiled.
@@ -70,7 +62,6 @@ enum CaseKind {
     Run,
     Check,
     Reject,
-    Doc,
 }
 
 impl CaseKind {
@@ -79,7 +70,6 @@ impl CaseKind {
             Self::Run => "run",
             Self::Check => "check",
             Self::Reject => "reject",
-            Self::Doc => "doc",
         }
     }
 
@@ -88,9 +78,8 @@ impl CaseKind {
             "run" => Ok(Self::Run),
             "check" => Ok(Self::Check),
             "reject" => Ok(Self::Reject),
-            "doc" => Ok(Self::Doc),
             other => Err(format!(
-                "unknown core-acceptance kind {other:?}; expected run, check, reject or doc"
+                "unknown core-acceptance kind {other:?}; expected run, check or reject"
             )),
         }
     }
@@ -102,8 +91,22 @@ struct ExpectedOutcome {
     /// program must produce. `Option` (not a default-empty `String`) so a
     /// run case that forgets it is a validation error, not a silent pass
     /// against an empty expectation.
+    ///
+    /// A `run` case declares exactly one of `stdout` or `stdout_file`; both
+    /// or neither is a validation error. `resolve_stdout_files` reads
+    /// `stdout_file` into this field before `validate_manifest` runs, so
+    /// every later reader (including `run_expectation`) sees one exact
+    /// stdout string regardless of which form the case used.
     #[serde(default)]
     stdout: Option<String>,
+    /// `kind = "run"` only: the exact stdout as a file, resolved against
+    /// `tests/core-acceptance/` like `source`. Lets a case share its
+    /// expectation with a published example's `.expected` file — one
+    /// authority for what the example prints — instead of duplicating the
+    /// text inline. Cleared once `resolve_stdout_files` folds its content
+    /// into `stdout`.
+    #[serde(default)]
+    stdout_file: Option<PathBuf>,
     #[serde(default)]
     stderr: String,
     /// `kind = "run"` only, and required there: see `stdout` for why this is
@@ -167,13 +170,14 @@ struct ExpectedDiagnostic {
 struct Options {
     suite: String,
     cases: Vec<String>,
-    /// Empty means every kind. `--kind` exists so the transitional
-    /// `make test-doc-examples` alias can run the doc fences without also
-    /// compiling every native case.
+    /// Empty means every kind.
     kinds: Vec<CaseKind>,
     hew_bin: PathBuf,
     timeout_seconds: Option<u64>,
     jobs: usize,
+    /// `Some((shard, total))` selects a stable 1-of-`total` slice of the
+    /// selected cases, sorted by id. `shard` is 0-based.
+    partition: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -221,10 +225,13 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     let run_dir = tempfile::tempdir()
         .map_err(|err| format!("create core acceptance temporary directory: {err}"))?;
     let mut manifest = load_manifest(&root)?;
-    expand_doc_cases(&mut manifest, &root, run_dir.path())?;
+    resolve_stdout_files(&mut manifest, &root)?;
     validate_manifest(&manifest, &root)?;
     let ratchet = load_expected_failures(&root, &manifest, current_platform())?;
-    let selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
+    let mut selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
+    if let Some(partition) = options.partition {
+        selected = partition_cases(selected, partition);
+    }
     let fingerprint = compiler_fingerprint(&options.hew_bin)?;
     let instrumentation_request = if options.suite == "safety" {
         if !cfg!(target_os = "linux") {
@@ -263,7 +270,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
 
     println!(
         "core-acceptance results: {} passed, {} known-failing, {} failed",
-        verdicts.len() - failed.len() - known.len() - now_passing.len(),
+        verdicts.len() - failed.len() - known.len(),
         known.len(),
         failed.len(),
     );
@@ -272,13 +279,14 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     }
 
     if !now_passing.is_empty() {
-        println!("core-acceptance: these cases pass but are listed in {EXPECTED_FAILURES_PATH}:");
+        println!(
+            "core-acceptance: these cases pass but are listed in {}:",
+            crate::ratchet::LEDGER_PATH
+        );
         for id in &now_passing {
             println!("  {id}");
         }
-        println!(
-            "  Delete those rows. Ratchets only shrink; never restore a row to keep a run green."
-        );
+        println!("  Delete those rows in the change that recovered them.");
     }
     if !failed.is_empty() {
         println!("core-acceptance: unlisted failing cases:");
@@ -287,14 +295,13 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         }
     }
 
-    if failed.is_empty() && now_passing.is_empty() {
+    if failed.is_empty() {
         println!("core-acceptance: PASS");
         Ok(())
     } else {
         Err(format!(
-            "core-acceptance: {} unlisted failure(s), {} stale expected-failure row(s)",
-            failed.len(),
-            now_passing.len()
+            "core-acceptance: {} unlisted failure(s)",
+            failed.len()
         ))
     }
 }
@@ -339,8 +346,7 @@ struct Ratchet<'a> {
     failed: Vec<&'a str>,
     /// Failed with a row: reported, not red.
     known: Vec<&'a str>,
-    /// Passed with a row: red, because a ratchet only shrinks and a stale row
-    /// hides the next real failure of that case.
+    /// Passed with a row: reported for cleanup without failing this run.
     now_passing: Vec<&'a str>,
 }
 
@@ -356,8 +362,6 @@ fn classify<'a>(verdicts: &[(&'a str, bool)], ratchet: &BTreeMap<String, String>
     }
     out
 }
-
-const EXPECTED_FAILURES_PATH: &str = "tests/core-acceptance/expected-failures.txt";
 
 /// The platform names the ledger and the runner both spell, matching
 /// `std::env::consts::OS` on every supported host.
@@ -383,98 +387,30 @@ fn current_platform() -> &'static str {
 /// otherwise the ledger accumulates rows that can never be retired. Two rows
 /// selecting the same case for the same platform are refused as an overlap,
 /// the same rule the nextest ratchet enforces.
+/// Reads `tests/expected-failures.tsv` through the shared ratchet parser
+/// (`suite = "acceptance"`; `safety` runs the same manifest's cases under
+/// the same rows) and refuses a row naming a case that no longer exists —
+/// a renamed or deleted case must take its row with it, otherwise the
+/// ledger accumulates rows that can never be retired.
 fn load_expected_failures(
     root: &Path,
     manifest: &Manifest,
     platform: &str,
 ) -> Result<BTreeMap<String, String>> {
-    let path = root.join(EXPECTED_FAILURES_PATH);
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(err) => return Err(format!("read {}: {err}", path.display())),
-    };
     let ids: std::collections::BTreeSet<&str> =
         manifest.cases.iter().map(|case| case.id.as_str()).collect();
-    let mut rows = BTreeMap::new();
-    let mut seen: std::collections::BTreeSet<(&str, String)> = std::collections::BTreeSet::new();
-    // A "# ── ... ──" section header resets sort order: rows are sorted by
-    // id within their own section, not across the whole file.
-    let mut last_id: Option<&str> = None;
-    for (number, line) in contents.lines().enumerate() {
-        let line = line.trim();
-        if line.starts_with("# ──") {
-            last_id = None;
-        }
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (platforms_field, rest) = line.split_once('\t').ok_or_else(|| {
-            format!(
-                "{}:{}: row has no platform column; prefix it with a comma-separated \
-                 platform list and a tab",
-                path.display(),
-                number + 1
-            )
-        })?;
-        let platforms: Vec<&str> = platforms_field.split(',').collect();
-        if platforms.iter().any(|item| item.is_empty()) {
+    let rows = crate::ratchet::rows_for(root, "acceptance", platform)?;
+    let mut out = BTreeMap::new();
+    for (id, row) in rows {
+        if !ids.contains(id.as_str()) {
             return Err(format!(
-                "{}:{}: row has an empty platform",
-                path.display(),
-                number + 1
+                "{}: {id} is not a core-acceptance case; delete the row with the case",
+                crate::ratchet::LEDGER_PATH
             ));
         }
-        if let Some(unknown) = platforms.iter().find(|item| !PLATFORMS.contains(item)) {
-            return Err(format!(
-                "{}:{}: unknown platform {unknown:?}; use one of {PLATFORMS:?} (no wildcard)",
-                path.display(),
-                number + 1
-            ));
-        }
-        let rest = rest.trim();
-        let (id, reason) = match rest.split_once('#') {
-            Some((id, reason)) => (id.trim(), reason.trim()),
-            None => (rest, ""),
-        };
-        if reason.is_empty() {
-            return Err(format!(
-                "{}:{}: {id} has no reason; give an issue or a one-line reason after #",
-                path.display(),
-                number + 1
-            ));
-        }
-        if !ids.contains(id) {
-            return Err(format!(
-                "{}:{}: {id} is not a core-acceptance case; delete the row with the case",
-                path.display(),
-                number + 1
-            ));
-        }
-        if let Some(previous) = last_id {
-            if id < previous {
-                return Err(format!(
-                    "{}:{}: not sorted by id: {id:?} follows {previous:?}",
-                    path.display(),
-                    number + 1
-                ));
-            }
-        }
-        last_id = Some(id);
-        for &candidate in &PLATFORMS {
-            if platforms.contains(&candidate) && !seen.insert((candidate, id.to_string())) {
-                return Err(format!(
-                    "{}:{}: {id} is already selected for {candidate}",
-                    path.display(),
-                    number + 1
-                ));
-            }
-        }
-        if platforms.contains(&platform) {
-            rows.insert(id.to_string(), reason.to_string());
-        }
+        out.insert(id, row.reason);
     }
-    Ok(rows)
+    Ok(out)
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
@@ -485,6 +421,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut timeout_seconds = None;
     let mut kinds = Vec::new();
     let mut jobs = None;
+    let mut partition = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -523,6 +460,10 @@ fn parse_options(args: &[String]) -> Result<Options> {
                     format!("--timeout-seconds must be a positive integer, got {value:?}")
                 })?);
             }
+            "--partition" => {
+                let value = required_value(args, &mut index, "--partition")?;
+                partition = Some(parse_partition(value)?);
+            }
             "--help" | "-h" => return Err("--help must be used on its own".to_string()),
             _ => {
                 return Err(format!(
@@ -553,7 +494,44 @@ fn parse_options(args: &[String]) -> Result<Options> {
         hew_bin,
         timeout_seconds,
         jobs,
+        partition,
     })
+}
+
+/// Parse `k/n`: a 0-based shard index and a positive total shard count.
+fn parse_partition(value: &str) -> Result<(usize, usize)> {
+    let (shard, total) = value
+        .split_once('/')
+        .ok_or_else(|| format!("--partition must be 'k/n', got {value:?}"))?;
+    let shard: usize = shard
+        .parse()
+        .map_err(|_| format!("--partition shard must be a non-negative integer, got {shard:?}"))?;
+    let total: usize = total
+        .parse()
+        .map_err(|_| format!("--partition total must be a positive integer, got {total:?}"))?;
+    if total == 0 {
+        return Err("--partition total must be positive".to_string());
+    }
+    if shard >= total {
+        return Err(format!(
+            "--partition shard {shard} must be less than total {total}"
+        ));
+    }
+    Ok((shard, total))
+}
+
+/// A stable 1-of-`total` slice of `selected`, ordered by id so a shard's
+/// contents do not depend on manifest iteration order.
+fn partition_cases(selected: Vec<&Case>, partition: (usize, usize)) -> Vec<&Case> {
+    let (shard, total) = partition;
+    let mut sorted = selected;
+    sorted.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    sorted
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index % total == shard)
+        .map(|(_, case)| case)
+        .collect()
 }
 
 /// One case at a time per core, capped. Every case shells out to the compiler
@@ -584,9 +562,10 @@ fn usage() -> String {
         "  --suite acceptance|safety              select a manifest suite (default: acceptance)",
         "  --case ID                             run one named manifest case",
         "  --hew-bin PATH                        use a prebuilt compiler binary",
-        "  --kind run,check,reject,doc           run only cases of these kinds",
+        "  --kind run,check,reject               run only cases of these kinds",
         "  --jobs N                              cases to run concurrently (default: cores; 1 for safety)",
         "  --timeout-seconds N                   override each case timeout",
+        "  --partition K/N                       run only shard K of N (0-based, stable by id)",
     ]
     .join("\n")
 }
@@ -709,28 +688,6 @@ fn validate_case(case: &Case, root: &Path) -> Result<()> {
                 ));
             }
         }
-        CaseKind::Doc => {
-            // Every doc case in the manifest was expanded into one case
-            // per extracted fence before validation, so what survives
-            // here is a fence: it proves a clean `hew check`, and has no
-            // expectation of its own to declare.
-            if !case.expected.diagnostics.is_empty()
-                || case.expected.stdout.is_some()
-                || case.expected.exit.is_some()
-                || !case.expected.stderr.is_empty()
-            {
-                return Err(format!(
-                    "{} is a doc fence and must not declare an expectation; a fence proves a clean check",
-                    case.id
-                ));
-            }
-            if case.suites.iter().any(|suite| suite == "safety") {
-                return Err(format!(
-                    "{} has kind doc but belongs to the safety suite",
-                    case.id
-                ));
-            }
-        }
     }
     if !case.env.is_empty() && case.kind != CaseKind::Run {
         return Err(format!(
@@ -753,10 +710,33 @@ fn validate_case(case: &Case, root: &Path) -> Result<()> {
 /// Resolve a case's `source` against `tests/core-acceptance/`. A migrated
 /// case points at the fixture where it already lives
 /// (`../vertical-slice/accept/x.hew`, `../../examples/y.hew`) instead of
-/// carrying a second copy of it, and an expanded doc fence carries an
-/// absolute path into the run directory — `Path::join` honours both.
+/// carrying a second copy of it.
 fn case_source(root: &Path, case: &Case) -> PathBuf {
     root.join("tests/core-acceptance").join(&case.source)
+}
+
+/// Fold every case's `expected.stdout_file` into `expected.stdout` before
+/// validation, so the rest of the runner only ever sees one exact stdout
+/// string. Exclusivity (`stdout` xor `stdout_file`) is enforced here rather
+/// than in `validate_case`, because `validate_case` runs after this pass and
+/// would otherwise only ever see the resolved `stdout`.
+fn resolve_stdout_files(manifest: &mut Manifest, root: &Path) -> Result<()> {
+    for case in &mut manifest.cases {
+        let Some(path) = case.expected.stdout_file.take() else {
+            continue;
+        };
+        if case.expected.stdout.is_some() {
+            return Err(format!(
+                "{} declares both expected stdout and stdout_file",
+                case.id
+            ));
+        }
+        let resolved = root.join("tests/core-acceptance").join(&path);
+        let contents = fs::read_to_string(&resolved)
+            .map_err(|err| format!("{} stdout_file {}: {err}", case.id, resolved.display()))?;
+        case.expected.stdout = Some(contents);
+    }
+    Ok(())
 }
 
 fn select_cases<'a>(
@@ -847,9 +827,9 @@ struct Runner<'a> {
 
 impl Runner<'_> {
     fn run_case(&self, case: &Case, log: &mut String) -> bool {
-        match case.kind {
+        let passed = match case.kind {
             CaseKind::Run => {
-                if !case.expected.diagnostics.is_empty() && !self.run_check(case, false, log) {
+                if !case.expected.diagnostics.is_empty() && !self.run_check(case, log) {
                     return false;
                 }
                 let mut passed = true;
@@ -860,20 +840,33 @@ impl Runner<'_> {
                 }
                 passed
             }
-            CaseKind::Check | CaseKind::Reject => self.run_check(case, false, log),
-            CaseKind::Doc => self.run_check(case, true, log),
+            CaseKind::Check | CaseKind::Reject => self.run_check(case, log),
+        };
+        if case.kind != CaseKind::Run {
+            return passed;
+        }
+        let case_dir = self.run_dir.join(&case.id);
+        match fs::remove_dir_all(&case_dir) {
+            Ok(()) => passed,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => passed,
+            Err(error) => {
+                let _ = writeln!(
+                    log,
+                    "FAIL {} profile=cleanup class=environment-failure detail=remove case artefacts: {error}",
+                    case.id
+                );
+                false
+            }
         }
     }
 
     /// Run one `hew check --format json` against the case's source: no
     /// build, no execution.
     ///
-    /// `expect_clean` is the doc-fence shape — the check must exit 0, which
-    /// is the whole observation a fence makes. Otherwise the check must be
-    /// refused (exit 1) and its diagnostics compared against the case:
+    /// The check's diagnostics are compared against the case:
     /// `check` demands the exact set, `reject` demands the named ones are
     /// present and says nothing about the rest.
-    fn run_check(&self, case: &Case, expect_clean: bool, log: &mut String) -> bool {
+    fn run_check(&self, case: &Case, log: &mut String) -> bool {
         let source = case_source(self.root, case);
         let mut command = Command::new(&self.options.hew_bin);
         command
@@ -923,7 +916,7 @@ impl Runner<'_> {
                     );
                     return false;
                 };
-                Self::check_reported(case, expect_clean, actual_exit, &stdout, &stderr, log)
+                Self::check_reported(case, actual_exit, &stdout, &stderr, log)
             }
         }
     }
@@ -931,7 +924,6 @@ impl Runner<'_> {
     /// Compare one finished `hew check` against the case.
     fn check_reported(
         case: &Case,
-        expect_clean: bool,
         actual_exit: i32,
         stdout: &str,
         stderr: &str,
@@ -944,28 +936,24 @@ impl Runner<'_> {
         // when the program is accepted with only advisory diagnostics or
         // none. `reject` only proves the compile was refused, and a refusal
         // by a compiler limitation exits 3.
-        let actual: Vec<ActualDiagnostic> = if expect_clean {
-            Vec::new()
-        } else {
-            match serde_json::from_str(stdout) {
-                Ok(diagnostics) => diagnostics,
-                Err(err) => {
-                    let _ = writeln!(
-                        log,
-                        "FAIL {} profile={} class=environment-failure detail=parse diagnostics json: {err}{}",
-                        case.id,
-                        case.kind.label(),
-                        summarise(stdout)
-                    );
-                    return false;
-                }
+        let actual: Vec<ActualDiagnostic> = match serde_json::from_str(stdout) {
+            Ok(diagnostics) => diagnostics,
+            Err(err) => {
+                let _ = writeln!(
+                    log,
+                    "FAIL {} profile={} class=environment-failure detail=parse diagnostics json: {err}{}",
+                    case.id,
+                    case.kind.label(),
+                    summarise(stdout)
+                );
+                return false;
             }
         };
         let reported_error = actual.iter().any(|got| got.severity == "error");
         let wrong_exit = match case.kind {
             CaseKind::Reject => actual_exit == 0,
             CaseKind::Check if reported_error => actual_exit != 1,
-            CaseKind::Doc | CaseKind::Check | CaseKind::Run => actual_exit != 0,
+            CaseKind::Check | CaseKind::Run => actual_exit != 0,
         };
         if wrong_exit {
             let expected_exit = match case.kind {
@@ -983,18 +971,16 @@ impl Runner<'_> {
             );
             return false;
         }
-        if !expect_clean {
-            let exact = matches!(case.kind, CaseKind::Check | CaseKind::Run);
-            if let Err(detail) = diagnostics_match(&case.expected.diagnostics, &actual, exact) {
-                let _ = writeln!(
-                    log,
-                    "FAIL {} profile={} class=wrong-diagnostics detail={detail}{}",
-                    case.id,
-                    case.kind.label(),
-                    summarise(stderr)
-                );
-                return false;
-            }
+        let exact = matches!(case.kind, CaseKind::Check | CaseKind::Run);
+        if let Err(detail) = diagnostics_match(&case.expected.diagnostics, &actual, exact) {
+            let _ = writeln!(
+                log,
+                "FAIL {} profile={} class=wrong-diagnostics detail={detail}{}",
+                case.id,
+                case.kind.label(),
+                summarise(stderr)
+            );
+            return false;
         }
         let _ = writeln!(
             log,
@@ -1493,343 +1479,6 @@ fn summarise(text: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Documentation fences
-// ---------------------------------------------------------------------------
-
-/// How a `kind = "doc"` case's fences are found and named.
-///
-/// Fence identity is the fence's own content, not its position in the file:
-/// a `<prefix>-<cksum>` id is unaffected by an unrelated fence inserted or
-/// removed earlier in the same document, and a fence whose text genuinely
-/// changes gets a new id and shows up as an ordinary new case. That is the
-/// same identity the doc-fence ratchet has always used, so an expected-failure
-/// row survives this migration verbatim.
-#[derive(Debug, Clone, Deserialize)]
-struct FenceSource {
-    prefix: String,
-    style: FenceStyle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum FenceStyle {
-    /// One Markdown file, whose fences carry an explicit hew tag.
-    Markdown,
-    /// A directory of `.hew` documentation modules. Only `//!` lines carry
-    /// prose, and their fences carry an explicit hew tag. Ids are
-    /// `<prefix>-<stem>-<cksum>`.
-    Module,
-    /// The standard library, walked recursively. Both `//!` and `///` carry
-    /// prose, an untagged fence is hew (the only language std writes in),
-    /// and an explicitly tagged fence is skipped. Ids are
-    /// `<prefix>-<slug>-<cksum>`.
-    Std,
-}
-
-/// Substrings that, in the five lines before a fence, mark it as documenting
-/// a surface that is not implemented yet. Spec ahead of implementation is not
-/// drift when it is declared.
-const FENCE_SKIP_MARKERS: [&str; 3] = ["Not yet implemented", "doctest: skip", "doctest:skip"];
-
-/// Replace every `kind = "doc"` case with one case per extracted fence.
-///
-/// A doc case in the manifest is a fence *source*, not an observation. After
-/// this pass every case in the manifest is a single observation with its own
-/// id, so selection, the expected-failure ledger and the reporting all see
-/// one flat key space.
-fn expand_doc_cases(manifest: &mut Manifest, root: &Path, run_dir: &Path) -> Result<()> {
-    if !manifest.cases.iter().any(|case| case.kind == CaseKind::Doc) {
-        return Ok(());
-    }
-    let fence_dir = run_dir.join("doc-fences");
-    fs::create_dir_all(&fence_dir).map_err(|err| format!("create doc fence directory: {err}"))?;
-    let mut minted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut expanded = Vec::with_capacity(manifest.cases.len());
-
-    for case in std::mem::take(&mut manifest.cases) {
-        if case.kind != CaseKind::Doc {
-            expanded.push(case);
-            continue;
-        }
-        let Some(fences) = case.fences.clone() else {
-            return Err(format!(
-                "{} has kind doc but declares no [case.fences]",
-                case.id
-            ));
-        };
-        let source = root.join("tests/core-acceptance").join(&case.source);
-        let mut found = 0usize;
-        for (path, prefix) in fence_documents(&source, &fences)? {
-            let text = fs::read_to_string(&path)
-                .map_err(|err| format!("read doc source {}: {err}", path.display()))?;
-            let extracted = match fences.style {
-                FenceStyle::Std => extract_std_fences(&text),
-                FenceStyle::Markdown => extract_fences(&text, false),
-                FenceStyle::Module => extract_fences(&text, true),
-            };
-            for (content, skip) in extracted {
-                found += 1;
-                if skip {
-                    continue;
-                }
-                let id = mint_fence_id(&prefix, &content, &mut minted);
-                let fence_path = fence_dir.join(format!("{id}.hew"));
-                fs::write(&fence_path, &content)
-                    .map_err(|err| format!("write fence {}: {err}", fence_path.display()))?;
-                expanded.push(Case {
-                    id,
-                    intent: format!(
-                        "documentation fence from {}: the surface it teaches must type-check",
-                        path.strip_prefix(root).unwrap_or(&path).display()
-                    ),
-                    source: fence_path,
-                    fixtures: None,
-                    suites: case.suites.clone(),
-                    timeout_seconds: case.timeout_seconds,
-                    kind: CaseKind::Doc,
-                    env: BTreeMap::new(),
-                    fences: None,
-                    expected: ExpectedOutcome::default(),
-                });
-            }
-        }
-        // A source that yields nothing (a renamed doc, a changed fence
-        // marker) would make the ledger trivially agree with an empty run.
-        if found == 0 {
-            return Err(format!(
-                "{} extracted no fences from {}",
-                case.id,
-                source.display()
-            ));
-        }
-    }
-    manifest.cases = expanded;
-    Ok(())
-}
-
-/// The `(file, id prefix)` pairs one doc case covers: a single file for
-/// `markdown`, every module in a directory for `module`, the whole tree for
-/// `std`.
-fn fence_documents(source: &Path, fences: &FenceSource) -> Result<Vec<(PathBuf, String)>> {
-    if fences.style == FenceStyle::Markdown {
-        if !source.is_file() {
-            return Err(format!("doc source is not a file: {}", source.display()));
-        }
-        return Ok(vec![(source.to_path_buf(), fences.prefix.clone())]);
-    }
-    if !source.is_dir() {
-        return Err(format!(
-            "doc source is not a directory: {}",
-            source.display()
-        ));
-    }
-    let recursive = fences.style == FenceStyle::Std;
-    let mut files = Vec::new();
-    collect_hew_files(source, recursive, &mut files)?;
-    files.sort();
-    let documents = files
-        .into_iter()
-        .map(|path| {
-            let slug = match fences.style {
-                FenceStyle::Std => path
-                    .strip_prefix(source)
-                    .unwrap_or(&path)
-                    .with_extension("")
-                    .to_string_lossy()
-                    .replace(std::path::MAIN_SEPARATOR, "-"),
-                _ => path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            };
-            let prefix = format!("{}-{slug}", fences.prefix);
-            (path, prefix)
-        })
-        .collect();
-    Ok(documents)
-}
-
-fn collect_hew_files(directory: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in
-        fs::read_dir(directory).map_err(|err| format!("read {}: {err}", directory.display()))?
-    {
-        let entry = entry.map_err(|err| format!("read directory entry: {err}"))?;
-        let path = entry.path();
-        if path.is_dir() {
-            if recursive && path.file_name().is_some_and(|name| name != "target") {
-                collect_hew_files(&path, recursive, out)?;
-            }
-        } else if path.extension().is_some_and(|ext| ext == "hew") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
-/// `<prefix>-<cksum>`, with a numeric suffix when two fences in the same
-/// document are byte-identical, so both are still checked independently.
-fn mint_fence_id(
-    prefix: &str,
-    content: &str,
-    minted: &mut std::collections::BTreeSet<String>,
-) -> String {
-    let base = format!("{prefix}-{}", posix_cksum(content.as_bytes()));
-    let mut candidate = base.clone();
-    let mut suffix = 1u32;
-    while minted.contains(&candidate) {
-        suffix += 1;
-        candidate = format!("{base}-{suffix}");
-    }
-    minted.insert(candidate.clone());
-    candidate
-}
-
-/// The POSIX `cksum` CRC. The doc-fence ratchet's ids were minted by
-/// `cksum`, so the runner must produce the same number or every existing
-/// expected-failure row would be orphaned by this migration.
-fn posix_cksum(data: &[u8]) -> u32 {
-    fn step(crc: u32, byte: u8) -> u32 {
-        let mut crc = crc ^ (u32::from(byte) << 24);
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 {
-                (crc << 1) ^ 0x04C1_1DB7
-            } else {
-                crc << 1
-            };
-        }
-        crc
-    }
-    let mut crc = 0u32;
-    for byte in data {
-        crc = step(crc, *byte);
-    }
-    let mut length = data.len();
-    while length > 0 {
-        let byte = u8::try_from(length & 0xFF).expect("masked to one byte");
-        crc = step(crc, byte);
-        length >>= 8;
-    }
-    !crc
-}
-
-/// Split a document the way `while IFS= read -r line` does: on newlines, with
-/// a final unterminated line dropped. Carriage returns stay in the line so a
-/// fence's content — and therefore its id — is byte-identical to what the
-/// shell extractor produced.
-fn document_lines(text: &str) -> Vec<&str> {
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    lines.pop();
-    lines
-}
-
-fn without_carriage_return(line: &str) -> &str {
-    line.strip_suffix('\r').unwrap_or(line)
-}
-
-fn fence_is_skipped(lines: &[String], fence_index: usize) -> bool {
-    let start = fence_index.saturating_sub(5);
-    lines[start..fence_index].iter().any(|line| {
-        FENCE_SKIP_MARKERS
-            .iter()
-            .any(|marker| line.contains(marker))
-    })
-}
-
-/// Extract the hew-tagged fences from a Markdown document, or from the `//!`
-/// prose of a `.hew` documentation module when `strip_module_prefix` is set.
-fn extract_fences(text: &str, strip_module_prefix: bool) -> Vec<(String, bool)> {
-    let lines: Vec<String> = document_lines(text)
-        .into_iter()
-        .map(|line| {
-            if !strip_module_prefix {
-                return line.to_string();
-            }
-            match line.strip_prefix("//!") {
-                Some(rest) => rest.strip_prefix(' ').unwrap_or(rest).to_string(),
-                None => String::new(),
-            }
-        })
-        .collect();
-
-    let mut fences = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        if without_carriage_return(&lines[index]) != "```hew" {
-            index += 1;
-            continue;
-        }
-        let skip = fence_is_skipped(&lines, index);
-        index += 1;
-        let mut content = String::new();
-        while index < lines.len() {
-            if without_carriage_return(&lines[index]) == "```" {
-                index += 1;
-                break;
-            }
-            content.push_str(&lines[index]);
-            content.push('\n');
-            index += 1;
-        }
-        fences.push((content, skip));
-    }
-    fences
-}
-
-/// The standard library's fences: `///` and `//!` both carry prose, an
-/// untagged ``` opens an implicit hew fence, and an explicitly tagged fence
-/// (```text) is stepped over rather than mistaken for one.
-fn extract_std_fences(text: &str) -> Vec<(String, bool)> {
-    let lines: Vec<String> = document_lines(text)
-        .into_iter()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            for marker in ["//!", "///"] {
-                if let Some(rest) = trimmed.strip_prefix(marker) {
-                    return rest.strip_prefix(' ').unwrap_or(rest).to_string();
-                }
-            }
-            String::new()
-        })
-        .collect();
-
-    let mut fences = Vec::new();
-    let mut index = 0;
-    let mut inside_other_language = false;
-    while index < lines.len() {
-        let stripped = without_carriage_return(&lines[index]);
-        if inside_other_language {
-            if stripped == "```" {
-                inside_other_language = false;
-            }
-            index += 1;
-            continue;
-        }
-        if stripped != "```" && stripped != "```hew" {
-            if stripped.starts_with("```") {
-                inside_other_language = true;
-            }
-            index += 1;
-            continue;
-        }
-        let skip = fence_is_skipped(&lines, index);
-        index += 1;
-        let mut content = String::new();
-        while index < lines.len() {
-            if without_carriage_return(&lines[index]) == "```" {
-                index += 1;
-                break;
-            }
-            content.push_str(&lines[index]);
-            content.push('\n');
-            index += 1;
-        }
-        fences.push((content, skip));
-    }
-    fences
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1896,6 +1545,7 @@ mod tests {
             cases: Vec::new(),
             kinds: Vec::new(),
             jobs: 1,
+            partition: None,
             hew_bin: directory.path().join("hew"),
             timeout_seconds: None,
         };
@@ -1951,6 +1601,7 @@ mod tests {
             cases: Vec::new(),
             kinds: Vec::new(),
             jobs: 1,
+            partition: None,
             hew_bin: binary.clone(),
             timeout_seconds: None,
         };
@@ -2051,90 +1702,34 @@ mod tests {
         assert!(error.contains("read command stdout capture"));
     }
 
-    // -----------------------------------------------------------------
-    // Expectation kind: `doc`, and the expected-failure ledger
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn fence_ids_use_the_posix_cksum_the_ratchet_was_minted_with() {
-        // `printf '%s' <content> | cksum` — the ids in every existing
-        // expected-failure row were minted this way, so a different checksum
-        // would orphan the whole ledger.
-        assert_eq!(posix_cksum(b""), 4_294_967_295);
-        assert_eq!(posix_cksum(b"fn main() {}\n"), 3_257_837_729);
-        assert_eq!(posix_cksum(b"let x = 1\n"), 2_119_607_129);
-    }
-
-    #[test]
-    fn markdown_fences_carry_content_and_honour_a_skip_marker() {
-        let document = concat!(
-            "prose\n",
-            "```hew\n",
-            "fn main() {}\n",
-            "```\n",
-            "<!-- doctest: skip -->\n",
-            "```hew\n",
-            "aspirational\n",
-            "```\n",
-        );
-        let fences = extract_fences(document, false);
-        assert_eq!(
-            fences,
-            vec![
-                ("fn main() {}\n".to_string(), false),
-                ("aspirational\n".to_string(), true),
-            ]
-        );
-    }
-
-    #[test]
-    fn module_fences_read_only_the_module_doc_prose() {
-        let module = concat!(
-            "//! prose\n",
-            "//! ```hew\n",
-            "//! fn main() {}\n",
-            "//! ```\n",
-            "fn actual_code() {}\n",
-            "```hew\n",
-            "not a doc fence\n",
-            "```\n",
-        );
-        assert_eq!(
-            extract_fences(module, true),
-            vec![("fn main() {}\n".to_string(), false)]
-        );
-    }
-
-    #[test]
-    fn std_fences_are_implicit_hew_and_step_over_a_tagged_block() {
-        let module = concat!(
-            "//! module prose\n",
-            "    /// ```text\n",
-            "    /// not hew at all\n",
-            "    /// ```\n",
-            "    /// ```\n",
-            "    /// let value = 1\n",
-            "    /// ```\n",
-        );
-        assert_eq!(
-            extract_std_fences(module),
-            vec![("let value = 1\n".to_string(), false)]
-        );
-    }
-
-    #[test]
-    fn identical_fences_in_one_document_are_still_checked_independently() {
-        let mut minted = std::collections::BTreeSet::new();
-        let first = mint_fence_id("guide", "same\n", &mut minted);
-        let second = mint_fence_id("guide", "same\n", &mut minted);
-        assert_ne!(first, second);
-        assert_eq!(second, format!("{first}-2"));
-    }
-
     fn ledger(rows: &[(&str, &str)]) -> BTreeMap<String, String> {
         rows.iter()
             .map(|(id, reason)| (id.to_string(), reason.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn parse_partition_refuses_a_shard_out_of_range() {
+        assert!(parse_partition("2/2").is_err());
+        assert!(parse_partition("0/0").is_err());
+        assert!(parse_partition("not-a-fraction").is_err());
+        assert_eq!(parse_partition("1/4").unwrap(), (1, 4));
+    }
+
+    #[test]
+    fn partition_cases_splits_by_id_and_covers_every_case_exactly_once() {
+        let manifest = manifest();
+        let all: Vec<&Case> = manifest.cases.iter().collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for shard in 0..3 {
+            for case in partition_cases(all.clone(), (shard, 3)) {
+                assert!(
+                    seen.insert(case.id.clone()),
+                    "case assigned to more than one shard"
+                );
+            }
+        }
+        assert_eq!(seen.len(), all.len());
     }
 
     #[test]
@@ -2156,67 +1751,70 @@ mod tests {
         assert!(result.now_passing.is_empty());
     }
 
+    fn row(platforms: &str, id: &str, expect: &str, issue: &str, reason: &str) -> String {
+        format!("acceptance\t{platforms}\t{id}\t{expect}\t{issue}\t{reason}\n")
+    }
+
     fn ledger_root(body: &str) -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
-        fs::create_dir_all(directory.path().join("tests/core-acceptance")).unwrap();
-        fs::write(directory.path().join(EXPECTED_FAILURES_PATH), body).unwrap();
+        let path = directory.path().join(crate::ratchet::LEDGER_PATH);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
         directory
     }
 
     #[test]
     fn a_row_naming_no_case_is_refused_rather_than_ignored() {
-        let directory = ledger_root("linux,macos,windows,freebsd\tghost  # issue #1\n");
+        let body = row(
+            "linux,macos,windows,freebsd",
+            "ghost",
+            "compile",
+            "#1",
+            "gone",
+        );
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("a row for a case that no longer exists must be refused");
         assert!(error.contains("is not a core-acceptance case"), "{error}");
     }
 
     #[test]
-    fn a_row_without_a_reason_is_refused() {
-        let directory = ledger_root("linux,macos,windows,freebsd\tacceptance-case\n");
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
-            .expect_err("a row with no reason must be refused");
-        assert!(error.contains("has no reason"), "{error}");
-    }
-
-    #[test]
-    fn a_row_without_a_platform_column_is_refused() {
-        let directory = ledger_root("acceptance-case  # issue #3001\n");
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
-            .expect_err("a row with no platform column must be refused");
-        assert!(error.contains("no platform column"), "{error}");
-    }
-
-    #[test]
     fn a_row_with_an_unknown_platform_is_refused() {
-        let directory = ledger_root("solaris\tacceptance-case  # issue #3001\n");
+        let body = row("solaris", "acceptance-case", "compile", "#1", "reason");
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("an unknown platform must be refused");
         assert!(error.contains("unknown platform"), "{error}");
     }
 
     #[test]
-    fn a_row_with_a_wildcard_platform_is_refused() {
-        let directory = ledger_root("*\tacceptance-case  # issue #3001\n");
-        let error = load_expected_failures(directory.path(), &manifest(), "linux")
-            .expect_err("core-acceptance has no wildcard platform");
-        assert!(error.contains("unknown platform"), "{error}");
+    fn a_wildcard_platform_applies_on_every_host() {
+        let body = row("*", "acceptance-case", "compile", "#3001", "reason");
+        let directory = ledger_root(&body);
+        let rows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
+        assert_eq!(rows["acceptance-case"], "reason");
     }
 
     #[test]
     fn a_ledger_row_is_read_with_its_reason() {
-        let directory = ledger_root(
-            "# a comment\n\nlinux,macos,windows,freebsd\tacceptance-case  # issue #3001\n",
+        let body = row(
+            "linux,macos,windows,freebsd",
+            "acceptance-case",
+            "compile",
+            "#3001",
+            "reason",
         );
+        let directory = ledger_root(&body);
         let rows = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
-        assert_eq!(rows["acceptance-case"], "issue #3001");
+        assert_eq!(rows["acceptance-case"], "reason");
     }
 
     #[test]
     fn a_row_applies_only_on_its_named_platforms() {
-        let directory = ledger_root("windows\tacceptance-case  # issue #3436\n");
+        let body = row("windows", "acceptance-case", "compile", "#3436", "reason");
+        let directory = ledger_root(&body);
         let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
-        assert_eq!(windows["acceptance-case"], "issue #3436");
+        assert_eq!(windows["acceptance-case"], "reason");
         let linux = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
         assert!(
             linux.is_empty(),
@@ -2226,9 +1824,14 @@ mod tests {
 
     #[test]
     fn two_rows_selecting_the_same_case_and_platform_are_refused_as_overlap() {
-        let directory = ledger_root(
-            "windows,freebsd\tacceptance-case  # issue #1\nfreebsd\tacceptance-case  # issue #2\n",
-        );
+        let body = row(
+            "windows,freebsd",
+            "acceptance-case",
+            "compile",
+            "#1",
+            "reason",
+        ) + &row("freebsd", "acceptance-case", "compile", "#2", "reason");
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "freebsd")
             .expect_err("overlapping platform selection for one case must be refused");
         assert!(error.contains("already selected for freebsd"), "{error}");
@@ -2236,37 +1839,34 @@ mod tests {
 
     #[test]
     fn an_out_of_order_row_is_refused() {
-        let directory = ledger_root(
-            "linux,macos,windows,freebsd\tsafety-case  # issue #1\n\
-             linux,macos,windows,freebsd\tacceptance-case  # issue #2\n",
+        let body = row(
+            "linux,macos,windows,freebsd",
+            "safety-case",
+            "compile",
+            "#1",
+            "reason",
+        ) + &row(
+            "linux,macos,windows,freebsd",
+            "acceptance-case",
+            "compile",
+            "#2",
+            "reason",
         );
+        let directory = ledger_root(&body);
         let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("a row out of id order must be refused");
-        assert!(error.contains("not sorted by id"), "{error}");
-    }
-
-    #[test]
-    fn sort_order_resets_at_a_section_header() {
-        let directory = ledger_root(
-            "# ── safety ──────────────────\n\
-             linux,macos,windows,freebsd\tsafety-case  # issue #1\n\
-             # ── acceptance ──────────────\n\
-             linux,macos,windows,freebsd\tacceptance-case  # issue #2\n",
-        );
-        let rows = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
-        assert_eq!(rows["safety-case"], "issue #1");
-        assert_eq!(rows["acceptance-case"], "issue #2");
+        assert!(error.contains("not sorted"), "{error}");
     }
 
     #[test]
     fn two_rows_selecting_the_same_case_on_disjoint_platforms_are_both_kept() {
-        let directory = ledger_root(
-            "windows\tacceptance-case  # issue #1\nfreebsd\tacceptance-case  # issue #2\n",
-        );
+        let body = row("windows", "acceptance-case", "compile", "#1", "reason-a")
+            + &row("freebsd", "acceptance-case", "compile", "#2", "reason-b");
+        let directory = ledger_root(&body);
         let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
-        assert_eq!(windows["acceptance-case"], "issue #1");
+        assert_eq!(windows["acceptance-case"], "reason-a");
         let freebsd = load_expected_failures(directory.path(), &manifest(), "freebsd").unwrap();
-        assert_eq!(freebsd["acceptance-case"], "issue #2");
+        assert_eq!(freebsd["acceptance-case"], "reason-b");
     }
 
     // -----------------------------------------------------------------
@@ -2291,9 +1891,9 @@ mod tests {
             timeout_seconds: 30,
             kind,
             env: BTreeMap::new(),
-            fences: None,
             expected: ExpectedOutcome {
                 stdout: None,
+                stdout_file: None,
                 stderr: String::new(),
                 exit: None,
                 diagnostics,
@@ -2352,6 +1952,67 @@ mod tests {
         let error = validate_manifest(&manifest, directory.path())
             .expect_err("a run case missing stdout/exit must fail validation");
         assert!(error.contains("must declare both expected stdout and exit"));
+    }
+
+    #[test]
+    fn stdout_file_is_folded_into_stdout() {
+        let directory = manifest_root_with_source("cases/case.hew");
+        let expected_path = directory
+            .path()
+            .join("tests/core-acceptance/expected/case.expected");
+        fs::create_dir_all(expected_path.parent().expect("has a parent")).unwrap();
+        fs::write(&expected_path, "hello\n").unwrap();
+
+        let mut case = make_case(CaseKind::Run, Vec::new(), &["acceptance"], "cases/case.hew");
+        case.expected.stdout_file = Some(PathBuf::from("expected/case.expected"));
+        case.expected.exit = Some(0);
+        let mut manifest = Manifest { cases: vec![case] };
+
+        resolve_stdout_files(&mut manifest, directory.path())
+            .expect("stdout_file must resolve against tests/core-acceptance/");
+        assert_eq!(
+            manifest.cases[0].expected.stdout.as_deref(),
+            Some("hello\n")
+        );
+        assert!(manifest.cases[0].expected.stdout_file.is_none());
+        validate_manifest(&manifest, directory.path())
+            .expect("a case with a resolved stdout_file validates like inline stdout");
+    }
+
+    #[test]
+    fn stdout_file_and_stdout_together_is_rejected() {
+        // Negative control: exactly one of `stdout`/`stdout_file` is valid;
+        // declaring both must fail before either is compared, not silently
+        // prefer one.
+        let directory = manifest_root_with_source("cases/case.hew");
+        let expected_path = directory
+            .path()
+            .join("tests/core-acceptance/expected/case.expected");
+        fs::create_dir_all(expected_path.parent().expect("has a parent")).unwrap();
+        fs::write(&expected_path, "hello\n").unwrap();
+
+        let mut case = make_case(CaseKind::Run, Vec::new(), &["acceptance"], "cases/case.hew");
+        case.expected.stdout = Some("hello\n".to_string());
+        case.expected.stdout_file = Some(PathBuf::from("expected/case.expected"));
+        case.expected.exit = Some(0);
+        let mut manifest = Manifest { cases: vec![case] };
+
+        let error = resolve_stdout_files(&mut manifest, directory.path())
+            .expect_err("declaring both stdout and stdout_file must fail");
+        assert!(error.contains("declares both expected stdout and stdout_file"));
+    }
+
+    #[test]
+    fn stdout_file_missing_is_a_load_error() {
+        let directory = manifest_root_with_source("cases/case.hew");
+        let mut case = make_case(CaseKind::Run, Vec::new(), &["acceptance"], "cases/case.hew");
+        case.expected.stdout_file = Some(PathBuf::from("expected/missing.expected"));
+        case.expected.exit = Some(0);
+        let mut manifest = Manifest { cases: vec![case] };
+
+        let error = resolve_stdout_files(&mut manifest, directory.path())
+            .expect_err("a stdout_file that does not exist must fail before validation");
+        assert!(error.contains("missing.expected"));
     }
 
     #[test]
@@ -2542,6 +2203,7 @@ mod tests {
             cases: Vec::new(),
             kinds: Vec::new(),
             jobs: 1,
+            partition: None,
             hew_bin: fake_hew,
             timeout_seconds: None,
         };
@@ -2566,7 +2228,7 @@ mod tests {
             "cases/probe.hew",
         );
         assert!(
-            runner.run_check(&correct_case, false, &mut String::new()),
+            runner.run_check(&correct_case, &mut String::new()),
             "a check case whose expectation matches the real diagnostic position must pass"
         );
 
@@ -2584,7 +2246,7 @@ mod tests {
             "cases/probe.hew",
         );
         assert!(
-            !runner.run_check(&wrong_position_case, false, &mut String::new()),
+            !runner.run_check(&wrong_position_case, &mut String::new()),
             "a check case naming the wrong position must fail the runner, not pass it"
         );
     }

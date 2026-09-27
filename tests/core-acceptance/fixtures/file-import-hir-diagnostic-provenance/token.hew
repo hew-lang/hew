@@ -1,6 +1,6 @@
 #[linear]
 pub type Token {
-    id: i64,
+    id: i64;
 }
 
 impl Token {

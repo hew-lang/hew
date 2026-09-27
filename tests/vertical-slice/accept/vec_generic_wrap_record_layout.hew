@@ -1,5 +1,5 @@
 type Wrap<T> {
-    v: T,
+    v: T;
 }
 
 fn main() {
@@ -7,17 +7,14 @@ fn main() {
     values.push(Wrap { v: 10 });
     values.push(Wrap { v: 20 });
     values.push(Wrap { v: 30 });
-
     let first = values[0];
     let second = values[1];
     values.set(1, Wrap { v: 40 });
     let popped = values.pop();
     let len_after_pop = values.len();
-
     var sum: i64 = 0;
     for item in values {
         sum = sum + item.v;
     }
-
     println(f"wrap-total={first.v + second.v + len_after_pop + popped.v + sum}");
 }

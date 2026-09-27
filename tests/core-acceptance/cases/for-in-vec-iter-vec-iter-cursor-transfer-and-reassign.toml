@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-vec-iter-vec-iter-cursor-transfer-and-reassign"
+intent = "`for x in vec` cursor (`VecIter<T>`) scope-exit drop oracles: per-iteration leak slope plus a poisoned-allocator no-use-after-free pin for the place-source reuse shape (issue #1949). Shape `vec_iter_cursor_transfer_and_reassign_50_frames` (vec iter cursor transfer and reassign has zero leak endpoints) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-vec-iter-vec-iter-cursor-transfer-and-reassign.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

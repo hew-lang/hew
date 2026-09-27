@@ -1,0 +1,8 @@
+fn main() {
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("dup" + "key", 1);
+    m.insert("dup" + "key", 2);
+    m.insert("dup" + "key", 3);
+    print(m.len());
+    print("OK");
+}

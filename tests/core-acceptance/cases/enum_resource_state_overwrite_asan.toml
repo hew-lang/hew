@@ -2,7 +2,7 @@
 id = "enum_resource_state_overwrite_asan"
 intent = "The fixture runs to completion and exits 0."
 source = "../vertical-slice/accept/enum_resource_state_overwrite_asan.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

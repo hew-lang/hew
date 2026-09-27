@@ -1,0 +1,7 @@
+[[case]]
+id = "sink_i64_typed"
+intent = "Sink<i64> and Stream<i64> are accepted by the Wire-capability checker. The checker accepts it with no diagnostics."
+source = "../vertical-slice/accept/sink_i64_typed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"

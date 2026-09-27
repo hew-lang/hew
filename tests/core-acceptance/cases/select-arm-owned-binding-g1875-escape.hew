@@ -1,0 +1,14 @@
+actor Maker {
+    receive fn make() -> string {
+        "escape-owned-reply".to_upper()
+    }
+}
+
+fn main() -> i64 {
+    let m = spawn Maker;
+    let x = select {
+        r from m.make() => r.expect("ask reply"),
+    };
+    print(x);
+    0
+}

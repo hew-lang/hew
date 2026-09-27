@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 
 use hew_sir::{
     AggregateShapeRef, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, CallableId, Edge,
-    Operand, OwnKind, Provenance, SemBlock, SemFunction, SemModule, SemOp, SemOpKind,
-    SemTerminator, SuspendKind, TrapKind, ValueDef,
+    Operand, OwnKind, Provenance, RuntimeVariantRole, SemBlock, SemFunction, SemModule, SemOp,
+    SemOpKind, SemTerminator, SuspendKind, TrapKind, ValueDef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +94,40 @@ pub struct VariantShape {
     pub id: u32,
     pub name: String,
     pub cases: Vec<VariantCase>,
+    pub runtime_tags: BTreeMap<String, u32>,
+}
+
+fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
+    use RuntimeVariantRole as Role;
+    match role {
+        Role::OptionSome => "OptionSome",
+        Role::OptionNone => "OptionNone",
+        Role::ResultOk => "ResultOk",
+        Role::ResultErr => "ResultErr",
+        Role::ActorErrorRejected => "ActorErrorRejected",
+        Role::ActorErrorFailed => "ActorErrorFailed",
+        Role::ActorErrorTrapped => "ActorErrorTrapped",
+        Role::ActorErrorDead => "ActorErrorDead",
+        Role::ActorErrorTimeout => "ActorErrorTimeout",
+        Role::ActorErrorNodeNotRunning => "ActorErrorNodeNotRunning",
+        Role::ActorErrorRoutingFailed => "ActorErrorRoutingFailed",
+        Role::ActorErrorEncodeFailed => "ActorErrorEncodeFailed",
+        Role::ActorErrorConnectionDropped => "ActorErrorConnectionDropped",
+        Role::ActorErrorPartition => "ActorErrorPartition",
+        Role::SendErrorFull => "SendErrorFull",
+        Role::SendErrorClosed => "SendErrorClosed",
+        Role::SendErrorNodeRoutingNotWired => "SendErrorNodeRoutingNotWired",
+        Role::SendErrorPartition => "SendErrorPartition",
+        Role::SendErrorStaleRef => "SendErrorStaleRef",
+        Role::SendErrorLocalShutdown => "SendErrorLocalShutdown",
+        Role::SendErrorCancelled => "SendErrorCancelled",
+        Role::SendErrorVersionMismatch => "SendErrorVersionMismatch",
+        Role::SendErrorUnauthorized => "SendErrorUnauthorized",
+        Role::SendErrorBackpressure => "SendErrorBackpressure",
+        Role::SendErrorDead => "SendErrorDead",
+        Role::DeliveryAccepted => "DeliveryAccepted",
+        Role::DeliveryDiscarded => "DeliveryDiscarded",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -484,9 +518,8 @@ impl<'m> Walker<'m> {
         let failure_ty = error
             .and_then(|shape| {
                 shape
-                    .variants
-                    .iter()
-                    .find(|variant| variant.name == "Rejected")
+                    .runtime_tag(RuntimeVariantRole::ActorErrorRejected)
+                    .and_then(|tag| shape.variants.get(tag as usize))
             })
             .and_then(|variant| variant.fields.first())
             .map(|field| &field.ty);
@@ -587,7 +620,15 @@ impl<'m> Walker<'m> {
         self.module.resources.iter().map(|(ty, release)| {
                 use hew_sir::ResourceRelease;
                 Ok(match release {
-                    ResourceRelease::RecordClose { close, .. } => serde_json::json!({"kind": "record", "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?}),
+                    ResourceRelease::RecordClose { close, .. } => {
+                        let shape = self.module.aggregate_shape_for_type(ty).ok_or_else(|| {
+                            EmitError::new(format!(
+                                "record resource `{}` has no exact aggregate shape",
+                                ty.user_facing()
+                            ))
+                        })?;
+                        serde_json::json!({"kind": "record", "shape": shape.id.0, "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?})
+                    },
                     ResourceRelease::OpaqueClose { close, .. } => serde_json::json!({"kind": "opaque", "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?}),
                     ResourceRelease::Nominal { release, .. } => serde_json::json!({"kind": "nominal", "ty": ty.user_facing().to_string(), "release": release.symbol}),
                     ResourceRelease::Task => serde_json::json!({"kind": "task"}),
@@ -712,9 +753,9 @@ impl<'m> Walker<'m> {
                 ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 | ResolvedTy::U64 | ResolvedTy::Usize |
                 ResolvedTy::F32 | ResolvedTy::F64 | ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String => scalar("scalar"),
                 ResolvedTy::Tuple(_) => Ok(serde_json::json!({"kind": "tuple", "members": members})),
-                ResolvedTy::Named { name, builtin, is_opaque, .. } => {
-                    if *builtin == Some(BuiltinType::Vec) { return Ok(serde_json::json!({"kind": "vector", "members": members})); }
-                    if *builtin == Some(BuiltinType::HashMap) { return Ok(serde_json::json!({"kind": "map", "members": members})); }
+                ResolvedTy::Named { head, is_opaque, .. } => { let name = head.registry_key(); let builtin = head.builtin();
+                    if builtin == Some(BuiltinType::Vec) { return Ok(serde_json::json!({"kind": "vector", "members": members})); }
+                    if builtin == Some(BuiltinType::HashMap) { return Ok(serde_json::json!({"kind": "map", "members": members})); }
                     if *is_opaque { return Ok(serde_json::json!({"kind": "identity", "name": name})); }
                     if let Some(shape) = self.module.variant_shape_for_type(&key.value) {
                         let mut offset = 0;
@@ -877,6 +918,11 @@ impl<'m> Walker<'m> {
             .map(|shape| VariantShape {
                 id: shape.id.0,
                 name: shape.enum_ty.user_facing().to_string(),
+                runtime_tags: shape
+                    .runtime_tags
+                    .iter()
+                    .map(|(role, tag)| (runtime_role_name(*role).to_string(), *tag))
+                    .collect(),
                 cases: shape
                     .variants
                     .iter()
@@ -1541,9 +1587,14 @@ impl<'m> Walker<'m> {
                 "unwind": encode_unwind(unwind),
             }),
 
-            SemTerminator::Panic { message, cleanup } => serde_json::json!({
+            SemTerminator::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => serde_json::json!({
                 "op": "panic",
                 "message": boundary(message),
+                "assertion": assertion.as_ref().map(|values| values.iter().map(boundary).collect::<Vec<_>>()),
                 "cleanup": encode_edge(cleanup),
             }),
             SemTerminator::Trap { kind } => {
@@ -1827,10 +1878,29 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         })
     }
     match operation {
+        Op::Stop(target)
+        | Op::Terminate(target)
+        | Op::AwaitStopped(target)
+        | Op::AwaitRestarted(target) => {
+            let op = match operation {
+                Op::Stop(_) => "stop",
+                Op::Terminate(_) => "terminate",
+                Op::AwaitStopped(_) => "await_stopped",
+                Op::AwaitRestarted(_) => "await_restarted",
+                _ => unreachable!(),
+            };
+            match target {
+                hew_sir::LifecycleTarget::Actor(id) | hew_sir::LifecycleTarget::ActorRole(id) => {
+                    serde_json::json!({ "op": op, "actor": id.0 })
+                }
+                hew_sir::LifecycleTarget::Supervisor(id)
+                | hew_sir::LifecycleTarget::SupervisorRole(id) => {
+                    serde_json::json!({ "op": op, "supervisor": id.0 })
+                }
+            }
+        }
         Op::Spawn(actor) => serde_json::json!({ "op": "spawn", "actor": actor.0 }),
         Op::SelfHandle(actor) => serde_json::json!({ "op": "self_handle", "actor": actor.0 }),
-        Op::Close(actor) => serde_json::json!({ "op": "close", "actor": actor.0 }),
-        Op::AwaitClosed(actor) => serde_json::json!({ "op": "await_closed", "actor": actor.0 }),
         Op::CallStart(p) => serde_json::json!({ "op": "call_start", "protocol": protocol(p) }),
         Op::CallTake(p) => serde_json::json!({ "op": "call_take", "protocol": protocol(p) }),
         Op::Submit { actor, policy, .. } => serde_json::json!({
@@ -1862,36 +1932,12 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         Op::SupervisorSpawn(supervisor) => {
             serde_json::json!({ "op": "supervisor_spawn", "supervisor": supervisor.0 })
         }
-        Op::SupervisorStop(supervisor) => {
-            serde_json::json!({ "op": "supervisor_stop", "supervisor": supervisor.0 })
-        }
-        Op::SupervisorAwaitClosed(supervisor) => {
-            serde_json::json!({ "op": "supervisor_await_closed", "supervisor": supervisor.0 })
-        }
         Op::SupervisorChild {
             supervisor,
             child,
             owner_is_role,
         } => serde_json::json!({
             "op": "supervisor_child",
-            "supervisor": supervisor.0,
-            "child": child,
-            "owner_is_role": owner_is_role,
-        }),
-        Op::SupervisorRoleAwaitClosed {
-            supervisor,
-            closing,
-        } => serde_json::json!({
-            "op": "supervisor_role_await_closed",
-            "supervisor": supervisor.0,
-            "closing": closing,
-        }),
-        Op::SupervisorAwaitRestart {
-            supervisor,
-            child,
-            owner_is_role,
-        } => serde_json::json!({
-            "op": "supervisor_await_restart",
             "supervisor": supervisor.0,
             "child": child,
             "owner_is_role": owner_is_role,

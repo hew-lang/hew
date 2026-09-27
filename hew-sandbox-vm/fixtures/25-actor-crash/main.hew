@@ -3,7 +3,7 @@ actor Boom {
     #[on(crash)]
     fn crashed(info: CrashInfo) -> CrashAction {
         println("crashed");
-        CrashAction.Kill
+        CrashAction.GiveUp
     }
 }
 fn main() {

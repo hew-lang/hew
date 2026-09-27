@@ -17,8 +17,9 @@
 use std::fmt;
 
 use crate::builtin_type::BuiltinType;
-use crate::ty::{TraitObjectBound, Ty, TypeVar};
-use crate::{CallableCapabilities, DefId, NominalId};
+use crate::def_table::BuiltinAnchor;
+use crate::ty::{TraitObjectBound, Ty, TypeHead, TypeVar};
+use crate::{CallableCapabilities, DefTable, NominalId};
 
 /// A concrete use of a declared nominal type.
 ///
@@ -28,35 +29,6 @@ use crate::{CallableCapabilities, DefId, NominalId};
 pub struct NominalInstance {
     pub nominal: NominalId,
     pub args: Vec<ResolvedTy>,
-}
-
-/// Allocate the direct-body identity for a trait default materialized in one
-/// concrete impl. The trait method identity remains the dispatch key; this
-/// identity names the selected body for the exact receiver instance.
-#[must_use]
-pub fn default_impl_method_declaration(
-    declaring_trait: &DefId,
-    receiver: &NominalInstance,
-    method: &str,
-) -> DefId {
-    let nominal = receiver.nominal.full_path();
-    let rendered_receiver = if receiver.args.is_empty() {
-        nominal.to_string()
-    } else {
-        format!(
-            "{nominal}<{}>",
-            receiver
-                .args
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-    crate::identity::mint_def_id(format!(
-        "{nominal}::<default impl {} for {rendered_receiver}>::{method}",
-        declaring_trait.full_path(),
-    ))
 }
 
 /// A fully-resolved, concrete type that has crossed the checker output
@@ -122,17 +94,12 @@ pub enum ResolvedTy {
     Slice(Box<ResolvedTy>),
     /// Named types (structs, enums, actors, type params).
     Named {
-        /// Type name
-        name: String,
+        /// The identity the name resolved to: a declared nominal, an actor
+        /// handle, a compiler builtin or a generic binder. Propagated
+        /// round-trip-totally from `Ty::Named.head`.
+        head: crate::TypeHead,
         /// Generic type arguments
         args: Vec<ResolvedTy>,
-        /// Compiler-known builtin discriminator. `Some(_)` means this `Named`
-        /// resolved to a canonical builtin from `builtin_type.rs::BUILTIN_TYPES`
-        /// during name resolution; `None` means it is a user-defined record/
-        /// enum/actor name or a type parameter. Consumers that need to
-        /// discriminate builtin vs user dispatch on this field, NOT on the
-        /// `name` string. Propagated round-trip-totally from `Ty::Named.builtin`.
-        builtin: Option<BuiltinType>,
         /// `#[opaque]`-handle discriminator. `true` means this `Named` resolved
         /// to a type declared `#[opaque]` (a pointer-width runtime handle such
         /// as `json.Value` / `cron.Expr`) during HIR name resolution; `false`
@@ -207,7 +174,7 @@ pub enum ResolvedTy {
     /// monomorphisation later replaces it with a concrete `ResolvedTy`.
     ///
     /// Construction from a checker-internal [`Ty`] requires the declared
-    /// type-parameter scope — see [`ResolvedTy::from_ty_with_type_params`].
+    /// type-parameter scope — see [`ResolvedTy::from_ty`].
     /// The unscoped [`ResolvedTy::from_ty`] never produces this variant (a
     /// bare `Ty::Named` is indistinguishable from a no-argument user type
     /// without that scope), so its behaviour is unchanged.
@@ -215,20 +182,59 @@ pub enum ResolvedTy {
     /// Display: the bare parameter name (`T`), via `to_ty()` →
     /// `Ty::Named { name, args: [], builtin: None }`.
     TypeParam {
-        /// The source-declared parameter name (e.g. `"T"`).
-        name: String,
+        /// The declaration-owned binder, including its display spelling.
+        name: crate::ParamHead,
     },
 }
 
 /// A single trait bound in a resolved trait object.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+#[derive(Debug, Clone)]
 pub struct ResolvedTraitBound {
     /// Trait name
     pub trait_name: String,
+    /// See [`crate::ty::TraitObjectBound::trait_id`].
+    pub trait_id: Option<crate::DefId>,
     /// Resolved type arguments
     pub args: Vec<ResolvedTy>,
     /// Resolved associated-type bindings, sorted by associated-type name.
     pub assoc_bindings: Vec<(String, ResolvedTy)>,
+}
+
+impl PartialEq for ResolvedTraitBound {
+    fn eq(&self, other: &Self) -> bool {
+        self.trait_id == other.trait_id
+            && self.trait_name == other.trait_name
+            && self.args == other.args
+            && self.assoc_bindings == other.assoc_bindings
+    }
+}
+
+impl Eq for ResolvedTraitBound {}
+
+impl PartialOrd for ResolvedTraitBound {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ResolvedTraitBound {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.trait_id
+            .cmp(&other.trait_id)
+            .then_with(|| self.trait_name.cmp(&other.trait_name))
+            .then_with(|| self.args.cmp(&other.args))
+            .then_with(|| self.assoc_bindings.cmp(&other.assoc_bindings))
+    }
+}
+
+impl std::hash::Hash for ResolvedTraitBound {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.trait_id.hash(state);
+        self.trait_name.hash(state);
+        self.args.hash(state);
+        self.assoc_bindings.hash(state);
+    }
 }
 
 /// Reasons a checker-internal [`Ty`] cannot cross the boundary as a
@@ -321,12 +327,11 @@ impl ResolvedTy {
     pub fn actor_handle_instance(&self) -> Option<NominalInstance> {
         match self {
             Self::Named {
-                name,
+                head: TypeHead::Actor(actor),
                 args,
-                builtin: Some(crate::BuiltinType::ActorHandle),
                 ..
             } => Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id(name.clone()),
+                nominal: actor.id,
                 args: args.clone(),
             }),
             _ => None,
@@ -336,13 +341,17 @@ impl ResolvedTy {
     /// The handle type of an actor named by a bare nominal carrier.
     #[must_use]
     pub fn actor_handle_from_nominal(nominal: &ResolvedTy) -> Option<ResolvedTy> {
-        let ResolvedTy::Named { name, args, .. } = nominal else {
+        let ResolvedTy::Named {
+            head: TypeHead::Nominal(actor) | TypeHead::Actor(actor),
+            args,
+            ..
+        } = nominal
+        else {
             return None;
         };
         Some(ResolvedTy::Named {
-            name: name.clone(),
+            head: TypeHead::Actor(*actor),
             args: args.clone(),
-            builtin: Some(crate::BuiltinType::ActorHandle),
             is_opaque: false,
         })
     }
@@ -353,14 +362,12 @@ impl ResolvedTy {
     pub fn actor_handle_nominal(&self) -> Option<ResolvedTy> {
         match self {
             Self::Named {
-                name,
+                head: TypeHead::Actor(actor),
                 args,
-                builtin: Some(crate::BuiltinType::ActorHandle),
                 ..
             } => Some(ResolvedTy::Named {
-                name: name.clone(),
+                head: TypeHead::Nominal(*actor),
                 args: args.clone(),
-                builtin: None,
                 is_opaque: false,
             }),
             _ => None,
@@ -373,8 +380,9 @@ impl ResolvedTy {
     /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
     /// semantic nominal identity. Source-defined builtin records retain their
     /// closed discriminator while selecting their canonical declaration.
+    ///
     #[must_use]
-    pub fn nominal_instance(&self) -> Option<NominalInstance> {
+    pub fn nominal_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
         match self {
             // The two compiler-owned cursor records. Both are declared in
             // `std/builtins.hew` as ordinary generic records and are reached
@@ -383,49 +391,40 @@ impl ResolvedTy {
             // not a checker-resolved named record, `record_fields` refuses it,
             // and SIR reports it as having no semantic value contract.
             Self::Named {
+                head: TypeHead::Builtin(BuiltinType::VecIter),
                 args,
-                builtin: Some(crate::BuiltinType::VecIter),
                 ..
             } => Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id("std.builtins.VecIter"),
+                nominal: crate::KnownDecl::VecIter.nominal(),
                 args: args.clone(),
             }),
             Self::Named {
+                head: TypeHead::Builtin(BuiltinType::HashMapIter),
                 args,
-                builtin: Some(crate::BuiltinType::HashMapIter),
                 ..
             } => Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id("std.builtins.HashMapIter"),
+                nominal: crate::KnownDecl::HashMapIter.nominal(),
                 args: args.clone(),
             }),
             Self::Named {
-                name,
+                head: TypeHead::Nominal(nominal),
                 args,
-                builtin,
                 ..
-            } if builtin.is_none()
-                || (matches!(
-                    builtin,
-                    Some(
-                        crate::BuiltinType::CrashInfo
-                            | crate::BuiltinType::CrashAction
-                            | crate::BuiltinType::CrashNotification
-                            | crate::BuiltinType::CrashKind
-                            | crate::BuiltinType::MonitorId
-                            | crate::BuiltinType::DownTarget
-                            | crate::BuiltinType::DownReason
-                            | crate::BuiltinType::DownNotification
-                            | crate::BuiltinType::MonitorRef
-                    )
-                ) && crate::builtin_type::has_exact_source_owned_lifecycle_identity(
-                    name, *builtin,
-                )) =>
-            {
-                Some(NominalInstance {
-                    nominal: crate::identity::mint_nominal_id(name.clone()),
-                    args: args.clone(),
-                })
-            }
+            } => Some(NominalInstance {
+                nominal: nominal.id,
+                args: args.clone(),
+            }),
+            // A lifecycle builtin is declared in its owning std module.
+            // TRANSITION(A1 commit 3): the declaration is read through its
+            // canonical path until the builtin carries its declaration id.
+            Self::Named {
+                head: TypeHead::Builtin(builtin),
+                args,
+                ..
+            } => Some(NominalInstance {
+                nominal: defs.lookup_nominal(builtin.source_owned_path()?)?,
+                args: args.clone(),
+            }),
             _ => None,
         }
     }
@@ -440,63 +439,68 @@ impl ResolvedTy {
     /// `impl Show for i64` names them. Returns `None` for shapes that cannot
     /// anchor an impl (closures, function types, type parameters).
     #[must_use]
-    pub fn impl_receiver_instance(&self) -> Option<NominalInstance> {
-        let primitive = |name: &str| {
+    pub fn impl_receiver_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
+        let anchored = |anchor: BuiltinAnchor, args: Vec<ResolvedTy>| {
             Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id(name),
-                args: Vec::new(),
+                nominal: crate::NominalId::from_minted_declaration(DefTable::anchor(anchor)),
+                args,
             })
         };
+        let primitive = |anchor: BuiltinAnchor| anchored(anchor, Vec::new());
         match self {
             Self::Named {
                 args,
-                builtin: Some(builtin),
+                head: crate::TypeHead::Builtin(builtin),
                 ..
             } => {
                 // An actor is the type of its handle, so its nominal identity
                 // is the actor declaration's own, read off the handle.
-                if let Some(instance) = self.actor_handle_instance() {
-                    return Some(instance);
-                }
-                let nominal = match builtin {
+                let anchor = match builtin {
                     BuiltinType::VecIter | BuiltinType::HashMapIter => {
-                        return self.nominal_instance();
+                        return self.nominal_instance(defs);
                     }
-                    BuiltinType::Generator => "Generator",
-                    BuiltinType::Vec => "Vec",
-                    BuiltinType::HashMap => "HashMap",
-                    BuiltinType::ChildRef => "ChildRef",
-                    BuiltinType::RemotePid => "RemotePid",
-                    BuiltinType::NodeId => "NodeId",
-                    BuiltinType::Location => "Location",
+                    BuiltinType::Generator => BuiltinAnchor::Generator,
+                    BuiltinType::Vec => BuiltinAnchor::Vec,
+                    BuiltinType::HashMap => BuiltinAnchor::HashMap,
+                    BuiltinType::ChildRef => BuiltinAnchor::ChildRef,
+                    BuiltinType::RemotePid => BuiltinAnchor::RemotePid,
+                    BuiltinType::NodeId => BuiltinAnchor::NodeId,
+                    BuiltinType::Location => BuiltinAnchor::Location,
                     // A shipped `#[opaque]` encoding value (`json.Value`) is a
                     // declaration in its own module; the catalogue owns that
                     // module path.
-                    other if other.is_encoding_value() => other.canonical_name(),
+                    // TRANSITION(P2): deleted by A1 commit 2.
+                    other if other.is_encoding_value() => {
+                        return Some(NominalInstance {
+                            nominal: defs.lookup_nominal(other.canonical_name())?,
+                            args: args.clone(),
+                        });
+                    }
                     _ => return None,
                 };
-                Some(NominalInstance {
-                    nominal: crate::identity::mint_nominal_id(nominal),
-                    args: args.clone(),
-                })
+                anchored(anchor, args.clone())
             }
-            Self::Named { .. } => self.nominal_instance(),
-            Self::I8 => primitive("i8"),
-            Self::I16 => primitive("i16"),
-            Self::I32 => primitive("i32"),
-            Self::I64 => primitive("i64"),
-            Self::U8 => primitive("u8"),
-            Self::U16 => primitive("u16"),
-            Self::U32 => primitive("u32"),
-            Self::U64 => primitive("u64"),
-            Self::Isize => primitive("isize"),
-            Self::Usize => primitive("usize"),
-            Self::F32 => primitive("f32"),
-            Self::F64 => primitive("f64"),
-            Self::Bool => primitive("bool"),
-            Self::Char => primitive("char"),
-            Self::String => primitive("string"),
-            Self::Bytes => primitive("bytes"),
+            Self::Named {
+                head: TypeHead::Actor(_),
+                ..
+            } => self.actor_handle_instance(),
+            Self::Named { .. } => self.nominal_instance(defs),
+            Self::I8 => primitive(BuiltinAnchor::I8),
+            Self::I16 => primitive(BuiltinAnchor::I16),
+            Self::I32 => primitive(BuiltinAnchor::I32),
+            Self::I64 => primitive(BuiltinAnchor::I64),
+            Self::U8 => primitive(BuiltinAnchor::U8),
+            Self::U16 => primitive(BuiltinAnchor::U16),
+            Self::U32 => primitive(BuiltinAnchor::U32),
+            Self::U64 => primitive(BuiltinAnchor::U64),
+            Self::Isize => primitive(BuiltinAnchor::Isize),
+            Self::Usize => primitive(BuiltinAnchor::Usize),
+            Self::F32 => primitive(BuiltinAnchor::F32),
+            Self::F64 => primitive(BuiltinAnchor::F64),
+            Self::Bool => primitive(BuiltinAnchor::Bool),
+            Self::Char => primitive(BuiltinAnchor::Char),
+            Self::String => primitive(BuiltinAnchor::String),
+            Self::Bytes => primitive(BuiltinAnchor::Bytes),
             _ => None,
         }
     }
@@ -504,13 +508,7 @@ impl ResolvedTy {
     /// Returns whether this type carries the checker-stamped builtin identity.
     #[must_use]
     pub fn is_builtin(&self, expected: BuiltinType) -> bool {
-        matches!(
-            self,
-            Self::Named {
-                builtin: Some(actual),
-                ..
-            } if *actual == expected
-        )
+        self.head().and_then(TypeHead::builtin) == Some(expected)
     }
 
     /// Returns `true` for every concrete integer type admitted by the checker.
@@ -655,13 +653,13 @@ impl ResolvedTy {
             (
                 Self::Named {
                     args: left_args,
-                    builtin: Some(left_builtin),
+                    head: crate::TypeHead::Builtin(left_builtin),
                     is_opaque: false,
                     ..
                 },
                 Self::Named {
                     args: right_args,
-                    builtin: Some(right_builtin),
+                    head: crate::TypeHead::Builtin(right_builtin),
                     is_opaque: false,
                     ..
                 },
@@ -744,45 +742,13 @@ impl ResolvedTy {
     /// encountered in a recursive descent: an unresolved inference
     /// variable, an `Ty::Error` placeholder, or an unmaterialized numeric
     /// literal. The carried data identifies the innermost offender.
-    pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
-        Self::from_ty_scoped(ty, &std::collections::HashSet::new())
-    }
-
-    /// Scope-aware variant of [`ResolvedTy::from_ty`] that recognises the
-    /// declared generic type parameters of the enclosing item.
-    ///
-    /// A bare `Ty::Named { name, args: [], builtin: None }` whose `name`
-    /// appears in `type_params` is converted to [`ResolvedTy::TypeParam`]
-    /// (the A622 abstract-parameter authority) rather than to a
-    /// `ResolvedTy::Named` user type. Every other type — and every name not
-    /// in scope — follows the exact same rules as [`ResolvedTy::from_ty`],
-    /// which is defined as this function with an empty scope. This keeps a
-    /// single conceptual boundary converter, so the two entry points cannot
-    /// drift: the unscoped form simply has no type parameters in scope.
-    ///
-    /// # Errors
-    ///
-    /// Identical fail-closed behaviour to [`ResolvedTy::from_ty`]: returns
-    /// the innermost [`BoundaryError`] for any leaked checker-internal state
-    /// (unresolved inference variable, error placeholder, unmaterialized
-    /// literal, or unresolved associated-type projection).
-    pub fn from_ty_with_type_params(
-        ty: &Ty,
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<Self, BoundaryError> {
-        Self::from_ty_scoped(ty, type_params)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "single exhaustive `Ty` -> `ResolvedTy` boundary conversion; \
                   every arm is a fail-closed mapping and splitting would scatter \
                   the total match across helpers"
     )]
-    fn from_ty_scoped(
-        ty: &Ty,
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<Self, BoundaryError> {
+    pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
         match ty {
             Ty::I8 => Ok(ResolvedTy::I8),
             Ty::I16 => Ok(ResolvedTy::I16),
@@ -808,22 +774,13 @@ impl ResolvedTy {
             Ty::FloatLiteral => Err(BoundaryError::UnmaterializedLiteral { is_integer: false }),
             Ty::Var(var) => Err(BoundaryError::UnresolvedInference { var: *var }),
             Ty::Error => Err(BoundaryError::TaintedError),
-            Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems, type_params)?)),
-            Ty::Array(elem, size) => Ok(ResolvedTy::Array(
-                Box::new(Self::from_ty_scoped(elem, type_params)?),
-                *size,
-            )),
-            Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty_scoped(
-                elem,
-                type_params,
-            )?))),
+            Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems)?)),
+            Ty::Array(elem, size) => Ok(ResolvedTy::Array(Box::new(Self::from_ty(elem)?), *size)),
+            Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty(elem)?))),
             Ty::Named {
-                name,
+                head: TypeHead::Builtin(BuiltinType::CancellationToken),
                 args,
-                builtin: Some(BuiltinType::CancellationToken),
-            } if args.is_empty() && name == "CancellationToken" => {
-                Ok(ResolvedTy::CancellationToken)
-            }
+            } if args.is_empty() => Ok(ResolvedTy::CancellationToken),
             // `instant` is a monotonic timestamp in nanoseconds; its runtime
             // ABI (`hew_instant_now`/`_elapsed`/`_duration_since`) is a bare
             // `i64`, so it lowers to `ResolvedTy::I64` at the MIR boundary. The
@@ -831,29 +788,20 @@ impl ResolvedTy {
             // route method dispatch to the `impl instant` block; MIR and codegen
             // see an ordinary `i64` and need no `instant`-specific arm.
             Ty::Named {
-                name,
+                head: TypeHead::Builtin(BuiltinType::Instant),
                 args,
-                builtin: Some(BuiltinType::Instant),
-            } if args.is_empty() && name == "instant" => Ok(ResolvedTy::I64),
+            } if args.is_empty() => Ok(ResolvedTy::I64),
             // A bare, non-builtin `Named` whose name is a declared generic
             // parameter of the enclosing item is the abstract-parameter form
             // (A622). The unscoped `from_ty` passes an empty scope, so it
             // never reaches this branch and its behaviour is unchanged.
             Ty::Named {
-                name,
+                head: TypeHead::Param(param),
                 args,
-                builtin: None,
-            } if args.is_empty() && type_params.contains(name) => {
-                Ok(ResolvedTy::TypeParam { name: name.clone() })
-            }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ok(ResolvedTy::Named {
-                name: name.clone(),
-                args: Self::convert_vec(args, type_params)?,
-                builtin: *builtin,
+            } if args.is_empty() => Ok(ResolvedTy::TypeParam { name: *param }),
+            Ty::Named { head, args } => Ok(ResolvedTy::Named {
+                head: *head,
+                args: Self::convert_vec(args)?,
                 // The checker's `Ty::Named` carries no opacity discriminator;
                 // opacity is stamped downstream by `hew-hir::lower::lower_type`
                 // from the opaque-type-decl set. A `ResolvedTy` produced from a
@@ -876,8 +824,8 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Function {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params, type_params)?,
-                ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
+                params: Self::convert_vec(params)?,
+                ret: Box::new(Self::from_ty(ret)?),
             }),
             Ty::Closure {
                 capabilities,
@@ -887,30 +835,27 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Closure {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params, type_params)?,
-                ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
-                captures: Self::convert_vec(captures, type_params)?,
+                params: Self::convert_vec(params)?,
+                ret: Box::new(Self::from_ty(ret)?),
+                captures: Self::convert_vec(captures)?,
             }),
             Ty::Pointer {
                 is_mutable,
                 pointee,
             } => Ok(ResolvedTy::Pointer {
                 is_mutable: *is_mutable,
-                pointee: Box::new(Self::from_ty_scoped(pointee, type_params)?),
+                pointee: Box::new(Self::from_ty(pointee)?),
             }),
             Ty::Borrow { pointee } => Ok(ResolvedTy::Borrow {
-                pointee: Box::new(Self::from_ty_scoped(pointee, type_params)?),
+                pointee: Box::new(Self::from_ty(pointee)?),
             }),
             Ty::TraitObject { traits } => Ok(ResolvedTy::TraitObject {
                 traits: traits
                     .iter()
-                    .map(|bound| Self::convert_trait_bound(bound, type_params))
+                    .map(Self::convert_trait_bound)
                     .collect::<Result<Vec<_>, _>>()?,
             }),
-            Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty_scoped(
-                inner,
-                type_params,
-            )?))),
+            Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty(inner)?))),
             Ty::AssocType {
                 trait_name,
                 assoc_name,
@@ -922,26 +867,19 @@ impl ResolvedTy {
         }
     }
 
-    fn convert_vec(
-        tys: &[Ty],
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<Vec<ResolvedTy>, BoundaryError> {
-        tys.iter()
-            .map(|ty| Self::from_ty_scoped(ty, type_params))
-            .collect()
+    fn convert_vec(tys: &[Ty]) -> Result<Vec<ResolvedTy>, BoundaryError> {
+        tys.iter().map(Self::from_ty).collect()
     }
 
-    fn convert_trait_bound(
-        bound: &TraitObjectBound,
-        type_params: &std::collections::HashSet<String>,
-    ) -> Result<ResolvedTraitBound, BoundaryError> {
+    fn convert_trait_bound(bound: &TraitObjectBound) -> Result<ResolvedTraitBound, BoundaryError> {
         Ok(ResolvedTraitBound {
             trait_name: bound.trait_name.clone(),
-            args: Self::convert_vec(&bound.args, type_params)?,
+            trait_id: bound.trait_id,
+            args: Self::convert_vec(&bound.args)?,
             assoc_bindings: bound
                 .assoc_bindings
                 .iter()
-                .map(|(name, ty)| Ok((name.clone(), Self::from_ty_scoped(ty, type_params)?)))
+                .map(|(name, ty)| Ok((name.clone(), Self::from_ty(ty)?)))
                 .collect::<Result<Vec<_>, BoundaryError>>()?,
         })
     }
@@ -977,16 +915,14 @@ impl ResolvedTy {
             ResolvedTy::Array(elem, size) => Ty::Array(Box::new(elem.to_ty()), *size),
             ResolvedTy::Slice(elem) => Ty::Slice(Box::new(elem.to_ty())),
             ResolvedTy::Named {
-                name,
+                head,
                 args,
-                builtin,
                 // `Ty::Named` carries no opacity discriminator; opacity is a
                 // HIR-resolution fact that does not round-trip back into the
                 // checker type. Dropped here intentionally.
                 is_opaque: _,
             } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
+                head: *head,
                 args: args.iter().map(Self::to_ty).collect(),
             },
             // A resolved closure no longer names the literal it came from, so
@@ -1021,6 +957,7 @@ impl ResolvedTy {
                     .iter()
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
+                        trait_id: bound.trait_id,
                         args: bound.args.iter().map(Self::to_ty).collect(),
                         assoc_bindings: bound
                             .assoc_bindings
@@ -1036,11 +973,7 @@ impl ResolvedTy {
             // the same shape the type param had before `from_ty_with_type_params`
             // recognised it, so the round-trip is lossless within the declared
             // type-parameter scope.
-            ResolvedTy::TypeParam { name } => Ty::Named {
-                name: name.clone(),
-                args: Vec::new(),
-                builtin: None,
-            },
+            ResolvedTy::TypeParam { name } => Ty::param(*name),
         }
     }
 
@@ -1049,47 +982,155 @@ impl ResolvedTy {
     /// "I'll just pass `None`" sites that would silently fall onto the
     /// user-record branch of every downstream discriminator.
     #[must_use]
-    pub fn named_builtin(
-        name: impl Into<String>,
-        kind: BuiltinType,
-        args: Vec<ResolvedTy>,
-    ) -> Self {
+    pub fn named_builtin(kind: BuiltinType, args: Vec<ResolvedTy>) -> Self {
         ResolvedTy::Named {
-            name: name.into(),
+            head: TypeHead::Builtin(kind),
             args,
-            builtin: Some(kind),
             is_opaque: false,
         }
     }
 
-    /// Construct a `Named` for a user-defined record/enum/actor name (or a
-    /// type parameter reference). Sets `builtin: None` explicitly so the
-    /// intent ("not a builtin") is named at the call site rather than being
-    /// inferred from an absent field.
+    /// Construct a `Named` for a declared nominal.
     #[must_use]
-    pub fn named_user(name: impl Into<String>, args: Vec<ResolvedTy>) -> Self {
+    pub fn named_user(nominal: crate::NominalHead, args: Vec<ResolvedTy>) -> Self {
         ResolvedTy::Named {
-            name: name.into(),
+            head: TypeHead::Nominal(nominal),
             args,
-            builtin: None,
             is_opaque: false,
         }
     }
 
     /// Construct a `Named` for a `#[opaque]` runtime-handle type (e.g.
     /// `json.Value`, `cron.Expr`). Sets `is_opaque: true` so the actor-state
-    /// clone/drop classifier recognises the handle by type identity rather
-    /// than by a short-name heuristic that collides with user types of the
-    /// same name. `builtin: None` — an opaque handle is a user-module decl,
-    /// not a compiler builtin.
+    /// clone/drop classifier recognises the handle by type identity.
     #[must_use]
-    pub fn named_opaque(name: impl Into<String>, args: Vec<ResolvedTy>) -> Self {
+    pub fn named_opaque(nominal: crate::NominalHead, args: Vec<ResolvedTy>) -> Self {
         ResolvedTy::Named {
-            name: name.into(),
+            head: TypeHead::Nominal(nominal),
             args,
-            builtin: None,
             is_opaque: true,
         }
+    }
+
+    /// The head of a named type.
+    #[must_use]
+    pub fn head(&self) -> Option<TypeHead> {
+        match self {
+            Self::Named { head, .. } => Some(*head),
+            _ => None,
+        }
+    }
+
+    /// A named type spelled by a declaration path.
+    ///
+    /// TRANSITION(A1): deleted by B1/B2, when HIR and SIR consume the heads the
+    /// checker published instead of resolving spellings again.
+    #[must_use]
+    pub fn named_path(defs: &DefTable, path: &str, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::Named {
+            head: Self::path_head(defs, path),
+            args,
+            is_opaque: false,
+        }
+    }
+
+    /// An `#[opaque]` named type spelled by a declaration path.
+    ///
+    /// TRANSITION(A1): see [`Self::named_path`].
+    #[must_use]
+    pub fn named_opaque_path(defs: &DefTable, path: &str, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::Named {
+            head: Self::path_head(defs, path),
+            args,
+            is_opaque: true,
+        }
+    }
+
+    /// A declared nominal minted in this thread's fixture table.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn named_for_test(path: &str, args: Vec<ResolvedTy>) -> Self {
+        let args_ty = args.iter().map(ResolvedTy::to_ty).collect();
+        match Ty::named_for_test(path, args_ty) {
+            Ty::Named { head, .. } => ResolvedTy::Named {
+                head,
+                args,
+                is_opaque: false,
+            },
+            primitive => ResolvedTy::from_ty(&primitive).expect("a primitive resolves"),
+        }
+    }
+
+    /// A user declaration at `path` in this thread's fixture table, even
+    /// when its spelling matches a builtin's.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn user_for_test(path: &str, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::named_user(
+            crate::NominalHead::new(crate::NominalId::for_test(path), path),
+            args,
+        )
+    }
+
+    /// An opaque declared nominal minted in this thread's fixture table.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn opaque_for_test(path: &str, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::named_opaque(
+            crate::NominalHead::new(crate::NominalId::for_test(path), path),
+            args,
+        )
+    }
+
+    /// The handle type of a fixture actor.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn actor_for_test(path: &str, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::Named {
+            head: TypeHead::Actor(crate::NominalHead::new(
+                crate::NominalId::for_test(path),
+                path,
+            )),
+            args,
+            is_opaque: false,
+        }
+    }
+
+    /// The generic binder spelled `spelling`, in the named carrier.
+    #[must_use]
+    pub fn param(parameter: crate::ParamHead) -> Self {
+        ResolvedTy::Named {
+            head: TypeHead::param(parameter),
+            args: Vec::new(),
+            is_opaque: false,
+        }
+    }
+
+    /// The handle type of an actor spelled by its declaration path.
+    ///
+    /// TRANSITION(A1): see [`Self::named_path`].
+    #[must_use]
+    pub fn named_actor_path(defs: &DefTable, path: &str, args: Vec<ResolvedTy>) -> Self {
+        let head = match Self::path_head(defs, path) {
+            TypeHead::Nominal(actor) => TypeHead::Actor(actor),
+            other => other,
+        };
+        ResolvedTy::Named {
+            head,
+            args,
+            is_opaque: false,
+        }
+    }
+
+    fn path_head(defs: &DefTable, path: &str) -> TypeHead {
+        defs.lookup_nominal(path).map_or_else(
+            || TypeHead::Unresolved(crate::Symbol::intern(path)),
+            |nominal| TypeHead::of_declaration(defs, nominal),
+        )
     }
 
     /// User-facing display wrapper that mirrors [`Ty::user_facing`]: numeric
@@ -1205,7 +1246,9 @@ pub fn mangle_resolved_ty_segment(
             let elem_seg = mangle_resolved_ty_segment(elem, type_param_mode)?;
             Some(format!("slice$x{elem_seg}$g"))
         }
-        ResolvedTy::Named { name, args, .. } => mangle_named_segment(name, args, type_param_mode),
+        ResolvedTy::Named { head, args, .. } => {
+            mangle_named_segment(head.registry_key(), args, type_param_mode)
+        }
         ResolvedTy::Function {
             capabilities,
             params,
@@ -1426,7 +1469,9 @@ mod tests {
             capabilities: CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(ResolvedTy::Unit),
-            captures: vec![ResolvedTy::TypeParam { name: "T".into() }],
+            captures: vec![ResolvedTy::TypeParam {
+                name: crate::ParamHead::for_test("T"),
+            }],
         };
         assert_eq!(
             mangle_resolved_ty_segment(&abstract_capture, TypeParamMangle::BareKeyFallback),
@@ -1437,44 +1482,41 @@ mod tests {
     #[test]
     fn storage_congruence_uses_nested_builtin_identity() {
         let short = ResolvedTy::named_builtin(
-            "Vec",
             crate::BuiltinType::Vec,
             vec![ResolvedTy::named_builtin(
-                "Sink",
                 crate::BuiltinType::Sink,
                 vec![ResolvedTy::I64],
             )],
         );
         let qualified = ResolvedTy::named_builtin(
-            "Vec",
             crate::BuiltinType::Vec,
             vec![ResolvedTy::named_builtin(
-                "std.stream.Sink",
                 crate::BuiltinType::Sink,
                 vec![ResolvedTy::I64],
             )],
         );
         assert!(short.is_storage_congruent_with(&qualified));
 
-        let foreign = ResolvedTy::named_user("user.stream.Sink", vec![ResolvedTy::I64]);
+        let foreign = ResolvedTy::named_for_test("user.stream.Sink", vec![ResolvedTy::I64]);
         assert!(!short.is_storage_congruent_with(&ResolvedTy::named_builtin(
-            "Vec",
             crate::BuiltinType::Vec,
-            vec![foreign],
+            vec![foreign]
         )));
-        assert!(!ResolvedTy::named_user("left.Token", Vec::new())
-            .is_storage_congruent_with(&ResolvedTy::named_user("right.Token", Vec::new())));
+        assert!(!ResolvedTy::named_for_test("left.Token", Vec::new())
+            .is_storage_congruent_with(&ResolvedTy::named_for_test("right.Token", Vec::new())));
     }
 
     #[test]
     fn concrete_type_param_mangling_preserves_probe_encoding() {
-        let type_param = ResolvedTy::TypeParam { name: "T".into() };
+        let type_param = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
         assert_eq!(
             mangle_resolved_ty_segment(&type_param, TypeParamMangle::Concrete),
             Some("typeparam$xT$g".into())
         );
 
-        let nested = ResolvedTy::named_user("Wrapper", vec![type_param]);
+        let nested = ResolvedTy::named_for_test("Wrapper", vec![type_param]);
         assert_eq!(
             mangle_resolved_ty_segment(&nested, TypeParamMangle::Concrete),
             Some("Wrapper$ltypeparam$xT$g$g".into())
@@ -1483,13 +1525,15 @@ mod tests {
 
     #[test]
     fn bare_key_type_param_mangling_preserves_fallback() {
-        let type_param = ResolvedTy::TypeParam { name: "T".into() };
+        let type_param = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
         assert_eq!(
             mangle_resolved_ty_segment(&type_param, TypeParamMangle::BareKeyFallback),
             None
         );
 
-        let nested = ResolvedTy::named_user("Wrapper", vec![type_param]);
+        let nested = ResolvedTy::named_for_test("Wrapper", vec![type_param]);
         assert_eq!(
             mangle_resolved_ty_segment(&nested, TypeParamMangle::BareKeyFallback),
             None
@@ -1500,20 +1544,14 @@ mod tests {
     #[test]
     fn builtin_identity_uses_the_carried_discriminant() {
         let builtin_vec = ResolvedTy::Named {
-            name: "Vec".into(),
             args: vec![ResolvedTy::I64],
-            builtin: Some(BuiltinType::Vec),
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
             is_opaque: false,
         };
         assert!(builtin_vec.is_builtin(BuiltinType::Vec));
         assert!(!builtin_vec.is_builtin(BuiltinType::HashMap));
 
-        let user_vec = ResolvedTy::Named {
-            name: "Vec".into(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        };
+        let user_vec = ResolvedTy::user_for_test("Vec", vec![]);
         assert!(!user_vec.is_builtin(BuiltinType::Vec));
     }
 
@@ -1586,11 +1624,7 @@ mod tests {
     #[test]
     fn from_ty_rejects_nested_inference_variable_in_named_args() {
         let var = TypeVar::fresh();
-        let ty = Ty::Named {
-            builtin: None,
-            name: "Vec".into(),
-            args: vec![Ty::Var(var)],
-        };
+        let ty = Ty::named_for_test("Vec", vec![Ty::Var(var)]);
         assert_eq!(
             ResolvedTy::from_ty(&ty),
             Err(BoundaryError::UnresolvedInference { var })
@@ -1632,19 +1666,13 @@ mod tests {
 
     #[test]
     fn from_ty_accepts_fully_concrete_named() {
-        let ty = Ty::Named {
-            builtin: None,
-            name: "Foo".into(),
-            args: vec![Ty::I32, Ty::String],
-        };
+        let ty = Ty::named_for_test("Foo", vec![Ty::I32, Ty::String]);
         assert_eq!(
             ResolvedTy::from_ty(&ty),
-            Ok(ResolvedTy::Named {
-                name: "Foo".into(),
-                args: vec![ResolvedTy::I32, ResolvedTy::String],
-                builtin: None,
-                is_opaque: false,
-            })
+            Ok(ResolvedTy::named_for_test(
+                "Foo",
+                vec![ResolvedTy::I32, ResolvedTy::String]
+            ))
         );
     }
 
@@ -1705,6 +1733,7 @@ mod tests {
         let ty = Ty::TraitObject {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
+                trait_id: None,
                 args: vec![Ty::I32],
                 assoc_bindings: vec![],
             }],
@@ -1712,6 +1741,7 @@ mod tests {
         let expected = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".into(),
+                trait_id: None,
                 args: vec![ResolvedTy::I32],
                 assoc_bindings: vec![],
             }],
@@ -1725,6 +1755,7 @@ mod tests {
         let ty = Ty::TraitObject {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
+                trait_id: None,
                 args: vec![Ty::Var(var)],
                 assoc_bindings: vec![],
             }],
@@ -1736,62 +1767,17 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_builtin_for_user_shadowed_names() {
-        // Smoke test for the §5.5 fix: a user-declared type whose *name*
-        // collides with a builtin (here `Vec`) MUST round-trip with
-        // `builtin: None` preserved. Before the fix, `to_ty` re-derived
-        // via `lookup_builtin_type(name)` and silently re-tagged the user
-        // type as the builtin.
-        let user_vec = Ty::Named {
-            name: "Vec".into(),
-            args: vec![Ty::I32],
-            builtin: None,
-        };
-        let resolved = ResolvedTy::from_ty(&user_vec).expect("concrete Ty resolves");
-        // `from_ty` preserves the discriminator.
-        match &resolved {
-            ResolvedTy::Named { builtin, .. } => {
-                assert_eq!(*builtin, None, "from_ty must preserve user-side `None`");
-            }
-            other => panic!("expected ResolvedTy::Named, got {other:?}"),
-        }
-        // `to_ty` consumes the carried discriminator (does NOT re-derive
-        // by name). Round-trip equality holds.
-        assert_eq!(resolved.to_ty(), user_vec);
-
-        // Sibling case: a true builtin round-trips with `Some(_)` intact.
-        let builtin_vec = Ty::Named {
-            name: "Vec".into(),
-            args: vec![Ty::I32],
-            builtin: Some(crate::BuiltinType::Vec),
-        };
-        let resolved_b = ResolvedTy::from_ty(&builtin_vec).expect("concrete Ty resolves");
-        match &resolved_b {
-            ResolvedTy::Named { builtin, .. } => {
-                assert_eq!(*builtin, Some(crate::BuiltinType::Vec));
-            }
-            other => panic!("expected ResolvedTy::Named, got {other:?}"),
-        }
-        assert_eq!(resolved_b.to_ty(), builtin_vec);
-    }
-
-    #[test]
     fn named_constructor_helpers_set_builtin_explicitly() {
-        let user = ResolvedTy::named_user("Connection", vec![]);
+        let user = ResolvedTy::named_for_test("Connection", vec![]);
         assert!(matches!(
             user,
-            ResolvedTy::Named { ref name, builtin: None, .. } if name == "Connection"
+            ResolvedTy::Named { head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_)), .. } if head.registry_key() == "Connection"
         ));
 
-        let builtin =
-            ResolvedTy::named_builtin("Vec", crate::BuiltinType::Vec, vec![ResolvedTy::I32]);
+        let builtin = ResolvedTy::named_builtin(crate::BuiltinType::Vec, vec![ResolvedTy::I32]);
         assert!(matches!(
             builtin,
-            ResolvedTy::Named {
-                ref name,
-                builtin: Some(crate::BuiltinType::Vec),
-                ..
-            } if name == "Vec"
+            ResolvedTy::Named { head: head @ crate::TypeHead::Builtin(crate::BuiltinType::Vec), .. } if head.registry_key() == "Vec"
         ));
     }
 
@@ -1804,8 +1790,7 @@ mod tests {
             Ty::String,
             Ty::Tuple(vec![Ty::I64, Ty::Unit]),
             Ty::Named {
-                builtin: Some(crate::BuiltinType::Vec),
-                name: "Vec".into(),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                 args: vec![Ty::I32],
             },
             Ty::Function {
@@ -1822,11 +1807,7 @@ mod tests {
 
     #[test]
     fn user_facing_display_matches_ty_user_facing() {
-        let ty = Ty::Named {
-            builtin: None,
-            name: "Option".into(),
-            args: vec![Ty::I64],
-        };
+        let ty = Ty::named_for_test("Option", vec![Ty::I64]);
         let resolved = ResolvedTy::from_ty(&ty).expect("concrete Ty resolves");
         assert_eq!(
             resolved.user_facing().to_string(),
@@ -1888,73 +1869,31 @@ mod tests {
 
     #[test]
     fn task_display_nested_named_type() {
-        let resolved = ResolvedTy::Task(Box::new(ResolvedTy::Named {
-            name: "User".into(),
-            args: Vec::new(),
-            builtin: None,
-            is_opaque: false,
-        }));
+        let resolved = ResolvedTy::Task(Box::new(ResolvedTy::named_for_test("User", Vec::new())));
         assert_eq!(resolved.to_string(), "<task<User>>");
     }
 
     // --- TypeParam variant tests (A622) ---
 
-    fn type_param_scope(names: &[&str]) -> std::collections::HashSet<String> {
-        names.iter().map(|s| (*s).to_string()).collect()
-    }
-
     #[test]
-    fn unscoped_from_ty_never_produces_type_param() {
-        // Behaviour-preserving: a bare `Named` is a user type under the
-        // unscoped converter, exactly as before this variant existed.
-        let ty = Ty::Named {
-            name: "T".into(),
-            args: vec![],
-            builtin: None,
-        };
+    fn from_ty_preserves_declared_parameter_identity() {
+        let ty = Ty::param(crate::ParamHead::for_test("T"));
         assert_eq!(
             ResolvedTy::from_ty(&ty),
-            Ok(ResolvedTy::Named {
-                name: "T".into(),
-                args: vec![],
-                builtin: None,
-                is_opaque: false,
+            Ok(ResolvedTy::TypeParam {
+                name: crate::ParamHead::for_test("T")
             })
         );
     }
 
     #[test]
-    fn scoped_from_ty_recognises_declared_type_param() {
-        let ty = Ty::Named {
-            name: "T".into(),
-            args: vec![],
-            builtin: None,
-        };
-        let scope = type_param_scope(&["T"]);
-        assert_eq!(
-            ResolvedTy::from_ty_with_type_params(&ty, &scope),
-            Ok(ResolvedTy::TypeParam { name: "T".into() })
-        );
-    }
-
-    #[test]
-    fn scoped_from_ty_leaves_out_of_scope_names_as_named() {
+    fn from_ty_keeps_same_spelled_nominal_distinct() {
         // A no-argument user type whose name is NOT a declared param stays a
         // `Named` even under the scoped converter.
-        let ty = Ty::Named {
-            name: "Color".into(),
-            args: vec![],
-            builtin: None,
-        };
-        let scope = type_param_scope(&["T", "U"]);
+        let ty = Ty::named_for_test("T", vec![]);
         assert_eq!(
-            ResolvedTy::from_ty_with_type_params(&ty, &scope),
-            Ok(ResolvedTy::Named {
-                name: "Color".into(),
-                args: vec![],
-                builtin: None,
-                is_opaque: false,
-            })
+            ResolvedTy::from_ty(&ty),
+            Ok(ResolvedTy::named_for_test("T", vec![]))
         );
     }
 
@@ -1962,62 +1901,52 @@ mod tests {
     fn type_param_round_trips_losslessly_both_directions() {
         // Non-vacuous round-trip: the variant survives ResolvedTy -> Ty and
         // back to the identical ResolvedTy under the declared scope.
-        let scope = type_param_scope(&["T"]);
-        let resolved = ResolvedTy::TypeParam { name: "T".into() };
+        let resolved = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
 
         let lowered = resolved.to_ty();
-        assert_eq!(
-            lowered,
-            Ty::Named {
-                name: "T".into(),
-                args: vec![],
-                builtin: None,
-            }
-        );
+        assert_eq!(lowered, Ty::param(crate::ParamHead::for_test("T")));
 
-        let restored = ResolvedTy::from_ty_with_type_params(&lowered, &scope)
-            .expect("type-param carrier resolves within scope");
+        let restored =
+            ResolvedTy::from_ty(&lowered).expect("type-param carrier resolves within scope");
         assert_eq!(restored, resolved);
     }
 
     #[test]
     fn nested_type_param_round_trips_inside_composites() {
-        let scope = type_param_scope(&["T"]);
         // Vec<T> as a user-named composite carrying an abstract argument.
-        let resolved = ResolvedTy::Named {
-            name: "Vec".into(),
-            args: vec![ResolvedTy::TypeParam { name: "T".into() }],
-            builtin: None,
-            is_opaque: false,
-        };
-        let restored = ResolvedTy::from_ty_with_type_params(&resolved.to_ty(), &scope)
+        let resolved = ResolvedTy::named_for_test(
+            "Vec",
+            vec![ResolvedTy::TypeParam {
+                name: crate::ParamHead::for_test("T"),
+            }],
+        );
+        let restored = ResolvedTy::from_ty(&resolved.to_ty())
             .expect("nested type-param resolves within scope");
         assert_eq!(restored, resolved);
     }
 
     #[test]
-    fn scoped_from_ty_still_fails_closed_on_inference_var() {
+    fn parameter_conversion_still_rejects_inference_variables() {
         // The scope must not weaken the fail-closed contract for genuine
         // checker-internal leaks.
         let var = TypeVar::fresh();
         let ty = Ty::Tuple(vec![
-            Ty::Named {
-                name: "T".into(),
-                args: vec![],
-                builtin: None,
-            },
+            Ty::param(crate::ParamHead::for_test("T")),
             Ty::Var(var),
         ]);
-        let scope = type_param_scope(&["T"]);
         assert_eq!(
-            ResolvedTy::from_ty_with_type_params(&ty, &scope),
+            ResolvedTy::from_ty(&ty),
             Err(BoundaryError::UnresolvedInference { var })
         );
     }
 
     #[test]
     fn type_param_display_is_bare_name() {
-        let resolved = ResolvedTy::TypeParam { name: "T".into() };
+        let resolved = ResolvedTy::TypeParam {
+            name: crate::ParamHead::for_test("T"),
+        };
         assert_eq!(resolved.to_string(), "T");
     }
 }

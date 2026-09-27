@@ -18,7 +18,7 @@ pub fn module(owned: bool) -> sir::SemModule {
     let function = module
         .functions
         .iter_mut()
-        .find(|f| f.declaration.full_path() == "panic_probe")
+        .find(|f| module.defs.path(f.declaration) == "panic_probe")
         .unwrap();
     let message = sir::Operand {
         value: function.params[0].value,
@@ -35,6 +35,7 @@ pub fn module(owned: bool) -> sir::SemModule {
                     operand: message.clone(),
                     decision: sir::BoundaryDecision::Borrow,
                 },
+                assertion: None,
                 cleanup: sir::Edge {
                     target: sir::BlockId(1),
                     args: vec![],

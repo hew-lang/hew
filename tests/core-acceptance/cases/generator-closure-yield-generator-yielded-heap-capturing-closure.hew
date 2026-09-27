@@ -1,0 +1,10 @@
+fn main() {
+    var i = 0;
+    while i < 8 {
+        let _g = gen {
+            let captured = f"generator-yielded-closure-owned-capture-{i}";
+            yield || captured.len();
+        };
+        i = i + 1;
+    }
+}

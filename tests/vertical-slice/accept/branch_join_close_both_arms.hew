@@ -8,7 +8,7 @@
 // twice. Each function is called down both of its paths.
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
 
 impl Conn {
@@ -21,8 +21,12 @@ impl Conn {
 fn close_in_match_arms(r: Result<i64, string>) {
     let held = Conn { fd: 1 };
     match r {
-        .Ok(_) => { held.close(); },
-        .Err(_) => { held.close(); },
+        .Ok(_) => {
+            held.close();
+        }
+        .Err(_) => {
+            held.close();
+        }
     }
 }
 

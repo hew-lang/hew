@@ -18,12 +18,14 @@ use hew_parser::ast::{
     SupervisorDecl, SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl,
     TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
 };
+use hew_parser::ast::{Ident, Symbol};
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
 mod actor_codec;
 mod actor_delivery;
 pub(crate) mod admissibility;
+pub(crate) mod assertion;
 mod branch_join;
 mod callables;
 mod calls;
@@ -32,6 +34,8 @@ mod coerce;
 pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
+pub mod dispatch_table;
+mod indirect_candidates;
 pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
@@ -55,6 +59,7 @@ mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;
 mod resolution;
+pub mod scope;
 mod serializable;
 mod statements;
 #[cfg(test)]
@@ -66,29 +71,34 @@ mod util;
 mod var_self;
 mod visibility;
 
-pub use self::types::{
-    type_def_for_spelling, ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution,
-    AssignTargetKind, AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
-    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, MachineMethodKind, MathGenericOp,
-    MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
-    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
-    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
-    ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
-    TypeCheckOutput, TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch,
-    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
-    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
-};
+#[cfg(any(test, feature = "test"))]
+pub use self::types::FnSigFixture;
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
     DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
     IndexContext, IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration,
     TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+};
+pub use self::types::{
+    ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
+    AssignTargetShape, CallableArgumentFlow, CallableCandidate, CallableDispatchActual,
+    CallableFieldFlow, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
+    DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, ImplMethodProvenance,
+    ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind, MathGenericOp,
+    MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
+    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
+    ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
+    TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
+    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    WireVariantLayout,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -145,10 +155,11 @@ pub fn builtin_function_names() -> &'static HashSet<String> {
         let mut checker = Checker::default();
         checker.register_builtins();
         let mut names: HashSet<String> = checker
-            .fn_sigs
+            .builtin_fn_sigs
             .keys()
+            .map(|name| name.as_str())
             .filter(|name| !name.contains('.') && !name.contains("::"))
-            .cloned()
+            .map(str::to_string)
             .collect();
         for builtin in builtin_named_types() {
             for method in builtin.methods {
@@ -201,32 +212,32 @@ pub(crate) struct CheckerClassDeclarations<'a> {
 }
 
 impl CheckerClassDeclarations<'_> {
-    fn is_opaque_type(&self, name: &str) -> bool {
-        self.checker.user_opaque_type_names.contains(name)
-            || self.checker.module_registry.is_handle_type(name)
+    fn is_opaque_type(&self, id: crate::NominalId) -> bool {
+        self.checker.opaque_type_ids.contains(&id)
     }
 }
 
 impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
-    fn declared_type(&self, name: &str) -> Option<crate::value_class::DeclaredType> {
+    fn builtin_declaration(&self, builtin: crate::BuiltinType) -> Option<crate::NominalId> {
+        self.checker.defs.builtin_declaration(builtin)
+    }
+
+    fn declared_type(&self, id: crate::NominalId) -> Option<crate::value_class::DeclaredType> {
         use crate::value_class::{DeclarationMarker, DeclaredType};
 
         // The `#[opaque]` attribute is a declaration fact, carried for a
         // program's own declarations by the checker's set and for an imported
         // handle by the module registry.
-        let is_opaque = self.is_opaque_type(name);
-        let marker = if self.checker.registry.is_resource(name) {
+        let is_opaque = self.is_opaque_type(id);
+        let marker = if self.checker.registry.is_resource(id) {
             DeclarationMarker::Resource
-        } else if self.checker.registry.is_linear(name) {
+        } else if self.checker.registry.is_linear(id) {
             DeclarationMarker::Linear
         } else {
             DeclarationMarker::None
         };
-        let definition = crate::check::types::type_def_for_spelling(&self.checker.type_defs, name);
+        let definition = self.checker.type_defs.get(&id);
         let Some(definition) = definition else {
-            if self.checker.supervisor_children.contains_key(name) {
-                return Some(DeclaredType::default());
-            }
             // A marker with no field table still decides the class outright.
             return (marker != DeclarationMarker::None).then(|| DeclaredType {
                 builtin: None,
@@ -238,7 +249,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         };
         let mut member_tys: Vec<Ty> = Vec::new();
         if definition.kind == TypeDefKind::Record && definition.fields.is_empty() {
-            if let Some(signature) = self.checker.fn_sigs.get(name) {
+            if let Some(signature) = self.checker.fn_sigs.get(&id.declaration()) {
                 member_tys.extend(signature.params.iter().cloned());
             }
         }
@@ -273,20 +284,6 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             }
         }
 
-        // §1.1's recursion cut (`classify_declaration`'s `walk.on_path`) keys a
-        // declaration by the exact name this lookup was asked for. A member
-        // that refers back to its own declaration is spelled bare inside the
-        // declaration's own source (name resolution never qualifies a
-        // self-reference), while an importer reaches the declaration through
-        // its qualified key — so the recursive occurrence and the declaration
-        // it recurses into carry two different keys and the cut never fires.
-        // `name` here is that qualified key whenever the lookup found one, so
-        // canonicalizing every bare member reference that also has a
-        // `{prefix}.{bare}` twin in `type_defs` gives the whole declaration
-        // one spelling, matching `ir-ladder.md` §1.1: one canonical key per
-        // declaration, the qualified one, with the bare twin staying a lookup
-        // alias never used as a fact key.
-        let module_prefix = name.rsplit_once('.').map(|(prefix, _)| prefix);
         let mut members = Vec::with_capacity(member_tys.len());
         for ty in member_tys {
             let ty = self
@@ -297,11 +294,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             // convert would be a guess. A marked declaration's class comes
             // from its marker, not its members, so it keeps its row with no
             // members instead - consumers that need the fields refuse there.
-            let parameters = definition.type_params.iter().cloned().collect();
-            let Ok(resolved) = ResolvedTy::from_ty_with_type_params(
-                &ty.materialize_literal_defaults(),
-                &parameters,
-            ) else {
+            let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
                 if marker == DeclarationMarker::None {
                     return None;
                 }
@@ -313,10 +306,9 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                     members: Vec::new(),
                 });
             };
-            let resolved =
-                resolve_member_ty(resolved, module_prefix, &self.checker.type_defs, &|name| {
-                    self.is_opaque_type(name)
-                });
+            let resolved = restore_member_opacity(resolved, &self.checker.defs, &|name| {
+                self.is_opaque_type(name)
+            });
             members.push(resolved);
         }
         // A declaration with no fields and no variants is still a declaration:
@@ -339,67 +331,30 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
     }
 }
 
-/// Rewrite a member type's bare `Named` occurrences to the declaring module's
-/// canonical (qualified) spelling, so a declaration's own recursive
-/// occurrence carries the same key its declaration is looked up under.
-///
-/// Only rewrites a bare name that has a `{prefix}.{bare}` twin registered in
-/// `type_defs` — an unqualified reference to a type outside this module (a
-/// builtin, or a name `type_defs` never published under the prefix) is left
-/// exactly as resolved. Restore opacity from the same declaration authority
-/// after qualifying each name, including nominals nested inside members.
-/// `Ty` carries no opacity, so its boundary conversion alone is insufficient.
-pub(crate) fn resolve_member_ty(
+/// Restore a member type's opacity from its declaration authority, including
+/// nominals nested inside members. `Ty` carries no opacity, so its boundary
+/// conversion alone is insufficient.
+pub(crate) fn restore_member_opacity(
     ty: ResolvedTy,
-    prefix: Option<&str>,
-    type_defs: &HashMap<String, crate::check::types::TypeDef>,
-    is_opaque_type: &impl Fn(&str) -> bool,
+    defs: &crate::DefTable,
+    is_opaque_type: &impl Fn(crate::NominalId) -> bool,
 ) -> ResolvedTy {
-    let rewrite_name = |name: String| -> String {
-        let Some(prefix) = prefix else {
-            return name;
-        };
-        if name.starts_with(prefix) && name[prefix.len()..].starts_with('.') {
-            return name;
-        }
-        let qualified = format!("{prefix}.{name}");
-        if type_defs.contains_key(&qualified) {
-            qualified
-        } else {
-            name
-        }
-    };
-    let resolve = |ty| resolve_member_ty(ty, prefix, type_defs, is_opaque_type);
+    let resolve = |ty| restore_member_opacity(ty, defs, is_opaque_type);
     match ty {
         ResolvedTy::Named {
-            name,
+            head,
             args,
-            builtin,
             is_opaque,
         } => {
             let args = args.into_iter().map(resolve).collect();
-            // A builtin already carries its identity in `builtin`; the name
-            // string is display-only there and rewriting it would be a
-            // second, redundant identity authority.
-            let name = if builtin.is_none() {
-                rewrite_name(name)
-            } else {
-                name
-            };
-            // Source-owned lifecycle fields retain the same exact declaration
-            // discriminator as annotations and constructed values. The lookup
-            // requires the qualified declaration already present in this scope.
-            let builtin = builtin.or_else(|| {
-                (name.contains('.') && type_defs.contains_key(&name))
-                    .then(|| crate::lookup_source_owned_lifecycle_type(&name))
-                    .flatten()
-            });
-            let is_opaque = !builtin.is_some_and(crate::BuiltinType::is_substrate_handle)
-                && (is_opaque || is_opaque_type(&name));
+            let is_opaque = !matches!(head, crate::TypeHead::Param(_))
+                && !head
+                    .builtin()
+                    .is_some_and(crate::BuiltinType::is_substrate_handle)
+                && (is_opaque || head.declaration(defs).is_some_and(is_opaque_type));
             ResolvedTy::Named {
-                name,
+                head,
                 args,
-                builtin,
                 is_opaque,
             }
         }
@@ -443,6 +398,7 @@ pub(crate) fn resolve_member_ty(
                 .into_iter()
                 .map(|bound| crate::resolved_ty::ResolvedTraitBound {
                     trait_name: bound.trait_name,
+                    trait_id: bound.trait_id,
                     args: bound.args.into_iter().map(resolve).collect(),
                     assoc_bindings: bound
                         .assoc_bindings
@@ -492,49 +448,42 @@ pub(crate) fn class_is_non_owning(
 )]
 pub(crate) fn declaration_walk_terminates(
     ty: &ResolvedTy,
-    type_defs: &HashMap<String, crate::check::types::TypeDef>,
+    types: crate::check::types::TypeDefView<'_>,
 ) -> bool {
-    fn definition<'a>(
-        name: &str,
-        type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
-    ) -> Option<&'a crate::check::types::TypeDef> {
-        crate::check::types::type_def_for_spelling(type_defs, name)
-    }
-
-    fn nominal_names(ty: &ResolvedTy, out: &mut Vec<String>) {
-        if let ResolvedTy::Named { name, .. } = ty {
-            out.push(name.clone());
+    fn nominal_heads(ty: &ResolvedTy, out: &mut Vec<crate::TypeHead>) {
+        if let ResolvedTy::Named { head, .. } = ty {
+            out.push(*head);
         }
         let mut components = Vec::new();
         crate::type_facts::push_type_components(ty, &mut components);
         for component in &components {
-            nominal_names(component, out);
+            nominal_heads(component, out);
         }
     }
 
-    fn member_names(ty: &Ty, out: &mut Vec<String>) {
+    fn member_heads(ty: &Ty, out: &mut Vec<crate::TypeHead>) {
         match ty {
-            Ty::Named { name, args, .. } => {
-                out.push(name.clone());
+            Ty::Named { head, args } => {
+                out.push(*head);
                 for arg in args {
-                    member_names(arg, out);
+                    member_heads(arg, out);
                 }
             }
             Ty::Tuple(elements) => {
                 for element in elements {
-                    member_names(element, out);
+                    member_heads(element, out);
                 }
             }
             Ty::Array(inner, _)
             | Ty::Slice(inner)
             | Ty::Task(inner)
             | Ty::Pointer { pointee: inner, .. }
-            | Ty::Borrow { pointee: inner } => member_names(inner, out),
+            | Ty::Borrow { pointee: inner } => member_heads(inner, out),
             Ty::Function { params, ret, .. } => {
                 for param in params {
-                    member_names(param, out);
+                    member_heads(param, out);
                 }
-                member_names(ret, out);
+                member_heads(ret, out);
             }
             Ty::Closure {
                 params,
@@ -543,74 +492,91 @@ pub(crate) fn declaration_walk_terminates(
                 ..
             } => {
                 for param in params.iter().chain(captures) {
-                    member_names(param, out);
+                    member_heads(param, out);
                 }
-                member_names(ret, out);
+                member_heads(ret, out);
             }
-            Ty::AssocType { base, .. } => member_names(base, out),
+            Ty::AssocType { base, .. } => member_heads(base, out),
             _ => {}
         }
     }
 
     fn visit(
-        name: &str,
-        type_defs: &HashMap<String, crate::check::types::TypeDef>,
-        stack: &mut Vec<String>,
-        done: &mut HashSet<String>,
+        head: crate::TypeHead,
+        types: crate::check::types::TypeDefView<'_>,
+        stack: &mut Vec<crate::NominalId>,
+        done: &mut HashSet<crate::NominalId>,
     ) -> bool {
-        if stack.iter().any(|entry| entry == name) {
-            return false;
-        }
-        if done.contains(name) {
-            return true;
-        }
-        let Some(definition) = definition(name, type_defs) else {
-            done.insert(name.to_string());
+        let Some(id) = head.declaration(types.defs) else {
             return true;
         };
-        stack.push(name.to_string());
-        let mut members: Vec<String> = Vec::new();
+        if stack.contains(&id) {
+            return false;
+        }
+        if done.contains(&id) {
+            return true;
+        }
+        let Some(definition) = types.type_defs.get(&id) else {
+            done.insert(id);
+            return true;
+        };
+        stack.push(id);
+        let mut members = Vec::new();
         for field in definition.fields.values() {
-            member_names(field, &mut members);
+            member_heads(field, &mut members);
         }
         for variant in definition.variants.values() {
             match variant {
                 crate::check::types::VariantDef::Unit => {}
                 crate::check::types::VariantDef::Tuple(payload) => {
                     for ty in payload {
-                        member_names(ty, &mut members);
+                        member_heads(ty, &mut members);
                     }
                 }
                 crate::check::types::VariantDef::Struct(fields) => {
                     for (_, ty) in fields {
-                        member_names(ty, &mut members);
+                        member_heads(ty, &mut members);
                     }
                 }
             }
         }
         let terminates = members
             .iter()
-            .all(|member| visit(member, type_defs, stack, done));
+            .all(|member| visit(*member, types, stack, done));
         stack.pop();
         if terminates {
-            done.insert(name.to_string());
+            done.insert(id);
         }
         terminates
     }
 
     let mut roots = Vec::new();
-    nominal_names(ty, &mut roots);
+    nominal_heads(ty, &mut roots);
     let mut stack = Vec::new();
     let mut done = HashSet::new();
     roots
         .iter()
-        .all(|root| visit(root, type_defs, &mut stack, &mut done))
+        .all(|root| visit(*root, types, &mut stack, &mut done))
 }
 
 impl Checker {
     /// Select one exact root declaration for the process entry plan.
     pub fn set_entry_selection(&mut self, selection: crate::DeclarationOccurrence) {
         self.entry_selection = Some(selection);
+        self.test_entry_selections = None;
+        self.test_entry_module = None;
+    }
+
+    /// Select exact root declarations for one compiled test module.
+    pub fn set_test_entry_selections(&mut self, selections: Vec<crate::DeclarationOccurrence>) {
+        self.test_entry_selections = Some(selections);
+        self.test_entry_module = None;
+        self.entry_selection = None;
+    }
+
+    /// Preserve the authored test source when a frontend uses a synthetic graph root.
+    pub fn set_test_entry_module(&mut self, module: hew_parser::module::ModulePath) {
+        self.test_entry_module = Some(module);
     }
 
     /// Build the §6.3 fact table over every concrete accepted expression type.
@@ -681,10 +647,7 @@ impl Checker {
                 // it fires loudly in debug/test/CI and is compiled out of
                 // release, mirroring the W4.047 totality net above.
                 Err(crate::value_class::ClassError::UnknownDeclaration { name })
-                    if self.type_defs.contains_key(&name)
-                        || name
-                            .split_once('.')
-                            .is_some_and(|(_, leaf)| self.type_defs.contains_key(leaf)) =>
+                    if self.type_def_exact(&name).is_some() =>
                 {
                     debug_assert!(
                         false,
@@ -719,36 +682,47 @@ impl Checker {
     /// Snapshot the declaration authority used to classify accepted types.
     fn type_fact_context(&self) -> TypeFactContext {
         let declarations = self.class_declarations();
-        let mut names: std::collections::BTreeSet<String> =
-            self.type_defs.keys().cloned().collect();
-        names.extend(self.registry.resource_type_names().iter().cloned());
-        names.extend(self.user_opaque_type_names.iter().cloned());
-        names.extend(self.module_registry.all_handle_types());
-        names.extend(self.supervisor_children.keys().cloned());
-        let rendered = names
-            .into_iter()
-            .filter_map(|name| {
-                crate::value_class::ClassDeclarations::declared_type(&declarations, &name).map(
+        let identities = self.type_defs.keys().copied();
+        let rendered = identities
+            .filter_map(|id| {
+                crate::value_class::ClassDeclarations::declared_type(&declarations, id).map(
                     |mut declaration| {
-                        declaration.builtin = self
-                            .resolved_builtin_type(&name)
-                            .filter(|kind| kind.is_encoding_value());
-                        (name, declaration)
+                        declaration.builtin = self.defs.declared_builtin(id.declaration());
+                        (id, declaration)
                     },
                 )
             })
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
-            .with_aliases(self.type_aliases.clone())
-            .with_wire_types(self.wire_layouts.keys().cloned().collect())
+            .with_defs(std::sync::Arc::new(self.defs.clone()))
+            .with_aliases(
+                self.type_aliases
+                    .values()
+                    .map(|alias| (alias.declaration, alias.clone()))
+                    .collect(),
+            )
+            .with_wire_types(
+                self.wire_layouts
+                    .keys()
+                    .filter_map(|name| {
+                        self.lookup_declaration(name)
+                            .map(crate::NominalId::of_declaration)
+                    })
+                    .collect(),
+            )
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
                 self.trait_impl_method_binders.clone(),
             )
-            .with_display_trait(self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
-                || self.trait_defs_key_for_bound("Display"),
-                |binding| binding.trait_id.full_path().to_string(),
-            ))
+            .with_display_method(
+                self.lang_items
+                    .get(crate::LANG_ITEM_DISPLAY)
+                    .and_then(|binding| {
+                        self.trait_method_ids_for_key(self.defs.path(binding.trait_id), "fmt")
+                    })
+                    .or_else(|| self.trait_method_call_target_ids("Display", "fmt"))
+                    .map(|(_, method)| method),
+            )
     }
 
     /// The §1.1 declaration lookup backed by this checker's tables.
@@ -778,7 +752,7 @@ impl Checker {
     pub(super) fn canonical_fn_owner(&self) -> Option<&str> {
         self.current_module
             .as_deref()
-            .or_else(|| self.identity.root_module_path())
+            .or_else(|| self.defs.root_module_path())
     }
 
     /// Mint the declaration-table identity for a free function owned by a
@@ -822,8 +796,22 @@ impl Checker {
     /// the signatures, leaving ambient builtin signatures intact.
     pub(super) fn visible_fn_signature_key(&self, name: &str) -> Option<String> {
         let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
+        // The current source scope owns an authored function or extern before
+        // any imported binding with the same spelling. Extern declarations do
+        // not populate fn_def_spans, so that index alone cannot establish this
+        // precedence. Join the exact scoped DefId to its registered signature.
+        if let Some(scope::Binding::Fn(declaration)) = self
+            .current_declaration_module()
+            .and_then(|module| self.scopes.item(module, Symbol::intern(name)))
+        {
+            for key in [&canonical, name] {
+                if self.fn_sig_keys.get(key) == Some(&declaration) {
+                    return Some(key.to_string());
+                }
+            }
+        }
         for key in [&canonical, name] {
-            if self.fn_def_spans.contains_key(key) && self.fn_sigs.contains_key(key) {
+            if self.fn_def_spans.contains_key(key) && self.has_fn_sig(key) {
                 return Some(key.to_string());
             }
         }
@@ -833,11 +821,11 @@ impl Checker {
                 self.current_module_idx,
                 binding.to_string(),
             )) {
-                return self.fn_sigs.contains_key(source).then(|| source.clone());
+                return self.has_fn_sig(source).then(|| source.clone());
             }
         }
         for key in [&canonical, name] {
-            if self.fn_sigs.contains_key(key) {
+            if self.has_fn_sig(key) {
                 return Some(key.to_string());
             }
         }
@@ -874,7 +862,7 @@ impl Checker {
         if key.contains("::") {
             return None;
         }
-        match self.identity.root_module_path() {
+        match self.defs.root_module_path() {
             Some(root) => key
                 .strip_prefix(root)
                 .and_then(|rest| rest.strip_prefix('.'))
@@ -897,9 +885,9 @@ impl Checker {
     /// paths) receive the reserved synthetic occurrence authority rather than
     /// borrowing a display-name namespace.
     fn mint_module_identities(&mut self, program: &Program) {
-        self.identity = crate::identity::IdentityTable::new();
+        self.defs = self.seed_defs.take().unwrap_or_default();
         let Some(module_graph) = &program.module_graph else {
-            self.identity.mint_synthetic_root();
+            self.defs.mint_synthetic_root();
             return;
         };
         // Deterministic mint order: the topo order, root last.
@@ -911,10 +899,11 @@ impl Checker {
                 continue;
             };
             let canonical = crate::module_registry::canonical_source_module_identity(
-                &mod_id.path.join("."),
+                mod_id,
                 &module.source_paths,
             );
-            self.identity.mint_module(&canonical, &module.source_paths);
+            self.defs
+                .mint_module(&canonical.dotted(), &module.source_paths);
         }
         // Second pass — per-file identities for directory modules' peer
         // files (rc1-F1 stage C): a peer file's declarations carry the
@@ -929,20 +918,20 @@ impl Checker {
             let Some(module) = module_graph.modules.get(mod_id) else {
                 continue;
             };
-            let dotted = mod_id.path.join(".");
             let canonical = crate::module_registry::canonical_source_module_identity(
-                &dotted,
+                mod_id,
                 &module.source_paths,
-            );
+            )
+            .dotted();
             for source in module.source_paths.iter().skip(1) {
-                self.identity.mint_source_file_module(&canonical, source);
+                self.defs.mint_source_file_module(&canonical, source);
             }
         }
         if self.repl_fragment {
-            self.identity.mint_synthetic_root();
+            self.defs.mint_synthetic_root();
         } else if let Some(root) = module_graph.modules.get(&module_graph.root) {
-            if self.identity.mint_root_module(&root.source_paths).is_none() {
-                self.identity.mint_synthetic_root();
+            if self.defs.mint_root_module(&root.source_paths).is_none() {
+                self.defs.mint_synthetic_root();
             }
         }
     }
@@ -961,7 +950,7 @@ impl Checker {
                 let Some(module) = graph.modules.get(module_id) else {
                     continue;
                 };
-                let dotted = module_id.path.join(".");
+                let dotted = module_id.dotted();
                 let namespace = if *module_id == graph.root {
                     NominalNamespace::RootBare
                 } else if flat_file_imports.contains(module_id) {
@@ -972,11 +961,11 @@ impl Checker {
                 let assembler = module
                     .source_paths
                     .first()
-                    .and_then(|source| self.identity.module_for_source(source))
-                    .or_else(|| self.identity.module_for_path(&dotted))
+                    .and_then(|source| self.defs.module_for_source(source))
+                    .or_else(|| self.defs.module_for_path(&dotted))
                     .or_else(|| {
                         (*module_id == graph.root)
-                            .then(|| self.identity.root_module())
+                            .then(|| self.defs.root_module())
                             .flatten()
                     });
                 for (item_index, (item, span)) in module.items.iter().enumerate() {
@@ -986,7 +975,7 @@ impl Checker {
                     // The file is the occurrence axis: two peer files whose
                     // items share a span must stay distinguishable.
                     let occurrence_module = source
-                        .and_then(|source| self.identity.module_for_source(source))
+                        .and_then(|source| self.defs.module_for_source(source))
                         .or(assembler);
                     // The render axis is the module being assembled, which is
                     // the module the checker keys by: `pkg/helpers.hew`'s
@@ -1002,6 +991,19 @@ impl Checker {
                         span,
                     );
                 }
+                for (item_index, (item, _)) in module.items.iter().enumerate() {
+                    let Item::Import(decl) = item else {
+                        continue;
+                    };
+                    let file = graph
+                        .item_source(module_id, item_index)
+                        .or_else(|| module.source_paths.first())
+                        .and_then(|source| self.defs.module_for_source(source))
+                        .or(assembler);
+                    if let Some(file) = file {
+                        self.bind_import_in_scope(file, decl);
+                    }
+                }
             }
             // `Program::items` is the checker root surface. Some callers keep
             // the graph root's `items` empty, so it is not interchangeable
@@ -1009,52 +1011,127 @@ impl Checker {
             // idempotent. File imports are flattened into `Program::items`
             // only after type checking, so the checker never sees an imported
             // item on this surface.
-            let root = self.identity.root_module();
+            let root = self.defs.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
                 self.mint_item_declaration_identities(
                     root,
                     root,
-                    NominalNamespace::RootBare,
+                    if self.checking_embedded_builtins {
+                        NominalNamespace::FlattenedFile
+                    } else {
+                        NominalNamespace::RootBare
+                    },
                     item_index,
                     item,
                     span,
                 );
             }
+            self.bind_root_imports_in_scope(program);
         } else {
-            let root = self.identity.root_module();
+            let root = self.defs.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
                 self.mint_item_declaration_identities(
                     root,
                     root,
-                    NominalNamespace::RootBare,
+                    if self.checking_embedded_builtins {
+                        NominalNamespace::FlattenedFile
+                    } else {
+                        NominalNamespace::RootBare
+                    },
                     item_index,
                     item,
                     span,
                 );
+            }
+            self.bind_root_imports_in_scope(program);
+        }
+    }
+
+    fn bind_root_imports_in_scope(&mut self, program: &Program) {
+        let Some(root) = self.defs.root_module() else {
+            return;
+        };
+        for (item, _) in &program.items {
+            if let Item::Import(decl) = item {
+                self.bind_import_in_scope(root, decl);
+            }
+        }
+    }
+
+    /// Bind one import declaration in its file's scope: a whole-module import
+    /// binds the module under its alias or last segment, a selection binds
+    /// each selected item under its alias or name, and a file import binds
+    /// every item of the imported file.
+    fn bind_import_in_scope(&mut self, file: crate::ModuleId, decl: &hew_parser::ast::ImportDecl) {
+        let Some(target) = decl
+            .resolved_source_paths
+            .first()
+            .and_then(|source| self.defs.module_for_source(source))
+            .or_else(|| self.defs.module_for_path(&decl.path.to_string()))
+        else {
+            return;
+        };
+        if decl.path.segments.is_empty() {
+            for (name, binding) in self.scopes.items(target) {
+                self.scopes.bind_import(file, name, binding);
+            }
+            return;
+        }
+        match &decl.spec {
+            None => {
+                if let Some(binding_name) = decl.module_alias.or_else(|| decl.path.last()) {
+                    self.scopes.bind_import(
+                        file,
+                        binding_name.name,
+                        scope::Binding::Module(target),
+                    );
+                }
+            }
+            Some(hew_parser::ast::ImportSpec::Names(names)) => {
+                for selected in names {
+                    if let Some(binding) = self.scopes.item(target, selected.name.name) {
+                        let bound = selected.alias.unwrap_or(selected.name);
+                        self.scopes.bind_import(file, bound.name, binding);
+                    }
+                }
             }
         }
     }
 
     pub(super) fn current_declaration_module(&self) -> Option<crate::ModuleId> {
-        self.current_item_source
+        let source = self
+            .current_item_source
             .as_deref()
-            .and_then(|source| self.identity.module_for_source(source))
+            .and_then(|source| self.defs.module_for_source(source));
+        let namespace = self
+            .current_module
+            .as_deref()
+            .and_then(|module| self.defs.module_for_path(module))
             .or_else(|| {
-                self.current_module
+                self.registration_origin_module
                     .as_deref()
-                    .and_then(|module| self.identity.module_for_path(module))
-            })
-            .or_else(|| self.identity.root_module())
+                    .and_then(|module| self.defs.module_for_path(module))
+            });
+        namespace.map_or_else(
+            || source.or_else(|| self.defs.root_module()),
+            |namespace| {
+                Some(
+                    source
+                        .filter(|file| self.scopes.namespace_of(*file) == namespace)
+                        .unwrap_or(namespace),
+                )
+            },
+        )
     }
 
     /// Resolve a declaration path the checker holds: its canonical render, or
     /// the other name a nominal answers to in its namespace. The published
     /// identity view carries only canonical renders.
-    pub(super) fn lookup_declaration(&self, path: &str) -> Option<&crate::DefId> {
-        self.identity.declaration_by_path(path).or_else(|| {
+    pub(super) fn lookup_declaration(&self, path: &str) -> Option<crate::DefId> {
+        self.defs.lookup_path(path).or_else(|| {
             self.nominal_namespace_claims
                 .get(path)
-                .and_then(|occurrence| self.identity.declaration(*occurrence))
+                .and_then(|occurrence| self.defs.declaration(*occurrence))
         })
     }
 
@@ -1064,7 +1141,7 @@ impl Checker {
         span: &std::ops::Range<usize>,
     ) -> Option<crate::DefId> {
         if let Some(declaration) = self.lookup_declaration(path) {
-            return Some(declaration.clone());
+            return Some(declaration);
         }
         self.errors.push(TypeError::new(
             TypeErrorKind::InvalidOperation,
@@ -1083,15 +1160,26 @@ impl Checker {
     pub(super) fn declare_lambda_actor(&mut self, span: &std::ops::Range<usize>) {
         let module = self.current_declaration_module();
         let actor_path =
-            crate::identity::lambda_actor_declaration_path(self.current_module.as_deref(), span);
-        let handler_path = crate::identity::lambda_actor_handler_path(&actor_path);
-        let mut minted = Vec::new();
-        for (kind, path) in [
-            (crate::DeclarationKind::Actor, actor_path.clone()),
-            (crate::DeclarationKind::ActorReceive, handler_path),
+            crate::def_table::lambda_actor_declaration_path(self.current_module.as_deref(), span);
+        let handler_path = crate::def_table::lambda_actor_handler_path(&actor_path);
+        let mut minted: Vec<crate::DefId> = Vec::new();
+        for (kind, name, path) in [
+            (
+                crate::DeclarationKind::Actor,
+                Symbol::intern("actor"),
+                actor_path.clone(),
+            ),
+            (
+                crate::DeclarationKind::ActorReceive,
+                Symbol::intern("call"),
+                handler_path,
+            ),
         ] {
             let occurrence = crate::DeclarationOccurrence::new(module, span, kind, 0);
-            match self.identity.declare(occurrence, path) {
+            match self
+                .defs
+                .declare(occurrence, name, minted.first().copied(), path)
+            {
                 Ok(declaration) => minted.push(declaration),
                 Err(error) => {
                     self.errors.push(TypeError::new(
@@ -1130,8 +1218,8 @@ impl Checker {
             kind,
             ordinal,
         );
-        if let Some(declaration) = self.identity.declaration(occurrence) {
-            return Some(declaration.clone());
+        if let Some(declaration) = self.defs.declaration(occurrence) {
+            return Some(declaration);
         }
         self.errors.push(TypeError::new(
             TypeErrorKind::InvalidOperation,
@@ -1146,35 +1234,70 @@ impl Checker {
     fn selected_entry_item<'a>(
         &mut self,
         program: &'a Program,
-    ) -> Option<(crate::DeclarationOccurrence, &'a std::ops::Range<usize>)> {
-        let selected_entry = self.entry_selection?;
+        selected_entry: crate::DeclarationOccurrence,
+        test_mode: bool,
+    ) -> Option<(
+        crate::DeclarationOccurrence,
+        &'a FnDecl,
+        &'a std::ops::Range<usize>,
+    )> {
+        let source_module = test_mode
+            .then_some(self.test_entry_module.as_ref())
+            .flatten();
+        let (owner, items) = if let Some(source_module) = source_module {
+            let Some(module) = program
+                .module_graph
+                .as_ref()
+                .and_then(|graph| graph.modules.get(source_module))
+            else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    selected_entry.span(),
+                    "selected test source module is absent from this compilation",
+                ));
+                return None;
+            };
+            (
+                self.defs.module_for_path(&source_module.dotted()),
+                module.items.as_slice(),
+            )
+        } else {
+            (self.defs.root_module(), program.items.as_slice())
+        };
         let selected_entry = if selected_entry.module().is_none() {
-            selected_entry.with_module(self.identity.root_module())
+            selected_entry.with_module(owner)
         } else {
             selected_entry
         };
-        let matched = program
-            .items
+        let matched = items
             .iter()
             .enumerate()
             .find_map(|(item_index, (item, span))| {
-                let Item::Function(_) = item else {
+                let Item::Function(declaration) = item else {
                     return None;
                 };
                 let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-                    self.identity.root_module(),
+                    owner,
                     span,
                     item_index,
                     crate::DeclarationKind::Function,
                     0,
                 );
-                (selected_entry == occurrence).then_some((occurrence, span))
+                (selected_entry == occurrence).then_some((occurrence, declaration, span))
             });
         if matched.is_none() {
             self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
+                if test_mode {
+                    TypeErrorKind::TestSignature
+                } else {
+                    TypeErrorKind::InvalidOperation
+                },
                 selected_entry.span(),
-                "selected process entry occurrence is not a root function in this compilation",
+                if test_mode {
+                    "selected test occurrence is not a root function in this compilation"
+                } else {
+                    "selected process entry occurrence is not a root function in this compilation"
+                },
             ));
         }
         matched
@@ -1184,7 +1307,7 @@ impl Checker {
         &mut self,
         return_type: Ty,
         span: &std::ops::Range<usize>,
-        resolved_fn_sigs: &HashMap<String, FnSig>,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
     ) -> Option<EntryExitAction> {
         let resolved_return_type = ResolvedTy::from_ty(&return_type).ok();
         match return_type {
@@ -1193,7 +1316,7 @@ impl Checker {
                 EntryExitAction::Integer(EntryIntegerType::from_ty(&integer)?),
             ),
             Ty::Named {
-                builtin: Some(crate::BuiltinType::Result),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
                 args,
                 ..
             } if matches!(args.as_slice(), [Ty::Unit, _]) => {
@@ -1221,7 +1344,7 @@ impl Checker {
                         display: EntryDisplayTarget::DynSlot { slot, method },
                     });
                 }
-                let Some((display_declaration, display_signature_key)) =
+                let Some(display_declaration) =
                     self.trait_impl_method_declaration(&error_ty, "Display", "fmt")
                 else {
                     self.errors.push(TypeError::new(
@@ -1239,13 +1362,13 @@ impl Checker {
                     ResolvedTy::Named { args, .. } => args.clone(),
                     _ => Vec::new(),
                 };
-                let Some(display_signature) = resolved_fn_sigs.get(&display_signature_key) else {
+                let Some(display_signature) = resolved_fn_sigs.of(display_declaration) else {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         span.clone(),
                         format!(
                             "checker has no resolved signature for entry Display target `{}`",
-                            display_declaration.display_name()
+                            self.defs.display(display_declaration)
                         ),
                     ));
                     return None;
@@ -1283,7 +1406,7 @@ impl Checker {
     /// handler's `Err(e)` into the actor's own fault, and the fault carries
     /// the error's text; a handler whose error the checker cannot render is
     /// refused at the submission rather than faulting with nothing to say.
-    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: &HashMap<String, FnSig>) {
+    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: crate::check::FnSigView<'_>) {
         let mut targets: HashMap<String, crate::actor_protocol::ReceiveFailureDisplay> =
             HashMap::new();
         for method_id in self.receive_fails_methods.clone() {
@@ -1327,14 +1450,13 @@ impl Checker {
     fn receive_failure_display(
         &mut self,
         error_ty: &Ty,
-        resolved_fn_sigs: &HashMap<String, FnSig>,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
     ) -> Option<crate::actor_protocol::ReceiveFailureDisplay> {
         if matches!(error_ty, Ty::String) {
             return Some(crate::actor_protocol::ReceiveFailureDisplay::Identity);
         }
-        let (declaration, signature_key) =
-            self.trait_impl_method_declaration(error_ty, "Display", "fmt")?;
-        let signature = resolved_fn_sigs.get(&signature_key)?;
+        let declaration = self.trait_impl_method_declaration(error_ty, "Display", "fmt")?;
+        let signature = resolved_fn_sigs.of(declaration)?;
         let instance = if signature.type_params.is_empty() {
             EntryCallableInstance::Declared
         } else {
@@ -1352,21 +1474,22 @@ impl Checker {
     fn classify_entry_exit_plan(
         &mut self,
         program: &Program,
-        resolved_fn_sigs: &HashMap<String, FnSig>,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
     ) -> Option<EntryExitPlan> {
         let (occurrence, span) =
-            if self.entry_selection.is_some() {
-                self.selected_entry_item(program)?
+            if let Some(selection) = self.entry_selection {
+                let (occurrence, _, span) = self.selected_entry_item(program, selection, false)?;
+                (occurrence, span)
             } else {
                 program.items.iter().enumerate().find_map(
                     |(item_index, (item, span))| match item {
                         Item::Function(declaration)
-                            if declaration.name == "main"
+                            if declaration.name == Ident::new("main")
                                 && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
                         {
                             Some((
                                 crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-                                    self.identity.root_module(),
+                                    self.defs.root_module(),
                                     span,
                                     item_index,
                                     crate::DeclarationKind::Function,
@@ -1379,9 +1502,9 @@ impl Checker {
                     },
                 )?
             };
-        let entry = self.identity.declaration(occurrence)?.clone();
+        let entry = self.defs.declaration(occurrence)?;
         let Some(return_type) = resolved_fn_sigs
-            .get(entry.full_path())
+            .get(self.defs.path(entry))
             .map(|signature| signature.return_type.clone())
         else {
             self.errors.push(TypeError::new(
@@ -1389,7 +1512,7 @@ impl Checker {
                 span.clone(),
                 format!(
                     "checker has no resolved signature for process entry `{}`",
-                    entry.display_name()
+                    self.defs.display(entry)
                 ),
             ));
             return None;
@@ -1397,6 +1520,102 @@ impl Checker {
         let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs)?;
 
         Some(EntryExitPlan { entry, action })
+    }
+
+    /// Publish every selected test root in discovery order. A bad selection
+    /// invalidates the whole batch so a downstream dispatcher cannot execute
+    /// a partial set after checking reported a signature error.
+    fn classify_test_entry_plans(
+        &mut self,
+        program: &Program,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
+    ) -> Vec<EntryExitPlan> {
+        let Some(selections) = self.test_entry_selections.clone() else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::new();
+        let mut plans = Vec::with_capacity(selections.len());
+        let mut invalid = false;
+        for selection in selections {
+            let Some((occurrence, declaration, span)) =
+                self.selected_entry_item(program, selection, true)
+            else {
+                invalid = true;
+                continue;
+            };
+            if !seen.insert(occurrence) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    occurrence.span(),
+                    "the same test root was selected more than once",
+                ));
+                invalid = true;
+                continue;
+            }
+            if !declaration.params.is_empty()
+                || declaration
+                    .type_params
+                    .as_ref()
+                    .is_some_and(|params| !params.is_empty())
+                || declaration.where_clause.is_some()
+                || declaration.is_generator
+            {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    format!(
+                        "test `{}` must have no parameters or type parameters and cannot be a generator",
+                        declaration.name
+                    ),
+                ));
+                invalid = true;
+                continue;
+            }
+            let Some(entry) = self.defs.declaration(occurrence) else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    "selected test has no checker declaration identity",
+                ));
+                invalid = true;
+                continue;
+            };
+            let Some(return_type) = resolved_fn_sigs
+                .get(self.defs.path(entry))
+                .map(|signature| signature.return_type.clone())
+            else {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::TestSignature,
+                    span.clone(),
+                    "selected test has no resolved signature",
+                ));
+                invalid = true;
+                continue;
+            };
+            let error_mark = self.errors.len();
+            let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs);
+            let Some(action) = action else {
+                for error in &mut self.errors[error_mark..] {
+                    error.kind = TypeErrorKind::TestSignature;
+                    error.message = error.message.replace("process entry", "test");
+                }
+                if self.errors.len() == error_mark {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::TestSignature,
+                        span.clone(),
+                        "test return type has no executable exit conversion",
+                    ));
+                }
+                invalid = true;
+                continue;
+            };
+            plans.push(EntryExitPlan { entry, action });
+        }
+        if invalid {
+            Vec::new()
+        } else {
+            plans
+        }
     }
 
     #[expect(
@@ -1430,10 +1649,17 @@ impl Checker {
     ) {
         use crate::{DeclarationKind as Kind, DeclarationOccurrence as Occurrence};
 
+        let namespace_module = owner.or(module);
+        if let (Some(file), Some(namespace_module)) = (module, namespace_module) {
+            if file != namespace_module {
+                self.scopes.join_namespace(file, namespace_module);
+            }
+        }
         let module_path = owner.or(module).and_then(|owner| {
-            let path = self.identity.module_path(owner);
+            let path = self.defs.module_path(owner);
             (path != "#synthetic-root").then(|| path.to_string())
         });
+        let occurrence_owner = module.map(|file| self.defs.module_path(file).to_string());
         let fn_path = |leaf: &str| {
             module_path
                 .as_ref()
@@ -1462,15 +1688,49 @@ impl Checker {
             NominalNamespace::FlattenedFile => Some(leaf.to_string()),
             NominalNamespace::Owned => None,
         };
+        let machine_event_owner = if let Item::TypeDecl(decl) = item {
+            if let hew_parser::ast::DeclarationOrigin::MachineEventType {
+                machine_start,
+                machine_end,
+                machine_ordinal,
+            } = decl.origin
+            {
+                let machine_span = machine_start..machine_end;
+                let occurrence = Occurrence::new_with_synthetic_ordinal(
+                    module,
+                    &machine_span,
+                    machine_ordinal,
+                    Kind::Machine,
+                    0,
+                );
+                self.defs
+                    .declaration(occurrence)
+                    .map(|owner| (owner, format!("{}.Event", self.defs.path(owner))))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         // `alias` marks the other name a nominal answers to in its namespace.
         // It is claimed there for collision reporting and never becomes a
         // second spelling of the declaration's identity.
-        let mut declare = |kind: Kind, ordinal: usize, path: String, alias: bool| {
+        // Declares one row and answers its identity, which a member row takes
+        // as its owner.
+        let mut minted_types: Vec<crate::DefId> = Vec::new();
+        let mut declare = |kind: Kind,
+                           ordinal: usize,
+                           name: Symbol,
+                           owner: Option<crate::DefId>,
+                           path: String,
+                           alias: bool|
+         -> Option<crate::DefId> {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
+            let mut minted = None;
             let collision = if alias {
                 let claimant = self
-                    .identity
+                    .defs
                     .occurrence_by_path(&path)
                     .or_else(|| self.nominal_namespace_claims.get(&path).copied());
                 match claimant {
@@ -1483,12 +1743,33 @@ impl Checker {
                     }
                 }
             } else {
-                match self.identity.declare(occurrence, path.clone()) {
-                    Ok(_) => self
-                        .nominal_namespace_claims
-                        .get(&path)
-                        .copied()
-                        .filter(|claimant| *claimant != occurrence),
+                match self.defs.declare(occurrence, name, owner, path.clone()) {
+                    Ok(id) => {
+                        minted = Some(id);
+                        if matches!(kind, Kind::Type | Kind::Record | Kind::MachineEventType) {
+                            minted_types.push(id);
+                        }
+                        match owner {
+                            Some(owner) => {
+                                let resolution = scope::Binding::of_item(&self.defs, id)
+                                    .map_or(scope::Resolution::Member(id), |binding| {
+                                        binding.resolution()
+                                    });
+                                self.scopes.declare_member(owner, name, resolution);
+                            }
+                            None => {
+                                if let (Some(namespace_module), Some(binding)) =
+                                    (namespace_module, scope::Binding::of_item(&self.defs, id))
+                                {
+                                    self.scopes.declare_item(namespace_module, name, binding);
+                                }
+                            }
+                        }
+                        self.nominal_namespace_claims
+                            .get(&path)
+                            .copied()
+                            .filter(|claimant| *claimant != occurrence)
+                    }
                     // An `extern "C"` symbol is the one declaration form where
                     // two occurrences under one path are genuinely one
                     // declaration: the linker binds every call to a single
@@ -1498,18 +1779,20 @@ impl Checker {
                     // contract. Peer files of one directory module routinely
                     // re-declare a runtime symbol, so binding the further
                     // occurrence is what keeps their declarations resolvable.
-                    Err(crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                    Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {
                         ..
                     }) if kind == Kind::ExternFunction => {
-                        self.identity.bind_redeclaration(occurrence, &path);
+                        self.defs.bind_redeclaration(occurrence, &path);
                         None
                     }
-                    Err(crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                    Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {
                         established_occurrence,
                         ..
                     }) => Some(established_occurrence),
                     Err(
-                        error @ crate::identity::DeclarationIdentityError::SecondSpelling { .. },
+                        error @ crate::def_table::DeclarationIdentityError::SecondSpelling {
+                            ..
+                        },
                     ) => {
                         self.errors.push(TypeError::new(
                             TypeErrorKind::InvalidOperation,
@@ -1521,7 +1804,7 @@ impl Checker {
                 }
             };
             let Some(established_occurrence) = collision else {
-                return;
+                return minted;
             };
             // Everything else is a redefinition. Registration reports the
             // ones it can see, which is one file at a time; a collision
@@ -1536,14 +1819,14 @@ impl Checker {
             if established_module == module
                 || !self.reported_declaration_collisions.insert(path.clone())
             {
-                return;
+                return minted;
             }
-            let leaf = path.rsplit(['.', ':']).next().unwrap_or(&path).to_string();
+            let leaf = name.to_string();
             let established_file = established_module
-                .and_then(|module| self.identity.module_source(module))
+                .and_then(|module| self.defs.module_source(module))
                 .map(|source| source.display().to_string());
             let conflicting_file = module
-                .and_then(|module| self.identity.module_source(module))
+                .and_then(|module| self.defs.module_source(module))
                 .map(|source| source.display().to_string());
             let mut error = TypeError::new(
                 TypeErrorKind::DuplicateDefinition,
@@ -1565,31 +1848,103 @@ impl Checker {
             }
             error.source_module = conflicting_file;
             self.errors.push(error);
+            minted
         };
         match item {
-            Item::Import(_) | Item::Impl(_) => {}
+            Item::Import(_) => {}
+            Item::Impl(_) => {
+                declare(
+                    Kind::ImplBlock,
+                    0,
+                    Symbol::intern("impl"),
+                    None,
+                    format!(
+                        "{}.<impl@{}:{}>",
+                        occurrence_owner.as_deref().unwrap_or("#synthetic-root"),
+                        span.start,
+                        span.end
+                    ),
+                    false,
+                );
+            }
             Item::Const(decl) => {
-                declare(Kind::Const, 0, owner_path(&decl.name), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Const, 0, alias, true);
+                let name = decl.name.name;
+                declare(Kind::Const, 0, name, None, owner_path(name.as_str()), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Const, 0, name, None, alias, true);
                 }
             }
-            Item::Function(decl) => declare(Kind::Function, 0, fn_path(&decl.name), false),
+            Item::Function(decl) => {
+                let name = decl.name.name;
+                declare(Kind::Function, 0, name, None, fn_path(name.as_str()), false);
+            }
             Item::ExternBlock(block) => {
                 for (index, decl) in block.functions.iter().enumerate() {
-                    declare(Kind::ExternFunction, index, fn_path(&decl.name), false);
+                    let name = decl.name.name;
+                    declare(
+                        Kind::ExternFunction,
+                        index,
+                        name,
+                        None,
+                        fn_path(name.as_str()),
+                        false,
+                    );
                 }
             }
             Item::TypeDecl(decl) => {
-                let owner = owner_path(&decl.name);
-                let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
-                    Kind::Machine
+                let generated_event = matches!(
+                    decl.origin,
+                    hew_parser::ast::DeclarationOrigin::MachineEventType { .. }
+                );
+                let (name, path, kind, parent) = if let Some((parent, path)) = &machine_event_owner
+                {
+                    (
+                        Symbol::intern("Event"),
+                        path.clone(),
+                        Kind::MachineEventType,
+                        Some(*parent),
+                    )
                 } else {
-                    Kind::Type
+                    let name = decl.name.name;
+                    let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                        Kind::Machine
+                    } else {
+                        Kind::Type
+                    };
+                    (name, owner_path(name.as_str()), kind, None)
                 };
-                declare(kind, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(kind, 0, alias, true);
+                if generated_event && parent.is_none() {
+                    return;
+                }
+                let owner = declare(kind, 0, name, parent, path.clone(), false);
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
+                    declare(kind, 0, name, parent, alias, true);
+                }
+                // An enum's variants and a desugared machine's states are
+                // members of their declaration.
+                let (member_kind, member_path) = if kind == Kind::Machine {
+                    (Kind::MachineState, "state")
+                } else {
+                    (Kind::Variant, "variant")
+                };
+                for (index, variant) in decl
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TypeBodyItem::Variant(variant) => Some(variant),
+                        hew_parser::ast::TypeBodyItem::Field { .. }
+                        | hew_parser::ast::TypeBodyItem::Method(_) => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        member_kind,
+                        index,
+                        variant.name.name,
+                        owner,
+                        format!("{path}::{member_path} {}", variant.name),
+                        false,
+                    );
                 }
                 for (index, method) in decl
                     .body
@@ -1604,30 +1959,49 @@ impl Checker {
                     declare(
                         Kind::TypeMethod,
                         index,
-                        format!("{owner}::{}", method.name),
+                        method.name.name,
+                        owner,
+                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
             }
             Item::TypeAlias(decl) => {
-                declare(Kind::TypeAlias, 0, owner_path(&decl.name), false);
+                let name = decl.name.name;
+                declare(
+                    Kind::TypeAlias,
+                    0,
+                    name,
+                    None,
+                    owner_path(name.as_str()),
+                    false,
+                );
                 if matches!(namespace, NominalNamespace::RootBare) {
-                    if let Some(alias) = nominal_alias(&decl.name) {
-                        declare(Kind::TypeAlias, 0, alias, true);
+                    if let Some(alias) = nominal_alias(name.as_str()) {
+                        declare(Kind::TypeAlias, 0, name, None, alias, true);
                     }
                 }
             }
             Item::Record(decl) => {
-                declare(Kind::Record, 0, owner_path(&decl.name), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Record, 0, alias, true);
+                let name = decl.name.name;
+                declare(
+                    Kind::Record,
+                    0,
+                    name,
+                    None,
+                    owner_path(name.as_str()),
+                    false,
+                );
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Record, 0, name, None, alias, true);
                 }
             }
             Item::Trait(decl) => {
-                let owner = owner_path(&decl.name);
-                declare(Kind::Trait, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Trait, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Trait, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Trait, 0, name, None, alias, true);
                 }
                 for (index, method) in decl
                     .items
@@ -1641,25 +2015,37 @@ impl Checker {
                     declare(
                         Kind::TraitMethod,
                         index,
-                        format!("{owner}::{}", method.name),
+                        method.name.name,
+                        owner,
+                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
             }
             Item::Actor(decl) => {
-                let owner = owner_path(&decl.name);
-                declare(Kind::Actor, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Actor, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Actor, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Actor, 0, name, None, alias, true);
                 }
                 if decl.init.is_some() {
-                    declare(Kind::ActorInit, 0, format!("{owner}::<init>"), false);
+                    declare(
+                        Kind::ActorInit,
+                        0,
+                        Symbol::intern("init"),
+                        owner,
+                        format!("{path}::<init>"),
+                        false,
+                    );
                 }
                 for (index, receive) in decl.receive_fns.iter().enumerate() {
                     declare(
                         Kind::ActorReceive,
                         index,
-                        format!("{owner}::{}", receive.name),
+                        receive.name.name,
+                        owner,
+                        format!("{path}::{}", receive.name),
                         false,
                     );
                 }
@@ -1667,38 +2053,64 @@ impl Checker {
                     declare(
                         Kind::ActorMethod,
                         index,
-                        format!("{owner}::{}", method.name),
+                        method.name.name,
+                        owner,
+                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
             }
             Item::Supervisor(decl) => {
-                let owner = owner_path(&decl.name);
-                declare(Kind::Supervisor, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Supervisor, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Supervisor, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Supervisor, 0, name, None, alias, true);
                 }
                 declare(
                     Kind::SupervisorBootstrap,
                     0,
-                    format!("{owner}::<bootstrap>"),
+                    Symbol::intern("bootstrap"),
+                    owner,
+                    format!("{path}::<bootstrap>"),
                     false,
                 );
             }
             Item::Machine(decl) => {
-                let owner = owner_path(&decl.name);
-                declare(Kind::Machine, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Machine, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Machine, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Machine, 0, name, None, alias, true);
                 }
+                // Raw machines also reach checking when normalization reports
+                // an error. Their event companion still owns a declaration,
+                // just as the generated enum does on the normalized path.
+                declare(
+                    Kind::MachineEventType,
+                    0,
+                    Symbol::intern("Event"),
+                    owner,
+                    format!("{path}.Event"),
+                    false,
+                );
                 for (index, state) in decl.states.iter().enumerate() {
-                    let state_owner = format!("{owner}::state {}", state.name);
-                    declare(Kind::MachineState, index, state_owner.clone(), false);
+                    let state_path = format!("{path}::state {}", state.name);
+                    let state_owner = declare(
+                        Kind::MachineState,
+                        index,
+                        state.name.name,
+                        owner,
+                        state_path.clone(),
+                        false,
+                    );
                     if state.entry.is_some() {
                         declare(
                             Kind::MachineStateEntry,
                             index,
-                            format!("{state_owner}::<entry>"),
+                            Symbol::intern("entry"),
+                            state_owner,
+                            format!("{state_path}::<entry>"),
                             false,
                         );
                     }
@@ -1706,7 +2118,9 @@ impl Checker {
                         declare(
                             Kind::MachineStateExit,
                             index,
-                            format!("{state_owner}::<exit>"),
+                            Symbol::intern("exit"),
+                            state_owner,
+                            format!("{state_path}::<exit>"),
                             false,
                         );
                     }
@@ -1715,7 +2129,9 @@ impl Checker {
                     declare(
                         Kind::MachineEvent,
                         index,
-                        format!("{owner}::event {}", event.name),
+                        event.name.name,
+                        owner,
+                        format!("{path}::event {}", event.name),
                         false,
                     );
                 }
@@ -1723,17 +2139,204 @@ impl Checker {
                     declare(
                         Kind::MachineTransition,
                         index,
-                        format!("{owner}::<transition#{index}>"),
+                        Symbol::intern("transition"),
+                        owner,
+                        format!("{path}::<transition#{index}>"),
                         false,
                     );
                 }
             }
         }
+        self.declare_item_type_parameter_scopes(module, item_ordinal, item, span);
+        if matches!(item, Item::Trait(_)) {
+            if let Some(module) = module {
+                let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    Some(module),
+                    span,
+                    item_ordinal,
+                    crate::DeclarationKind::Trait,
+                    0,
+                );
+                if let Some(owner) = self.defs.declaration(occurrence) {
+                    self.scopes
+                        .declare_receiver_parameter(module, owner, span.clone());
+                }
+            }
+        }
+        for id in minted_types {
+            if let Some(builtin) = self.declaration_builtin(id) {
+                self.defs.bind_builtin_declaration(builtin, id);
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive declaration walk publishes lexical generic scopes under their owners"
+    )]
+    fn declare_item_type_parameter_scopes(
+        &mut self,
+        module: Option<crate::ModuleId>,
+        item_ordinal: usize,
+        item: &Item,
+        span: &Span,
+    ) {
+        use crate::{DeclarationKind as Kind, DeclarationOccurrence};
+        let Some(module) = module else {
+            return;
+        };
+        let mut declare =
+            |kind, ordinal, region: &Span, parameters: &[hew_parser::ast::TypeParam]| {
+                let occurrence = DeclarationOccurrence::new_with_synthetic_ordinal(
+                    Some(module),
+                    span,
+                    item_ordinal,
+                    kind,
+                    ordinal,
+                );
+                if let Some(owner) = self.defs.declaration(occurrence) {
+                    self.scopes.declare_type_parameters(
+                        module,
+                        owner,
+                        region.clone(),
+                        parameters.iter().map(|param| param.name),
+                    );
+                }
+            };
+        match item {
+            Item::Function(function) => declare(
+                Kind::Function,
+                0,
+                span,
+                function.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::Impl(block) => {
+                let parameters = block.type_params.as_deref().unwrap_or_default();
+                declare(Kind::ImplBlock, 0, span, parameters);
+                // Normalization gives generated machine methods their own spans.
+                // Their enclosing impl still owns the receiver's binders.
+                for method in &block.methods {
+                    if method.fn_span.start < span.start || method.fn_span.end > span.end {
+                        declare(Kind::ImplBlock, 0, &method.fn_span, parameters);
+                    }
+                }
+            }
+            Item::TypeDecl(decl) => {
+                let kind = match decl.origin {
+                    hew_parser::ast::DeclarationOrigin::MachineState => Kind::Machine,
+                    hew_parser::ast::DeclarationOrigin::MachineEventType { .. } => {
+                        Kind::MachineEventType
+                    }
+                    _ => Kind::Type,
+                };
+                declare(
+                    kind,
+                    0,
+                    span,
+                    decl.type_params.as_deref().unwrap_or_default(),
+                );
+                for (index, method) in decl
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
+                        _ => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        Kind::TypeMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Record(decl) => declare(
+                Kind::Record,
+                0,
+                span,
+                decl.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::TypeAlias(decl) => declare(
+                Kind::TypeAlias,
+                0,
+                span,
+                decl.type_params.as_deref().unwrap_or_default(),
+            ),
+            Item::Trait(decl) => {
+                declare(
+                    Kind::Trait,
+                    0,
+                    span,
+                    decl.type_params.as_deref().unwrap_or_default(),
+                );
+                for (index, method) in decl
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TraitItem::Method(method) => Some(method),
+                        hew_parser::ast::TraitItem::AssociatedType { .. } => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        Kind::TraitMethod,
+                        index,
+                        &method.span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Actor(decl) => {
+                declare(Kind::Actor, 0, span, &decl.type_params);
+                for (index, method) in decl.receive_fns.iter().enumerate() {
+                    declare(
+                        Kind::ActorReceive,
+                        index,
+                        &method.span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::ActorMethod,
+                        index,
+                        &method.fn_span,
+                        method.type_params.as_deref().unwrap_or_default(),
+                    );
+                }
+            }
+            Item::Supervisor(decl) => declare(Kind::Supervisor, 0, span, &decl.type_params),
+            Item::Machine(decl) => declare(Kind::Machine, 0, span, &decl.type_params),
+            _ => {}
+        }
+    }
+
+    /// The compiler builtin a std declaration is: its shipped source row in
+    /// the builtin spelling table, or a shipped encoding value. A root or user
+    /// module declaration with the same spelling stays its own nominal.
+    fn declaration_builtin(&self, id: crate::DefId) -> Option<crate::BuiltinType> {
+        if !self.checking_embedded_builtins && self.defs.module(id) == self.defs.root_module() {
+            return None;
+        }
+        let path = self.defs.path(id);
+        crate::BuiltinType::from_source_declaration(path).or_else(|| {
+            self.resolved_builtin_type(path)
+                .filter(|builtin| builtin.is_encoding_value())
+        })
     }
 
     /// Check the compiler-embedded builtin source under its declaration
-    /// authority. User programs must enter through [`Self::check_program`].
-    pub fn check_embedded_builtins(&mut self, program: &Program) -> TypeCheckOutput {
+    /// authority, minting into a fork of `base` so the declarations it shares
+    /// with the compilation keep their identities. User programs must enter
+    /// through [`Self::check_program`].
+    pub fn check_embedded_builtins(
+        &mut self,
+        program: &Program,
+        base: &crate::DefTable,
+    ) -> TypeCheckOutput {
+        self.seed_defs = Some(base.fork_for_embedded_builtins());
         self.checking_embedded_builtins = true;
         let output = self.check_program(program);
         self.checking_embedded_builtins = false;
@@ -1798,7 +2401,7 @@ impl Checker {
                 .get(&module_graph.root)
                 .is_some_and(|root| root.source_paths.is_empty());
             for (module_id, module) in &module_graph.modules {
-                let module_full_path = module_id.path.join(".");
+                let module_full_path = module_id.dotted();
                 if !module.source_paths.is_empty() {
                     self.module_source_paths
                         .insert(module_full_path.clone(), module.source_paths.clone());
@@ -1825,6 +2428,7 @@ impl Checker {
                 if directly_checked_stdlib {
                     for owner in module.source_paths.iter().filter_map(|source| {
                         crate::module_registry::canonical_stdlib_module_for_source(source)
+                            .map(|owner| owner.dotted())
                     }) {
                         self.canonical_std_module_sources.insert(owner.clone());
                         self.canonical_std_root_sources.insert(owner);
@@ -1910,8 +2514,15 @@ impl Checker {
         // both are `self` fields, so swap `fn_sigs` out across the build to
         // keep the borrow checker happy without cloning the whole signature map.
         let fn_sigs_for_descriptors = std::mem::take(&mut self.fn_sigs);
-        self.actor_protocol_descriptors =
-            build_actor_protocol_descriptors(program, &fn_sigs_for_descriptors, &mut self.errors);
+        self.actor_protocol_descriptors = build_actor_protocol_descriptors(
+            program,
+            FnSigView::new(
+                &fn_sigs_for_descriptors,
+                &self.fn_sig_keys,
+                &self.builtin_fn_sigs,
+            ),
+            &mut self.errors,
+        );
         self.fn_sigs = fn_sigs_for_descriptors;
 
         // Check non-root module_graph bodies first (dependencies before dependents).
@@ -1928,7 +2539,7 @@ impl Checker {
                     continue;
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
-                    let module_name = mod_id.path.join(".");
+                    let module_name = mod_id.dotted();
                     self.current_module = Some(module_name.clone());
                     // Index per SOURCE FILE, not per module: a directory
                     // module assembles its peer `.hew` files into one module
@@ -1945,8 +2556,8 @@ impl Checker {
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
-                                self.local_type_defs.insert(td.name.clone());
-                                self.source_type_defs.insert(td.name.clone());
+                                self.local_type_defs.insert(td.name.to_string());
+                                self.source_type_defs.insert(td.name.to_string());
                             }
                             Item::Machine(md) => {
                                 // Parallel to the TypeDecl arm: seed the machine's
@@ -1956,9 +2567,9 @@ impl Checker {
                                 // type so event-typed parameters and bare event
                                 // ctors in imported machine modules resolve as
                                 // locally-non-generic.
-                                self.local_type_defs.insert(md.name.clone());
-                                self.source_type_defs.insert(md.name.clone());
-                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(md.name.to_string());
+                                self.source_type_defs.insert(md.name.to_string());
+                                let event_type_name = format!("{}.Event", md.name);
                                 self.local_type_defs.insert(event_type_name.clone());
                                 self.source_type_defs.insert(event_type_name);
                             }
@@ -1967,11 +2578,11 @@ impl Checker {
                                 // `impl ImportedTrait for ThisActor` is therefore
                                 // local-typed, not an orphan. Seed both sets so the
                                 // orphan rule treats it like any other local type.
-                                self.local_type_defs.insert(ad.name.clone());
-                                self.source_type_defs.insert(ad.name.clone());
+                                self.local_type_defs.insert(ad.name.to_string());
+                                self.source_type_defs.insert(ad.name.to_string());
                             }
                             Item::Trait(tr) => {
-                                self.local_trait_defs.insert(tr.name.clone());
+                                self.local_trait_defs.insert(tr.name.to_string());
                             }
                             _ => {}
                         }
@@ -1992,9 +2603,9 @@ impl Checker {
                     // "std::" / "hew::" / "ecosystem::" (the double-colon
                     // guarantees 2+ segments).
                     let saved_is_stdlib_source = self.is_stdlib_source;
-                    if mod_id.path.len() >= 2
+                    if mod_id.segments.len() >= 2
                         && matches!(
-                            mod_id.path.first().map(String::as_str),
+                            mod_id.segments.first().map(|segment| segment.as_str()),
                             Some("std" | "hew" | "ecosystem")
                         )
                     {
@@ -2196,6 +2807,7 @@ impl Checker {
         // Effect and transfer checks consume capture and actor-dispatch facts
         // before those facts are moved into the checked-program handoff.
         self.report_completion_call_cycles();
+        let checked_impl_body_callees = self.checked_impl_body_callees();
         let suspension_effects = self.finish_suspension_effects();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()
@@ -2263,31 +2875,40 @@ impl Checker {
         let rendering_members = self
             .type_defs
             .iter()
-            .map(|(name, definition)| {
+            .map(|(id, definition)| {
                 (
-                    name.clone(),
+                    *id,
                     crate::type_facts::RenderingMembers::new(definition, |ty| {
                         self.subst.resolve(ty).materialize_literal_defaults()
                     }),
                 )
             })
             .collect();
-        let mut resolved_type_defs: HashMap<String, TypeDef> = self
+        let mut resolved_type_defs: HashMap<crate::NominalId, TypeDef> = self
             .type_defs
             .iter()
-            .map(|(name, type_def)| (name.clone(), self.resolve_type_def(type_def)))
+            .map(|(id, type_def)| (*id, self.resolve_type_def(type_def)))
             .collect();
 
         let resolved_type_aliases = self.resolved_type_aliases();
         let trait_defaults = self.resolved_trait_defaults();
 
-        let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
+        let mut resolved_fn_sigs: HashMap<crate::DefId, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
-            .map(|(name, sig)| {
-                let resolved = self.resolve_fn_sig(&sig);
-                (name, resolved)
+            .map(|(id, sig)| {
+                let resolved = self.resolve_source_fn_sig(id, &sig);
+                (id, resolved)
             })
             .collect();
+        let resolved_builtin_fn_sigs: HashMap<Symbol, FnSig> =
+            std::mem::take(&mut self.builtin_fn_sigs)
+                .into_iter()
+                .map(|(name, sig)| {
+                    let resolved = self.resolve_fn_sig(&sig);
+                    (name, resolved)
+                })
+                .collect();
+        self.builtin_fn_sigs.clone_from(&resolved_builtin_fn_sigs);
 
         self.validate_checker_output_contract(
             &mut resolved_expr_types,
@@ -2309,24 +2930,59 @@ impl Checker {
             *ty = self.finalize_type_for_handoff(ty);
         }
         self.current_module = saved_output_module;
-        for sig in resolved_fn_sigs.values_mut() {
-            *sig = self.resolve_fn_sig(sig);
+        for (declaration, sig) in &mut resolved_fn_sigs {
+            *sig = self.resolve_source_fn_sig(*declaration, sig);
         }
-        let entry_exit_plan = self.classify_entry_exit_plan(program, &resolved_fn_sigs);
-        self.attach_receive_failure_displays(&resolved_fn_sigs);
+        let imported_impl_body_facts = checked_impl_body_callees
+            .into_iter()
+            .filter_map(|(declaration, callees)| {
+                let sig = resolved_fn_sigs.get(&declaration)?;
+                let params = sig
+                    .params
+                    .iter()
+                    .map(|ty| ResolvedTy::from_ty(ty).ok())
+                    .collect::<Option<Vec<_>>>()?;
+                let return_type = ResolvedTy::from_ty(&sig.return_type).ok()?;
+                let receiver = sig
+                    .impl_method
+                    .as_ref()
+                    .and_then(|method| method.receiver)
+                    .map(crate::NominalId::of_declaration);
+                Some((
+                    declaration,
+                    ImportedImplBodyFact {
+                        receiver,
+                        params,
+                        return_type,
+                        callees,
+                    },
+                ))
+            })
+            .collect();
+        let fn_sig_keys = self.fn_sig_keys.clone();
+        let resolved_sigs =
+            FnSigView::new(&resolved_fn_sigs, &fn_sig_keys, &resolved_builtin_fn_sigs);
+        let test_entry_plans = self.classify_test_entry_plans(program, resolved_sigs);
+        let entry_exit_plan = if self.test_entry_selections.is_some() {
+            None
+        } else {
+            self.classify_entry_exit_plan(program, resolved_sigs)
+        };
+        self.attach_receive_failure_displays(resolved_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
         }
-        let opaque_resource_candidates =
-            self.derive_opaque_resource_candidate_graph(&resolved_fn_sigs);
-        for cycle in crate::cycle::detect_recursive_value_type_cycles(&resolved_type_defs) {
+        let opaque_resource_candidates = self.derive_opaque_resource_candidate_graph(resolved_sigs);
+        for cycle in crate::cycle::detect_recursive_value_type_cycles(
+            crate::check::TypeDefView::new(&self.defs, &resolved_type_defs),
+        ) {
             let span = self
                 .type_def_spans
                 .get(&cycle.edge.from)
                 .cloned()
                 .unwrap_or(0..0);
             let type_kind = resolved_type_defs
-                .get(&cycle.edge.from)
+                .get(&cycle.edge.from_id)
                 .map_or("type", |type_def| value_type_kind_label(type_def.kind));
             self.errors.push(TypeError::recursive_value_type(
                 span,
@@ -2379,7 +3035,9 @@ impl Checker {
                 .iter()
                 .filter(|spec| {
                     spec.suppress_from_sandbox_emit
-                        && resolved_type_defs.contains_key(spec.name)
+                        && TypeDefView::new(&self.defs, &resolved_type_defs)
+                            .at_path(spec.name)
+                            .is_some()
                         && !self.source_type_defs.contains(spec.name)
                 })
                 .map(|spec| spec.name.to_string())
@@ -2469,6 +3127,20 @@ impl Checker {
             typed
         };
 
+        let mut resolved_annotation_types = HashMap::new();
+        let saved_module = self.current_module.clone();
+        for (site, (ty, module)) in std::mem::take(&mut self.annotation_types) {
+            self.current_module = module;
+            let ty = self.finalize_type_for_handoff(&ty);
+            if let Ok(ty) = ResolvedTy::from_ty(&ty) {
+                let ty = restore_member_opacity(ty, &self.defs, &|name| {
+                    self.class_declarations().is_opaque_type(name)
+                });
+                resolved_annotation_types.insert(site, ty);
+            }
+        }
+        self.current_module = saved_module;
+
         // #1929 Stage 1: classify every concrete generic type-argument's
         // `Vec<T>` element ABI now, while `self.registry` (the `Copy` marker
         // authority) and the resolved `type_defs` (the `is_indirect` authority)
@@ -2479,7 +3151,7 @@ impl Checker {
         let vec_generic_element_abi = self.build_vec_generic_element_abi(
             &resolved_call_type_args,
             &resolved_record_init_type_args,
-            &resolved_type_defs,
+            TypeDefView::new(&self.defs, &resolved_type_defs),
         );
 
         // The §6.3 fact table describes an accepted program. A rejected one
@@ -2496,22 +3168,34 @@ impl Checker {
             (TypeFactContext::default(), BTreeMap::new())
         };
         // Machine purity follows each resource's release into its `close`.
-        let resource_closes: HashMap<String, crate::DefId> = if normalized_machines.is_some() {
-            self.registry
-                .resource_type_names()
-                .iter()
-                .filter_map(|name| {
-                    self.inherent_impl_method_declaration(
-                        &Ty::named(name.clone(), Vec::new()),
-                        "close",
-                    )
-                    .map(|close| (name.clone(), close))
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let resource_closes: HashMap<crate::NominalId, crate::DefId> =
+            if normalized_machines.is_some() {
+                self.registry
+                    .resource_type_ids()
+                    .iter()
+                    .filter_map(|id| {
+                        self.inherent_impl_method_declaration(
+                            &Ty::named_head(self.head_of_declaration(*id), Vec::new()),
+                            "close",
+                        )
+                        .map(|close| (*id, close))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+        // Flush any pending dirty registration before the handle-bearing set is
+        // moved out: the output layer uses it for codegen decisions, and it
+        // reads the declaration table the output takes next.
+        self.ensure_handle_bearing_fresh();
+        let callable_argument_flows = self.finish_callable_argument_flows();
+        // The checker keeps its table: post-check queries resolve through it.
+        let defs = std::sync::Arc::new(self.defs.clone());
+        let resolutions = self.scopes.take_resolutions();
+        let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
+            declaration_type_parameters: self.scopes.declaration_parameter_facts(),
+            resolved_annotation_types,
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,
@@ -2519,6 +3203,7 @@ impl Checker {
             call_argument_slots: std::mem::take(&mut self.call_argument_slots),
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
+            unrendered_assertion_operands: std::mem::take(&mut self.unrendered_assertion_operands),
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
             numeric_operand_coercions: std::mem::take(&mut self.numeric_operand_coercions),
             extern_method_signatures: std::mem::take(&mut self.extern_method_signatures),
@@ -2530,7 +3215,7 @@ impl Checker {
             owning_take_vec_cursors: std::mem::take(&mut self.owning_take_vec_cursors),
             borrowed_element_option_reads: std::mem::take(&mut self.borrowed_element_option_reads),
             type_facts,
-            type_fact_context,
+            type_fact_context: type_fact_context.with_defs(std::sync::Arc::clone(&defs)),
             resolved_expr_types: resolved_expr_types_typed,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
@@ -2562,6 +3247,7 @@ impl Checker {
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             actor_delivery_calls: std::mem::take(&mut self.actor_delivery_calls),
+            actor_coalesce_keys: std::mem::take(&mut self.actor_coalesce_keys),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),
@@ -2574,11 +3260,24 @@ impl Checker {
             type_defs: resolved_type_defs,
             resolved_type_aliases,
             internal_builtin_enum_names,
-            identity: std::mem::take(&mut self.identity).freeze(),
+            defs,
+            resolutions,
+            contexts,
             entry_exit_plan,
+            test_entry_plans,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
+            dispatch: self.dispatch.clone(),
+            fn_sig_keys: self.fn_sig_keys.clone(),
+            builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
+            imported_impl_body_facts,
+            indirect_call_candidates: std::mem::take(&mut self.indirect_call_candidates),
+            callable_argument_flows,
+            generic_trait_call_arguments: std::mem::take(&mut self.generic_trait_call_arguments),
+            callable_formals: std::mem::take(&mut self.callable_formals),
+            aggregate_field_candidates: std::mem::take(&mut self.aggregate_field_candidates),
+            callable_return_candidates: std::mem::take(&mut self.callable_return_candidates),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
             trait_bindings: std::mem::take(&mut self.trait_bindings),
             trait_defaults,
@@ -2586,12 +3285,7 @@ impl Checker {
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
             consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),
             root_value_bindings: std::mem::take(&mut self.root_value_bindings),
-            handle_bearing_structs: {
-                // Flush any pending dirty registration before the set is moved
-                // out — the output layer uses this set for codegen decisions.
-                self.ensure_handle_bearing_fresh();
-                std::mem::take(&mut self.handle_bearing_structs)
-            },
+            handle_bearing_structs: std::mem::take(&mut self.handle_bearing_structs),
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
@@ -2631,7 +3325,7 @@ impl Checker {
         };
 
         // Detect actor reference cycles and emit warnings.
-        let (cycle_capable, cycles) = crate::cycle::detect_actor_ref_cycles(&output.type_defs);
+        let (cycle_capable, cycles) = crate::cycle::detect_actor_ref_cycles(output.types());
         for cycle_actors in &cycles {
             let desc = cycle_actors.join(" -> ");
             let span = cycle_actors
@@ -2723,6 +3417,7 @@ impl Checker {
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
         let entry_selection = self.entry_selection;
+        let test_entry_selections = self.test_entry_selections.clone();
 
         *self = Self::new(module_registry);
         self.wasm_target = wasm_target;
@@ -2734,6 +3429,7 @@ impl Checker {
         self.lint_levels = lint_levels;
         self.lint_sources = lint_sources;
         self.entry_selection = entry_selection;
+        self.test_entry_selections = test_entry_selections;
     }
 
     /// The canonical prelude is an import-only authority manifest: its imports
@@ -2836,15 +3532,15 @@ impl Checker {
                 // Real stdlib modules are at least 2 path segments deep
                 // (e.g. ["std", "iter"]).  A single-segment module named
                 // ["std"] is a user file (std.hew) and must still be linted.
-                if mod_id.path.len() >= 2
+                if mod_id.segments.len() >= 2
                     && matches!(
-                        mod_id.path.first().map(String::as_str),
+                        mod_id.segments.first().map(|segment| segment.as_str()),
                         Some("std" | "hew" | "ecosystem")
                     )
                 {
                     continue;
                 }
-                let module_name = mod_id.path.join(".");
+                let module_name = mod_id.dotted();
                 let module_base = span_indices
                     .as_ref()
                     .and_then(|indices| indices.module_base(mod_id))
@@ -3060,7 +3756,7 @@ impl Checker {
                             &block.stmts,
                             block.trailing_expr.as_deref(),
                             i,
-                            binding_name,
+                            binding_name.name.as_str(),
                             in_fork,
                         );
                         self.closure_escape_facts.insert(
@@ -3571,7 +4267,7 @@ impl Checker {
             }
             Expr::GenBlock { body } => self.classify_escapes_in_block(body, in_fork),
             Expr::Literal(_)
-            | Expr::Identifier(_)
+            | Expr::Ident(_)
             | Expr::QualifiedAssoc(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -4005,7 +4701,7 @@ fn collect_lambda_spans_in_expr(
             }
         }
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -4097,7 +4793,7 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
     let mut actors: Vec<(String, &ActorDecl)> = Vec::new();
     for (item, _) in &program.items {
         if let Item::Actor(ad) = item {
-            actors.push((ad.name.clone(), ad));
+            actors.push((ad.name.to_string(), ad));
         }
     }
     if let Some(mg) = &program.module_graph {
@@ -4105,15 +4801,15 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
             if *mod_id == mg.root {
                 continue;
             }
-            let module_owner = mod_id.path.join(".");
+            let module_owner = mod_id.dotted();
             for (item, _) in &module.items {
                 if let Item::Actor(ad) = item {
                     let owner_identity = if module_owner.is_empty() {
-                        ad.name.clone()
+                        ad.name.to_string()
                     } else {
                         format!("{module_owner}.{}", ad.name)
                     };
-                    actors.push((owner_identity, ad));
+                    actors.push((owner_identity.clone(), ad));
                 }
             }
         }
@@ -4136,7 +4832,7 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
 /// derivative error here would be noise.
 fn build_actor_protocol_descriptors(
     program: &Program,
-    fn_sigs: &HashMap<String, crate::check::types::FnSig>,
+    fn_sigs: crate::check::types::FnSigView<'_>,
     errors: &mut Vec<TypeError>,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
@@ -4187,7 +4883,7 @@ fn build_actor_protocol_descriptors(
             // codegen through this `symbol` field.
             let symbol = format!("{actor_identity}__{}", rf.name);
             specs.push(crate::actor_protocol::ActorHandlerSpec {
-                name: rf.name.clone(),
+                name: rf.name.to_string(),
                 param_tys,
                 return_ty,
                 symbol,
@@ -4214,7 +4910,7 @@ fn build_actor_protocol_descriptors(
                     let span = ad
                         .receive_fns
                         .iter()
-                        .find(|rf| rf.name == h.name)
+                        .find(|rf| rf.name == Ident::new(&h.name))
                         .map_or(0..0, |rf| rf.span.clone());
                     cross_actor_seen.push((h.msg_id, actor_identity.clone(), h.name.clone(), span));
                 }
@@ -4230,7 +4926,7 @@ fn build_actor_protocol_descriptors(
                 let span = ad
                     .receive_fns
                     .iter()
-                    .find(|rf| rf.name == collision.handler_b)
+                    .find(|rf| rf.name == Ident::new(&collision.handler_b))
                     .map_or(0..0, |rf| rf.span.clone());
                 let message = format!(
                     "actor `{}` has two `receive fn`s with the same msg_id 0x{:08x}: `{}` and `{}`",

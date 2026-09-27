@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-vec-iter-admitted-own-break-sink"
+intent = "`for x in vec` cursor (`VecIter<T>`) scope-exit drop oracles: per-iteration leak slope plus a poisoned-allocator no-use-after-free pin for the place-source reuse shape (issue #1949). Shape `admitted_own_break_sink` (for in own break sink runs clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-vec-iter-admitted-own-break-sink.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1OK"
+exit = 0

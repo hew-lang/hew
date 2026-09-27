@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-trait-vec-leak"
+intent = "Exact-ownership oracles for heterogeneous `Vec<dyn Trait>` storage. Shape `dyn_trait_vec_high` (dyn trait vec has flat leak slope, dyn trait vec releases each slot once under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/dyn-trait-vec-leak.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "OK"
+exit = 0

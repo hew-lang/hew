@@ -1,44 +1,81 @@
 actor Worker {
-    var label: string = "",
-    var count: i64 = 0,
-    init(seed: string) { label = seed; }
-    #[on(stop)] fn stopped() { println(label); }
-    receive fn put(next: i64) { count = next; }
-    receive fn get() -> i64 { count }
+    var label: string = "";
+    var count: i64 = 0;
+    init(seed: string) {
+        label = seed;
+    }
+    #[on(stop)]
+    fn stopped() {
+        println(label);
+    }
+    receive fn put(next: i64) {
+        count = next;
+    }
+    receive fn get() -> i64 {
+        count
+    }
 }
 
 supervisor Branch(seed: string) {
-    child worker: Worker(seed: seed),
+    child worker: Worker(seed: seed);
 }
 
 supervisor Root(seed: string) {
-    child persistent: Branch(seed: seed),
-    child recoverable: Branch(seed: seed) restart: transient,
-    child short_lived: Branch(seed: seed) restart: temporary,
+    child persistent: Branch(seed: seed);
+    child recoverable: Branch(seed: seed) restart: transient;
+    child short_lived: Branch(seed: seed) restart: temporary;
 }
 
 fn main() {
     let root = spawn Root(seed: "owned child stopped".to_upper());
     let role = root.persistent;
     let worker = role.worker;
-    for _ in 0..2 {
+    for _ in 0 .. 2 {
         worker.put(42).expect("mutate current incarnation");
-        close(role);
-        let _ = await_restart root.persistent;
+        {
+            let __hew_migrated_actor_806 = role;
+            stop(__hew_migrated_actor_806);
+            stopped(__hew_migrated_actor_806);
+        };
+        let _ = {
+            let __hew_migrated_role_835 = root.persistent;
+            restarted(__hew_migrated_role_835);
+            __hew_migrated_role_835
+        };
         assert(worker.get().expect("role reaches replacement") == 0);
     }
     let retiring = root.recoverable;
-    close(retiring);
-    closed(retiring);
-    let _ = await_restart root.recoverable;
+    {
+        let __hew_migrated_actor_983 = retiring;
+        stop(__hew_migrated_actor_983);
+        stopped(__hew_migrated_actor_983);
+    };
+    stopped(retiring);
+    let _ = {
+        let __hew_migrated_role_1034 = root.recoverable;
+        restarted(__hew_migrated_role_1034);
+        __hew_migrated_role_1034
+    };
     assert(retiring.worker.get().is_err());
-    close(root.short_lived);
-    closed(root.short_lived);
-    let _ = await_restart root.short_lived;
+    {
+        let __hew_migrated_actor_1114 = root.short_lived;
+        stop(__hew_migrated_actor_1114);
+        stopped(__hew_migrated_actor_1114);
+    };
+    stopped(root.short_lived);
+    let _ = {
+        let __hew_migrated_role_1181 = root.short_lived;
+        restarted(__hew_migrated_role_1181);
+        __hew_migrated_role_1181
+    };
     assert(root.short_lived.worker.get().is_err());
     assert(worker.get().expect("permanent child stays live") == 0);
-    close(root);
-    closed(role);
+    {
+        let __hew_migrated_actor_1337 = root;
+        stop(__hew_migrated_actor_1337);
+        stopped(__hew_migrated_actor_1337);
+    };
+    stopped(role);
     assert(worker.get().is_err());
     println("nested role lifecycle observes one incarnation");
 }

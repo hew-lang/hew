@@ -1,10 +1,10 @@
 type Row {
-    text: string,
+    text: string;
 }
 
 enum Box {
-    Full(Row),
-    Empty,
+    Full(Row);
+    Empty;
 }
 
 fn main() {
@@ -13,7 +13,7 @@ fn main() {
         .Full(row) => {
             opt = Box.Empty;
             println(row.text);
-        },
-        .Empty => {},
+        }
+        .Empty => {}
     }
 }

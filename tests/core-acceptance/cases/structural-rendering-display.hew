@@ -1,6 +1,6 @@
 type Reading {
-    station: string,
-    temperature: i64,
+    station: string;
+    temperature: i64;
 }
 
 impl Display for Reading {
@@ -11,8 +11,8 @@ impl Display for Reading {
 }
 
 type Tagged<T> {
-    label: string,
-    value: T,
+    label: string;
+    value: T;
 }
 
 impl<T: Display> Display for Tagged<T> {
@@ -22,16 +22,16 @@ impl<T: Display> Display for Tagged<T> {
 }
 
 enum Observation {
-    Circle { radius: i64 },
-    Square(i64),
-    Sample { reading: Reading },
-    Missing,
+    Circle { radius: i64;  }
+    Square(i64);
+    Sample { reading: Reading;  }
+    Missing;
 }
 
 type Report {
-    current: Reading,
-    history: Vec<Option<Reading>>,
-    tagged: Tagged<i64>,
+    current: Reading;
+    history: Vec<Option<Reading>>;
+    tagged: Tagged<i64>;
 }
 
 fn show<T>(value: T) -> string {

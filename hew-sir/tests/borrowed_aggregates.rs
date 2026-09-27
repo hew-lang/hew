@@ -35,8 +35,13 @@ fn parent(module: &hew_sir::SemModule, loan: ValueId) -> ValueId {
     match base {
         hew_sir::PlaceBase::Value(value) => value,
         hew_sir::PlaceBase::Place(place) => {
-            let plan = hew_sir::place_plan(function, &module.aggregate_shapes, &module.type_facts)
-                .unwrap();
+            let plan = hew_sir::place_plan(
+                &module.defs,
+                function,
+                &module.aggregate_shapes,
+                &module.type_facts,
+            )
+            .unwrap();
             let hew_sir::OwnerRoot::Value(value) = plan.projection(place).unwrap().root else {
                 panic!("fixture must borrow an SSA owner")
             };
@@ -200,7 +205,13 @@ fn projected_owner_cannot_end_while_its_leaf_is_live() {
             _ => None,
         })
         .unwrap();
-    let plan = hew_sir::place_plan(function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = hew_sir::place_plan(
+        &module.defs,
+        function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     let hew_sir::OwnerRoot::Local(root) = plan.projection(place).unwrap().root else {
         panic!("source owner must have local storage")
     };
@@ -267,17 +278,29 @@ fn projected_loans_require_the_exact_root_type_and_ownership() {
 /// A local nested field loan depends directly on the root, with no intermediate loan.
 fn projected_borrow_module() -> hew_sir::SemModule {
     let module = fixture::lower_source(
-        r#"
-        type Inner { items: Vec<string>, }
-        type Outer { inner: Inner, sibling: string, }
-        fn main() -> i64 {
-            let outer = Outer { inner: Inner { items: ["first", "second"] }, sibling: "keep" };
-            outer.inner.items[0].len()
-        }
-    "#,
+        r#"type Inner {
+    items: Vec<string>;
+}
+
+type Outer {
+    inner: Inner;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    let outer = Outer { inner: Inner { items: ["first", "second"] }, sibling: "keep" };
+    outer.inner.items[0].len()
+}
+"#,
     );
     let main = &module.functions[0];
-    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = hew_sir::place_plan(
+        &module.defs,
+        main,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     let loans: Vec<_> = main
         .blocks
         .iter()

@@ -11,15 +11,14 @@ mod support;
 use support::leak_slope::{compile_to_native, run_under_malloc_scribble};
 use support::{describe_output, require_codegen};
 
-const SOURCE: &str = r#"
-actor Recipient {
+const SOURCE: &str = r#"actor Recipient {
     receive fn take(data: bytes) -> i64 {
         data.len() as i64
     }
 }
 
 actor Forwarder {
-    let recipient: Recipient,
+    let recipient: Recipient;
 
     receive fn forward(data: bytes, flag: bool) -> bytes {
         if flag {
@@ -32,7 +31,6 @@ actor Forwarder {
 fn main() -> i64 {
     let recipient = spawn Recipient;
     let forwarder = spawn Forwarder(recipient: recipient);
-
     let false_ok = match forwarder.forward("false-path".to_bytes(), false) {
         .Ok(data) => data == "false-path".to_bytes(),
         .Err(_) => false,
@@ -41,10 +39,15 @@ fn main() -> i64 {
         .Ok(data) => data == "true-path".to_bytes(),
         .Err(_) => false,
     };
-
-    close(forwarder);
-    close(recipient);
-    if false_ok && true_ok { 0 } else { 1 }
+    stop(forwarder);
+    stopped(forwarder);
+    stop(recipient);
+    stopped(recipient);
+    if false_ok && true_ok {
+        0
+    } else {
+        1
+    }
 }
 "#;
 

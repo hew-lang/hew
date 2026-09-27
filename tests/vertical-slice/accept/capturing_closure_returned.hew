@@ -5,7 +5,8 @@
 fn make_adder(base: i64) -> fn(i64) -> i64 {
     |n: i64| base + n
 }
+
 fn main() {
     let add5 = make_adder(5);
-    println(add5(3));  // 8
+    println(add5(3)); // 8
 }

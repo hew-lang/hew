@@ -2,15 +2,13 @@
 
 import std.random;
 
-import std.testing;
-
 #[test]
 fn test_choices_returns_an_index_for_valid_cumulative_weights() {
     var weights: Vec<f64> = Vec.new();
     weights.push(1.0);
     weights.push(3.0);
     let chosen = random.choices(weights, 3.0, 1);
-    testing.assert_true(chosen == 0 || chosen == 1);
+    assert(chosen == 0 || chosen == 1);
 }
 
 #[test]

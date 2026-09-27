@@ -53,10 +53,15 @@ fn fallible_receive_completion_carries_its_declared_failure() {
     assert_eq!(success, &crate::Ty::I64, "{call:?}");
     // `fails string` becomes the envelope's `Failed(string)`; the handler's own
     // `Result` never reaches the caller as a nested value.
-    let crate::Ty::Named { name, args, .. } = failure else {
+    let crate::Ty::Named {
+        head: name_head,
+        args,
+        ..
+    } = failure
+    else {
         panic!("completion error is not nominal: {failure:?}");
     };
-    assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
+    assert_eq!(name_head.spelling(), crate::KnownDecl::ActorError.path());
     assert_eq!(args[0], crate::Ty::String, "{failure:?}");
 }
 

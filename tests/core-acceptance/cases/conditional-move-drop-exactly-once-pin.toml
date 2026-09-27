@@ -1,0 +1,10 @@
+[[case]]
+id = "conditional-move-drop-exactly-once-pin"
+intent = "Conditionally-moved collection locals — leak-slope oracles plus poisoned-allocator exactly-once pins (#2418). Shape `exactly_once_pin` (conditional move shapes run clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/conditional-move-drop-exactly-once-pin.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "020134413213221029992122102999OK"
+exit = 0

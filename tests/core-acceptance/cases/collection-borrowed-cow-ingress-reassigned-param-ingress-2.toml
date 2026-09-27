@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-borrowed-cow-ingress-reassigned-param-ingress-2"
+intent = "Carrier-general collection-ingress exactly-once oracles: the borrowed `bytes` parameter, the REASSIGNED parameter generation, and the `VecIter` `string` yield binder. Shape `reassigned_param_ingress_high` (reassigned param ingress leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/collection-borrowed-cow-ingress-reassigned-param-ingress-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

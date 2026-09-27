@@ -4,7 +4,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net.dns;
 //!
 //! fn main() {
@@ -73,7 +73,7 @@ pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.dns;
 ///
 /// fn main() {

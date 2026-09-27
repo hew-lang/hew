@@ -11,14 +11,18 @@
 // element clone failed" before anything printed. The `direct=` line is the
 // control - the same body with an ordinary direct call in place of the
 // closure, which must produce the same number.
-type Holder { items: Vec<string> }
+type Holder {
+    items: Vec<string>;
+}
 
 fn read_len(x: Holder) -> i64 {
     x.items.len()
 }
 
 fn keep_via_closure(h: Holder) -> i64 {
-    let probe: fn(Holder) -> i64 = |x: Holder| -> i64 { x.items.len() };
+    let probe: fn(Holder) -> i64 = |x: Holder| -> i64 {
+        x.items.len()
+    };
     let seen = probe(h);
     var bag: Vec<Holder> = [];
     bag.push(h);

@@ -4,7 +4,7 @@ use super::*;
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_parser::{
     ast::Item,
-    module::{Module as SourceModule, ModuleGraph, ModuleId},
+    module::{Module as SourceModule, ModuleGraph, ModulePath},
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -38,8 +38,8 @@ fn resource_module(module_name: &str, source: &str, caller: &str) -> hew_sir::Se
         .parent()
         .unwrap()
         .join(source_path)];
-    let root = ModuleId::root();
-    let resource = ModuleId::new(module_name.split('.').map(str::to_string).collect());
+    let root = ModulePath::root();
+    let resource = ModulePath::new(module_name.split('.'));
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(SourceModule {
@@ -139,6 +139,8 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
         let engine = llvm
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .unwrap();
+        // MCJIT resolves the whole module, including the process-entry adapter.
+        // Map its runtime imports even though this oracle calls the body directly.
         for (symbol, address) in [
             ("selected_case", selected_case as *const () as usize),
             ("hew_process_run", create_owner as *const () as usize),
@@ -163,15 +165,24 @@ fn opaque_resource_c_abi_releases_once_on_return_close_and_fault_at_o0_o2() {
                 hew_runtime::fault::hew_fault_drop as *const () as usize,
             ),
             (
-                "hew_fault_report",
-                hew_runtime::fault::hew_fault_report as *const () as usize,
+                "hew_fault_set_site",
+                hew_runtime::fault::hew_fault_set_site as *const () as usize,
+            ),
+            (
+                "hew_fault_report_entry",
+                hew_runtime::fault::hew_fault_report_entry as *const () as usize,
             ),
             (
                 "hew_process_exit_byte",
                 hew_runtime::exit_status::hew_process_exit_byte as *const () as usize,
             ),
         ] {
-            engine.add_global_mapping(&llvm.get_function(symbol).unwrap(), address);
+            engine.add_global_mapping(
+                &llvm
+                    .get_function(symbol)
+                    .unwrap_or_else(|| panic!("missing runtime symbol {symbol}")),
+                address,
+            );
         }
         type MainBody =
             unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
@@ -254,7 +265,7 @@ fn opaque_resource_layouts_preserve_pointer_and_native_io_token_abis() {
             let ty = semantic
                 .resources
                 .keys()
-                .find(|ty| matches!(ty, ResolvedTy::Named { name, .. } if name == owner))
+                .find(|ty| matches!(ty, ResolvedTy::Named { head, .. } if head.spelling() == owner))
                 .unwrap();
             assert_eq!(target.layout(ty).unwrap().repr, repr, "{triple}: {owner}");
             let physical = hew_mir::lower_physical_module(semantic, target).unwrap();

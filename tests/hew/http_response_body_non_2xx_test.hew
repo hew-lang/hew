@@ -6,24 +6,21 @@
 //!
 //! One-process loopback round-trip, same shape as
 //! `http_server_client_roundtrip_test.hew`: the `Client` actor runs the
-//! blocking request on its own worker while the test thread accepts and
-//! responds with a 404 carrying a real body; mailbox ordering (`fetch`
-//! before the status/body asks) makes the readback race-free without a
-//! sleep.
+//! blocking request in a fork while the test thread accepts and responds
+//! with a 404 carrying a real body. The fork is joined before the status/body
+//! asks, so readback needs no sleep.
 
 import std.net.http.http_client;
 
 import std.net.http;
 
-import std.testing;
-
 actor Client {
-    let url: string,
-    var status: i64,
-    var body: string,
+    let url: string;
+    var status: i64;
+    var body: string;
 
     receive fn fetch(unused: i64) {
-        http_client.set_timeout(3000);
+        assert(http_client.set_timeout(3000).is_ok());
         let resp = http_client.get(url);
         status = resp.status();
         body = resp.body();
@@ -41,27 +38,29 @@ actor Client {
 
 /// A 404 response still round-trips its exact body bytes.
 #[test]
+#[real_time]
 fn test_non_2xx_response_body_round_trips() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
             let port = http.server_port(server);
             let client = spawn Client(url: f"http://127.0.0.1:{port}/missing", status: 0, body: "");
-            let _ = client.fetch(0);
+            let request = fork client.fetch(0);
             let req = server.accept();
             let _ = req.respond_text(404, "not found: the resource does not exist");
             req.close();
             server.close();
+            assert((await request).is_ok());
             match client.status_result() {
-                .Ok(status) => testing.assert_eq(status, 404),
-                .Err(_e) => testing.assert_true(false),
+                .Ok(status) => assert(status == 404),
+                .Err(_e) => assert(false),
             }
             match client.body_result() {
-                .Ok(body) => testing.assert_eq_str(body, "not found: the resource does not exist"),
-                .Err(_e) => testing.assert_true(false),
+                .Ok(body) => assert(body == "not found: the resource does not exist"),
+                .Err(_e) => assert(false),
             }
-        },
+        }
         .Err(_err) => {
-            testing.assert_true(false);
-        },
+            assert(false);
+        }
     }
 }

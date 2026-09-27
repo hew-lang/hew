@@ -12,8 +12,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected",
-        "proof_kind": "rejected-boundary"
+        "disposition": "accepted",
+        "proof_kind": "internal-transient"
       },
       "release_symbol": "hew_msg_envelope_release"
     },
@@ -198,7 +198,7 @@
       "resource": "TlsStream",
       "runtime": {
         "path": "hew-std/src/tls.rs",
-        "test": "close_reaps_a_live_blocked_reader_without_hanging",
+        "test": "close_reaps_an_attached_reader_without_hanging",
         "valid_handle": true,
         "execution_profile": "external-network"
       },
@@ -284,8 +284,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected",
-        "proof_kind": "rejected-boundary"
+        "disposition": "accepted",
+        "proof_kind": "internal-transient"
       },
       "release_symbol": "hew_stream_pair_free"
     }

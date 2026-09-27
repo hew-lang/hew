@@ -4,12 +4,13 @@ use hew_types::error::TypeErrorKind;
 #[test]
 fn dotted_type_members_share_canonical_dispatch() {
     let output = typecheck_isolated(
-        r#"
-machine Lifecycle {
-    events { Reset, }
-    state Start,
-    state Running { value: i64, },
-    on Reset: Running => .Start,
+        r#"machine Lifecycle {
+    events {
+        Reset;
+    }
+    state Start;
+    state Running { value: i64; }
+    on Reset: Running => .Start;
     default { state }
 }
 
@@ -68,12 +69,13 @@ fn main() {
 #[test]
 fn bare_type_without_member_remains_an_error() {
     let output = typecheck_isolated(
-        r"
-machine Lifecycle {
-    events { Reset, }
-    state Start,
-    state Running,
-    on Reset: Running => .Start,
+        r"machine Lifecycle {
+    events {
+        Reset;
+    }
+    state Start;
+    state Running;
+    on Reset: Running => .Start;
     default { state }
 }
 

@@ -7,6 +7,7 @@
 //! The handle is opaque to generated code and is not a public embedding API.
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::util::MutexExt;
@@ -17,6 +18,21 @@ use crate::internal::types::{ExitReason, HEW_TRAP_USER_PANIC};
 
 /// Private completion codes kept distinct from source panic and trap codes.
 pub const HEW_FAULT_CANCELLED: i32 = -1;
+
+/// Whether `code` is a cancellation that a requested shutdown caused. Such a
+/// cancellation is an expected stop, not a fault. The wasm32 driver has no
+/// shutdown sequence, so there it is always false.
+pub(crate) fn cancelled_by_shutdown(code: i32) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        code == HEW_FAULT_CANCELLED && crate::shutdown::hew_is_shutting_down() != 0
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = code;
+        false
+    }
+}
 pub const HEW_FAULT_DEADLINE: i32 = -2;
 /// Internal cancellation requested after another race child has completed.
 /// Only the owning race drain may suppress this completion diagnostic.
@@ -34,15 +50,38 @@ pub struct HewFault {
 struct FaultDiagnostic {
     code: i32,
     message: Option<Box<str>>,
+    assertion: Option<AssertionOperands>,
+    /// Root-source byte offset, when codegen can attribute the fault.
+    site: AtomicU32,
     reported: Mutex<bool>,
 }
 
+/// Rendered values from one failed comparison, retained with its fault.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct AssertionOperands {
+    pub operator: String,
+    pub left: String,
+    pub right: String,
+}
+
+const NO_SITE: u32 = u32::MAX;
+
 impl HewFault {
     fn new(code: i32, message: Option<Box<str>>) -> Self {
+        Self::new_with_assertion(code, message, None)
+    }
+
+    fn new_with_assertion(
+        code: i32,
+        message: Option<Box<str>>,
+        assertion: Option<AssertionOperands>,
+    ) -> Self {
         Self {
             primary: Arc::new(FaultDiagnostic {
                 code,
                 message,
+                assertion,
+                site: AtomicU32::new(NO_SITE),
                 reported: Mutex::new(false),
             }),
             secondary: Vec::new(),
@@ -191,6 +230,39 @@ pub unsafe extern "C" fn hew_fault_new_panic(message: *const HewString) -> *mut 
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
     Box::into_raw(Box::new(HewFault::new(HEW_TRAP_USER_PANIC, Some(message))))
+}
+
+/// Copy one assertion's human report and rendered comparison values into an
+/// owned fault. The four input strings remain caller-owned.
+///
+/// # Safety
+/// Every non-null pointer must reference a live managed string for this call.
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn hew_fault_new_assertion(
+    message: *const HewString,
+    operator: *const HewString,
+    left: *const HewString,
+    right: *const HewString,
+) -> *mut HewFault {
+    // SAFETY: the caller retains all four borrowed managed strings until return.
+    let (message, operator, left, right) = unsafe {
+        (
+            string_as_str(message),
+            string_as_str(operator),
+            string_as_str(left),
+            string_as_str(right),
+        )
+    };
+    Box::into_raw(Box::new(HewFault::new_with_assertion(
+        HEW_TRAP_USER_PANIC,
+        Some(message.into()),
+        Some(AssertionOperands {
+            operator: operator.to_owned(),
+            left: left.to_owned(),
+            right: right.to_owned(),
+        }),
+    )))
 }
 
 /// Copy a borrowed managed string into the fault a `fails` handler raises
@@ -363,6 +435,30 @@ pub unsafe extern "C" fn hew_fault_code(fault: *const HewFault) -> i32 {
     unsafe { fault.as_ref() }.map_or(0, HewFault::code)
 }
 
+/// Attach the source site that raised a newly created fault.
+///
+/// # Safety
+/// `fault` must be a live uniquely owned fault without concurrent readers.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_set_site(fault: *mut HewFault, offset: u32) {
+    // SAFETY: the caller retains a unique live owner for this operation.
+    if let Some(fault) = unsafe { fault.as_ref() } {
+        fault.primary.site.store(offset, Ordering::Relaxed);
+    }
+}
+
+fn note_test_fault(fault: &HewFault) {
+    let primary = fault.primary.as_ref();
+    let site = primary.site.load(Ordering::Relaxed);
+    crate::test_report::note_fault(
+        fault_reason(primary.code),
+        primary.code,
+        primary.message.as_deref(),
+        (site != NO_SITE).then_some(site),
+        primary.assertion.as_ref(),
+    );
+}
+
 /// Report each diagnostic to stderr once across all observers. Return 0 on
 /// success, 1 on I/O failure or an absent fault. Reporting does not consume
 /// the owner or remove any text available to scope recovery and host errors.
@@ -378,6 +474,22 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     };
     // Unlike eprintln!, an output error must not panic across this C boundary.
     i32::from(write_unreported(fault, &mut io::stderr().lock()).is_err())
+}
+
+/// Report the process entry's terminal fault, including its test record.
+/// Actor faults use [`hew_fault_report`] and cannot satisfy `#[should_panic]`
+/// merely because a test later exits non-zero with crash debt.
+///
+/// # Safety
+/// `fault` is a live borrow for this call, without concurrent release.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_report_entry(fault: *const HewFault) -> i32 {
+    // SAFETY: the caller retains a live immutable fault through this report.
+    if let Some(fault) = unsafe { fault.as_ref() } {
+        note_test_fault(fault);
+    }
+    // SAFETY: forwarded unchanged from the caller.
+    unsafe { hew_fault_report(fault) }
 }
 
 /// Raise a fault that generated drop glue has no owner to carry.
@@ -414,6 +526,9 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
     // SAFETY: the caller transfers one live, unique fault owner.
     let fault = unsafe { Box::from_raw(fault) };
     let code = fault.code();
+    if crate::actor::hew_actor_self().is_null() {
+        note_test_fault(&fault);
+    }
     let _ = write_report(&fault, &mut io::stderr().lock());
     drop(fault);
     // SAFETY: the bridge accepts any context; the typed line is already out.
@@ -428,6 +543,7 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 /// from this one formatter, so the text does not depend on which path failed.
 pub(crate) fn report_trap_code(code: i32) {
     let fault = HewFault::new(code, None);
+    note_test_fault(&fault);
     let _ = write_report(&fault, &mut io::stderr().lock());
 }
 

@@ -124,15 +124,16 @@ fn vec_index_rejects_unsigned_i32_index() {
 #[test]
 fn vec_index_admits_resource_element_as_an_interior_borrow() {
     let output = check_source(
-        r"
-        #[resource]
-        type Token { id: i64 }
+        r"#[resource]
+type Token {
+    id: i64;
+}
 
-        fn inspect(tokens: Vec<Token>) -> i64 {
-            let token = tokens[0];
-            token.id
-        }
-        ",
+fn inspect(tokens: Vec<Token>) -> i64 {
+    let token = tokens[0];
+    token.id
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -149,9 +150,8 @@ fn vec_index_still_rejects_either_pipe_half() {
     ] {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let half = Ty::Named {
-            name: name.to_string(),
             args: vec![Ty::I64],
-            builtin: Some(builtin),
+            head: crate::TypeHead::Builtin(builtin),
         };
         assert!(!checker.validate_vec_index_borrow_surface(&half, &Span::from(0..0)));
         assert!(
@@ -215,8 +215,10 @@ fn generic_swap_return_type_typechecks_without_false_mismatch() {
     // Before fix: "type mismatch: expected `B`, found `A`" on `p.first` (the
     // `second` field of the return, which expects type A after swapping).
     let output = check_source(
-        r"
-type Pair<A, B> { first: A, second: B, }
+        r"type Pair<A, B> {
+    first: A;
+    second: B;
+}
 
 fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
     Pair<B, A> { first: p.second, second: p.first }
@@ -241,8 +243,10 @@ fn generic_swap_heterogeneous_params_typechecks() {
     // clearly: before the fix the second field got expected type `A` instead of
     // `i64`, and the checker emitted "expected `A`, found `i64`".
     let output = check_source(
-        r"
-type Pair<A, B> { first: A, second: B, }
+        r"type Pair<A, B> {
+    first: A;
+    second: B;
+}
 
 fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
     Pair<B, A> { first: p.second, second: p.first }
@@ -266,10 +270,14 @@ fn generic_identity_pair_homogeneous_still_typechecks() {
     // Confirm that the non-swapping (homogeneous) case was not broken by the
     // parallel-substitution change.
     let output = check_source(
-        r"
-type Pair<A, B> { first: A, second: B, }
+        r"type Pair<A, B> {
+    first: A;
+    second: B;
+}
 
-fn fst<A, B>(p: Pair<A, B>) -> A { p.first }
+fn fst<A, B>(p: Pair<A, B>) -> A {
+    p.first
+}
 
 fn main() {
     let p = Pair { first: 10, second: 3 };
@@ -302,8 +310,10 @@ fn generic_field_access_on_swapped_instantiation_typechecks() {
     // Field `first: A` in `Pair<A, B>`, instantiated with args [B, A]:
     // sequential A→B then B→A gives A again; parallel gives B.
     let output = check_source(
-        r"
-type Pair<A, B> { first: A, second: B, }
+        r"type Pair<A, B> {
+    first: A;
+    second: B;
+}
 
 fn get_first_of_swapped<A, B>(p: Pair<B, A>) -> B {
     p.first
@@ -325,8 +335,10 @@ fn generic_field_access_second_on_swapped_instantiation_typechecks() {
     // in the single-param substitution — but the combined swap test below
     // exercises both fields in the same function to catch any residual alias.
     let output = check_source(
-        r"
-type Pair<A, B> { first: A, second: B, }
+        r"type Pair<A, B> {
+    first: A;
+    second: B;
+}
 
 fn get_second_of_swapped<A, B>(p: Pair<B, A>) -> A {
     p.second

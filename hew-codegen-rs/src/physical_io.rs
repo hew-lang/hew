@@ -231,6 +231,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     (self.ctx.i32_type().const_zero(), pending),
                     (self.ctx.i32_type().const_int(1, false), completed),
                     (self.ctx.i32_type().const_int(2, false), completed),
+                    // `AsyncIoStatus::Cancelled` (3): shutdown's `async_io::cancel_all`
+                    // wakes the waiter by transitioning the operation state directly,
+                    // without ever touching this frame's own cancellation flag (the
+                    // check above). A parked accept woken this way must still take the
+                    // cancel edge instead of falling through to the fail-closed abort.
+                    (self.ctx.i32_type().const_int(3, false), cancelled),
                 ],
             )
             .llvm_ctx("select I/O readiness")?;

@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-trait-return"
+intent = "Exact-ownership oracles for a heap-boxed trait object returned by value. Shape `dyn_trait_return_high` (returned dyn has flat leak slope, returned dyn is live and freed once under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/dyn-trait-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "OK"
+exit = 0

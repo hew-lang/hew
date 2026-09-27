@@ -1,0 +1,35 @@
+# suite	platforms	id	expect	issue	reason
+#
+# The one expected-failure ledger for every ratcheted suite (nextest,
+# core-acceptance, hew-suite, corpus). One row per (suite, id); sorted
+# globally by (suite, id); no section headers, no wildcard platform on
+# core-acceptance rows (there are none here yet). `xtask ratchet check`
+# refuses an unlisted failure, an id that no longer exists in its suite,
+# and a row whose expect kind no longer matches. A row whose test now
+# passes is reported for cleanup, never a blocking failure (D555
+# amendment) — delete the row by hand once it recovers.
+
+corpus	*	docs/repros/final-core/own-generic-identity-transfer.hew	compile	#3598	tracked corpus refusal; see linked issue
+corpus	*	examples/v05/pipe_vec_element_fails.hew	compile	#3590	tracked corpus refusal; see linked issue
+corpus	*	examples/v05/vec_unsupported_method_fails.hew	compile	#3591	tracked corpus refusal; see linked issue
+corpus	*	hew-cli/tests/fixtures/main_entry_exit/non_error.hew	compile	#3592	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_async_await.hew	diagnostic:E_NO_ASYNC_FN	#3593	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew	compile	#3594	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_index_trait.hew	compile	#3595	tracked corpus refusal; see linked issue
+corpus	*	hew-lsp/tests/fixtures/v05_machine_methods.hew	compile	#3596	tracked corpus refusal; see linked issue
+corpus	*	hew-observe/test-harness/observe_workload.hew	compile	#3597	tracked corpus refusal; see linked issue
+corpus	*	repros/03_hashmap_string_vec_value.hew	compile	#3599	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/bytes_clone.hew	compile	#3602	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/cap_move.hew	compile	#3603	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/closure_mut_share.hew	compile	#3604	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/cond_init.hew	diagnostic:E_SIR_UNSUPPORTED	#3605	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/lambda_send_twice.hew	diagnostic:E_RESULT_DROPPED	#3606	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/let_field_mut.hew	compile	#3607	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/res_param_consume.hew	compile	#3608	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/resource_early_close.hew	compile	#3609	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/resource_send2.hew	compile	#3610	tracked corpus refusal; see linked issue
+corpus	*	repros/ladder/state_reinit.hew	diagnostic:E_SIR_UNSUPPORTED	#3611	tracked corpus refusal; see linked issue
+corpus	*	repros/p0a_hashmap_string_vec_value.hew	compile	#3600	tracked corpus refusal; see linked issue
+corpus	*	repros/p0c_method_value_failclosed.hew	compile	#3601	tracked corpus refusal; see linked issue
+corpus	*	tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew	compile	#3612	tracked corpus refusal; see linked issue
+corpus	*	tools/downstream/syntax-fixtures/syntax_test.hew	compile	#3614	tracked corpus refusal; see linked issue

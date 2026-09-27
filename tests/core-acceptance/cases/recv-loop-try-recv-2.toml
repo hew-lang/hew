@@ -1,0 +1,10 @@
+[[case]]
+id = "recv-loop-try-recv-2"
+intent = "Per-iteration recv-result drop on the loop back-edge. Shape `try_recv_high` (try recv string loop no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/recv-loop-try-recv-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "f0\nf1\nf2\nf3\nf4\nf5\nf6\nf7\nf8\nf9\nf10\nf11\nf12\nf13\nf14\nf15\nf16\nf17\nf18\nf19\nf20\nf21\nf22\nf23\nf24\nf25\nf26\nf27\nf28\nf29\nf30\nf31\nf32\nf33\nf34\nf35\nf36\nf37\nf38\nf39\nf40\nf41\nf42\nf43\nf44\nf45\nf46\nf47\nf48\nf49\n"
+exit = 0

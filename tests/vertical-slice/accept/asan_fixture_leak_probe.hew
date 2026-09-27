@@ -17,11 +17,9 @@
 // as the historical array-repeat shapes: the process exits cleanly but LSan
 // reports the unreachable malloc'd block at process termination).
 //
-// This file is intentionally leaky.  It must NOT be run in the normal vertical-
-// slice accept harness.  It is only compiled and run by
-// `scripts/asan-fixture-check.sh` under ASAN_OPTIONS=detect_leaks=1, where a
-// non-zero exit / LeakSanitizer report is the expected (pass) outcome for the
-// gate.
+// This file is intentionally leaky, so it stays out of the core-acceptance
+// `safety` suite: under ASan/LSan its LeakSanitizer report is the expected
+// outcome, which makes it the manual negative control for that suite.
 extern "C" {
     fn malloc(size: i64) -> i64;
 }

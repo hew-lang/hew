@@ -152,16 +152,21 @@ fn any_expr(output: &hew_hir::LowerOutput, mut pred: impl FnMut(&HirExpr) -> boo
 /// doesn't, the dispatch refuses to fabricate a symbol.
 #[test]
 fn fstring_dispatches_through_lang_item_registry() {
-    let source = r#"
-        type Point { x: i64 }
-        impl Display for Point {
-            fn fmt(p: Point) -> string { "P" }
-        }
-        fn main() {
-            let p = Point { x: 7 };
-            let s: string = f"got {p}";
-        }
-    "#;
+    let source = r#"type Point {
+    x: i64;
+}
+
+impl Display for Point {
+    fn fmt(p: Point) -> string {
+        "P"
+    }
+}
+
+fn main() {
+    let p = Point { x: 7 };
+    let s: string = f"got {p}";
+}
+"#;
     let output = lower_checked(source);
     assert!(
         output.diagnostics.is_empty(),
@@ -302,7 +307,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
     // from running.  We invoke `lower_program` directly with a hand-built
     // tc_output that has the Display lang-item plus the interpolant's
     // expr_types entry set to `Named("Widget")`.
-    let source = "type Widget { x: i64 } fn main(w: Widget) { let s: string = f\"got {w}\"; }";
+    let source = "type Widget {\n    x: i64;\n}\n\nfn main(w: Widget) {\n    let s: string = f\"got {w}\";\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
 
@@ -329,13 +334,18 @@ fn fstring_named_type_without_impl_is_fail_closed() {
     // CheckerBoundaryViolation in display dispatch substitution.
     let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     tc.lang_items = hew_types::LangItemRegistry::default();
+    let defs = std::sync::Arc::make_mut(&mut tc.defs);
+    // Rows no declaration can claim: the poisoned binding names nothing the
+    // checker or the embedded builtin check declared.
+    let trait_id = defs.mint_for_test("#poison.Display");
+    let method_id = defs.mint_for_test("#poison.Display::fmt");
     tc.lang_items.insert(
         hew_types::LANG_ITEM_DISPLAY_FMT,
         hew_types::LangItemBinding {
             trait_name: "Display".to_string(),
-            trait_id: hew_types::DefId::for_test("Display"),
+            trait_id,
             method_name: Some("fmt".to_string()),
-            method_id: Some(hew_types::DefId::for_test("Display::fmt")),
+            method_id: Some(method_id),
         },
     );
     tc.insert_expr_type(
@@ -344,11 +354,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
             end: interp_span.end,
             module_idx: 0,
         },
-        Ty::Named {
-            builtin: None,
-            name: "Widget".to_string(),
-            args: vec![],
-        },
+        Ty::named_for_test("Widget", vec![]),
     );
 
     let lower_output = lower_program(
@@ -497,8 +503,7 @@ fn direct_display_surface_narrow_primitives_lower() {
 /// performs — instead of failing closed with `UnresolvedBuiltinOverload`.
 #[test]
 fn direct_display_surface_named_type_routes_to_impl() {
-    let prelude = "type Point { x: i64 } \
-                   impl Display for Point { fn fmt(p: Point) -> string { \"P\" } }";
+    let prelude = "type Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(p: Point) -> string {\n        \"P\"\n    }\n}\n";
     let surfaces = [
         ("println(p);", "println_str"),
         ("print(p);", "print_str"),

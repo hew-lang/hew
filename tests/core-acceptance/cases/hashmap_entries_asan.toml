@@ -2,7 +2,7 @@
 id = "hashmap_entries_asan"
 intent = "ASan/LSan oracle for HashMap.entries() tuple clone/drop ownership."
 source = "../vertical-slice/accept/hashmap_entries_asan.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

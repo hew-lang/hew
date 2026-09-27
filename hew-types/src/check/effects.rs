@@ -146,6 +146,11 @@ pub(super) struct EffectGraph {
     /// The construct or call that first made each body suspend.
     witnesses: HashMap<EffectBody, String>,
     calls: HashMap<SpanKey, Invocation>,
+    /// Every authored call the body checker visited, including unresolved
+    /// calls. Imported-body eligibility refuses a body missing a selected
+    /// target instead of inferring one from the callee spelling.
+    seen_calls: HashMap<SpanKey, Option<EffectBody>>,
+    construct_calls: HashSet<SpanKey>,
     submission_effects: HashMap<SpanKey, bool>,
     bindings: HashMap<TypeBindingId, CallableOrigin>,
     fork_transfers: Vec<PendingForkTransfer>,
@@ -187,7 +192,7 @@ impl Checker {
                         object: receiver.clone(),
                         field: method.clone(),
                     };
-                    if let Some(ty) = self.record_fn_field_type(receiver, method) {
+                    if let Some(ty) = self.record_fn_field_type(receiver, method.0.name.as_str()) {
                         self.check_fork_transfer(&field, &branch.1, &ty);
                     }
                 } else if !matches!(
@@ -291,7 +296,6 @@ impl Checker {
     ) -> Option<EffectBody> {
         let body = self
             .lookup_declaration(qualified_name)
-            .cloned()
             .map(EffectBody::Declaration);
         if let Some(body) = &body {
             self.effect_graph.bodies.entry(body.clone()).or_default();
@@ -354,9 +358,10 @@ impl Checker {
             .get(&SpanKey::in_module(&callee.1, self.current_module_idx))
             .cloned()
             .or_else(|| match &callee.0 {
-                Expr::Identifier(name) => {
-                    self.env.lookup_ref(name).map(|binding| binding.ty.clone())
-                }
+                Expr::Ident(name) => self
+                    .env
+                    .lookup_ref(name.name.as_str())
+                    .map(|binding| binding.ty.clone()),
                 _ => None,
             })
     }
@@ -366,10 +371,11 @@ impl Checker {
         let receiver_ty = self
             .expr_types
             .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))?;
-        let Ty::Named { name, args, .. } = self.subst.resolve(receiver_ty) else {
+        let Ty::Named { head, args } = self.subst.resolve(receiver_ty) else {
             return None;
         };
-        let definition = self.lookup_type_def(&name)?;
+        let name = head.registry_key();
+        let definition = self.lookup_type_def(name)?;
         Some(Self::instantiate_type_def_member(
             definition.fields.get(field)?,
             &definition.type_params,
@@ -386,7 +392,7 @@ impl Checker {
                 })
         };
         match expr {
-            Expr::Identifier(name) => match self.env.lookup_ref(name) {
+            Expr::Ident(name) => match self.env.lookup_ref(name.name.as_str()) {
                 Some(binding) if self.effect_graph.bindings.contains_key(&binding.id) => {
                     CallableOrigin::Binding {
                         binding: binding.id,
@@ -416,7 +422,7 @@ impl Checker {
                     .iter()
                     .map(|(name, value)| {
                         (
-                            name.clone(),
+                            name.to_string(),
                             self.expression_callable_origin(&value.0, &value.1),
                         )
                     })
@@ -424,7 +430,7 @@ impl Checker {
             ),
             Expr::FieldAccess { object, field } => self
                 .expression_callable_origin(&object.0, &object.1)
-                .project(field),
+                .project(field.0.name.as_str()),
             _ => typed(span),
         }
     }
@@ -457,7 +463,7 @@ impl Checker {
             } => {
                 let Some((binding, ty)) = self
                     .env
-                    .lookup_ref(name)
+                    .lookup_ref(name.name.as_str())
                     .map(|binding| (binding.id, binding.ty.clone()))
                 else {
                     return;
@@ -530,6 +536,11 @@ impl Checker {
 
     pub(super) fn record_expression_effect(&mut self, expr: &Expr, span: &Span) {
         let key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
+            self.effect_graph
+                .seen_calls
+                .insert(key.clone(), self.effect_graph.current_body.clone());
+        }
         let checked_invocation = self.direct_call_targets.contains_key(&key)
             || self.resolved_calls.contains_key(&key)
             || self.method_call_rewrites.contains_key(&key)
@@ -541,8 +552,8 @@ impl Checker {
                 Expr::Call { function, .. } => (
                     self.callee_value_type(function),
                     match &function.0 {
-                        Expr::Identifier(name) => name.clone(),
-                        Expr::FieldAccess { field, .. } => field.clone(),
+                        Expr::Ident(name) => name.to_string(),
+                        Expr::FieldAccess { field, .. } => field.0.to_string(),
                         _ => "callee".to_string(),
                     },
                 ),
@@ -561,16 +572,16 @@ impl Checker {
                             })
                         }
                         Some(MethodCallRewrite::RecordFnFieldCall { .. }) => {
-                            self.record_fn_field_type(receiver, method)
+                            self.record_fn_field_type(receiver, method.0.name.as_str())
                         }
                         _ if self.direct_call_targets.get(&key)
                             == Some(&CallTarget::IndirectFunctionValue) =>
                         {
-                            self.record_fn_field_type(receiver, method)
+                            self.record_fn_field_type(receiver, method.0.name.as_str())
                         }
                         _ => None,
                     };
-                    (callee, method.clone())
+                    (callee, method.0.to_string())
                 }
                 _ => (None, "send".to_string()),
             };
@@ -586,6 +597,15 @@ impl Checker {
             );
         }
         self.record_intrinsic_suspension(expr);
+    }
+
+    /// A checked variant constructor is a call-form expression with no
+    /// executable callee. Mark it at the selection site so body eligibility
+    /// does not mistake it for an unresolved function call.
+    pub(super) fn record_construct_call(&mut self, span: &Span) {
+        self.effect_graph
+            .construct_calls
+            .insert(SpanKey::in_module(span, self.current_module_idx));
     }
 
     /// Task joins and structured child teardown suspend independently of the
@@ -627,6 +647,46 @@ impl Checker {
             })
     }
 
+    /// Direct calls made by checked impl bodies, grouped by the body's exact
+    /// declaration. An unresolved or indirect edge has no declaration to
+    /// propagate; its own HIR lowering still verifies the checked call fact.
+    pub(super) fn checked_impl_body_callees(&self) -> HashMap<crate::DefId, Vec<crate::DefId>> {
+        let mut result: HashMap<crate::DefId, Vec<crate::DefId>> = HashMap::new();
+        for body in self.effect_graph.bodies.keys() {
+            if let EffectBody::Declaration(id) = body {
+                if self.defs.kind(*id) == crate::DeclarationKind::ImplMethod {
+                    result.entry(*id).or_default();
+                }
+            }
+        }
+        for (key, owner) in &self.effect_graph.seen_calls {
+            if self.effect_graph.calls.contains_key(key)
+                || self.effect_graph.construct_calls.contains(key)
+            {
+                continue;
+            }
+            if let Some(EffectBody::Declaration(declaration)) = owner {
+                result.remove(declaration);
+            }
+        }
+        for (key, invocation) in &self.effect_graph.calls {
+            let Some(EffectBody::Declaration(owner)) = invocation.owner.as_ref() else {
+                continue;
+            };
+            let Some(callees) = result.get_mut(owner) else {
+                continue;
+            };
+            if let Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) = self.call_target(key) {
+                callees.push(*id);
+            }
+        }
+        for callees in result.values_mut() {
+            callees.sort_unstable();
+            callees.dedup();
+        }
+        result
+    }
+
     fn callee_suspends(&self, invocation: &Invocation, bodies: &HashMap<EffectBody, bool>) -> bool {
         match invocation.callee.as_ref().map(|ty| self.subst.resolve(ty)) {
             Some(Ty::Function { capabilities, .. }) => capabilities.suspends,
@@ -653,7 +713,7 @@ impl Checker {
                 | CallTarget::ImplMethod(id)
                 | CallTarget::StaticTraitMethod { method: id, .. },
             ) => bodies
-                .get(&EffectBody::Declaration(id.clone()))
+                .get(&EffectBody::Declaration(*id))
                 .copied()
                 .unwrap_or(true),
             Some(CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. }) => {
@@ -820,7 +880,7 @@ impl Checker {
                 continue;
             }
             let subject = match &obligation.body {
-                EffectBody::Declaration(id) => format!("function `{}`", id.display_name()),
+                EffectBody::Declaration(id) => format!("function `{}`", self.defs.display(*id)),
                 _ => "closure".to_string(),
             };
             let witness = witnesses

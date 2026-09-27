@@ -5,6 +5,7 @@
 ///   • `spawn Foo<i64>()` — turbofish parsed onto `Expr::Spawn.type_args`
 ///   • `spawn Foo<T, U>(x: val)` — multiple type args with init args
 ///   • Non-generic `spawn Foo()` — `type_args` is empty, no regression
+use hew_parser::ast::Ident;
 use hew_parser::ast::{Expr, Item, Stmt, TypeExpr};
 
 // ── parser_spawn_with_type_args_parses_correctly ─────────────────────────────
@@ -35,12 +36,12 @@ fn main() {
 
     for (item, _) in &result.program.items {
         match item {
-            Item::Actor(ad) if ad.name == "Worker" => {
+            Item::Actor(ad) if ad.name == Ident::new("Worker") => {
                 assert_eq!(ad.type_params.len(), 1, "expected 1 type param on Worker");
-                assert_eq!(ad.type_params[0].name, "T");
+                assert_eq!(ad.type_params[0].name, Ident::new("T"));
                 found_actor_type_param = true;
             }
-            Item::Function(f) if f.name == "main" => {
+            Item::Function(f) if f.name == Ident::new("main") => {
                 for (stmt, _) in &f.body.stmts {
                     if let Stmt::Let {
                         value:
@@ -53,16 +54,16 @@ fn main() {
                         ..
                     } = stmt
                     {
-                        if let Expr::Identifier(name) = &target.0 {
-                            if name == "Worker" {
+                        if let Expr::Ident(name) = &target.0 {
+                            if name.name.as_str() == "Worker" {
                                 assert_eq!(
                                     type_args.len(),
                                     1,
                                     "expected 1 type arg on spawn Worker<i64>()"
                                 );
                                 // The type arg should be a Named TypeExpr for `i64`.
-                                if let (TypeExpr::Named { name: ty_name, .. }, _) = &type_args[0] {
-                                    assert_eq!(ty_name, "i64");
+                                if let (TypeExpr::Named { path, .. }, _) = &type_args[0] {
+                                    assert_eq!(path.to_string(), "i64");
                                 } else {
                                     panic!("expected Named type arg, got {:?}", type_args[0]);
                                 }
@@ -101,7 +102,7 @@ fn main() {
 
     for (item, _) in &result.program.items {
         if let Item::Function(f) = item {
-            if f.name == "main" {
+            if f.name == Ident::new("main") {
                 for (stmt, _) in &f.body.stmts {
                     if let Stmt::Let {
                         value: Some((Expr::Spawn { type_args, .. }, _)),
@@ -137,7 +138,7 @@ fn main() {
     let mut found = false;
     for (item, _) in &result.program.items {
         if let Item::Function(f) = item {
-            if f.name == "main" {
+            if f.name == Ident::new("main") {
                 for (stmt, _) in &f.body.stmts {
                     if let Stmt::Let {
                         value:
@@ -174,12 +175,12 @@ actor Buffer<T: Send> {
 
     for (item, _) in &result.program.items {
         if let Item::Actor(ad) = item {
-            if ad.name == "Buffer" {
+            if ad.name == Ident::new("Buffer") {
                 assert_eq!(ad.type_params.len(), 1);
                 let tp = &ad.type_params[0];
-                assert_eq!(tp.name, "T");
+                assert_eq!(tp.name, Ident::new("T"));
                 assert_eq!(tp.bounds.len(), 1);
-                assert_eq!(tp.bounds[0].name, "Send");
+                assert_eq!(tp.bounds[0].path.to_string(), "Send");
                 return;
             }
         }
@@ -222,13 +223,13 @@ actor Buffer<T: Send> {
     let mut found = false;
     for (item, _) in &reparsed.program.items {
         if let Item::Actor(ad) = item {
-            if ad.name == "Buffer" {
+            if ad.name == Ident::new("Buffer") {
                 assert_eq!(
                     ad.type_params.len(),
                     1,
                     "type_params dropped after formatter round-trip"
                 );
-                assert_eq!(ad.type_params[0].name, "T");
+                assert_eq!(ad.type_params[0].name, Ident::new("T"));
                 found = true;
             }
         }

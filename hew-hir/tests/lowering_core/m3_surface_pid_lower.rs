@@ -113,20 +113,21 @@ fn spawn_expr_type_is_the_actor_handle() {
     // `Counter` actor handle (D489: an actor is the type of its handle).
     // This ensures that the checker's discriminator survives into the
     // type-check output that HIR lowering consumes.
-    let source = r"
-        actor Counter {
-            let n: i32,
-            init() {}
-        }
-        fn main() {
-            let c = spawn Counter(n: 0);
-        }
-    ";
+    let source = r"actor Counter {
+    let n: i32;
+    init() {}
+}
+
+fn main() {
+    let c = spawn Counter(n: 0);
+}
+";
     let (tc, _lower) = lower_with_types(source);
-    let has_counter_handle = tc
-        .expr_types
-        .values()
-        .any(|ty| ty.actor_handle_identity() == Some(("Counter", &[][..])));
+    let has_counter_handle = tc.expr_types.values().any(|ty| {
+        ty.actor_handle_identity()
+            .map(|(head, args)| (head.spelling.as_str(), args))
+            == Some(("Counter", &[][..]))
+    });
     assert!(
         has_counter_handle,
         "expr_types should contain at least one Counter actor-handle entry"
@@ -134,17 +135,16 @@ fn spawn_expr_type_is_the_actor_handle() {
     // The spawn-return type is the actor's own name with the `ActorHandle`
     // builtin discriminator; no stray `ActorRef`-named handle exists anywhere
     // in the type table (the family is the actor handle / `RemotePid`).
-    let has_stray_actor_ref = tc
-        .expr_types
-        .values()
-        .any(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"));
+    let has_stray_actor_ref = tc.expr_types.values().any(
+        |ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "ActorRef"),
+    );
     assert!(
         !has_stray_actor_ref,
         "spawn must produce the actor's own handle type; no `ActorRef`-named \
          handle should appear: {:#?}",
         tc.expr_types
             .values()
-            .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"))
+            .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "ActorRef"))
             .collect::<Vec<_>>()
     );
 }
@@ -156,14 +156,14 @@ fn hir_lower_actor_no_diagnostics() {
     // A simple actor declaration (no spawn expression in main) should lower
     // without diagnostics. This verifies that the actor-handle rename (D489)
     // in the checker doesn't break actor declaration lowering.
-    let source = r"
-        actor Bot {
-            let x: i32,
-            init() {}
-            receive fn handle(msg: i32) {}
-        }
-        fn main() {}
-    ";
+    let source = r"actor Bot {
+    let x: i32;
+    init() {}
+    receive fn handle(msg: i32) {}
+}
+
+fn main() {}
+";
     let (_tc, lower) = lower_with_types(source);
     assert!(
         lower.diagnostics.is_empty(),
@@ -176,16 +176,15 @@ fn hir_lower_actor_no_diagnostics() {
 
 #[test]
 fn hir_module_has_main() {
-    let source = r"
-        actor Foo {
-            let v: i32,
-            init() {}
-        }
+    let source = r"actor Foo {
+    let v: i32;
+    init() {}
+}
 
-        fn main() {
-            let _f = spawn Foo(v: 0);
-        }
-    ";
+fn main() {
+    let _f = spawn Foo(v: 0);
+}
+";
     let (_tc, lower) = lower_with_types(source);
     let has_main = lower.module.items.iter().any(|item| match item {
         HirItem::Function(f) => f.name == "main",
@@ -196,28 +195,29 @@ fn hir_module_has_main() {
 
 #[test]
 fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
-    let source = r"
-        #[wire]
-        type Job {
-            n: i32 @1,
-        }
+    let source = r"#[wire]
+type Job {
+    n: i32 @1;
+}
 
-        actor Worker {
-            let id: i32,
-            init() {}
-            receive fn run(job: Job) -> i64 { 21 }
-        }
+actor Worker {
+    let id: i32;
+    init() {}
+    receive fn run(job: Job) -> i64 {
+        21
+    }
+}
 
-        impl ActorMsg for Worker {
-            type Msg = Job;
-            type Reply = i64;
-        }
+impl ActorMsg for Worker {
+    type Msg = Job;
+    type Reply = i64;
+}
 
-        fn main() {
-            let remote: RemotePid<Worker>;
-            let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
-        }
-    ";
+fn main() {
+    let remote: RemotePid<Worker>;
+    let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
+}
+";
     let (_tc, lower) = lower_with_types(source);
     assert!(
         lower.diagnostics.is_empty(),
@@ -243,8 +243,8 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
                 layout.key.type_args.as_slice(),
                 [
                     hew_types::ResolvedTy::I64,
-                    hew_types::ResolvedTy::Named { name, .. }
-                ] if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE
+                    hew_types::ResolvedTy::Named { head: name_head, .. }
+                ] if name_head.spelling() == hew_types::KnownDecl::ActorError.path()
             )
     });
     assert!(
@@ -256,19 +256,29 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
 
 #[test]
 fn remote_pid_lookup_annotation_keeps_builtin_discriminator() {
-    let source = r#"
-        actor Echo { receive fn handle(request: i64) -> i64 { request } }
-        impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
-        actor Client {
-            receive fn go(unused: i64) {
-                let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
-                match found {
-                    .Ok(peer) => { let reply = peer.ask(7, 1000); },
-                    .Err(_) => {},
-                }
+    let source = r#"actor Echo {
+    receive fn handle(request: i64) -> i64 {
+        request
+    }
+}
+
+impl ActorMsg for Echo {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+actor Client {
+    receive fn go(unused: i64) {
+        let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
+        match found {
+            .Ok(peer) => {
+                let reply = peer.ask(7, 1000);
             }
+            .Err(_) => {}
         }
-    "#;
+    }
+}
+"#;
     let (_tc, lower) = lower_with_types(source);
     assert!(
         lower.diagnostics.is_empty(),
@@ -279,20 +289,29 @@ fn remote_pid_lookup_annotation_keeps_builtin_discriminator() {
 
 #[test]
 fn dotted_generic_node_lookup_carries_checker_executable_target() {
-    let source = r#"
-        actor Echo { receive fn handle(request: i64) -> i64 { request } }
-        impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
-        actor Client {
-            receive fn go(unused: i64) {
-                let found: Result<RemotePid<Echo>, LookupError> =
-                    Node.lookup<Echo>("echo");
-                match found {
-                    .Ok(peer) => { let reply = peer.ask(7, 1000); },
-                    .Err(_) => {},
-                }
+    let source = r#"actor Echo {
+    receive fn handle(request: i64) -> i64 {
+        request
+    }
+}
+
+impl ActorMsg for Echo {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+actor Client {
+    receive fn go(unused: i64) {
+        let found: Result<RemotePid<Echo>, LookupError> = Node.lookup<Echo>("echo");
+        match found {
+            .Ok(peer) => {
+                let reply = peer.ask(7, 1000);
             }
+            .Err(_) => {}
         }
-    "#;
+    }
+}
+"#;
     let (_tc, lower) = lower_with_types(source);
     assert!(
         lower.diagnostics.is_empty(),

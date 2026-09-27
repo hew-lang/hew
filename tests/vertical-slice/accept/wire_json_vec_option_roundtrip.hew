@@ -3,8 +3,8 @@
 // recovered vector elements (10 + 20 + 12 = 42) select the exit code.
 #[wire]
 type Bag {
-    items: Vec<i64> @1,
-    label: Option<string> @2,
+    items: Vec<i64> @1;
+    label: Option<string> @2;
 }
 
 fn main() -> i64 {
@@ -16,10 +16,18 @@ fn main() -> i64 {
     let j = bag.to_json();
     match Bag.from_json(j) {
         .Ok(b) => {
-            if b.items.len() != 3 { return 1; }
+            if b.items.len() != 3 {
+                return 1;
+            }
             match b.label {
-                .Some(t) => { if t != "tag" { return 2; } }
-                .None => { return 3; }
+                .Some(t) => {
+                    if t != "tag" {
+                        return 2;
+                    }
+                }
+                .None => {
+                    return 3;
+                }
             }
             b.items[0] + b.items[1] + b.items[2]
         }

@@ -25,7 +25,7 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::ptr;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hew_runtime::actor::{hew_actor_free, hew_actor_spawn_opts, HewActorOpts};
 use hew_runtime::read_slot::{
@@ -68,17 +68,10 @@ fn loopback_pair() -> (i32, TcpStream) {
     (server_conn, client)
 }
 
-fn poll_status_until(slot: *mut hew_runtime::read_slot::HewReadSlot, want: ReadStatus, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let status = unsafe { hew_read_slot_status(slot) };
-        if status == want as i32 {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{what}: slot status did not reach {want:?} within 3s (last = {status})"
-        );
+/// Poll until the slot reaches `want`; the test runner's timeout is the hang
+/// guard for a status that never arrives.
+fn poll_status_until(slot: *mut hew_runtime::read_slot::HewReadSlot, want: ReadStatus) {
+    while unsafe { hew_read_slot_status(slot) } != want as i32 {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -121,7 +114,7 @@ fn scenario_reactor_deposits_read_bytes_worker_free() {
         .expect("client write");
     client.flush().ok();
 
-    poll_status_until(slot, ReadStatus::Data, "read deposit");
+    poll_status_until(slot, ReadStatus::Data);
 
     // Play the resumed continuation: take the bytes the reactor handed off.
     let triple = unsafe { hew_read_slot_take(slot) };
@@ -159,7 +152,7 @@ fn scenario_peer_close_deposits_eof() {
     // Peer closes without writing → the reactor reads EOF and deposits Eof.
     drop(client);
 
-    poll_status_until(slot, ReadStatus::Eof, "eof deposit");
+    poll_status_until(slot, ReadStatus::Eof);
 
     unsafe { hew_read_slot_free(slot) };
     let _ = unsafe { hew_actor_free(actor) };
@@ -189,6 +182,9 @@ fn scenario_cancelled_await_drops_late_readiness() {
     // so the slot never transitions to Data.
     client.write_all(b"too-late").expect("client write");
     client.flush().ok();
+    // WHY a window: nothing reports that the reactor saw and dropped the late
+    // readiness, so this leg passes vacuously on a slow host. WHAT the real
+    // fix is: a readiness-dropped counter on the reactor.
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(
         unsafe { hew_read_slot_status(slot) },

@@ -119,6 +119,29 @@ pub unsafe extern "C" fn hew_actor_wait_edge_new(
     })
 }
 
+/// Register a dependency on the incarnation selected by a terminal observer.
+/// A role's owner token is a supervisor, so resolving that token independently
+/// cannot prove an actor wait cycle and can select a different child after a
+/// restart.
+///
+/// # Safety
+/// `state` and `wait` remain live through this registration.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_wait_edge_new_for_wait(
+    state: *const HewCoroState,
+    wait: *const crate::actor_native::HewNativeActorWait,
+    operation: i32,
+) -> *const HewActorWaitEdge {
+    // SAFETY: the caller retains both pointers for this call.
+    let owner = unsafe { &*state }.actor_turn;
+    // SAFETY: the same caller retains this wait until registration returns.
+    let target = unsafe { &*wait }.target;
+    if owner.is_none() || target.is_none() {
+        return std::ptr::null();
+    }
+    Arc::into_raw(HewActorWaitEdge::register(owner, target, operation))
+}
+
 /// Arm before checking the operation predicate, closing registration/wake races.
 ///
 /// # Safety

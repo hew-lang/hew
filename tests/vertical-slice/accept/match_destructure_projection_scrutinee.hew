@@ -8,21 +8,16 @@
 //! the match through the same shape.
 
 type Pair {
-    a: string,
-    b: string,
+    a: string;
+    b: string;
 }
 
 type Holder {
-    p: Pair,
+    p: Pair;
 }
 
 fn make_holder() -> Holder {
-    Holder {
-        p: Pair {
-            a: ("a-" + "payload"),
-            b: ("b-" + "payload"),
-        },
-    }
+    Holder { p: Pair { a: ("a-" + "payload"), b: ("b-" + "payload") } }
 }
 
 fn main() -> i64 {

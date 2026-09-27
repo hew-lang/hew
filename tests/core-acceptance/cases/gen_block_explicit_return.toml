@@ -1,0 +1,7 @@
+[[case]]
+id = "gen_block_explicit_return"
+intent = "gen{} with an explicit `return` but no yield. The checker accepts it with no diagnostics."
+source = "../vertical-slice/accept/gen_block_explicit_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"

@@ -46,6 +46,10 @@
           "ty": {
             "type": "string"
           },
+          "shape": {
+            "type": "integer",
+            "minimum": 0
+          },
           "close": {
             "type": "integer",
             "minimum": 0
@@ -164,6 +168,12 @@
           },
           "name": {
             "type": "string"
+          },
+          "runtime_tags": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/id"
+            }
           },
           "cases": {
             "type": "array",

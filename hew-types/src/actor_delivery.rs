@@ -1,40 +1,28 @@
 //! Checked sender policies and source-defined message value contracts.
 
-use serde::{Deserialize, Serialize};
+use crate::{KnownDecl, Ty, TypeHead};
 
-use crate::Ty;
-
-pub const MESSAGE_TYPE: &str = "std.builtins.Message";
-pub const SENDER_TYPE: &str = "std.builtins.ActorMailbox";
-pub const POLICY_VIEW_TYPE: &str = "std.builtins.ActorPolicy";
-pub const FAILURE_TYPE: &str = "std.builtins.SendFailure";
-pub const DELIVERY_TYPE: &str = "std.builtins.Delivery";
-pub const ON_FULL_TYPE: &str = "std.builtins.OnFull";
-pub const ACTOR_ERROR_TYPE: &str = "std.builtins.ActorError";
-pub const NEVER_TYPE: &str = "std.builtins.Never";
-pub const REQUEST_TYPE: &str = "std.builtins.ActorRequest";
-
-/// These declarations have one source owner in `std/builtins.hew`.
-pub const DECLARATIONS: &[&str] = &[
-    "ActorError",
-    "Never",
-    "ActorMailbox",
-    "ActorPolicy",
-    "Message",
-    "SendFailure",
-    "Delivery",
-    "OnFull",
-    "RejectSend",
-    "WaitSend",
-    "DropNewestSend",
-    "ReplaceLatestSend",
-    "ActorRequest",
-    "ActorRequestOwner",
-    "ActorRequestAdmission",
+/// The `std/builtins.hew` declarations the delivery protocol is built from.
+pub const DECLARATIONS: &[KnownDecl] = &[
+    KnownDecl::ActorError,
+    KnownDecl::Never,
+    KnownDecl::ActorMailbox,
+    KnownDecl::ActorPolicy,
+    KnownDecl::Message,
+    KnownDecl::SendFailure,
+    KnownDecl::Delivery,
+    KnownDecl::OnFull,
+    KnownDecl::RejectSend,
+    KnownDecl::WaitSend,
+    KnownDecl::DropNewestSend,
+    KnownDecl::ReplaceLatestSend,
+    KnownDecl::ActorRequest,
+    KnownDecl::ActorRequestOwner,
+    KnownDecl::ActorRequestAdmission,
 ];
 
 /// A view's policy is immutable and determines its submission effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SendPolicy {
     Reject,
     Wait,
@@ -43,24 +31,20 @@ pub enum SendPolicy {
 }
 
 impl SendPolicy {
+    /// The witness declaration that carries this policy in a view's type.
     #[must_use]
-    pub const fn witness_name(self) -> &'static str {
+    pub const fn witness(self) -> KnownDecl {
         match self {
-            Self::Reject => "std.builtins.RejectSend",
-            Self::Wait => "std.builtins.WaitSend",
-            Self::DropNewest => "std.builtins.DropNewestSend",
-            Self::ReplaceLatest => "std.builtins.ReplaceLatestSend",
+            Self::Reject => KnownDecl::RejectSend,
+            Self::Wait => KnownDecl::WaitSend,
+            Self::DropNewest => KnownDecl::DropNewestSend,
+            Self::ReplaceLatest => KnownDecl::ReplaceLatestSend,
         }
     }
 
     #[must_use]
     pub fn from_witness(ty: &Ty) -> Option<Self> {
-        let Ty::Named {
-            name,
-            args,
-            builtin: None,
-        } = ty
-        else {
+        let Ty::Named { head, args } = ty else {
             return None;
         };
         if !args.is_empty() {
@@ -73,7 +57,7 @@ impl SendPolicy {
             Self::ReplaceLatest,
         ]
         .into_iter()
-        .find(|policy| policy.witness_name() == name)
+        .find(|policy| policy.witness().head() == *head)
     }
 
     #[must_use]
@@ -82,35 +66,17 @@ impl SendPolicy {
     }
 }
 
-/// The delivery outcome a discarded expression drops, or `None`.
-///
-/// A submission yields `Result<Delivery, SendFailure<_>>`, the pid/channel
-/// `send` family yields `Result<_, SendError>`, and a completion call yields
-/// `Result<_, ActorError<_, _>>`. Discarding any of them in statement position loses a
-/// delivery failure, which is `E_SEND_RESULT_DROPPED` (HEW-SPEC-2026 §2.1.1,
-/// §5.6). The returned name is the error type, for the diagnostic.
-#[must_use]
-pub fn dropped_delivery_outcome(ty: &Ty) -> Option<&'static str> {
-    let (_, error) = ty.as_result()?;
-    let Ty::Named { name, builtin, .. } = error else {
-        return None;
-    };
-    match builtin {
-        Some(crate::BuiltinType::SendError) => Some("SendError"),
-        None if name == ACTOR_ERROR_TYPE => Some("ActorError"),
-        None if name == FAILURE_TYPE => Some("SendFailure"),
-        _ => None,
-    }
-}
-
 /// Selected operations carried independently of source and linker spellings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorDeliveryCall {
-    Close,
-    AwaitClosed,
-    /// `pid.stop()`: request a graceful stop without waiting. HIR lowers it
-    /// to the same request `close` makes and discards the returned handle.
+    /// Close admission and drain accepted turns without waiting.
     Stop,
+    /// Close admission, discard queued turns and cancel at the next suspension.
+    Terminate,
+    /// Wait for release and transfer an unrecovered fault to the caller.
+    AwaitStopped,
+    /// Wait for the current supervised role to become live again.
+    AwaitRestarted,
     Policy {
         policy: SendPolicy,
     },
@@ -131,22 +97,24 @@ pub enum ActorDeliveryCall {
 /// The method declaration identifies a sealed protocol; its arguments retain
 /// the concrete request tuple, success and declared failure after binding.
 #[must_use]
-pub fn request_type(method_id: &str, params: Ty, success: Ty, failure: Ty) -> Ty {
+pub fn request_type(method: crate::NominalHead, params: Ty, success: Ty, failure: Ty) -> Ty {
     nominal(
-        REQUEST_TYPE,
-        vec![nominal(method_id, vec![params, success, failure])],
+        KnownDecl::ActorRequest,
+        vec![Ty::Named {
+            head: TypeHead::Nominal(method),
+            args: vec![params, success, failure],
+        }],
     )
 }
 
 #[must_use]
-pub fn request_parts(ty: &Ty) -> Option<(&str, &Ty, &Ty, &Ty)> {
-    let Ty::Named { name, args, .. } = ty else {
+pub fn request_parts(ty: &Ty) -> Option<(crate::NominalHead, &Ty, &Ty, &Ty)> {
+    let Ty::Named { head, args } = ty else {
         return None;
     };
     let [Ty::Named {
-        name: method,
+        head: TypeHead::Nominal(method),
         args: protocol,
-        ..
     }] = args.as_slice()
     else {
         return None;
@@ -154,31 +122,30 @@ pub fn request_parts(ty: &Ty) -> Option<(&str, &Ty, &Ty, &Ty)> {
     let [params, success, failure] = protocol.as_slice() else {
         return None;
     };
-    (name == REQUEST_TYPE).then_some((method, params, success, failure))
+    (*head == KnownDecl::ActorRequest.head()).then_some((*method, params, success, failure))
 }
 
 #[must_use]
-pub fn nominal(name: &str, args: Vec<Ty>) -> Ty {
+pub fn nominal(known: KnownDecl, args: Vec<Ty>) -> Ty {
     Ty::Named {
-        name: name.to_string(),
+        head: known.head(),
         args,
-        builtin: None,
     }
 }
 
 #[must_use]
 pub fn message_type(target: Ty, payload: Ty, policy: SendPolicy) -> Ty {
     nominal(
-        MESSAGE_TYPE,
-        vec![target, payload, nominal(policy.witness_name(), Vec::new())],
+        KnownDecl::Message,
+        vec![target, payload, nominal(policy.witness(), Vec::new())],
     )
 }
 
 #[must_use]
 pub fn sender_type(target: Ty, policy: SendPolicy) -> Ty {
     nominal(
-        SENDER_TYPE,
-        vec![target, nominal(policy.witness_name(), Vec::new())],
+        KnownDecl::ActorMailbox,
+        vec![target, nominal(policy.witness(), Vec::new())],
     )
 }
 
@@ -187,30 +154,25 @@ pub fn sender_type(target: Ty, policy: SendPolicy) -> Ty {
 #[must_use]
 pub fn policy_view_type(target: Ty, policy: SendPolicy) -> Ty {
     nominal(
-        POLICY_VIEW_TYPE,
-        vec![target, nominal(policy.witness_name(), Vec::new())],
+        KnownDecl::ActorPolicy,
+        vec![target, nominal(policy.witness(), Vec::new())],
     )
 }
 
 #[must_use]
 pub fn policy_view_parts(ty: &Ty) -> Option<(&Ty, SendPolicy)> {
-    view_parts(ty, POLICY_VIEW_TYPE)
+    view_parts(ty, KnownDecl::ActorPolicy)
 }
 
 #[must_use]
 pub fn message_parts(ty: &Ty) -> Option<(&Ty, &Ty, SendPolicy)> {
-    let Ty::Named {
-        name,
-        args,
-        builtin: None,
-    } = ty
-    else {
+    let Ty::Named { head, args } = ty else {
         return None;
     };
     let [target, payload, witness] = args.as_slice() else {
         return None;
     };
-    if name != MESSAGE_TYPE || !target.addresses_local_actor() {
+    if *head != KnownDecl::Message.head() || !target.addresses_local_actor() {
         return None;
     }
     Some((target, payload, SendPolicy::from_witness(witness)?))
@@ -218,22 +180,17 @@ pub fn message_parts(ty: &Ty) -> Option<(&Ty, &Ty, SendPolicy)> {
 
 #[must_use]
 pub fn sender_parts(ty: &Ty) -> Option<(&Ty, SendPolicy)> {
-    view_parts(ty, SENDER_TYPE)
+    view_parts(ty, KnownDecl::ActorMailbox)
 }
 
-fn view_parts<'a>(ty: &'a Ty, view: &str) -> Option<(&'a Ty, SendPolicy)> {
-    let Ty::Named {
-        name,
-        args,
-        builtin: None,
-    } = ty
-    else {
+fn view_parts(ty: &Ty, view: KnownDecl) -> Option<(&Ty, SendPolicy)> {
+    let Ty::Named { head, args } = ty else {
         return None;
     };
     let [target, witness] = args.as_slice() else {
         return None;
     };
-    if name != view || !target.addresses_local_actor() {
+    if *head != view.head() || !target.addresses_local_actor() {
         return None;
     }
     Some((target, SendPolicy::from_witness(witness)?))
@@ -242,7 +199,7 @@ fn view_parts<'a>(ty: &'a Ty, view: &str) -> Option<(&'a Ty, SendPolicy)> {
 #[must_use]
 pub fn result_type(message: Ty) -> Ty {
     Ty::result(
-        nominal(DELIVERY_TYPE, Vec::new()),
-        nominal(FAILURE_TYPE, vec![message]),
+        nominal(KnownDecl::Delivery, Vec::new()),
+        nominal(KnownDecl::SendFailure, vec![message]),
     )
 }

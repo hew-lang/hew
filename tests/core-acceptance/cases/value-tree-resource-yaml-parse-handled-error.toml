@@ -1,0 +1,10 @@
+[[case]]
+id = "value-tree-resource-yaml-parse-handled-error"
+intent = "Exact ownership oracle for the JSON, TOML, and YAML `Value` resources. Shape `yaml_parse_handled_error_50` (parse match results are exactly leak clean, parse match results do not double free or read poison) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/value-tree-resource-yaml-parse-handled-error.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n"
+exit = 0

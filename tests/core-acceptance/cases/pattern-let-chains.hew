@@ -1,6 +1,6 @@
 enum Slot {
-    Filled(string),
-    Empty,
+    Filled(string);
+    Empty;
 }
 
 fn slot(index: i64) -> Slot {

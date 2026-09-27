@@ -1,0 +1,21 @@
+fn make() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    return v;
+}
+
+fn total(xs: Vec<i64>) -> i64 {
+    xs[0] + xs[1]
+}
+
+fn main() {
+    let made = make();
+    let a = made[0] + made[1];
+    var v: Vec<i64> = Vec.new();
+    v.push(20);
+    v.push(1);
+    let b = total(v);
+    print(a + b);
+    print("OK");
+}

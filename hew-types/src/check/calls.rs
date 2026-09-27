@@ -49,7 +49,7 @@ impl Checker {
     pub(super) fn lookup_variant_constructor(
         &self,
         func_name: &str,
-    ) -> Option<(String, Vec<Ty>, Vec<String>)> {
+    ) -> Option<(String, Vec<Ty>, Vec<crate::ParamHead>)> {
         if let Some(pos) = func_name.rfind("::") {
             let type_prefix = &func_name[..pos];
             let variant_name = &func_name[pos + 2..];
@@ -66,14 +66,14 @@ impl Checker {
                 .flatten();
             let direct_key = canonical_owner_key
                 .as_deref()
-                .filter(|key| self.type_defs.contains_key(*key))
+                .filter(|key| self.type_def_at(key).is_some())
                 .or_else(|| {
                     local_owner_key
                         .as_deref()
-                        .filter(|key| self.type_defs.contains_key(*key))
+                        .filter(|key| self.type_def_at(key).is_some())
                 })
                 .unwrap_or(type_prefix);
-            let direct = self.type_defs.get(direct_key).and_then(|td| {
+            let direct = self.type_def_at(direct_key).and_then(|td| {
                 if !matches!(
                     td.kind,
                     TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -100,7 +100,7 @@ impl Checker {
                 self.current_module_idx,
                 type_prefix.to_string(),
             ))?;
-            self.type_defs.get(canonical.as_str()).and_then(|td| {
+            self.type_def_at(canonical.as_str()).and_then(|td| {
                 if !matches!(
                     td.kind,
                     TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -128,22 +128,27 @@ impl Checker {
             let find_in = |name: &str, check_local: bool| {
                 self.type_defs
                     .iter()
-                    .filter(|(type_name, td)| {
-                        let is_local = self.local_type_defs.contains(type_name.as_str())
-                            || self.source_type_defs.contains(type_name.as_str())
+                    .filter(|(id, td)| {
+                        let type_name = self.defs.path(id.declaration());
+                        let is_local = self.local_type_defs.contains(td.name.as_str())
+                            || self.source_type_defs.contains(td.name.as_str())
                             || self.is_current_module_type_def(type_name);
                         let kind_ok =
                             td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct;
                         kind_ok && (is_local == check_local)
                     })
-                    .find_map(|(type_name, td)| {
+                    .find_map(|(id, td)| {
                         td.variants.get(name).and_then(|variant| {
                             let params = match variant {
                                 VariantDef::Unit => Vec::new(),
                                 VariantDef::Tuple(p) => p.clone(),
                                 VariantDef::Struct(_) => return None,
                             };
-                            Some((type_name.clone(), params, td.type_params.clone()))
+                            Some((
+                                self.defs.path(id.declaration()).to_string(),
+                                params,
+                                td.type_params.clone(),
+                            ))
                         })
                     })
             };
@@ -162,8 +167,8 @@ impl Checker {
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
-            Ty::Named { name, args, .. }
-                if self.strict_nominal_identity(name)
+            Ty::Named { head, args }
+                if self.strict_nominal_identity(head.registry_key())
                     == self.strict_nominal_identity(type_name)
                     && args.len() == arity =>
             {
@@ -179,14 +184,10 @@ impl Checker {
     /// display spelling again would lose renamed builtin presentations or
     /// retag a same-spelling source declaration.
     pub(super) fn variant_nominal_from_expected(expected: &Ty, args: Vec<Ty>) -> Option<Ty> {
-        let Ty::Named { name, builtin, .. } = expected else {
+        let Ty::Named { head, .. } = expected else {
             return None;
         };
-        Some(Ty::Named {
-            name: name.clone(),
-            args,
-            builtin: *builtin,
-        })
+        Some(Ty::Named { head: *head, args })
     }
 
     fn lower_turbofish_elem(
@@ -230,8 +231,7 @@ impl Checker {
             self.lower_turbofish_elem(constructor_name, expected_arity, supplied_args, span)?;
         let resolved_args: Vec<Ty> = lowered.iter().map(|ty| self.subst.resolve(ty)).collect();
         let result_ty = Ty::Named {
-            builtin: Some(builtin),
-            name: constructor_name.to_string(),
+            head: crate::TypeHead::Builtin(builtin),
             args: resolved_args,
         };
         match builtin {
@@ -377,7 +377,7 @@ impl Checker {
                     );
                     None
                 }
-                Some(name) => match Self::named_parameter_slot(param_names, name) {
+                Some(name) => match Self::named_parameter_slot(param_names, name.name.as_str()) {
                     Some(slot) if supplied[slot] => {
                         let how = if slot < index && args[slot].name().is_none() {
                             "positionally"
@@ -394,7 +394,7 @@ impl Checker {
                     Some(slot) => Some(slot),
                     None => {
                         let similar = crate::error::find_similar(
-                            name,
+                            name.name.as_str(),
                             param_names.iter().map(String::as_str),
                         );
                         self.report_error_with_suggestions(
@@ -490,7 +490,7 @@ impl Checker {
     /// How a diagnostic names the callee of a call expression.
     pub(super) fn callee_label(function: &Spanned<Expr>) -> String {
         match &function.0 {
-            Expr::Identifier(name) => format!("`{name}`"),
+            Expr::Ident(name) => format!("`{name}`"),
             Expr::ContextVariant(context) => format!("`.{}`", context.name),
             _ => "this callee".to_string(),
         }
@@ -660,6 +660,7 @@ impl Checker {
                     span,
                 },
             ) {
+                self.record_construct_call(span);
                 return Some(result);
             }
         }
@@ -667,7 +668,7 @@ impl Checker {
         // `Vec.new` before the blanket early-return for other constructors.
         let mut contextual_name = None;
         let func_name = match &func.0 {
-            Expr::Identifier(name) => name.clone(),
+            Expr::Ident(name) => name.to_string(),
             Expr::ContextVariant(context) => {
                 let Some(owner) = self.context_variant_expected_owner(expected, span) else {
                     for arg in args {
@@ -676,20 +677,20 @@ impl Checker {
                     }
                     return Some(Ty::Error);
                 };
-                contextual_name = Some(context.name.clone());
+                contextual_name = Some(context.name);
                 format!("{owner}::{}", context.name)
             }
             Expr::FieldAccess { object, field } => {
-                let Expr::Identifier(obj_name) = &object.0 else {
+                let Expr::Ident(obj_name) = &object.0 else {
                     return None;
                 };
-                format!("{obj_name}::{field}")
+                format!("{obj_name}::{}", field.0)
             }
             _ => return None,
         };
 
         let constructor_family =
-            crate::runtime_call::RuntimeCallFamily::from_checker_signature(&func_name);
+            crate::runtime_call::RuntimeCallFamily::from_checker_signature(func_name.as_str());
         // Constructors with explicit type args that are not covered here fall
         // through to the generic call resolver.
         if type_args.is_some()
@@ -707,7 +708,7 @@ impl Checker {
 
         let resolved_expected = self.subst.resolve(expected);
 
-        if let Some(context_name) = contextual_name.as_deref() {
+        if let Some(context_name) = contextual_name.map(|ident| ident.name.as_str()) {
             let owner = func_name
                 .rsplit_once("::")
                 .map_or(func_name.as_str(), |(owner, _)| owner);
@@ -799,13 +800,13 @@ impl Checker {
         } {
             self.check_arity(args, 0, &format!("`{name}.new`"), span);
             let Ty::Named {
-                name: expected_name,
+                head,
                 args: expected_args,
-                ..
             } = &resolved_expected
             else {
                 return None;
             };
+            let expected_name = head.registry_key();
             if expected_name != name || expected_args.len() != arity {
                 return None;
             }
@@ -818,8 +819,7 @@ impl Checker {
                 return Some(Ty::Error);
             }
             let result_ty = Ty::Named {
-                builtin: Some(builtin),
-                name: name.to_string(),
+                head: crate::TypeHead::Builtin(builtin),
                 args: resolved_args.clone(),
             };
             if !resolved_args.iter().any(|arg| matches!(arg, Ty::Var(_))) {
@@ -858,13 +858,13 @@ impl Checker {
                 // Expected-type path: infer element type from the surrounding
                 // `Vec<T>` annotation.
                 let Ty::Named {
-                    name,
+                    head,
                     args: vec_args,
-                    ..
                 } = &resolved_expected
                 else {
                     return None;
                 };
+                let name = head.registry_key();
                 if name != "Vec" || vec_args.len() != 1 {
                     return None;
                 }
@@ -876,8 +876,7 @@ impl Checker {
                 // expected type as-is (both are valid deferred placeholders).
                 let result_ty = if type_args.is_some() {
                     Ty::Named {
-                        builtin: Some(crate::BuiltinType::Vec),
-                        name: "Vec".to_string(),
+                        head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                         args: vec![elem_ty],
                     }
                 } else {
@@ -903,7 +902,7 @@ impl Checker {
                 self.record_type(span, &Ty::Error);
                 return Some(Ty::Error);
             }
-            if crate::vec_authority::classify_element(&elem_ty, &self.type_defs)
+            if crate::vec_authority::classify_element(&elem_ty, self.type_def_view())
                 == Some(crate::vec_authority::VecElementToken::Layout)
                 && matches!(elem_ty, Ty::Named { .. })
                 // An element that still carries an unresolved type parameter
@@ -939,8 +938,7 @@ impl Checker {
             // already has the correct Vec<T> shape).
             let result_ty = if type_args.is_some() {
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    name: "Vec".to_string(),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                     args: vec![self.subst.resolve(&elem_ty)],
                 }
             } else {
@@ -955,16 +953,16 @@ impl Checker {
         }
 
         let Ok(canonical_lifecycle) =
-            self.canonicalize_source_lifecycle_value_path(&func_name, span)
+            self.canonicalize_source_lifecycle_value_path(func_name.as_str(), span)
         else {
             return Some(Ty::Error);
         };
-        let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
+        let constructor_name = canonical_lifecycle.as_deref().unwrap_or(func_name.as_str());
         if let Some((type_name, expected_params, type_params)) =
             self.lookup_variant_constructor(constructor_name)
         {
-            if contextual_name.is_none() && !func_name.contains("::") {
-                self.report_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
+            if contextual_name.is_none() && !func_name.as_str().contains("::") {
+                self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
             }
             let mut inferred_args = self.expected_constructor_type_args(
                 &resolved_expected,
@@ -973,15 +971,15 @@ impl Checker {
             )?;
             self.check_arity(args, expected_params.len(), "this function", span);
             {
-                let subst_map: HashMap<String, Ty> = type_params
+                let subst_map: HashMap<crate::ParamHead, Ty> = type_params
                     .iter()
                     .zip(inferred_args.iter())
-                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .map(|(p, a)| (*p, a.clone()))
                     .collect();
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = expected_params.get(i) {
                         let (expr, arg_span) = arg.expr();
-                        let expected_ty = param_ty.substitute_named_params_parallel(&subst_map);
+                        let expected_ty = param_ty.substitute_type_params_parallel(&subst_map);
                         self.check_against(expr, arg_span, &expected_ty);
                         self.record_value_transfer(expr, arg_span);
                     }
@@ -994,6 +992,7 @@ impl Checker {
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
             let result_ty = Self::variant_nominal_from_expected(&resolved_expected, resolved_args)
                 .expect("constructor expected-type match requires a named nominal");
+            self.record_construct_call(span);
             self.record_type(span, &result_ty);
             return Some(result_ty);
         }
@@ -1015,14 +1014,15 @@ impl Checker {
         }
 
         let result = self.check_builtin_variant_against_expected(
-            &func_name,
+            func_name.as_str(),
             args,
             &resolved_expected,
             span,
         )?;
+        self.record_construct_call(span);
         // Only the bare source spelling reaches here: dotted heads check their
         // builtin constructor directly.
-        self.report_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
+        self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
         Some(result)
     }
 
@@ -1258,10 +1258,6 @@ impl Checker {
     /// a visibility violation), and `None` when `func_name` is not a
     /// module-qualified call, the module is unknown, or no `module.fn` key
     /// exists — leaving the existing `undefined function` diagnostic to fire.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "module-qualified calls validate visibility, target support, and ownership"
-    )]
     fn try_check_namespaced_module_call(
         &mut self,
         func_name: &str,
@@ -1272,7 +1268,7 @@ impl Checker {
         let (module_name, method) = func_name.split_once("::")?;
         // A trait-qualified call (`Trait::method`) is handled by the dedicated
         // paths above and must not be re-interpreted as a module call.
-        if self.trait_defs.contains_key(module_name) {
+        if self.has_trait_def(module_name) {
             return None;
         }
         if method.contains("::") {
@@ -1286,7 +1282,7 @@ impl Checker {
         // nested modules and aliases retain their exact source identity.
         let canonical_owner = self.canonical_module_import_owner(module_name);
         let key = self.canonical_fn_identity(Some(&canonical_owner), method);
-        if !self.fn_sigs.contains_key(&key) {
+        if !self.has_fn_sig(&key) {
             return None;
         }
         if self.module_binding_in_current_file(module_name) {
@@ -1340,15 +1336,11 @@ impl Checker {
         if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
             self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
         }
-        let sig = self.fn_sigs.get(&key).cloned()?;
+        let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
-        let assoc_bindings = self
-            .fn_type_param_assoc_bindings
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
+        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             &assoc_bindings,
@@ -1389,10 +1381,49 @@ impl Checker {
         Some(applied_sig.return_type)
     }
 
+    /// Refuse compiler-internal memory operations before lowering source calls.
+    pub(super) fn check_source_call_target(&mut self, span: &Span, target: &CallTarget) {
+        use crate::stdlib_authority::Intrinsic;
+
+        let intrinsic = match target {
+            CallTarget::Builtin { endpoint } => Intrinsic::from_key(endpoint),
+            CallTarget::User(declaration) => self
+                .intrinsic_declarations
+                .get(self.defs.path(*declaration))
+                .and_then(|key| Intrinsic::from_key(key)),
+            _ => None,
+        };
+        if let Some(
+            intrinsic @ (Intrinsic::MemAlloc
+            | Intrinsic::MemRealloc
+            | Intrinsic::MemDealloc
+            | Intrinsic::MemPtrOffset
+            | Intrinsic::MemPtrCopy),
+        ) = intrinsic
+        {
+            if self.errors.iter().any(|error| {
+                error.span == *span
+                    && error.source_module == self.current_module
+                    && matches!(error.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })
+            }) {
+                return;
+            }
+            self.report_error(
+                    TypeErrorKind::IntrinsicOutsideFloor {
+                        intrinsic_key: intrinsic.key().to_string(),
+                        module: self.current_module.clone().unwrap_or_else(|| "(root)".into()),
+                    },
+                    span,
+                    "E_INTRINSIC_OUTSIDE_FLOOR: raw memory primitives are compiler-internal and cannot be called from source".into(),
+                );
+        }
+    }
+
     /// Publish the canonical target of an admitted ordinary call.  This is the
     /// authority boundary for `HirExprKind::Call`; lowerings never recover it
     /// from a callee name or a linker symbol.
     pub(super) fn record_direct_call_target(&mut self, span: &Span, target: CallTarget) {
+        self.check_source_call_target(span, &target);
         self.direct_call_targets
             .insert(SpanKey::in_module(span, self.current_module_idx), target);
     }
@@ -1477,7 +1508,7 @@ impl Checker {
     /// the same string every `{owner}::{member}` registry key is built from.
     fn current_actor_type_name(&self) -> Option<&str> {
         match self.current_actor_type.as_ref()? {
-            Ty::Named { name, .. } => Some(name.as_str()),
+            Ty::Named { head, .. } => Some(head.registry_key()),
             _ => None,
         }
     }
@@ -1499,8 +1530,8 @@ impl Checker {
     /// lifecycle hook shares the `ActorMethod` kind but gets no row, because
     /// the runtime, not Hew code, enters it).
     fn actor_method_owner(&self, signature_key: &str) -> Option<String> {
-        if self.identity.declaration_kind_by_path(signature_key)
-            != Some(crate::identity::DeclarationKind::ActorMethod)
+        if self.defs.declaration_kind_by_path(signature_key)
+            != Some(crate::def_table::DeclarationKind::ActorMethod)
         {
             return None;
         }
@@ -1513,8 +1544,8 @@ impl Checker {
 
     pub(super) fn source_call_target(&self, declaration: crate::DefId) -> CallTarget {
         if self
-            .identity
-            .declaration_kind_by_path(declaration.full_path())
+            .defs
+            .declaration_kind_by_path(self.defs.path(declaration))
             == Some(crate::DeclarationKind::Record)
         {
             CallTarget::RecordConstructor(declaration)
@@ -1533,7 +1564,6 @@ impl Checker {
             },
         );
         self.lookup_declaration(&declaration)
-            .cloned()
             .map(|declaration| self.source_call_target(declaration))
     }
 
@@ -1552,9 +1582,8 @@ impl Checker {
         // is also importable in its own right publishes both `pkg.f` and
         // `pkg.file.f`), and the extern table is keyed by the identity, not by
         // a spelling. Resolve the key first, then read the extern row.
-        let resolved = self.lookup_declaration(signature_key).cloned();
-        if self.identity.declaration_kind_by_path(signature_key)
-            == Some(crate::DeclarationKind::Record)
+        let resolved = self.lookup_declaration(signature_key);
+        if self.defs.declaration_kind_by_path(signature_key) == Some(crate::DeclarationKind::Record)
         {
             if let Some(declaration) = resolved {
                 return CallTarget::RecordConstructor(declaration);
@@ -1562,7 +1591,7 @@ impl Checker {
         }
         if let Some(extern_decl) = resolved
             .as_ref()
-            .and_then(|declaration| self.extern_table.declaration(declaration.full_path()))
+            .and_then(|declaration| self.extern_table.declaration(*declaration))
         {
             if extern_decl.symbol.is_empty() {
                 return CallTarget::Unsupported {
@@ -1578,14 +1607,14 @@ impl Checker {
             // stays user-provenance even when its spelling collides with an
             // audited runtime endpoint, in either registration order).
             //
-            let Some(declaration) = resolved.clone() else {
+            let Some(declaration) = resolved else {
                 return CallTarget::Unsupported {
                     reason: format!(
                         "checker identity table has no extern declaration `{signature_key}`"
                     ),
                 };
             };
-            if let Some(family) = self.source_runtime_target(&declaration, extern_decl) {
+            if let Some(family) = self.source_runtime_target(declaration, extern_decl) {
                 return CallTarget::Runtime(family);
             }
             return CallTarget::Extern {
@@ -1612,7 +1641,7 @@ impl Checker {
             && !self.builtin_call_targets.contains_key(signature_key)
         {
             if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
-                return CallTarget::ImplMethod(declaration.clone());
+                return CallTarget::ImplMethod(*declaration);
             }
         }
         if let Some(target) = self.user_call_target_for_declared_fn(signature_key) {
@@ -1678,7 +1707,7 @@ impl Checker {
                 // populated by an earlier graph-registration pass that did
                 // not retain a second `fn_def_spans` compatibility entry.
                 if let Some(declaration) = self.lookup_declaration(&declaration) {
-                    return self.source_call_target(declaration.clone());
+                    return self.source_call_target(declaration);
                 }
                 return CallTarget::Unsupported {
                     reason: format!(
@@ -1702,7 +1731,7 @@ impl Checker {
             self.current_module_idx,
             signature_key.to_string(),
         )) {
-            return self.lookup_declaration(source_key).cloned().map_or_else(
+            return self.lookup_declaration(source_key).map_or_else(
                 || CallTarget::Unsupported {
                     reason: format!(
                         "checker identity table has no imported declaration `{source_key}`"
@@ -1733,7 +1762,7 @@ impl Checker {
     /// declaration was first to mint the shared C ABI contract.
     fn source_runtime_target(
         &self,
-        declaration: &crate::DefId,
+        declaration: crate::DefId,
         extern_decl: &crate::extern_table::ExternDeclaration,
     ) -> Option<crate::RuntimeCallFamily> {
         let module = extern_decl.declaring_module.as_deref()?;
@@ -1750,13 +1779,11 @@ impl Checker {
         {
             return None;
         }
-        let contract = self
-            .extern_table
-            .contract_for_declaration(declaration.full_path())?;
+        let contract = self.extern_table.contract_for_declaration(declaration)?;
         if contract.is_variadic {
             return None;
         }
-        let signature = self.fn_sigs.get(declaration.full_path())?;
+        let signature = self.fn_sig(self.defs.path(declaration))?;
         if !signature.type_params.is_empty() {
             return None;
         }
@@ -1768,29 +1795,33 @@ impl Checker {
             .ok()?;
         let result = ResolvedTy::from_ty(&self.subst.resolve(&signature.return_type)).ok()?;
         (family.matches_encoding_extern(
+            &self.defs,
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,
             &contract.consuming_params,
         ) || family.matches_file_read_extern(
+            &self.defs,
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,
             &contract.consuming_params,
         ) || family.matches_tcp_extern(
+            &self.defs,
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,
             &contract.consuming_params,
         ) || family.matches_async_io_extern(
+            &self.defs,
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,
@@ -1828,11 +1859,16 @@ impl Checker {
             );
             return Ty::Error;
         }
-        // Get function name from expression
+        // A body-local binding shadows a function of the same spelling (R3).
+        // Keep it on the ordinary value-call path below, which also handles
+        // polymorphic closures and actor-handle capture checks.
+        let lexical_shadow_of_item = matches!(&func.0, Expr::Ident(name)
+            if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
+                && self.visible_fn_signature_key(name.name.as_str()).is_some());
         let func_name = match &func.0 {
-            Expr::Identifier(name) => name.clone(),
+            Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => {
-                if let Expr::Identifier(obj_name) = &object.0 {
+                if let Expr::Ident(obj_name) = &object.0 {
                     // When the object identifier names a live value binding,
                     // the callee is a field access on a value — not a
                     // module-qualified or type-namespaced name. Synthesise the
@@ -1845,12 +1881,12 @@ impl Checker {
                     // identifiers on the existing name-building path
                     // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                     // names are not registered as value bindings.
-                    if self.env.lookup_ref(obj_name).is_some() {
+                    if self.env.lookup_ref(obj_name.name.as_str()).is_some() {
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
                         return self.check_call_with_type(&resolved, func, args, span);
                     }
-                    format!("{obj_name}::{field}")
+                    format!("{obj_name}::{}", field.0)
                 } else {
                     let func_ty = self.synthesize(&func.0, &func.1);
                     return self.check_call_with_type(&func_ty, func, args, span);
@@ -1893,6 +1929,22 @@ impl Checker {
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
         let constructor_match = self.lookup_variant_constructor(constructor_name);
         if let Some((type_name, expected_params, type_params)) = constructor_match {
+            let member = constructor_name
+                .rsplit("::")
+                .next()
+                .unwrap_or(constructor_name);
+            if self.type_def_at(&type_name).is_some_and(|definition| {
+                matches!(definition.variants.get(member), Some(VariantDef::Unit))
+            }) {
+                self.report_error(
+                    TypeErrorKind::PathKindMismatch,
+                    span,
+                    format!(
+                        "unit variant `{constructor_name}` is a value; remove the call parentheses"
+                    ),
+                );
+                return Ty::Error;
+            }
             if !func_name.contains("::") {
                 self.report_bare_variant_expr(
                     &func_name,
@@ -1949,10 +2001,10 @@ impl Checker {
             }
             self.check_arity(args, expected_params.len(), "this function", span);
             {
-                let subst_map: HashMap<String, Ty> = type_params
+                let subst_map: HashMap<crate::ParamHead, Ty> = type_params
                     .iter()
                     .zip(inferred_args.iter())
-                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .map(|(p, a)| (*p, a.clone()))
                     .collect();
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = expected_params.get(i) {
@@ -1960,7 +2012,7 @@ impl Checker {
                         let expected_ty = if subst_map.is_empty() {
                             param_ty.clone()
                         } else {
-                            param_ty.substitute_named_params_parallel(&subst_map)
+                            param_ty.substitute_type_params_parallel(&subst_map)
                         };
                         self.check_against(expr, span, &expected_ty);
                         self.record_value_transfer(expr, span);
@@ -1972,7 +2024,8 @@ impl Checker {
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            let result_ty = self.variant_nominal_ty(type_name, resolved_args);
+            let result_ty = self.variant_nominal_ty(&type_name, resolved_args);
+            self.record_construct_call(span);
             return result_ty;
         }
 
@@ -2015,7 +2068,7 @@ impl Checker {
                 let elem_ty = lowered.remove(0);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 // Inherit the layout+Copy guard from check_call_against_expected_constructor.
-                if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
+                if crate::vec_authority::classify_element(&resolved_elem, self.type_def_view())
                     == Some(crate::vec_authority::VecElementToken::Layout)
                     && matches!(resolved_elem, Ty::Named { .. })
                 {
@@ -2034,8 +2087,7 @@ impl Checker {
                     }
                 }
                 let result_ty = Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec),
-                    name: "Vec".to_string(),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                     args: vec![resolved_elem],
                 };
                 self.record_type(span, &result_ty);
@@ -2088,61 +2140,86 @@ impl Checker {
                     "Result"
                 };
                 self.report_bare_variant_expr(&func_name, &format!("{owner}.{func_name}"), span);
-                return self
+                let result = self
                     .check_builtin_variant_call(&func_name, args, span)
                     .expect("builtin variant constructor names are matched above");
+                self.record_construct_call(span);
+                return result;
             }
-            // `close(actor)` requests a cooperative stop and waits until the
-            // actor's terminal cleanup has run; `fork close(actor)` is the
-            // non-waiting request. `closed(actor)` waits without requesting.
-            // A source declaration of the name owns it: the handle builtin
-            // applies only where nothing in scope declares `close`/`closed`.
-            "close" | "closed" if !self.declares_function(&func_name) => {
+            // Lifecycle requests and waits are distinct checked operations.
+            // A source declaration with the same name owns its call site.
+            "stop" | "terminate" | "stopped" | "restarted"
+                if !self.declares_function(&func_name) =>
+            {
                 if !self.check_arity(args, 1, &format!("`{func_name}`"), span) {
                     return Ty::Error;
                 }
                 let (expr, sp) = args[0].expr();
                 let actor_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&actor_ty);
-                // Supervisor close uses the tree's terminal contract, which
-                // tears down every child before returning.
-                if let Some(Ty::Named { name, .. }) = resolved.as_local_actor_ref() {
-                    if self.supervisor_children.contains_key(name) {
-                        if func_name == "close" {
-                            self.record_direct_call_target(
-                                span,
-                                CallTarget::Runtime(
-                                    crate::runtime_call::RuntimeCallFamily::SupervisorStop,
-                                ),
-                            );
-                            self.record_submission_suspension(span, true);
-                            return Ty::Unit;
-                        }
-                        self.actor_delivery_calls.insert(
-                            SpanKey::in_module(span, self.current_module_idx),
-                            crate::actor_delivery::ActorDeliveryCall::AwaitClosed,
-                        );
-                        self.record_submission_suspension(span, true);
-                        return Ty::Unit;
-                    }
+                if func_name == "stopped"
+                    && matches!(expr, Expr::Ident(name) if name.name.as_str() == "self")
+                {
+                    self.report_error(
+                        TypeErrorKind::ActorWaitsOnSelf,
+                        span,
+                        "E_ACTOR_WAITS_ON_SELF: an actor cannot wait for its own release"
+                            .to_string(),
+                    );
+                    return Ty::Error;
                 }
-                if resolved.addresses_local_actor() {
-                    let operation = if func_name == "close" {
-                        crate::actor_delivery::ActorDeliveryCall::Close
-                    } else {
-                        crate::actor_delivery::ActorDeliveryCall::AwaitClosed
+                let valid = if func_name == "restarted" {
+                    resolved.as_child_ref().is_some()
+                } else {
+                    resolved.addresses_local_actor()
+                };
+                if valid {
+                    let operation = match func_name.as_str() {
+                        "stop" => crate::actor_delivery::ActorDeliveryCall::Stop,
+                        "terminate" => crate::actor_delivery::ActorDeliveryCall::Terminate,
+                        "stopped" => crate::actor_delivery::ActorDeliveryCall::AwaitStopped,
+                        "restarted" => crate::actor_delivery::ActorDeliveryCall::AwaitRestarted,
+                        _ => unreachable!("lifecycle spelling matched above"),
                     };
                     self.actor_delivery_calls
                         .insert(SpanKey::in_module(span, self.current_module_idx), operation);
-                    self.record_submission_suspension(span, true);
+                    if matches!(func_name.as_str(), "stopped" | "restarted") {
+                        self.record_submission_suspension(span, true);
+                    }
                     return Ty::Unit;
                 }
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("`{func_name}` expects an actor handle"),
+                    if func_name == "restarted" {
+                        "`restarted` expects a supervised role".to_string()
+                    } else {
+                        format!("`{func_name}` expects an actor handle")
+                    },
                 );
                 return Ty::Error;
+            }
+            "close" | "closed" | "supervisor_stop" if !self.declares_function(&func_name) => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                let replacement = if func_name == "closed" {
+                    "stopped(handle)"
+                } else {
+                    "stop(handle); stopped(handle);"
+                };
+                self.report_migration_diagnostic(
+                    TypeErrorKind::ActorLifecycleRetired,
+                    format!("E_ACTOR_LIFECYCLE_RETIRED: `{func_name}` is retired for actors"),
+                    format!("write `{replacement}` using the original handle expression"),
+                    span,
+                );
+                return if self.migration_mode {
+                    Ty::Unit
+                } else {
+                    Ty::Error
+                };
             }
             "bytes::from" => {
                 self.check_arity(args, 1, "`bytes.from`", span);
@@ -2170,7 +2247,7 @@ impl Checker {
                         // forms feed the same HIR identity lowering below.
                         Ty::Array(inner, _) => self.expect_type(&elem, &inner, span),
                         Ty::Named {
-                            builtin: Some(crate::BuiltinType::Vec),
+                            head: crate::TypeHead::Builtin(crate::BuiltinType::Vec),
                             args,
                             ..
                         } if args.len() == 1 => self.expect_type(&elem, &args[0], span),
@@ -2260,11 +2337,11 @@ impl Checker {
 
                 // Accept local actor handles as supervisor handles.
                 if let Some(Ty::Named {
-                    name: sup_name,
+                    head: sup_head,
                     args: sup_args,
-                    ..
                 }) = sup_ty_resolved.as_local_actor_ref()
                 {
+                    let sup_name = sup_head.registry_key();
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // `supervisor_child` builtin indexes into the static slot space.
                         let statics = &sup_children.statics;
@@ -2280,8 +2357,7 @@ impl Checker {
                             {
                                 let child_type = &statics[i].1;
                                 let parameters = self
-                                    .type_defs
-                                    .get(sup_name)
+                                    .type_def_at(sup_name)
                                     .map_or_else(Vec::new, |definition| {
                                         definition.type_params.clone()
                                     });
@@ -2290,7 +2366,7 @@ impl Checker {
                                     .zip(sup_args.iter().cloned())
                                     .collect();
                                 return Ty::child_ref(
-                                    child_type.substitute_named_params_parallel(&substitution),
+                                    child_type.substitute_type_params_parallel(&substitution),
                                 );
                             }
                         }
@@ -2314,7 +2390,7 @@ impl Checker {
         // receiver param on the resolved sig so arity matches and the
         // first arg is type-checked against the canonical receiver.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.trait_defs.contains_key(trait_name) {
+            if self.has_trait_def(trait_name) {
                 if let Some(ret_ty) = self.try_dispatch_ufcs_primitive_trait_method(
                     trait_name,
                     method_name,
@@ -2328,9 +2404,12 @@ impl Checker {
 
         // Prefer a declaration or an exact file import, then an enclosing
         // actor helper. A signature published by another file is not a binding.
-        let visible_fn_key = self
-            .visible_fn_signature_key(&func_name)
-            .or_else(|| self.enclosing_actor_method_key(&func_name));
+        let visible_fn_key = if lexical_shadow_of_item {
+            None
+        } else {
+            self.visible_fn_signature_key(&func_name)
+                .or_else(|| self.enclosing_actor_method_key(&func_name))
+        };
         let has_visible_fn_signature = visible_fn_key.is_some();
         let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
         // An actor method reads and writes the actor's own state, so it is
@@ -2363,8 +2442,7 @@ impl Checker {
             }
         }
         if let Some(sig) = self
-            .fn_sigs
-            .get(&resolved_fn_name)
+            .fn_sig(&resolved_fn_name)
             .cloned()
             .filter(|_| has_visible_fn_signature)
         {
@@ -2437,11 +2515,17 @@ impl Checker {
                     .materialize_literal_defaults();
                 self.require_actor_handle_argument(&resolved, "Node.register", handle_span);
             }
-            let assoc_bindings = self
-                .fn_type_param_assoc_bindings
-                .get(&resolved_fn_name)
-                .cloned()
-                .unwrap_or_default();
+            let assoc_bindings = sig.type_param_assoc_bindings.clone();
+            // `assert` takes one optional parameter, the failure message.
+            let assertion = self.call_target_for_signature(&resolved_fn_name)
+                == CallTarget::Builtin {
+                    endpoint: crate::stdlib_catalog_identity::ASSERT.to_string(),
+                };
+            let sig = if assertion && args.len() == 2 {
+                crate::check::assertion::with_message(sig)
+            } else {
+                sig
+            };
             let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                 &sig,
                 &assoc_bindings,
@@ -2466,6 +2550,9 @@ impl Checker {
                     key: &resolved_fn_name,
                 }),
             );
+            if assertion {
+                self.record_unrendered_assertion_operands(args);
+            }
 
             // A codec imported by name (`import std.encoding.wire.{to_json}`)
             // is the same compiler operation as `wire.to_json(..)`.
@@ -2504,7 +2591,7 @@ impl Checker {
             if resolved_fn_name == "len" {
                 if let Some(Ty::Named {
                     args,
-                    builtin: Some(crate::BuiltinType::HashSet),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
                     ..
                 }) = applied_sig.params.first().map(|ty| self.subst.resolve(ty))
                 {
@@ -2532,7 +2619,7 @@ impl Checker {
             if matches!(
                 &func.0,
                 Expr::FieldAccess { object, .. }
-                    if matches!(object.0, Expr::Identifier(_))
+                    if matches!(object.0, Expr::Ident(_))
             ) || self.actor_method_owner(&resolved_fn_name).is_some()
             {
                 self.record_method_call_rewrite(
@@ -2553,10 +2640,20 @@ impl Checker {
             .lookup_with_depth(&func_name)
             .map(|(depth, binding)| (depth, binding.clone()))
         {
-            if matches!(
-                self.normalize_for_use(&binding.ty),
-                Ty::Function { .. } | Ty::Closure { .. }
-            ) {
+            let recursive_actor_receiver = self.in_lambda_actor_body
+                && self.callable_binding_candidates.get(&binding.id).is_some_and(|origins| {
+                    !origins.may_be_unknown
+                        && matches!(origins.known.as_slice(), [super::types::CallableCandidate::Closure(site)]
+                            if self.effect_graph.current_body.as_ref()
+                                == Some(&super::effects::EffectBody::Closure(site.clone())))
+                });
+            if recursive_actor_receiver {
+                if let Expr::Ident(name) = &func.0 {
+                    // The actor's recursive receiver denotes its current turn,
+                    // not an owned capture from the enclosing environment.
+                    self.record_local_resolution(*name, &func.1);
+                }
+            } else {
                 self.synthesize(&func.0, &func.1);
             }
             if let Some(sig) = binding
@@ -2611,7 +2708,7 @@ impl Checker {
             if matches!(
                 &resolved_func_ty,
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::ActorFn),
+                    head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
                     ..
                 }
             ) {
@@ -2646,7 +2743,7 @@ impl Checker {
         // If the function name has the form `TraitName::method` and TraitName
         // is a known trait, resolve the method from the trait definition.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.trait_defs.contains_key(trait_name) {
+            if self.has_trait_def(trait_name) {
                 // Use the full signature (receiver included) for qualified calls.
                 if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
                     // The trait sig includes all non-receiver params.
@@ -2721,13 +2818,14 @@ impl Checker {
             })
             .map(|(_, _, binding)| binding.as_str())
             .collect();
+        let local_names: Vec<&str> = self.env.all_names().map(Symbol::as_str).collect();
         let mut similar = crate::error::find_similar(
             &func_name,
-            self.fn_sigs
-                .keys()
-                .map(String::as_str)
+            self.sigs()
+                .entries()
+                .map(|(key, _)| key)
                 .filter(|key| !foreign_bindings.contains(key))
-                .chain(self.env.all_names()),
+                .chain(local_names.iter().copied()),
         );
         similar.extend(module_qualified_intrinsic_spellings(&func_name));
         self.report_error_with_suggestions(
@@ -2820,6 +2918,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
+        self.record_indirect_call_candidates(span, func);
         let resolved = self.normalize_for_use(func_ty);
         match resolved {
             Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
@@ -2850,7 +2949,7 @@ impl Checker {
             // the handle's message type (M). The message must be Send (crosses actor boundary).
             Ty::Named {
                 args: ref type_args,
-                builtin: Some(crate::BuiltinType::ActorFn),
+                head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
                 ..
             } if type_args.len() == 2 => {
                 self.check_lambda_actor_call(&resolved, type_args, args, span, None)
@@ -2858,10 +2957,15 @@ impl Checker {
             // A delivery view over a lambda handle: `mailbox(handle, ..)` and
             // `policy(handle, ..)` carry the same `(msg)` call surface the
             // handle has, and decide only how the submission is admitted.
-            Ty::Named { builtin: None, .. }
-                if crate::actor_delivery::sender_parts(&resolved)
-                    .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
-                    .is_some_and(|(target, _)| target.as_actor_fn().is_some()) =>
+            Ty::Named {
+                head:
+                    crate::TypeHead::Nominal(_)
+                    | crate::TypeHead::Param(_)
+                    | crate::TypeHead::Unresolved(_),
+                ..
+            } if crate::actor_delivery::sender_parts(&resolved)
+                .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
+                .is_some_and(|(target, _)| target.as_actor_fn().is_some()) =>
             {
                 let one_way = crate::actor_delivery::sender_parts(&resolved).is_some();
                 let (target, policy) = crate::actor_delivery::sender_parts(&resolved)

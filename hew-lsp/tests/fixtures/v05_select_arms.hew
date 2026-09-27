@@ -12,19 +12,22 @@ fn select_probe() -> i32 {
 
 fn select_arms() -> i32 {
     let recipient = spawn Responder;
-    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     tx.send("ping").expect("send");
     let result = select {
         reply from recipient.ask(1) => match reply {
             .Ok(value) => value,
             .Err(_) => 0,
-        },
+        }
         msg from rx.recv() => {
             match msg {
                 .Some(value) => select_probe(),
                 .None => 0,
             }
-        },
+        }
         after 1s => select_probe(),
     };
     result

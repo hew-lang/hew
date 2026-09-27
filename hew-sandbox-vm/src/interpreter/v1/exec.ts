@@ -34,7 +34,9 @@ import type {
   TrapName,
   ValueDef,
   VariantShape,
+  RuntimeVariantRole,
 } from "./package.js";
+import { runtimeTag } from "./package.js";
 import { StructuralRenderer } from "./structural.js";
 import {
   selectedValue,
@@ -72,7 +74,13 @@ type Ref =
   | { kind: "payload"; parent: Ref; index: number };
 
 type Fault = (
-  | { kind: "panic"; message: string; cancelled?: boolean; deadline?: boolean }
+  | {
+      kind: "panic";
+      message: string;
+      assertion?: { operator: string; left: string; right: string };
+      cancelled?: boolean;
+      deadline?: boolean;
+    }
   | { kind: "trap"; trap: TrapName; message?: string }
 ) & { primary?: Fault; secondary?: Fault[] };
 
@@ -118,12 +126,14 @@ interface ActorInstance {
   alive: boolean;
   completed: boolean;
   closing: boolean;
+  terminating: boolean;
   drainingMailbox: boolean;
   mailboxDrained: Array<() => void>;
   closingFault: Fault | null;
   closeFaultDebt?: number;
   crashing: Fault | null;
   active: FrameContext | null;
+  stopHook: FrameContext | null;
   closed: Array<() => void>;
   supervisor?: { owner: SupervisorInstance; child: number };
 }
@@ -134,6 +144,9 @@ interface SupervisorInstance {
   config: VmValue[];
   children: Array<VmValue | null>;
   alive: boolean;
+  terminating: boolean;
+  teardownChild: VmValue | null;
+  teardownCancelTimer: (() => void) | null;
   restartTimes: number[];
   specs: SupervisorShape["children"];
   offsets: number[];
@@ -349,11 +362,11 @@ class ExecutorV1 {
       },
       prng: new Mt19937(),
       regexPatterns: pkg.regex_patterns,
-      enumValue: (shape, caseName, payload) => ({
+      enumValue: (shape, role, payload) => ({
         kind: "enum",
         typeId: shape.name,
-        // The tag is the case's position in the descriptor's declaration order.
-        tag: shape.cases.findIndex((entry) => entry.name === caseName),
+        shape: shape.id,
+        tag: runtimeTag(shape, role),
         payload,
       }),
     };
@@ -395,7 +408,7 @@ class ExecutorV1 {
     for (const owner of this.supervisors.values())
       if (!owner.supervisor) this.stopSupervisor(owner);
     for (const actor of this.actors.values())
-      if (!actor.supervisor && actor.alive) this.requestActorClose(actor);
+      if (!actor.supervisor && actor.alive) this.requestActorStop(actor);
     this.scheduler.run();
     if (this.rootFault) this.haltWithFault(this.rootFault);
     if (this.trace.exitCode === 0 && this.faultDebts.size)
@@ -731,6 +744,7 @@ class ExecutorV1 {
         this.define(act, op.dst, {
           kind: "record",
           typeId: this.aggregateName(op.shape),
+          shape: op.shape ?? undefined,
           fields: op.fields.map((id) => this.read(act, id)),
         });
         return;
@@ -773,6 +787,7 @@ class ExecutorV1 {
         this.define(act, op.dst, {
           kind: "enum",
           typeId: this.variantName(op.shape),
+          shape: op.shape,
           tag: op.variant,
           payload: op.fields.map((id) => this.read(act, id)),
         });
@@ -780,17 +795,23 @@ class ExecutorV1 {
       case "variant.is":
         this.define(act, op.dst, {
           kind: "bool",
-          value: tagOf(this.read(act, op.source)) === op.variant,
+          value:
+            this.variantAt(this.read(act, op.source), op.shape).tag ===
+            op.variant,
         });
         return;
       case "variant.project_copy":
         this.define(
           act,
           op.dst,
-          cloneValue(payloadOf(this.read(act, op.source))[op.field] ?? UNIT),
+          cloneValue(
+            this.variantAt(this.read(act, op.source), op.shape, op.variant)
+              .payload[op.field] ?? UNIT,
+          ),
         );
         return;
       case "variant.project_borrow":
+        this.variantAt(this.read(act, op.source), op.shape, op.variant);
         act.env.set(op.dst, {
           kind: "payload",
           parent: this.refOf(act, op.source),
@@ -798,7 +819,12 @@ class ExecutorV1 {
         });
         return;
       case "variant.destructure":
-        this.spread(act, payloadOf(this.read(act, op.source)), op.results);
+        this.spread(
+          act,
+          this.variantAt(this.read(act, op.source), op.shape, op.variant)
+            .payload,
+          op.results,
+        );
         this.invalidate(act, op.source);
         return;
 
@@ -1090,8 +1116,11 @@ class ExecutorV1 {
         );
         return;
       case "switch.variant": {
-        const scrutinee = this.read(act, term.scrutinee);
-        const tag = tagOf(scrutinee);
+        const scrutinee = this.variantAt(
+          this.read(act, term.scrutinee),
+          term.shape,
+        );
+        const tag = scrutinee.tag;
         // The arms cover every tag; there is no default.
         const arm = term.arms.find((candidate) => candidate.variant === tag);
         if (!arm) {
@@ -1306,7 +1335,18 @@ class ExecutorV1 {
 
       case "panic": {
         const message = this.boundary(act, term.message);
-        act.fault = { kind: "panic", message: renderMessage(message) };
+        const assertion = term.assertion
+          ? {
+              operator: renderMessage(this.boundary(act, term.assertion[0])),
+              left: renderMessage(this.boundary(act, term.assertion[1])),
+              right: renderMessage(this.boundary(act, term.assertion[2])),
+            }
+          : undefined;
+        act.fault = {
+          kind: "panic",
+          message: renderMessage(message),
+          ...(assertion ? { assertion } : {}),
+        };
         if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
@@ -1351,10 +1391,12 @@ class ExecutorV1 {
           term.result_shape == null
             ? undefined
             : this.pkg.variants[term.result_shape];
+        if (!shape) throw new Error("recover_fault has no exact variant shape");
         const deadline = fault.kind === "panic" && fault.deadline;
         const value: VmValue = {
           kind: "enum",
-          typeId: shape?.name ?? "",
+          typeId: shape.name,
+          shape: shape.id,
           tag: deadline ? term.deadline_variant : term.fault_variant,
           payload: [
             {
@@ -1521,7 +1563,7 @@ class ExecutorV1 {
         term,
         this.variant(
           term.result_shape,
-          value ? "Some" : "None",
+          value ? "OptionSome" : "OptionNone",
           value ? [value] : [],
         ),
       );
@@ -1535,19 +1577,7 @@ class ExecutorV1 {
       );
       return;
     }
-    const role = this.roles.get((value as { id: string }).id)!;
-    if (operation === "AwaitRestartMember" && this.rolePending(role)) {
-      this.running = false;
-      const settled = () => {
-        if (this.rolePending(role)) {
-          role.waiting.push(settled);
-          return;
-        }
-        this.completeShim(act, term, value);
-        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-      };
-      role.waiting.push(settled);
-    } else this.completeShim(act, term, value);
+    this.completeShim(act, term, value);
   }
 
   private structuralFormat(
@@ -1717,7 +1747,7 @@ class ExecutorV1 {
             wake(
               this.variant(
                 term.result_shape,
-                value === null ? "None" : "Some",
+                value === null ? "OptionNone" : "OptionSome",
                 value === null ? [] : [value],
               ),
             );
@@ -1802,7 +1832,7 @@ class ExecutorV1 {
               wake(
                 this.variant(
                   term.result_shape,
-                  value === null ? "None" : "Some",
+                  value === null ? "OptionNone" : "OptionSome",
                   value === null ? [] : [value],
                 ),
               );
@@ -2161,7 +2191,7 @@ class ExecutorV1 {
           case "record": {
             const resource = (this.pkg.resources ?? []).find(
               (resource) =>
-                resource.kind === "record" && resource.ty === value.typeId,
+                resource.kind === "record" && resource.shape === value.shape,
             );
             if (resource?.close !== undefined) {
               if (this.consumedResources.has(value)) break;
@@ -2283,15 +2313,31 @@ class ExecutorV1 {
 
   private variant(
     shapeId: number | null | undefined,
-    name: string,
+    role: RuntimeVariantRole,
     payload: VmValue[] = [],
   ): VmValue {
     const shape = shapeId == null ? undefined : this.pkg.variants[shapeId];
     if (!shape)
       throw new Error(`runtime result has no variant shape ${shapeId}`);
-    const tag = shape.cases.findIndex((entry) => entry.name === name);
-    if (tag < 0) throw new Error(`${shape.name} has no ${name} case`);
-    return { kind: "enum", typeId: shape.name, tag, payload };
+    const tag = runtimeTag(shape, role);
+    return { kind: "enum", typeId: shape.name, shape: shape.id, tag, payload };
+  }
+
+  private variantAt(
+    value: VmValue,
+    shape: number,
+    tag?: number,
+  ): Extract<VmValue, { kind: "enum" }> {
+    if (
+      value.kind !== "enum" ||
+      value.shape !== shape ||
+      (tag !== undefined && value.tag !== tag)
+    ) {
+      throw new TypeError(
+        `expected variant ${shape}${tag === undefined ? "" : `:${tag}`}`,
+      );
+    }
+    return value;
   }
 
   private completion(
@@ -2301,16 +2347,16 @@ class ExecutorV1 {
     error: string | null,
   ): VmValue {
     return error
-      ? this.variant(result, "Err", [
+      ? this.variant(result, "ResultErr", [
           this.variant(
             errorShape,
-            error,
+            actorErrorRole(error),
             (error === "Failed" || error === "Rejected") && value
               ? [value]
               : [],
           ),
         ])
-      : this.variant(result, "Ok", [value ?? UNIT]);
+      : this.variant(result, "ResultOk", [value ?? UNIT]);
   }
 
   private actorFor(value: VmValue): ActorInstance {
@@ -2357,11 +2403,13 @@ class ExecutorV1 {
           alive: true,
           completed: false,
           closing: false,
+          terminating: false,
           drainingMailbox: false,
           mailboxDrained: [],
           closingFault: null,
           crashing: null,
           active: null,
+          stopHook: null,
           closed: [],
         };
         this.actors.set(actor.id, actor);
@@ -2510,15 +2558,22 @@ class ExecutorV1 {
         const shapes = term.submission_shapes;
         if (!shapes) throw new Error("submission lacks its result shapes");
         const accepted = (discarded: boolean) =>
-          this.variant(term.result_shape, "Ok", [
-            this.variant(shapes.success, discarded ? "Discarded" : "Accepted"),
+          this.variant(term.result_shape, "ResultOk", [
+            this.variant(
+              shapes.success,
+              discarded ? "DeliveryDiscarded" : "DeliveryAccepted",
+            ),
           ]);
         const rejected = (reason: string) =>
-          this.variant(term.result_shape, "Err", [
+          this.variant(term.result_shape, "ResultErr", [
             {
               kind: "record",
               typeId: this.aggregateName(shapes.failure!),
-              fields: [this.variant(shapes.reason, reason), request],
+              shape: shapes.failure!,
+              fields: [
+                this.variant(shapes.reason, sendErrorRole(reason)),
+                request,
+              ],
             },
           ]);
         let parked = false;
@@ -2529,7 +2584,7 @@ class ExecutorV1 {
         };
         const submit = () => {
           if (!actor.alive || actor.closing) {
-            finish(rejected("Closed"));
+            finish(rejected("Dead"));
             return;
           }
           const full =
@@ -2678,6 +2733,9 @@ class ExecutorV1 {
           spent: new Set(),
           completed: false,
           alive: true,
+          terminating: false,
+          teardownChild: null,
+          teardownCancelTimer: null,
           restartTimes: [],
           closed: [],
         };
@@ -2706,7 +2764,6 @@ class ExecutorV1 {
         return;
       }
       case "supervisor_pool_view":
-      case "supervisor_await_restart":
       case "supervisor_child": {
         const owner = this.supervisorFor(args[0]!);
         const spec = owner.layout.children[operation.child];
@@ -2734,47 +2791,79 @@ class ExecutorV1 {
           });
           return;
         }
-        const value = makeRole(offset);
-        const role = this.roles.get((value as { id: string }).id)!;
-        if (
-          operation.op === "supervisor_await_restart" &&
-          this.rolePending(role)
-        ) {
+        this.completeShim(act, term, makeRole(offset));
+        return;
+      }
+      case "await_restarted": {
+        const target = args[0]!;
+        const role = "id" in target ? this.roles.get(target.id) : undefined;
+        if (!role) throw new Error("restarted requires a supervised role");
+        if (this.rolePending(role)) {
           this.running = false;
           const settled = () => {
             if (this.rolePending(role)) {
               role.waiting.push(settled);
               return;
             }
-            this.completeShim(act, term, value);
+            this.completeShim(act, term, UNIT);
             this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
           };
           role.waiting.push(settled);
-        } else this.completeShim(act, term, value);
+        } else this.completeShim(act, term, UNIT);
         return;
       }
-      case "supervisor_stop": {
-        const owner = this.supervisorFor(args[0]!);
-        this.stopSupervisor(owner);
-        this.completeShim(act, term, args[0]!);
+      case "stop": {
+        const target = args[0]!;
+        if (target.kind === "actor")
+          this.requestActorStop(this.actorFor(target));
+        else if (target.kind === "supervisor")
+          this.stopSupervisor(this.supervisorFor(target));
+        else throw new Error("stop requires an actor or supervisor handle");
+        this.completeShim(act, term, UNIT);
         return;
       }
-      case "supervisor_role_await_closed":
-      case "supervisor_await_closed": {
-        const owner = this.supervisorFor(args[0]!);
-        if (
-          operation.op === "supervisor_role_await_closed" &&
-          operation.closing
-        )
-          this.stopSupervisor(owner);
-        if (owner.completed) this.completeShim(act, term, UNIT);
-        else {
-          this.running = false;
-          owner.closed.push(() => {
-            this.completeShim(act, term, UNIT);
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-          });
-        }
+      case "terminate": {
+        const target = args[0]!;
+        if (target.kind === "actor")
+          this.requestActorTerminate(this.actorFor(target));
+        else if (target.kind === "supervisor")
+          this.stopSupervisor(this.supervisorFor(target), true);
+        else
+          throw new Error("terminate requires an actor or supervisor handle");
+        this.completeShim(act, term, UNIT);
+        return;
+      }
+      case "await_stopped": {
+        const target = args[0]!;
+        if (target.kind === "actor") {
+          const actor = this.actorFor(target);
+          const complete = () => {
+            const fault = actor.crashing ?? actor.closingFault;
+            if (actor.closeFaultDebt !== undefined)
+              this.faultDebts.delete(actor.closeFaultDebt);
+            if (fault) this.raiseFault(act, fault, term.unwind);
+            else this.completeShim(act, term, UNIT);
+          };
+          if (actor.completed) complete();
+          else {
+            this.running = false;
+            actor.closed.push(() => {
+              complete();
+              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            });
+          }
+        } else if (target.kind === "supervisor") {
+          const owner = this.supervisorFor(target);
+          if (owner.completed) this.completeShim(act, term, UNIT);
+          else {
+            this.running = false;
+            owner.closed.push(() => {
+              this.completeShim(act, term, UNIT);
+              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            });
+          }
+        } else
+          throw new Error("stopped requires an actor or supervisor handle");
         return;
       }
       case "self_handle":
@@ -2785,32 +2874,6 @@ class ExecutorV1 {
           id: act.context.actor.id,
         });
         return;
-      case "close": {
-        const actor = this.actorFor(args[0]!);
-        this.requestActorClose(actor);
-        this.completeShim(act, term, args[0]!);
-        return;
-      }
-      case "await_closed": {
-        const actor = this.actorFor(args[0]!);
-        const complete = () => {
-          const fault = actor.crashing ?? actor.closingFault;
-          if (actor.closeFaultDebt !== undefined)
-            this.faultDebts.delete(actor.closeFaultDebt);
-          if (fault) this.raiseFault(act, fault, term.unwind);
-          else this.completeShim(act, term, UNIT);
-        };
-        if (actor.completed) {
-          complete();
-          return;
-        }
-        this.running = false;
-        actor.closed.push(() => {
-          complete();
-          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-        });
-        return;
-      }
       default:
         throw new Error(`actor operation ${operation.op} has no executor`);
     }
@@ -2922,6 +2985,7 @@ class ExecutorV1 {
           const record = (shape: number, fields: VmValue[]): VmValue => ({
             kind: "record",
             typeId: this.aggregateName(shape),
+            shape,
             fields,
           });
           const owner: VmValue = {
@@ -2937,7 +3001,7 @@ class ExecutorV1 {
           ]);
           finish(
             record(shapes.failure, [
-              this.variant(shapes.reason, "Full"),
+              this.variant(shapes.reason, "SendErrorFull"),
               message,
             ]),
             "Rejected",
@@ -2968,7 +3032,7 @@ class ExecutorV1 {
 
   private dispatchActor(actor: ActorInstance): void {
     if (actor.busy || !actor.alive || actor.drainingMailbox) return;
-    if (actor.closing && actor.mailbox.length > 0) {
+    if (actor.terminating && actor.mailbox.length > 0) {
       this.drainMailbox(actor, this.faultText(actor.closingFault), (fault) => {
         actor.closingFault = combineFaults(actor.closingFault, fault);
         this.dispatchActor(actor);
@@ -2983,7 +3047,7 @@ class ExecutorV1 {
     }
     actor.busy = true;
     this.scheduler.enqueue(actor.id, () => {
-      if (actor.closing) {
+      if (actor.terminating) {
         actor.busy = false;
         this.dispatchActor(actor);
         return;
@@ -3102,6 +3166,7 @@ class ExecutorV1 {
       const info: VmValue = {
         kind: "record",
         typeId: this.aggregateName(actor.layout.crash_info!),
+        shape: actor.layout.crash_info!,
         fields: [
           { kind: "i64", value: BigInt(code!) },
           { kind: "string", value: String(message) },
@@ -3294,7 +3359,11 @@ class ExecutorV1 {
     this.stopSupervisor(owner);
   }
 
-  private stopChild(value: VmValue | null, done: () => void): void {
+  private stopChild(
+    value: VmValue | null,
+    done: () => void,
+    force = false,
+  ): void {
     if (!value) {
       done();
       return;
@@ -3306,7 +3375,8 @@ class ExecutorV1 {
         return;
       }
       actor.closed.push(done);
-      this.requestActorClose(actor);
+      if (force) this.requestActorTerminate(actor);
+      else this.requestActorStop(actor);
     } else if (value.kind === "supervisor") {
       const nested = this.supervisorFor(value);
       if (nested.completed) {
@@ -3314,17 +3384,49 @@ class ExecutorV1 {
         return;
       }
       nested.closed.push(done);
-      this.stopSupervisor(nested);
+      this.stopSupervisor(nested, force);
     } else throw new Error("supervisor child is neither actor nor supervisor");
   }
 
-  private stopSupervisor(owner: SupervisorInstance): void {
+  private terminateChild(value: VmValue | null): void {
+    if (!value) return;
+    if (value.kind === "actor")
+      this.requestActorTerminate(this.actorFor(value));
+    else if (value.kind === "supervisor")
+      this.stopSupervisor(this.supervisorFor(value), true);
+  }
+
+  private stopSupervisor(owner: SupervisorInstance, force = false): void {
+    if (force) {
+      owner.terminating = true;
+      owner.teardownCancelTimer?.();
+      owner.teardownCancelTimer = null;
+      this.terminateChild(owner.teardownChild);
+    }
     if (!owner.alive) return;
     owner.alive = false;
-    const children = [...owner.children].reverse();
+    let childIndex = owner.children.length - 1;
     const next = () => {
-      if (children.length) {
-        this.stopChild(children.shift()!, next);
+      owner.teardownCancelTimer?.();
+      owner.teardownCancelTimer = null;
+      owner.teardownChild = null;
+      if (childIndex >= 0) {
+        const index = childIndex--;
+        const child = owner.children[index]!;
+        owner.teardownChild = child;
+        const spec = owner.specs[index]!;
+        const stopNs =
+          spec.stop_ns === undefined
+            ? "actor" in spec.role
+              ? 5_000_000_000
+              : null
+            : spec.stop_ns;
+        if (!owner.terminating && stopNs !== null && stopNs > 0) {
+          owner.teardownCancelTimer = this.scheduler.after(BigInt(stopNs), () =>
+            this.terminateChild(child),
+          );
+        }
+        this.stopChild(child, next, owner.terminating || stopNs === 0);
         return;
       }
       this.closeValueAsync(
@@ -3369,27 +3471,49 @@ class ExecutorV1 {
     );
   }
 
-  private requestActorClose(actor: ActorInstance): void {
+  private requestActorStop(actor: ActorInstance): void {
     if (actor.closing || actor.completed) return;
     actor.closing = true;
-    // The active turn drains first. Queued owners follow it before state and
-    // stop hooks, and each authored close may call a peer or suspend.
+    // Admission closes immediately. The active turn and every accepted queued
+    // turn finish before stop hooks and state release.
+    this.dispatchActor(actor);
+    for (const admit of actor.admission.splice(0)) admit();
+  }
+
+  private requestActorTerminate(actor: ActorInstance): void {
+    if (actor.completed || actor.terminating) return;
+    actor.closing = true;
+    actor.terminating = true;
     actor.active?.cancel?.();
+    actor.stopHook?.cancel?.();
     this.dispatchActor(actor);
     for (const admit of actor.admission.splice(0)) admit();
   }
 
   private stopActor(actor: ActorInstance): void {
     actor.busy = true;
-    const hooks = [...actor.layout.stop];
+    const hooks = actor.terminating ? [] : [...actor.layout.stop];
     const next = () => {
-      const hook = hooks.shift();
+      const hook = actor.terminating ? undefined : hooks.shift();
       if (hook !== undefined) {
-        this.invokeFrame(actor, hook, [actor.state], next, (fault) => {
-          actor.closingFault = combineFaults(actor.closingFault, fault);
-          hooks.length = 0;
-          next();
-        });
+        actor.stopHook = this.invokeFrame(
+          actor,
+          hook,
+          [actor.state],
+          () => {
+            actor.stopHook = null;
+            next();
+          },
+          (fault) => {
+            actor.stopHook = null;
+            if (
+              !(actor.terminating && fault.kind === "panic" && fault.cancelled)
+            )
+              actor.closingFault = combineFaults(actor.closingFault, fault);
+            hooks.length = 0;
+            next();
+          },
+        );
       } else {
         this.closeValueAsync(
           actor.state,
@@ -3406,7 +3530,18 @@ class ExecutorV1 {
             actor.completed = true;
             actor.alive = false;
             actor.busy = false;
-            this.trace.snapshot("actor.stop", { actor_id: actor.id });
+            this.trace.snapshot(
+              actor.terminating ? "actor.terminate" : "actor.stop",
+              { actor_id: actor.id },
+            );
+            this.settleSupervisedEnd(
+              actor,
+              actor.closingFault
+                ? "Crashed"
+                : actor.terminating
+                  ? "Terminated"
+                  : "Stopped",
+            );
             for (const wake of actor.closed.splice(0)) wake();
           },
           actor,
@@ -3414,6 +3549,34 @@ class ExecutorV1 {
       }
     };
     next();
+  }
+
+  private settleSupervisedEnd(
+    actor: ActorInstance,
+    reason: "Stopped" | "Terminated" | "Crashed",
+  ): void {
+    const parent = actor.supervisor;
+    if (
+      !parent ||
+      !parent.owner.alive ||
+      parent.owner.recovering.has(parent.child)
+    )
+      return;
+    const { owner, child } = parent;
+    const policy = owner.specs[child]!.restart;
+    if (
+      policy === "permanent" ||
+      (policy === "transient" && reason !== "Stopped")
+    ) {
+      this.restartChild(
+        owner,
+        child,
+        actor.closeFaultDebt === undefined ? [] : [actor.closeFaultDebt],
+      );
+    } else {
+      owner.spent.add(child);
+      this.wakeRoles();
+    }
   }
 
   // ── exit and faults ──────────────────────────────────────────────────────
@@ -3425,13 +3588,22 @@ class ExecutorV1 {
     const message = isPanic
       ? fault.message
       : (fault.message ?? trapMessage(fault.trap));
+    const [code, kind] = faultInfo(fault);
     // A failing run reports no exit code: native exits 1 for every fault and
     // names the kind in its message, so the kind is what travels, in
     // `runtime_failures`. The page turns it into an exit code of its own.
     this.trace.fail(
       status,
       "runtime.failure",
-      runtimeFailure(isPanic ? "panic" : "trap", message, trapKind, null),
+      runtimeFailure(
+        isPanic ? "panic" : "trap",
+        message,
+        trapKind,
+        null,
+        undefined,
+        fault.kind === "panic" ? fault.assertion : undefined,
+        { code, kind },
+      ),
     );
     throw new Halt(status);
   }
@@ -3551,11 +3723,60 @@ function payloadOf(value: VmValue): VmValue[] {
   return value.payload;
 }
 
-function tagOf(value: VmValue): number {
-  if (value.kind !== "enum") {
-    throw new TypeError(`expected an enum value, got ${value.kind}`);
+function actorErrorRole(reason: string): RuntimeVariantRole {
+  switch (reason) {
+    case "Rejected":
+      return "ActorErrorRejected";
+    case "Failed":
+      return "ActorErrorFailed";
+    case "Trapped":
+      return "ActorErrorTrapped";
+    case "Dead":
+      return "ActorErrorDead";
+    case "Timeout":
+      return "ActorErrorTimeout";
+    case "NodeNotRunning":
+      return "ActorErrorNodeNotRunning";
+    case "RoutingFailed":
+      return "ActorErrorRoutingFailed";
+    case "EncodeFailed":
+      return "ActorErrorEncodeFailed";
+    case "ConnectionDropped":
+      return "ActorErrorConnectionDropped";
+    case "Partition":
+      return "ActorErrorPartition";
+    default:
+      throw new Error(`unknown actor error reason ${reason}`);
   }
-  return value.tag;
+}
+
+function sendErrorRole(reason: string): RuntimeVariantRole {
+  switch (reason) {
+    case "Full":
+      return "SendErrorFull";
+    case "Closed":
+      return "SendErrorClosed";
+    case "NodeRoutingNotWired":
+      return "SendErrorNodeRoutingNotWired";
+    case "Partition":
+      return "SendErrorPartition";
+    case "StaleRef":
+      return "SendErrorStaleRef";
+    case "LocalShutdown":
+      return "SendErrorLocalShutdown";
+    case "Cancelled":
+      return "SendErrorCancelled";
+    case "VersionMismatch":
+      return "SendErrorVersionMismatch";
+    case "Unauthorized":
+      return "SendErrorUnauthorized";
+    case "Backpressure":
+      return "SendErrorBackpressure";
+    case "Dead":
+      return "SendErrorDead";
+    default:
+      throw new Error(`unknown send error reason ${reason}`);
+  }
 }
 
 function calleeFunction(value: VmValue): number {

@@ -49,12 +49,14 @@ fn explicit_next_uses_the_common_vector_and_aggregate_contracts() {
     ",
     );
     let cursor = hew_types::ResolvedTy::named_builtin(
-        "VecIter",
         hew_types::BuiltinType::VecIter,
         vec![hew_types::ResolvedTy::I64],
     );
     let shape = module.aggregate_shape_for_type(&cursor).unwrap();
-    assert_eq!(shape.instance.nominal.full_path(), "std.builtins.VecIter");
+    assert_eq!(
+        module.defs.path(shape.instance.nominal.declaration()),
+        "std.builtins.VecIter"
+    );
     assert!(module
         .functions
         .iter()
@@ -83,7 +85,7 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
     let main = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
     let mut reads = 0;
@@ -110,9 +112,13 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
                     let hew_sir::SemOpKind::LoadBorrow { place } = &op.kind else {
                         return false;
                     };
-                    let plan =
-                        hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts)
-                            .unwrap();
+                    let plan = hew_sir::place_plan(
+                        &module.defs,
+                        main,
+                        &module.aggregate_shapes,
+                        &module.type_facts,
+                    )
+                    .unwrap();
                     let projection = plan.projection(*place).unwrap();
                     let [step] = projection.path.as_slice() else {
                         panic!("cursor field must be direct")
@@ -125,7 +131,10 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
                         .iter()
                         .find(|shape| shape.id == id)
                         .unwrap();
-                    assert_eq!(shape.instance.nominal.full_path(), "std.builtins.VecIter");
+                    assert_eq!(
+                        module.defs.path(shape.instance.nominal.declaration()),
+                        "std.builtins.VecIter"
+                    );
                     assert_eq!(shape.fields[step.field as usize].ty, op.results[0].ty);
                     op.results[0].own == hew_sir::OwnKind::Guaranteed
                 }),
@@ -134,7 +143,13 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
         }
     }
     assert_eq!(reads, 2, "cursor next needs one length and one item read");
-    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = hew_sir::place_plan(
+        &module.defs,
+        main,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     assert!(
         !operations.iter().any(|op| {
             let projected_copy = match op.kind {
@@ -153,22 +168,26 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
 #[test]
 fn vector_empty_checks_compose_with_iteration_and_mutation() {
     lower_source(
-        r#"
-        type Values { items: Vec<string>, }
-        fn main() -> i64 {
-            var items: Vec<string> = [];
-            if items.is_empty() { items.push("first"); }
-            let source = Values { items: items };
-            var total = 0;
-            if !source.items.is_empty() {
-                for item in source.items {
-                    items.clear();
-                    total = total + item.len();
-                }
-            }
-            total
+        r#"type Values {
+    items: Vec<string>;
+}
+
+fn main() -> i64 {
+    var items: Vec<string> = [];
+    if items.is_empty() {
+        items.push("first");
+    }
+    let source = Values { items: items };
+    var total = 0;
+    if !source.items.is_empty() {
+        for item in source.items {
+            items.clear();
+            total = total + item.len();
         }
-    "#,
+    }
+    total
+}
+"#,
     );
 }
 
@@ -195,15 +214,22 @@ fn iteration_exits_preserve_outer_values_and_clean_up_items() {
 #[test]
 fn nested_fields_update_through_the_same_aggregate_operations() {
     lower_source(
-        r#"
-        type Inner { value: string, other: Vec<string>, }
-        type Outer { inner: Inner, sibling: string, }
-        fn main() -> i64 {
-            var value = Outer { inner: Inner { value: "old", other: ["keep"] }, sibling: "sibling" };
-            value.inner.value = value.sibling;
-            value.inner.value.len()
-        }
-    "#,
+        r#"type Inner {
+    value: string;
+    other: Vec<string>;
+}
+
+type Outer {
+    inner: Inner;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    var value = Outer { inner: Inner { value: "old", other: ["keep"] }, sibling: "sibling" };
+    value.inner.value = value.sibling;
+    value.inner.value.len()
+}
+"#,
     );
 }
 
@@ -260,7 +286,7 @@ fn missing_break_cleanup_is_rejected_by_the_ownership_verifier() {
     let function = module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let local = function
         .bindings

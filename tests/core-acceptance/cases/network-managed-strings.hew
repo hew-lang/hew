@@ -1,8 +1,13 @@
 import std.net.http;
+
 import std.net.http.http_client;
+
 import std.net.websocket;
+
 import std.encoding.protobuf;
+
 import std.process;
+
 import std.os;
 
 fn contains_header(headers: Vec<(string, string)>, name: string, value: string) -> bool {
@@ -17,16 +22,15 @@ fn contains_header(headers: Vec<(string, string)>, name: string, value: string) 
 fn check_http_listener_released(address: string) {
     // tiny_http wakes its detached accept thread on close; socket release
     // follows when that thread observes the close request.
-    for _ in 0..1000 {
+    loop {
         match http.listen(address) {
             .Ok(server) => {
                 server.close();
                 return;
-            },
+            }
             .Err(_) => sleep(1ms),
         }
     }
-    panic("HTTP listener was not released");
 }
 
 fn check_invalid_address(address: string) {
@@ -34,21 +38,21 @@ fn check_invalid_address(address: string) {
         .Ok(server) => {
             server.close();
             panic("invalid HTTP address accepted");
-        },
+        }
         .Err(error) => match error {
             .InvalidArgument(detail) => assert(!detail.is_empty()),
             _ => panic("wrong HTTP address error"),
-        },
+        }
     }
     match websocket.listen(address) {
         .Ok(server) => {
             server.close();
             panic("invalid WebSocket address accepted");
-        },
+        }
         .Err(error) => match error {
             .InvalidArgument(detail) => assert(!detail.is_empty()),
             _ => panic("wrong WebSocket address error"),
-        },
+        }
     }
 }
 

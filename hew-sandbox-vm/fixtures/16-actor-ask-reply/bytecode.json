@@ -814,6 +814,7 @@
             }
           ],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 7
@@ -1052,12 +1053,25 @@
         }
       ],
       "id": 0,
-      "name": "ActorError<Never, Never>"
+      "name": "ActorError<Never, Never>",
+      "runtime_tags": {
+        "ActorErrorConnectionDropped": 8,
+        "ActorErrorDead": 3,
+        "ActorErrorEncodeFailed": 7,
+        "ActorErrorFailed": 1,
+        "ActorErrorNodeNotRunning": 5,
+        "ActorErrorPartition": 9,
+        "ActorErrorRejected": 0,
+        "ActorErrorRoutingFailed": 6,
+        "ActorErrorTimeout": 4,
+        "ActorErrorTrapped": 2
+      }
     },
     {
       "cases": [],
       "id": 1,
-      "name": "Never"
+      "name": "Never",
+      "runtime_tags": {}
     },
     {
       "cases": [
@@ -1107,7 +1121,20 @@
         }
       ],
       "id": 2,
-      "name": "SendError"
+      "name": "SendError",
+      "runtime_tags": {
+        "SendErrorBackpressure": 9,
+        "SendErrorCancelled": 6,
+        "SendErrorClosed": 1,
+        "SendErrorDead": 10,
+        "SendErrorFull": 0,
+        "SendErrorLocalShutdown": 5,
+        "SendErrorNodeRoutingNotWired": 2,
+        "SendErrorPartition": 3,
+        "SendErrorStaleRef": 4,
+        "SendErrorUnauthorized": 8,
+        "SendErrorVersionMismatch": 7
+      }
     },
     {
       "cases": [
@@ -1125,7 +1152,11 @@
         }
       ],
       "id": 3,
-      "name": "Result<string, ActorError<Never, Never>>"
+      "name": "Result<string, ActorError<Never, Never>>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     }
   ],
   "vtables": []

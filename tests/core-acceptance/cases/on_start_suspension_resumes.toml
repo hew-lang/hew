@@ -1,0 +1,10 @@
+[[case]]
+id = "on_start_suspension_resumes"
+intent = "#2269: a `#[on(start)]` lifecycle hook that suspends (sleep/await) must run to completion across the suspension point — code AND state writes after the suspend must survive."
+source = "../vertical-slice/accept/on_start_suspension_resumes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "before\nafter\n99\n"
+exit = 0

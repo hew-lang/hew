@@ -5,19 +5,19 @@
 
 /// The represented YAML kind, without exposing runtime tags.
 pub enum Kind {
-    Null,
-    Bool,
-    Integer,
-    Float,
-    String,
-    Sequence,
-    Mapping,
-    Tagged,
+    Null;
+    Bool;
+    Integer;
+    Float;
+    String;
+    Sequence;
+    Mapping;
+    Tagged;
 }
 
 /// Malformed YAML input.
 pub enum ParseError {
-    Invalid(string),
+    Invalid(string);
 }
 
 impl Display for ParseError {
@@ -30,7 +30,7 @@ impl Display for ParseError {
 
 /// A value cannot be represented as YAML text.
 pub enum EncodeError {
-    Invalid(string),
+    Invalid(string);
 }
 
 impl Display for EncodeError {
@@ -44,13 +44,13 @@ impl Display for EncodeError {
 /// A checked access or mutation failed without changing the value.
 pub enum AccessError {
     /// Expected kind, followed by the actual kind.
-    WrongKind(Kind, Kind),
+    WrongKind(Kind, Kind);
     /// The integer does not fit the requested signed or unsigned type.
-    IntegerRange,
+    IntegerRange;
     /// The index is negative or exceeds the supported runtime index range.
-    InvalidIndex(i64),
+    InvalidIndex(i64);
     /// A mapping key is not a string; its kind is preserved in the error.
-    UnsupportedMappingKey(Kind),
+    UnsupportedMappingKey(Kind);
 }
 
 impl Display for AccessError {

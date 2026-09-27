@@ -297,39 +297,53 @@ impl BuiltinTy {
             BuiltinTy::Unit => ResolvedTy::Unit,
             BuiltinTy::Never => ResolvedTy::Never,
             BuiltinTy::VecAny => ResolvedTy::named_builtin(
-                "Vec",
                 hew_types::BuiltinType::Vec,
-                vec![ResolvedTy::named_user("T", vec![])],
+                vec![ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                    hew_types::BuiltinType::Vec,
+                    0,
+                    "T",
+                ))],
             ),
             BuiltinTy::HashMapAny => ResolvedTy::named_builtin(
-                "HashMap",
                 hew_types::BuiltinType::HashMap,
                 vec![
-                    ResolvedTy::named_user("K", vec![]),
-                    ResolvedTy::named_user("V", vec![]),
+                    ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                        hew_types::BuiltinType::HashMap,
+                        0,
+                        "K",
+                    )),
+                    ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                        hew_types::BuiltinType::HashMap,
+                        1,
+                        "V",
+                    )),
                 ],
             ),
             BuiltinTy::HashSetAny => ResolvedTy::named_builtin(
-                "HashSet",
                 hew_types::BuiltinType::HashSet,
-                vec![ResolvedTy::named_user("T", vec![])],
+                vec![ResolvedTy::param(hew_types::DefTable::builtin_parameter(
+                    hew_types::BuiltinType::HashSet,
+                    0,
+                    "T",
+                ))],
             ),
             BuiltinTy::Pointer => ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::U8),
             },
             BuiltinTy::Duration => ResolvedTy::Duration,
-            BuiltinTy::NodeConfig => ResolvedTy::named_user("std.builtins.NodeConfig", vec![]),
+            BuiltinTy::NodeConfig => ResolvedTy::named_user(
+                hew_types::NominalHead::new(
+                    hew_types::KnownDecl::NodeConfig.nominal(),
+                    hew_types::KnownDecl::NodeConfig.path(),
+                ),
+                vec![],
+            ),
             BuiltinTy::NodeResult => ResolvedTy::named_builtin(
-                "Result",
                 hew_types::BuiltinType::Result,
                 vec![
                     ResolvedTy::Unit,
-                    ResolvedTy::named_builtin(
-                        "NodeError",
-                        hew_types::BuiltinType::NodeError,
-                        vec![],
-                    ),
+                    ResolvedTy::named_builtin(hew_types::BuiltinType::NodeError, vec![]),
                 ],
             ),
         }
@@ -398,6 +412,12 @@ const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
     &[BuiltinTy::String, BuiltinTy::String, BuiltinTy::String];
+const STRING_STRING_STRING_STRING: &[BuiltinTy] = &[
+    BuiltinTy::String,
+    BuiltinTy::String,
+    BuiltinTy::String,
+    BuiltinTy::String,
+];
 const EMPTY: &[BuiltinTy] = &[];
 const HASHMAP_ANY: &[BuiltinTy] = &[BuiltinTy::HashMapAny];
 const HASHSET_ANY: &[BuiltinTy] = &[BuiltinTy::HashSetAny];
@@ -531,6 +551,13 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_panic_msg",
         },
+    ),
+    direct(
+        "assertion_panic",
+        BuiltinClass::ClassA,
+        STRING_STRING_STRING_STRING,
+        BuiltinTy::Never,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
         "assert",
@@ -1031,8 +1058,7 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
     ),
     // Pointer-shaped element family (a `Vec` of actor handles): the actor-handle
     // builtin lowers to a single pointer-sized word (`*mut HewActor`) and the
-    // checker classifies it via
-    // `BuiltinType::lowers_as_pointer_vec_element` → `"ptr"`. The runtime ABI
+    // checker classifies an actor head as `"ptr"`. The runtime ABI
     // (`hew_vec_new_ptr` + `hew_vec_{push,get,set,pop}_ptr`) already exists;
     // these rows register the symbols with HIR's `fn_registry` and codegen's
     // `fn_symbols` so the constructor (`hew_vec_new_ptr`) and the element ops
@@ -2769,7 +2795,7 @@ fn to_string_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::String => Some("len_str"),
-        ResolvedTy::Named { name, .. } if name == "Vec" => Some("len_vec"),
+        ResolvedTy::Named { head, .. } if head.registry_key() == "Vec" => Some("len_vec"),
         _ => None,
     }
 }
@@ -2779,7 +2805,7 @@ mod utf8_floor_tests {
     use crate::{lower_program_host_target, HirDiagnosticKind, HirItem, ResolutionCtx};
     use hew_parser::{
         ast::Program,
-        module::{Module, ModuleGraph, ModuleId},
+        module::{Module, ModuleGraph, ModulePath},
     };
     use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -2787,12 +2813,8 @@ mod utf8_floor_tests {
         let floor = hew_parser::parse(source);
         let root = hew_parser::parse("fn main() {}");
         assert!(floor.errors.is_empty(), "{:?}", floor.errors);
-        let floor_id = ModuleId::new(vec![
-            "std".to_string(),
-            "encoding".to_string(),
-            "utf8".to_string(),
-        ]);
-        let root_id = ModuleId::root();
+        let floor_id = ModulePath::new(["std", "encoding", "utf8"]);
+        let root_id = ModulePath::root();
         let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()

@@ -23,7 +23,9 @@
 //! which a pure-runtime fixture cannot reach because the independent
 //! liveness layer also excludes the (arm-scoped, dead-at-exit) binders.
 
-enum Box<T> { Full(T), }
+enum Box<T> {
+    Full(T);
+}
 
 fn main() -> i64 {
     var i: i64 = 0;
@@ -31,8 +33,12 @@ fn main() -> i64 {
         let b: Box<string> = Box.Full(("df-" + "payload"));
         // Two independent destructures of the same payload: each binds a
         // fresh `string` aliasing the inner buffer with no retain.
-        let _x = match b { Box.Full(f) => 0, };
-        let _y = match b { Box.Full(g) => 0, };
+        let _x = match b {
+            Box.Full(f) => 0,
+        };
+        let _y = match b {
+            Box.Full(g) => 0,
+        };
         i = i + 1;
     }
     println("done");

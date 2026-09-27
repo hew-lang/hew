@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-iter-method-escape-escape-async"
+intent = "`Vec<T>::iter()` cursor drop-safety oracles: the `iter()` cursor must own an INDEPENDENT snapshot of its backing buffer, so it can coexist with — or outlive — the source vec without a double-free or use-after-free. Shape `escape_async` (iter escape async no uaf under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-iter-method-escape-escape-async.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "42OK"
+exit = 0

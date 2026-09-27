@@ -629,7 +629,7 @@ pub struct Binding {
 pub fn stream_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Stream),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Stream),
             args,
             ..
         } if args.len() == 1 => args.first(),
@@ -642,7 +642,7 @@ pub fn stream_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 pub fn sink_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Sink),
+            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Sink),
             args,
             ..
         } if args.len() == 1 => args.first(),
@@ -694,12 +694,7 @@ mod tests {
     fn a_named_type_with_no_row_refuses_whether_or_not_its_name_is_a_builtin() {
         let none = super::TypeFactTable::new();
         for name in ["Location", "Handle"] {
-            let ty = hew_types::ResolvedTy::Named {
-                name: name.to_string(),
-                args: Vec::new(),
-                builtin: None,
-                is_opaque: false,
-            };
+            let ty = hew_types::ResolvedTy::user_for_test(name, Vec::new());
             let error = OwnKind::of_ty(&ty, &none)
                 .expect_err("a type with no row and no declaration has no ownership kind");
             assert!(error.contains(name), "{error}");

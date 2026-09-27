@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-projection-chain-chain-double-skip"
+intent = "Nested-projection-chain ownership oracle — the compiled-binary pins for a MULTI-level field-projection alias chain. Shape `chain_double_skip_high` (two level double skip leak slope below tolerance, two level double skip no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-projection-chain-chain-double-skip.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

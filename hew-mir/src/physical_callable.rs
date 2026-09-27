@@ -355,6 +355,7 @@ impl FunctionLowerer<'_> {
         let SemTerminator::DynCall {
             receiver,
             slot,
+            method,
             signature,
             args,
             result,
@@ -368,6 +369,7 @@ impl FunctionLowerer<'_> {
         Ok(PhysicalTerminator::DynCall {
             receiver: self.argument_transfer(receiver.operand.value, receiver.decision)?,
             slot: *slot,
+            method: *method,
             signature: PhysicalCallSignature {
                 params: self.call_params(signature)?,
                 return_ty: signature.return_ty.clone(),
@@ -498,11 +500,12 @@ pub(super) fn verify_dyn_call(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     receiver: ArgumentTransfer,
-    slot: u32,
+    selected_method: (u32, hew_types::DefId),
     signature: &PhysicalCallSignature,
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
 ) -> Result<(), PhysicalError> {
+    let (slot, method) = selected_method;
     let source = match receiver {
         ArgumentTransfer::Borrow(id)
         | ArgumentTransfer::BorrowMut(id)
@@ -530,6 +533,14 @@ pub(super) fn verify_dyn_call(
                     table.concrete_ty.user_facing()
                 ))
             })?;
+        if published.method != method {
+            return Err(PhysicalError::new(format!(
+                "physical dispatch of `{}` names slot {slot}, which `{}` fills with `{}`",
+                module.defs.path(method),
+                table.concrete_ty.user_facing(),
+                module.defs.path(published.method)
+            )));
+        }
         if &published.signature != signature {
             return Err(PhysicalError::new(format!(
                 "physical dispatch of slot {slot} differs from the ABI `{}` was erased under",

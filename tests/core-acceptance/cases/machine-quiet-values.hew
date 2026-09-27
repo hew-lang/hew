@@ -1,14 +1,18 @@
 machine Quiet {
-    events { Begin, Finish }
-    state Idle,
-    state Active { label: string },
+    events {
+        Begin;
+        Finish;
+    }
+    state Idle;
+    state Active { label: string; }
     on Begin: Idle => Active { label: "quiet".to_upper() }
-    on Finish: Active => Idle,
+    on Finish: Active => Idle;
     default { state }
 }
 
 fn impossible(output: QuietOutput) -> i64 {
-    match output {}
+    match output {
+    }
 }
 
 fn main() -> i64 {
@@ -24,8 +28,10 @@ fn main() -> i64 {
         return 1;
     }
     match retained.disposition {
-        .Taken => {},
-        .Ignored => { return 2; },
+        .Taken => {}
+        .Ignored => {
+            return 2;
+        }
     }
     println(quiet.state_name());
     0

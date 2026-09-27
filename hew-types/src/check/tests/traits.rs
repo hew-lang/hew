@@ -7,42 +7,43 @@ pub(super) use super::*;
 #[test]
 fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
     let output = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-        }
+impl Builder {
+    fn close(consume self) {}
+}
 
-        trait Fluent {
-            #[returns_receiver]
-            fn touch(consume self) -> Self;
-        }
+trait Fluent {
+    #[returns_receiver]
+    fn touch(consume self) -> Self;
+}
 
-        impl Fluent for Builder {
-            #[returns_receiver]
-            fn touch(consume self) -> Builder {
-                self
-            }
-        }
+impl Fluent for Builder {
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn touch_twice<T: Fluent>(consume value: T) {
-            value.touch();
-            value.touch();
-        }
+fn touch_twice<T: Fluent>(consume value: T) {
+    value.touch();
+    value.touch();
+}
 
-        fn transfer(consume value: Builder) -> Builder {
-            value.touch()
-        }
+fn transfer(consume value: Builder) -> Builder {
+    value.touch()
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.touch();
-            let next = value.touch();
-            next.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.touch();
+    let next = value.touch();
+    next.touch();
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -69,26 +70,27 @@ fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
 #[test]
 fn captured_receiver_identity_result_moves_original_binding() {
     let output = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
+impl Builder {
+    fn close(consume self) {}
 
-            #[returns_receiver]
-            fn touch(consume self) -> Builder {
-                self
-            }
-        }
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            let next = value.touch();
-            value.touch();
-            next.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    let next = value.touch();
+    value.touch();
+    next.touch();
+}
+",
     );
     assert!(
         output
@@ -107,24 +109,29 @@ fn captured_receiver_identity_result_moves_original_binding() {
 #[test]
 fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
     let borrowed = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-            fn inspect(self) -> i64 { self.value }
+impl Builder {
+    fn close(consume self) {}
+    fn inspect(self) -> i64 {
+        self.value
+    }
 
-            #[returns_receiver]
-            fn touch(consume self) -> Builder { self }
-        }
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.touch().inspect();
-            value.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.touch().inspect();
+    value.touch();
+}
+",
     );
     assert!(
         borrowed.errors.is_empty(),
@@ -133,23 +140,26 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
     );
 
     let consumed = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
+impl Builder {
+    fn close(consume self) {}
 
-            #[returns_receiver]
-            fn touch(consume self) -> Builder { self }
-        }
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.touch().close();
-            value.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.touch().close();
+    value.touch();
+}
+",
     );
     assert!(
         consumed
@@ -164,46 +174,54 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
 #[test]
 fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
     for source in [
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            fn bad(consume self) -> Builder {
-                Builder { value: 2 }
-            }
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    fn bad(consume self) -> Builder {
+        Builder { value: 2 }
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    fn bad(consume self) -> Builder {
+        if self.value == 0 {
+            return self;
         }
-        ",
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            fn bad(consume self) -> Builder {
-                if self.value == 0 {
-                    return self;
-                }
-                self
-            }
-        }
-        ",
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            #[returns_receiver]
-            fn bad(consume self) -> Builder {
-                self
-            }
-        }
-        ",
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            fn bad(consume self, consume other: Builder) -> Builder {
-                other
-            }
-        }
-        ",
+        self
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    #[returns_receiver]
+    fn bad(consume self) -> Builder {
+        self
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    fn bad(consume self, consume other: Builder) -> Builder {
+        other
+    }
+}
+",
     ] {
         let output = check_source(source);
         assert!(
@@ -220,37 +238,38 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
 #[test]
 fn receiver_identity_allows_nonreceiver_arguments() {
     let output = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-        }
+impl Builder {
+    fn close(consume self) {}
+}
 
-        trait Fluent {
-            #[returns_receiver]
-            fn with(consume self, value: i64) -> Self;
-        }
+trait Fluent {
+    #[returns_receiver]
+    fn with(consume self, value: i64) -> Self;
+}
 
-        impl Fluent for Builder {
-            #[returns_receiver]
-            fn with(consume self, value: i64) -> Builder {
-                self
-            }
-        }
+impl Fluent for Builder {
+    #[returns_receiver]
+    fn with(consume self, value: i64) -> Builder {
+        self
+    }
+}
 
-        fn twice<T: Fluent>(consume value: T) {
-            value.with(1);
-            value.with(2);
-        }
+fn twice<T: Fluent>(consume value: T) {
+    value.with(1);
+    value.with(2);
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.with(2);
-            value.with(3);
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.with(2);
+    value.with(3);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -262,33 +281,34 @@ fn receiver_identity_allows_nonreceiver_arguments() {
 #[test]
 fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     let output = check_source(
-        r"
-        type Box<T> { value: T }
+        r"type Box<T> {
+    value: T;
+}
 
-        impl<T> Box<T> {
-            fn get(boxed: Box<T>, value: T) -> _ {
-                value
-            }
-        }
+impl<T> Box<T> {
+    fn get(boxed: Box<T>, value: T) -> _ {
+        value
+    }
+}
 
-        trait Fluent<T> {
-            #[returns_receiver]
-            fn with(consume self, value: T) -> Self;
-        }
+trait Fluent<T> {
+    #[returns_receiver]
+    fn with(consume self, value: T) -> Self;
+}
 
-        impl<T> Fluent<T> for Box<T> {
-            #[returns_receiver]
-            fn with(consume self, value: T) -> Box<T> {
-                self
-            }
-        }
+impl<T> Fluent<T> for Box<T> {
+    #[returns_receiver]
+    fn with(consume self, value: T) -> Box<T> {
+        self
+    }
+}
 
-        fn main() {
-            let box = Box { value: 1 };
-            box.with(2);
-            box.with(3);
-        }
-        ",
+fn main() {
+    let box = Box { value: 1 };
+    box.with(2);
+    box.with(3);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -297,21 +317,17 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     );
 
     let get_sig = output
-        .fn_sigs
+        .sigs()
         .get("Box::get")
         .expect("generic inherent method must retain its signature");
     assert_eq!(
         get_sig.return_type,
-        Ty::Named {
-            builtin: None,
-            name: "T".to_string(),
-            args: vec![],
-        },
+        Ty::param(get_sig.type_params[0]),
         "the body must resolve the primary return hole"
     );
 
     let with_sig = output
-        .fn_sigs
+        .sigs()
         .get("Box::with")
         .expect("generic trait impl method must retain its signature");
     assert!(
@@ -320,10 +336,10 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     );
     assert!(matches!(
         &with_sig.return_type,
-        Ty::Named { name, args, .. }
-            if name == "Box"
-                && matches!(args.as_slice(), [Ty::Named { name, args, .. }]
-                    if name == "T" && args.is_empty())
+        Ty::Named { head, args }
+            if head.spelling() == "Box"
+                && matches!(args.as_slice(), [Ty::Named { head, args }]
+                    if head.is_param() && head.spelling() == "T" && args.is_empty())
     ));
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
@@ -341,16 +357,18 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
 #[test]
 fn generic_receiver_identity_rejects_changed_type_arguments() {
     let output = check_source(
-        r"
-        type Pair<T, U> { first: T, second: U }
+        r"type Pair<T, U> {
+    first: T;
+    second: U;
+}
 
-        impl<T, U> Pair<T, U> {
-            #[returns_receiver]
-            fn swap_identity(consume self) -> Pair<U, T> {
-                Pair { first: self.second, second: self.first }
-            }
-        }
-        ",
+impl<T, U> Pair<T, U> {
+    #[returns_receiver]
+    fn swap_identity(consume self) -> Pair<U, T> {
+        Pair { first: self.second, second: self.first }
+    }
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -362,7 +380,7 @@ fn generic_receiver_identity_rejects_changed_type_arguments() {
     );
     assert!(
         output
-            .fn_sigs
+            .sigs()
             .get("Pair::swap_identity")
             .is_some_and(|sig| !sig.returns_receiver_identity),
         "a changed generic instantiation must fail closed in dispatch metadata"
@@ -415,25 +433,35 @@ fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
 #[test]
 fn trait_impl_must_match_receiver_identity_and_consume_axes() {
     for source in [
-        r"
-        type Builder { value: i64 }
-        trait Fluent {
-            #[returns_receiver]
-            fn touch(consume self) -> Self;
-        }
-        impl Fluent for Builder {
-            fn touch(consume self) -> Builder { self }
-        }
-        ",
-        r"
-        type Builder { value: i64 }
-        trait Fluent {
-            fn inspect(self) -> Self;
-        }
-        impl Fluent for Builder {
-            fn inspect(consume self) -> Builder { self }
-        }
-        ",
+        r"type Builder {
+    value: i64;
+}
+
+trait Fluent {
+    #[returns_receiver]
+    fn touch(consume self) -> Self;
+}
+
+impl Fluent for Builder {
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+trait Fluent {
+    fn inspect(self) -> Self;
+}
+
+impl Fluent for Builder {
+    fn inspect(consume self) -> Builder {
+        self
+    }
+}
+",
     ] {
         let output = check_source(source);
         assert!(
@@ -450,32 +478,35 @@ fn trait_impl_must_match_receiver_identity_and_consume_axes() {
 #[test]
 fn receiver_identity_trait_method_is_not_dyn_object_safe() {
     let output = check_source(
-        r"
-        trait Fluent {
-            #[returns_receiver]
-            fn touch(consume self) -> Self;
-        }
+        r"trait Fluent {
+    #[returns_receiver]
+    fn touch(consume self) -> Self;
+}
 
-        #[resource]
-        type Builder { value: i64 }
+#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-        }
+impl Builder {
+    fn close(consume self) {}
+}
 
-        impl Fluent for Builder {
-            #[returns_receiver]
-            fn touch(consume self) -> Builder { self }
-        }
+impl Fluent for Builder {
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn use_dyn(value: dyn Fluent) {
-            value.touch();
-        }
+fn use_dyn(value: dyn Fluent) {
+    value.touch();
+}
 
-        fn main() {
-            use_dyn(Builder { value: 1 });
-        }
-        ",
+fn main() {
+    use_dyn(Builder { value: 1 });
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -539,8 +570,8 @@ fn module_local_dyn_trait_method_records_vtable_call() {
         .expect("root program must contain the shapes import");
     import.resolved_items = Some(module_items.clone().into());
 
-    let root_id = ModuleId::root();
-    let shapes_id = ModuleId::new(vec!["shapes".to_string()]);
+    let root_id = ModulePath::root();
+    let shapes_id = ModulePath::new(["shapes"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {
@@ -584,24 +615,98 @@ fn module_local_dyn_trait_method_records_vtable_call() {
 }
 
 #[test]
+fn qualified_dyn_trait_keeps_foreign_method_order_and_identity() {
+    let foreign = hew_parser::parse(
+        "pub trait Shape { fn name(self) -> string; fn kind(self) -> string; } \
+         pub fn show(s: dyn Shape) { println(s.name() + s.kind()); }",
+    );
+    assert!(foreign.errors.is_empty(), "{:#?}", foreign.errors);
+    let source = "import ma;\n\ntrait Shape {\n    fn kind(self) -> string;\n    fn name(self) -> string;\n}\n\ntype Box {\n    v: i64;\n}\n\nimpl Shape for Box {\n    fn kind(self) -> string {\n        \"K\"\n    }\n    fn name(self) -> string {\n        \"N\"\n    }\n}\n\nfn announce(shape: dyn ma.Shape) -> string {\n    shape.name()\n}\n\nfn main() {\n    ma.show(Box { v: 1 });\n}\n";
+    let mut root = hew_parser::parse(source);
+    assert!(root.errors.is_empty(), "{:#?}", root.errors);
+    let (Item::Import(import), _) = &mut root.program.items[0] else {
+        panic!("expected module import");
+    };
+    import.resolved_items = Some(foreign.program.items.clone().into());
+    import.resolved_source_paths = vec![std::path::PathBuf::from("ma.hew")];
+    let root_id = ModulePath::root();
+    let ma_id = ModulePath::new(["ma"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    for (id, items, path) in [
+        (ma_id.clone(), foreign.program.items, "ma.hew"),
+        (root_id.clone(), root.program.items.clone(), "main.hew"),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: Vec::new(),
+                source_paths: vec![std::path::PathBuf::from(path)],
+                doc: None,
+            })
+            .unwrap();
+    }
+    graph.topo_order = vec![ma_id, root_id];
+    root.program.module_graph = Some(graph);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&root.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let foreign_trait = output.defs.lookup_path("ma.Shape").expect("foreign trait");
+    let show = output
+        .defs
+        .lookup_path("ma.show")
+        .expect("foreign function");
+    let Ty::TraitObject { traits } = &output.fn_sigs[&show].params[0] else {
+        panic!("foreign parameter should be a trait object");
+    };
+    assert_eq!(traits[0].trait_id, Some(foreign_trait));
+    let annotation = source.find("dyn ma.Shape").unwrap() + "dyn ma.".len();
+    assert_eq!(
+        output.resolutions.get(&SpanKey::in_module(
+            &(annotation..annotation + "Shape".len()),
+            0
+        )),
+        Some(&crate::check::scope::Resolution::Def(foreign_trait))
+    );
+    let coercion = output
+        .dyn_trait_coercions
+        .values()
+        .next()
+        .expect("concrete argument to foreign trait object");
+    assert_eq!(coercion.trait_bounds[0].trait_id, Some(foreign_trait));
+    assert_eq!(
+        coercion
+            .vtable_entries
+            .iter()
+            .map(|entry| entry.method_name.as_str())
+            .collect::<Vec<_>>(),
+        ["name", "kind"]
+    );
+    assert!(coercion
+        .vtable_entries
+        .iter()
+        .all(|entry| output.defs.owner(entry.method) == Some(foreign_trait)));
+}
+
+#[test]
 fn dyn_trait_return_signature_is_admitted() {
-    let source = r#"
-        trait Named {
-            fn name(val: Self) -> string;
-        }
+    let source = r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        type Person {
-            name: string,
-        }
+type Person {
+    name: string;
+}
 
-        impl Named for Person {
-            fn name(person: Person) -> string { person.name }
-        }
+impl Named for Person {
+    fn name(person: Person) -> string {
+        person.name
+    }
+}
 
-        fn make_person() -> dyn Named {
-            Person { name: "Ada" }
-        }
-    "#;
+fn make_person() -> dyn Named {
+    Person { name: "Ada" }
+}
+"#;
 
     let (errors, _) = parse_and_check(source);
     assert!(
@@ -612,23 +717,24 @@ fn dyn_trait_return_signature_is_admitted() {
 
 #[test]
 fn nested_dyn_trait_return_signature_is_admitted() {
-    let source = r#"
-        trait Named {
-            fn name(val: Self) -> string;
-        }
+    let source = r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        type Person {
-            name: string,
-        }
+type Person {
+    name: string;
+}
 
-        impl Named for Person {
-            fn name(person: Person) -> string { person.name }
-        }
+impl Named for Person {
+    fn name(person: Person) -> string {
+        person.name
+    }
+}
 
-        fn maybe_person() -> Option<dyn Named> {
-            .Some(Person { name: "Ada" })
-        }
-    "#;
+fn maybe_person() -> Option<dyn Named> {
+    .Some(Person { name: "Ada" })
+}
+"#;
 
     let (errors, _) = parse_and_check(source);
     assert!(
@@ -1628,12 +1734,10 @@ fn trait_method_where_clause_bound_enforced_positive() {
         output.errors
     );
     assert!(
-        output.call_type_args.values().any(|args| args
-            == &vec![crate::ty::Ty::Named {
-                builtin: None,
-                name: "Page".to_string(),
-                args: vec![]
-            }]),
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::named_in(&output.defs, "Page", vec![])]),
         "expected method-level bound call to infer U=Page, got {:?}",
         output.call_type_args
     );
@@ -1651,12 +1755,12 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
             ..FnSig::default()
         },
     );
-    checker.type_defs.insert(
-        "Speaker".to_string(),
-        make_test_type_def("Speaker", vec![], methods),
-    );
-    checker.fn_sigs.insert(
-        "Speaker::hello".to_string(),
+    let __id = checker.test_declaration("Speaker");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Speaker", vec![], methods));
+    checker.test_fn_sig(
+        "Speaker::hello",
         FnSig {
             return_type: Ty::I64,
             ..FnSig::default()
@@ -1681,30 +1785,23 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
     );
+    let __id = checker.test_declaration("Boxy");
     checker.type_defs.insert(
-        "Boxy".to_string(),
-        make_test_type_def("Boxy", vec!["T".to_string()], methods),
+        __id,
+        make_test_type_def("Boxy", vec![crate::ParamHead::for_test("T")], methods),
     );
     checker.env.define(
         "boxy".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "Boxy".to_string(),
-            args: vec![Ty::String],
-        },
+        checker.test_named("Boxy", vec![Ty::String]),
         false,
     );
 
     let expr = Expr::Index {
-        object: Box::new((Expr::Identifier("boxy".to_string()), 0..4)),
+        object: Box::new((Expr::Ident(Ident::new("boxy")), 0..4)),
         index: Box::new(make_int_literal(0, 5..6)),
     };
 
@@ -1730,35 +1827,32 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     // Same as above but the `get` method is registered via fn_sigs rather than
     // inline on the type_def (the fn_sig-fallback path in lookup_named_method_sig).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
-        "Wrapper".to_string(),
-        make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
+        __id,
+        make_test_type_def(
+            "Wrapper",
+            vec![crate::ParamHead::for_test("T")],
+            HashMap::new(),
+        ),
     );
-    checker.fn_sigs.insert(
-        "Wrapper::get".to_string(),
+    checker.test_fn_sig(
+        "Wrapper::get",
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
     );
     checker.env.define(
         "wrapper".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "Wrapper".to_string(),
-            args: vec![Ty::String],
-        },
+        checker.test_named("Wrapper", vec![Ty::String]),
         false,
     );
 
     let expr = Expr::Index {
-        object: Box::new((Expr::Identifier("wrapper".to_string()), 0..7)),
+        object: Box::new((Expr::Ident(Ident::new("wrapper")), 0..7)),
         index: Box::new(make_int_literal(0, 8..9)),
     };
 
@@ -1789,13 +1883,8 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Register HashMap with a string-keyed .get() method (as the stdlib defines it).
     // Return type is Option<V>, represented as the Named form.
     let option_v = Ty::Named {
-        builtin: Some(crate::BuiltinType::Option),
-        name: "Option".to_string(),
-        args: vec![Ty::Named {
-            builtin: None,
-            name: "V".to_string(),
-            args: vec![],
-        }],
+        head: crate::TypeHead::Builtin(crate::BuiltinType::Option),
+        args: vec![Ty::param(crate::ParamHead::for_test("V"))],
     };
     let mut methods = HashMap::new();
     methods.insert(
@@ -1807,24 +1896,28 @@ fn hashmap_bracket_index_is_a_compile_error() {
             ..FnSig::default()
         },
     );
+    let __id = checker.test_declaration("HashMap");
     checker.type_defs.insert(
-        "HashMap".to_string(),
-        make_test_type_def("HashMap", vec!["K".to_string(), "V".to_string()], methods),
+        __id,
+        make_test_type_def(
+            "HashMap",
+            vec![
+                crate::ParamHead::for_test("K"),
+                crate::ParamHead::for_test("V"),
+            ],
+            methods,
+        ),
     );
     checker.env.define(
         "m".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "HashMap".to_string(),
-            args: vec![Ty::String, Ty::I64],
-        },
+        checker.test_named("HashMap", vec![Ty::String, Ty::I64]),
         false,
     );
 
     // Use an i64 index so the only diagnostic comes from the named-type guard,
     // not from a type mismatch on the index expression itself.
     let expr = Expr::Index {
-        object: Box::new((Expr::Identifier("m".to_string()), 0..1)),
+        object: Box::new((Expr::Ident(Ident::new("m")), 0..1)),
         index: Box::new(make_int_literal(0, 2..3)),
     };
 
@@ -1844,28 +1937,27 @@ fn hashmap_bracket_index_is_a_compile_error() {
 #[test]
 fn index_trait_user_impl_runs() {
     let output = check_source(
-        r"
-        type Grid {
-            bias: i32,
-        }
+        r"type Grid {
+    bias: i32;
+}
 
-        impl Index<i32> for Grid {
-            type Output = i32;
+impl Index<i32> for Grid {
+    type Output = i32;
 
-            fn get(g: Grid, index: i32) -> Option<i32> {
-                .Some(g.bias + index)
-            }
+    fn get(g: Grid, index: i32) -> Option<i32> {
+        .Some(g.bias + index)
+    }
 
-            fn at(g: Grid, index: i32) -> i32 {
-                g.bias + index
-            }
-        }
+    fn at(g: Grid, index: i32) -> i32 {
+        g.bias + index
+    }
+}
 
-        fn f() -> i32 {
-            let g = Grid { bias: 40 };
-            g[2]
-        }
-        ",
+fn f() -> i32 {
+    let g = Grid { bias: 40 };
+    g[2]
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1933,24 +2025,21 @@ fn dyn_index_with_output_binding() {
 #[test]
 fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
-        "Wrapper".to_string(),
-        make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
+        __id,
+        make_test_type_def(
+            "Wrapper",
+            vec![crate::ParamHead::for_test("T")],
+            HashMap::new(),
+        ),
     );
-    checker.fn_sigs.insert(
-        "Wrapper::value".to_string(),
+    checker.test_fn_sig(
+        "Wrapper::value",
         FnSig {
             param_names: vec!["next".to_string()],
-            params: vec![Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            }],
-            return_type: Ty::Named {
-                builtin: None,
-                name: "T".to_string(),
-                args: vec![],
-            },
+            params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+            return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
     );
@@ -1965,12 +2054,12 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
 #[test]
 fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.type_defs.insert(
-        "Thing".to_string(),
-        make_test_type_def("Thing", vec![], HashMap::new()),
-    );
-    checker.fn_sigs.insert(
-        "Thing::label".to_string(),
+    let __id = checker.test_declaration("Thing");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Thing", vec![], HashMap::new()));
+    checker.test_fn_sig(
+        "Thing::label",
         FnSig {
             return_type: Ty::String,
             ..FnSig::default()
@@ -1978,15 +2067,11 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     );
     checker.env.define(
         "thing".to_string(),
-        Ty::Named {
-            builtin: None,
-            name: "widgets.Thing".to_string(),
-            args: vec![],
-        },
+        checker.test_named("widgets.Thing", vec![]),
         false,
     );
 
-    let receiver = (Expr::Identifier("thing".to_string()), 0..5);
+    let receiver = (Expr::Ident(Ident::new("thing")), 0..5);
     let ty = checker.check_method_call(&receiver, "label", &[], &(0..13));
 
     assert_eq!(ty, Ty::Error);
@@ -2026,24 +2111,25 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
 
 #[test]
 fn generic_named_method_calls_record_method_type_args() {
-    let source = r#"
-        type Wrapper<T> { value: T }
+    let source = r#"type Wrapper<T> {
+    value: T;
+}
 
-        impl<T> Wrapper<T> {
-            fn map<U>(wrapper: Wrapper<T>, mapper: fn(T) -> U) -> U {
-                mapper(wrapper.value)
-            }
-        }
+impl<T> Wrapper<T> {
+    fn map<U>(wrapper: Wrapper<T>, mapper: fn(T) -> U) -> U {
+        mapper(wrapper.value)
+    }
+}
 
-        fn to_len(value: string) -> i64 {
-            value.len()
-        }
+fn to_len(value: string) -> i64 {
+    value.len()
+}
 
-        fn main() {
-            let wrapper = Wrapper { value: "hew" };
-            let len = wrapper.map(to_len);
-        }
-    "#;
+fn main() {
+    let wrapper = Wrapper { value: "hew" };
+    let len = wrapper.map(to_len);
+}
+"#;
 
     let result = hew_parser::parse(source);
     assert!(
@@ -2101,12 +2187,11 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
     );
 
     let fn_sig = output
-        .fn_sigs
+        .sigs()
         .get("Wrapper::map")
         .expect("impl method must populate fn_sigs");
     let method_sig = output
-        .type_defs
-        .get("Wrapper")
+        .type_def_at_path("Wrapper")
         .and_then(|type_def| type_def.methods.get("map"))
         .expect("impl method must populate type_def.methods");
 
@@ -2129,13 +2214,11 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
 #[test]
 fn structural_hardening_uses_fn_sigs_named_method_fallback() {
     let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    checker.type_defs.insert(
-        "Speaker".to_string(),
-        make_test_type_def("Speaker", vec![], HashMap::new()),
-    );
+    let __id = checker.test_declaration("Speaker");
     checker
-        .fn_sigs
-        .insert("Speaker::hello".to_string(), FnSig::default());
+        .type_defs
+        .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
+    checker.test_fn_sig("Speaker::hello", FnSig::default());
 
     assert!(
         checker.type_structurally_satisfies("Speaker", "Greet"),
@@ -2155,12 +2238,12 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
             ..FnSig::default()
         },
     );
-    checker.type_defs.insert(
-        "Sink".to_string(),
-        make_test_type_def("Sink", vec![], methods),
-    );
-    checker.fn_sigs.insert(
-        "Sink::close".to_string(),
+    let __id = checker.test_declaration("Sink");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Sink", vec![], methods));
+    checker.test_fn_sig(
+        "Sink::close",
         FnSig {
             return_type: Ty::I32,
             ..FnSig::default()
@@ -2201,7 +2284,8 @@ fn structural_hardening_qualified_trait_name_matches() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     assert!(
         checker.type_structurally_satisfies("Speaker", "greet.Greet"),
@@ -2237,7 +2321,8 @@ fn structural_hardening_qualified_type_name_matches() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     assert!(
         checker.type_structurally_satisfies("mymod.Speaker", "Greet"),
@@ -2273,7 +2358,8 @@ fn structural_hardening_unknown_module_qualifier_is_rejected() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     // Trait "unknown.Greet" should not resolve to "Greet" because "unknown" is
     // not a registered module.
@@ -2478,12 +2564,12 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
     // Build super-trait with an associated type.
     let assoc_super = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "AssocSuper".to_string(),
+        name: Ident::new("AssocSuper"),
         type_params: None,
         super_traits: None,
         items: vec![
             TraitItem::AssociatedType {
-                name: "Output".to_string(),
+                name: Ident::new("Output"),
                 default: None,
                 bounds: vec![],
                 span: 0..0,
@@ -2491,13 +2577,17 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: "do_it".to_string(),
+                name: Ident::new("do_it"),
                 type_params: None,
                 params: vec![Param {
-                    name: "val".to_string(),
+                    name: Ident::new("val"),
+                    name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
-                            name: "Self".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("Self"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..4,
@@ -2516,31 +2606,33 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_super = Checker::trait_info_from_decl(&assoc_super, None, 0);
-    checker
-        .trait_defs
-        .insert("AssocSuper".to_string(), info_super);
+    let info_super = checker.trait_info_from_decl(&assoc_super, None, 0);
+    checker.test_trait_def("AssocSuper", info_super);
 
     // Child trait with no assoc types of its own.
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "ChildTrait".to_string(),
+        name: Ident::new("ChildTrait"),
         type_params: None,
         super_traits: Some(vec![hew_parser::ast::TraitBound {
-            name: "AssocSuper".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("AssocSuper"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "run".to_string(),
+            name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
-                name: "val".to_string(),
+                name: Ident::new("val"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        name: "Self".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("Self"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..4,
@@ -2558,13 +2650,9 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_child = Checker::trait_info_from_decl(&child, None, 0);
-    checker
-        .trait_defs
-        .insert("ChildTrait".to_string(), info_child);
-    checker
-        .trait_super
-        .insert("ChildTrait".to_string(), vec!["AssocSuper".to_string()]);
+    let info_child = checker.trait_info_from_decl(&child, None, 0);
+    checker.test_trait_def("ChildTrait", info_child);
+    checker.set_trait_supers("ChildTrait", vec!["AssocSuper".to_string()]);
 
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
@@ -2581,22 +2669,26 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 
     let generic_super = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "GenericSuper".to_string(),
+        name: Ident::new("GenericSuper"),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "map".to_string(),
+            name: Ident::new("map"),
             type_params: Some(vec![TypeParam {
-                name: "U".to_string(),
+                name: Ident::new("U"),
                 bounds: vec![],
             }]),
             params: vec![Param {
-                name: "val".to_string(),
+                name: Ident::new("val"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        name: "Self".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("Self"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..4,
@@ -2614,30 +2706,32 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_super = Checker::trait_info_from_decl(&generic_super, None, 0);
-    checker
-        .trait_defs
-        .insert("GenericSuper".to_string(), info_super);
+    let info_super = checker.trait_info_from_decl(&generic_super, None, 0);
+    checker.test_trait_def("GenericSuper", info_super);
 
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "ChildTrait".to_string(),
+        name: Ident::new("ChildTrait"),
         type_params: None,
         super_traits: Some(vec![hew_parser::ast::TraitBound {
-            name: "GenericSuper".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("GenericSuper"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "run".to_string(),
+            name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
-                name: "val".to_string(),
+                name: Ident::new("val"),
+                name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        name: "Self".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("Self"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..4,
@@ -2655,13 +2749,9 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_child = Checker::trait_info_from_decl(&child, None, 0);
-    checker
-        .trait_defs
-        .insert("ChildTrait".to_string(), info_child);
-    checker
-        .trait_super
-        .insert("ChildTrait".to_string(), vec!["GenericSuper".to_string()]);
+    let info_child = checker.trait_info_from_decl(&child, None, 0);
+    checker.test_trait_def("ChildTrait", info_child);
+    checker.set_trait_supers("ChildTrait", vec!["GenericSuper".to_string()]);
 
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
@@ -2672,31 +2762,31 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 #[test]
 fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .trait_super
-        .insert("TraitA".to_string(), vec!["TraitB".to_string()]);
-    checker
-        .trait_super
-        .insert("TraitB".to_string(), vec!["TraitA".to_string()]);
+    for name in ["TraitA", "TraitB"] {
+        checker.test_trait_def(
+            name,
+            TraitInfo {
+                source_module: None,
+                file_index: 0,
+                methods: Vec::new(),
+                associated_types: Vec::new(),
+                type_params: Vec::new(),
+            },
+        );
+    }
+    checker.set_trait_supers("TraitA", vec!["TraitB".to_string()]);
+    checker.set_trait_supers("TraitB", vec!["TraitA".to_string()]);
     checker
         .trait_impls_set
         .insert(("Thing".to_string(), "TraitA".to_string()));
 
     let sig = FnSig {
-        type_params: vec!["T".to_string()],
+        type_params: vec![crate::ParamHead::for_test("T")],
         type_param_bounds: HashMap::from([("T".to_string(), vec!["MissingTrait".to_string()])]),
         ..Default::default()
     };
 
-    checker.enforce_type_param_bounds(
-        &sig,
-        &[Ty::Named {
-            builtin: None,
-            name: "Thing".to_string(),
-            args: vec![],
-        }],
-        &(0..0),
-    );
+    checker.enforce_type_param_bounds(&sig, &[Ty::named_for_test("Thing", vec![])], &(0..0));
 
     assert!(
         checker
@@ -2903,15 +2993,20 @@ fn second_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yiel
 // so it exercises the false branch of every other marker in one repro.
 #[test]
 fn record_field_marker_derivation_expands_top_level_alias() {
-    let source = r"
-        type GoodAlias = i64;
-        type BadAlias = Rc<i64>;
+    let source = r"type GoodAlias = i64;
 
-        type Good { v: GoodAlias }
-        type Bad { v: BadAlias }
+type BadAlias = Rc<i64>;
 
-        fn main() {}
-    ";
+type Good {
+    v: GoodAlias;
+}
+
+type Bad {
+    v: BadAlias;
+}
+
+fn main() {}
+";
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -2926,16 +3021,8 @@ fn record_field_marker_derivation_expands_top_level_alias() {
         output.errors
     );
 
-    let good = Ty::Named {
-        builtin: None,
-        name: "Good".to_string(),
-        args: vec![],
-    };
-    let bad = Ty::Named {
-        builtin: None,
-        name: "Bad".to_string(),
-        args: vec![],
-    };
+    let good = checker.named_ty_for_key("Good", vec![]);
+    let bad = checker.named_ty_for_key("Bad", vec![]);
 
     for marker in [
         crate::traits::MarkerTrait::Send,
@@ -2998,13 +3085,21 @@ fn record_field_marker_derivation_expands_top_level_alias() {
 #[test]
 fn impl_of_undeclared_trait_is_rejected() {
     let parsed = hew_parser::parse(
-        r"
-        type Point { x: i64, }
-        impl Nonexistent for Point {
-            fn shift(pt: Point) -> i64 { pt.x }
-        }
-        fn main() { let p = Point { x: 1 }; let _ = p.shift(); }
-        ",
+        r"type Point {
+    x: i64;
+}
+
+impl Nonexistent for Point {
+    fn shift(pt: Point) -> i64 {
+        pt.x
+    }
+}
+
+fn main() {
+    let p = Point { x: 1 };
+    let _ = p.shift();
+}
+",
     );
     assert!(
         parsed.errors.is_empty(),
@@ -3030,17 +3125,22 @@ fn impl_of_marker_trait_without_declared_methods_is_accepted() {
     // declare no method set, so their absence from `trait_defs` must not be
     // read as an undeclared trait.
     let parsed = hew_parser::parse(
-        r"
-        type Key { id: i64, }
-        impl Eq for Key {
-            fn eq(left: Key, right: Key) -> bool { left.id == right.id }
-        }
-        fn main() {
-            let a = Key { id: 1 };
-            let b = Key { id: 1 };
-            let _ = a.eq(b);
-        }
-        ",
+        r"type Key {
+    id: i64;
+}
+
+impl Eq for Key {
+    fn eq(left: Key, right: Key) -> bool {
+        left.id == right.id
+    }
+}
+
+fn main() {
+    let a = Key { id: 1 };
+    let b = Key { id: 1 };
+    let _ = a.eq(b);
+}
+",
     );
     assert!(
         parsed.errors.is_empty(),
@@ -3065,10 +3165,14 @@ fn impl_of_marker_trait_without_declared_methods_is_accepted() {
 fn foreign_impl_program(root_source: &str) -> TypeCheckOutput {
     let thing_path: std::path::PathBuf = "pkgs/thing.hew".into();
     let mut thing = hew_parser::parse(
-        r"
-        pub type Thing { v: i64, }
-        pub fn make() -> Thing { Thing { v: 7 } }
-        ",
+        r"pub type Thing {
+    v: i64;
+}
+
+pub fn make() -> Thing {
+    Thing { v: 7 }
+}
+",
     );
     let mut root = hew_parser::parse(root_source);
     for parsed in [&thing, &root] {
@@ -3094,8 +3198,8 @@ fn foreign_impl_program(root_source: &str) -> TypeCheckOutput {
         std::iter::repeat_n(thing_path.clone(), thing_item_count).collect();
     root_import.resolved_source_paths = vec![thing_path.clone()];
 
-    let root_id = ModuleId::root();
-    let thing_id = ModuleId::new(vec!["pkg".to_string(), "thing".to_string()]);
+    let root_id = ModulePath::root();
+    let thing_id = ModulePath::new(["pkg", "thing"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -3155,11 +3259,12 @@ fn local_trait_implemented_for_an_imported_type_dispatches() {
         output.errors
     );
     assert!(
-        output.fn_sigs.contains_key("pkg.thing.Thing::tag"),
+        output.sigs().contains("pkg.thing.Thing::tag"),
         "the impl method must register under the target's identity: {:?}",
         output
-            .fn_sigs
-            .keys()
+            .sigs()
+            .entries()
+            .map(|(key, _)| key)
             .filter(|key| key.ends_with("::tag"))
             .collect::<Vec<_>>()
     );

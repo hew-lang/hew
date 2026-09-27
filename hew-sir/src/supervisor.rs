@@ -40,6 +40,13 @@ pub enum SemSupervisedRole {
     Supervisor(SupervisorId),
 }
 
+/// Checked source of a child's graceful-stop deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemStopDeadline {
+    Literal(i64),
+    Config(usize),
+}
+
 /// One declared child. Its runtime slots are its position among the children
 /// of the same role kind, in declaration order; a pool occupies `pool_count`
 /// consecutive slots from that base.
@@ -48,6 +55,7 @@ pub struct SemSupervisorChild {
     pub name: String,
     pub role: SemSupervisedRole,
     pub restart: SemRestartPolicy,
+    pub stop_deadline: SemStopDeadline,
     /// `None` for `child name: Type`; `Some(n)` for `pool name: Type count: n`.
     /// A pool's members are fungible: the same spawn callable fills every one
     /// of its `n` slots, and each slot restarts on its own.
@@ -179,7 +187,6 @@ impl SemSupervisor {
         };
         let view = vec![self.handle_ty.clone(), member.clone()];
         Ok(ResolvedTy::named_builtin(
-            hew_types::BuiltinType::SupervisorPool.canonical_name(),
             hew_types::BuiltinType::SupervisorPool,
             view,
         ))
@@ -188,7 +195,6 @@ impl SemSupervisor {
     #[must_use]
     pub fn child_ref_ty(&self) -> ResolvedTy {
         ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ChildRef.canonical_name(),
             hew_types::BuiltinType::ChildRef,
             vec![self.handle_ty.clone()],
         )
@@ -201,7 +207,7 @@ impl SemSupervisor {
         if !self
             .handle_ty
             .is_builtin(hew_types::BuiltinType::ActorHandle)
-            || declared_handle(&self.handle_ty).as_ref() != Some(&self.declaration)
+            || declared_handle(&module.defs, &self.handle_ty) != Some(self.declaration)
         {
             return Err("supervisor handle refers to another declaration".into());
         }
@@ -265,7 +271,7 @@ impl SemSupervisor {
 }
 
 /// The declaration a direct handle or stable supervisor role names.
-pub(crate) fn declared_handle(ty: &ResolvedTy) -> Option<DefId> {
+pub(crate) fn declared_handle(_defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<DefId> {
     let instance = crate::actor::local_actor_instance(ty)?;
-    Some(instance.nominal.declaration().clone())
+    Some(instance.nominal.declaration())
 }

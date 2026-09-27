@@ -2,35 +2,43 @@
 // the notification it was handed is still intact when it resumes; the actor
 // serves later calls once each hook's continuation completes.
 import std.failure;
+
 import std.link_monitor;
 
 actor Audit {
-    var notes: i64 = 0,
-    receive fn note(kind: string) -> i64 { notes = notes + 1; notes }
+    var notes: i64 = 0;
+    receive fn note(kind: string) -> i64 {
+        notes = notes + 1;
+        notes
+    }
 }
 
 actor Target {
-    receive fn fail() { panic("linked target"); }
+    receive fn fail() {
+        panic("linked target");
+    }
 }
 
 actor Watcher {
-    audit: Audit,
-    var exits: i64 = 0,
-    var downs: i64 = 0,
+    let audit: Audit;
+    var exits: i64 = 0;
+    var downs: i64 = 0;
 
     receive fn watch(target: Target) -> link_monitor.MonitorRef {
         link(target).expect("link target");
         monitor(target).expect("monitor target")
     }
 
-    receive fn counts() -> i64 { exits * 10 + downs }
+    receive fn counts() -> i64 {
+        exits * 10 + downs
+    }
 
-    #[on(exit)]
+    #[on(link)]
     fn exited(note: failure.CrashNotification) {
         sleep(1ms);
         audit.note("exit").expect("audit exit");
         assert(note.actor_id > 0);
-        assert(note.kind == failure.CrashKind.Crashed);
+        assert(note.kind == failure.CrashKind.Fault);
         exits = exits + 1;
     }
 
@@ -39,7 +47,7 @@ actor Watcher {
         audit.note("down").expect("audit down");
         sleep(1ms);
         assert(match note.reason {
-            .Crashed(kind) => kind == failure.CrashKind.Crashed,
+            .Crashed(kind) => kind == failure.CrashKind.Fault,
             _ => false,
         });
         downs = downs + 1;
@@ -52,14 +60,19 @@ fn main() {
     let watcher = spawn Watcher(audit: audit);
     let observation = watcher.watch(target).expect("watch target");
     let _ = target.fail();
-    for _ in 0 .. 1000 {
-        if watcher.counts().expect("hook outcomes") == 11 {
-            break;
-        }
+    while watcher.counts().expect("hook outcomes") != 11 {
         sleep(1ms);
     }
     println(f"hooks {watcher.counts().expect("hook outcomes")}");
     observation.close();
-    close(watcher);
-    close(audit);
+    {
+        let __hew_migrated_actor_1751 = watcher;
+        stop(__hew_migrated_actor_1751);
+        stopped(__hew_migrated_actor_1751);
+    };
+    {
+        let __hew_migrated_actor_1771 = audit;
+        stop(__hew_migrated_actor_1771);
+        stopped(__hew_migrated_actor_1771);
+    };
 }

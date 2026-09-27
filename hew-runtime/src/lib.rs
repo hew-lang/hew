@@ -214,6 +214,7 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         std::process::abort();
     }
 
+    crate::test_report::finish(code);
     terminate(code);
 }
 
@@ -635,7 +636,7 @@ mod trap_code;
 // these stubs.
 // ── Actor/scheduling modules ─────────────────────────────────────────────────
 // These require threads, signals and networking. wasm32 has none of them: the
-// process runs on `wasm_driver`, the single-thread driver of the same core.
+// process runs on `driver`, the single-thread driver of the same core.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;
@@ -680,6 +681,7 @@ pub mod runtime_id;
 pub mod scheduler;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown;
+mod test_report;
 // One authority for "what exit status must this program report": read on every
 // native shutdown path, not just the implicit actor-drain one.
 pub mod exit_status;
@@ -713,14 +715,13 @@ pub mod async_io;
 pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blocking_pool;
+/// The single-thread process driver: always on wasm32, selected natively by
+/// `HEW_DETERMINISTIC` for deterministic runs.
+pub mod driver;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;
 pub mod timer_periodic;
 pub mod wake;
-/// The single-threaded wasm32 process driver: the timer wheel and the root
-/// readiness latch the WASI process runs inline while it waits.
-#[cfg(target_arch = "wasm32")]
-pub mod wasm_driver;
 // timer_wheel compiles on every target: native uses it with the background
 // ticker thread (timer_periodic); WASM uses it with a host-driven tick
 // (scheduler_wasm + timer_periodic_wasm).

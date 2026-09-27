@@ -1,0 +1,10 @@
+[[case]]
+id = "fresh-vec-index-projection-drop-projection-escape"
+intent = "Direct projection from a fresh `Vec` composite-index result must release the cloned root once, without changing the bound-index control's ownership. Shape `projection_escape` (escaped projection field remains live under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fresh-vec-index-projection-drop-projection-escape.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "string-try-to-float-try-to-float-valid-decimal"
+intent = "Leak oracle for `std::string::try_to_float`. Shape `try_to_float_valid_decimal_high` (valid decimal parse has no per character leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-try-to-float-try-to-float-valid-decimal.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

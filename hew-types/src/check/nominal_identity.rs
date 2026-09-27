@@ -45,6 +45,42 @@ pub(super) enum NominalOrigin<'a> {
 }
 
 impl Checker {
+    /// The owned spelling of a former flat machine event name, when an exact
+    /// machine declaration proves the replacement. An authored type or trait
+    /// with the flat name remains its own declaration.
+    pub(super) fn legacy_machine_event_replacement(&self, spelling: &str) -> Option<String> {
+        let (qualifier, flat) = spelling
+            .rsplit_once('.')
+            .map_or((None, spelling), |(owner, flat)| (Some(owner), flat));
+        let machine = flat.strip_suffix("Event").filter(|name| !name.is_empty())?;
+        if self.type_def_at(spelling).is_some() || self.defs.lookup_path(spelling).is_some() {
+            return None;
+        }
+        let canonical = if let Some(qualifier) = qualifier {
+            let owner = self.module_import_bindings.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                qualifier.to_string(),
+            ))?;
+            format!("{owner}.{machine}")
+        } else {
+            self.source_nominal_declaration(machine)?
+        };
+        let owner = self.defs.lookup_path(&canonical)?;
+        if self.defs.kind(owner) != crate::DeclarationKind::Machine {
+            return None;
+        }
+        self.defs.member_of_kind(
+            owner,
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        )?;
+        Some(qualifier.map_or_else(
+            || format!("{machine}.Event"),
+            |qualifier| format!("{qualifier}.{machine}.Event"),
+        ))
+    }
+
     /// The canonical owner-qualified declaration a nominal SPELLING denotes in
     /// this context, or `None` when no authority proves one (the caller keeps
     /// the spelling as written and the downstream exact compare fails closed).
@@ -157,7 +193,7 @@ impl Checker {
             self.current_module_idx,
             name.to_string(),
         )) {
-            if self.type_defs.contains_key(identity)
+            if self.type_def_at(identity).is_some()
                 || self.known_types.contains(identity)
                 || crate::lookup_source_owned_lifecycle_type(identity).is_some()
             {
@@ -182,40 +218,40 @@ impl Checker {
         &self,
         ty: &crate::ty::Ty,
         canonical_owner: &str,
-        binders: &[String],
+        binders: &[crate::ParamHead],
     ) -> crate::ty::Ty {
         let mapped = ty.map_children_pub(&|child| {
             self.canonicalize_registry_signature(child, canonical_owner, binders)
         });
         let crate::ty::Ty::Named {
-            name,
+            head: crate::TypeHead::Unresolved(spelling),
             args,
-            builtin,
         } = mapped
         else {
             return mapped;
         };
-        if args.is_empty() && binders.contains(&name) {
-            return crate::ty::Ty::Named {
-                name,
-                args,
-                builtin,
-            };
+        let spelling = spelling.as_str();
+        if args.is_empty() {
+            if let Some(parameter) = binders
+                .iter()
+                .find(|binder| binder.spelling.as_str() == spelling)
+            {
+                return crate::ty::Ty::param(*parameter);
+            }
         }
         let name = self
             .resolve_nominal_declaration(
                 NominalOrigin::RegistrySignature { canonical_owner },
-                &name,
+                spelling,
             )
-            .unwrap_or(name);
-        crate::ty::Ty::Named {
-            builtin: builtin.or_else(|| {
-                self.resolved_builtin_type(&name)
-                    .filter(|kind| kind.is_encoding_value())
-            }),
-            name,
-            args,
+            .unwrap_or_else(|| spelling.to_string());
+        if let Some(kind) = self
+            .resolved_builtin_type(&name)
+            .filter(|kind| kind.is_encoding_value())
+        {
+            return crate::ty::Ty::named_head(crate::TypeHead::Builtin(kind), args);
         }
+        self.named_ty_for_key(&name, args)
     }
 
     /// The canonical identity of an extern signature's nominal type, resolved
@@ -224,5 +260,385 @@ impl Checker {
     /// the lexical producer.
     pub(super) fn extern_signature_nominal_owner(&self, name: &str) -> Option<String> {
         self.resolve_nominal_declaration(NominalOrigin::Lexical, name)
+    }
+}
+
+impl Checker {
+    /// The nominal head a string registry key names: the declaration the key
+    /// was minted under, rendered as the key.
+    ///
+    /// TRANSITION(A1 commit 3): deleted when the registries are keyed by
+    /// identity and every carrier holds the head `Scope::resolve` returned.
+    pub(super) fn nominal_head_for_key(&self, key: &str) -> Option<crate::NominalHead> {
+        let id = self.lookup_declaration(key)?;
+        Some(crate::NominalHead::new(
+            crate::NominalId::from_minted_declaration(id),
+            self.defs.path(id),
+        ))
+    }
+
+    /// The named type a string registry key names: its declared nominal, or
+    /// the builtin the key spells when no declaration claims it.
+    ///
+    /// TRANSITION(A1 commit 3): see [`Self::nominal_head_for_key`].
+    pub(super) fn named_ty_for_key(&self, key: &str, args: Vec<Ty>) -> Ty {
+        if let Some(primitive) = Ty::from_name(key).filter(|_| args.is_empty()) {
+            return primitive;
+        }
+        // An import alias spelling projects to its declaration's owner.
+        let canonical = self.canonical_nominal_name(key);
+        let key = canonical.as_deref().unwrap_or(key);
+        if let Some(nominal) = self.nominal_head_for_key(key) {
+            return Ty::named_head(self.head_of_declaration(nominal.id), args);
+        }
+        if let Some(builtin) = crate::builtin_type::lookup_builtin_type(key) {
+            return Ty::named_head(crate::TypeHead::Builtin(builtin), args);
+        }
+        // A trait written in type position names the trait's declaration; a
+        // handler-style trait becomes the actor handle it types.
+        if let Some(id) = self
+            .lookup_declaration(&self.trait_ref_lookup_key(key))
+            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
+        {
+            return Ty::named_head(
+                crate::TypeHead::Nominal(crate::NominalHead::new(
+                    crate::NominalId::from_minted_declaration(id),
+                    self.defs.path(id),
+                )),
+                args,
+            );
+        }
+        Ty::Named {
+            head: crate::TypeHead::Unresolved(crate::Symbol::intern(key)),
+            args,
+        }
+    }
+
+    /// The head a declared nominal names in this run.
+    pub(super) fn head_of_declaration(&self, nominal: crate::NominalId) -> crate::TypeHead {
+        if let Some(known) = self.known_declaration(nominal) {
+            return known.head();
+        }
+        crate::TypeHead::of_declaration(&self.defs, nominal)
+    }
+}
+
+impl Checker {
+    /// The known `std.builtins` declaration a nominal is. The embedded
+    /// builtin run re-declares the cursors at its own root; those rows are
+    /// the same declarations (TRANSITION(P2): deleted with that run, B1).
+    fn known_declaration(&self, nominal: crate::NominalId) -> Option<crate::KnownDecl> {
+        crate::KnownDecl::of(nominal).or_else(|| {
+            let declaration = nominal.declaration();
+            (self.checking_embedded_builtins
+                && self.defs.module(declaration) == self.defs.root_module())
+            .then(|| crate::KnownDecl::from_leaf(self.defs.name(declaration)))
+            .flatten()
+            .filter(|known| {
+                matches!(
+                    known,
+                    crate::KnownDecl::VecIter | crate::KnownDecl::HashMapIter
+                )
+            })
+        })
+    }
+
+    /// The file the checker is currently reading, for the spelling boundary.
+    pub(super) fn scope_site(&self) -> Option<super::scope::ScopeSite> {
+        Some(super::scope::ScopeSite {
+            file: self.current_declaration_module()?,
+            span_file: self.current_module_idx,
+        })
+    }
+
+    /// Publish the exact lexical binding at a declaration or use site.
+    pub(super) fn record_local_resolution(
+        &mut self,
+        name: hew_parser::ast::Ident,
+        span: &hew_parser::ast::Span,
+    ) {
+        let Some(binding) = self.env.lookup_ref(name) else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        self.scopes
+            .record_resolution(site, span, super::scope::Resolution::Local(binding.id));
+    }
+
+    /// Record the item prefix of a written value path. `Scope` stops at the
+    /// first value member, which the field or call checker publishes after it
+    /// selects that member from the receiver's type.
+    pub(super) fn record_value_path_resolution(
+        &mut self,
+        expr: &hew_parser::ast::Expr,
+        span: &hew_parser::ast::Span,
+    ) {
+        fn segments(
+            expr: &hew_parser::ast::Expr,
+            span: &hew_parser::ast::Span,
+            out: &mut Vec<hew_parser::ast::Spanned<hew_parser::ast::Ident>>,
+        ) -> bool {
+            match expr {
+                hew_parser::ast::Expr::Ident(name) => {
+                    out.push((*name, span.clone()));
+                    true
+                }
+                hew_parser::ast::Expr::FieldAccess { object, field } => {
+                    if !segments(&object.0, &object.1, out) {
+                        return false;
+                    }
+                    out.push(field.clone());
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        let mut path = Vec::new();
+        if segments(expr, span, &mut path) {
+            let _ =
+                self.scopes
+                    .resolve_prefix(&self.env, site, super::scope::Namespace::Value, &path);
+            if let Some((_, written)) = path.first() {
+                let key = super::types::SpanKey::in_module(written, self.current_module_idx);
+                if let Some(super::scope::Resolution::Local(binding)) =
+                    self.scopes.resolutions().get(&key)
+                {
+                    if let Some((owner, index)) = self.actor_field_binding_ids.get(binding) {
+                        self.scopes.record_resolution(
+                            site,
+                            written,
+                            super::scope::Resolution::Field(*owner, *index),
+                        );
+                    }
+                }
+            }
+            // An identifier expression's span can include the whitespace up
+            // to the next token. Retain that expression key for compiler
+            // consumers and publish the written token for editor consumers.
+            if let Some((name, written)) = path.first() {
+                let exact_end = written.start.saturating_add(name.name.as_str().len());
+                if exact_end < written.end {
+                    let key = super::types::SpanKey::in_module(written, self.current_module_idx);
+                    if let Some(resolution) = self.scopes.resolutions().get(&key).copied() {
+                        self.scopes.record_resolution(
+                            site,
+                            &(written.start..exact_end),
+                            resolution,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Publish a record field chosen from the receiver's resolved nominal.
+    /// The field index is declaration order, not hash-map iteration order.
+    pub(super) fn record_field_resolution(
+        &mut self,
+        object: &hew_parser::ast::Spanned<hew_parser::ast::Expr>,
+        field: &hew_parser::ast::Spanned<hew_parser::ast::Ident>,
+    ) {
+        let key = super::types::SpanKey::in_module(&object.1, self.current_module_idx);
+        let Some(receiver) = self.expr_types.get(&key) else {
+            return;
+        };
+        let crate::Ty::Named { head, .. } = self.subst.resolve(receiver) else {
+            return;
+        };
+        let Some(nominal) = head.nominal() else {
+            return;
+        };
+        let Some(definition) = self.type_defs.get(&nominal) else {
+            return;
+        };
+        let Some(index) = definition
+            .field_order
+            .iter()
+            .position(|name| name == field.0.name.as_str())
+        else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        self.scopes.record_resolution(
+            site,
+            &field.1,
+            super::scope::Resolution::Field(
+                nominal,
+                u32::try_from(index).expect("more than u32::MAX record fields"),
+            ),
+        );
+    }
+
+    /// The checker has already selected `self.field` as actor state. Publish
+    /// that member at both the whole projection used by HIR and its written
+    /// field token used by source navigation.
+    pub(super) fn record_actor_state_projection_resolution(
+        &mut self,
+        span: &hew_parser::ast::Span,
+        field: &hew_parser::ast::Spanned<hew_parser::ast::Ident>,
+    ) {
+        let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+        if !self.actor_self_state_fields.contains(&key) {
+            return;
+        }
+        let Some(crate::Ty::Named { head, .. }) = self.current_actor_type.as_ref() else {
+            return;
+        };
+        let Some(owner) = head.nominal() else {
+            return;
+        };
+        let Some(index) = self
+            .current_actor_fields
+            .iter()
+            .position(|member| member.name == field.0.name.as_str())
+        else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        let resolution = super::scope::Resolution::Field(
+            owner,
+            u32::try_from(index).expect("more than u32::MAX actor fields"),
+        );
+        self.scopes.record_resolution(site, span, resolution);
+        self.scopes.record_resolution(site, &field.1, resolution);
+        let token_end = field.1.start + field.0.name.as_str().len();
+        if token_end < field.1.end {
+            self.scopes
+                .record_resolution(site, &(field.1.start..token_end), resolution);
+        }
+    }
+
+    /// Publish labels after the record constructor has selected its nominal.
+    pub(super) fn record_struct_init_field_resolutions(
+        &mut self,
+        fields: &[(
+            hew_parser::ast::Ident,
+            hew_parser::ast::Spanned<hew_parser::ast::Expr>,
+        )],
+        label_spans: &[hew_parser::ast::Span],
+        ty: &crate::Ty,
+    ) {
+        let crate::Ty::Named { head, .. } = self.subst.resolve(ty) else {
+            return;
+        };
+        let Some(nominal) = head.nominal() else {
+            return;
+        };
+        let Some(definition) = self.type_defs.get(&nominal) else {
+            return;
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        for ((field, _), span) in fields.iter().zip(label_spans) {
+            if let Some(index) = definition
+                .field_order
+                .iter()
+                .position(|name| name == field.name.as_str())
+            {
+                self.scopes.record_resolution(
+                    site,
+                    span,
+                    super::scope::Resolution::Field(
+                        nominal,
+                        u32::try_from(index).expect("more than u32::MAX record fields"),
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Publish the declaration the completed call checker selected for its
+    /// written callee segment. Runtime and indirect calls have no source
+    /// declaration to publish here.
+    pub(super) fn record_call_resolution(
+        &mut self,
+        call_span: &hew_parser::ast::Span,
+        callee_span: &hew_parser::ast::Span,
+        method_like: bool,
+    ) {
+        let key = super::types::SpanKey::in_module(call_span, self.current_module_idx);
+        let target = self
+            .method_call_rewrites
+            .get(&key)
+            .and_then(|rewrite| match rewrite {
+                MethodCallRewrite::RewriteToFunction { target, .. }
+                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. }
+                | MethodCallRewrite::StaticTraitDispatch { target, .. } => Some(target),
+                _ => None,
+            })
+            .or_else(|| self.direct_call_targets.get(&key));
+        let Some(target) = target else {
+            return;
+        };
+        let resolution = match target {
+            CallTarget::User(id)
+            | CallTarget::RecordConstructor(id)
+            | CallTarget::Extern {
+                declaration: id, ..
+            }
+            | CallTarget::DeclaredRuntime {
+                declaration: id, ..
+            } => {
+                if method_like {
+                    super::scope::Resolution::Member(*id)
+                } else {
+                    super::scope::Resolution::Def(*id)
+                }
+            }
+            CallTarget::ImplMethod(id)
+            | CallTarget::DynamicVtable { method: id, .. }
+            | CallTarget::StaticTraitMethod { method: id, .. } => {
+                super::scope::Resolution::Member(*id)
+            }
+            _ => return,
+        };
+        let Some(site) = self.scope_site() else {
+            return;
+        };
+        self.scopes.record_resolution(site, callee_span, resolution);
+    }
+
+    /// The head a written type path names, resolved through `Scope`.
+    pub(super) fn resolve_type_path_head(
+        &mut self,
+        path: &hew_parser::ast::Path,
+    ) -> Option<crate::TypeHead> {
+        let site = self.scope_site()?;
+        match self.scopes.resolve(
+            &self.env,
+            site,
+            super::scope::Namespace::Type,
+            &path.segments,
+        ) {
+            Ok(super::scope::Resolution::Nominal(id)) => {
+                Some(self.known_declaration(id).map_or_else(
+                    || {
+                        crate::TypeHead::Nominal(crate::NominalHead::new(
+                            id,
+                            self.defs.path(id.declaration()),
+                        ))
+                    },
+                    crate::KnownDecl::head,
+                ))
+            }
+            Ok(super::scope::Resolution::Param(id)) => Some(crate::TypeHead::param(
+                crate::ParamHead::new(id, path.segments[0].0.name),
+            )),
+            Ok(super::scope::Resolution::Builtin(builtin)) => {
+                Some(crate::TypeHead::Builtin(builtin))
+            }
+            _ => None,
+        }
     }
 }

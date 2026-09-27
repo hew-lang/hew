@@ -10,11 +10,13 @@
 // `for i in -5..5` with `i` used as i32 sums {-5,-4,-3,-2,-1,0,1,2,3,4}
 // = -5.  The exit code is truncated to u8: 256 + (-5) = 251.
 
-fn id_i32(x: i32) -> i32 { x }
+fn id_i32(x: i32) -> i32 {
+    x
+}
 
 fn main() -> i32 {
     var sum: i32 = 0;
-    for i in -5..5 {
+    for i in -5 .. 5 {
         sum = sum + id_i32(i);
     }
     sum

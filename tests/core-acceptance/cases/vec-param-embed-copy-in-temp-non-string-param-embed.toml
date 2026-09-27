@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-param-embed-copy-in-temp-non-string-param-embed"
+intent = "Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps. Shape `non_string_param_embed` (non string param embed uses owned carrier temp) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-param-embed-copy-in-temp-non-string-param-embed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

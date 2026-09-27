@@ -1,6 +1,6 @@
 type Claim {
-    run_id: string,
-    fence: i64,
+    run_id: string;
+    fence: i64;
 }
 
 // An owned string field read from an indexed element in the left operand of
@@ -36,7 +36,6 @@ fn main() {
     var claims: Vec<Claim> = Vec.new();
     claims.push(Claim { run_id: "r", fence: 1 });
     claims.push(Claim { run_id: "s", fence: 2 });
-
     println(matches(claims, "r", 1));
     println(matches(claims, "r", 9));
     println(matches(claims, "z", 1));

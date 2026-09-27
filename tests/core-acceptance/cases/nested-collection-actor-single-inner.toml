@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-collection-actor-single-inner"
+intent = "Nested-collection exactly-once ownership oracles for #2545 and #2546. Shape `actor_single_inner` (actor single inner vec teardown runs clean) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-collection-actor-single-inner.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

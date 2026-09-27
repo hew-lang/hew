@@ -1,0 +1,10 @@
+[[case]]
+id = "funcupdate-owned-field-drop-funcupdate-carry-tuple-field-same"
+intent = "Functional-update owned-field drop leak oracle. Shape `funcupdate_carry_tuple_field_same_frame_high` (funcupdate carry tuple field same frame order no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/funcupdate-owned-field-drop-funcupdate-carry-tuple-field-same.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 64

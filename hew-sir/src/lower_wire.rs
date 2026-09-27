@@ -2,8 +2,6 @@
 
 use std::sync::Arc;
 
-use heck::{ToKebabCase, ToLowerCamelCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
-use hew_parser::ast::NamingCase;
 use hew_types::{BuiltinType, ResolvedTy, WireCodecDirection};
 
 use super::{Builder, InstanceService};
@@ -12,17 +10,6 @@ use crate::{
     OpId, Operand, OwnKind, SemTerminator, SemWireField, SemWireKind, SemWirePlan, SemWireVariant,
     ValueDef, ValueId,
 };
-
-fn wire_name(name: &str, case: Option<NamingCase>) -> String {
-    match case {
-        None => name.to_owned(),
-        Some(NamingCase::CamelCase) => name.to_lower_camel_case(),
-        Some(NamingCase::PascalCase) => name.to_upper_camel_case(),
-        Some(NamingCase::SnakeCase) => name.to_snake_case(),
-        Some(NamingCase::ScreamingSnake) => name.to_shouty_snake_case(),
-        Some(NamingCase::KebabCase) => name.to_kebab_case(),
-    }
-}
 
 impl InstanceService<'_> {
     #[expect(
@@ -64,7 +51,7 @@ impl InstanceService<'_> {
             | ResolvedTy::String
             | ResolvedTy::Bytes => SemWireKind::Scalar,
             ResolvedTy::Named {
-                builtin: Some(builtin),
+                head: hew_types::TypeHead::Builtin(builtin),
                 args,
                 ..
             } => match (builtin, args.as_slice()) {
@@ -86,7 +73,7 @@ impl InstanceService<'_> {
                     if matches!(
                         value,
                         ResolvedTy::Named {
-                            builtin: Some(BuiltinType::Option),
+                            head: hew_types::TypeHead::Builtin(BuiltinType::Option),
                             ..
                         }
                     ) {
@@ -117,11 +104,14 @@ impl InstanceService<'_> {
                 }
             },
             ResolvedTy::Named {
-                name,
-                builtin: None,
+                head:
+                    head @ (hew_types::TypeHead::Nominal(_)
+                    | hew_types::TypeHead::Param(_)
+                    | hew_types::TypeHead::Unresolved(_)),
                 is_opaque: false,
                 ..
             } => {
+                let name = head.registry_key();
                 let layout = self
                     .module
                     .wire_layouts
@@ -147,14 +137,8 @@ impl InstanceService<'_> {
                             index: u32::try_from(index)
                                 .map_err(|_| "wire field index exceeds u32")?,
                             tag: wire.tag,
-                            json_name: wire
-                                .json_name
-                                .clone()
-                                .unwrap_or_else(|| wire_name(&field.name, layout.json_case)),
-                            yaml_name: wire
-                                .yaml_name
-                                .clone()
-                                .unwrap_or_else(|| wire_name(&field.name, layout.yaml_case)),
+                            json_name: wire.json_name.clone(),
+                            yaml_name: wire.yaml_name.clone(),
                             presence: wire.presence,
                             value: self.wire_plan(&field.ty, path)?,
                         });
@@ -169,17 +153,17 @@ impl InstanceService<'_> {
                     let variants = self.variant_shapes[shape.0 as usize].variants.clone();
                     let mut plans = Vec::with_capacity(variants.len());
                     for (index, variant) in variants.iter().enumerate() {
-                        let (_, tag) = layout
+                        let wire = layout
                             .variants
                             .iter()
-                            .find(|(name, _)| *name == variant.name)
+                            .find(|wire| wire.name == variant.name)
                             .ok_or("wire enum case has no checked tag")?;
                         plans.push(SemWireVariant {
                             index: u32::try_from(index)
                                 .map_err(|_| "wire variant index exceeds u32")?,
-                            tag: *tag,
-                            json_name: wire_name(&variant.name, layout.json_case),
-                            yaml_name: wire_name(&variant.name, layout.yaml_case),
+                            tag: wire.tag,
+                            json_name: wire.json_name.clone(),
+                            yaml_name: wire.yaml_name.clone(),
                             fields: variant
                                 .fields
                                 .iter()
@@ -220,9 +204,6 @@ impl Builder<'_, '_> {
     ) -> Result<ValueId, String> {
         let value_ty = self.ty(value_ty);
         let plan = self.service.wire_plan(&value_ty, &mut Vec::new())?;
-        if let Some(format) = direction.text_format() {
-            plan.verify_text_names(format)?;
-        }
         let result_ty = self.ty(&expr.ty);
         self.service.require_type_facts(&result_ty)?;
         let text_result = if matches!(

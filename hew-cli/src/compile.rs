@@ -39,6 +39,10 @@ pub struct CompileOptions {
     pub module_search_paths: Option<Vec<PathBuf>>,
     /// Exact source occurrence selected as the process entry by `hew test`.
     pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// Test functions selected for one shared dispatcher, in ordinal order.
+    pub test_entry_selections: Vec<hew_types::DeclarationOccurrence>,
+    /// Compile-time admission for entries run on the deterministic driver.
+    pub deterministic_admission: hew_compile::DeterministicAdmission,
     /// Canonical `<stem>.hew` production peer for a selected test root.
     pub companion: Option<PathBuf>,
     /// Compile a synthetic `hew eval` REPL fragment rather than a finished
@@ -62,6 +66,8 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
         entry_selection: options.entry_selection,
+        test_entry_selections: options.test_entry_selections.clone(),
+        deterministic_admission: options.deterministic_admission.clone(),
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
@@ -84,6 +90,8 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
         entry_selection: options.entry_selection,
+        test_entry_selections: options.test_entry_selections.clone(),
+        deterministic_admission: options.deterministic_admission.clone(),
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
@@ -155,6 +163,10 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
 /// checker's own `DerivedOrdUnavailable`); an HIR diagnostic's channel is
 /// `kind.channel()`. Computed once here — callers propagate the returned
 /// channel rather than re-deriving it from the diagnostics list.
+#[allow(
+    clippy::too_many_lines,
+    reason = "all frontend diagnostic variants render through one channel-preserving boundary"
+)]
 pub(crate) fn render_frontend_diagnostics(
     diagnostics: &[FrontendDiagnostic],
 ) -> Option<hew_types::error::DiagChannel> {
@@ -192,16 +204,34 @@ pub(crate) fn render_frontend_diagnostics(
                                 message: &note.message,
                             })
                             .collect();
-                        crate::diagnostic::render_diagnostic(
-                            source,
-                            filename,
-                            span,
-                            &inner.message,
-                            &notes,
-                            &inner.help,
-                        );
+                        if inner.code == "E_MESSAGE" {
+                            crate::diagnostic::render_diagnostic(
+                                source,
+                                filename,
+                                span,
+                                &inner.message,
+                                &notes,
+                                &inner.help,
+                            );
+                        } else {
+                            crate::diagnostic::render_coded_diagnostic(
+                                source,
+                                filename,
+                                span,
+                                &inner.code,
+                                &inner.message,
+                                &notes,
+                                &inner.help,
+                            );
+                        }
                     }
-                    _ => crate::diagnostic::emit_plain_diagnostic_line(&inner.message),
+                    _ if inner.code == "E_MESSAGE" => {
+                        crate::diagnostic::emit_plain_diagnostic_line(&inner.message);
+                    }
+                    _ => crate::diagnostic::emit_plain_diagnostic_line(&format!(
+                        "error[{}]: {}",
+                        inner.code, inner.message
+                    )),
                 }
             }
             FrontendDiagnosticKind::Parse(error) => {
@@ -340,7 +370,7 @@ mod tests {
 
     fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
-            path: path.iter().map(ToString::to_string).collect(),
+            path: hew_parser::ast::Path::from_spellings(path),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -354,7 +384,7 @@ mod tests {
 
     fn make_file_import(file: &str) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
-            path: vec![],
+            path: hew_parser::ast::Path::from_spellings(&[]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -417,7 +447,13 @@ mod tests {
             .iter()
             .filter_map(|(item, _)| {
                 if let Item::Import(decl) = item {
-                    Some(decl.path.clone())
+                    Some(
+                        decl.path
+                            .segments
+                            .iter()
+                            .map(|(segment, _)| segment.to_string())
+                            .collect(),
+                    )
                 } else {
                     None
                 }

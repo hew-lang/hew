@@ -3,16 +3,14 @@
 
 import std.string;
 
-import std.testing;
-
 type ClaimView {
-    item: string,
-    run_id: string,
-    fence: i64,
-    expires_at: i64,
-    lifecycle_state: string,
-    checkpoint: i64,
-    exact_head_verifying: bool,
+    item: string;
+    run_id: string;
+    fence: i64;
+    expires_at: i64;
+    lifecycle_state: string;
+    checkpoint: i64;
+    exact_head_verifying: bool;
 }
 
 fn active_claims() -> Vec<ClaimView> {
@@ -26,12 +24,12 @@ fn active_claims() -> Vec<ClaimView> {
 #[test]
 fn claim_projection_vec_allocates_and_preserves_fields() {
     let claims = active_claims();
-    testing.assert_eq(claims.len(), 4);
-    testing.assert_eq_str(claims[3].item, "gitea:owner:repo:issue:3");
-    testing.assert_eq_str(claims[3].run_id, "run-3");
-    testing.assert_eq(claims[3].fence, 4);
-    testing.assert_eq(claims[3].expires_at, 9003);
-    testing.assert_eq_str(claims[3].lifecycle_state, "Completed");
-    testing.assert_eq(claims[3].checkpoint, 3);
-    testing.assert_true(claims[2].exact_head_verifying);
+    assert(claims.len() == 4);
+    assert(claims[3].item == "gitea:owner:repo:issue:3");
+    assert(claims[3].run_id == "run-3");
+    assert(claims[3].fence == 4);
+    assert(claims[3].expires_at == 9003);
+    assert(claims[3].lifecycle_state == "Completed");
+    assert(claims[3].checkpoint == 3);
+    assert(claims[2].exact_head_verifying);
 }

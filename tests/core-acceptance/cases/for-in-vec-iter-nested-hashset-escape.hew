@@ -1,0 +1,14 @@
+fn main() {
+    var vs: Vec<HashSet<string>> = Vec.new();
+    var s: HashSet<string> = HashSet.new();
+    s.insert("escape" + "-member");
+    vs.push(s);
+    var sink: HashMap<i64, HashSet<string>> = HashMap.new();
+    var k: i64 = 0;
+    for inner in vs.iter() {
+        sink.insert(k, inner);
+        k = k + 1;
+    }
+    print(sink.len());
+    print("OK");
+}

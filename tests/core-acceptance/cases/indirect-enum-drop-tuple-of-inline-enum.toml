@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-tuple-of-inline-enum"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `tuple_of_inline_enum_df` (indirect enum tuple of inline enum leak slope below tolerance, indirect enum tuple of inline enum no corruption under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-tuple-of-inline-enum.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

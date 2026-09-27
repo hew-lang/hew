@@ -32,7 +32,7 @@ pub(super) struct Active {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct State {
+pub(crate) struct State {
     pub pending: Vec<Pending>,
     pub active: Vec<Active>,
     invalid_join: bool,
@@ -97,7 +97,7 @@ impl State {
     }
 }
 
-pub(super) struct Region {
+pub(crate) struct Region {
     defer: DeferId,
     blocks: BTreeSet<BlockId>,
     locals: BTreeSet<StorageId>,
@@ -377,8 +377,13 @@ fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>)
             used.insert(source(receiver));
             used.extend(args.iter().map(source));
         }
-        PhysicalTerminator::Panic { message, .. } => {
+        PhysicalTerminator::Panic {
+            message, assertion, ..
+        } => {
             used.insert(source(message));
+            if let Some(assertion) = assertion {
+                used.extend(assertion.iter().map(source));
+            }
         }
         _ => {}
     }

@@ -1159,6 +1159,39 @@ mod tests {
         }
     }
 
+    /// The AST names identifiers as `{ "name", "ctx" }` and qualified names as
+    /// a path of spanned segments; the playground reads this JSON shape.
+    #[test]
+    fn parse_source_serializes_identifiers_and_segmented_paths() {
+        let source = "fn f(shape: ma.Shape) {}";
+        let result = ok(parse_source(source));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let function = &parsed["ast"]["items"][0][0]["Function"];
+        assert_eq!(
+            function["name"],
+            serde_json::json!({ "name": "f", "ctx": 0 }),
+            "{result}"
+        );
+        let param = &function["params"][0];
+        assert_eq!(
+            param["name"],
+            serde_json::json!({ "name": "shape", "ctx": 0 })
+        );
+        let ma = source.find("ma.").unwrap();
+        let shape = source.find("Shape").unwrap();
+        assert_eq!(
+            param["ty"][0]["Named"],
+            serde_json::json!({
+                "path": { "segments": [
+                    [{ "name": "ma", "ctx": 0 }, { "start": ma, "end": ma + 2 }],
+                    [{ "name": "Shape", "ctx": 0 }, { "start": shape, "end": shape + 5 }],
+                ] },
+                "type_args": null,
+            }),
+            "{result}"
+        );
+    }
+
     #[test]
     fn parse_source_returns_ast_and_parse_diagnostics() {
         let result = ok(parse_source("fn main() { let x = 1; }"));

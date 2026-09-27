@@ -15,22 +15,20 @@ use hew_types::compute_default_msg_id;
 #[test]
 fn actor_protocol_descriptor_populates_for_each_actor() {
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i64,
+        r"actor Counter {
+    let count: i64;
 
-            receive fn increment(n: i64) {
-            }
+    receive fn increment(n: i64) {}
 
-            receive fn total() -> i64 {
-                return count;
-            }
-        }
+    receive fn total() -> i64 {
+        return count;
+    }
+}
 
-        fn main() -> i64 {
-            return 0;
-        }
-        ",
+fn main() -> i64 {
+    return 0;
+}
+",
     );
 
     assert!(
@@ -70,32 +68,28 @@ fn actor_protocol_descriptor_msg_ids_are_stable_across_handler_reorder() {
     // slice 1 the msg_ids are derived from the fully-qualified handler name
     // and must therefore be unchanged under reorder.
     let original = typecheck(
-        r"
-        actor Counter {
-            let count: i64,
+        r"actor Counter {
+    let count: i64;
 
-            receive fn increment(n: i64) {
-            }
+    receive fn increment(n: i64) {}
 
-            receive fn total() -> i64 {
-                return count;
-            }
-        }
-        ",
+    receive fn total() -> i64 {
+        return count;
+    }
+}
+",
     );
     let reordered = typecheck(
-        r"
-        actor Counter {
-            let count: i64,
+        r"actor Counter {
+    let count: i64;
 
-            receive fn total() -> i64 {
-                return count;
-            }
+    receive fn total() -> i64 {
+        return count;
+    }
 
-            receive fn increment(n: i64) {
-            }
-        }
-        ",
+    receive fn increment(n: i64) {}
+}
+",
     );
 
     assert!(original.errors.is_empty(), "{:?}", original.errors);
@@ -121,25 +115,22 @@ fn actor_protocol_descriptor_qualifies_by_actor_name() {
     // The same handler name in two different actors must not collide,
     // because the hash input is the fully-qualified name.
     let output = typecheck(
-        r"
-        actor Counter {
-            let count: i64,
+        r"actor Counter {
+    let count: i64;
 
-            receive fn tick() {
-            }
-        }
+    receive fn tick() {}
+}
 
-        actor Gauge {
-            let value: i64,
+actor Gauge {
+    let value: i64;
 
-            receive fn tick() {
-            }
-        }
+    receive fn tick() {}
+}
 
-        fn main() -> i64 {
-            return 0;
-        }
-        ",
+fn main() -> i64 {
+    return 0;
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let counter_tick = output

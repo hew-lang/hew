@@ -1,0 +1,10 @@
+[[case]]
+id = "hashmap-overwrite-key-hashmap-vacant"
+intent = "`HashMap.insert` / `HashSet.insert` overwrite-path key leak oracles: a per-overwrite leak slope plus poisoned-allocator exactly-once pins for the vacant and overwrite paths (issue #2033). Shape `hashmap_vacant` (hashmap vacant inserts exactly once under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/hashmap-overwrite-key-hashmap-vacant.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "3OK"
+exit = 0

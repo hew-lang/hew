@@ -42,19 +42,19 @@ fn link_actor_ref_returns_result_link_error() {
         out.errors
     );
     assert!(
-        out.type_defs.contains_key("std.builtins.LinkError"),
+        out.type_def_at_path("std.builtins.LinkError").is_some(),
         "LinkError must retain its std/builtins.hew declaration owner"
     );
     assert!(
-        !out.type_defs.contains_key("std.link_monitor.LinkError"),
+        out.type_def_at_path("std.link_monitor.LinkError").is_none(),
         "the mixed monitor projection must not re-owner LinkError"
     );
 }
 
 #[test]
-fn link_result_can_be_ignored_as_statement() {
-    // Using `link(worker)` as a bare statement (result discarded) must still
-    // typecheck — callers are not required to handle the error.
+fn link_result_cannot_be_ignored_as_statement() {
+    // A bare link call drops its LinkError. The adjacent explicit-discard
+    // test covers the deliberate alternative.
     let src = with_actor(
         r"
         let w = spawn Worker;
@@ -63,8 +63,10 @@ fn link_result_can_be_ignored_as_statement() {
     );
     let out = typecheck(&src);
     assert!(
-        out.errors.is_empty(),
-        "link(actor_ref) as statement should typecheck without errors; got: {:?}",
+        out.errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ResultDropped),
+        "link(actor_ref) as a bare statement must refuse the lost error: {:?}",
         out.errors
     );
 }

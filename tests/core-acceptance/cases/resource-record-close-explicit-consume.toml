@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-record-close-explicit-consume"
+intent = "Field-bearing `#[resource]` record `close()` oracle (spec §3.7.3 / §10(d)). Shape `explicit_consume` (resource record explicit close single no double) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/resource-record-close-explicit-consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "outer-closed\ninner-closed\nafter-explicit\n"
+exit = 0

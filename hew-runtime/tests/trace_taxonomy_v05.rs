@@ -250,11 +250,9 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
         hew_stream_pair_free(pair);
         hew_sink_close(sink);
         hew_stream_close(stream);
-
-        // Give the scheduler a moment to flush the post-send lifecycle
-        // events. The drain below caps at 256 events which is well above
-        // what this scenario produces.
-        std::thread::sleep(Duration::from_millis(50));
+        // The pipe closes record their events on this thread, so the drain
+        // below is non-empty whatever the scheduler has flushed; events the
+        // workers record later are outside what this test checks.
     }
 
     let json = drain_events_json();

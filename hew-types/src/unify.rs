@@ -347,19 +347,10 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
             unify(subst, ar, br)
         }
 
-        // Named types with same name — unify type args. Arity must match: a
-        // handle's type parameter is load-bearing, so `RemotePid<A>` only
-        // unifies with `RemotePid<A>` (and `RemotePid<A1>` ≠ `RemotePid<A2>`
-        // when `A1 != A2`). Also handles module-qualified names: "json.Value"
-        // matches "Value".
-        (
-            Ty::Named {
-                name: an, args: aa, ..
-            },
-            Ty::Named {
-                name: bn, args: ba, ..
-            },
-        ) if an == bn || Ty::names_match_qualified(an, bn) => {
+        // Named types with one head identity — unify type args (rule R5: no
+        // spelling is compared). Arity must match: a handle's type parameter
+        // is load-bearing, so `RemotePid<A>` only unifies with `RemotePid<A>`.
+        (Ty::Named { head: ha, args: aa }, Ty::Named { head: hb, args: ba }) if ha == hb => {
             if aa.len() != ba.len() {
                 return Err(UnifyError::ArityMismatch {
                     expected: aa.len(),
@@ -550,16 +541,8 @@ mod tests {
     fn test_unify_named_types() {
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
-        let a = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::Var(v)],
-        };
-        let b = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::I32],
-        };
+        let a = Ty::named_for_test("Vec", vec![Ty::Var(v)]);
+        let b = Ty::named_for_test("Vec", vec![Ty::I32]);
         assert!(unify(&mut subst, &a, &b).is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::I32);
     }
@@ -568,8 +551,8 @@ mod tests {
     fn exact_unification_commits_inferred_arguments() {
         let mut subst = Substitution::new();
         let element = TypeVar::fresh();
-        let pattern = Ty::named("owner.Wrapper", vec![Ty::Var(element)]);
-        let receiver = Ty::named("owner.Wrapper", vec![Ty::String]);
+        let pattern = Ty::named_for_test("owner.Wrapper", vec![Ty::Var(element)]);
+        let receiver = Ty::named_for_test("owner.Wrapper", vec![Ty::String]);
 
         unify_exact(&mut subst, &pattern, &receiver).unwrap();
 
@@ -582,8 +565,8 @@ mod tests {
         let retained = TypeVar::fresh();
         let speculative = TypeVar::fresh();
         subst.insert(retained, &Ty::Bool).unwrap();
-        let pattern = Ty::named("Wrapper", vec![Ty::Var(speculative)]);
-        let foreign = Ty::named("foreign.Wrapper", vec![Ty::I64]);
+        let pattern = Ty::named_for_test("Wrapper", vec![Ty::Var(speculative)]);
+        let foreign = Ty::named_for_test("foreign.Wrapper", vec![Ty::I64]);
 
         assert!(matches!(
             unify_exact(&mut subst, &pattern, &foreign),
@@ -668,16 +651,8 @@ mod tests {
         // never unify. This is the sound generic-arm behaviour the checker
         // depends on — a wrong-actor handle must surface a mismatch, never a
         // silent accept that drops the type argument.
-        let actor_a = Ty::Named {
-            builtin: None,
-            name: "ClientHandler".to_string(),
-            args: vec![],
-        };
-        let actor_b = Ty::Named {
-            builtin: None,
-            name: "Supervisor".to_string(),
-            args: vec![],
-        };
+        let actor_a = Ty::named_for_test("ClientHandler", vec![]);
+        let actor_b = Ty::named_for_test("Supervisor", vec![]);
 
         let mut subst = Substitution::new();
         assert!(
@@ -705,8 +680,7 @@ mod tests {
         // arity is enforced, so the dropped-type-argument hole stays closed.
         let mut subst = Substitution::new();
         let untyped = Ty::Named {
-            builtin: Some(crate::BuiltinType::RemotePid),
-            name: "RemotePid".to_string(),
+            head: crate::TypeHead::Builtin(crate::BuiltinType::RemotePid),
             args: vec![],
         };
         assert!(
@@ -833,16 +807,8 @@ mod tests {
     #[test]
     fn test_unify_named_different_names() {
         let mut subst = Substitution::new();
-        let a = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::I32],
-        };
-        let b = Ty::Named {
-            builtin: None,
-            name: "HashMap".to_string(),
-            args: vec![Ty::I32],
-        };
+        let a = Ty::named_for_test("Vec", vec![Ty::I32]);
+        let b = Ty::named_for_test("HashMap", vec![Ty::I32]);
         assert!(unify(&mut subst, &a, &b).is_err());
     }
 
@@ -874,16 +840,8 @@ mod tests {
     #[test]
     fn same_name_handle_arity_mismatch_rejects_nonstandard_pairs() {
         let mut subst = Substitution::new();
-        let typed = Ty::Named {
-            builtin: None,
-            name: "RemotePid".to_string(),
-            args: vec![Ty::I32, Ty::Bool],
-        };
-        let untyped = Ty::Named {
-            builtin: None,
-            name: "RemotePid".to_string(),
-            args: vec![],
-        };
+        let typed = Ty::named_for_test("RemotePid", vec![Ty::I32, Ty::Bool]);
+        let untyped = Ty::named_for_test("RemotePid", vec![]);
 
         assert!(matches!(
             unify(&mut subst, &typed, &untyped),
@@ -911,19 +869,11 @@ mod tests {
     fn test_resolve_deeply_nested() {
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
-        let ty = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::Tuple(vec![Ty::Var(v), Ty::Bool])],
-        };
+        let ty = Ty::named_for_test("Vec", vec![Ty::Tuple(vec![Ty::Var(v), Ty::Bool])]);
         assert!(unify(
             &mut subst,
             &ty,
-            &Ty::Named {
-                builtin: None,
-                name: "Vec".to_string(),
-                args: vec![Ty::Tuple(vec![Ty::String, Ty::Bool])],
-            }
+            &Ty::named_for_test("Vec", vec![Ty::Tuple(vec![Ty::String, Ty::Bool])])
         )
         .is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::String);

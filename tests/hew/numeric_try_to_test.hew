@@ -1,74 +1,72 @@
 //! Executable coverage for exact numeric `.try_to_X()` conversions.
 
-import std.testing;
-
 fn expect_some_i32(value: Option<i32>, expected: i32) {
     match value {
-        .Some(actual) => testing.assert_eq(actual as i64, expected as i64),
-        .None => testing.assert_true(false),
+        .Some(actual) => assert((actual as i64) == (expected as i64)),
+        .None => assert(false),
     }
 }
 
 fn expect_none_i32(value: Option<i32>) {
     match value {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }
 
 fn expect_some_i8(value: Option<i8>, expected: i8) {
     match value {
-        .Some(actual) => testing.assert_eq(actual as i64, expected as i64),
-        .None => testing.assert_true(false),
+        .Some(actual) => assert((actual as i64) == (expected as i64)),
+        .None => assert(false),
     }
 }
 
 fn expect_none_i8(value: Option<i8>) {
     match value {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }
 
 fn expect_none_u32(value: Option<u32>) {
     match value {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }
 
 fn expect_some_u64(value: Option<u64>, expected: u64) {
     match value {
-        .Some(actual) => testing.assert_eq(actual as i64, expected as i64),
-        .None => testing.assert_true(false),
+        .Some(actual) => assert((actual as i64) == (expected as i64)),
+        .None => assert(false),
     }
 }
 
 fn expect_some_f32(value: Option<f32>, expected: f32) {
     match value {
-        .Some(actual) => testing.assert_true(actual == expected),
-        .None => testing.assert_true(false),
+        .Some(actual) => assert(actual == expected),
+        .None => assert(false),
     }
 }
 
 fn expect_none_f32(value: Option<f32>) {
     match value {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }
 
 fn expect_some_f64(value: Option<f64>, expected: f64) {
     match value {
-        .Some(actual) => testing.assert_true(actual == expected),
-        .None => testing.assert_true(false),
+        .Some(actual) => assert(actual == expected),
+        .None => assert(false),
     }
 }
 
 fn expect_none_f64(value: Option<f64>) {
     match value {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
+        .Some(_) => assert(false),
+        .None => assert(true),
     }
 }
 

@@ -82,18 +82,21 @@ fn ticker_park_notify() {
 
 /// Return (or create) the process timer wheel, ensuring something ticks it.
 ///
-/// Natively that is a background ticker thread parked on the next deadline.
-/// wasm32 has no thread to park: the process drives the wheel itself between
-/// readiness steps, so the wheel lives with the driver and nothing is started
-/// here.
+/// On the threaded runtime that is a background ticker thread parked on the
+/// next deadline. The single-thread driver has no thread to park: it drives
+/// the wheel itself between steps, so the wheel lives with the driver and
+/// nothing is started here.
 pub(crate) fn global_wheel() -> *mut HewTimerWheel {
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::wasm_driver::global_wheel()
+    if crate::driver::active() {
+        return crate::driver::global_wheel();
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         native_global_wheel()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        unreachable!("wasm32 always runs on the driver")
     }
 }
 
@@ -709,6 +712,10 @@ unsafe fn schedule_periodic_on_wheel(
 /// this check does not hold there.
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 unsafe fn assert_ticker_alive(context: &str, tw: *mut HewTimerWheel) {
+    // The single-thread driver ticks the wheel itself; there is no ticker.
+    if crate::driver::active() {
+        return;
+    }
     let ticker_running = TICKER_RUNNING.load(Ordering::SeqCst);
     let handle_finished = TICKER_HANDLE.get().and_then(|handle_mutex| {
         handle_mutex

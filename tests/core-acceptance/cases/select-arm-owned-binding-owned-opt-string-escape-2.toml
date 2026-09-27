@@ -1,0 +1,10 @@
+[[case]]
+id = "select-arm-owned-binding-owned-opt-string-escape-2"
+intent = "Select-arm owned-binding leak oracle (#1875, select-arm half). Shape `owned_opt_string_escape_scribble` (opt string escape no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/select-arm-owned-binding-owned-opt-string-escape-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "OPT-ESCAPE-OWNED-REPLY"
+exit = 0

@@ -4,8 +4,6 @@ import std.crypto.password;
 
 import std.misc.log;
 
-import std.testing;
-
 #[test]
 fn test_log_level_and_format_use_int_surface() {
     let original_level: i64 = log.get_level();
@@ -14,8 +12,8 @@ fn test_log_level_and_format_use_int_surface() {
     let format: i64 = 1;
     log.set_level(level);
     log.set_format(format);
-    testing.assert_eq(log.get_level(), level);
-    testing.assert_eq(log.get_format(), format);
+    assert(log.get_level() == level);
+    assert(log.get_format() == format);
     log.set_format(original_format);
     log.set_level(original_level);
 }
@@ -31,10 +29,10 @@ fn test_password_hash_custom_accepts_int_cost() {
         .Ok(v) => v,
         .Err(message) => panic(message),
     };
-    testing.assert_true(matches);
+    assert(matches);
     let mismatches = match password.verify("numeric-ergonomics-miss", hash) {
         .Ok(v) => v,
         .Err(message) => panic(message),
     };
-    testing.assert_false(mismatches);
+    assert(!mismatches);
 }

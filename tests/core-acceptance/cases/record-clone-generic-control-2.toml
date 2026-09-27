@@ -1,0 +1,10 @@
+[[case]]
+id = "record-clone-generic-control-2"
+intent = "Drop-safety oracle for GENERIC record clone (`clone Pair<i64, i64>` and owned-field instantiations). Shape `control` (generic record clone multi instantiation no drop leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/record-clone-generic-control-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -293,8 +293,7 @@ non-zero `u64` values, never reused, and exhaust only after issuing
 
 An actor receives monitor termination through one typed hook:
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 import std.link_monitor.{DownNotification, DownReason, DownTarget};
 
 actor Watcher {
@@ -303,10 +302,10 @@ actor Watcher {
         match note.target {
             DownTarget.Remote(location) => {
                 println(f"remote actor down: {location}");
-            },
+            }
             DownTarget.Local(slot) => {
                 println(f"local actor {slot} down");
-            },
+            }
         }
         match note.reason {
             DownReason.Exited => println("clean exit"),
@@ -367,8 +366,7 @@ lists the peer's credential in `NodeConfig.peers`. A peer's route slot is its
 one-based position in that vector, so the single peer below occupies slot `1`
 and slot `0` stays reserved for local dispatch:
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 var config = NodeConfig.at("0.0.0.0:9000");
 config.transport = "tcp";
 config.key = "server.key";
@@ -383,8 +381,7 @@ match Node.start(config) {
 
 A client that pinned the server at local route slot `1` connects with:
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 match Node.connect("1@127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),

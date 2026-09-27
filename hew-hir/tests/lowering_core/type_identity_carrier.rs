@@ -11,7 +11,7 @@
 
 use hew_hir::{dump_hir, lower_program_host_target, HirItem, HirTypeDecl, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
 /// Build a `Program` containing a non-root module `bank` with arbitrary
@@ -30,8 +30,8 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         root.errors
     );
 
-    let imported_id = ModuleId::new(vec!["bank".to_string()]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["bank"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program
@@ -110,9 +110,8 @@ fn find_type<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirTypeDec
 #[test]
 fn imported_type_carries_defining_module_and_root_type_carries_none() {
     let program = build_program_with_imported_module(
-        "pub type Widget { count: i64 }\n",
-        "type Local { total: i64 }\n\
-         fn main() -> i64 { 0 }",
+        "pub type Widget {\n    count: i64;\n}\n",
+        "type Local {\n    total: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
@@ -138,25 +137,24 @@ fn imported_type_carries_defining_module_and_root_type_carries_none() {
 #[test]
 fn type_qualified_name_derives_dotted_for_module_and_bare_for_root() {
     let program = build_program_with_imported_module(
-        "pub type Widget { count: i64 }\n",
-        "type Local { total: i64 }\n\
-         fn main() -> i64 { 0 }",
+        "pub type Widget {\n    count: i64;\n}\n",
+        "type Local {\n    total: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
 
     let imported = find_type(&output, "Widget");
-    assert_eq!(imported.qualified_name(), "bank.Widget");
+    assert_eq!(imported.qualified_name(&output.module.defs), "bank.Widget");
     assert_eq!(
-        hew_hir::mangle_dotted_name(&imported.qualified_name()),
+        hew_hir::mangle_dotted_name(&imported.qualified_name(&output.module.defs)),
         "bank$Widget",
         "module-type symbols mangle through the dotted-name authority"
     );
 
     let local = find_type(&output, "Local");
-    assert_eq!(local.qualified_name(), "Local");
+    assert_eq!(local.qualified_name(&output.module.defs), "Local");
     assert_eq!(
-        hew_hir::mangle_dotted_name(&local.qualified_name()),
+        hew_hir::mangle_dotted_name(&local.qualified_name(&output.module.defs)),
         "Local",
         "root-type qualified key mangles to the bare name unchanged"
     );
@@ -168,9 +166,8 @@ fn type_qualified_name_derives_dotted_for_module_and_bare_for_root() {
 #[test]
 fn hir_dump_shows_qualified_identity_only_for_imported_types() {
     let program = build_program_with_imported_module(
-        "pub type Widget { count: i64 }\n",
-        "type Local { total: i64 }\n\
-         fn main() -> i64 { 0 }",
+        "pub type Widget {\n    count: i64;\n}\n",
+        "type Local {\n    total: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
     let (output, tco) = lower_with_checker(&program);
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
@@ -198,7 +195,7 @@ fn hir_dump_shows_qualified_identity_only_for_imported_types() {
 #[test]
 fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
     let program = build_program_with_imported_module(
-        "pub type Widget { v: i64 }\n",
+        "pub type Widget {\n    v: i64;\n}\n",
         "fn read(w: bank.Widget) -> i64 { w.v }\n\
          fn main() -> i64 { 0 }",
     );
@@ -216,8 +213,11 @@ fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
         .expect("root `read` function must lower");
     let param = read_fn.params.first().expect("read has one param");
     match &param.ty {
-        ResolvedTy::Named { name, .. } => assert_eq!(
-            name, "bank.Widget",
+        ResolvedTy::Named {
+            head: name_head, ..
+        } => assert_eq!(
+            name_head.spelling(),
+            "bank.Widget",
             "qualified annotation must keep its module qualifier into HIR, not strip to bare"
         ),
         other => panic!("expected ResolvedTy::Named, got {other:?}"),
@@ -227,48 +227,34 @@ fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
 #[test]
 fn checked_member_types_preserve_nominal_opacity_through_hir() {
     use hew_types::BuiltinType;
-    let option = |inner| ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![inner]);
-    let vector = |inner| ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![inner]);
+    let option = |inner| ResolvedTy::named_builtin(BuiltinType::Option, vec![inner]);
+    let vector = |inner| ResolvedTy::named_builtin(BuiltinType::Vec, vec![inner]);
 
-    for (definition, name, expected) in [
-        (
-            "#[opaque] type Handle {}",
-            "Handle",
-            ResolvedTy::named_opaque("Handle", vec![]),
-        ),
+    for (definition, name, builtin) in [
+        ("#[opaque] type Handle {}", "Handle", None),
         (
             "import std.encoding.json;",
             "json.Value",
-            ResolvedTy::Named {
-                name: "std.encoding.json.Value".into(),
-                args: vec![],
-                builtin: Some(BuiltinType::JsonValue),
-                is_opaque: true,
-            },
+            Some(BuiltinType::JsonValue),
         ),
         (
             "import std.encoding.yaml;",
             "yaml.Value",
-            ResolvedTy::Named {
-                name: "std.encoding.yaml.Value".into(),
-                args: vec![],
-                builtin: Some(BuiltinType::YamlValue),
-                is_opaque: true,
-            },
+            Some(BuiltinType::YamlValue),
         ),
     ] {
         let source = format!(
             r"{definition}
-            type Value {{ count: i64 }}
+            type Value {{ count: i64; }}
             type Envelope {{
-                value: {name},
-                nested: (Option<{name}>, Vec<{name}>),
-                callback: fn({name}) -> {name},
-                ordinary: Value
+                value: {name};
+                nested: (Option<{name}>, Vec<{name}>);
+                callback: fn({name}) -> {name};
+                ordinary: Value;
             }}
             enum Payload {{
-                Direct({name}),
-                Nested {{ value: Option<Vec<{name}>> }}
+                Direct({name});
+                Nested {{ value: Option<Vec<{name}>>; }}
             }}
             fn main() -> i64 {{ 0 }}"
         );
@@ -279,11 +265,28 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             .unwrap()
             .to_path_buf();
         let checked = Checker::new(ModuleRegistry::new(vec![root])).check_program(&parsed.program);
+        let head = match builtin {
+            Some(builtin) => hew_types::TypeHead::Builtin(builtin),
+            None => hew_types::TypeHead::Nominal(hew_types::NominalHead::new(
+                checked
+                    .defs
+                    .lookup_nominal("Handle")
+                    .expect("Handle declaration"),
+                "Handle",
+            )),
+        };
+        let expected = ResolvedTy::Named {
+            head,
+            args: Vec::new(),
+            is_opaque: true,
+        };
         let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
         let fields = &find_type(&hir, "Envelope").fields;
-        let published = &checked.type_fact_context.declarations()["Envelope"].members;
+        let published = &checked.type_fact_context.declarations()
+            [&checked.defs.lookup_nominal("Envelope").unwrap()]
+            .members;
         assert_eq!(
             published,
             &fields
@@ -301,7 +304,10 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
         };
         assert_eq!(params, std::slice::from_ref(&expected));
         assert_eq!(ret.as_ref(), &expected);
-        assert_eq!(published[3], ResolvedTy::named_user("Value", vec![]));
+        assert_eq!(
+            published[3],
+            ResolvedTy::named_path(&checked.defs, "Value", vec![])
+        );
 
         let payload = find_type(&hir, "Payload");
         let mut variants: Vec<_> = payload.variants.iter().collect();
@@ -311,7 +317,9 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             .flat_map(hew_hir::HirVariant::field_tys)
             .collect();
         assert_eq!(
-            checked.type_fact_context.declarations()["Payload"].members,
+            checked.type_fact_context.declarations()
+                [&checked.defs.lookup_nominal("Payload").unwrap()]
+                .members,
             payloads
         );
         assert_eq!(payloads, vec![expected.clone(), option(vector(expected))]);

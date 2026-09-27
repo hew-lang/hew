@@ -1,0 +1,8 @@
+pub trait Shape {
+    fn name(self) -> string;
+    fn kind(self) -> string;
+}
+
+pub fn show(s: dyn Shape) {
+    println("name=" + s.name() + " kind=" + s.kind());
+}

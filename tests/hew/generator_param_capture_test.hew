@@ -13,8 +13,6 @@
 //! coro-ramp `__hew_gen_body_*` entry — safe for BitCopy scalars, which is
 //! all these fixtures exercise.
 
-import std.testing;
-
 // A parameterized generator: the body reads the formal parameter `n` in both
 // the loop bound and the yielded value. `n` is a free variable of the body,
 // so it travels through the generator's heap env block into the coro frame.
@@ -35,8 +33,8 @@ fn test_gen_fn_param_is_readable() {
         seen = seen + 1;
     }
     // Yields 0,1,2,3 → sum 6, count 4.
-    testing.assert_eq(total, 6);
-    testing.assert_eq(seen, 4);
+    assert(total == 6);
+    assert(seen == 4);
 }
 
 // A multi-yield parameter read: `n` is live ACROSS a yield boundary, so the
@@ -53,7 +51,7 @@ fn test_gen_fn_param_survives_cross_yield() {
     for x in echo_twice(21) {
         total = total + x;
     }
-    testing.assert_eq(total, 42);
+    assert(total == 42);
 }
 
 #[test]
@@ -73,7 +71,7 @@ fn test_gen_block_captures_outer_locals() {
         total = total + v;
     }
     // Yields 7,8,9 → sum 24.
-    testing.assert_eq(total, 24);
+    assert(total == 24);
 }
 
 #[test]
@@ -86,5 +84,5 @@ fn test_capture_free_generator_still_works() {
     } {
         total = total + n;
     }
-    testing.assert_eq(total, 6);
+    assert(total == 6);
 }

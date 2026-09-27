@@ -297,8 +297,10 @@ fn qualified_variant_tuple_payload_binds_nested_values() {
     let path = dir.path().join("qualified_variant_tuple_payload.hew");
     std::fs::write(
         &path,
-        r"
-enum Pair { Both((i64, i64)), None }
+        r"enum Pair {
+    Both((i64, i64));
+    None;
+}
 
 fn main() {
     let pair = Pair.Both((19, 23));
@@ -472,33 +474,27 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     let path = dir.path().join("node_peer_auth.hew");
     std::fs::write(
         &path,
-        r#"
-        actor Counter {
-            var count: i64,
-            receive fn increment(n: i64) { count = count + n; }
-        }
+        r#"actor Counter {
+    var count: i64;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+}
 
-        fn main() {
-            let config = NodeConfig {
-                bind: "127.0.0.1:0",
-                transport: "quic-mesh",
-                key: "node.key",
-                trust: "pinned",
-                peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"],
-                seeds: [],
-            };
-            match Node.start(config) {
-                .Ok(_) => {},
-                .Err(_) => panic("node start failed"),
-            }
-            let me = Node.identity_key();
-            let counter = spawn Counter(count: 0);
-            Node.register("counter", counter);
-            let _ = counter.increment(5);
-            Node.shutdown();
-            println(f"peer-auth ok id={me}");
-        }
-        "#,
+fn main() {
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: "quic-mesh", key: "node.key", trust: "pinned", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {}
+        .Err(_) => panic("node start failed"),
+    }
+    let me = Node.identity_key();
+    let counter = spawn Counter(count: 0);
+    Node.register("counter", counter);
+    let _ = counter.increment(5);
+    Node.shutdown();
+    println(f"peer-auth ok id={me}");
+}
+"#,
     )
     .expect("write peer-auth fixture");
 
@@ -739,8 +735,8 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
         &path,
         r"
         type Counter {
-            cur: i64,
-            end: i64,
+            cur: i64;
+            end: i64;
         }
 
         impl Iterator for Counter {
@@ -783,204 +779,6 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
-}
-
-/// #1929 Stage 1: element-typed `Vec<T>` methods (`push`/`get`/`set`/`pop`)
-/// under a type parameter re-resolve to the correct per-ABI runtime symbol per
-/// monomorphisation and round-trip the EXACT pushed value for every scalar /
-/// string element ABI (i64, f64, bool, string) plus `set`/`pop`.
-#[test]
-fn run_generic_vec_element_methods_roundtrip_scalar_abis() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/vec_generic_elem_push_get.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_push_get.expected"),
-    )
-    .expect("read vec_generic_elem_push_get.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Vec element-method round-trip should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 1: the pointer-ABI element. A `Vec<T>` `push`/`get` under a type
-/// parameter instantiated with the Copy pointer-identity handle
-/// `Counter` re-resolves to `hew_vec_push_ptr` / `hew_vec_get_ptr`,
-/// and the retrieved handle drives the SAME actor (bump then report → "1").
-#[test]
-fn run_generic_vec_element_methods_roundtrip_ptr_abi() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/vec_generic_elem_ptr_handle.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_ptr_handle.expected"),
-    )
-    .expect("read vec_generic_elem_ptr_handle.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Vec ptr-element round-trip should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 1: read-only generic algorithm `items.get(i).show()` over
-/// `Vec<T> where T: Show`, instantiated with the Copy value-record `Color`.
-/// `get` re-resolves to the `hew_vec_get_layout` (Copy value-record) ABI the
-/// concrete path already backs, then `.show()` dispatches statically.
-#[test]
-fn run_generic_vec_get_copy_record_then_trait_dispatch() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_get_trait_dispatch.hew");
-    let expected = std::fs::read_to_string(
-        repo_root()
-            .join("tests/vertical-slice/accept/vec_generic_elem_get_trait_dispatch.expected"),
-    )
-    .expect("read vec_generic_elem_get_trait_dispatch.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Vec Copy-record get + trait dispatch should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 2: a NON-Copy record element under a type parameter. `Vec<Name>`
-/// (Name owns a heap `string`) re-resolves its element ops to the owned
-/// descriptor family (`hew_vec_get_owned` / `hew_vec_push_owned`) — the same
-/// ABI the concrete owned path uses — through the generic monomorphisation
-/// spine. `first<T>(v) -> T` returns the gotten element (the ownership escape);
-/// the owned getter borrow, the interior-borrow leak taint, and the scope-exit
-/// `hew_vec_free_owned` agree so the round-trip is correct for the owned record
-/// alongside the scalar (`i64`) and copy-on-write (`string`) element ABIs.
-#[test]
-fn run_generic_vec_get_owned_record_under_type_param() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_record.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_record.expected"),
-    )
-    .expect("read generic_vec_get_owned_record.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Vec owned-record get should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 2 leak proof for the generic owned-element ABI: 100k iterations
-/// of push-an-owned-`Name` into a `Vec<T>`, get it back via a returning generic
-/// helper (the ownership escape), read the field, and drop. A double-free of the
-/// one heap string (the owned getter borrow aliasing the Vec's slot that
-/// `hew_vec_free_owned` also releases) SIGABRTs within a few iterations; a
-/// missed drop grows RSS linearly. A clean run is the exactly-once witness.
-#[test]
-fn run_generic_vec_get_owned_element_is_dropped_once() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_leak.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_leak.expected"),
-    )
-    .expect("read generic_vec_get_owned_leak.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Vec owned-element round-trip should run cleanly (a double-free \
-         would abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 2: `for x in items` over a `Vec<T>` where `T` is a type
-/// parameter. `copy_all<T>` drives the generic for-in (the Stage 2 target) and
-/// re-collects each yielded element into a fresh `Vec<T>` via `out.push(x)`.
-/// The synthetic `VecIter<elem>` layout is registered per monomorphisation so
-/// the iterator's record-field access resolves for each concrete element. The
-/// iterate-and-collect round-trip is summed at the concrete call site for a
-/// scalar element (i64 → 60) and a Copy value-record element (Point → 10).
-#[test]
-fn run_generic_vec_for_in_collect_scalar_and_record() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.expected"),
-    )
-    .expect("read for_in_generic_vec_collect.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Vec<T> for-in collect should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 2: pure-iteration proof for the generic for-in. `count<T>`
-/// increments an `i64` accumulator once per yielded element without touching
-/// the element value, isolating the `VecIter` desugar from the element-write
-/// path. The loop runs exactly once per element across four concrete
-/// identities — `i64` (3), `string` (4), the Copy value-record `Point` (2),
-/// and a user-authored clone-total `MonitorRef` shadow (1). The last case pins
-/// the positive half of the builtin-resource identity boundary exercised by
-/// the fail-closed test below.
-#[test]
-fn run_generic_vec_for_in_count_across_element_abis() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.expected"),
-    )
-    .expect("read for_in_generic_vec_count.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Vec<T> for-in count should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
 /// A generic Vec iteration body is admitted before its `T` is known, then each
@@ -1034,215 +832,6 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
     );
 }
 
-/// Compile `tests/vertical-slice/accept/<fixture>.hew` to a native binary via
-/// `hew compile --emit-dir` and return the binary path `hew compile` reports.
-/// Bypasses `hew run`'s interpreter path entirely, so a scope-exit double
-/// free that `hew run` downgrades to a nonzero exit still aborts here.
-fn compile_vertical_slice_fixture_to_native(
-    fixture: &str,
-    dir: &std::path::Path,
-) -> std::path::PathBuf {
-    let source = repo_root().join(format!("tests/vertical-slice/accept/{fixture}.hew"));
-    let compile_out = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.to_str().expect("emit-dir utf-8"),
-            source.to_str().expect("source utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-    assert!(
-        compile_out.status.success(),
-        "{fixture} compile failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&compile_out.stdout),
-        String::from_utf8_lossy(&compile_out.stderr),
-    );
-    let stdout_str = String::from_utf8_lossy(&compile_out.stdout);
-    stdout_str
-        .lines()
-        .find_map(|l| l.strip_prefix("native: "))
-        .unwrap_or_else(|| {
-            panic!("no `native:` line in compile output for {fixture}:\n{stdout_str}")
-        })
-        .into()
-}
-
-/// #2356: `for x in [<array literal>]` must exit 0 against the BUILT NATIVE
-/// binary, not just `hew run` (which downgrades the abort to a nonzero exit
-/// instead of surfacing it). Pre-fix, the array literal's synthetic Vec temp
-/// was borrowed (`Read`) into the for-in loop's `VecIter` cursor instead of
-/// captured (`Capture`) like a named binding, so the cursor's scope-exit
-/// release double-freed the temp's buffer alongside the temp's own drop — a
-/// libmalloc invalid-free abort (native exit 133).
-#[test]
-fn run_for_in_array_literal_native_exit_zero() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let bin_path = compile_vertical_slice_fixture_to_native("for_in_array_literal", dir.path());
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/for_in_array_literal.expected"),
-    )
-    .expect("read for_in_array_literal.expected");
-
-    let output = Command::new(&bin_path)
-        .output()
-        .unwrap_or_else(|e| panic!("run for_in_array_literal native binary: {e}"));
-
-    assert!(
-        output.status.success(),
-        "for_in_array_literal native binary must exit 0 (pre-fix: 133, a libmalloc \
-         invalid-free abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for for_in_array_literal");
-}
-
-/// #2356 companion: the same fixture shape with an explicit `-> i64` main
-/// and a `return 0` after the loop must also exit 0 against the built native
-/// binary — the scope-exit double free fires regardless of whether the
-/// function ends via a tail expression or an explicit `return`.
-#[test]
-fn run_for_in_array_literal_return_native_exit_zero() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let bin_path =
-        compile_vertical_slice_fixture_to_native("for_in_array_literal_return", dir.path());
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/for_in_array_literal_return.expected"),
-    )
-    .expect("read for_in_array_literal_return.expected");
-
-    let output = Command::new(&bin_path)
-        .output()
-        .unwrap_or_else(|e| panic!("run for_in_array_literal_return native binary: {e}"));
-
-    assert!(
-        output.status.success(),
-        "for_in_array_literal_return native binary must exit 0; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, expected,
-        "stdout mismatch for for_in_array_literal_return"
-    );
-}
-
-#[test]
-fn run_move_owned_record_field_sibling_cleanup_native() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let fixture = "move_owned_record_field_sibling_cleanup";
-    let bin_path = compile_vertical_slice_fixture_to_native(fixture, dir.path());
-    let expected = std::fs::read_to_string(
-        repo_root().join(format!("tests/vertical-slice/accept/{fixture}.expected")),
-    )
-    .expect("read moved-field sibling-cleanup expectation");
-
-    let output = Command::new(&bin_path)
-        .output()
-        .unwrap_or_else(|error| panic!("run {fixture} native binary: {error}"));
-    assert!(
-        output.status.success(),
-        "{fixture} must release the extracted owner and sibling once; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {fixture}");
-}
-
-/// #1929 Stage 3 / #1565: generic `println` / `print` / `to_string` of a value
-/// typed by a `T: Display` type parameter. The builtin print surfaces no longer
-/// re-derive a monomorphic overload from the concrete argument type; instead
-/// they route through the checker-verified `Display` obligation and dispatch to
-/// the concrete `Display::fmt` impl per monomorphisation. Covers a primitive
-/// (`i64` → 42, 7), a string (`hi`, `yo`), and a user `impl Display` (`Color`).
-#[test]
-fn run_generic_display_println_print_to_string() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/generic_display_println.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/generic_display_println.expected"),
-    )
-    .expect("read generic_display_println.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Display println/print/to_string should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 3 / #1565: f-string interpolation `f"{x}"` of a `T: Display`
-/// type parameter (previously rejected by the checker's `require_display_impl`
-/// gate because it did not recognise a type parameter's `Display` bound), plus
-/// generic `println` over a `Vec<T>` — combining Stage 2 generic `for-in` with
-/// Stage 3 Display dispatch. Covers `i64`, `string`, and a user `impl Display`.
-#[test]
-fn run_generic_display_fstring_and_vec_iteration() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/generic_display_fstring.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/generic_display_fstring.expected"),
-    )
-    .expect("read generic_display_fstring.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Display f-string + Vec<T> iteration should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #1929 Stage 3 / #1565: a generic `T: Display` consumer dispatches to a
-/// `Display` impl defined in a different module. The static-trait-dispatch
-/// resolution keys on the canonical `(Display, <concrete>, fmt)` triple, so the
-/// impl's defining module is irrelevant — proving the cross-module Display
-/// receiver acceptance criterion. Also exercises an `i64` receiver in the same
-/// program so the generic and primitive paths coexist.
-#[test]
-fn run_generic_display_cross_module_receiver() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/generic_display_xmod.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/generic_display_xmod.expected"),
-    )
-    .expect("read generic_display_xmod.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic Display cross-module receiver should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
 #[test]
 fn var_self_countdown_loop_writes_receiver_back() {
     require_codegen();
@@ -1252,7 +841,7 @@ fn var_self_countdown_loop_writes_receiver_back() {
     std::fs::write(
         &source,
         r"
-pub type Countdown { n: i64, }
+pub type Countdown { n: i64; }
 
 impl Iterator for Countdown {
     type Item = i64;
@@ -1273,8 +862,8 @@ fn main() {
     var total = 0;
     loop {
         match cd.next() {
-            .Some(v) => { total = total + v; },
-            .None => { break; },
+            .Some(v) => { total = total + v; }
+            .None => { break; }
         }
     }
     println(total);
@@ -1304,7 +893,7 @@ fn var_self_direct_second_next_observes_mutated_receiver() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64, }
+pub type Counter { n: i64; }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -1319,8 +908,8 @@ fn main() {
     var c = Counter { n: 0 };
     let _first = c.next();
     match c.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println(-1); },
+        .Some(v2) => { println(v2); }
+        .None => { println(-1); }
     }
 }
 ",
@@ -1355,8 +944,8 @@ fn main() {
     var it = words.into_iter();
     let _first = it.next();
     match it.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println("none"); },
+        .Some(v2) => { println(v2); }
+        .None => { println("none"); }
     }
 }
 "#,
@@ -1384,7 +973,7 @@ fn var_self_nested_block_value_does_not_get_abi_wrapped() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64, }
+pub type Counter { n: i64; }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -1400,8 +989,8 @@ fn main() {
     var c = Counter { n: 1 };
     let _first = c.next();
     match c.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println(-1); },
+        .Some(v2) => { println(v2); }
+        .None => { println(-1); }
     }
 }
 ",
@@ -1421,51 +1010,6 @@ fn main() {
 }
 
 #[test]
-fn var_self_concrete_specialised_trait_impl_checks_compiles_and_runs() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/accept/var_self_concrete_specialised_trait_impl.hew");
-    let source_str = source.to_str().expect("fixture path is valid UTF-8");
-
-    // `hew check` runs through HIR, MIR, and codegen-front. Before the fix,
-    // MIR tried to mangle the already-specialised `Vec$$i64::bump` symbol
-    // again and panicked here.
-    let check = support::bounded_hew_command(
-        ["check", source_str],
-        repo_root(),
-        "check concrete-specialised var-self trait impl",
-    );
-    assert!(
-        check.status.success(),
-        "concrete-specialised var-self trait impl should check; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr),
-    );
-
-    // Compile independently of `hew run`, then execute that exact native
-    // artifact so codegen/link and receiver write-back semantics are both
-    // witnessed.
-    let dir = support::tempdir();
-    let binary = compile_vertical_slice_fixture_to_native(
-        "var_self_concrete_specialised_trait_impl",
-        dir.path(),
-    );
-    let output = support::run_bounded_command(
-        Command::new(&binary),
-        "run concrete-specialised var-self trait impl",
-    );
-    assert!(
-        output.status.success(),
-        "compiled concrete-specialised var-self trait impl should exit zero; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "99\n");
-}
-
-#[test]
 fn var_self_generic_impl_direct_second_next_resolves_monomorphized_callee() {
     require_codegen();
 
@@ -1474,7 +1018,7 @@ fn var_self_generic_impl_direct_second_next_resolves_monomorphized_callee() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T, n: i64, }
+pub type Slot<T> { x: T; n: i64; }
 
 trait Tick {
     type Item;
@@ -1494,8 +1038,8 @@ fn main() {
     var s = Slot<i64> { x: 0, n: 0 };
     let _first = s.next();
     match s.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println(-1); },
+        .Some(v2) => { println(v2); }
+        .None => { println(-1); }
     }
 }
 ",
@@ -1523,7 +1067,7 @@ fn var_self_generic_method_direct_resolves_impl_and_method_type_args() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T, }
+pub type Slot<T> { x: T; }
 
 trait Tick {
     fn take<U>(var self, u: U) -> U;
@@ -1653,478 +1197,6 @@ fn main() -> i64 {
     assert_eq!(actual, "42\ntrue\n", "stdout mismatch");
 }
 
-/// W5-011 function-scope drop elaboration: a `string` returned from a user
-/// function and an aliasing call result must be freed exactly once, never
-/// twice. `id(s)` returns `s`'s buffer unretained, so `s` and the result
-/// alias the same refcount-1 allocation; the drop elaborator excludes the
-/// argument source from scope-exit drop and frees only the result. The
-/// pre-W5-011 attempt dropped both and double-freed — the runtime's
-/// `free_cstring` header-sentinel check aborts the process on a double-free,
-/// so a clean exit with `done` is the runtime proof that the buffer is freed
-/// exactly once. The structural single-drop proof lives in
-/// `hew-mir/tests/elaborate.rs`
-/// (`call_arg_source_excluded_so_call_result_is_freed_once`); this test is
-/// the behavioural guard that the emitted native binary does not double-free.
-#[test]
-fn run_move_out_string_is_freed_once_no_double_free() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/move_out_no_double_free.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/move_out_no_double_free.expected"),
-    )
-    .expect("read move_out_no_double_free.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    // A double-free aborts the process (SIGABRT) via the runtime's
-    // `free_cstring` sentinel check, so `success()` is itself the proof.
-    assert!(
-        output.status.success(),
-        "move_out_no_double_free should run cleanly (a double-free would abort); \
-         stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// W5-011 P3 alias-wrapper double-free guard: every alias site that moves a
-/// heap-owning `string` into a persistent slot (tuple element, control-flow
-/// join result, call argument, variant payload) must exclude the aliased
-/// source from scope-exit drop. The fail-closed sole-owner derivation
-/// (`derive_cow_sole_owner`) excludes any local read as a source operand
-/// anywhere in the finalized instruction+terminator stream — which every one
-/// of these aliased sources is. A regressed derivation that dropped an aliased
-/// source in addition to its live owner would double-free the shared
-/// refcount-1 buffer; the runtime's `free_cstring` header-sentinel check aborts
-/// the process (SIGABRT) on a double-free, so a clean exit across many
-/// iterations is the behavioural proof. The structural exclusion proofs live in
-/// `hew-mir/tests/elaborate.rs` (the alias-site regression battery); this test
-/// guards that the emitted native binary frees each shared buffer exactly once.
-#[test]
-fn run_alias_wrappers_no_double_free() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/alias_wrappers_no_double_free.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/alias_wrappers_no_double_free.expected"),
-    )
-    .expect("read alias_wrappers_no_double_free.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    // A double-free aborts the process (SIGABRT) via the runtime's
-    // `free_cstring` sentinel check, so `success()` is itself the proof.
-    assert!(
-        output.status.success(),
-        "alias_wrappers_no_double_free should run cleanly (a double-free would \
-         abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// W5-011 P3 destructure-binder double-free guard: a `match`-destructured
-/// enum payload binds a fresh `string` local that aliases the parent's
-/// refcount-1 buffer with no retain. Two destructures of the same value each
-/// bind such a local; admitting either binder to a scope-exit `hew_string_drop`
-/// would double-free the shared buffer. The fail-closed sole-owner derivation
-/// (`derive_cow_sole_owner`) seeds projection-alias taint on the destination
-/// of any `Move` from an interior projection (`MachineVariant` / `EnumVariant`
-/// / `GenState`), so each binder is excluded. A regressed derivation that
-/// admitted a binder would double-free; the runtime's `free_cstring` sentinel
-/// aborts (SIGABRT) on a double-free, so a clean exit is the behavioural proof.
-/// The structural exclusion proofs live in the `cow_sole_owner_derivation`
-/// unit tests (hew-mir/src/lower.rs); this test guards the emitted native
-/// binary.
-#[test]
-fn run_destructure_payload_no_double_free() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/destructure_payload_no_double_free.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/destructure_payload_no_double_free.expected"),
-    )
-    .expect("read destructure_payload_no_double_free.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "destructure_payload_no_double_free should run cleanly (a double-free \
-         would abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// W5-011 leak guard: a heap-owning `string` local that never escapes is
-/// freed at function scope exit, so a tight loop that allocates one such
-/// local per iteration must run in bounded memory. Before W5-011 these
-/// helper-locals leaked (the buffer was never freed). This test asserts the
-/// program completes and prints `done` across many iterations; the bounded-RSS
-/// proof (identical peak RSS at 100k vs 2M iterations) is recorded in the
-/// validation evidence.
-#[test]
-fn run_fn_local_string_is_dropped_bounded_memory() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/fn_local_string_dropped.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/fn_local_string_dropped.expected"),
-    )
-    .expect("read fn_local_string_dropped.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "fn_local_string_dropped should run cleanly; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// W5.011 P3 owned-`string` temporary substrate double-free guard: a fresh-owned
-/// `string` produced by `+`/concat, `.to_upper()`, or the `Vec<string>`
-/// getter and then used in a borrowing context (`.len()`) — whether bound
-/// (`let y = <producer>; y.len()`), nested (`(<producer>).len()`), or discarded
-/// (`<producer>;`) — must be released exactly once. A regressed substrate that
-/// dropped such an owner twice would over-decrement the refcount and free early;
-/// the runtime's `free_cstring` header-sentinel check aborts the process
-/// (SIGABRT) on a double-free, so a clean exit with `done` across every
-/// iteration of the hot loop is the behavioural proof that each owner is freed
-/// exactly once (and the bounded-RSS leak proof — flat peak RSS at 40M
-/// iterations — is recorded in the validation evidence). The structural
-/// single-drop proofs live in
-/// `hew-mir/tests/owned_string_temp_drop_canary.rs`.
-#[test]
-fn run_owned_string_temp_no_double_free() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/owned_string_temp_no_double_free.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/owned_string_temp_no_double_free.expected"),
-    )
-    .expect("read owned_string_temp_no_double_free.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    // A double-free aborts the process (SIGABRT) via the runtime's
-    // `free_cstring` sentinel check, so `success()` is itself the proof.
-    assert!(
-        output.status.success(),
-        "owned_string_temp_no_double_free should run cleanly (a double-free would \
-         abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-#[test]
-fn run_user_record_string_field_is_dropped_once() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/user_record_string_field.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/user_record_string_field.expected"),
-    )
-    .expect("read user_record_string_field.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "user_record_string_field should run cleanly (a double-free would abort); \
-         stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Generic-instantiation twin of `run_user_record_string_field_is_dropped_once`:
-/// a `Pair<i64, string>` carrying a single fresh `string.repeat` result is
-/// constructed and dropped on every one of 100k iterations. The generic
-/// owned-record drop spine must free the string field exactly once per iteration
-/// without depending on nested-concat temp cleanup — a double-free aborts (the
-/// loop is the exactly-once witness), a missed drop leaks.
-#[test]
-fn run_generic_record_string_field_is_dropped_once() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/generic_record_string_field.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/generic_record_string_field.expected"),
-    )
-    .expect("read generic_record_string_field.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic_record_string_field should run cleanly (a double-free would \
-         abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// The #2434 root cause split from the generic-record fixture: `first + " " +
-/// last` creates a fresh concat temp that is immediately borrowed by another
-/// concat, with no record wrapper involved. The nested-temp drop splice must
-/// release that intermediate exactly once.
-#[test]
-fn run_nested_string_concat_temp_is_dropped_once() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/nested_string_concat_temp.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/nested_string_concat_temp.expected"),
-    )
-    .expect("read nested_string_concat_temp.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "nested_string_concat_temp should run cleanly (a double-free would \
-         abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Generic record swap that moves an owned string across instantiations
-/// (`Pair<i64, string>` -> `Pair<string, i64>`) and returns the result by value,
-/// 100k times. The returned generic owned record is dropped exactly once at the
-/// caller; the callee transfers the string into the new instantiation. A
-/// double-free aborts, a missed drop leaks.
-#[test]
-fn run_generic_record_swap_owned_is_dropped_once() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/generic_record_swap_owned.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/generic_record_swap_owned.expected"),
-    )
-    .expect("read generic_record_swap_owned.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "generic_record_swap_owned should run cleanly (a double-free would \
-         abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Non-BitCopy record match destructure — full extraction of an owned
-/// `string` field across 100k iterations. Until the partial-move/drop
-/// elaboration spine landed, `lower_match_project` rejected the shape
-/// fail-closed; this guards the lift. The extracted binder is added to
-/// `owned_locals` so its function-scope drop fires exactly once, and
-/// `derive_owned_record_drop_allowed` excludes the source aggregate's
-/// composite drop via the field-binder release-owner rule. A regressed
-/// lift that double-freed would abort at `free_cstring`'s sentinel; a
-/// regressed lift that leaked would grow RSS linearly with iteration count.
-#[test]
-fn run_match_record_destructure_owned_drops_once() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/match_record_destructure_owned.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/match_record_destructure_owned.expected"),
-    )
-    .expect("read match_record_destructure_owned.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_record_destructure_owned should run cleanly (a double-free would \
-         abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Non-BitCopy tuple match destructure — full extraction of a
-/// `(string, i64)` across 100k iterations. The tuple analogue of
-/// `run_match_record_destructure_owned_drops_once`:
-/// `derive_tuple_composite_drop_allowed` excludes the tuple temp's composite
-/// member drop because the extracted owned binder is in
-/// `release_owner_bases`. A double-free aborts; a leak grows RSS.
-#[test]
-fn run_match_tuple_destructure_owned_drops_once() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/match_tuple_destructure_owned.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/match_tuple_destructure_owned.expected"),
-    )
-    .expect("read match_tuple_destructure_owned.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_tuple_destructure_owned should run cleanly (a double-free would \
-         abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Non-BitCopy record match destructure — PARTIAL extraction (wildcard on
-/// an owned `string` sibling) across 100k iterations. The partial-extraction
-/// emitter discharges the wildcarded `string` through
-/// `Instr::FieldDropInPlace` (raw slot load + `hew_string_drop` +
-/// null-store — string field LOADS retain via `hew_string_clone`, so a
-/// load+drop pair would retain-cancel and leak the original slot value).
-/// The drop spine's composite suppression already kicks in once any binder
-/// owns release. A double-free (composite + binder + in-place drop all
-/// firing) aborts; a leak grows RSS.
-#[test]
-fn run_match_record_partial_extraction_owned_drops_once() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/match_record_partial_extraction_owned.hew");
-    let expected = std::fs::read_to_string(
-        repo_root()
-            .join("tests/vertical-slice/accept/match_record_partial_extraction_owned.expected"),
-    )
-    .expect("read match_record_partial_extraction_owned.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_record_partial_extraction_owned should run cleanly (a double-free \
-         or use-after-free would abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Match-destructure wildcard on an owned-AGGREGATE field (here `Inner`
-/// is a record carrying a `string`) — the skipped field is discharged in
-/// place through `Instr::FieldDropInPlace` (type-directed at codegen via
-/// `emit_heap_slot_drop`), with the composite-drop provers excluding the
-/// scrutinee root directly on the op's base. A regression that
-/// re-admitted the composite alongside the in-place drop would double-free
-/// the nested string leaf and abort at `free_cstring`'s sentinel.
-#[test]
-fn run_match_record_wildcard_owned_aggregate_field_drops_once() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/accept/match_record_wildcard_owned_aggregate_field.hew");
-    let expected =
-        std::fs::read_to_string(repo_root().join(
-            "tests/vertical-slice/accept/match_record_wildcard_owned_aggregate_field.expected",
-        ))
-        .expect("read match_record_wildcard_owned_aggregate_field.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_record_wildcard_owned_aggregate_field should run cleanly (a composite \
-         re-drop of the in-place-discharged field would abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// #2400 resource-wrapper collision, now qualified: two imported modules each
-/// define a DISTINCT type named `Server` with an `impl ServerMethods for
-/// Server`. Both are close resources, so both used to lower `Server::close`
-/// under one unqualified raw-MIR symbol and trip the #2400 duplicate-symbol
-/// fail-closed guard — a compiler limitation, since the program itself is
-/// valid Hew.
-///
-/// The free->close migration qualifies colliding imported resource wrappers
-/// into distinct module-qualified symbols, so http and websocket
-/// `Server::close` now coexist and the program compiles to native and runs.
-/// Full LLVM verification passing is the anti-fail-open guard: a silent
-/// linkonce merge or a dropped body would surface as the opaque verifier dump
-/// ("Global is external, but doesn't have external or weak linkage!"). The
-/// compiler's duplicate-symbol guard still fences genuinely-unqualifiable
-/// same-name collisions (so #2400 stays open for the non-resource case).
-#[test]
-fn check_dual_module_same_type_name_impl_resource_qualified_compiles() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/accept/dual_module_same_type_name_resource_qualified.hew");
-    let dir = support::tempdir();
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.path().to_str().expect("emit-dir utf-8"),
-        ])
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // Native compile runs full codegen + LLVM verification. Success is the
-    // anti-fail-open guard: were the qualification to regress, the two distinct
-    // `Server::close` bodies would collide again and either fail closed on the
-    // duplicate symbol or silently merge into the verifier dump below.
-    assert!(
-        output.status.success(),
-        "dual-module same-name resource wrappers should compile after \
-         qualification; combined output:\n{combined}"
-    );
-    assert!(
-        !combined.contains("duplicate function symbol"),
-        "resource-wrapper qualification regressed — `Server::close` collided \
-         again at codegen-front:\n{combined}"
-    );
-    assert!(
-        !combined.contains("doesn't have external or weak linkage"),
-        "must not degrade to the raw LLVM verifier dump:\n{combined}"
-    );
-}
-
 /// Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
 /// UPSTREAM by the channel element-layout witness — the existing check-time
 /// diagnostic, not a new one. No recv surface can type this element class
@@ -2212,216 +1284,8 @@ fn check_gen_block_borrowed_resource_capture_fails_closed() {
     );
 }
 
-/// CAP-11 admitted boundary: the two null-env `fn(..)` value shapes — a
-/// named-fn reference and a capture-free closure — still compile and run
-/// with exact stdout. Both pairs carry a null env word by construction, so
-/// the generator's flat env copy has no heap box to leak or alias; a gate
-/// regression that over-tightened onto these shapes would fail this test at
-/// compile time.
-#[test]
-fn run_gen_fn_null_env_fn_values_exact_stdout() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/gen_fn_null_env_fn_values.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/gen_fn_null_env_fn_values.expected"),
-    )
-    .expect("read gen_fn_null_env_fn_values.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "gen_fn_null_env_fn_values should run cleanly; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Non-BitCopy record match destructure — FULL extraction with a
-/// non-escaping bound owned field.
-///
-/// `Pair { a: x, b: y } => x` binds both heap-owning fields, but `y` is
-/// never read. Until the per-binder taint-suppression landed, `y`'s
-/// `RecordFieldLoad` dest was tainted as a projection-alias of the parent,
-/// `derive_cow_sole_owner` excluded it from the leaf `CoW` allow-set, and
-/// the drop elaborator silently emitted no drop for `y` — one allocation
-/// leaked per match. The fix pairs the scrutinee consume mark with a
-/// `match_project_consumed_binder_locals` exemption: when the scrutinee is
-/// a non-captured `BindingRef` (consume-marked at the destructure site),
-/// the bound owned fields become sole owners and are admitted. A double-
-/// free regression (composite + binder both fire) would abort at
-/// `free_cstring`'s sentinel; the prior leak posture grew RSS linearly
-/// with iteration count.
-#[test]
-fn run_match_record_full_extraction_unused_binder_drops_once() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/accept/match_record_full_extraction_unused_binder.hew");
-    let expected =
-        std::fs::read_to_string(repo_root().join(
-            "tests/vertical-slice/accept/match_record_full_extraction_unused_binder.expected",
-        ))
-        .expect("read match_record_full_extraction_unused_binder.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_record_full_extraction_unused_binder should run cleanly (a double-free \
-         would abort, a leak would grow RSS); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Non-BitCopy record match destructure — FULL extraction of an owned
-/// `Vec<i64>` field with a wildcarded `BitCopy` sibling. The arm
-/// `Pair { a: _, b: v } => v` moves the vector into `v`, which enters
-/// `owned_locals` exactly like a `string` binder would: the extraction path
-/// is type-agnostic over non-BitCopy field types. Correctness oracle — each
-/// extracted vector is a valid length-2 buffer holding `[10, 20]`, so the
-/// running total over 1000 iterations is `1000 * (2 + 10 + 20) = 32000`. A
-/// lift that rejected non-`string` owned binders would fail to compile; a
-/// lift that handed back an empty / invalid handle would print the wrong
-/// total or abort. (The `Vec` drop-in-loop leak axis is governed by the
-/// pre-existing `Vec` value-class drop limitation — identical to a plain
-/// `let v = make_vec()` — so this test pins extraction correctness and the
-/// absence of double-free / abort across the back-edge drop path, not the
-/// per-iteration `Vec` byte count.)
-#[test]
-fn run_match_record_vec_full_extraction() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/match_record_vec_full_extraction.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/match_record_vec_full_extraction.expected"),
-    )
-    .expect("read match_record_vec_full_extraction.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_record_vec_full_extraction should run cleanly; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Non-BitCopy record match destructure — ALL-wildcard arm over an owned
-/// aggregate (`Outer { name: _, inner: _ } => 0`). The arm binds nothing, so
-/// nothing seeds the field-binder release-owner rule and the scrutinee's own
-/// composite `RecordInPlace` drop is NOT suppressed: it fires at scope exit
-/// and frees every owned field (`name` plus the nested `inner.value`). Drop
-/// oracle over 100k iterations of a `string`-backed aggregate (string drop is
-/// leak-clean, unlike `Vec`): a regression that suppressed the composite drop
-/// without a replacement leaks two strings per iteration (the time-bounded
-/// runner trips on linear RSS growth / wall-clock); a regression that BOTH
-/// dropped composite AND emitted per-field drops double-frees and aborts at
-/// `free_cstring`'s sentinel. A clean `done` is the behavioural proof.
-#[test]
-fn run_match_record_wildcard_all_owned_drops_once() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/accept/match_record_wildcard_all_owned_drops_once.hew");
-    let expected =
-        std::fs::read_to_string(repo_root().join(
-            "tests/vertical-slice/accept/match_record_wildcard_all_owned_drops_once.expected",
-        ))
-        .expect("read match_record_wildcard_all_owned_drops_once.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_record_wildcard_all_owned_drops_once should run cleanly (a leak or \
-         double-free would trip the runner / abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Non-BitCopy record match destructure — an all-wildcard arm leaves the
-/// scrutinee reusable. Because the arm moves nothing out, the scrutinee
-/// binding is NOT consume-marked (only an arm that binds at least one owned
-/// field earns the mark), so a post-match read of `o.name` is legitimate and
-/// the binding's composite drop still fires at scope exit. This is the
-/// inverse of `check_match_destructure_use_after_consume_fails_closed`: there
-/// an owned field is moved out, the scrutinee is consumed, and a post-match
-/// read fires `UseAfterConsume`. A regression that over-eagerly consume-marked
-/// an all-wildcard scrutinee would reject this read at check time.
-#[test]
-fn run_match_record_wildcard_scrutinee_reusable() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/accept/match_record_wildcard_scrutinee_reusable.hew");
-    let expected = std::fs::read_to_string(
-        repo_root()
-            .join("tests/vertical-slice/accept/match_record_wildcard_scrutinee_reusable.expected"),
-    )
-    .expect("read match_record_wildcard_scrutinee_reusable.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "match_record_wildcard_scrutinee_reusable should run cleanly; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
 // The conditional carrier-consumption paths run in the carrier-conditional-consume
 // acceptance and safety case. The former checker refusal no longer applies.
-
-/// A last-use string sent to an actor moves into the prepared outbound carrier
-/// and neutralizes the sender slot. The fixture's handler consumes that string
-/// into actor state; a FIFO ask verifies its exact length, and final actor
-/// teardown releases the receiver-owned buffer. If the sender also releases the
-/// prepared carrier after enqueue, teardown trips the runtime's `free_cstring`
-/// sentinel (SIGABRT). One transfer exercises the ownership edge completely;
-/// repeating it only amplifies runtime work under the shared subprocess
-/// deadline.
-#[test]
-fn run_actor_sent_string_not_double_freed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/actor_sent_string_not_double_freed.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/actor_sent_string_not_double_freed.expected"),
-    )
-    .expect("read actor_sent_string_not_double_freed.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    // Wrong length returns non-zero; a double-free aborts via `free_cstring`.
-    // `success()` therefore preserves both the value and release oracles.
-    assert!(
-        output.status.success(),
-        "actor_sent_string_not_double_freed should run cleanly (a double-free \
-         would abort); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
 
 /// Stdin round-trip through `std::io`. Guards against the regression that
 /// shipped before this test existed: extern declarations in imported stdlib
@@ -2556,14 +1420,7 @@ fn run_fstring_rejects_type_without_display_impl() {
     let hew_src = dir.path().join("fstring_missing_display.hew");
     std::fs::write(
         &hew_src,
-        "type Foo {\n\
-         \x20   x: i64,\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let f = Foo { x: 1 };\n\
-         \x20   println(f\"foo is {f}\");\n\
-         }\n",
+        "type Foo {\n    x: i64;\n}\n\nfn main() {\n    let f = Foo { x: 1 };\n    println(f\"foo is {f}\");\n}\n",
     )
     .unwrap();
 
@@ -2604,18 +1461,7 @@ fn run_fstring_dispatches_user_defined_display() {
     let hew_src = dir.path().join("fstring_user_display.hew");
     std::fs::write(
         &hew_src,
-        "import std.io;\n\
-         \n\
-         type Point { x: i64, }\n\
-         \n\
-         impl Display for Point {\n\
-         \x20   fn fmt(p: Point) -> string { f\"Point({p.x})\" }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let p = Point { x: 7 };\n\
-         \x20   println(f\"got {p}\");\n\
-         }\n",
+        "import std.io;\n\ntype Point {\n    x: i64;\n}\n\nimpl Display for Point {\n    fn fmt(p: Point) -> string {\n        f\"Point({p.x})\"\n    }\n}\n\nfn main() {\n    let p = Point { x: 7 };\n    println(f\"got {p}\");\n}\n",
     )
     .unwrap();
 
@@ -2628,263 +1474,6 @@ fn run_fstring_dispatches_user_defined_display() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "got Point(7)\n",);
-}
-
-/// T-1 value oracle: `type R { b: i64, a: i64 }` matched as `R { a, b }`.
-///
-/// Declaration order: `b` is at index 0, `a` is at index 1.
-/// Pattern binding order: `a` first, then `b`.
-/// `R { b: 10, a: 20 }` → `match r { R { a, b } => a - b }` → 20 - 10 = 10.
-///
-/// If field offsets were resolved alphabetically (`a → 0, b → 1`) the result
-/// would be 10 - 20 = -10, producing exit code 246 (i64 → u8 wrapping on Linux)
-/// rather than 10 — a distinct wrong value that this oracle catches.
-///
-/// Pairs with the MIR unit test `record_project_declaration_order_not_alphabetical`
-/// which asserts the `FieldOffset` values directly.
-#[test]
-fn run_struct_match_declaration_order_not_alphabetical() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/match_struct_decl_order.hew");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    let exit_code = output.status.code().unwrap_or(-1);
-    assert_eq!(
-        exit_code, 10,
-        "expected exit 10 (a - b = 20 - 10); \
-         exit {exit_code} means field offsets may be wrong (alphabetical sort would give -10 → 246); \
-         stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-/// Regression oracle — for-range loop variable derives its type from the
-/// checker-resolved `Range<T>` element type, not the start bound.
-///
-/// `for i in 0..n` with `n: i32` passed to `take_i32(i32)`.  The checker
-/// resolves the range as `Range<i32>`, so `i` should be `i32` throughout.
-/// Before the fix the loop counter was always `I64`, causing `IntCmp` /
-/// `IntArithChecked` width-guard failures at codegen.
-///
-/// The program sums 0+1+2+3+4+5+6 = 21 and returns 21 as the exit code.
-#[test]
-fn for_range_i32_bound_runs_and_returns_correct_value() {
-    require_codegen();
-
-    let fixture = repo_root().join("tests/vertical-slice/accept/for_range_regression.hew");
-    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&fixture)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew run");
-
-    assert_eq!(
-        output.status.code(),
-        Some(21),
-        "expected exit 21 (sum 0..7); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "expected no diagnostics; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-#[test]
-fn i32_match_integer_literal_arm_runs_correct_branch() {
-    require_codegen();
-
-    let fixture = repo_root().join("tests/vertical-slice/accept/i32_match_literal.hew");
-    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-
-    let output = run_bounded_hew_run(&fixture, repo_root());
-
-    assert_eq!(
-        output.status.code(),
-        Some(42),
-        "expected exit 42 from the i32 literal match arm; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "expected no diagnostics; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-#[test]
-fn platform_sized_match_integer_literal_arms_run_correct_branches() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/platform_sized_match_literal.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/platform_sized_match_literal.expected"),
-    )
-    .expect("read platform_sized_match_literal.expected");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert_eq!(
-        output.status.code(),
-        Some(43),
-        "expected exit 43 from isize + usize literal match arms; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "expected no diagnostics; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
-/// Regression oracle — mixed-width range bounds (i32..i64) produce a loop
-/// variable typed at the wider bound (i64), not the narrower start bound.
-///
-/// `for i in a..b` with `a: i32 = 2, b: i64 = 6` passed to `id_i64(i64)`.
-/// The checker resolves `Range<i64>` (common width of i32 and i64 is i64).
-/// Before the fix, HIR derived element type from `start_hir.ty = i32`,
-/// causing `call i64 @id_i64(i32 %arg)` which LLVM rejected.
-///
-/// Sums 2+3+4+5 = 14; exit code 14.
-#[test]
-fn for_range_mixed_width_bounds_runs_and_returns_correct_value() {
-    require_codegen();
-
-    let fixture = repo_root().join("tests/vertical-slice/accept/for_range_mixed_width_bounds.hew");
-    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&fixture)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew run");
-
-    assert_eq!(
-        output.status.code(),
-        Some(14),
-        "expected exit 14 (sum 2..6 as i64); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "expected no diagnostics; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-/// Regression oracle — negative integer literal range bounds lower correctly
-/// when the loop variable is narrowed to a concrete integer type.
-///
-/// `for i in -5..5` with `id_i32(i)`.  The checker narrows the deferred
-/// range `TypeVar` to `i32`.  Before the fix, the inner literal `5` inside
-/// the negated start bound `-5` kept the `IntLiteral`→`I64` materialized
-/// default, while the outer `-5` span was re-recorded as `i32`.  MIR
-/// codegen then rejected `IntNegChecked` because dest (i32) ≠ operand (i64).
-///
-/// Sum of {-5,-4,-3,-2,-1,0,1,2,3,4} = -5.  Exit code 256 - 5 = 251.
-// WINDOWS-TODO: Windows preserves signed exit codes; test expects Unix u8-wrapped value (251 vs -5).
-#[cfg_attr(windows, ignore)]
-#[test]
-fn for_range_negative_literal_bound_runs_and_returns_correct_value() {
-    require_codegen();
-
-    let fixture =
-        repo_root().join("tests/vertical-slice/accept/for_range_negative_literal_bound.hew");
-    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&fixture)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew run");
-
-    assert_eq!(
-        output.status.code(),
-        Some(251),
-        "expected exit 251 (sum -5..5 as i32, wraps to 251); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "expected no diagnostics; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-/// Range iterator adapters (`.rev()` / `.step_by(k)`) lower to a strided /
-/// descending `ForRange` and produce the EXACT iteration sequences:
-///   - `(0..5).rev()`              → 4 3 2 1 0
-///   - `(0..10).step_by(2)`        → 0 2 4 6 8
-///   - `(0..=10).rev().step_by(3)` → 10 7 4 1   (composed left-to-right)
-///
-/// Asserting the full stdout (not just an exit code or a count) is the test
-/// with teeth: a mis-ordered, off-by-one, or dropped-stride codegen path
-/// would change the printed sequence.
-#[test]
-fn for_range_rev_and_step_by_print_exact_sequences() {
-    require_codegen();
-
-    let cases: &[(&str, &str)] = &[
-        (
-            "tests/vertical-slice/accept/for_range_rev.hew",
-            "4\n3\n2\n1\n0\n",
-        ),
-        (
-            "tests/vertical-slice/accept/for_range_step_by.hew",
-            "0\n2\n4\n6\n8\n",
-        ),
-        (
-            "tests/vertical-slice/accept/for_range_rev_step_by.hew",
-            "10\n7\n4\n1\n",
-        ),
-    ];
-
-    for (rel, expected_stdout) in cases {
-        let fixture = repo_root().join(rel);
-        assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-
-        let output = Command::new(hew_binary())
-            .arg("run")
-            .arg(&fixture)
-            .current_dir(repo_root())
-            .output()
-            .expect("invoke hew run");
-
-        assert!(
-            output.status.success(),
-            "{rel}: expected clean exit; stdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-        assert_eq!(
-            stdout,
-            *expected_stdout,
-            "{rel}: exact iteration sequence mismatch; stderr: {}",
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
 }
 
 /// `.step_by(k)` before `.rev()` does not commute with the supported
@@ -2926,533 +1515,6 @@ fn for_range_step_by_before_rev_is_rejected() {
     assert!(
         combined.contains("`step_by` before `rev` is unsupported"),
         "expected the actionable diagnostic; got: {combined}",
-    );
-}
-
-/// Named functions used as first-class values: passed as arguments,
-/// stored in let bindings, and called through a local binding.
-/// Also guards that lambda literals continue to work (regression guard).
-///
-/// Before this fix, `apply(double, 7)` printed nothing and exited 0 because
-/// the wildcard `BindingRef { .. } => None` arm in `lower_value` silently
-/// swallowed the `ResolvedRef::Item` case, causing the argument to be missing
-/// from the call and the let-binding `r` to have no backend slot.
-#[test]
-fn named_fn_as_value_four_line_oracle() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/named_fn_as_value.hew");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "named_fn_as_value should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, "14\n6\n10\n21\n",
-        "expected four lines 14/6/10/21; got: {actual:?}"
-    );
-}
-
-/// Regression: the same named function used as a value at more than one call
-/// site previously caused duplicate/undefined shim symbols in the LLVM module
-/// (`__hew_named_fn_invoke_double` and `__hew_named_fn_invoke_double.1`),
-/// failing module verification with exit 125.  The fix deduplicates shims at
-/// the module-collection level so the body is emitted exactly once regardless
-/// of how many sites reference the same named function.
-#[test]
-fn named_fn_value_reused_across_sites() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/named_fn_value_reused.hew");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "named_fn_value_reused should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, "2\n20\n30\n100\n",
-        "expected 2/20/30/100; got: {actual:?}"
-    );
-}
-
-/// Named function returned from a function and called through the result.
-///
-/// Before this fix, `get_double()` returned an uninitialised closure pair
-/// because `lower_value(double)` returned None in the return-statement path,
-/// causing `f(7)` to call through a garbage function pointer (exit 1,
-/// no output).
-#[test]
-fn named_fn_returned_and_called() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/named_fn_return.hew");
-
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "named_fn_return should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "14\n", "expected 14; got: {actual:?}");
-}
-
-/// Inline capturing closure: `base` is an untyped local integer binding.
-///
-/// Previously failed at HIR with `E_HIR: CheckerBoundaryViolation` because
-/// the `check_against` const-values coercion path in the type checker called
-/// `env.lookup` instead of `synthesize_identifier`, bypassing the
-/// `lambda_capture_depth` depth-check that registers closure captures.
-#[test]
-fn capturing_closure_inline_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/capturing_closure_inline.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "capturing_closure_inline should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "15\n10\n", "expected 15/10; got: {actual:?}");
-}
-
-/// Returned capturing closure: a function returns a closure that captures a
-/// parameter binding.
-///
-/// Previously failed at MIR with `E_MIR_CHECK: InitialisedBeforeUse` because
-/// `MirStatement::Use` was emitted unconditionally for all `BindingRef` nodes,
-/// including captured bindings handled via `ClosureEnvFieldLoad`. The dataflow
-/// checker saw the outer binding id as `Uninit` in the closure shim context.
-#[test]
-fn capturing_closure_returned_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/capturing_closure_returned.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "capturing_closure_returned should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "8\n", "expected 8; got: {actual:?}");
-}
-
-/// Returned capturing closure survives the producing frame being clobbered.
-///
-/// Previously the closure env stayed a stack alloca in the producer's frame
-/// even though the checker classified the literal `Escapes`; deep unrelated
-/// calls between `make_adder` and the closure call overwrote the frame and
-/// the capture read garbage. The env is now heap-promoted at the literal
-/// site (`Instr::MakeClosure` `HeapBox` mode) and freed exactly once by the
-/// pair's scope-exit `DropKind::ClosurePair` drop.
-#[test]
-fn returned_closure_survives_stack_clobber() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_env_heap_promotion.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_env_heap_promotion should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "15\n", "expected 15; got: {actual:?}");
-}
-
-/// Nested closure captures the OUTER closure literal's own parameter.
-///
-/// Previously `E_HIR` `DanglingRef`: the HIR verifier walked a closure literal's
-/// body without first registering the literal's own parameters as declared
-/// bindings (only named-fn and actor-method params were registered), so the
-/// inner literal's capture of the outer param resolved to a binding the
-/// verifier believed undeclared.
-#[test]
-fn closure_nested_captures_outer_param_runs() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/closure_nested_captures_outer_param.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_nested_captures_outer_param should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "15\n", "expected 15; got: {actual:?}");
-}
-
-/// A closure captures another closure BINDING from the enclosing scope and
-/// dispatches it as a bare-identifier callee.
-///
-/// Previously `E_HIR` `CheckerBoundaryViolation`: the call checker resolved a
-/// bare-identifier closure callee directly, without recording the
-/// `ClosureCaptureFact` the identifier-read path records, so HIR capture
-/// materialization found the captured binding with no checker metadata.
-#[test]
-fn closure_captures_closure_binding_runs() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/closure_captures_closure_binding.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_captures_closure_binding should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "42\n", "expected 42; got: {actual:?}");
-}
-
-/// A non-capturing closure literal nested inside another closure's body.
-///
-/// Previously `E_NOT_YET_IMPLEMENTED` (missing closure invoke shim): the nested
-/// literal's invoke shim is produced while the parent shim is being lowered, so
-/// it lands in the parent's `generated.generated`, and the module driver
-/// flattened only one level — `MakeClosure` then referenced a shim symbol
-/// codegen never emitted. The driver now flattens the generated tree fully.
-#[test]
-fn closure_nested_noncapturing_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_nested_noncapturing.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_nested_noncapturing should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "16\n", "expected 16; got: {actual:?}");
-}
-
-/// Type-parameterized closure capture: a closure inside `fn pick<T>(x: T) -> T`
-/// captures the type-parameter-typed value and returns it, instantiated at two
-/// concrete types.
-///
-/// Previously `E_MIR` `UnknownType` `T`: the closure env field type and the
-/// invoke shim's return ABI were left as the bare type-parameter symbol. The
-/// codegen-readiness walk over the env record layout has no per-monomorphisation
-/// subst map, so an un-substituted `T` was rejected at the MIR boundary. The
-/// closure-literal lowering now substitutes capture/param/return types through
-/// the monomorphisation map. The `string` instantiation also exercises an OWNED
-/// capture (heap buffer released by the escaping env free thunk).
-#[test]
-fn closure_type_param_capture_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_type_param_capture.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_type_param_capture should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, "42\nclosure\n",
-        "expected 42 then closure; got: {actual:?}"
-    );
-}
-
-/// Type-parameterized closure capture with TWO type parameters captured by the
-/// same closure env. Each capture field substitutes to its concrete type
-/// independently (`i64`, `string`).
-#[test]
-fn closure_type_param_multi_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_type_param_multi.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_type_param_multi should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "99\n", "expected 99; got: {actual:?}");
-}
-
-/// `BorrowMut` write-back (#1′): a closure reassigns a captured scalar `var`.
-///
-/// Previously `E_MIR` `UnresolvedPlace` ("assignment target binding has no MIR
-/// place"): the assignment lowering resolved only `binding_locals` targets, so
-/// a reassigned captured binding (which lives in the closure env, not a local
-/// slot) had no write path. The lowering now emits a `ClosureEnvFieldStore`
-/// into the env field. The env owns the mutable scalar (Option B): `acc`
-/// accumulates 0 -> 5 -> 8 while the caller's original `total` stays 0.
-#[test]
-fn closure_captured_var_writeback_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_captured_var_writeback.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_captured_var_writeback should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "5\n8\n0\n", "expected 5,8,0; got: {actual:?}");
-}
-
-/// `BorrowMut` write-back (#1′) through an ESCAPING heap-boxed env: the stateful
-/// counter-factory idiom. `make_counter` returns a closure capturing its local
-/// `count` by `BorrowMut`, so the env is heap-promoted and each call mutates the
-/// heap field in place, accumulating 1 -> 2 -> 3.
-#[test]
-fn closure_counter_factory_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_counter_factory.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_counter_factory should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "1\n2\n3\n", "expected 1,2,3; got: {actual:?}");
-}
-
-/// A closure that captures a non-Copy `string` binding WITHOUT `move` is
-/// accepted: the checker infers a read-only Borrow capture (the closure only
-/// reads `name`), so the legacy `ClosureExplicitMoveRequired` diagnostic is
-/// dead for this site. Because it is a borrow, the outer binding still owns the
-/// string and `main` reads it again after the closure — the string is freed
-/// exactly once at scope exit. Replaces the stale `closure_explicit_move_required`
-/// reject fixture, which asserted the now-removed reject behaviour.
-#[test]
-fn closure_noncopy_inferred_borrow_runs() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/closure_noncopy_inferred_borrow.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_noncopy_inferred_borrow should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "hew\nhew\n", "expected hew,hew; got: {actual:?}");
-}
-/// get, and pop over boxed-pair elements riding the pointer-element ABI.
-#[test]
-fn vec_of_fn_storage_ops_run() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/vec_of_fn_storage.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "vec_of_fn_storage should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, "2\n6\n101\n105\n2\n",
-        "expected 2/6/101/105/2; got: {actual:?}"
-    );
-}
-
-/// A vec of capture-carrying closures releases each element's env box and
-/// pair box exactly once through the descriptor-driven Vec release.
-#[test]
-fn vec_of_fn_capturing_closures_drop_clean() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/vec_of_fn_drop_discipline.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "vec_of_fn_drop_discipline should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "25\n3\n", "expected 25/3; got: {actual:?}");
-}
-
-/// A record with a fn-typed field constructs, stores a capturing closure,
-/// returns by value (env heap-live across the return), and drops the env
-/// exactly once via the record drop spine.
-#[test]
-fn record_fn_field_round_trips() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/record_fn_field.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "record_fn_field should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "42\n11\n7\n", "expected 42/11/7; got: {actual:?}");
-}
-
-/// `h.cb(args)` on a fn-typed record field dispatches as a field-load +
-/// closure call; repeated dispatch borrows the pair (never consumes).
-#[test]
-fn record_fn_field_method_dispatch_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/record_fn_field_dispatch.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "record_fn_field_dispatch should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, "42\n123\n101\n",
-        "expected 42/123/101; got: {actual:?}"
-    );
-}
-
-/// Non-generic cross-module named functions are first-class values: stored,
-/// passed, returned, held as Vec elements and record fields, and invoked
-/// through each path. The fixture exercises all six behaviours against a
-/// seven-line oracle.
-#[test]
-fn cross_module_fn_value_seven_line_oracle() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/cross_module_fn_value/main.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "cross_module_fn_value should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/cross_module_fn_value/main.expected"),
-    )
-    .expect("read main.expected");
-    assert_eq!(
-        actual, expected,
-        "expected the seven oracle lines from main.expected; got: {actual:?}"
-    );
-}
-
-/// A local binding that shadows an imported module name resolves as a field
-/// access, not a fn-value `BindingRef`.  The checker's `receiver_is_binding`
-/// guard records i64 (record field) for `helpers.double`; the HIR must
-/// honour that resolution even when the `fn_registry` has a hit for the
-/// qualified key.
-#[test]
-fn cross_module_fn_value_shadowed_local_binding_resolves_as_field() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/cross_module_fn_value_shadow/main.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "shadowing fixture should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/cross_module_fn_value_shadow/main.expected"),
-    )
-    .expect("read main.expected");
-    assert_eq!(
-        actual, expected,
-        "expected field access to print 7; got: {actual:?}"
-    );
-}
-
-/// Root-local functions take precedence over wildcard-imported functions with
-/// the same name, including when their signatures differ.
-#[test]
-fn imported_free_functions_do_not_shadow_root_local_functions() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/imported_fn_local_shadow/main.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "local function shadowing fixture should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/imported_fn_local_shadow/main.expected"),
-    )
-    .expect("read main.expected");
-    assert_eq!(
-        actual, expected,
-        "expected calls to resolve to the root-local functions; got: {actual:?}"
-    );
-}
-
-/// A private (non-pub) enum returned from a pub fn across a module boundary
-/// must compile and run correctly.  Previously the §4b pre-pass cached the
-/// `HirTypeDecl` for all enums, but the fourth-pass emission guard was missing
-/// the enum arm, so the private enum's layout never reached MIR and produced
-/// `E_MIR: unknown type`.  Regression fixture for #2195.
-#[test]
-fn cross_module_private_enum_returned_from_pub_fn() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/cross_module_private_enum/main.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-
-    assert!(
-        output.status.success(),
-        "cross_module_private_enum should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/cross_module_private_enum/main.expected"),
-    )
-    .expect("read main.expected");
-    assert_eq!(
-        actual, expected,
-        "expected 'not found' from cross_module_private_enum; got: {actual:?}"
     );
 }
 
@@ -3583,28 +1645,6 @@ fn check_closure_borrowed_element_store_fails_closed() {
     );
 }
 
-/// A `consume` fn-typed parameter stored into an owning record field transfers
-/// env ownership into the record. The record becomes the sole owner that frees
-/// the env once at its drop, and the stored closure stays callable through the
-/// field. Ownership comes from the declaration, not from the body: a borrowed
-/// parameter stored this way is `E_OWN_CONSUME_BORROWED`.
-/// `make_handler(make_adder(7))` then `h.action(35)` dispatches 35 + 7 = 42.
-#[test]
-fn closure_param_field_store_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_param_field_store.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert_eq!(
-        output.status.code(),
-        Some(42),
-        "make_handler stored closure must dispatch 35 + 7 = 42 through the field; \
-         stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
 /// Storing a `consume` fn-typed parameter into a record field is the
 /// parameter's single consumption (the record becomes the sole env owner);
 /// using the parameter AFTER that store is a use-after-consume, rejected by
@@ -3629,74 +1669,6 @@ fn check_closure_param_use_after_store_fails_closed() {
     );
 }
 
-/// Invocation borrows the pair; a later owning store is the binding's
-/// single consumption. Invoke-then-move runs clean and the new owner
-/// dispatches and drops the env exactly once.
-#[test]
-fn closure_invoke_then_move_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/closure_invoke_then_move.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "closure_invoke_then_move should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, "41\n42\n", "expected 41/42; got: {actual:?}");
-}
-
-/// Spec §3.8.6 Vec pipeline: `map`/`filter`/`reduce` expand to counted loops
-/// (closure bound once, called per element), including the chained form and
-/// a capture-carrying predicate.
-#[test]
-fn vec_pipeline_map_filter_reduce_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/vec_pipeline_map_filter_reduce.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "vec_pipeline_map_filter_reduce should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, "10\n2\n15\n120\n9\n",
-        "expected 10/2/15/120/9; got: {actual:?}"
-    );
-}
-
-/// `scope { while { println } }`: calls inside nested control-flow within a
-/// scope block must NOT be treated as spawned tasks.
-///
-/// Previously failed at HIR with `TaskSpawnSignatureUnsupported` and
-/// `TaskSpawnCalleeUnsupported` because `lower_block` did not reset
-/// `scope_depth` to 0, causing the `scope_depth > 0` guard in
-/// `lower_expression_stmt_kind` to intercept all calls at any nesting depth
-/// inside a scope body.
-#[test]
-fn scope_nested_while_println_runs() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/scope_while_println.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
-    assert!(
-        output.status.success(),
-        "scope_while_println should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(
-        actual, "tick\ntick\ntick\n",
-        "expected three tick lines; got: {actual:?}"
-    );
-}
-
 /// Value-class capstone (RC-6) — a user record carrying an owned `string` field
 /// is constructed, returned by value across the MIR boundary, round-tripped
 /// through a `let` binding, field-read, and dropped at scope exit. Before this
@@ -3709,22 +1681,21 @@ fn owned_record_string_field_by_value_round_trips() {
     let path = dir.path().join("owned_record_string.hew");
     std::fs::write(
         &path,
-        r#"
-        type CommandOutput {
-            stdout: string,
-            code: i64,
-        }
+        r#"type CommandOutput {
+    stdout: string;
+    code: i64;
+}
 
-        fn run() -> CommandOutput {
-            CommandOutput { stdout: "ok", code: 7 }
-        }
+fn run() -> CommandOutput {
+    CommandOutput { stdout: "ok", code: 7 }
+}
 
-        fn main() {
-            let o = run();
-            println(o.stdout);
-            println(f"{o.code}");
-        }
-        "#,
+fn main() {
+    let o = run();
+    println(o.stdout);
+    println(f"{o.code}");
+}
+"#,
     )
     .unwrap();
 
@@ -3749,25 +1720,24 @@ fn owned_record_vec_field_by_value_round_trips() {
     let path = dir.path().join("owned_record_vec.hew");
     std::fs::write(
         &path,
-        r"
-        type Histogram {
-            counts: Vec<i64>,
-            total: i64,
-        }
+        r"type Histogram {
+    counts: Vec<i64>;
+    total: i64;
+}
 
-        fn build() -> Histogram {
-            var v: Vec<i64> = Vec.new();
-            v.push(10);
-            v.push(20);
-            Histogram { counts: v, total: 30 }
-        }
+fn build() -> Histogram {
+    var v: Vec<i64> = Vec.new();
+    v.push(10);
+    v.push(20);
+    Histogram { counts: v, total: 30 }
+}
 
-        fn main() {
-            let h = build();
-            println(h.counts.len());
-            println(h.total);
-        }
-        ",
+fn main() {
+    let h = build();
+    println(h.counts.len());
+    println(h.total);
+}
+",
     )
     .unwrap();
 
@@ -3792,27 +1762,26 @@ fn owned_nested_record_by_value_round_trips() {
     let path = dir.path().join("owned_nested_record.hew");
     std::fs::write(
         &path,
-        r#"
-        type User {
-            name: string,
-        }
+        r#"type User {
+    name: string;
+}
 
-        type Boxed {
-            user: User,
-            tag: i64,
-        }
+type Boxed {
+    user: User;
+    tag: i64;
+}
 
-        fn wrap(n: i64) -> Boxed {
-            let u = User { name: "ada" };
-            Boxed { user: u, tag: n }
-        }
+fn wrap(n: i64) -> Boxed {
+    let u = User { name: "ada" };
+    Boxed { user: u, tag: n }
+}
 
-        fn main() {
-            let b = wrap(99);
-            println(b.user.name);
-            println(f"{b.tag}");
-        }
-        "#,
+fn main() {
+    let b = wrap(99);
+    println(b.user.name);
+    println(f"{b.tag}");
+}
+"#,
     )
     .unwrap();
 
@@ -3882,30 +1851,7 @@ fn run_imports_json_fluent_builders_round_trip() {
     let hew_src = dir.path().join("json_builders.hew");
     std::fs::write(
         &hew_src,
-        "import std.encoding.json;\n\
-         \n\
-         fn main() -> i32 {\n\
-         \x20   var obj = json.object();\n\
-         \x20   match obj.set(\"name\", json.from_string(\"Hew\")) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   match obj.set(\"version\", json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   let s = match obj.stringify() { .Ok(text) => text, .Err(_) => return 1, };\n\
-         \x20   println(s);\n\
-         \x20   let parsed = match json.parse(s) { .Ok(value) => value, .Err(_) => return 1, };\n\
-         \x20   let field = match parsed.get_field(\"version\") {\n\
-         \x20       .Ok(.Some(value)) => value,\n\
-         \x20       .Ok(.None) => return 1,\n\
-         \x20       .Err(_) => return 1,\n\
-         \x20   };\n\
-         \x20   let version = match field.get_int() { .Ok(value) => value, .Err(_) => return 1, };\n\
-         \x20   println(f\"version={version}\");\n\
-         \x20   var arr = json.array();\n\
-         \x20   match arr.push(json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   match arr.push(json.from_int(2)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   match arr.push(json.from_int(3)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
-         \x20   let len = match arr.array_len() { .Ok(value) => value, .Err(_) => return 1, };\n\
-         \x20   println(f\"len={len}\");\n\
-         \x20   0\n\
-         }\n",
+        "import std.encoding.json;\n\nfn main() -> i32 {\n    var obj = json.object();\n    match obj.set(\"name\", json.from_string(\"Hew\")) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    match obj.set(\"version\", json.from_int(1)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    let s = match obj.stringify() {\n        .Ok(text) => text,\n        .Err(_) => return 1,\n    };\n    println(s);\n    let parsed = match json.parse(s) {\n        .Ok(value) => value,\n        .Err(_) => return 1,\n    };\n    let field = match parsed.get_field(\"version\") {\n        .Ok(.Some(value)) => value,\n        .Ok(.None) => return 1,\n        .Err(_) => return 1,\n    };\n    let version = match field.get_int() {\n        .Ok(value) => value,\n        .Err(_) => return 1,\n    };\n    println(f\"version={version}\");\n    var arr = json.array();\n    match arr.push(json.from_int(1)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    match arr.push(json.from_int(2)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    match arr.push(json.from_int(3)) {\n        .Ok(_) => {}\n        .Err(_) => return 1,\n    }\n    let len = match arr.array_len() {\n        .Ok(value) => value,\n        .Err(_) => return 1,\n    };\n    println(f\"len={len}\");\n    0\n}\n",
     )
     .unwrap();
 
@@ -4089,20 +2035,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
     let hew_src = dir.path().join("record_handle_return.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream.{ Sink, Stream };\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
-         fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let p = Pipe { sink: s, input: r };\n\
-         \x20   p\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = make_pipe();\n\
-         \x20   p.sink.send(\"alpha\").expect(\"send\");\n\
-         \x20   p.sink.close();\n\
-         \x20   p.input.close();\n\
-         \x20   println(\"record-ok\");\n\
-         }\n",
+        "import std.stream.{Sink, Stream};\n\ntype Pipe {\n    sink: Sink<string>;\n    input: Stream<string>;\n}\n\nfn make_pipe() -> Pipe {\n    let (s, r) = match stream.pipe(8) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let p = Pipe { sink: s, input: r };\n    p\n}\n\nfn main() {\n    let p = make_pipe();\n    p.sink.send(\"alpha\").expect(\"send\");\n    p.sink.close();\n    p.input.close();\n    println(\"record-ok\");\n}\n",
     )
     .unwrap();
     let output = run_bounded_hew_run(&hew_src, repo_root());
@@ -4130,18 +2063,7 @@ fn run_record_of_handles_return_without_explicit_close_exits_clean() {
     let hew_src = dir.path().join("record_handle_return_noclose.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream.{ Sink, Stream };\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
-         fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let p = Pipe { sink: s, input: r };\n\
-         \x20   p\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = make_pipe();\n\
-         \x20   p.sink.send(\"alpha\").expect(\"send\");\n\
-         \x20   println(\"record-noclose-ok\");\n\
-         }\n",
+        "import std.stream.{Sink, Stream};\n\ntype Pipe {\n    sink: Sink<string>;\n    input: Stream<string>;\n}\n\nfn make_pipe() -> Pipe {\n    let (s, r) = match stream.pipe(8) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let p = Pipe { sink: s, input: r };\n    p\n}\n\nfn main() {\n    let p = make_pipe();\n    p.sink.send(\"alpha\").expect(\"send\");\n    println(\"record-noclose-ok\");\n}\n",
     )
     .unwrap();
     let output = run_bounded_hew_run(&hew_src, repo_root());
@@ -4211,17 +2133,36 @@ fn run_bound_tuple_field_close_drops_each_handle_once() {
 /// Shared prelude: a `#[resource]` record over a real `malloc` block, so a
 /// second close is a genuine double free rather than only an extra line.
 const RESOURCE_FIELD_PRELUDE: &str = "\
-extern \"C\" {\n\
-    fn malloc(size: i64) -> i64;\n\
-    fn free(addr: i64);\n\
-}\n\
-#[resource]\n\
-type Slot { addr: i64 }\n\
-impl Slot {\n\
-    fn close(consume self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
-}\n\
-fn acquire() -> Slot { Slot { addr: unsafe { malloc(64) } } }\n\
-type Two { a: Slot, b: Slot }\n";
+extern \"C\" {
+    fn malloc(size: i64) -> i64;
+    fn free(addr: i64);
+}
+
+#[resource]
+type Slot {
+    addr: i64;
+}
+
+impl Slot {
+    fn close(consume self) {
+        println(\"close\");
+        unsafe {
+            free(self.addr)
+        };
+    }
+}
+
+fn acquire() -> Slot {
+    Slot { addr: unsafe {
+        malloc(64)
+    } }
+}
+
+type Two {
+    a: Slot;
+    b: Slot;
+}
+";
 
 fn run_resource_field_program(name: &str, body: &str) -> std::process::Output {
     let dir = support::tempdir();
@@ -4324,14 +2265,25 @@ fn run_record_resource_field_partial_close_leaks_the_sibling() {
 /// Shared prelude: a `#[resource]` record whose `close` names the value it is
 /// closing, and a `Result`-returning producer.
 const RESOURCE_PAYLOAD_PRELUDE: &str = "\
-#[resource]\n\
-type Handle { id: i64 }\n\
-impl Handle {\n\
-    fn close(consume self) { println(f\"close {self.id}\"); }\n\
-}\n\
-fn acquire(ok: bool) -> Result<Handle, string> {\n\
-    if ok { .Ok(Handle { id: 7 }) } else { .Err(\"declined\") }\n\
-}\n";
+#[resource]
+type Handle {
+    id: i64;
+}
+
+impl Handle {
+    fn close(consume self) {
+        println(f\"close {self.id}\");
+    }
+}
+
+fn acquire(ok: bool) -> Result<Handle, string> {
+    if ok {
+        .Ok(Handle { id: 7 })
+    } else {
+        .Err(\"declined\")
+    }
+}
+";
 
 fn run_resource_payload_program(name: &str, body: &str) -> std::process::Output {
     let dir = support::tempdir();
@@ -4352,13 +2304,7 @@ fn run_result_resource_payload_field_read_closes_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_read.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(h) => { println(f\"id={h.id}\"); },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(h) => {\n            println(f\"id={h.id}\");\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -4382,13 +2328,7 @@ fn run_result_resource_payload_untouched_binder_closes_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_untouched.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(h) => { let _ = h; },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(h) => {\n            let _ = h;\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -4407,13 +2347,7 @@ fn run_result_resource_payload_explicit_close_stays_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_explicit.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(h) => { h.close(); },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(h) => {\n            h.close();\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -4435,13 +2369,7 @@ fn run_result_resource_payload_wildcard_arm_closes_once() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_wildcard.hew",
-        "fn main() {\n\
-         \x20   match acquire(true) {\n\
-         \x20       .Ok(_) => { println(\"ok\"); },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(true) {\n        .Ok(_) => {\n            println(\"ok\");\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -4463,13 +2391,7 @@ fn run_result_resource_payload_error_arm_closes_nothing() {
     require_codegen();
     let output = run_resource_payload_program(
         "resource_payload_error.hew",
-        "fn main() {\n\
-         \x20   match acquire(false) {\n\
-         \x20       .Ok(h) => { let _ = h; },\n\
-         \x20       .Err(e) => { println(e); },\n\
-         \x20   }\n\
-         \x20   println(\"done\");\n\
-         }\n",
+        "fn main() {\n    match acquire(false) {\n        .Ok(h) => {\n            let _ = h;\n        }\n        .Err(e) => {\n            println(e);\n        }\n    }\n    println(\"done\");\n}\n",
     );
     assert!(
         output.status.success(),
@@ -4498,15 +2420,7 @@ fn clone_string_survives_consuming_send() {
     let path = dir.path().join("clone_string_send.hew");
     std::fs::write(
         &path,
-        "actor ProbeSink { let id: i64, receive fn take(s: string) -> i64 { s.len() } }\n\
-         fn main() {\n\
-         \x20   let s: string = \"hello\";\n\
-         \x20   let dup = clone s;\n\
-         \x20   let sink = spawn ProbeSink(id: 0);\n\
-         \x20   let n = sink.take(dup);\n\
-         \x20   match n { .Ok(len) => println(f\"len={len}\"), .Err(_) => println(\"ask failed\") }\n\
-         \x20   println(f\"original still usable: {s}\");\n\
-         }\n",
+        "actor ProbeSink {\n    let id: i64;\n    receive fn take(s: string) -> i64 {\n        s.len()\n    }\n}\n\nfn main() {\n    let s: string = \"hello\";\n    let dup = clone s;\n    let sink = spawn ProbeSink(id: 0);\n    let n = sink.take(dup);\n    match n {\n        .Ok(len) => println(f\"len={len}\"),\n        .Err(_) => println(\"ask failed\"),\n    }\n    println(f\"original still usable: {s}\");\n}\n",
     )
     .unwrap();
 
@@ -4708,13 +2622,7 @@ fn run_file_imported_actor_spawns_and_calls() {
     let dir = support::tempdir();
     std::fs::write(
         dir.path().join("counter.hew"),
-        "pub actor Counter {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn bump() -> i64 {\n\
-         \x20       n = n + 1;\n\
-         \x20       n\n\
-         \x20   }\n\
-         }\n",
+        "pub actor Counter {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -4803,13 +2711,7 @@ fn run_string_path_imported_record_annotated_param_field_access() {
     std::fs::create_dir_all(dir.path().join("src/workflow")).unwrap();
     std::fs::write(
         dir.path().join("src/workflow/machine.hew"),
-        "pub type WorkflowState {\n\
-         \x20   name: string,\n\
-         \x20   count: i64,\n\
-         }\n\
-         pub fn make_state(name: string, count: i64) -> WorkflowState {\n\
-         \x20   WorkflowState { name: name, count: count }\n\
-         }\n",
+        "pub type WorkflowState {\n    name: string;\n    count: i64;\n}\n\npub fn make_state(name: string, count: i64) -> WorkflowState {\n    WorkflowState { name: name, count: count }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -4865,18 +2767,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
     let dir = support::tempdir();
     std::fs::write(
         dir.path().join("summer.hew"),
-        "pub actor Summer {\n\
-         \x20   var total: i64 = 0,\n\
-         \x20   receive fn add_doubled(n: i64) -> i64 {\n\
-         \x20       let f = |x: i64| -> i64 { x * 2 };\n\
-         \x20       var sum: i64 = 0;\n\
-         \x20       for i in 0..n {\n\
-         \x20           sum = sum + f(i);\n\
-         \x20       }\n\
-         \x20       total = total + sum;\n\
-         \x20       total\n\
-         \x20   }\n\
-         }\n",
+        "pub actor Summer {\n    var total: i64 = 0;\n    receive fn add_doubled(n: i64) -> i64 {\n        let f = |x: i64| -> i64 {\n            x * 2\n        };\n        var sum: i64 = 0;\n        for i in 0 .. n {\n            sum = sum + f(i);\n        }\n        total = total + sum;\n        total\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -4932,31 +2823,7 @@ fn run_package_module_actor_spawns_and_calls() {
     .unwrap();
     std::fs::write(
         pkg_dir.join("bank.hew"),
-        "fn clamp_nonneg(x: i64) -> i64 {\n\
-         \x20   if x < 0 { 0 } else { x }\n\
-         }\n\
-         \n\
-         pub actor Account {\n\
-         \x20   var balance: i64 = 0,\n\
-         \x20   init(opening: i64) {\n\
-         \x20       balance = clamp_nonneg(opening);\n\
-         \x20   }\n\
-         \x20   receive fn deposit(amount: i64) -> i64 {\n\
-         \x20       balance = balance + clamp_nonneg(amount);\n\
-         \x20       balance\n\
-         \x20   }\n\
-         \x20   receive fn withdraw(amount: i64) -> i64 {\n\
-         \x20       let take = clamp_nonneg(amount);\n\
-         \x20       if take > balance {\n\
-         \x20           return balance;\n\
-         \x20       }\n\
-         \x20       balance = balance - take;\n\
-         \x20       balance\n\
-         \x20   }\n\
-         \x20   receive fn peek() -> i64 {\n\
-         \x20       balance\n\
-         \x20   }\n\
-         }\n",
+        "fn clamp_nonneg(x: i64) -> i64 {\n    if x < 0 {\n        0\n    } else {\n        x\n    }\n}\n\npub actor Account {\n    var balance: i64 = 0;\n    init(opening: i64) {\n        balance = clamp_nonneg(opening);\n    }\n    receive fn deposit(amount: i64) -> i64 {\n        balance = balance + clamp_nonneg(amount);\n        balance\n    }\n    receive fn withdraw(amount: i64) -> i64 {\n        let take = clamp_nonneg(amount);\n        if take > balance {\n            return balance;\n        }\n        balance = balance - take;\n        balance\n    }\n    receive fn peek() -> i64 {\n        balance\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -5011,19 +2878,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_the_actor_type() {
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(
         pkg_dir.join("conn.hew"),
-        "pub actor Inner {\n\
-         \x20   receive fn ping() -> i64 { 41 }\n\
-         }\n\
-         \n\
-         pub actor Outer {\n\
-         \x20   let inner: Inner,\n\
-         \x20   receive fn go() -> i64 {\n\
-         \x20       match inner.ping() {\n\
-         \x20           .Ok(v) => v + 1,\n\
-         \x20           .Err(_) => -1,\n\
-         \x20       }\n\
-         \x20   }\n\
-         }\n",
+        "pub actor Inner {\n    receive fn ping() -> i64 {\n        41\n    }\n}\n\npub actor Outer {\n    let inner: Inner;\n    receive fn go() -> i64 {\n        match inner.ping() {\n            .Ok(v) => v + 1,\n            .Err(_) => -1,\n        }\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -5080,22 +2935,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.m;\n\
-         \n\
-         type Inner { x: i64 }\n\
-         \n\
-         actor Holder {\n\
-         \x20   let inner: Inner,\n\
-         \x20   receive fn get() -> i64 { inner.x }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let h = spawn Holder(inner: Inner { x: 7 });\n\
-         \x20   match h.get() {\n\
-         \x20       .Ok(v) => println(f\"v={v}\"),\n\
-         \x20       .Err(_) => println(\"err\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.m;\n\ntype Inner {\n    x: i64;\n}\n\nactor Holder {\n    let inner: Inner;\n    receive fn get() -> i64 {\n        inner.x\n    }\n}\n\nfn main() {\n    let h = spawn Holder(inner: Inner { x: 7 });\n    match h.get() {\n        .Ok(v) => println(f\"v={v}\"),\n        .Err(_) => println(\"err\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -5125,13 +2965,7 @@ fn run_non_pub_imported_actor_fails_closed() {
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(
         pkg_dir.join("secret.hew"),
-        "actor Hidden {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn bump() -> i64 {\n\
-         \x20       n = n + 1;\n\
-         \x20       n\n\
-         \x20   }\n\
-         }\n",
+        "actor Hidden {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
@@ -5185,7 +3019,7 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0,\n\
+                 \x20   var n: i64 = 0;\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  }}\n"
             ),
@@ -5240,32 +3074,13 @@ fn run_root_and_package_same_actor_name_route_independently() {
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(
         pkg_dir.join("bank.hew"),
-        "pub actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn who() -> i64 { 999 }\n\
-         }\n",
+        "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        999\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.bank;\n\
-         actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn who() -> i64 { 111 }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn bank.Account();\n\
-         \x20   let l = spawn Account();\n\
-         \x20   match a.who() {\n\
-         \x20       .Ok(v) => println(f\"a={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   match l.who() {\n\
-         \x20       .Ok(v) => println(f\"l={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.bank;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn bank.Account();\n    let l = spawn Account();\n    match a.who() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    match l.who() {\n        .Ok(v) => println(f\"l={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -5302,7 +3117,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0,\n\
+                 \x20   var n: i64 = 0;\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  \x20   receive fn boom() {{ panic(\"{pkg} crash\"); }}\n\
                  }}\n"
@@ -5313,41 +3128,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.bank;\n\
-         import hew.store;\n\
-         supervisor Pair {\n\
-         \x20   strategy: one_for_one,\n\
-         \x20   intensity: 5 within 60s,\n\
-         \n\
-         \x20   child b: bank.Account,\n\
-         \x20   child s: store.Account,\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = spawn Pair;\n\
-         \x20   sleep(50ms);\n\
-         \x20   let b = p.b;\n\
-         \x20   let s = p.s;\n\
-         \x20   match b.who() {\n\
-         \x20       .Ok(v) => println(f\"b={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   match s.who() {\n\
-         \x20       .Ok(v) => println(f\"s={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   let _ = b.boom();\n\
-         \x20   sleep(200ms);\n\
-         \x20   let b2 = p.b;\n\
-         \x20   match b2.who() {\n\
-         \x20       .Ok(v) => println(f\"b2={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         \x20   let s2 = p.s;\n\
-         \x20   match s2.who() {\n\
-         \x20       .Ok(v) => println(f\"s2={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.bank;\n\nimport hew.store;\n\nsupervisor Pair {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n\n    child b: bank.Account;\n    child s: store.Account;\n}\n\nfn main() {\n    let p = spawn Pair;\n    sleep(50ms);\n    let b = p.b;\n    let s = p.s;\n    match b.who() {\n        .Ok(v) => println(f\"b={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    match s.who() {\n        .Ok(v) => println(f\"s={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    let _ = b.boom();\n    sleep(200ms);\n    let b2 = p.b;\n    match b2.who() {\n        .Ok(v) => println(f\"b2={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n    let s2 = p.s;\n    match s2.who() {\n        .Ok(v) => println(f\"s2={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -5383,10 +3164,9 @@ fn run_fungible_child_binding_joins_after_observed_restart() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        r#"
-indirect enum Tree {
-    Leaf(i64),
-    Node(Tree, Tree),
+        r#"indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
 }
 
 fn tree_sum(tree: Tree) -> i64 {
@@ -5397,38 +3177,49 @@ fn tree_sum(tree: Tree) -> i64 {
 }
 
 actor Worker {
-    receive fn score(tag: i64, tree: Tree) -> i64 { tag + tree_sum(tree) }
-    receive fn boom() { panic("restart"); }
+    receive fn score(tag: i64, tree: Tree) -> i64 {
+        tag + tree_sum(tree)
+    }
+    receive fn boom() {
+        panic("restart");
+    }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child worker: Worker,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker;
 }
 
 fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
     // `boom` is a completion call, so its `Err` proves the crash opened its
-    // fault record. `await_restart` then waits for that record to settle,
+    // fault record. `restarted` then waits for that record to settle,
     // which is the observable restart this test joins on.
     let _ = worker.boom();
-    let _ = await_restart sup.worker;
-    let (a, b) = await fork (
-        worker.score(11, .Node(.Leaf(1), .Leaf(2))),
-        worker.score(22, .Node(.Leaf(3), .Leaf(4))),
-    );
-    let (c, d) = await fork (
-        worker.score(33, .Node(.Leaf(5), .Leaf(6))),
-        worker.score(44, .Node(.Leaf(7), .Leaf(8))),
-    );
-    let ra = match a { .Ok(v) => v, .Err(_) => -1, };
-    let rb = match b { .Ok(v) => v, .Err(_) => -1, };
-    let rc = match c { .Ok(v) => v, .Err(_) => -1, };
-    let rd = match d { .Ok(v) => v, .Err(_) => -1, };
+    let _ = restarted(sup.worker);
+    let (a, b) = await fork (worker.score(11, .Node(.Leaf(1), .Leaf(2))), worker.score(22, .Node(.Leaf(3), .Leaf(4))));
+    let (c, d) = await fork (worker.score(33, .Node(.Leaf(5), .Leaf(6))), worker.score(44, .Node(.Leaf(7), .Leaf(8))));
+    let ra = match a {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    let rb = match b {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    let rc = match c {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    let rd = match d {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
     print(f"{ra},{rb},{rc},{rd}");
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     0
 }
 "#,
@@ -5468,27 +3259,13 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     // Note: no `pub` — the actor is private to its module.
     std::fs::write(
         pkg_dir.join("secret.hew"),
-        "actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn id() -> i64 { 999 }\n\
-         }\n",
+        "actor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        999\n    }\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.secret;\n\
-         actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn id() -> i64 { 111 }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn secret.Account();\n\
-         \x20   match a.id() {\n\
-         \x20       .Ok(v) => println(f\"a={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -5534,26 +3311,13 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     // `secret` exports a public *non-actor* type named `Account`.
     std::fs::write(
         pkg_dir.join("secret.hew"),
-        "pub type Account {\n\
-         \x20   balance: i64,\n\
-         }\n",
+        "pub type Account {\n    balance: i64;\n}\n",
     )
     .unwrap();
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew.secret;\n\
-         actor Account {\n\
-         \x20   var n: i64 = 0,\n\
-         \x20   receive fn id() -> i64 { 111 }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn secret.Account();\n\
-         \x20   match a.id() {\n\
-         \x20       .Ok(v) => println(f\"a={v}\"),\n\
-         \x20       .Err(_) => println(\"e\"),\n\
-         \x20   }\n\
-         }\n",
+        "import hew.secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n    match a.id() {\n        .Ok(v) => println(f\"a={v}\"),\n        .Err(_) => println(\"e\"),\n    }\n}\n",
     )
     .unwrap();
 
@@ -5581,47 +3345,6 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     );
 }
 
-/// Arg-bearing fork callees under the poisoned allocator: the fixture moves
-/// a heap `string` into a fork-entry shim env via the named form
-/// (`fork ts = shout(greeting); await ts;`). `MallocScribble`/`MallocPreScribble`
-/// poison freed and fresh allocations, so a child reading the env after a
-/// premature parent-side free deterministically corrupts the output (or
-/// aborts) instead of passing by luck. The structural single-owner proof
-/// lives in `hew-mir/tests/cancellation_scope.rs`
-/// (`fork_string_arg_parent_and_shim_emit_no_drops_for_moved_arg`); this is
-/// the behavioural freed-read guard on the emitted native binary.
-#[test]
-fn run_fork_args_spawn_scribbled_no_freed_read() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/accept/fork_args_spawn.hew");
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/fork_args_spawn.expected"),
-    )
-    .expect("read fork_args_spawn.expected");
-
-    let mut command = support::hew_command();
-    command
-        .arg("run")
-        .arg(&source)
-        .current_dir(repo_root())
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1");
-    let output =
-        support::run_bounded_command(command, format!("hew run {} (scribbled)", source.display()));
-
-    assert!(
-        output.status.success(),
-        "fork_args_spawn must run cleanly under the poisoned allocator; \
-         stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
-}
-
 #[test]
 fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
     require_codegen();
@@ -5630,42 +3353,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
     let source = dir.path().join("suspended_actor_state_handoff.hew");
     std::fs::write(
         &source,
-        "#[resource]\n\
-         #[opaque]\n\
-         type Marker {}\n\
-         impl Marker {\n\
-         \x20   fn close(consume self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
-         }\n\
-         extern \"C\" {\n\
-         \x20   fn hew_deque_new() -> Marker;\n\
-         \x20   fn hew_deque_free(consume marker: Marker);\n\
-         }\n\
-         actor Child {\n\
-         \x20   let label: string,\n\
-         \x20   let marker: Marker,\n\
-         \x20   receive fn ping() {}\n\
-         }\n\
-         actor Maker {\n\
-         \x20   receive fn go() {\n\
-         \x20       var i: i64 = 0;\n\
-         \x20       while i < 3 {\n\
-         \x20           sleep(1ms);\n\
-         \x20           let label = f\"child-{i}\";\n\
-         \x20           let child = spawn Child(\n\
-         \x20               label: label.clone(),\n\
-         \x20               marker: unsafe { hew_deque_new() },\n\
-         \x20           );\n\
-         \x20           child.stop();\n\
-         \x20           i = i + 1;\n\
-         \x20       }\n\
-         \x20       println(\"maker-done\");\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let maker = spawn Maker;\n\
-         \x20   let _ = maker.go();\n\
-         \x20   sleep(200ms);\n\
-         }\n",
+        "#[resource]\n#[opaque]\ntype Marker {\n}\n\nimpl Marker {\n    fn close(consume self) {\n        unsafe {\n            hew_deque_free(self)\n        };\n        println(\"closed\");\n    }\n}\n\nextern \"C\" {\n    fn hew_deque_new() -> Marker;\n    fn hew_deque_free(consume marker: Marker);\n}\n\nactor Child {\n    let label: string;\n    let marker: Marker;\n    receive fn ping() {}\n}\n\nactor Maker {\n    receive fn go() {\n        var i: i64 = 0;\n        while i < 3 {\n            sleep(1ms);\n            let label = f\"child-{i}\";\n            let child = spawn Child(label: label.clone(), marker: unsafe {\n                hew_deque_new()\n            });\n            stop(child);\n            stopped(child);\n            i = i + 1;\n        }\n        println(\"maker-done\");\n    }\n}\n\nfn main() {\n    let maker = spawn Maker;\n    let _ = maker.go();\n    sleep(200ms);\n}\n",
     )
     .expect("write suspended actor state handoff fixture");
 

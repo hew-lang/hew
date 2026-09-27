@@ -19,7 +19,7 @@ fn lower(source: &str) -> LoweredModule {
 
 fn declarations(clone: bool) -> String {
     let capabilities = if clone { "once, clone" } else { "once" };
-    format!("type Two {{ a: fn[{capabilities}]() -> i64, b: fn() -> i64 }} fn answer() -> i64 {{ 41 }} fn sibling() -> i64 {{ 1 }}")
+    format!("type Two {{ a: fn[{capabilities}]() -> i64; b: fn() -> i64; }} fn answer() -> i64 {{ 41 }} fn sibling() -> i64 {{ 1 }}")
 }
 
 fn assert_lowered(source: &str) -> LoweredModule {
@@ -49,7 +49,7 @@ fn assert_once_field_transfer(source: &str) {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .unwrap();
     let callee = main
         .blocks
@@ -82,6 +82,7 @@ fn assert_once_field_transfer(source: &str) {
         panic!("once receiver must take its stored field")
     };
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -103,7 +104,7 @@ fn temporary_record_and_tuple_fields_transfer_without_copying_siblings() {
     for value in ["42", "100 / 0"] {
         let source = format!(
             r#"
-            type Job {{ run: fn[once](i64) -> i64, label: string }}
+            type Job {{ run: fn[once](i64) -> i64; label: string; }}
             fn make_job() -> Job {{
                 let text = "owned callback";
                 Job {{ run: move |value: i64| {{ println(text); value }}, label: "sibling owner" }}
@@ -251,32 +252,48 @@ fn partial_jobs_preserve_nested_siblings_reinitialization_and_fault_cleanup() {
 #[test]
 fn a_partial_captured_record_retains_its_remaining_fields() {
     assert_lowered(
-        r#"
-        type Job { run: fn[once]() -> i64, label: string }
-        fn answer() -> i64 { 42 }
-        fn main() -> i64 {
-            let job = Job { run: answer, label: "captured sibling" };
-            let callback = move || { println(job.run()); println(job.label); 0 };
-            callback()
-        }
-    "#,
+        r#"type Job {
+    run: fn[once]() -> i64;
+    label: string;
+}
+
+fn answer() -> i64 {
+    42
+}
+
+fn main() -> i64 {
+    let job = Job { run: answer, label: "captured sibling" };
+    let callback = move || {
+        println(job.run());
+        println(job.label);
+        0
+    };
+    callback()
+}
+"#,
     );
 }
 
 #[test]
 fn runtime_field_mutation_preserves_a_partially_consumed_container() {
     assert_lowered(
-        r#"
-        type Bag { run: fn[once]() -> i64, values: Vec<string> }
-        fn answer() -> i64 { 42 }
-        fn main() -> i64 {
-            var bag = Bag { run: answer, values: Vec.new() };
-            println(bag.run());
-            bag.values.push("remaining field");
-            println(bag.values.len());
-            0
-        }
-    "#,
+        r#"type Bag {
+    run: fn[once]() -> i64;
+    values: Vec<string>;
+}
+
+fn answer() -> i64 {
+    42
+}
+
+fn main() -> i64 {
+    var bag = Bag { run: answer, values: Vec.new() };
+    println(bag.run());
+    bag.values.push("remaining field");
+    println(bag.values.len());
+    0
+}
+"#,
     );
 }
 
@@ -308,7 +325,7 @@ fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
             .module
             .functions
             .iter()
-            .find(|function| function.declaration.full_path() == "main")
+            .find(|function| lowered.module.defs.path(function.declaration) == "main")
             .unwrap();
         // A destructure of a place names fields, not the whole value: each
         // field is read out of its own storage, and the aggregate is never

@@ -326,8 +326,9 @@ fn demonitor_after_target_death_is_silent_ok() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_scheduler();
     hew_deterministic_reset();
+    DOWN_SIGNAL.reset();
 
-    let watcher = TestActor::spawn(noop_dispatch);
+    let watcher = TestActor::spawn_with_sys(noop_dispatch, down_capture_sys_dispatch);
     let target = TestActor::spawn(noop_dispatch);
 
     // SAFETY: reading id via valid live pointer.
@@ -349,8 +350,11 @@ fn demonitor_after_target_death_is_silent_ok() {
         "target should reach Crashed state"
     );
 
-    // Allow sweep to complete.
-    std::thread::sleep(Duration::from_millis(100));
+    // The DOWN is sent by the sweep that retires the monitor entry, so once
+    // it arrives the entry is gone.
+    DOWN_SIGNAL
+        .wait_for_count(1, Duration::from_secs(5))
+        .expect("the monitor must deliver its DOWN");
 
     // First demonitor — the entry may already be swept; must be a no-op.
     hew_actor_demonitor(ref_id);

@@ -101,10 +101,9 @@ fn lowers_try_to_numeric_method_to_hir_node() {
     assert_eq!(
         tail.ty,
         ResolvedTy::Named {
-            name: "Option".to_string(),
             args: vec![ResolvedTy::I32],
-            builtin: Some(BuiltinType::Option),
-            is_opaque: false,
+            head: hew_types::TypeHead::Builtin(BuiltinType::Option),
+            is_opaque: false
         }
     );
 }

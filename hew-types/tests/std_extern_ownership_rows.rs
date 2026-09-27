@@ -34,7 +34,7 @@ fn declared_std_externs() -> Vec<(String, PathBuf)> {
                     continue;
                 }
                 for function in &block.functions {
-                    externs.push((function.name.clone(), file.clone()));
+                    externs.push((function.name.to_string(), file.clone()));
                 }
             }
         }

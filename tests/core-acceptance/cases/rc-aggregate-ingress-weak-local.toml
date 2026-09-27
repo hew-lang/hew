@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-aggregate-ingress-weak-local"
+intent = "Ownership oracle for an `Rc` / `Weak` handle moved into a VALUE aggregate. Shape `weak_local_high` (weak handle tuple member does not over release, weak handle tuple member does not under release) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-aggregate-ingress-weak-local.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

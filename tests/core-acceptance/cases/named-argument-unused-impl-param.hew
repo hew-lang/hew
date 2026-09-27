@@ -5,7 +5,7 @@ trait Probe {
 }
 
 type Flat {
-    base: i64,
+    base: i64;
 }
 
 impl Probe for Flat {

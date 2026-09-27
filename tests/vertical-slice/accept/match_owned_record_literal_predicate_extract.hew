@@ -1,7 +1,7 @@
 type Packet {
-    tag: i64,
-    left: string,
-    right: string,
+    tag: i64;
+    left: string;
+    right: string;
 }
 
 fn make(tag: i64) -> Packet {

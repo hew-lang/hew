@@ -1,10 +1,12 @@
 //! Exact source contracts for native TCP handles and synchronous operations.
 
-use super::{
-    runtime_semantic_contract, Deserialize, EnumIter, IntoEnumIterator, IoHandleKind, ResolvedTy,
-    RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallFamily, RuntimeResultEffect,
-    RuntimeSemanticContract, RuntimeValueKind, Serialize,
+use crate::runtime_call::{
+    runtime_semantic_contract, IoHandleKind, RuntimeArgumentContract, RuntimeArgumentEffect,
+    RuntimeCallFamily, RuntimeResultEffect, RuntimeSemanticContract, RuntimeValueKind,
 };
+use crate::ResolvedTy;
+use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, Default)]
 pub enum TcpOp {
@@ -106,9 +108,14 @@ impl TcpOp {
 }
 
 impl RuntimeCallFamily {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of the extern declaration is matched independently"
+    )]
     #[must_use]
     pub fn matches_tcp_extern(
         self,
+        defs: &crate::DefTable,
         module: &str,
         declaration: &str,
         symbol: &str,
@@ -121,7 +128,7 @@ impl RuntimeCallFamily {
             && symbol == self.c_symbol()
             && declaration == format!("{module}.{symbol}")
             && self.semantic_contract().is_some_and(|contract| {
-                contract.matches_signature(params, result)
+                contract.matches_signature(defs, params, result)
                     && consuming.len() == contract.arguments.len()
                     && consuming
                         .iter()

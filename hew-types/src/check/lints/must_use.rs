@@ -4,9 +4,8 @@
 //! and a disposition; dropping it on the floor loses both. A program should
 //! read it or discard it explicitly (`let _ = …`).
 //!
-//! Send and ask outcomes are not a lint tier: discarding one is
-//! `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
-//! (HEW-SPEC-2026 §2.1.1, §5.6).
+//! Result outcomes are not a lint tier: discarding one is
+//! `E_RESULT_DROPPED`, a compile error raised by the statement checker.
 //!
 //! ## Precision over recall
 //!
@@ -67,15 +66,16 @@ impl NodeVisitor for MustUse<'_> {
             let Stmt::Expression((_expr, expr_span)) = stmt else {
                 continue;
             };
-            let Some(Ty::Named { name, .. }) = self.ctx.resolved_type_at(expr_span) else {
+            let Some(Ty::Named { head, .. }) = self.ctx.resolved_type_at(expr_span) else {
                 continue;
             };
+            let name = head.registry_key();
             if self
                 .ctx
                 .checker
-                .identity
-                .declaration_by_path(&name)
-                .is_some_and(|declaration| self.ctx.checker.must_use_types.contains(declaration))
+                .defs
+                .lookup_path(name)
+                .is_some_and(|declaration| self.ctx.checker.must_use_types.contains(&declaration))
             {
                 self.hits.push(Hit {
                     span: expr_span.clone(),

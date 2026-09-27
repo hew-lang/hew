@@ -16,8 +16,6 @@
 //! (non-suffixed) name depends on lowering order, not spawn order — the test
 //! must hold regardless of which callee is encountered first.
 
-import std.testing;
-
 // Generic free fn. Its `i64` monomorphization mangles to `worker$$i64`,
 // which `mir_sanitize_symbol` normalizes to `worker__i64` — the exact same
 // normalized form as the concrete function below.
@@ -60,8 +58,8 @@ actor CollisionRunner {
 fn test_task_entry_adapter_no_collision_original_order() {
     let r = spawn CollisionRunner;
     match r.run_original_order() {
-        .Ok(n) => testing.assert_eq(n, 3),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 3),
+        .Err(_) => assert(false),
     }
 }
 
@@ -69,7 +67,7 @@ fn test_task_entry_adapter_no_collision_original_order() {
 fn test_task_entry_adapter_no_collision_reversed_order() {
     let r = spawn CollisionRunner;
     match r.run_reversed_order() {
-        .Ok(n) => testing.assert_eq(n, 3),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 3),
+        .Err(_) => assert(false),
     }
 }

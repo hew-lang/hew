@@ -729,6 +729,22 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// Distinct closures cannot share the required callable shape.
+    ClosureShapeMismatch,
+    /// Binary operands have incompatible types for the selected operator.
+    BinaryOperandTypes,
+    /// Range bounds have no common integer type.
+    RangeBoundTypes,
+    /// A former actor lifecycle spelling was used; only migration mode may
+    /// inspect it as a warning and no executable operation is published.
+    ActorLifecycleRetired,
+    /// A lifecycle method on an actor handle was retired in favour of a free
+    /// function, unless an authored receive handler owns that method name.
+    ActorHandleMethodRetired,
+    /// An actor attempted to wait for its own terminal release.
+    ActorWaitsOnSelf,
+    /// A selected test root cannot be invoked by the test dispatcher.
+    TestSignature,
     /// An actor spawn omitted a required state field or `init` parameter.
     MissingActorSpawnArgument,
     /// An ordering operator (`<`/`<=`/`>`/`>=`) on a record, enum, tuple, or
@@ -810,10 +826,9 @@ pub enum TypeErrorKind {
     /// §4.12). The compiler synthesizes the handle wrapper itself; naming it
     /// in the annotation says the body yields handles, not `Y` values.
     GenReturnSpelling,
-    /// A statement-position send or ask whose typed delivery outcome is
-    /// discarded (HEW-SPEC-2026 §2.1.1, §5.6). Losing a delivery failure by
-    /// accident is not available; the discard has to be written down.
-    SendResultDropped,
+    /// A statement-position `Result` whose error is discarded implicitly.
+    /// Deliberate discard is written as `let _ = ...`.
+    ResultDropped,
     /// A block-like form used as a statement that produces a value other than
     /// `()`. The statement ends at its `}` and the value would be dropped
     /// silently; parenthesize it to use the value, or discard it with
@@ -1507,6 +1522,13 @@ impl TypeErrorKind {
             Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::ClosureShapeMismatch => "E_CLOSURE_SHAPE_MISMATCH",
+            Self::BinaryOperandTypes => "E_BINARY_OPERAND_TYPES",
+            Self::RangeBoundTypes => "E_RANGE_BOUND_TYPES",
+            Self::ActorLifecycleRetired => "E_ACTOR_LIFECYCLE_RETIRED",
+            Self::ActorHandleMethodRetired => "E_ACTOR_HANDLE_METHOD_RETIRED",
+            Self::ActorWaitsOnSelf => "E_ACTOR_WAITS_ON_SELF",
+            Self::TestSignature => "E_TEST_SIGNATURE",
             Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",
             Self::DerivedOrdUnavailable { .. } => "E_LIMIT_DERIVED_ORD",
             Self::ConstInitializer => "E_CONST_INITIALIZER",
@@ -1531,7 +1553,7 @@ impl TypeErrorKind {
             Self::BoundaryResourceMustConsume => "E_BOUNDARY_RESOURCE_MUST_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
-            Self::SendResultDropped => "E_SEND_RESULT_DROPPED",
+            Self::ResultDropped => "E_RESULT_DROPPED",
             Self::BlockStatementValue => "E_BLOCK_STATEMENT_VALUE",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
@@ -1792,15 +1814,8 @@ mod tests {
 
     #[test]
     fn test_undefined_field_display() {
-        let err = TypeError::undefined_field(
-            10..20,
-            &Ty::Named {
-                builtin: None,
-                name: "Point".into(),
-                args: vec![],
-            },
-            "colour",
-        );
+        let err =
+            TypeError::undefined_field(10..20, &Ty::named_for_test("Point", vec![]), "colour");
         assert_eq!(err.to_string(), "no field `colour` on type `Point`");
         assert_eq!(err.kind, TypeErrorKind::UndefinedField);
     }
@@ -2128,11 +2143,7 @@ mod tests {
 
     #[test]
     fn test_undefined_field_on_generic_type() {
-        let ty = Ty::Named {
-            builtin: None,
-            name: "HashMap".into(),
-            args: vec![Ty::String, Ty::I32],
-        };
+        let ty = Ty::named_for_test("HashMap", vec![Ty::String, Ty::I32]);
         let err = TypeError::undefined_field(0..10, &ty, "colour");
         assert_eq!(
             err.to_string(),

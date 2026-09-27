@@ -6,9 +6,9 @@
 // the schema evolves. This playground example uses required fields only.
 #[wire]
 type UserMessage {
-    name: string @1,
-    age: i32 @2,
-    nickname: string @3,
+    name: string @1;
+    age: i32 @2;
+    nickname: string @3;
 }
 
 fn main() {

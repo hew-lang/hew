@@ -2,7 +2,7 @@
 // reads it, so pushing to the vector inside the arm is refused by name.
 #[resource]
 type Tok {
-    id: i64,
+    id: i64;
 }
 
 impl Tok {
@@ -18,7 +18,7 @@ fn main() {
         Option.Some(e) => {
             v.push(Tok { id: 2 });
             println(e.id);
-        },
+        }
         Option.None => println("none"),
     }
 }

@@ -363,6 +363,16 @@ def wasm_public_programs(
     printing a witness from an otherwise dead `main`.
     """
     programs: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+        "std.builtins.ActorRequestOwner": (
+            "internal-transient",
+            (
+                (
+                    "boundary",
+                    "actor Worker { receive fn value() -> i64 { 7 } }\n"
+                    f'fn main() {{ let worker = spawn Worker; let reply = worker.value().expect("ask"); assert(reply == 7); stop(worker); stopped(worker); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
         "std.encoding.toml.Value": (
             "public-lifecycle",
             (
@@ -529,12 +539,12 @@ def wasm_public_programs(
             ),
         ),
         "std.stream.StreamPair": (
-            "rejected-boundary",
+            "internal-transient",
             (
                 (
                     "boundary",
                     "import std.stream;\n"
-                    f'fn main() {{ let (sink, source) = stream.pipe(1); println("{witness}"); }}\n',
+                    f'fn main() {{ let (sink, source): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe opens"); sink.send(7).expect("send"); assert(source.recv().expect("value") == 7); sink.close(); source.close(); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -569,9 +579,14 @@ def generic_lifecycle_sources(case: dict) -> tuple[tuple[str, str], tuple[str, s
         fail(f"{case['carrier_key']}: missing generated scope-exit lifecycle case")
     if "fn explicit_close_case" not in explicit:
         fail(f"{case['carrier_key']}: missing generated explicit-close lifecycle case")
-    # The compiler-owned cases do not have a public constructor. Give the
-    # freestanding Wasm linker an entry point without calling either case:
-    # their generated LLVM remains present for the exact-release assertion.
+    # Public functions remain in emitted LLVM even without a source-level
+    # constructor; private unused functions are correctly discarded.
+    scope = scope.replace("fn scope_exit_case", "pub fn scope_exit_case", 1)
+    explicit = explicit.replace(
+        "fn explicit_close_case", "pub fn explicit_close_case", 1
+    )
+    # Give the freestanding Wasm linker an entry point without fabricating a
+    # resource value for either lifecycle function.
     entrypoint = "\nfn main() { }\n"
     return (
         ("scope-exit", scope + entrypoint),
@@ -594,12 +609,12 @@ def llvm_function_body(llvm: str, function: str) -> str:
     return llvm[header.start() : end + 2]
 
 
-def llvm_calls_symbol(body: str, symbol: str) -> bool:
-    return (
-        re.search(
-            rf'\bcall\b[^@]*@(?:"{re.escape(symbol)}"|{re.escape(symbol)})\(', body
+def llvm_call_count(body: str, symbol: str) -> int:
+    return len(
+        re.findall(
+            rf'\bcall\b[^@\n]*@(?:"[^"]*{re.escape(symbol)}"|[^\s(]*{re.escape(symbol)})\(',
+            body,
         )
-        is not None
     )
 
 
@@ -607,11 +622,15 @@ def assert_exact_llvm_release_chain(
     carrier: str, llvm: str, function: str, close: str, release: str
 ) -> None:
     body = llvm_function_body(llvm, function)
-    if not llvm_calls_symbol(body, close):
-        fail(f"{carrier}: {function} LLVM omits exact close dispatch {close}")
-    close_body = llvm_function_body(llvm, close)
-    if not llvm_calls_symbol(close_body, release):
-        fail(f"{carrier}: {close} LLVM omits exact release {release}")
+    if function == "scope_exit_case":
+        if llvm_call_count(body, release) != 1:
+            fail(f"{carrier}: scope exit must call exact release {release} once")
+    else:
+        if llvm_call_count(body, close) != 1:
+            fail(f"{carrier}: explicit close must dispatch {close} once")
+        close_body = llvm_function_body(llvm, close)
+        if llvm_call_count(close_body, release) != 1:
+            fail(f"{carrier}: {close} must call exact release {release} once")
 
 
 def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) -> None:
@@ -663,10 +682,10 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
             except AssertionError as error:
                 failures.append(str(error))
 
-        # A rejected public boundary is the target contract for this family.
-        # Its imported implementation may itself be unavailable, so only
-        # accepted families can establish generic LLVM lowering.
-        if expected == "rejected":
+        # Internal transient owners are exercised through their public actor
+        # ask or pipe producer. They cannot be constructed as source values
+        # for the generic consuming-parameter codegen cases.
+        if expected == "rejected" or proof_kind == "internal-transient":
             continue
 
         # These exact source-derived cases establish compiler implicit and
@@ -832,7 +851,7 @@ def main() -> None:
                 "scope-exit LLVM without its close/release chain unexpectedly passed lifecycle evidence"
             )
         missing_close_release = (
-            "define internal i8 @scope_exit_case(ptr %0) {\n"
+            "define internal i8 @explicit_close_case(ptr %0) {\n"
             "entry:\n"
             f'  call i8 @"{facts["compiler_e2e_cases"][0]["close_symbol"]}"(ptr %0)\n'
             "  ret i8 0\n"
@@ -847,7 +866,7 @@ def main() -> None:
             assert_exact_llvm_release_chain(
                 str(facts["compiler_e2e_cases"][0]["carrier_key"]),
                 missing_close_release,
-                "scope_exit_case",
+                "explicit_close_case",
                 str(facts["compiler_e2e_cases"][0]["close_symbol"]),
                 release,
             )

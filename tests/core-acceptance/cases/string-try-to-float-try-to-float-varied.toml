@@ -1,0 +1,10 @@
+[[case]]
+id = "string-try-to-float-try-to-float-varied"
+intent = "Leak oracle for `std::string::try_to_float`. Shape `try_to_float_varied_high` (varied valid and invalid parses have no per character leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-try-to-float-try-to-float-varied.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

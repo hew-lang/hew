@@ -22,7 +22,7 @@ and the last observed error without consuming anything.
 
 ### Server
 
-```hew
+```hew,no_run
 import std.net.quic;
 
 fn main() {
@@ -30,28 +30,28 @@ fn main() {
     let conn = ep.accept();
     let stream = conn.accept_stream();
     let data = stream.recv();
-    stream.send(data);
-    stream.finish();
+    stream.send(data).expect("send succeeds");
+    stream.finish().expect("stream finishes");
     stream.close();
-    conn.disconnect();
+    conn.disconnect().expect("disconnect succeeds");
     ep.close();
 }
 ```
 
 ### Client
 
-```hew
+```hew,no_run
 import std.net.quic;
 
 fn main() {
     let ep = quic.new_client();
     let conn = ep.connect("127.0.0.1:4433", "localhost");
     let stream = conn.open_stream();
-    stream.send(b"hello quic");
+    stream.send(b"hello quic").expect("send succeeds");
     let reply = stream.recv();
-    stream.finish();
+    stream.finish().expect("stream finishes");
     stream.close();
-    conn.disconnect();
+    conn.disconnect().expect("disconnect succeeds");
     ep.close();
 }
 ```

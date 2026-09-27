@@ -81,8 +81,8 @@ fn test_builtin_registration() {
     checker.register_builtins();
 
     // Check that println_int is registered
-    assert!(checker.fn_sigs.contains_key("println_int"));
-    let sig = &checker.fn_sigs["println_int"];
+    assert!(checker.sigs().contains("println_int"));
+    let sig = &checker.sigs()["println_int"];
     assert_eq!(sig.params.len(), 1);
     assert_eq!(sig.params[0], Ty::I64);
     assert_eq!(sig.return_type, Ty::Unit);
@@ -102,7 +102,7 @@ fn test_yield_outside_generator() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "not_a_gen".to_string(),
+        name: Ident::new("not_a_gen"),
         type_params: None,
         params: vec![],
         return_type: None,
@@ -133,12 +133,12 @@ fn test_receive_gen_fn_returns_stream() {
 
     let receive_fn = ReceiveFnDecl {
         is_generator: true,
-        name: "numbers".to_string(),
+        name: Ident::new("numbers"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -167,7 +167,7 @@ fn test_receive_gen_fn_returns_stream() {
 
     let actor = ActorDecl {
         visibility: Visibility::Pub,
-        name: "NumberStream".to_string(),
+        name: Ident::new("NumberStream"),
         type_params: vec![],
         super_traits: None,
         init: None,
@@ -191,7 +191,7 @@ fn test_receive_gen_fn_returns_stream() {
     let output = checker.check_program(&program);
     assert!(output.errors.is_empty());
     assert_eq!(
-        output.fn_sigs["NumberStream::numbers"].return_type,
+        output.sigs()["NumberStream::numbers"].return_type,
         Ty::stream(Ty::I64)
     );
 }
@@ -420,15 +420,18 @@ fn test_stream_annotation_resolves_to_stream_type() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "foo".to_string(),
+        name: Ident::new("foo"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "Stream".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Stream"), 0..0),
                 type_args: Some(vec![(
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -459,7 +462,7 @@ fn test_stream_annotation_resolves_to_stream_type() {
     // The body is empty (returns unit) so there will be a return-type mismatch error,
     // but fn_sigs is populated in pass 1 (before body checking), so the signature
     // should already reflect the resolved return type.
-    assert_eq!(output.fn_sigs["foo"].return_type, Ty::stream(Ty::I32));
+    assert_eq!(output.sigs()["foo"].return_type, Ty::stream(Ty::I32));
 }
 
 #[test]
@@ -473,15 +476,21 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "bar".to_string(),
+        name: Ident::new("bar"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "ActorStream".to_string(),
+                path: hew_parser::ast::Path::single(
+                    hew_parser::ast::Ident::new("ActorStream"),
+                    0..0,
+                ),
                 type_args: Some(vec![(
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -536,15 +545,18 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "baz".to_string(),
+        name: Ident::new("baz"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "Stream".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Stream"), 0..0),
                 type_args: Some(vec![(
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -574,7 +586,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
     let output = checker.check_program(&program);
     // Stream<i32> must still resolve to the built-in stream type.
     assert_eq!(
-        output.fn_sigs["baz"].return_type,
+        output.sigs()["baz"].return_type,
         Ty::stream(Ty::I32),
         "Stream<i32> (canonical name) must resolve to Ty::stream(Ty::I32)"
     );
@@ -607,30 +619,24 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
     let output = checker.check_program(&result.program);
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     for ty in [
-        &output.fn_sigs["stream_id"].params[0],
-        &output.fn_sigs["stream_id"].return_type,
+        &output.sigs()["stream_id"].params[0],
+        &output.sigs()["stream_id"].return_type,
     ] {
         assert!(
             matches!(
                 ty,
-                Ty::Named {
-                    name,
-                    args,
-                    builtin: Some(crate::BuiltinType::Stream),
-                } if name == "Stream" && args == &[Ty::I64]
+                Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Stream), args }
+                    if args == &[Ty::I64]
             ),
             "got: {ty:?}",
         );
     }
-    let sink = &output.fn_sigs["close_sink"].params[0];
+    let sink = &output.sigs()["close_sink"].params[0];
     assert!(
         matches!(
             sink,
-            Ty::Named {
-                name,
-                builtin: Some(crate::BuiltinType::Sink),
-                args,
-            } if name == "Sink" && args == &[Ty::String]
+            Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Sink), args }
+                if args == &[Ty::String]
         ),
         "a qualified builtin spelling must keep its builtin identity and element: {sink:?}"
     );
@@ -655,9 +661,8 @@ fn direct_main_observations_require_actor_context() {
     }
 }
 
-/// A source declaration owns its name. `close` and `closed` are actor-handle
-/// spellings, so a program that declares one of them keeps its own signature
-/// while a handle call in the same program still reaches the builtin.
+/// A source declaration owns its name even when it resembles a retired
+/// lifecycle operation.
 #[test]
 fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
     let source = "actor Worker { receive fn ping() {} }\n\
@@ -668,23 +673,22 @@ fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
          fn main() {\n\
              let worker = spawn Worker();\n\
              let _sent = worker.ping();\n\
-             close(worker);\n\
+             stop(worker);\n\
              let _checked = check();\n\
          }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
-/// Negative control for the guard: with no declaration in scope both handle
-/// builtins keep their own signature on a real pid.
+/// With no declaration in scope both lifecycle builtins accept a real pid.
 #[test]
-fn an_undeclared_close_and_closed_still_take_a_handle() {
+fn an_undeclared_stop_and_stopped_take_a_handle() {
     let source = "actor Worker { receive fn ping() {} }\n\
          fn main() {\n\
              let worker = spawn Worker();\n\
              let _sent = worker.ping();\n\
-             close(worker);\n\
-             closed(worker);\n\
+             stop(worker);\n\
+             stopped(worker);\n\
          }";
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
@@ -693,8 +697,8 @@ fn an_undeclared_close_and_closed_still_take_a_handle() {
 /// Negative control: without a declaration the builtin still owns the name and
 /// still refuses a two-argument call.
 #[test]
-fn an_undeclared_closed_keeps_the_handle_builtin_arity() {
-    let output = check_source("fn main() { closed(7, \"ok\"); }");
+fn an_undeclared_stopped_keeps_the_handle_builtin_arity() {
+    let output = check_source("fn main() { stopped(7, \"ok\"); }");
     assert!(
         output
             .errors
@@ -705,47 +709,37 @@ fn an_undeclared_closed_keeps_the_handle_builtin_arity() {
     );
 }
 
-/// `stop` is the actor handle's own lifecycle method (#3193): `self.stop()`
-/// inside the actor and `pid.stop()` outside it both type as `()`, while a
-/// receive handler can no longer take the name and the retired free function
-/// is gone.
+/// The free `stop` function is distinct from a receive handler named `stop`.
 #[test]
-fn actor_stop_is_a_handle_method_and_a_reserved_handler_name() {
+fn actor_stop_is_distinct_from_a_stop_receive_handler() {
     let accepted = check_source(
         "actor Worker {\n\
-             receive fn work() { self.stop(); println(\"after\"); }\n\
+             receive fn work() { stop(self); println(\"after\"); }\n\
              #[on(stop)]\n\
-             fn stop() {}\n\
+             fn on_stop() {}\n\
          }\n\
          fn main() {\n\
              let worker = spawn Worker;\n\
              let _sent = worker.work();\n\
-             let unit: () = worker.stop();\n\
+             let unit: () = stop(worker);\n\
              let _ = unit;\n\
          }",
     );
     assert!(accepted.errors.is_empty(), "{:?}", accepted.errors);
 
-    let reserved = check_source(
+    let handler = check_source(
         "actor Worker { receive fn stop() {} }\n\
-         fn main() { let _worker = spawn Worker; }",
+         fn main() { let worker = spawn Worker; let _sent = worker.stop(); stop(worker); stopped(worker); }",
     );
-    assert!(
-        reserved
-            .errors
-            .iter()
-            .any(|error| error.message.contains("E_RESERVED_HANDLER_NAME")),
-        "{:?}",
-        reserved.errors
-    );
+    assert!(handler.errors.is_empty(), "{:?}", handler.errors);
 
     for (source, expected) in [
         (
             "actor Worker { receive fn ping() {} }\n\
              fn main() { let worker = spawn Worker; worker.stop(1); }",
-            "argument",
+            "E_ACTOR_HANDLE_METHOD_RETIRED",
         ),
-        ("fn main() { stop(1); }", "undefined function `stop`"),
+        ("fn main() { stop(1); }", "actor"),
     ] {
         let output = check_source(source);
         assert!(

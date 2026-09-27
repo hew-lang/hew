@@ -1077,8 +1077,8 @@ impl Builder<'_, '_> {
 
     /// Test the borrowed scrutinee against one compiled regex literal.
     ///
-    /// The literal's index selects its slot in the module's handle array, so
-    /// each pattern is compiled once at process start rather than per arm
+    /// The literal's index selects its module-owned handle, so each pattern is
+    /// compiled once at module load rather than per arm
     /// evaluation. The scrutinee is borrowed; the call produces only a bool.
     fn regex_match_test(&mut self, plan: &MatchPlan, literal_id: u32) -> Result<ValueId, String> {
         let index = self.emit_typed(

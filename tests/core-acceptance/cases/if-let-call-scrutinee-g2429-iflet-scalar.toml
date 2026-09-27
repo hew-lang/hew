@@ -1,0 +1,10 @@
+[[case]]
+id = "if-let-call-scrutinee-g2429-iflet-scalar"
+intent = "From-call `if let` scrutinee enum-payload leak oracle (#2429 class). Shape `g2429_iflet_scalar_high` (scalar iflet loop leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/if-let-call-scrutinee-g2429-iflet-scalar.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

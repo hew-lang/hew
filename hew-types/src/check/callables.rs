@@ -9,6 +9,7 @@ use crate::{
     CallableCallMode, CallableCapabilities, ClosureCaptureAccess, ClosureCaptureAcquisition,
     ClosureCaptureConsumption,
 };
+use hew_parser::ast::Ident;
 
 impl Checker {
     /// Instantiate a declaration used as a value through the same signature,
@@ -31,7 +32,10 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let sig = self.fn_sigs[signature_key].clone();
+        let sig = self
+            .fn_sig(signature_key)
+            .cloned()
+            .unwrap_or_else(|| panic!("function value `{signature_key}` has a signature"));
         if sig
             .param_ownership
             .contains(&crate::env::ParameterOwnership::Consume)
@@ -43,11 +47,7 @@ impl Checker {
             return Ty::Error;
         }
         let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
-        let assoc_bindings = self
-            .fn_type_param_assoc_bindings
-            .get(signature_key)
-            .cloned()
-            .unwrap_or_default();
+        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         self.enforce_type_param_bounds_with_assoc(&sig, &assoc_bindings, &arguments, span);
         self.record_concrete_call_type_args(span, &arguments);
         let target = self.call_target_for_signature(signature_key);
@@ -218,11 +218,11 @@ impl Checker {
 
     pub(super) fn resolve_private_captures(
         &mut self,
-        captures: &[Spanned<String>],
+        captures: &[Spanned<Ident>],
     ) -> HashSet<TypeBindingId> {
         let mut bindings = HashSet::new();
         for (name, span) in captures {
-            if let Some(binding) = self.env.lookup_ref(name) {
+            if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
                 if !bindings.insert(binding.id) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -282,7 +282,7 @@ impl Checker {
             let is_copy = self.registry.implements_marker(&fact.ty, MarkerTrait::Copy);
             if is_move && !fork_snapshot {
                 if !is_copy
-                    && !self.reject_borrowed_consumption(&Expr::Identifier(fact.name.clone()), span)
+                    && !self.reject_borrowed_consumption(&Expr::Ident(Ident::new(&fact.name)), span)
                 {
                     self.env.mark_moved(&fact.name, span.clone());
                 }
@@ -417,12 +417,13 @@ impl Checker {
         // take; one without it promises nothing, and the instance reaches the
         // SIR verifier instead. Spec §3.8.1 puts that on the declaration, so
         // refuse here and name the bound alongside `consume`.
-        if let Ty::Named { name, args, .. } = &ty {
+        if let Ty::Named { head, args } = &ty {
+            let name = head.registry_key();
             if args.is_empty()
                 && self.is_type_param_in_scope(name)
                 && !self.type_param_has_marker_bound(name, MarkerTrait::Clone)
             {
-                let param = name.clone();
+                let param = name;
                 self.report_error_with_suggestions(
                     TypeErrorKind::OwnConsumeBorrowed,
                     span,
@@ -618,8 +619,9 @@ impl Checker {
                     TypeErrorKind::OwnConsumeBorrowed,
                     span,
                     format!(
-                        "E_OWN_CONSUME_BORROWED: `{method}` lends a value its collection keeps, \
-                         and this use takes ownership of it"
+                        "E_OWN_CONSUME_BORROWED: `{}` lends a value its collection keeps, \
+                         and this use takes ownership of it",
+                        method.0
                     ),
                     vec![
                         "move the value out with `remove`, or read it where the collection lends it"
@@ -774,7 +776,7 @@ impl Checker {
             let callee = (
                 Expr::FieldAccess {
                     object: Box::new(receiver.clone()),
-                    field: method.to_string(),
+                    field: (Ident::new(method), span.clone()),
                 },
                 span.clone(),
             );
@@ -848,8 +850,7 @@ impl Checker {
                 }
                 let mut trial = self.subst.clone();
                 for (left, right) in lp.iter().zip(rp).chain(std::iter::once((&**lr, &**rr))) {
-                    self.try_unify_invariant_with_owner_identity(&mut trial, left, right)
-                        .then_some(())?;
+                    Self::try_unify_invariant(&mut trial, left, right).then_some(())?;
                 }
                 let capabilities = CallableCapabilities {
                     call: lc.call.max(rc.call),
@@ -885,25 +886,17 @@ impl Checker {
             }
             (
                 Ty::Named {
-                    name: left_name,
+                    head: left_head,
                     args: left,
-                    builtin: left_builtin,
                 },
                 Ty::Named {
-                    name: right_name,
+                    head: right_head,
                     args: right,
-                    builtin: right_builtin,
                 },
-            ) if left_name == right_name
-                && left_builtin == right_builtin
-                && left.len() == right.len() =>
-            {
-                Some(Ty::Named {
-                    name: left_name.clone(),
-                    builtin: *left_builtin,
-                    args: self.join_callable_type_list(left, right)?,
-                })
-            }
+            ) if left_head == right_head && left.len() == right.len() => Some(Ty::Named {
+                head: *left_head,
+                args: self.join_callable_type_list(left, right)?,
+            }),
             (Ty::Array(left, left_len), Ty::Array(right, right_len)) if left_len == right_len => {
                 self.join_callable_types(left, right)
                     .map(|ty| Ty::Array(Box::new(ty), *left_len))

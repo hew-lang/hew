@@ -1,0 +1,7 @@
+pub fn classify_text(input: string) -> string {
+    match input {
+        re"^[0-9]+$" => "digits",
+        re"^[a-z]+$" => "letters",
+        _ => "other",
+    }
+}

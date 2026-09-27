@@ -1,0 +1,10 @@
+[[case]]
+id = "fresh-composite-push-move-fresh-composite-push-letbound"
+intent = "Leak oracle for FORM 1 — a `Vec::push` of a fresh COMPOSITE call-result whose producer tail-returns its construction through a `let`-bound local (the `[..]` array-literal desugar). Shape `fresh_composite_push_letbound_df` (push letbound composite call does not double free, push letbound composite call leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fresh-composite-push-move-fresh-composite-push-letbound.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

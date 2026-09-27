@@ -1,0 +1,10 @@
+[[case]]
+id = "tuple-record-enum-container-drop-enum-carrier-forward-rebind-even"
+intent = "Regression oracle for an owned record transferred out of a returned tuple. Shape `enum_carrier_forward_rebind_even` (empty enum carrier helper releases payload and tuple sibling on both paths) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/tuple-record-enum-container-drop-enum-carrier-forward-rebind-even.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "checksum=26\n"
+exit = 0

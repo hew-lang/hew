@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-iter-filter-collect-vec-iter-owned-record-filter-collect"
+intent = "Native ownership oracle for fluent `VecIter::filter().collect()`. Shape `vec_iter_owned_record_filter_collect_high` (owned record filter collect does not double free, owned record filter collect has no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-iter-filter-collect-vec-iter-owned-record-filter-collect.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frameframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframeframe"
+exit = 0

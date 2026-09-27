@@ -1,0 +1,13 @@
+[[case]]
+id = "example-datastruct-circular_buffer"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/datastruct/circular_buffer.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout_file = "../../examples/datastruct/circular_buffer.expected"
+exit = 0

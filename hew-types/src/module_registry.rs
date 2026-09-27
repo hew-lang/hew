@@ -3,11 +3,12 @@
 //! Replaces the baked-in `stdlib_generated.rs` tables. Discovers modules
 //! by searching the filesystem and parsing `.hew` files at user compile time.
 
+use hew_parser::ast::Ident;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use hew_parser::ast::Item;
-use hew_parser::module::ModuleId;
+use hew_parser::module::ModulePath;
 
 use crate::stdlib_loader::{load_module_checked, ModuleInfo};
 
@@ -32,7 +33,7 @@ fn parse_cache_key(source: &std::path::Path) -> PathBuf {
 /// Module declarations and derived metadata visible to one checked program.
 #[derive(Debug, Clone, Default)]
 struct ProgramModuleState {
-    modules: BTreeMap<ModuleId, ModuleInfo>,
+    modules: BTreeMap<ModulePath, ModuleInfo>,
     handle_types: HashSet<String>,
     drop_types: HashSet<String>,
     drop_funcs: HashMap<String, String>,
@@ -67,7 +68,7 @@ pub struct ModuleRegistry {
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedModule<'a> {
     /// Canonical nominal identity selected for the active source.
-    pub module_id: &'a ModuleId,
+    pub module_id: &'a ModulePath,
     /// Parsed declarations and extracted module metadata.
     pub info: &'a ModuleInfo,
     /// Whether the source belongs to this compiler's stdlib distribution.
@@ -75,14 +76,8 @@ pub struct LoadedModule<'a> {
 }
 
 /// Parse a canonical dotted module identity at the registry boundary.
-fn module_id_from_identity(module_path: &str) -> ModuleId {
-    ModuleId::new(
-        module_path
-            .split('.')
-            .filter(|segment| !segment.is_empty())
-            .map(String::from)
-            .collect(),
-    )
+fn module_id_from_identity(module_path: &str) -> ModulePath {
+    ModulePath::new(module_path.split('.').filter(|segment| !segment.is_empty()))
 }
 
 /// Walk up the directory tree from `from`, returning the first ancestor directory
@@ -237,13 +232,13 @@ pub fn stdlib_search_paths() -> Vec<PathBuf> {
     compiler_stdlib_root().into_iter().collect()
 }
 
-/// Return the canonical dotted stdlib owner for an exact shipped source file.
+/// Return the canonical stdlib owner for an exact shipped source file.
 ///
 /// Package directories are owned by their primary `{name}.hew` source, so a
 /// peer file in that directory has the same owner. A directory without such a
 /// primary source leaves each `.hew` file as its own module.
 #[must_use]
-pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<String> {
+pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<ModulePath> {
     let input_canonical = std::fs::canonicalize(source_file).ok()?;
 
     stdlib_search_paths().into_iter().find_map(|root| {
@@ -270,13 +265,14 @@ pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Opti
         } else {
             relative.with_extension("")
         };
-        let dotted = module_path
-            .iter()
-            .map(|component| component.to_str())
-            .collect::<Option<Vec<_>>>()?
-            .join(".");
+        let module = ModulePath::new(
+            module_path
+                .iter()
+                .map(|component| component.to_str())
+                .collect::<Option<Vec<_>>>()?,
+        );
 
-        is_canonical_stdlib_module_source(&input_canonical, &dotted).then_some(dotted)
+        is_canonical_stdlib_module_source(&input_canonical, &module.dotted()).then_some(module)
     })
 }
 
@@ -361,9 +357,9 @@ fn canonical_stdlib_module_source_in_roots(
 /// Return the declaration owner selected by an import's resolved source.
 #[must_use]
 pub fn canonical_source_module_identity(
-    requested_dotted: &str,
+    requested: &ModulePath,
     source_paths: &[PathBuf],
-) -> String {
+) -> ModulePath {
     // Directory-module peers are alternate physical spellings of the same
     // shipped module.  Resolve their owner from the trusted source path so a
     // direct `std.net.http.http_client` import cannot create a second nominal
@@ -371,7 +367,7 @@ pub fn canonical_source_module_identity(
     source_paths
         .iter()
         .find_map(|source| canonical_stdlib_module_for_source(source))
-        .unwrap_or_else(|| requested_dotted.to_string())
+        .unwrap_or_else(|| requested.clone())
 }
 
 #[derive(Debug)]
@@ -490,8 +486,8 @@ impl std::fmt::Display for ModuleError {
 impl ModuleRegistry {
     fn module_info_declares_nominal(info: &ModuleInfo, leaf: &str) -> bool {
         info.source_items.iter().any(|(item, _)| match item {
-            Item::TypeDecl(decl) => decl.name == leaf,
-            Item::Record(decl) => decl.name == leaf,
+            Item::TypeDecl(decl) => decl.name == Ident::new(leaf),
+            Item::Record(decl) => decl.name == Ident::new(leaf),
             _ => false,
         })
     }
@@ -505,7 +501,7 @@ impl ModuleRegistry {
     /// must come from the same selected source.
     fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
         let module_id = module_id_from_identity(owner);
-        let loader_path = module_id.path.join("::");
+        let loader_path = module_id.join("::");
         if let Some(info) = self
             .active
             .modules
@@ -516,7 +512,7 @@ impl ModuleRegistry {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            return Some(canonical_source_module_identity(owner, &source_paths));
+            return Some(canonical_source_module_identity(&module_id, &source_paths).dotted());
         }
         self.search_paths.iter().find_map(|search_path| {
             let info = load_module_checked(&loader_path, search_path)
@@ -526,7 +522,7 @@ impl ModuleRegistry {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            Some(canonical_source_module_identity(owner, &source_paths))
+            Some(canonical_source_module_identity(&module_id, &source_paths).dotted())
         })
     }
 
@@ -557,7 +553,7 @@ impl ModuleRegistry {
         &self,
         name: &str,
         method_receiver: bool,
-    ) -> Option<(&ModuleId, &ModuleInfo, String)> {
+    ) -> Option<(&ModulePath, &ModuleInfo, String)> {
         let (owner, leaf) = name.rsplit_once('.')?;
         if owner.contains('.') {
             let module_id = module_id_from_identity(owner);
@@ -586,7 +582,7 @@ impl ModuleRegistry {
             })
             .map(|(module_id, info)| (module_id, info, name.to_string()))
             .collect::<Vec<_>>();
-        matches.sort_unstable_by(|left, right| left.0.path.cmp(&right.0.path));
+        matches.sort_unstable_by(|left, right| left.0.segments.cmp(&right.0.segments));
         match matches.as_slice() {
             [only] => Some((only.0, only.1, only.2.clone())),
             _ => None,
@@ -676,10 +672,10 @@ impl ModuleRegistry {
         )
     }
 
-    fn module_info_has_stdlib_authority(&self, id: &ModuleId, info: &ModuleInfo) -> bool {
-        info.source_path.as_deref().is_some_and(|source_path| {
-            self.source_has_stdlib_authority(source_path, &id.path.join("."))
-        })
+    fn module_info_has_stdlib_authority(&self, id: &ModulePath, info: &ModuleInfo) -> bool {
+        info.source_path
+            .as_deref()
+            .is_some_and(|source_path| self.source_has_stdlib_authority(source_path, &id.dotted()))
     }
 
     /// Iterate the modules active for this checked program in canonical identity
@@ -720,7 +716,7 @@ impl ModuleRegistry {
         module_path: &str,
     ) -> Result<(), CompilerModuleError> {
         let id = module_id_from_identity(module_path);
-        let loader_path = id.path.join("::");
+        let loader_path = id.join("::");
 
         if let Some(info) = self.active.modules.get(&id) {
             if !self.module_info_has_stdlib_authority(&id, info) {
@@ -761,8 +757,7 @@ impl ModuleRegistry {
         };
 
         let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-        let canonical_owner = canonical_source_module_identity(&id.path.join("."), &source_paths);
-        let canonical_id = module_id_from_identity(&canonical_owner);
+        let canonical_id = canonical_source_module_identity(&id, &source_paths);
         if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
             return Err(CompilerModuleError::SourceOutsideAuthority {
                 module_path: module_path.to_string(),
@@ -773,7 +768,7 @@ impl ModuleRegistry {
         if let Some(active) = self.active.modules.get(&canonical_id) {
             if !self.module_info_has_stdlib_authority(&canonical_id, active) {
                 return Err(CompilerModuleError::ConflictingActiveModule {
-                    module_path: canonical_owner,
+                    module_path: canonical_id.dotted(),
                     loaded_source: active.source_path.clone(),
                 });
             }
@@ -801,7 +796,7 @@ impl ModuleRegistry {
     ///
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
         let id = module_id_from_identity(module_path);
-        let loader_path = id.path.join("::");
+        let loader_path = id.join("::");
 
         if self.active.modules.contains_key(&id) {
             return Ok(&self.active.modules[&id]);
@@ -825,9 +820,7 @@ impl ModuleRegistry {
                 info
             };
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            let canonical_owner =
-                canonical_source_module_identity(&id.path.join("."), &source_paths);
-            let canonical_id = module_id_from_identity(&canonical_owner);
+            let canonical_id = canonical_source_module_identity(&id, &source_paths);
             return Ok(self.activate_module(&canonical_id, info));
         }
 
@@ -846,7 +839,7 @@ impl ModuleRegistry {
         })
     }
 
-    fn activate_module(&mut self, id: &ModuleId, info: ModuleInfo) -> &ModuleInfo {
+    fn activate_module(&mut self, id: &ModulePath, info: ModuleInfo) -> &ModuleInfo {
         self.active
             .handle_types
             .extend(info.handle_types.iter().cloned());
@@ -880,7 +873,7 @@ impl ModuleRegistry {
         let (module_id, _, spelling) = self.registry_receiver_declaration(name, false)?;
         Some(format!(
             "{}.{}",
-            module_id.path.join("."),
+            module_id.dotted(),
             crate::short_name(&spelling)
         ))
     }
@@ -900,29 +893,7 @@ impl ModuleRegistry {
     pub fn canonical_method_receiver_identity(&self, name: &str) -> Option<String> {
         let (module_id, _, spelling) = self.registry_receiver_declaration(name, true)?;
         let leaf = crate::short_name(&spelling);
-        Some(format!("{}.{leaf}", module_id.path.join(".")))
-    }
-
-    /// Resolve an owned registry receiver to its exact loaded source identity.
-    ///
-    /// Ownership metadata is extracted under the registry spelling
-    /// (`regex.Pattern`), while source annotations carry the complete owner
-    /// (`std.text.regex.Pattern`). This joins only those two representations of
-    /// the same loaded declaration; it never recovers an owner from a leaf.
-    #[must_use]
-    pub fn canonical_owned_type_identity(&self, name: &str) -> Option<String> {
-        let (module_id, info, spelling) = self.registry_receiver_declaration(name, true)?;
-        (info.handle_types.contains(&spelling)
-            || info.resource_wrapper_types.contains(&spelling)
-            || info.drop_types.contains(&spelling)
-            || info.drop_funcs.iter().any(|(ty, _)| ty == &spelling))
-        .then(|| {
-            format!(
-                "{}.{}",
-                module_id.path.join("."),
-                crate::short_name(&spelling)
-            )
-        })
+        Some(format!("{}.{leaf}", module_id.dotted()))
     }
 
     /// Project a legacy registry signature type into its exact source owner.
@@ -961,12 +932,12 @@ impl ModuleRegistry {
             };
             let import_binding = import
                 .module_alias
-                .as_deref()
-                .or_else(|| import.path.last().map(String::as_str))?;
+                .map(|ident| ident.name.as_str())
+                .or_else(|| import.path.last().map(|ident| ident.name.as_str()))?;
             if import_binding != binding {
                 return None;
             }
-            let imported_owner = import.path.join(".");
+            let imported_owner = import.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             self.exact_module_source_type_owner(&imported_owner, leaf)
                 .map(|canonical_owner| format!("{canonical_owner}.{leaf}"))
         })
@@ -984,20 +955,21 @@ impl ModuleRegistry {
             self.canonicalize_registry_signature_ty(child, canonical_owner)
         });
         let crate::ty::Ty::Named {
-            name,
+            head: crate::TypeHead::Unresolved(spelling),
             args,
-            builtin,
         } = mapped
         else {
             return mapped;
         };
         let name = self
-            .canonical_registry_signature_type_identity(&name, canonical_owner)
-            .unwrap_or(name);
-        crate::ty::Ty::Named {
-            builtin: builtin.or_else(|| self.encoding_value_builtin(&name)),
-            name,
-            args,
+            .canonical_registry_signature_type_identity(spelling.as_str(), canonical_owner)
+            .unwrap_or_else(|| spelling.to_string());
+        match self.encoding_value_builtin(&name) {
+            Some(builtin) => crate::ty::Ty::named_head(crate::TypeHead::Builtin(builtin), args),
+            None => crate::ty::Ty::Named {
+                head: crate::TypeHead::Unresolved(crate::Symbol::intern(&name)),
+                args,
+            },
         }
     }
 
@@ -1107,7 +1079,7 @@ impl ModuleRegistry {
         method: &str,
     ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty, String)> {
         let (module_id, info, spelling) = self.registry_receiver_declaration(handle_type, true)?;
-        let canonical_owner = module_id.path.join(".");
+        let canonical_owner = module_id.dotted();
         let hm = info
             .handle_methods
             .iter()
@@ -1175,20 +1147,24 @@ mod tests {
     fn canonical_stdlib_owner_follows_flat_package_and_peer_layouts() {
         let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("string.hew")).as_deref(),
-            Some("std.string")
+            canonical_stdlib_module_for_source(&stdlib.join("string.hew"))
+                .map(|module| module.dotted()),
+            Some("std.string".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/http.hew")).as_deref(),
-            Some("std.net.http")
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/http.hew"))
+                .map(|module| module.dotted()),
+            Some("std.net.http".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/http_client.hew")).as_deref(),
-            Some("std.net.http")
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/http_client.hew"))
+                .map(|module| module.dotted()),
+            Some("std.net.http".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew")).as_deref(),
-            Some("std.io.scanner")
+            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew"))
+                .map(|module| module.dotted()),
+            Some("std.io.scanner".to_string())
         );
     }
 
@@ -1197,19 +1173,25 @@ mod tests {
         let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
         assert_eq!(
             canonical_source_module_identity(
-                "std.net.http.http_client",
+                &ModulePath::new(["std", "net", "http", "http_client"]),
                 &[stdlib.join("net/http/http_client.hew")]
             ),
-            "std.net.http"
+            ModulePath::new(["std", "net", "http"])
         );
         assert_eq!(
-            canonical_source_module_identity("std.net.http", &[stdlib.join("net/http/http.hew")]),
-            "std.net.http"
+            canonical_source_module_identity(
+                &ModulePath::new(["std", "net", "http"]),
+                &[stdlib.join("net/http/http.hew")]
+            ),
+            ModulePath::new(["std", "net", "http"])
         );
         let user_lookalike = std::env::temp_dir().join("user/std/net/http/http_client.hew");
         assert_eq!(
-            canonical_source_module_identity("std.net.http.http_client", &[user_lookalike]),
-            "std.net.http.http_client",
+            canonical_source_module_identity(
+                &ModulePath::new(["std", "net", "http", "http_client"]),
+                &[user_lookalike]
+            ),
+            ModulePath::new(["std", "net", "http", "http_client"]),
             "only a shipped source names a directory module; a user source keeps its own owner"
         );
     }
@@ -1311,7 +1293,7 @@ mod tests {
         let user_source = user_net_dir.join("net.hew");
         fs::write(
             &user_source,
-            "pub type Handle { marker: i64, }\npub type Endpoint { marker: i64, }\n",
+            "pub type Handle {\n    marker: i64;\n}\n\npub type Endpoint {\n    marker: i64;\n}\n",
         )
         .expect("write user net lookalike");
 
@@ -1765,7 +1747,7 @@ mod tests {
         let fixture = TestDir::new("registry-signature-record-owner");
         fs::write(
             fixture.root.join("record_owner.hew"),
-            "pub type Packet { value: i64 }\n",
+            "pub type Packet {\n    value: i64;\n}\n",
         )
         .expect("write record owner");
         fs::write(
@@ -1775,7 +1757,7 @@ mod tests {
         .expect("write record importer");
         fs::write(
             fixture.root.join("lookalike.hew"),
-            "pub type Packet { other: string }\n",
+            "pub type Packet {\n    other: string;\n}\n",
         )
         .expect("write record lookalike");
 
@@ -1842,15 +1824,15 @@ mod tests {
 
         let mut reg = ModuleRegistry::new(Vec::new());
         reg.active.modules.insert(
-            ModuleId::new(vec!["vendor_a".into(), "nested".into(), "shared".into()]),
+            ModulePath::new(["vendor_a", "nested", "shared"]),
             module_info("run", "vendor_a_shared_run"),
         );
         reg.active.modules.insert(
-            ModuleId::new(vec!["vendor_b".into(), "nested".into(), "shared".into()]),
+            ModulePath::new(["vendor_b", "nested", "shared"]),
             module_info("run", "vendor_b_shared_run"),
         );
         reg.active.modules.insert(
-            ModuleId::new(vec!["vendor_c".into(), "nested".into(), "unique".into()]),
+            ModulePath::new(["vendor_c", "nested", "unique"]),
             module_info("run", "vendor_c_unique_run"),
         );
 
@@ -1916,7 +1898,7 @@ mod tests {
     #[test]
     fn same_legacy_receiver_spelling_never_cross_wires_loaded_modules() {
         fn shared_info(c_symbol: &str, dispatch_through_impl: bool) -> ModuleInfo {
-            let parsed = hew_parser::parse("pub type Pattern { value: i32, }\n");
+            let parsed = hew_parser::parse("pub type Pattern {\n    value: i32;\n}\n");
             assert!(parsed.errors.is_empty());
             ModuleInfo {
                 source_path: None,
@@ -1929,10 +1911,13 @@ mod tests {
                     method_name: "clone_for_test".to_string(),
                     c_symbol: c_symbol.to_string(),
                     params: vec![
-                        crate::ty::Ty::option(crate::ty::Ty::named("regex.Pattern", vec![])),
-                        crate::ty::Ty::named("regex.Foreign", vec![]),
+                        crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+                            "regex.Pattern",
+                            vec![],
+                        )),
+                        crate::ty::Ty::unresolved_for_test("regex.Foreign", vec![]),
                     ],
-                    return_type: crate::ty::Ty::option(crate::ty::Ty::named(
+                    return_type: crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
                         "regex.Pattern",
                         vec![],
                     )),
@@ -1963,17 +1948,23 @@ mod tests {
         assert_eq!(a.3, "vendor_a.text.regex");
         assert_eq!(
             a.1[0],
-            crate::ty::Ty::option(crate::ty::Ty::named("vendor_a.text.regex.Pattern", vec![])),
+            crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+                "vendor_a.text.regex.Pattern",
+                vec![]
+            )),
             "nested signature positions must retain the selected source owner"
         );
         assert_eq!(
             a.1[1],
-            crate::ty::Ty::named("regex.Foreign", vec![]),
+            crate::ty::Ty::unresolved_for_test("regex.Foreign", vec![]),
             "an undeclared foreign regex.X type must not inherit the owner"
         );
         assert_eq!(
             a.2,
-            crate::ty::Ty::option(crate::ty::Ty::named("vendor_a.text.regex.Pattern", vec![]))
+            crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+                "vendor_a.text.regex.Pattern",
+                vec![]
+            ))
         );
 
         let b = reg
@@ -1995,11 +1986,7 @@ mod tests {
             None,
             "an ambiguous legacy receiver must fail closed"
         );
-        assert_eq!(
-            reg.canonical_owned_type_identity("regex.Pattern"),
-            None,
-            "ambiguous ownership metadata must fail closed too"
-        );
+
         assert!(!reg.handle_method_dispatches_through_impl("regex.Pattern", "clone_for_test"));
     }
 
@@ -2124,7 +2111,7 @@ mod tests {
 
         let loaded = registry
             .loaded_modules()
-            .map(|module| module.module_id.path.join("."))
+            .map(|module| module.module_id.dotted())
             .collect::<Vec<_>>();
         assert_eq!(loaded, ["std.alpha", "std.zeta"]);
 
@@ -2168,27 +2155,26 @@ mod tests {
             ("yaml", BuiltinType::YamlValue),
         ] {
             let owner = format!("std.encoding.{format}");
-            let input = Ty::option(Ty::named(format!("{format}.Value"), vec![]));
+            let input = Ty::option(Ty::unresolved_for_test(&format!("{format}.Value"), vec![]));
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&input, &owner),
                 input
             );
             registry.load_compiler_stdlib_module(&owner).unwrap();
             let expected = Ty::option(Ty::Named {
-                name: kind.canonical_name().to_string(),
                 args: vec![],
-                builtin: Some(kind),
+                head: crate::TypeHead::Builtin(kind),
             });
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&input, &owner),
                 expected
             );
-            let bare = Ty::named("Value", vec![]);
+            let bare = Ty::unresolved_for_test("Value", vec![]);
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&bare, &owner),
                 bare
             );
-            let foreign = Ty::named("user.Value", vec![]);
+            let foreign = Ty::unresolved_for_test("user.Value", vec![]);
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&foreign, &owner),
                 foreign
@@ -2205,10 +2191,10 @@ mod tests {
         registry.load("std.encoding.json").unwrap();
         assert_eq!(
             registry.canonicalize_registry_signature_ty(
-                &crate::Ty::named("json.Value", vec![]),
+                &crate::Ty::unresolved_for_test("json.Value", vec![]),
                 "std.encoding.json"
             ),
-            crate::Ty::named("std.encoding.json.Value", vec![])
+            crate::Ty::unresolved_for_test("std.encoding.json.Value", vec![])
         );
     }
 
@@ -2248,7 +2234,7 @@ mod tests {
             1,
             "reuse must not duplicate active membership"
         );
-        assert_eq!(active[0].module_id.path, ["std", "option"]);
+        assert_eq!(active[0].module_id.dotted(), "std.option");
         assert!(active[0].compiler_owned);
         assert_eq!(
             active[0]

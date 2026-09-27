@@ -14,6 +14,8 @@ pub mod mono;
 pub mod monomorph;
 pub mod node;
 pub mod stdlib_catalog;
+pub mod symbol;
+pub mod test_entry;
 pub mod value_class;
 pub mod verify;
 
@@ -48,9 +50,9 @@ pub use node::{
     HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding,
     HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirPayloadVariantPredicate,
     HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirSelectionOrder, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget,
-    HirVariant, HirVariantKind, WhereOrigin,
+    HirSelectionOrder, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant,
+    HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

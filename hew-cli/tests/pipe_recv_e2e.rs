@@ -39,7 +39,6 @@ actor Worker {
 fn main() {
     let w = spawn Worker;
     let _ = w.run();
-    sleep(100ms);
 }
 "#;
 
@@ -62,13 +61,13 @@ actor Worker {
                     .Some(s) => println(f"a:{s}"),
                     .None => println("a:none"),
                 }
-            },
+            }
             b from rxb.recv() => {
                 match b {
                     .Some(n) => println(f"b:{n}"),
                     .None => println("b:none"),
                 }
-            },
+            }
             after 1s => println("timeout"),
         };
         txa.close();
@@ -81,7 +80,6 @@ actor Worker {
 fn main() {
     let w = spawn Worker;
     let _ = w.run();
-    sleep(100ms);
 }
 "#;
 

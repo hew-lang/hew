@@ -1,0 +1,10 @@
+[[case]]
+id = "regex-pattern-resource-regex-pattern-literal-close"
+intent = "Regex `Pattern` resource close leak oracle. Shape `regex_pattern_literal_close_high` (regex pattern literal close has no per iteration leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/regex-pattern-resource-regex-pattern-literal-close.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 50

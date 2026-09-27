@@ -3,19 +3,33 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 pub(super) use super::*;
-use crate::{DefId, LangItem};
+use crate::LangItem;
 
 #[test]
 fn var_self_methods_accept_mutable_field_places_and_reject_immutable_roots() {
-    let declarations = r"
-        trait Bump { fn bump(var self) -> i64; }
-        type Counter { value: i64 }
-        impl Bump for Counter {
-            fn bump(var self) -> i64 { self.value += 1; self.value }
-        }
-        type Inner<T> { counter: T }
-        type Outer<T> { inner: Inner<T> }
-    ";
+    let declarations = r"trait Bump {
+    fn bump(var self) -> i64;
+}
+
+type Counter {
+    value: i64;
+}
+
+impl Bump for Counter {
+    fn bump(var self) -> i64 {
+        self.value += 1;
+        self.value
+    }
+}
+
+type Inner<T> {
+    counter: T;
+}
+
+type Outer<T> {
+    inner: Inner<T>;
+}
+";
     for (binding, mutable) in [("var", true), ("let", false)] {
         for (ty, value, receiver) in [
             (
@@ -100,16 +114,17 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
     // the flag must be set in BOTH tables. Missing either one silently
     // disables the caller-side mutable-binding gate.
     let output = check_source(
-        r"
-        type Counter { val: i32 }
+        r"type Counter {
+    val: i32;
+}
 
-        impl Iterator for Counter {
-            type Item = i32;
-            fn next(var self) -> Option<i32> {
-                .Some(self.val)
-            }
-        }
-        ",
+impl Iterator for Counter {
+    type Item = i32;
+    fn next(var self) -> Option<i32> {
+        .Some(self.val)
+    }
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -117,7 +132,7 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
         output.errors,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Counter::next")
         .expect("Counter::next must be registered in fn_sigs");
     assert!(
@@ -125,8 +140,7 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
         "fn_sigs[Counter::next].requires_mutable_receiver must be true for `var self`",
     );
     let td = output
-        .type_defs
-        .get("Counter")
+        .type_def_at_path("Counter")
         .expect("Counter type must be registered");
     let method_sig = td
         .methods
@@ -142,13 +156,16 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
 fn q297_immut_self_method_records_no_mut_receiver_flag() {
     // Negative control: a plain `self` receiver must NOT carry the flag.
     let output = check_source(
-        r"
-        type Counter { val: i32 }
+        r"type Counter {
+    val: i32;
+}
 
-        impl Counter {
-            fn peek(self) -> i32 { self.val }
-        }
-        ",
+impl Counter {
+    fn peek(self) -> i32 {
+        self.val
+    }
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -156,7 +173,7 @@ fn q297_immut_self_method_records_no_mut_receiver_flag() {
         output.errors,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Counter::peek")
         .expect("Counter::peek must be registered");
     assert!(
@@ -170,17 +187,20 @@ fn q297_trait_var_self_vs_impl_self_rejects_with_receiver_mutability_detail() {
     // Trait declares `var self`; impl uses plain `self`. Q004's
     // receiver-mutability axis (added in Stage 1) must reject this.
     let output = check_source(
-        r"
-        trait Bump {
-            fn step(var self) -> i64;
-        }
+        r"trait Bump {
+    fn step(var self) -> i64;
+}
 
-        type Box { n: i64 }
+type Box {
+    n: i64;
+}
 
-        impl Bump for Box {
-            fn step(self) -> i64 { self.n }
-        }
-        ",
+impl Bump for Box {
+    fn step(self) -> i64 {
+        self.n
+    }
+}
+",
     );
     let mismatch = output.errors.iter().find(|e| {
         matches!(
@@ -204,25 +224,26 @@ fn q297_let_bound_receiver_rejects_var_self_method_call() {
     // impls; the relaxation only applies to trait impls where the trait
     // contract gives the mutation observable meaning.
     let output = check_source(
-        r"
-        trait Bump {
-            fn step(var self) -> i64;
-        }
+        r"trait Bump {
+    fn step(var self) -> i64;
+}
 
-        type Counter { val: i64 }
+type Counter {
+    val: i64;
+}
 
-        impl Bump for Counter {
-            fn step(var self) -> i64 {
-                self.val = self.val + 1;
-                self.val
-            }
-        }
+impl Bump for Counter {
+    fn step(var self) -> i64 {
+        self.val = self.val + 1;
+        self.val
+    }
+}
 
-        fn main() {
-            let c = Counter { val: 0 };
-            c.step();
-        }
-        ",
+fn main() {
+    let c = Counter { val: 0 };
+    c.step();
+}
+",
     );
     let mutability = output.errors.iter().find(|e| {
         matches!(e.kind, TypeErrorKind::MutabilityError)
@@ -240,25 +261,26 @@ fn q297_var_bound_receiver_accepts_var_self_method_call() {
     // Positive control for the caller-side gate: a `var`-bound receiver
     // must dispatch cleanly through the same `var self` trait method.
     let output = check_source(
-        r"
-        trait Bump {
-            fn step(var self) -> i64;
-        }
+        r"trait Bump {
+    fn step(var self) -> i64;
+}
 
-        type Counter { val: i64 }
+type Counter {
+    val: i64;
+}
 
-        impl Bump for Counter {
-            fn step(var self) -> i64 {
-                self.val = self.val + 1;
-                self.val
-            }
-        }
+impl Bump for Counter {
+    fn step(var self) -> i64 {
+        self.val = self.val + 1;
+        self.val
+    }
+}
 
-        fn main() {
-            var c = Counter { val: 0 };
-            c.step();
-        }
-        ",
+fn main() {
+    var c = Counter { val: 0 };
+    c.step();
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -305,19 +327,20 @@ fn concrete_specialised_builtin_var_self_preserves_vec_dispatch_authority() {
 #[test]
 fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
     let output = check_source_allowing_prelude_redeclaration(
-        r"
-        type Option<T> { value: T, }
+        r"type Option<T> {
+    value: T;
+}
 
-        trait Bump {
-            fn bump(var self);
-        }
+trait Bump {
+    fn bump(var self);
+}
 
-        impl Bump for Option<i64> {
-            fn bump(var self) {
-                self.value = 99;
-            }
-        }
-        ",
+impl Bump for Option<i64> {
+    fn bump(var self) {
+        self.value = 99;
+    }
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -327,7 +350,7 @@ fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
     let option_types: Vec<&Ty> = output
         .expr_types
         .values()
-        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
         !option_types.is_empty()
@@ -335,7 +358,7 @@ fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
                 !matches!(
                     *ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Option),
+                        head: crate::TypeHead::Builtin(BuiltinType::Option),
                         ..
                     }
                 )
@@ -354,29 +377,30 @@ fn w3042_static_trait_dispatch_let_bound_receiver_rejects_var_self_method() {
     // emit a MutabilityError that names the dispatch kind so the
     // diagnostic is distinguishable from the (Ty::Named, _) variant.
     let output = check_source(
-        r"
-        trait Bump {
-            fn step(var self) -> i64;
-        }
+        r"trait Bump {
+    fn step(var self) -> i64;
+}
 
-        type Counter { val: i64 }
+type Counter {
+    val: i64;
+}
 
-        impl Bump for Counter {
-            fn step(var self) -> i64 {
-                self.val = self.val + 1;
-                self.val
-            }
-        }
+impl Bump for Counter {
+    fn step(var self) -> i64 {
+        self.val = self.val + 1;
+        self.val
+    }
+}
 
-        fn pump<I: Bump>(it: I) -> i64 {
-            it.step()
-        }
+fn pump<I: Bump>(it: I) -> i64 {
+    it.step()
+}
 
-        fn main() {
-            var c = Counter { val: 0 };
-            pump(c);
-        }
-        ",
+fn main() {
+    var c = Counter { val: 0 };
+    pump(c);
+}
+",
     );
     let mutability = output.errors.iter().find(|e| {
         matches!(e.kind, TypeErrorKind::MutabilityError)
@@ -396,29 +420,30 @@ fn w3042_static_trait_dispatch_var_bound_receiver_accepts_var_self_method() {
     // Positive control: a `var`-bound generic-typed receiver dispatched
     // through the same `var self` trait method must type-check clean.
     let output = check_source(
-        r"
-        trait Bump {
-            fn step(var self) -> i64;
-        }
+        r"trait Bump {
+    fn step(var self) -> i64;
+}
 
-        type Counter { val: i64 }
+type Counter {
+    val: i64;
+}
 
-        impl Bump for Counter {
-            fn step(var self) -> i64 {
-                self.val = self.val + 1;
-                self.val
-            }
-        }
+impl Bump for Counter {
+    fn step(var self) -> i64 {
+        self.val = self.val + 1;
+        self.val
+    }
+}
 
-        fn pump<I: Bump>(var it: I) -> i64 {
-            it.step()
-        }
+fn pump<I: Bump>(var it: I) -> i64 {
+    it.step()
+}
 
-        fn main() {
-            var c = Counter { val: 0 };
-            pump(c);
-        }
-        ",
+fn main() {
+    var c = Counter { val: 0 };
+    pump(c);
+}
+",
     );
     assert!(
         output
@@ -439,28 +464,29 @@ fn w3042_dyn_trait_let_bound_receiver_rejects_var_self_method() {
     // is distinguishable from the (Ty::Named, _) and StaticTraitDispatch
     // variants.
     let output = check_source(
-        r"
-        trait Bump {
-            fn step(var self) -> i64;
-        }
+        r"trait Bump {
+    fn step(var self) -> i64;
+}
 
-        type Counter { val: i64 }
+type Counter {
+    val: i64;
+}
 
-        impl Bump for Counter {
-            fn step(var self) -> i64 {
-                self.val = self.val + 1;
-                self.val
-            }
-        }
+impl Bump for Counter {
+    fn step(var self) -> i64 {
+        self.val = self.val + 1;
+        self.val
+    }
+}
 
-        fn invoke(b: dyn Bump) -> i64 {
-            b.step()
-        }
+fn invoke(b: dyn Bump) -> i64 {
+    b.step()
+}
 
-        fn main() {
-            invoke(Counter { val: 0 });
-        }
-        ",
+fn main() {
+    invoke(Counter { val: 0 });
+}
+",
     );
     let mutability = output.errors.iter().find(|e| {
         matches!(e.kind, TypeErrorKind::MutabilityError)
@@ -488,8 +514,7 @@ fn q297_stdlib_iterator_next_and_vec_iter_carry_mut_receiver_flag() {
     // load-bearing impl side rather than the trait side.)
     let output = check_source("");
     let td = output
-        .type_defs
-        .get("VecIter")
+        .type_def_at_path("std.builtins.VecIter")
         .expect("VecIter must be pre-registered from std/builtins.hew");
     let next_sig = td
         .methods
@@ -511,9 +536,9 @@ fn builtin_iterator_lang_item_publishes_exact_next_identity() {
         .expect("the prelude Iterator::next must publish its lang-item identity");
     assert_eq!(binding.trait_name, "Iterator");
     assert_eq!(binding.method_name.as_deref(), Some("next"));
-    assert_eq!(binding.trait_id.full_path(), "std.builtins.Iterator");
+    assert_eq!(output.defs.path(binding.trait_id), "std.builtins.Iterator");
     assert_eq!(
-        binding.method_id.as_ref().map(DefId::full_path),
+        binding.method_id.map(|id| output.defs.path(id)),
         Some("std.builtins.Iterator::next")
     );
 }
@@ -523,14 +548,34 @@ fn builtin_iterator_lang_item_publishes_exact_next_identity() {
 /// operation that can fail, naming the field and the operation.
 #[test]
 fn var_self_receiver_stays_whole_wherever_it_can_fail() {
-    let declarations = r"
-        #[resource]
-        type Conn { fd: i64 }
-        impl Conn { fn close(consume self) {} fn weight(self) -> i64 { self.fd } }
-        type Holder { conn: Conn, count: i64, spare: Option<Conn>, items: Vec<i64>, pool: Vec<Conn> }
-        fn work() -> i64 { 1 }
-        trait Touch { fn touch(var self, divisor: i64) -> i64; }
-    ";
+    let declarations = r"#[resource]
+type Conn {
+    fd: i64;
+}
+
+impl Conn {
+    fn close(consume self) {}
+    fn weight(self) -> i64 {
+        self.fd
+    }
+}
+
+type Holder {
+    conn: Conn;
+    count: i64;
+    spare: Option<Conn>;
+    items: Vec<i64>;
+    pool: Vec<Conn>;
+}
+
+fn work() -> i64 {
+    1
+}
+
+trait Touch {
+    fn touch(var self, divisor: i64) -> i64;
+}
+";
     for (body, operation) in [
         (
             "let conn = self.conn; self.count = 8 / divisor; self.conn = conn; 0",

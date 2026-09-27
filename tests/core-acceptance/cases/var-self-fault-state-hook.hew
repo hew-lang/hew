@@ -2,8 +2,8 @@ import std.failure;
 
 #[resource]
 type Conn {
-    fd: i64,
-    items: Vec<string>,
+    fd: i64;
+    items: Vec<string>;
 }
 
 impl Conn {
@@ -20,7 +20,7 @@ impl Conn {
 }
 
 actor Holder {
-    var conn: Conn,
+    var conn: Conn;
 
     receive fn poke(fail: bool) -> i64 {
         conn.bump(fail);
@@ -35,16 +35,24 @@ actor Holder {
 }
 
 supervisor Group {
-    intensity: 1 within 60s,
-    child holder: Holder(conn: Conn { fd: 1, items: ["item"] }),
+    intensity: 1 within 60s;
+    child holder: Holder(conn: Conn { fd: 1, items: ["item"] });
 }
 
 fn main() {
     let group = spawn Group;
     println(group.holder.poke(false).expect("poke"));
     let _ = group.holder.poke(true);
-    let _ = await_restart group.holder;
+    let _ = {
+        let __hew_migrated_role_856 = group.holder;
+        restarted(__hew_migrated_role_856);
+        __hew_migrated_role_856
+    };
     println(group.holder.poke(false).expect("fresh"));
-    close(group);
+    {
+        let __hew_migrated_actor_943 = group;
+        stop(__hew_migrated_actor_943);
+        stopped(__hew_migrated_actor_943);
+    };
     println("done");
 }

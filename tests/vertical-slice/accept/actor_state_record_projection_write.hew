@@ -10,12 +10,12 @@
 // releases the field's previous owner, so a mishandled write-back shows up as a
 // corrupted or freed string rather than a stale integer.
 type Named {
-    label: string,
-    n: i64,
+    label: string;
+    n: i64;
 }
 
 actor Holder {
-    var cur: Named,
+    var cur: Named;
 
     receive fn bump_bare() {
         cur.n = cur.n + 1;
@@ -50,7 +50,6 @@ actor Holder {
 
 fn main() {
     let h = spawn Holder(cur: Named { label: "initial", n: 0 });
-
     let _ = h.bump_bare();
     let _ = h.bump_self();
     let _ = h.bump_compound();
@@ -58,16 +57,14 @@ fn main() {
         .Ok(v) => println(f"n={v}"),
         .Err(_) => println("ask failed"),
     }
-
     let _ = h.relabel("relabelled");
     match h.get_label() {
         .Ok(v) => println(f"label={v}"),
         .Err(_) => println("ask failed"),
     }
-
     // Repeat the heap-leaf write so a leaked or double-released owner has more
     // than one chance to surface.
-    for i in 0..16 {
+    for i in 0 .. 16 {
         let _ = h.relabel("churned");
         let _ = h.bump_bare();
     }
@@ -79,7 +76,6 @@ fn main() {
         .Ok(v) => println(f"churned_label={v}"),
         .Err(_) => println("ask failed"),
     }
-
     let _ = h.replace();
     match h.get_n() {
         .Ok(v) => println(f"replaced_n={v}"),

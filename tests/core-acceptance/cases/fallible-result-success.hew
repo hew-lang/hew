@@ -1,5 +1,7 @@
 fn nested(outer_error: bool) -> Result<string, string> fails string {
-    if outer_error { return error "outer".to_upper(); }
+    if outer_error {
+        return error "outer".to_upper();
+    }
     .Err("inner".to_upper())
 }
 
@@ -7,7 +9,9 @@ fn describe(outer_error: bool) -> string {
     let inner = nested(outer_error) handle error {
         return f"failure:{error}";
     };
-    inner handle error { f"success:{error}" }
+    inner handle error {
+        f"success:{error}"
+    }
 }
 
 fn main() -> i64 {

@@ -78,8 +78,8 @@
             },
             "result_shape": null,
             "span": {
-              "end": 242,
-              "start": 242
+              "end": 268,
+              "start": 268
             },
             "submission_shapes": {
               "failure": null,
@@ -134,8 +134,8 @@
             },
             "result_shape": null,
             "span": {
-              "end": 277,
-              "start": 277
+              "end": 303,
+              "start": 303
             },
             "submission_shapes": {
               "failure": null,
@@ -159,8 +159,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 242,
-              "start": 242
+              "end": 268,
+              "start": 268
             }
           }
         },
@@ -171,8 +171,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 242,
-              "start": 242
+              "end": 268,
+              "start": 268
             }
           }
         },
@@ -226,8 +226,8 @@
               }
             ],
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             },
             "unwind": {
               "args": [],
@@ -246,8 +246,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 277,
-              "start": 277
+              "end": 303,
+              "start": 303
             }
           }
         },
@@ -258,8 +258,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 277,
-              "start": 277
+              "end": 303,
+              "start": 303
             }
           }
         },
@@ -283,8 +283,8 @@
             },
             "op": "cleanup.dispatch",
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             }
           }
         },
@@ -299,8 +299,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             }
           }
         },
@@ -315,8 +315,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             }
           }
         },
@@ -327,8 +327,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             }
           }
         },
@@ -339,8 +339,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             }
           }
         },
@@ -389,8 +389,8 @@
               }
             ],
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             },
             "unwind": {
               "args": [],
@@ -409,8 +409,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             }
           }
         },
@@ -421,8 +421,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 302,
-              "start": 302
+              "end": 328,
+              "start": 328
             }
           }
         },
@@ -446,8 +446,8 @@
             },
             "op": "cleanup.dispatch",
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             }
           }
         },
@@ -462,8 +462,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             }
           }
         },
@@ -478,8 +478,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             }
           }
         },
@@ -490,8 +490,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             }
           }
         },
@@ -502,8 +502,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             }
           }
         },
@@ -516,8 +516,8 @@
               "own": "owned",
               "source": 7,
               "span": {
-                "end": 329,
-                "start": 329
+                "end": 355,
+                "start": 355
               }
             },
             {
@@ -525,8 +525,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 350,
-                "start": 350
+                "end": 376,
+                "start": 376
               },
               "str": 0
             }
@@ -556,8 +556,8 @@
               "value": 10
             },
             "span": {
-              "end": 350,
-              "start": 350
+              "end": 376,
+              "start": 376
             },
             "unwind": {
               "args": [],
@@ -576,8 +576,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             }
           }
         },
@@ -595,8 +595,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 329,
-              "start": 329
+              "end": 355,
+              "start": 355
             }
           }
         },
@@ -635,8 +635,8 @@
             "result_member_shapes": [],
             "result_shape": null,
             "span": {
-              "end": 350,
-              "start": 350
+              "end": 376,
+              "start": 376
             },
             "structural": null,
             "unwind": null
@@ -653,8 +653,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 350,
-              "start": 350
+              "end": 376,
+              "start": 376
             }
           }
         },
@@ -672,8 +672,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 350,
-              "start": 350
+              "end": 376,
+              "start": 376
             }
           }
         },
@@ -691,7 +691,7 @@
           "term": {
             "args": [
               {
-                "decision": "move",
+                "decision": "borrow",
                 "value": 1
               }
             ],
@@ -702,15 +702,15 @@
             },
             "op": "actor.call",
             "operation": {
-              "op": "supervisor_stop",
+              "op": "stop",
               "supervisor": 0
             },
             "request_shapes": null,
             "result": null,
             "result_shape": null,
             "span": {
-              "end": 383,
-              "start": 383
+              "end": 408,
+              "start": 408
             },
             "submission_shapes": null,
             "unwind": {
@@ -721,17 +721,46 @@
         },
         {
           "id": 27,
-          "ops": [],
+          "ops": [
+            {
+              "dst": 12,
+              "op": "const.unit",
+              "own": "none",
+              "span": {
+                "end": 403,
+                "start": 403
+              }
+            }
+          ],
           "params": [],
           "term": {
-            "edge": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 1
+              }
+            ],
+            "error_shape": null,
+            "normal": {
               "args": [],
               "to": 30
             },
-            "op": "goto",
+            "op": "actor.call",
+            "operation": {
+              "op": "await_stopped",
+              "supervisor": 0
+            },
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
             "span": {
-              "end": 383,
-              "start": 383
+              "end": 427,
+              "start": 427
+            },
+            "submission_shapes": null,
+            "unwind": {
+              "args": [],
+              "to": 31
             }
           }
         },
@@ -746,8 +775,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 383,
-              "start": 383
+              "end": 408,
+              "start": 408
             }
           }
         },
@@ -758,8 +787,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 383,
-              "start": 383
+              "end": 408,
+              "start": 408
             }
           }
         },
@@ -768,10 +797,54 @@
           "ops": [],
           "params": [],
           "term": {
+            "edge": {
+              "args": [],
+              "to": 33
+            },
+            "op": "goto",
+            "span": {
+              "end": 427,
+              "start": 427
+            }
+          }
+        },
+        {
+          "id": 31,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 32
+            },
+            "op": "goto",
+            "span": {
+              "end": 427,
+              "start": 427
+            }
+          }
+        },
+        {
+          "id": 32,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 427,
+              "start": 427
+            }
+          }
+        },
+        {
+          "id": 33,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
             "span": {
-              "end": 383,
-              "start": 383
+              "end": 427,
+              "start": 427
             },
             "value": null
           }
@@ -793,14 +866,15 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 45,
-                "start": 45
+                "end": 53,
+                "start": 53
               },
               "str": 1
             }
           ],
           "params": [],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 1
@@ -811,8 +885,8 @@
             },
             "op": "panic",
             "span": {
-              "end": 45,
-              "start": 45
+              "end": 53,
+              "start": 53
             }
           }
         },
@@ -827,8 +901,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 45,
-              "start": 45
+              "end": 53,
+              "start": 53
             }
           }
         },
@@ -846,8 +920,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 45,
-              "start": 45
+              "end": 53,
+              "start": 53
             }
           }
         }
@@ -873,8 +947,8 @@
               "op": "const.str",
               "own": "owned",
               "span": {
-                "end": 96,
-                "start": 96
+                "end": 116,
+                "start": 116
               },
               "str": 2
             }
@@ -887,8 +961,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 96,
-              "start": 96
+              "end": 116,
+              "start": 116
             }
           }
         },
@@ -899,8 +973,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 96,
-              "start": 96
+              "end": 116,
+              "start": 116
             },
             "value": {
               "decision": "move",
@@ -952,8 +1026,8 @@
             },
             "result_shape": null,
             "span": {
-              "end": 191,
-              "start": 191
+              "end": 216,
+              "start": 216
             },
             "submission_shapes": {
               "failure": null,
@@ -982,8 +1056,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 191,
-              "start": 191
+              "end": 216,
+              "start": 216
             }
           }
         },
@@ -998,8 +1072,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 191,
-              "start": 191
+              "end": 216,
+              "start": 216
             }
           }
         },
@@ -1010,8 +1084,8 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 191,
-              "start": 191
+              "end": 216,
+              "start": 216
             }
           }
         },
@@ -1022,8 +1096,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 191,
-              "start": 191
+              "end": 216,
+              "start": 216
             },
             "value": {
               "decision": "move",
@@ -1293,6 +1367,7 @@
             }
           ],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 7
@@ -1517,7 +1592,11 @@
         }
       ],
       "id": 0,
-      "name": "Result<(), ActorError<Never, Never>>"
+      "name": "Result<(), ActorError<Never, Never>>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     },
     {
       "cases": [
@@ -1567,12 +1646,25 @@
         }
       ],
       "id": 1,
-      "name": "ActorError<Never, Never>"
+      "name": "ActorError<Never, Never>",
+      "runtime_tags": {
+        "ActorErrorConnectionDropped": 8,
+        "ActorErrorDead": 3,
+        "ActorErrorEncodeFailed": 7,
+        "ActorErrorFailed": 1,
+        "ActorErrorNodeNotRunning": 5,
+        "ActorErrorPartition": 9,
+        "ActorErrorRejected": 0,
+        "ActorErrorRoutingFailed": 6,
+        "ActorErrorTimeout": 4,
+        "ActorErrorTrapped": 2
+      }
     },
     {
       "cases": [],
       "id": 2,
-      "name": "Never"
+      "name": "Never",
+      "runtime_tags": {}
     },
     {
       "cases": [
@@ -1622,7 +1714,20 @@
         }
       ],
       "id": 3,
-      "name": "SendError"
+      "name": "SendError",
+      "runtime_tags": {
+        "SendErrorBackpressure": 9,
+        "SendErrorCancelled": 6,
+        "SendErrorClosed": 1,
+        "SendErrorDead": 10,
+        "SendErrorFull": 0,
+        "SendErrorLocalShutdown": 5,
+        "SendErrorNodeRoutingNotWired": 2,
+        "SendErrorPartition": 3,
+        "SendErrorStaleRef": 4,
+        "SendErrorUnauthorized": 8,
+        "SendErrorVersionMismatch": 7
+      }
     },
     {
       "cases": [
@@ -1640,7 +1745,11 @@
         }
       ],
       "id": 4,
-      "name": "Result<string, ActorError<Never, Never>>"
+      "name": "Result<string, ActorError<Never, Never>>",
+      "runtime_tags": {
+        "ResultErr": 1,
+        "ResultOk": 0
+      }
     }
   ],
   "vtables": []

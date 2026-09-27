@@ -1,20 +1,23 @@
-// A scope deadline expires while `main` iterates a generator parked in a long
-// sleep. The generator is closed and its deferred cleanup runs, then the
+// A scope deadline expires while `main` iterates a generator parked on a gate
+// nothing feeds. The generator is closed and its deferred cleanup runs, then the
 // consumer's cleanup, and the unrecovered deadline fails the process: the
 // line after the scope never prints.
-gen fn delayed() -> string {
+import std.stream;
+
+gen fn delayed(consume gate: stream.Stream<i64>) -> string {
     let label = "producer".to_upper();
     defer println(label + " cleaned");
     yield label;
-    sleep(10s);
+    gate.recv();
     yield "unreachable";
 }
 
 fn main() {
     let label = "consumer".to_upper();
     defer println(label + " cleaned");
+    let (_never, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     scope within 20ms {
-        for value in delayed() {
+        for value in delayed(gate) {
             println(value);
         }
     };

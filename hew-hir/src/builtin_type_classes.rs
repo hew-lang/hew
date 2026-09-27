@@ -48,11 +48,7 @@ impl BuiltinFieldTy {
             Self::I64 => ResolvedTy::I64,
             Self::U64 => ResolvedTy::U64,
             Self::U32 => ResolvedTy::U32,
-            Self::CrashKind => ResolvedTy::named_builtin(
-                "std.failure.CrashKind",
-                BuiltinType::CrashKind,
-                Vec::new(),
-            ),
+            Self::CrashKind => ResolvedTy::named_builtin(BuiltinType::CrashKind, Vec::new()),
             Self::String => ResolvedTy::String,
         }
     }
@@ -349,7 +345,7 @@ mod tests {
             ("stream.Sink", BuiltinType::Sink),
             ("stream.Stream", BuiltinType::Stream),
         ] {
-            let ty = ResolvedTy::named_builtin(name, builtin, vec![ResolvedTy::String]);
+            let ty = ResolvedTy::named_builtin(builtin, vec![ResolvedTy::String]);
             assert_eq!(
                 lookup_type_marker_for_ty(&ty, &table),
                 Some(ResourceMarker::Resource),
@@ -364,7 +360,7 @@ mod tests {
         seed_builtin_type_classes(&mut table);
 
         for name in ["foo.Sink", "foo.Stream"] {
-            let ty = ResolvedTy::named_user(name, vec![ResolvedTy::String]);
+            let ty = ResolvedTy::named_for_test(name, vec![ResolvedTy::String]);
             assert_ne!(
                 lookup_type_marker_for_ty(&ty, &table),
                 Some(ResourceMarker::Resource),
@@ -407,7 +403,7 @@ mod tests {
         // record machinery in MIR is what admits it as `CowValue` for drop).
         let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
-        let ty = ResolvedTy::named_user("CrashInfo", vec![]);
+        let ty = ResolvedTy::named_for_test("CrashInfo", vec![]);
         assert_ne!(
             lookup_type_marker_for_ty(&ty, &table),
             Some(ResourceMarker::BitCopy),
@@ -459,7 +455,7 @@ mod tests {
         );
         assert_eq!(
             BuiltinFieldTy::CrashKind.to_resolved_ty(),
-            ResolvedTy::named_builtin("std.failure.CrashKind", BuiltinType::CrashKind, Vec::new(),)
+            ResolvedTy::named_builtin(BuiltinType::CrashKind, Vec::new())
         );
     }
 

@@ -9,7 +9,12 @@ import type { Pipes } from "./pipes.js";
 
 import { UNIT, cloneValue, renderStdout, type VmValue } from "../values.js";
 import { Mt19937, seededMt } from "./mt19937.js";
-import type { RuntimeFamilyEntry, TrapName, VariantShape } from "./package.js";
+import type {
+  RuntimeFamilyEntry,
+  RuntimeVariantRole,
+  TrapName,
+  VariantShape,
+} from "./package.js";
 
 /// A language-visible fault raised inside a shim. The executor routes it to the
 /// call's `unwind` edge, or ends the program when the call names none.
@@ -41,7 +46,11 @@ export interface ShimHost {
   regexPatterns: readonly string[];
   /// Build a value of the enum descriptor the call demands. The tag comes from
   /// that descriptor's declaration order, never from a guess.
-  enumValue(shape: VariantShape, caseName: string, payload: VmValue[]): VmValue;
+  enumValue(
+    shape: VariantShape,
+    role: RuntimeVariantRole,
+    payload: VmValue[],
+  ): VmValue;
 }
 
 /// `shape` is the `result_shape` the call names: the variant descriptor its
@@ -60,9 +69,7 @@ export function resolveRuntimeShim(
 ): RuntimeShim | undefined {
   switch (entry.family) {
     case "SupervisorPool":
-      return ["Member", "Get", "AwaitRestartMember"].includes(
-        String(entry.detail),
-      )
+      return ["Member", "Get"].includes(String(entry.detail))
         ? () => {
             throw new Error("SupervisorPool requires its resumable executor");
           }
@@ -244,8 +251,8 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
     const items = vec(args, 0).items;
     const at = index(args, 1);
     return at >= 0 && at < items.length
-      ? host.enumValue(shape, "Some", [cloneValue(items[at]!)])
-      : host.enumValue(shape, "None", []);
+      ? host.enumValue(shape, "OptionSome", [cloneValue(items[at]!)])
+      : host.enumValue(shape, "OptionNone", []);
   },
   Index: (_host, args) => {
     const items = vec(args, 0).items;

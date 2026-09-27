@@ -10,11 +10,17 @@ ownership machinery. They do not own a thread, mailbox or output queue.
 
 ```hew
 machine Gate {
-    events { Open { token: string }, Close, }
-    emits { Accepted { token: string }, Rejected { reason: string }, }
+    events {
+        Open { token: string; }
+        Close;
+    }
+    emits {
+        Accepted { token: string; }
+        Rejected { reason: string; }
+    }
 
-    state Closed,
-    state Opened { token: string },
+    state Closed;
+    state Opened { token: string; }
 
     on Open: Closed => Opened when !event.token.is_empty() {
         emit Accepted { token: event.token };
@@ -24,7 +30,7 @@ machine Gate {
         emit Rejected { reason: "empty token" };
         Closed
     }
-    on Close: Opened => Closed,
+    on Close: Opened => Closed;
     default { state }
 }
 
@@ -81,7 +87,7 @@ including owning strings, bytes and collections.
 
 A rule has the form:
 
-```hew
+```hew,ignore
 on Input: Source => Target reenter when condition { field: value }
 ```
 

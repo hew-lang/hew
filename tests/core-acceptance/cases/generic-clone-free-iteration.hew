@@ -5,8 +5,8 @@
 // and over `i64`, and both vectors are whole afterwards.
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -20,19 +20,17 @@ fn count_all<T>(values: Vec<T>) -> i64 {
     for _ in values {
         n = n + 1;
     }
-    return n
+    return n;
 }
 
 fn main() -> i64 {
     var tokens: Vec<Token> = Vec.new();
     tokens.push(Token { label: "t", id: 1 });
     tokens.push(Token { label: "t", id: 2 });
-
     var numbers: Vec<i64> = Vec.new();
     numbers.push(10);
     numbers.push(20);
     numbers.push(30);
-
     println(f"tokens={count_all(tokens)}");
     println(f"numbers={count_all(numbers)}");
 
@@ -43,7 +41,6 @@ fn main() -> i64 {
         sum = sum + value;
     }
     println(f"sum={sum}");
-
     while !tokens.is_empty() {
         let token = tokens.pop();
         token.close();

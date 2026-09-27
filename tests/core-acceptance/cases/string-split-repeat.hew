@@ -11,16 +11,13 @@ fn main() {
     println(fields.len());
     println(fields[0]);
     println(fields[2]);
-
     println("ab".repeat(3));
     println(string.repeat("-", 5));
-
     var total = 0;
     for row in ["a,b", "c,d,e"] {
         let cells = row.split(",");
         total = total + cells.len();
     }
     println(total);
-
     println(string.split("one two", " ")[1]);
 }

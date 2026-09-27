@@ -9,9 +9,10 @@ archive="$ROOT/.ast-grep/cache/tree-sitter-hew.tar.gz"
 }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/scripts" "$tmp/tools" "$tmp/.ast-grep/cache"
+mkdir -p "$tmp/scripts" "$tmp/tools/downstream" "$tmp/.ast-grep/cache"
 cp "$ROOT/scripts/build-ast-grep-lang.sh" "$tmp/scripts/"
 cp "$ROOT/tools/ast-grep.lock" "$tmp/tools/"
+cp "$ROOT/tools/downstream/tree-sitter.lock" "$tmp/tools/downstream/"
 cp "$archive" "$tmp/.ast-grep/cache/tree-sitter-hew.tar.gz"
 mkdir -p "$tmp/.ast-grep/tree-sitter-tool/bin"
 cp "$ROOT/.ast-grep/tree-sitter-tool/bin/tree-sitter" "$tmp/.ast-grep/tree-sitter-tool/bin/"
@@ -77,6 +78,12 @@ fn dialect(a: int, b: int) {
 }
 
 type Handle {}
+type Datum { value: i64; }
+
+actor Inbox {
+    var total: i64 = 0;
+    receive fn tick() { total += 1; }
+}
 
 fn consume_var(consume var value: Handle) {
     value;
@@ -156,6 +163,15 @@ if "$tmp/scripts/build-ast-grep-lang.sh" >/dev/null 2>&1; then
     exit 1
 fi
 mv "$tmp/tools/ast-grep.lock.bak" "$tmp/tools/ast-grep.lock"
+
+# The shared grammar lock owns the revision for both ast-grep and parity.
+# Changing only that revision must invalidate an otherwise valid archive.
+sed -i.bak 's/^commit = ".*"/commit = "0000000000000000000000000000000000000000"/' "$tmp/tools/downstream/tree-sitter.lock"
+if "$tmp/scripts/build-ast-grep-lang.sh" >/dev/null 2>&1; then
+    echo "stale grammar revision unexpectedly passed" >&2
+    exit 1
+fi
+mv "$tmp/tools/downstream/tree-sitter.lock.bak" "$tmp/tools/downstream/tree-sitter.lock"
 
 # A corrupted cached corpus must never be silently rebuilt from arbitrary bytes.
 printf 'not a grammar archive' >"$tmp/.ast-grep/cache/tree-sitter-hew.tar.gz"

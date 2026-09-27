@@ -17,9 +17,9 @@ fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
 fn main() {
     // Context-determined via annotation.
     let g: fn(Vec<i64>) -> i64 = helpers.first;
-    println(g([10, 20, 30]));   // 10
+    println(g([10, 20, 30])); // 10
 
     // Context-determined via annotation; invoked through a higher-order fn.
     let h: fn(i64) -> i64 = helpers.identity;
-    println(apply(h, 99));       // 99
+    println(apply(h, 99)); // 99
 }

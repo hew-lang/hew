@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-named-child-df-control"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `named_child_df_control` (indirect enum named child no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-named-child-df-control.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

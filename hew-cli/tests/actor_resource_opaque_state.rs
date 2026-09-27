@@ -25,7 +25,6 @@ fn run_teardown_close_oracle(name: &str, actor_decl: &str, spawn_expr: &str) {
     let marker_literal = hew_string_literal(&marker);
     let source = format!(
         r#"import std.fs;
-import std.testing;
 
 #[resource]
 #[opaque]
@@ -35,7 +34,7 @@ impl Dq {{
     fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
-            .Ok(_) => {{}},
+            .Ok(_) => {{}}
             .Err(_) => panic("append close marker"),
         }}
     }}
@@ -47,17 +46,18 @@ extern "C" {{
 }}
 
 type Holder {{
-    dq: Dq
+    dq: Dq;
 }}
 
 {actor_decl}
 
 #[test]
+#[real_time]
 fn actor_resource_state_closes_once() {{
     let keeper = {spawn_expr};
     match keeper.ping() {{
-        .Ok(n) => testing.assert_eq(n, 1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 1),
+        .Err(_) => assert(false),
     }}
 }}
 "#
@@ -67,7 +67,8 @@ fn actor_resource_state_closes_once() {{
     let output = Command::new(hew_binary())
         .args([
             "test",
-            "--no-color",
+            "--color",
+            "never",
             source_path.to_str().expect("source path utf-8"),
         ])
         .current_dir(repo_root())
@@ -102,7 +103,6 @@ fn run_builtin_name_collision_teardown_oracle(type_name: &str) {
     let marker_literal = hew_string_literal(&marker);
     let source = format!(
         r#"import std.fs;
-import std.testing;
 
 #[resource]
 #[opaque]
@@ -112,7 +112,7 @@ impl {type_name} {{
     fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
-            .Ok(_) => {{}},
+            .Ok(_) => {{}}
             .Err(_) => panic("append close marker"),
         }}
     }}
@@ -124,16 +124,17 @@ extern "C" {{
 }}
 
 actor Keeper {{
-    let handle: {type_name},
+    let handle: {type_name};
     receive fn ping() -> i64 {{ 1 }}
 }}
 
 #[test]
+#[real_time]
 fn colliding_resource_closes_once() {{
     let keeper = spawn Keeper(handle: unsafe {{ hew_deque_new() }});
     match keeper.ping() {{
-        .Ok(n) => testing.assert_eq(n, 1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 1),
+        .Err(_) => assert(false),
     }}
 }}
 "#
@@ -143,7 +144,8 @@ fn colliding_resource_closes_once() {{
     let output = Command::new(hew_binary())
         .args([
             "test",
-            "--no-color",
+            "--color",
+            "never",
             source_path.to_str().expect("source path utf-8"),
         ])
         .current_dir(repo_root())
@@ -187,14 +189,14 @@ impl UserReceiver {{
     fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
-            .Ok(_) => {{}},
+            .Ok(_) => {{}}
             .Err(_) => panic("append close marker"),
         }}
     }}
 }}
 
 pub actor Keeper {{
-    let handle: UserReceiver = unsafe {{ hew_deque_new() }},
+    let handle: UserReceiver = unsafe {{ hew_deque_new() }};
     receive fn ping() -> i64 {{ 1 }}
 }}
 
@@ -225,7 +227,7 @@ extern "C" {{
 fn main() {{
     let keeper = spawn {actor}();
     match keeper.ping() {{
-        .Ok(n) => if n != 1 {{ panic("wrong reply") }},
+        .Ok(n) => if n != 1 {{ panic("wrong reply") }}
         .Err(_) => panic("ask failed"),
     }}
 }}
@@ -255,9 +257,12 @@ fn direct_resource_actor_state_closes_once_on_teardown() {
     run_teardown_close_oracle(
         "direct",
         r"actor Keeper {
-    let dq: Dq,
-    receive fn ping() -> i64 { 1 }
-}",
+    let dq: Dq;
+    receive fn ping() -> i64 {
+        1
+    }
+}
+",
         "spawn Keeper(dq: unsafe { hew_deque_new() })",
     );
 }
@@ -267,9 +272,12 @@ fn wrapped_resource_actor_state_still_closes_once_on_teardown() {
     run_teardown_close_oracle(
         "wrapped",
         r"actor Keeper {
-    let holder: Holder,
-    receive fn ping() -> i64 { 1 }
-}",
+    let holder: Holder;
+    receive fn ping() -> i64 {
+        1
+    }
+}
+",
         "spawn Keeper(holder: Holder { dq: unsafe { hew_deque_new() } })",
     );
 }

@@ -22,9 +22,11 @@ fn use_after_explicit_close_hits_the_consume_wall() {
     let emit_dir = temp.path().join("emit");
     std::fs::write(
         &source,
-        r#"
-#[resource]
-type Token { label: string, id: i64 }
+        r#"#[resource]
+type Token {
+    label: string;
+    id: i64;
+}
 
 impl Token {
     fn close(consume self) {

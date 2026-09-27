@@ -1,14 +1,14 @@
 use hew_hir::{lower_program_host_target, HirDiagnosticKind, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-fn parsed_module(id: ModuleId, source: &str) -> Module {
+fn parsed_module(id: ModulePath, source: &str) -> Module {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors for {}: {:?}",
-        id.path.join("."),
+        id.dotted(),
         parsed.errors
     );
 
@@ -27,8 +27,9 @@ fn parsed_module(id: ModuleId, source: &str) -> Module {
 }
 
 fn program_with_colliding_imports_and_local_record() -> Program {
-    let root_source = r"
-type Thing { x: i64 }
+    let root_source = r"type Thing {
+    x: i64;
+}
 
 fn main() -> i64 {
     let Thing { x } = Thing { x: 1 };
@@ -42,9 +43,9 @@ fn main() -> i64 {
         root.errors
     );
 
-    let a_id = ModuleId::new(vec!["a".to_string()]);
-    let b_id = ModuleId::new(vec!["b".to_string()]);
-    let root_id = ModuleId::root();
+    let a_id = ModulePath::new(["a"]);
+    let b_id = ModulePath::new(["b"]);
+    let root_id = ModulePath::root();
     let root_module = Module {
         id: root_id.clone(),
         items: root.program.items.clone(),
@@ -55,10 +56,16 @@ fn main() -> i64 {
 
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
-        .add_module(parsed_module(a_id.clone(), "pub type Thing { a: i64 }"))
+        .add_module(parsed_module(
+            a_id.clone(),
+            "pub type Thing {\n    a: i64;\n}\n",
+        ))
         .expect("add module a");
     graph
-        .add_module(parsed_module(b_id.clone(), "pub type Thing { b: i64 }"))
+        .add_module(parsed_module(
+            b_id.clone(),
+            "pub type Thing {\n    b: i64;\n}\n",
+        ))
         .expect("add module b");
     graph.add_module(root_module).expect("add root module");
     graph.topo_order = vec![a_id, b_id, root_id];

@@ -1,0 +1,19 @@
+actor Worker {
+    receive fn wait_on(role: ChildRef<Worker>) {
+        println("entered");
+        stopped(role);
+        println("unexpected return");
+    }
+}
+
+supervisor Team {
+    child worker: Worker restart: temporary;
+}
+
+fn main() {
+    let team = spawn Team;
+    mailbox(team.worker).wait_on(team.worker).expect("admit wait");
+    stopped(team.worker);
+    stop(team);
+    stopped(team);
+}

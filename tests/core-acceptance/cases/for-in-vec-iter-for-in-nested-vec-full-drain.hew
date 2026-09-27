@@ -1,0 +1,19 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var rows: Vec<Vec<string>> = Vec.new();
+        var r: i64 = 0;
+        while r < 8 {
+            var row: Vec<string> = Vec.new();
+            row.push("nested" + "-value");
+            rows.push(row);
+            r = r + 1;
+        }
+        for row in rows.iter() {
+            total = total + row.len();
+        }
+        i = i + 1;
+    }
+    total % 7
+}

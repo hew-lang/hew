@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-owned-clone-owned-vec-clone-drop-loop"
+intent = "Owned-element `Vec<T>::clone()` receiver-borrow leak oracle. Shape `owned_vec_clone_drop_loop_high` (owned vec clone receiver no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-owned-clone-owned-vec-clone-drop-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 200

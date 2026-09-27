@@ -116,7 +116,7 @@ jobs:
           sudo apt-get install -y -qq clang-format gcc
 
       - name: Verify build tooling and checker behaviour
-        run: make -k test-tooling
+        run: make -k test-tooling compile-determinism-selftest test-obligation-site-diff
 
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
@@ -189,13 +189,16 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
+          targets: wasm32-wasip1
           cache-shared-key: compiled-hew-linux
 
-      - name: Build compiled Hew bundle
+      - name: Build compiler, native archive and WASI runtime once
         run: |
-          make hew-native
-          mkdir -p compiled-hew/debug
-          cp target/debug/hew target/debug/libhew.a compiled-hew/debug/
+          make hew-native wasm-runtime-debug
+          mkdir -p compiled-hew/debug compiled-hew/wasm32-wasip1/debug
+          cp target/debug/hew target/debug/libhew.a target/debug/libhew_runtime.a compiled-hew/debug/
+          cp target/wasm32-wasip1/debug/libhew_runtime.a \
+            target/wasm32-wasip1/debug/libhew_std.a compiled-hew/wasm32-wasip1/debug/
           # Relocated toolchain layout: the binary finds std at <exe_dir>/../std.
           cp -R std compiled-hew/std
           tar -czf compiled-hew-linux.tar.gz compiled-hew
@@ -273,7 +276,15 @@ jobs:
     # here covers all Rust shards and tooling tests. Compiled-Hew reporting
     # remains independent of failures in those other gate groups.
     name: Build & test (Linux)
-    needs: [compiled-hew-linux, compiled-hew-shards, build-and-test, tooling]
+    needs:
+      [
+        compiled-hew-linux,
+        compiled-hew-shards,
+        acceptance,
+        nextest,
+        corpus,
+        tooling,
+      ]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -387,11 +398,13 @@ jobs:
       - name: Require Linux gates and tooling checks
         if: always()
         env:
-          LINUX_RESULT: ${{ needs.build-and-test.result }}
+          ACCEPTANCE_RESULT: ${{ needs.acceptance.result }}
+          NEXTEST_RESULT: ${{ needs.nextest.result }}
+          CORPUS_RESULT: ${{ needs.corpus.result }}
           TOOLING_RESULT: ${{ needs.tooling.result }}
         run: |
           status=0
-          for leg in LINUX_RESULT TOOLING_RESULT; do
+          for leg in ACCEPTANCE_RESULT NEXTEST_RESULT CORPUS_RESULT TOOLING_RESULT; do
             result="${!leg}"
             if [ "$result" != success ]; then
               echo "::error::$leg is '$result' (expected success)"
@@ -400,407 +413,159 @@ jobs:
           done
           exit "$status"
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Linux compiler, runtime and integration gates.
-  # ─────────────────────────────────────────────────────────────────────────
-  build-and-test:
-    name: Linux gates (shard ${{ matrix.shard }}/3)
+  # The remaining pull-request gates consume the same compiler and static
+  # archives. Make's -o flag marks the already-installed artefacts as current;
+  # each source gate still runs its normal recipe and checks actual behaviour.
+  acceptance:
+    name: Core acceptance and integrations (${{ matrix.shard }}/3)
+    needs: compiled-hew-linux
     runs-on: ubuntu-24.04
-    # Make owns the three semantic gate groups. This matrix only parallelizes
-    # them; it does not duplicate their commands in workflow YAML.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
-    # The serial job needed 180 min for about 138 min of expected work. The
-    # heaviest shard is about 31 min of gate work on top of
-    # roughly 15 min of provisioning and warm-up; 90 min leaves generous
-    # cold-runner headroom while retaining a finite hung-job limit.
-    timeout-minutes: 90
-    env:
-      # mold is installed by the "Install build tools" step below.
-      # Use gcc's -fuse-ld=mold flag (no clang-as-driver dependency) to
-      # activate mold for all Rust compilations in this job.  Scoped here
-      # rather than .cargo/config.toml so other workflows (release-gate,
-      # coverage-nightly, sanitizers) that run on runners without mold are
-      # unaffected.
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+        shard: [0, 1, 2]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+      - name: Install native link prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - name: Install MQTT clients
+        if: matrix.shard == 2
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mosquitto-clients
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          tools: ${{ matrix.shard == 2 && 'nextest@0.9.120' || '' }}
+          cache-shared-key: acceptance-${{ matrix.shard }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+      - name: Install compiled Hew artefacts
+        run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
+      - name: Run core acceptance partition
+        run: make -o hew-native core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/3"
+      - name: Run documentation examples
+        if: matrix.shard == 0
+        run: make -o hew-native test-doc-examples
+      - name: Run package integration
+        if: matrix.shard == 0
+        run: make -o hew-native observe-functional-test test-pkg-import test-package-install
+      - name: Run C extern and host client integrations
+        if: matrix.shard == 1
+        run: >-
+          make -o hew-native compile-determinism-verify
+          stdlib-user-build-clean stdlib-errno-gate
+          test-extern-bytes test-host-client
+      - name: Run migration and MQTT integrations
+        if: matrix.shard == 2
+        run: make -o hew-native test-leak-oracle-selftest test-migrate-corpus mqtt-broker-e2e
 
+  nextest:
+    name: Workspace nextest (${{ matrix.shard }}/2)
+    needs: compiled-hew-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
       - name: Free runner disk
-        # This job installs LLVM 22.1.5 (~1.5 GB), builds the release hew-runtime
-        # + hew-lsp binaries, the wasm32-wasip1 runtime, and runs the full debug
-        # workspace nextest suite — all on one ubuntu-24.04 runner (~14 GB free).
-        # The runner died of ENOSPC twice before this step was added (PR #1994).
-        # Code coverage moved to the nightly workflow (c24721fa) so target/llvm-cov-target/
-        # no longer accumulates here; the preinstalled-toolchain purge below still
-        # recovers the headroom the LLVM download + workspace nextest target/ needs.
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
           sudo docker system prune -af >/dev/null 2>&1 || true
-          df -h /
-
-      - name: Install build tools
+      - name: Install native link prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gdb libssl-dev pkg-config mold zlib1g-dev libzstd-dev
-
-      - name: Install MQTT E2E clients
-        if: matrix.shard == 3
-        # mqtt-broker-e2e drives the Hew broker with real MQTT 3.1.1 clients;
-        # do not let an absent client turn that behavioural oracle into an
-        # implicit local-only target.
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mosquitto-clients
-          command -v mosquitto_pub
-          command -v mosquitto_sub
-
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
-        uses: ./.github/actions/setup-llvm
+          sudo apt-get install -y -qq gdb libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
-
       - uses: ./.github/actions/setup-rust-build
         with:
-          targets: "wasm32-unknown-unknown, wasm32-wasip1"
+          targets: wasm32-wasip1
           tools: nextest@0.9.120
-          cache-shared-key: build-test-linux
-
+          cache-shared-key: nextest-${{ matrix.shard }}
       - name: Install wasmtime
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
-          mkdir -p "${WASMTIME_ROOT}"
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
-          tar -xJf "${RUNNER_TEMP}/${WASMTIME_DIR}.tar.xz" -C "${WASMTIME_ROOT}"
-          echo "${WASMTIME_ROOT}/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "${WASMTIME_ROOT}/${WASMTIME_DIR}/wasmtime" --version
+            --pattern "${dir}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
+          tar -xJf "${RUNNER_TEMP}/${dir}.tar.xz" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/${dir}" >> "$GITHUB_PATH"
+          "${RUNNER_TEMP}/${dir}/wasmtime" --version
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+      - name: Install compiled Hew artefacts
+        run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
+      - name: Run workspace test partition with ratchet accounting
+        run: make -o test-artifacts test NEXTEST_PARTITION="${{ matrix.shard }}/2"
+      - name: Run C ABI crate tests
+        if: matrix.shard == 1
+        run: make test-cabi
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
+        with:
+          report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
+          check_name: Test Results (Linux nextest ${{ matrix.shard }}/2)
+          fail_on_failure: true
+          fail_on_parse_error: true
+          require_tests: true
 
-      - name: Install wasm-pack v0.13.1 and Binaryen 117
-        if: matrix.shard == 3
-        uses: ./.github/actions/setup-wasm-pack
-
-      - name: Setup Node.js for browser checks
-        if: matrix.shard == 3
-        # Also the node/npm this shard's `make ci-shard-3` needs for
-        # grammar-parity (npm install in the cloned tree-sitter-hew), alongside
-        # sandbox-parity's existing hew-sandbox-vm dependency.
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+  corpus:
+    name: Source corpus and sandbox parity
+    needs: compiled-hew-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install native link prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: wasm32-wasip1
+          cache-shared-key: corpus
+      - uses: ./.github/actions/setup-wasm-pack
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: hew-sandbox-vm/package-lock.json
-
-      - name: Provision pinned ast-grep toolchain
-        if: matrix.shard != 3
-        uses: ./.github/actions/setup-ast-grep
-
-      - name: Run unconditional gate shard
-        id: gates
-        env:
-          HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        run: make ci-shard-${{ matrix.shard }}
-
-      - name: Compiler IR size and MIR lowering cost
-        if: ${{ !cancelled() && matrix.shard == 2 && steps.gates.outcome != 'skipped' }}
-        run: make -k compiler-measurements
-
-      - name: Upload test reports
-        if: ${{ always() && matrix.shard != 3 }}
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
-          check_name: Test Results (Linux shard ${{ matrix.shard }})
-          fail_on_failure: true
-          fail_on_parse_error: true
-          require_tests: true
-
-  # Code coverage moved off the per-PR path: it was the flakiest required check
-  # (cargo-llvm-cov instrumentation + the duplicated target/llvm-cov-target/
-  # tree on top of LLVM install exited 100 / ENOSPC on sound PRs). The real
-  # correctness tests run in "Build & test (Linux)"; coverage now runs nightly
-  # in .github/workflows/coverage-nightly.yml (same llvm-cov command + report).
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Build & test — Windows
-  # ─────────────────────────────────────────────────────────────────────────
-  build-and-test-windows:
-    name: Build & test (Windows)
-    runs-on: windows-2022
-    timeout-minutes: 60
-    # Advisory on every ci.yml event (D505): Windows is not a branch-protection
-    # required check on pull requests, so a hard failure here on push read as
-    # a red main for a platform PRs never gated on. The scheduled
-    # nightly-ratchet-accounting.yml job (Strict nextest accounting) is the
-    # sole hard authority for Windows; its ledger, not this job, decides
-    # whether Windows is broken. release-gate.yml defines its own jobs and
-    # does not read this continue-on-error.
-    continue-on-error: true
-    env:
-      # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
-      # NASM on windows-msvc; the documented escape consumes the crate's
-      # pregenerated assembly objects, so the test-time hew-lib bootstrap links
-      # without a NASM toolchain. (Parity with release-gate.yml / release.yml.)
-      AWS_LC_SYS_PREBUILT_NASM: "1"
-      # Cap concurrent rustc invocations on the Windows runner to avoid OOM.
-      # hew-codegen-rs/llvm.rs (~33k lines) consumes ~2-3 GB of RSS per rustc
-      # process under the LLVM backend; with the default job count equal to the
-      # runner's CPU count (4), peak concurrent RSS exceeds the runner's 16 GB
-      # and the kernel kills rustc (STATUS_STACK_BUFFER_OVERRUN / 0xc0000409).
-      # Two concurrent jobs fit comfortably (2 × 3 GB = 6 GB peak for codegen,
-      # leaving headroom for the OS, LLVM headers, and the linker pass).
-      # Linux and macOS runners have more headroom at their default parallelism
-      # and are unaffected. Revisit when hew-codegen-rs/llvm.rs is split into
-      # smaller modules, or when the Windows runner gains more memory.
-      CARGO_BUILD_JOBS: "2"
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-
-      - name: Setup MSVC environment
-        # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
-        # the LLVM prefix is configured in the following setup-llvm step.
-        uses: ./.github/actions/setup-msvc
-
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
-        uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
-
-      - uses: ./.github/actions/setup-rust-build
-        with:
-          targets: wasm32-wasip1
-          tools: nextest@0.9.120
-          cache-shared-key: build-test-windows
-
-      - name: Install GNU Make
-        shell: pwsh
-        run: choco install make --yes --no-progress
-
-      - name: Build Rust crates
-        # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
-        # because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
-
-      - name: Build Hew runtime library for PDB e2e
-        run: cargo build -p hew-lib --release
-
-      - name: Install WASI runner prerequisites
-        # Windows had no equivalent of the Linux tarball / macOS brew install,
-        # so `wasmtime` was absent here and every WASI-dependent hew-cli test
-        # either failed with "`wasmtime` not found" or — via the deleted
-        # try_require_wasi_runner — passed having asserted nothing. Provision
-        # the runner from the same pinned WASMTIME_VERSION the other two jobs
-        # use, and prove it runs inside this step: a broken install must fail
-        # the job here, not resurface as "not found" inside a test.
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
-          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
-          $root = Join-Path $env:RUNNER_TEMP "wasmtime"
-          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --dir $env:RUNNER_TEMP --clobber
-          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
-
-          Expand-Archive -Path $archive -DestinationPath $root -Force
-          $wasmtimeBin = Join-Path $root $dir
-          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
-          if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
-            throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
-          }
-          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
-
-          & $wasmtimeExe --version
-          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but 'wasmtime --version' exited $LASTEXITCODE" }
-
-          # wasm-ld comes from the LLVM install provisioned above; hew's WASM
-          # link step shells out to it, so an unreachable wasm-ld is the same
-          # class of silent gap as a missing runtime.
-          $wasmLd = Get-Command wasm-ld -ErrorAction SilentlyContinue
-          if (-not $wasmLd) { throw "wasm-ld not found on PATH (expected from the LLVM ${env:LLVM_VERSION} install)" }
-          & $wasmLd.Source --version
-          if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
-
-      - name: Run full Rust workspace tests
-        # Run the full workspace nextest on every event so a native-linking or
-        # cross-platform regression is always caught before merge.
-        # hew-wasm is excluded on every platform (profile.ci's default-filter
-        # does the same) — the browser/tooling WASM surface has its own
-        # playground-wasm-build job. hew-cabi has #[no_mangle] symbols that
-        # conflict with hew-runtime when both link into a test binary; the
-        # C-ABI step below is its coverage.
-        # Default features include "full" (encryption + profiler + quic),
-        # so all QUIC transport tests run without an explicit flag.
-        shell: bash
-        run: make SHELL=bash test
-
-      - name: Run C-ABI crate tests
-        # Standalone because the workspace run above must exclude hew-cabi.
-        # The crate is 82 fast tests and is the only place the C-ABI ownership
-        # contract is exercised on Windows.
-        shell: bash
-        run: make SHELL=bash test-cabi
-
-      - name: Verify Windows CodeView PDB emission
-        # Keep debug metadata failures visible without preventing runtime tests.
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $pdbutil = Get-Command llvm-pdbutil -ErrorAction SilentlyContinue
-          if (-not $pdbutil) {
-            throw "llvm-pdbutil not found on PATH; the LLVM toolchain must provide the PDB inspection tool"
-          }
-          & $pdbutil.Source --version
-          if ($LASTEXITCODE -ne 0) { throw "llvm-pdbutil --version failed with exit code $LASTEXITCODE" }
-
-          $dir = Join-Path $env:RUNNER_TEMP "hew-pdb-e2e"
-          New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $source = Join-Path $dir "pdb-e2e.hew"
-          $binary = Join-Path $dir "pdb-e2e.exe"
-          @"
-          fn main() {
-              println(2235)
-          }
-          "@ | Set-Content -Path $source -Encoding utf8
-
-          & .\target\release\hew.exe build -g $source -o $binary
-          if ($LASTEXITCODE -ne 0) { throw "hew build -g failed with exit code $LASTEXITCODE" }
-          if (-not (Test-Path -LiteralPath $binary)) { throw "hew build -g did not produce $binary" }
-
-          $pdb = Join-Path $dir "pdb-e2e.pdb"
-          if (-not (Test-Path -LiteralPath $pdb)) { throw "hew build -g did not produce the expected PDB at $pdb" }
-
-          $dump = & $pdbutil.Source dump -summary -modules -symbols -l $pdb 2>&1
-          if ($LASTEXITCODE -ne 0) { throw "llvm-pdbutil could not inspect $pdb`n$dump" }
-          $dumpText = $dump -join "`n"
-          if ($dumpText -notmatch "pdb-e2e\.hew") { throw "PDB dump has no source module record for pdb-e2e.hew`n$dumpText" }
-          if ($dumpText -notmatch "(?i)main") { throw "PDB dump has no main symbol`n$dumpText" }
-          if ($dumpText -notmatch "(?i)line") { throw "PDB dump has no line information`n$dumpText" }
-
-      - name: Upload test reports
-        if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
-        with:
-          report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
-          check_name: Test Results (Windows)
-          fail_on_failure: true
-          fail_on_parse_error: true
-          require_tests: true
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Build & test — macOS (Apple Silicon)
-  # ─────────────────────────────────────────────────────────────────────────
-  build-and-test-macos:
-    name: Build & test (macOS arm64)
-    # macos-15, not macos-14: the live-debugger suite renders an enum local,
-    # and lldb only learned to read `DW_TAG_variant_part` in lldb 18. The
-    # Xcode 15.x lldb on macos-14 prints the enum as an empty struct - it does
-    # the same to rustc's own enums, so the DWARF is not what is at fault.
-    runs-on: macos-15
-    timeout-minutes: 60
-    # Advisory on every ci.yml event (D505): macOS is not a branch-protection
-    # required check on pull requests, so a hard failure here on push read as
-    # a red main for a platform PRs never gated on. The scheduled
-    # nightly-ratchet-accounting.yml job (Strict nextest accounting) is the
-    # sole hard authority for macOS; its ledger, not this job, decides
-    # whether macOS is broken. release-gate.yml defines its own jobs and does
-    # not read this continue-on-error.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-
-      - uses: ./.github/actions/setup-rust-build
-        with:
-          targets: "aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1"
-          tools: nextest@0.9.120
-          cache-shared-key: build-test-macos
-
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
-        uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
-
-      - name: Set macOS deployment target
-        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
-
-      - name: Smoke test the release binary
-        # Drives a trivial program through `hew compile` with the RELEASE
-        # binary. Guards the ABI-mismatch abort class (#1606): a release build
-        # that crashes at process exit while every debug test passes, because
-        # the two use different C++ runtime linkage.
-        run: make test-release-binary
-
-      - name: Install WASI runner prerequisites
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
-          WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
-          mkdir -p "${WASMTIME_ROOT}"
-          .github/scripts/retry-download.sh \
-            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
-          tar -xJf "${RUNNER_TEMP}/${WASMTIME_DIR}.tar.xz" -C "${WASMTIME_ROOT}"
-          echo "${WASMTIME_ROOT}/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "${WASMTIME_ROOT}/${WASMTIME_DIR}/wasmtime" --version
-          command -v wasm-ld
-          wasm-ld --version
-
-      - name: Run full Rust workspace tests
-        # Run the full workspace nextest on every event so a native-linking or
-        # cross-platform regression is always caught before merge.
-        # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
-        # when both link into a test binary.
-        #
-        # Oracle integration binaries are intentionally excluded from ordinary
-        # hosted jobs, including release-gate, for runner cost/reliability.
-        # The macOS leak-oracle authority is explicit local macOS validation
-        # before release; Linux supplies structural/ASan coverage where applicable.
-        env:
-          NEXTEST_WORKSPACE_FILTER: "not binary(~oracle)"
-        run: make test
-
-      - name: Run C-ABI crate tests
-        # Standalone because the workspace run above must exclude hew-cabi.
-        # Apple Silicon keeps C-ABI coverage alongside the full workspace run.
-        run: make test-cabi
-
-      - name: Upload test reports
-        # The Linux and Windows jobs already publish the same two reports
-        # as inline PR annotations; this job produces them too but never
-        # surfaced them — a macOS-only failure was readable only by
-        # scrolling raw step logs.
-        if: always()
-        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
-        with:
-          report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
-          check_name: Test Results (macOS)
-          fail_on_failure: true
-          fail_on_parse_error: true
-          require_tests: true
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+      - name: Install compiled Hew artefacts
+        run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
+      - name: Check source corpus and sandbox parity
+        run: make -o hew-native -o wasm-runtime grammar-parity sandbox-parity hew-check-all

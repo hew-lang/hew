@@ -1,0 +1,15 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var maps: Vec<HashMap<string, i64>> = Vec.new();
+        var map: HashMap<string, i64> = HashMap.new();
+        map.insert("nested" + "-key", 7);
+        maps.push(map);
+        for yielded in maps.iter() {
+            total = total + yielded.len();
+        }
+        i = i + 1;
+    }
+    total % 7
+}

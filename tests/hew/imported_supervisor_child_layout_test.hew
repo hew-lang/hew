@@ -3,21 +3,20 @@
 
 import "imported_supervisor_child_support/worker.hew";
 
-import std.testing;
-
 supervisor ImportedWorkerPool {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
 
-    child worker: ImportedWorker(id: 17),
+    child worker: ImportedWorker(id: 17);
 }
 
 #[test]
 fn imported_actor_is_a_supervised_child() {
     let sup = spawn ImportedWorkerPool;
     match sup.worker.identify() {
-        .Ok(id) => testing.assert_eq(id, 17),
-        .Err(_) => testing.assert_true(false),
+        .Ok(id) => assert(id == 17),
+        .Err(_) => assert(false),
     }
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
 }

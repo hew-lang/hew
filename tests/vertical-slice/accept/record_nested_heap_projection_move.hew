@@ -1,17 +1,15 @@
-type NestedHeapMoveInner { text: string, value: i64 }
+type NestedHeapMoveInner {
+    text: string;
+    value: i64;
+}
+
 type NestedHeapMoveCarrier {
-    inner: NestedHeapMoveInner,
-    sibling: string,
+    inner: NestedHeapMoveInner;
+    sibling: string;
 }
 
 fn project(i: i64) -> string {
-    let r = NestedHeapMoveCarrier {
-        inner: NestedHeapMoveInner {
-            text: ("inner-" + "payload"),
-            value: i,
-        },
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = NestedHeapMoveCarrier { inner: NestedHeapMoveInner { text: ("inner-" + "payload"), value: i }, sibling: ("sibling-" + "payload") };
     r.inner.text
 }
 
@@ -23,5 +21,9 @@ fn main() -> i64 {
         total = total + moved.len();
         i = i + 1;
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

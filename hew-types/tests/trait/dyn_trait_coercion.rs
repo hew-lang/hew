@@ -119,26 +119,27 @@ fn two_concrete_types_to_dyn_display_produce_distinct_entries() {
 #[test]
 fn generic_method_breaks_object_safety_in_dyn_position() {
     let output = typecheck_isolated(
-        r#"
-        trait WithGenericMethod {
-            fn foo<U>(val: Self, u: U) -> i64;
-        }
+        r#"trait WithGenericMethod {
+    fn foo<U>(val: Self, u: U) -> i64;
+}
 
-        type Widget { name: string, }
+type Widget {
+    name: string;
+}
 
-        impl WithGenericMethod for Widget {
-            fn foo<U>(val: Widget, u: U) -> i64 {
-                0
-            }
-        }
+impl WithGenericMethod for Widget {
+    fn foo<U>(val: Widget, u: U) -> i64 {
+        0
+    }
+}
 
-        fn use_dyn(value: dyn WithGenericMethod) {}
+fn use_dyn(value: dyn WithGenericMethod) {}
 
-        fn main() {
-            let w = Widget { name: "x" };
-            use_dyn(w);
-        }
-        "#,
+fn main() {
+    let w = Widget { name: "x" };
+    use_dyn(w);
+}
+"#,
     );
     let rejects: Vec<_> = output
         .errors
@@ -172,26 +173,27 @@ fn generic_method_breaks_object_safety_in_dyn_position() {
 #[test]
 fn self_return_breaks_object_safety_in_dyn_position() {
     let output = typecheck_isolated(
-        r#"
-        trait Cloneable {
-            fn cloned(val: Self) -> Self;
-        }
+        r#"trait Cloneable {
+    fn cloned(val: Self) -> Self;
+}
 
-        type Widget { name: string, }
+type Widget {
+    name: string;
+}
 
-        impl Cloneable for Widget {
-            fn cloned(val: Widget) -> Widget {
-                Widget { name: val.name }
-            }
-        }
+impl Cloneable for Widget {
+    fn cloned(val: Widget) -> Widget {
+        Widget { name: val.name }
+    }
+}
 
-        fn use_dyn(value: dyn Cloneable) {}
+fn use_dyn(value: dyn Cloneable) {}
 
-        fn main() {
-            let w = Widget { name: "x" };
-            use_dyn(w);
-        }
-        "#,
+fn main() {
+    let w = Widget { name: "x" };
+    use_dyn(w);
+}
+"#,
     );
     let rejects: Vec<_> = output
         .errors
@@ -222,29 +224,30 @@ fn self_return_breaks_object_safety_in_dyn_position() {
 #[test]
 fn dyn_iterator_with_item_binding_object_safe() {
     let output = typecheck_embedded_builtins_isolated(
-        r"
-        trait Iterator {
-            type Item;
-            fn next(iter: Self) -> Option<Self.Item>;
-        }
+        r"trait Iterator {
+    type Item;
+    fn next(iter: Self) -> Option<Self.Item>;
+}
 
-        type Counter { value: i32, }
+type Counter {
+    value: i32;
+}
 
-        impl Iterator for Counter {
-            type Item = i32;
-            fn next(iter: Counter) -> Option<i32> {
-                .Some(iter.value)
-            }
-        }
+impl Iterator for Counter {
+    type Item = i32;
+    fn next(iter: Counter) -> Option<i32> {
+        .Some(iter.value)
+    }
+}
 
-        fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
-            iter.next()
-        }
+fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+    iter.next()
+}
 
-        fn main() {
-            use_iter(Counter { value: 1 });
-        }
-        ",
+fn main() {
+    use_iter(Counter { value: 1 });
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -274,27 +277,28 @@ fn dyn_iterator_with_item_binding_object_safe() {
 #[test]
 fn dyn_iterator_without_binding_rejected() {
     let output = typecheck_embedded_builtins_isolated(
-        r"
-        trait Iterator {
-            type Item;
-            fn next(iter: Self) -> Option<Self.Item>;
-        }
+        r"trait Iterator {
+    type Item;
+    fn next(iter: Self) -> Option<Self.Item>;
+}
 
-        type Counter { value: i32, }
+type Counter {
+    value: i32;
+}
 
-        impl Iterator for Counter {
-            type Item = i32;
-            fn next(iter: Counter) -> Option<i32> {
-                .Some(iter.value)
-            }
-        }
+impl Iterator for Counter {
+    type Item = i32;
+    fn next(iter: Counter) -> Option<i32> {
+        .Some(iter.value)
+    }
+}
 
-        fn use_iter(iter: dyn Iterator) {}
+fn use_iter(iter: dyn Iterator) {}
 
-        fn main() {
-            use_iter(Counter { value: 1 });
-        }
-        ",
+fn main() {
+    use_iter(Counter { value: 1 });
+}
+",
     );
     let missing_binding_errors: Vec<_> = output
         .errors
@@ -324,26 +328,27 @@ fn dyn_iterator_without_binding_rejected() {
 #[test]
 fn dyn_iterator_failed_projection_is_diagnostic() {
     let output = typecheck_embedded_builtins_isolated(
-        r"
-        trait Iterator {
-            type Item;
-            fn next(iter: Self) -> Option<Self.Item>;
-        }
+        r"trait Iterator {
+    type Item;
+    fn next(iter: Self) -> Option<Self.Item>;
+}
 
-        type Counter { value: i32, }
+type Counter {
+    value: i32;
+}
 
-        impl Iterator for Counter {
-            fn next(iter: Counter) -> Option<i32> {
-                .Some(iter.value)
-            }
-        }
+impl Iterator for Counter {
+    fn next(iter: Counter) -> Option<i32> {
+        .Some(iter.value)
+    }
+}
 
-        fn use_iter(iter: dyn Iterator<Item = i32>) {}
+fn use_iter(iter: dyn Iterator<Item = i32>) {}
 
-        fn main() {
-            use_iter(Counter { value: 1 });
-        }
-        ",
+fn main() {
+    use_iter(Counter { value: 1 });
+}
+",
     );
     assert!(
         output.errors.iter().any(|e| matches!(
@@ -363,33 +368,42 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
 #[test]
 fn dyn_distinct_bindings_get_distinct_vtables() {
     let output = typecheck_embedded_builtins_isolated(
-        r#"
-        trait Iterator {
-            type Item;
-            fn next(iter: Self) -> Option<Self.Item>;
-        }
+        r#"trait Iterator {
+    type Item;
+    fn next(iter: Self) -> Option<Self.Item>;
+}
 
-        type IntCounter { value: i32, }
-        type StringCounter { value: string, }
+type IntCounter {
+    value: i32;
+}
 
-        impl Iterator for IntCounter {
-            type Item = i32;
-            fn next(iter: IntCounter) -> Option<i32> { .Some(iter.value) }
-        }
+type StringCounter {
+    value: string;
+}
 
-        impl Iterator for StringCounter {
-            type Item = string;
-            fn next(iter: StringCounter) -> Option<string> { .Some(iter.value) }
-        }
+impl Iterator for IntCounter {
+    type Item = i32;
+    fn next(iter: IntCounter) -> Option<i32> {
+        .Some(iter.value)
+    }
+}
 
-        fn use_int(iter: dyn Iterator<Item = i32>) {}
-        fn use_string(iter: dyn Iterator<Item = string>) {}
+impl Iterator for StringCounter {
+    type Item = string;
+    fn next(iter: StringCounter) -> Option<string> {
+        .Some(iter.value)
+    }
+}
 
-        fn main() {
-            use_int(IntCounter { value: 1 });
-            use_string(StringCounter { value: "x" });
-        }
-        "#,
+fn use_int(iter: dyn Iterator<Item = i32>) {}
+
+fn use_string(iter: dyn Iterator<Item = string>) {}
+
+fn main() {
+    use_int(IntCounter { value: 1 });
+    use_string(StringCounter { value: "x" });
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -416,29 +430,30 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
 #[test]
 fn dyn_trait_method_signature_substituted() {
     let output = typecheck_embedded_builtins_isolated(
-        r"
-        trait Iterator {
-            type Item;
-            fn next(iter: Self) -> Option<Self.Item>;
-        }
+        r"trait Iterator {
+    type Item;
+    fn next(iter: Self) -> Option<Self.Item>;
+}
 
-        type Counter { value: i32, }
+type Counter {
+    value: i32;
+}
 
-        impl Iterator for Counter {
-            type Item = i32;
-            fn next(iter: Counter) -> Option<i32> {
-                .Some(iter.value)
-            }
-        }
+impl Iterator for Counter {
+    type Item = i32;
+    fn next(iter: Counter) -> Option<i32> {
+        .Some(iter.value)
+    }
+}
 
-        fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
-            iter.next()
-        }
+fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+    iter.next()
+}
 
-        fn main() {
-            use_iter(Counter { value: 1 });
-        }
-        ",
+fn main() {
+    use_iter(Counter { value: 1 });
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -467,26 +482,27 @@ fn dyn_trait_method_signature_substituted() {
 #[test]
 fn structural_impl_populates_method_table_for_dyn_named() {
     let output = typecheck_isolated(
-        r#"
-        trait Named {
-            fn name(val: Self) -> string;
-        }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        type Widget { label: string, }
+type Widget {
+    label: string;
+}
 
-        impl Widget {
-            fn name(val: Widget) -> string {
-                val.label
-            }
-        }
+impl Widget {
+    fn name(val: Widget) -> string {
+        val.label
+    }
+}
 
-        fn use_named(value: dyn Named) {}
+fn use_named(value: dyn Named) {}
 
-        fn main() {
-            let w = Widget { label: "x" };
-            use_named(w);
-        }
-        "#,
+fn main() {
+    let w = Widget { label: "x" };
+    use_named(w);
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -507,11 +523,7 @@ fn structural_impl_populates_method_table_for_dyn_named() {
     assert_eq!(entry.trait_name, "Named");
     assert_eq!(
         entry.concrete_type,
-        Ty::Named {
-            builtin: None,
-            name: "Widget".to_string(),
-            args: vec![],
-        }
+        Ty::named_in(&output.defs, "Widget", vec![])
     );
     assert_eq!(
         entry.method_table,
@@ -521,7 +533,7 @@ fn structural_impl_populates_method_table_for_dyn_named() {
     let inherent = output
         .impl_method_declaration_ids
         .get("Widget::name")
-        .cloned();
+        .copied();
     assert!(
         inherent.is_some(),
         "the inherent impl must publish a declaration identity: {:#?}",
@@ -540,20 +552,21 @@ fn structural_impl_populates_method_table_for_dyn_named() {
 #[test]
 fn type_without_the_method_is_refused_for_dyn_named() {
     let output = typecheck_isolated(
-        r#"
-        trait Named {
-            fn name(val: Self) -> string;
-        }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        type Widget { label: string, }
+type Widget {
+    label: string;
+}
 
-        fn use_named(value: dyn Named) {}
+fn use_named(value: dyn Named) {}
 
-        fn main() {
-            let w = Widget { label: "x" };
-            use_named(w);
-        }
-        "#,
+fn main() {
+    let w = Widget { label: "x" };
+    use_named(w);
+}
+"#,
     );
     assert!(
         output
@@ -585,18 +598,25 @@ fn type_without_the_method_is_refused_for_dyn_named() {
 #[test]
 fn dyn_annotated_let_binds_the_trait_object_type() {
     let output = typecheck(
-        r#"
-        trait Named { fn name(val: Self) -> string; }
-        type Widget { label: string, }
-        impl Named for Widget {
-            fn name(w: Widget) -> string { w.label }
-        }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        fn main() {
-            let d: dyn Named = Widget { label: "x" };
-            let n: i64 = d;
-        }
-        "#,
+type Widget {
+    label: string;
+}
+
+impl Named for Widget {
+    fn name(w: Widget) -> string {
+        w.label
+    }
+}
+
+fn main() {
+    let d: dyn Named = Widget { label: "x" };
+    let n: i64 = d;
+}
+"#,
     );
     let mismatch = output
         .errors
@@ -616,25 +636,40 @@ fn dyn_annotated_let_binds_the_trait_object_type() {
 #[test]
 fn dyn_annotated_var_accepts_a_second_concrete_impl() {
     let output = typecheck(
-        r#"
-        trait Named { fn name(val: Self) -> string; }
-        type Widget { label: string, }
-        impl Named for Widget {
-            fn name(w: Widget) -> string { w.label }
-        }
-        type Gadget { label: string, }
-        impl Named for Gadget {
-            fn name(g: Gadget) -> string { g.label }
-        }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        fn show(v: dyn Named) { println(v.name()); }
+type Widget {
+    label: string;
+}
 
-        fn main() {
-            var d: dyn Named = Widget { label: "a" };
-            d = Gadget { label: "b" };
-            show(d);
-        }
-        "#,
+impl Named for Widget {
+    fn name(w: Widget) -> string {
+        w.label
+    }
+}
+
+type Gadget {
+    label: string;
+}
+
+impl Named for Gadget {
+    fn name(g: Gadget) -> string {
+        g.label
+    }
+}
+
+fn show(v: dyn Named) {
+    println(v.name());
+}
+
+fn main() {
+    var d: dyn Named = Widget { label: "a" };
+    d = Gadget { label: "b" };
+    show(d);
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -651,18 +686,25 @@ fn dyn_annotated_var_accepts_a_second_concrete_impl() {
 #[test]
 fn dyn_annotated_let_dispatches_through_the_vtable() {
     let output = typecheck(
-        r#"
-        trait Named { fn name(val: Self) -> string; }
-        type Widget { label: string, }
-        impl Named for Widget {
-            fn name(w: Widget) -> string { w.label }
-        }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        fn main() {
-            let d: dyn Named = Widget { label: "x" };
-            println(d.name());
-        }
-        "#,
+type Widget {
+    label: string;
+}
+
+impl Named for Widget {
+    fn name(w: Widget) -> string {
+        w.label
+    }
+}
+
+fn main() {
+    let d: dyn Named = Widget { label: "x" };
+    println(d.name());
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -684,18 +726,25 @@ fn dyn_annotated_let_dispatches_through_the_vtable() {
 #[test]
 fn clone_on_a_trait_object_is_rejected_with_a_named_limit() {
     let output = typecheck(
-        r#"
-        trait Named { fn name(val: Self) -> string; }
-        type Widget { label: string, }
-        impl Named for Widget {
-            fn name(w: Widget) -> string { w.label }
-        }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        fn main() {
-            let d: dyn Named = Widget { label: "x" };
-            let copy = clone d;
-        }
-        "#,
+type Widget {
+    label: string;
+}
+
+impl Named for Widget {
+    fn name(w: Widget) -> string {
+        w.label
+    }
+}
+
+fn main() {
+    let d: dyn Named = Widget { label: "x" };
+    let copy = clone d;
+}
+"#,
     );
     let err = output
         .errors
@@ -717,31 +766,47 @@ fn clone_on_a_trait_object_is_rejected_with_a_named_limit() {
 #[test]
 fn dyn_return_joins_record_each_concrete_arm_coercion() {
     let output = typecheck_isolated(
-        r#"
-        trait Named { fn name(val: Self) -> string; }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        type Dog { tag: string, }
-        impl Dog { fn name(val: Dog) -> string { val.tag } }
+type Dog {
+    tag: string;
+}
 
-        type Cat { tag: string, lives: i64, }
-        impl Cat { fn name(val: Cat) -> string { val.tag } }
+impl Dog {
+    fn name(val: Dog) -> string {
+        val.tag
+    }
+}
 
-        fn choose_if(kind: i64) -> dyn Named {
-            if kind == 0 {
-                Dog { tag: "rex" }
-            } else {
-                Cat { tag: "tom", lives: 9 }
-            }
-        }
+type Cat {
+    tag: string;
+    lives: i64;
+}
 
-        fn choose_match(kind: i64) -> dyn Named {
-            match kind {
-                0 => Dog { tag: "spot" },
-                1 => Cat { tag: "milo", lives: 8 },
-                _ => Dog { tag: "luna" },
-            }
-        }
-        "#,
+impl Cat {
+    fn name(val: Cat) -> string {
+        val.tag
+    }
+}
+
+fn choose_if(kind: i64) -> dyn Named {
+    if kind == 0 {
+        Dog { tag: "rex" }
+    } else {
+        Cat { tag: "tom", lives: 9 }
+    }
+}
+
+fn choose_match(kind: i64) -> dyn Named {
+    match kind {
+        0 => Dog { tag: "spot" },
+        1 => Cat { tag: "milo", lives: 8 },
+        _ => Dog { tag: "luna" },
+    }
+}
+"#,
     );
 
     assert!(
@@ -753,14 +818,14 @@ fn dyn_return_joins_record_each_concrete_arm_coercion() {
         .dyn_trait_coercions
         .values()
         .filter(
-            |coercion| matches!(&coercion.concrete_type, Ty::Named { name, .. } if name == "Dog"),
+            |coercion| matches!(&coercion.concrete_type, Ty::Named { head, .. } if head.spelling() == "Dog"),
         )
         .count();
     let cat_sites = output
         .dyn_trait_coercions
         .values()
         .filter(
-            |coercion| matches!(&coercion.concrete_type, Ty::Named { name, .. } if name == "Cat"),
+            |coercion| matches!(&coercion.concrete_type, Ty::Named { head, .. } if head.spelling() == "Cat"),
         )
         .count();
     assert!(dog_sites >= 3, "every Dog arm must record a coercion site");
@@ -770,26 +835,50 @@ fn dyn_return_joins_record_each_concrete_arm_coercion() {
 #[test]
 fn nested_and_early_dyn_return_paths_never_reach_graph_errors() {
     let output = typecheck_isolated(
-        r#"
-        trait Named { fn name(val: Self) -> string; }
-        type Dog { tag: string, }
-        impl Dog { fn name(val: Dog) -> string { val.tag } }
-        type Cat { tag: string, lives: i64, }
-        impl Cat { fn name(val: Cat) -> string { val.tag } }
+        r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        fn nested(a: bool, b: bool) -> dyn Named {
-            if a {
-                if b { Dog { tag: "rex" } } else { Cat { tag: "tom", lives: 9 } }
-            } else {
-                Dog { tag: "spot" }
-            }
-        }
+type Dog {
+    tag: string;
+}
 
-        fn early(cat: bool) -> dyn Named {
-            if cat { return Cat { tag: "milo", lives: 8 }; }
-            Dog { tag: "luna" }
+impl Dog {
+    fn name(val: Dog) -> string {
+        val.tag
+    }
+}
+
+type Cat {
+    tag: string;
+    lives: i64;
+}
+
+impl Cat {
+    fn name(val: Cat) -> string {
+        val.tag
+    }
+}
+
+fn nested(a: bool, b: bool) -> dyn Named {
+    if a {
+        if b {
+            Dog { tag: "rex" }
+        } else {
+            Cat { tag: "tom", lives: 9 }
         }
-        "#,
+    } else {
+        Dog { tag: "spot" }
+    }
+}
+
+fn early(cat: bool) -> dyn Named {
+    if cat {
+        return Cat { tag: "milo", lives: 8 };
+    }
+    Dog { tag: "luna" }
+}
+"#,
     );
 
     assert!(

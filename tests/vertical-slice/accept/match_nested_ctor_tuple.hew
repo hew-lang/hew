@@ -6,7 +6,6 @@ fn main() {
         .None => 0,
     };
     println(a);
-
     let miss: Option<(i64, i64)> = .None;
     let b = match miss {
         .Some((x, y)) => x + y,

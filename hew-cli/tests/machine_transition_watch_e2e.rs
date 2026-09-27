@@ -121,36 +121,7 @@ fn run_inline_scribbled(label: &str, source: &str, expected_stdout: &str) {
 fn select_record_element_cross_block_arm_runs_clean() {
     run_inline_scribbled(
         "select_record_element",
-        "import std.stream;\n\
-         \n\
-         type Transition {\n\
-         \x20   from_state: string,\n\
-         \x20   to_state: string\n\
-         }\n\
-         \n\
-         actor Combined {\n\
-         \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" }).expect(\"send\");\n\
-         \x20       tx.close();\n\
-         \x20       select {\n\
-         \x20           t from rx.recv() => {\n\
-         \x20               match t {\n\
-         \x20                   .Some(tr) => println(f\"{tr.from_state} -> {tr.to_state}\"),\n\
-         \x20                   .None => println(\"closed\"),\n\
-         \x20               }\n\
-         \x20           },\n\
-         \x20           after 1s => println(\"timeout\"),\n\
-         \x20       };\n\
-         \x20       rx.close();\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let c = spawn Combined;\n\
-         \x20   let _ = c.run();\n\
-         \x20   sleep(200ms);\n\
-         }\n",
+        "import std.stream;\n\ntype Transition {\n    from_state: string;\n    to_state: string;\n}\n\nactor Combined {\n    receive fn run() {\n        let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(4) {\n            .Ok(pair) => pair,\n            .Err(error) => panic(error),\n        };\n        tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" }).expect(\"send\");\n        tx.close();\n        select {\n            t from rx.recv() => {\n                match t {\n                    .Some(tr) => println(f\"{tr.from_state} -> {tr.to_state}\"),\n                    .None => println(\"closed\"),\n                }\n            }\n            after 1s => println(\"timeout\"),\n        };\n        rx.close();\n    }\n}\n\nfn main() {\n    let c = spawn Combined;\n    let _ = c.run();\n    sleep(200ms);\n}\n",
         "Created -> Initialising\n",
     );
 }
@@ -164,39 +135,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
 fn select_enum_element_thunks_resolve_and_run_clean() {
     run_inline_scribbled(
         "select_enum_element",
-        "import std.stream;\n\
-         \n\
-         enum Transition {\n\
-         \x20   Moved { from_state: string, to_state: string },\n\
-         }\n\
-         \n\
-         actor Combined {\n\
-         \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" }).expect(\"send\");\n\
-         \x20       tx.close();\n\
-         \x20       select {\n\
-         \x20           t from rx.recv() => {\n\
-         \x20               match t {\n\
-         \x20                   .Some(t2) => {\n\
-         \x20                       match t2 {\n\
-         \x20                           Transition.Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n\
-         \x20                       }\n\
-         \x20                   },\n\
-         \x20                   .None => println(\"closed\"),\n\
-         \x20               }\n\
-         \x20           },\n\
-         \x20           after 1s => println(\"timeout\"),\n\
-         \x20       };\n\
-         \x20       rx.close();\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let c = spawn Combined;\n\
-         \x20   let _ = c.run();\n\
-         \x20   sleep(200ms);\n\
-         }\n",
+        "import std.stream;\n\nenum Transition {\n    Moved { from_state: string; to_state: string;  }\n}\n\nactor Combined {\n    receive fn run() {\n        let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(4) {\n            .Ok(pair) => pair,\n            .Err(error) => panic(error),\n        };\n        tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" }).expect(\"send\");\n        tx.close();\n        select {\n            t from rx.recv() => {\n                match t {\n                    .Some(t2) => {\n                        match t2 {\n                            Transition.Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n                        }\n                    }\n                    .None => println(\"closed\"),\n                }\n            }\n            after 1s => println(\"timeout\"),\n        };\n        rx.close();\n    }\n}\n\nfn main() {\n    let c = spawn Combined;\n    let _ = c.run();\n    sleep(200ms);\n}\n",
         "Created -> Initialising\n",
     );
 }
@@ -331,74 +270,7 @@ fn pipe_handle_use_after_transfer_refused() {
 fn cross_actor_record_transition_watch_runs_clean() {
     run_inline_scribbled(
         "cross_actor_transition_watch",
-        "import std.concurrency.lifecycle;\n\
-         import std.stream;\n\
-         \n\
-         type Transition {\n\
-         \x20   from_state: string,\n\
-         \x20   to_state: string\n\
-         }\n\
-         \n\
-         actor Service {\n\
-         \x20   receive fn drive(consume tx: stream.Sink<Transition>) {\n\
-         \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;\n\
-         \x20       let before1 = lc.state_name();\n\
-         \x20       lc.step(lifecycle.LifecycleEvent.Initialise);\n\
-         \x20       let after1 = lc.state_name();\n\
-         \x20       if before1 != after1 {\n\
-         \x20           tx.send(Transition { from_state: before1, to_state: after1 }).expect(\"send\");\n\
-         \x20       }\n\
-         \x20       let before2 = lc.state_name();\n\
-         \x20       lc.step(lifecycle.LifecycleEvent.Crashed { error: Error.Code(7) });\n\
-         \x20       let after2 = lc.state_name();\n\
-         \x20       if before2 != after2 {\n\
-         \x20           tx.send(Transition { from_state: before2, to_state: after2 }).expect(\"send\");\n\
-         \x20       }\n\
-         \x20       tx.close();\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         actor Observer {\n\
-         \x20   receive fn watch(consume rx: stream.Stream<Transition>, consume done: stream.Sink<i64>) {\n\
-         \x20       var waiting = true;\n\
-         \x20       while waiting {\n\
-         \x20           select {\n\
-         \x20               t from rx.recv() => {\n\
-         \x20                   match t {\n\
-         \x20                       .Some(tr) => {\n\
-         \x20                           println(f\"{tr.from_state} -> {tr.to_state}\");\n\
-         \x20                           if tr.to_state == \"Faulted\" {\n\
-         \x20                               println(\"observer: child faulted\");\n\
-         \x20                           }\n\
-         \x20                       },\n\
-         \x20                       .None => {\n\
-         \x20                           println(\"watch closed\");\n\
-         \x20                           waiting = false;\n\
-         \x20                       },\n\
-         \x20                   }\n\
-         \x20               },\n\
-         \x20               after 2s => {\n\
-         \x20                   println(\"timeout\");\n\
-         \x20                   waiting = false;\n\
-         \x20               },\n\
-         \x20           };\n\
-         \x20       }\n\
-         \x20       rx.close();\n\
-         \x20       done.send(1).expect(\"send\");\n\
-         \x20       done.close();\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let (done_tx, done_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let obs = spawn Observer;\n\
-         \x20   let _ = fork obs.watch(rx, done_tx);\n\
-         \x20   let svc = spawn Service;\n\
-         \x20   let _ = svc.drive(tx);\n\
-         \x20   let _ = done_rx.recv();\n\
-         \x20   done_rx.close();\n\
-         }\n",
+        "import std.concurrency.lifecycle;\n\nimport std.stream;\n\ntype Transition {\n    from_state: string;\n    to_state: string;\n}\n\nactor Service {\n    receive fn drive(consume tx: stream.Sink<Transition>) {\n        var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;\n        let before1 = lc.state_name();\n        lc.step(lifecycle.Lifecycle.Event.Initialise);\n        let after1 = lc.state_name();\n        if before1 != after1 {\n            tx.send(Transition { from_state: before1, to_state: after1 }).expect(\"send\");\n        }\n        let before2 = lc.state_name();\n        lc.step(lifecycle.Lifecycle.Event.Crashed { error: Error.Code(7) });\n        let after2 = lc.state_name();\n        if before2 != after2 {\n            tx.send(Transition { from_state: before2, to_state: after2 }).expect(\"send\");\n        }\n        tx.close();\n    }\n}\n\nactor Observer {\n    receive fn watch(consume rx: stream.Stream<Transition>, consume done: stream.Sink<i64>) {\n        var waiting = true;\n        while waiting {\n            select {\n                t from rx.recv() => {\n                    match t {\n                        .Some(tr) => {\n                            println(f\"{tr.from_state} -> {tr.to_state}\");\n                            if tr.to_state == \"Faulted\" {\n                                println(\"observer: child faulted\");\n                            }\n                        }\n                        .None => {\n                            println(\"watch closed\");\n                            waiting = false;\n                        }\n                    }\n                }\n                after 2s => {\n                    println(\"timeout\");\n                    waiting = false;\n                }\n            };\n        }\n        rx.close();\n        done.send(1).expect(\"send\");\n        done.close();\n    }\n}\n\nfn main() {\n    let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(8) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let (done_tx, done_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let obs = spawn Observer;\n    let _ = fork obs.watch(rx, done_tx);\n    let svc = spawn Service;\n    let _ = svc.drive(tx);\n    let _ = done_rx.recv();\n    done_rx.close();\n}\n",
         "Created -> Initialising\nInitialising -> Faulted\nobserver: child faulted\nwatch closed\n",
     );
 }
@@ -414,34 +286,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
 fn select_after_genuine_expiry_takes_after_arm() {
     run_inline_scribbled(
         "select_after_genuine_expiry",
-        "import std.stream;\n\
-         \n\
-         actor Observer {\n\
-         \x20   receive fn watch(consume rx: stream.Stream<i64>, consume done: stream.Sink<i64>) {\n\
-         \x20       select {\n\
-         \x20           v from rx.recv() => {\n\
-         \x20               match v {\n\
-         \x20                   .Some(_) => println(\"value\"),\n\
-         \x20                   .None => println(\"closed\"),\n\
-         \x20               }\n\
-         \x20           },\n\
-         \x20           after 400ms => println(\"timeout\"),\n\
-         \x20       };\n\
-         \x20       rx.close();\n\
-         \x20       done.send(1).expect(\"send\");\n\
-         \x20       done.close();\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let (done_tx, done_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let obs = spawn Observer;\n\
-         \x20   let _ = obs.watch(rx, done_tx);\n\
-         \x20   let _ = done_rx.recv();\n\
-         \x20   done_rx.close();\n\
-         \x20   tx.close();\n\
-         }\n",
+        "import std.stream;\n\nactor Observer {\n    receive fn watch(consume rx: stream.Stream<i64>, consume done: stream.Sink<i64>) {\n        select {\n            v from rx.recv() => {\n                match v {\n                    .Some(_) => println(\"value\"),\n                    .None => println(\"closed\"),\n                }\n            }\n            after 400ms => println(\"timeout\"),\n        };\n        rx.close();\n        done.send(1).expect(\"send\");\n        done.close();\n    }\n}\n\nfn main() {\n    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let (done_tx, done_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let obs = spawn Observer;\n    let _ = obs.watch(rx, done_tx);\n    let _ = done_rx.recv();\n    done_rx.close();\n    tx.close();\n}\n",
         "timeout\n",
     );
 }
@@ -462,30 +307,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
     let source = dir.path().join("gate_shape.hew");
     std::fs::write(
         &source,
-        "import std.stream;\n\
-         \n\
-         actor Observer {\n\
-         \x20   receive fn watch(consume rx: stream.Stream<i64>) {\n\
-         \x20       select {\n\
-         \x20           v from rx.recv() => {\n\
-         \x20               match v {\n\
-         \x20                   .Some(_) => println(\"value\"),\n\
-         \x20                   .None => println(\"closed\"),\n\
-         \x20               }\n\
-         \x20           },\n\
-         \x20           after 1s => println(\"timeout\"),\n\
-         \x20       };\n\
-         \x20       rx.close();\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let obs = spawn Observer;\n\
-         \x20   let _ = obs.watch(rx);\n\
-         \x20   tx.close();\n\
-         \x20   sleep(20ms);\n\
-         }\n",
+        "import std.stream;\n\nactor Observer {\n    receive fn watch(consume rx: stream.Stream<i64>) {\n        select {\n            v from rx.recv() => {\n                match v {\n                    .Some(_) => println(\"value\"),\n                    .None => println(\"closed\"),\n                }\n            }\n            after 1s => println(\"timeout\"),\n        };\n        rx.close();\n    }\n}\n\nfn main() {\n    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {\n        .Ok(pair) => pair,\n        .Err(error) => panic(error),\n    };\n    let obs = spawn Observer;\n    let _ = obs.watch(rx);\n    tx.close();\n    sleep(20ms);\n}\n",
     )
     .unwrap();
 
@@ -572,49 +394,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
 fn heap_payload_machine_actor_field_steps_clean() {
     run_inline_scribbled(
         "heap_machine_field",
-        "machine Conn {\n\
-         \x20   events {\n\
-         \x20       Connect,\n\
-         \x20       Fail { reason: string, }\n\
-         \x20       ,Reset,\n\
-         \x20   }\n\
-         \n\
-         \x20   state Idle,\n\
-         \x20   state Open,\n\
-         \x20   state Failed { reason: string, }\n\
-         \n\
-         \x20   ,on Connect: Idle => Open,\n\
-         \x20   on Fail: Open => Failed { reason: event.reason }\n\
-         \x20   on Reset: Failed => Idle,\n\
-         \x20   on Connect: _ => _ {\n\
-         \x20       state\n\
-         \x20   }\n\
-         \x20   on Fail: _ => _ {\n\
-         \x20       state\n\
-         \x20   }\n\
-         \x20   on Reset: _ => _ {\n\
-         \x20       state\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         actor Holder {\n\
-         \x20   var c: Conn = Conn.Idle,\n\
-         \n\
-         \x20   receive fn drive() {\n\
-         \x20       c.step(ConnEvent.Connect);\n\
-         \x20       println(c.state_name());\n\
-         \x20       c.step(ConnEvent.Fail { reason: \"boom\" });\n\
-         \x20       println(c.state_name());\n\
-         \x20       c.step(ConnEvent.Reset);\n\
-         \x20       println(c.state_name());\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let h = spawn Holder;\n\
-         \x20   let _ = h.drive();\n\
-         \x20   sleep(150ms);\n\
-         }\n",
+        "machine Conn {\n    events {\n        Connect;\n        Fail { reason: string; }\n        Reset;\n    }\n\n    state Idle;\n    state Open;\n    state Failed { reason: string; }\n    on Connect: Idle => Open;\n    on Fail: Open => Failed { reason: event.reason }\n    on Reset: Failed => Idle;\n    on Connect: _ => _ {\n        state\n    }\n    on Fail: _ => _ {\n        state\n    }\n    on Reset: _ => _ {\n        state\n    }\n}\n\nactor Holder {\n    var c: Conn = Conn.Idle;\n\n    receive fn drive() {\n        c.step(Conn.Event.Connect);\n        println(c.state_name());\n        c.step(Conn.Event.Fail { reason: \"boom\" });\n        println(c.state_name());\n        c.step(Conn.Event.Reset);\n        println(c.state_name());\n    }\n}\n\nfn main() {\n    let h = spawn Holder;\n    let _ = h.drive();\n    sleep(150ms);\n}\n",
         "Open\nFailed\nIdle\n",
     );
 }
@@ -624,25 +404,38 @@ fn heap_payload_machine_actor_field_steps_clean() {
 fn supervisor_child_machine_state_resets_after_restart() {
     run_inline_scribbled(
         "machine_child_restart",
-        r#"
-machine Light {
-    events { Flip, }
-    state Off,
-    state On,
-    on Flip: Off => On,
-    on Flip: On => Off,
+        r#"machine Light {
+    events {
+        Flip;
+    }
+    state Off;
+    state On;
+    on Flip: Off => On;
+    on Flip: On => Off;
 }
+
 actor Worker {
-    var light: Light = Light.Off,
-    receive fn flip() { let _ = light.step(.Flip); }
-    receive fn is_on() -> bool { match light { .On => true, .Off => false, } }
-    receive fn fail() { panic("restart machine child"); }
+    var light: Light = Light.Off;
+    receive fn flip() {
+        let _ = light.step(.Flip);
+    }
+    receive fn is_on() -> bool {
+        match light {
+            .On => true,
+            .Off => false,
+        }
+    }
+    receive fn fail() {
+        panic("restart machine child");
+    }
 }
+
 supervisor Pool {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
-    child worker: Worker(),
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child worker: Worker();
 }
+
 fn main() {
     let pool = spawn Pool;
     let role = pool.worker;
@@ -650,11 +443,12 @@ fn main() {
     role.flip().expect("flip state");
     assert(role.is_on().expect("changed state"));
     let _ = role.fail();
-    let _ = await_restart pool.worker;
+    let _ = restarted(pool.worker);
     assert(!role.is_on().expect("restarted state"));
     role.flip().expect("flip restarted child");
     assert(role.is_on().expect("live restarted child"));
-    close(pool);
+    stop(pool);
+    stopped(pool);
     println("machine state resets after restart");
 }
 "#,
@@ -676,76 +470,78 @@ fn machine_snapshot_select_watch_matches_state_variants() {
     run_inline_scribbled(
         "machine_snapshot_select",
         "\
-         // Snapshot watch: machine values as pipe elements through the sealed\n\
-         // select arm, state-variant pattern matching on the received snapshot.\n\
-         import std.stream;\n\
-         \n\
-         machine Conn {\n\
-         \x20   events {\n\
-         \x20       Connect,\n\
-         \x20       Fail { reason: string, }\n\
-         \x20   }\n\
-         \n\
-         \x20   state Idle,\n\
-         \x20   state Open,\n\
-         \x20   state Failed { reason: string, }\n\
-         \n\
-         \x20   ,on Connect: Idle => Open,\n\
-         \x20   on Fail: Open => Failed { reason: event.reason }\n\
-         \x20   on Connect: _ => _ {\n\
-         \x20       state\n\
-         \x20   }\n\
-         \x20   on Fail: _ => _ {\n\
-         \x20       state\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         actor Owner {\n\
-         \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       var c: Conn = Conn.Idle;\n\
-         \x20       c.step(ConnEvent.Connect);\n\
-         \x20       tx.send(c).expect(\"send\");\n\
-         \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
-         \x20       tx.send(c).expect(\"send\");\n\
-         \x20       tx.close();\n\
-         \x20       var waiting = true;\n\
-         \x20       while waiting {\n\
-         \x20           select {\n\
-         \x20               snap from rx.recv() => {\n\
-         \x20                   match snap {\n\
-         \x20                       .Some(s) => {\n\
-         \x20                           match s {\n\
-         \x20                               Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
-         \x20                               Conn.Open => println(\"open\"),\n\
-         \x20                               Conn.Idle => println(\"idle\"),\n\
-         \x20                           }\n\
-         \x20                       },\n\
-         \x20                       .None => {\n\
-         \x20                           println(\"watch closed\");\n\
-         \x20                           waiting = false;\n\
-         \x20                       },\n\
-         \x20                   }\n\
-         \x20               },\n\
-         \x20               after 2s => {\n\
-         \x20                   println(\"timeout\");\n\
-         \x20                   waiting = false;\n\
-         \x20               },\n\
-         \x20           };\n\
-         \x20       }\n\
-         \x20       rx.close();\n\
-         \x20       0\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let o = spawn Owner;\n\
-         \x20   match o.run() {\n\
-         \x20       .Ok(_) => {},\n\
-         \x20       .Err(_) => println(\"ask failed\"),\n\
-         \x20   }\n\
-         }\n\
-         ",
+// Snapshot watch: machine values as pipe elements through the sealed
+// select arm, state-variant pattern matching on the received snapshot.
+import std.stream;
+
+machine Conn {
+    events {
+        Connect;
+        Fail { reason: string; }
+    }
+
+    state Idle;
+    state Open;
+    state Failed { reason: string; }
+    on Connect: Idle => Open;
+    on Fail: Open => Failed { reason: event.reason }
+    on Connect: _ => _ {
+        state
+    }
+    on Fail: _ => _ {
+        state
+    }
+}
+
+actor Owner {
+    receive fn run() -> i64 {
+        let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
+        var c: Conn = Conn.Idle;
+        c.step(Conn.Event.Connect);
+        tx.send(c).expect(\"send\");
+        c.step(Conn.Event.Fail { reason: \"peer reset\" });
+        tx.send(c).expect(\"send\");
+        tx.close();
+        var waiting = true;
+        while waiting {
+            select {
+                snap from rx.recv() => {
+                    match snap {
+                        .Some(s) => {
+                            match s {
+                                Conn.Failed { reason } => println(f\"failed: {reason}\"),
+                                Conn.Open => println(\"open\"),
+                                Conn.Idle => println(\"idle\"),
+                            }
+                        }
+                        .None => {
+                            println(\"watch closed\");
+                            waiting = false;
+                        }
+                    }
+                }
+                after 2s => {
+                    println(\"timeout\");
+                    waiting = false;
+                }
+            };
+        }
+        rx.close();
+        0
+    }
+}
+
+fn main() {
+    let o = spawn Owner;
+    match o.run() {
+        .Ok(_) => {}
+        .Err(_) => println(\"ask failed\"),
+    }
+}
+",
         "open\nfailed: peer reset\nwatch closed\n",
     );
 }
@@ -764,26 +560,7 @@ fn vec_machine_element_stores_and_releases_each_value() {
     let source = dir.path().join("vec_machine.hew");
     std::fs::write(
         &source,
-        "machine Conn {\n\
-         \x20   events {\n\
-         \x20       Connect,\n\
-         \x20       Fail { reason: string, },\n\
-         \x20   }\n\
-         \x20   state Idle,\n\
-         \x20   state Open,\n\
-         \x20   state Failed { reason: string, },\n\
-         \x20   on Connect: Idle => Open,\n\
-         \x20   on Fail: Open => Failed { reason: event.reason }\n\
-         \x20   on Connect: _ => _ { state }\n\
-         \x20   on Fail: _ => _ { state }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   var conns: Vec<Conn> = [];\n\
-         \x20   conns.push(Conn.Idle);\n\
-         \x20   conns.push(Conn.Failed { reason: \"peer\" + \" reset\" });\n\
-         \x20   println(f\"conns={conns.len()}\");\n\
-         }\n",
+        "machine Conn {\n    events {\n        Connect;\n        Fail { reason: string; }\n    }\n    state Idle;\n    state Open;\n    state Failed { reason: string; }\n    on Connect: Idle => Open;\n    on Fail: Open => Failed { reason: event.reason }\n    on Connect: _ => _ {\n        state\n    }\n    on Fail: _ => _ {\n        state\n    }\n}\n\nfn main() {\n    var conns: Vec<Conn> = [];\n    conns.push(Conn.Idle);\n    conns.push(Conn.Failed { reason: \"peer\" + \" reset\" });\n    println(f\"conns={conns.len()}\");\n}\n",
     )
     .unwrap();
 
@@ -916,63 +693,7 @@ fn nested_pipe_handle_in_tuple_transfers_correctly() {
 /// stdout — a single corrupted decode anywhere in the batch fails the test.
 #[test]
 fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
-    const SOURCE: &str = "import std.stream;\n\
-         \n\
-         machine Conn {\n\
-         \x20   events {\n\
-         \x20       Connect,\n\
-         \x20       Fail { reason: string, }\n\
-         \x20   }\n\
-         \n\
-         \x20   state Idle,\n\
-         \x20   state Open,\n\
-         \x20   state Failed { reason: string, }\n\
-         \n\
-         \x20   ,on Connect: Idle => Open,\n\
-         \x20   on Fail: Open => Failed { reason: event.reason }\n\
-         \x20   on Connect: _ => _ {\n\
-         \x20       state\n\
-         \x20   }\n\
-         \x20   on Fail: _ => _ {\n\
-         \x20       state\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         actor Owner {\n\
-         \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       var c: Conn = Conn.Idle;\n\
-         \x20       c.step(ConnEvent.Connect);\n\
-         \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
-         \x20       tx.send(c).expect(\"send\");\n\
-         \x20       tx.close();\n\
-         \x20       select {\n\
-         \x20           snap from rx.recv() => {\n\
-         \x20               match snap {\n\
-         \x20                   .Some(s) => {\n\
-         \x20                       match s {\n\
-         \x20                           Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
-         \x20                           Conn.Open => println(\"open\"),\n\
-         \x20                           Conn.Idle => println(\"idle\"),\n\
-         \x20                       }\n\
-         \x20                   },\n\
-         \x20                   .None => println(\"watch closed\"),\n\
-         \x20               }\n\
-         \x20           },\n\
-         \x20           after 2s => println(\"timeout\"),\n\
-         \x20       };\n\
-         \x20       rx.close();\n\
-         \x20       42\n\
-         \x20   }\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let o = spawn Owner;\n\
-         \x20   match o.run() {\n\
-         \x20       .Ok(r) => println(f\"r={r}\"),\n\
-         \x20       .Err(_) => println(\"ask failed\"),\n\
-         \x20   }\n\
-         }\n";
+    const SOURCE: &str = "import std.stream;\n\nmachine Conn {\n    events {\n        Connect;\n        Fail { reason: string; }\n    }\n\n    state Idle;\n    state Open;\n    state Failed { reason: string; }\n    on Connect: Idle => Open;\n    on Fail: Open => Failed { reason: event.reason }\n    on Connect: _ => _ {\n        state\n    }\n    on Fail: _ => _ {\n        state\n    }\n}\n\nactor Owner {\n    receive fn run() -> i64 {\n        let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) {\n            .Ok(pair) => pair,\n            .Err(error) => panic(error),\n        };\n        var c: Conn = Conn.Idle;\n        c.step(Conn.Event.Connect);\n        c.step(Conn.Event.Fail { reason: \"peer reset\" });\n        tx.send(c).expect(\"send\");\n        tx.close();\n        select {\n            snap from rx.recv() => {\n                match snap {\n                    .Some(s) => {\n                        match s {\n                            Conn.Failed { reason } => println(f\"failed: {reason}\"),\n                            Conn.Open => println(\"open\"),\n                            Conn.Idle => println(\"idle\"),\n                        }\n                    }\n                    .None => println(\"watch closed\"),\n                }\n            }\n            after 2s => println(\"timeout\"),\n        };\n        rx.close();\n        42\n    }\n}\n\nfn main() {\n    let o = spawn Owner;\n    match o.run() {\n        .Ok(r) => println(f\"r={r}\"),\n        .Err(_) => println(\"ask failed\"),\n    }\n}\n";
 
     require_codegen();
 

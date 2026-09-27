@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-callee-consume-drop-result-named"
+intent = "Leak oracle for the callee-side drop of a CONSUMED by-value enum param (#2732). Shape `result_named_df` (result named consume does not double free, result named consume leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-callee-consume-drop-result-named.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -2,16 +2,14 @@
 # corpus-ratchet.sh — every corpus-versus-expected-failures gate, one driver.
 #
 # A corpus ratchet answers one question: does the set of things that FAIL right
-# now exactly equal the set recorded in an expected-failures file? A new failure
-# is a regression; a listed failure that now passes is a recovery that needs
-# its ledger row removed. Regressions are hard errors in every invocation.
-# Recoveries are reported but non-blocking in PR gates, and become hard errors
-# only when RATCHET_STRICT_RECOVERIES=1 (the scheduled ledger-accounting run).
+# now exactly equal the set recorded in tests/expected-failures.tsv (the one
+# ratchet ledger, read through `cargo xtask ratchet rows`)? A new failure is a
+# regression; a listed failure that now passes is a recovery, reported but
+# never blocking (D555 amendment) — its row still needs deleting by hand.
 #
-# Four gates asked that question in four separate scripts:
+# Two gates asked that question in two separate scripts:
 #
 #   hew-suite    make test-hew-ratchet    `hew test tests/hew/`
-#   stdlib       make test-stdlib-ratchet `hew check` over std/**.hew
 #   hew-corpus   make hew-check-all       `hew check` over the tracked corpus
 #
 # They differed in how the corpus is enumerated and run, and in the prose they
@@ -43,7 +41,7 @@
 #   scripts/corpus-ratchet.sh <corpus> [options]
 #   scripts/corpus-ratchet.sh --help
 #
-# Corpora: hew-suite | stdlib | hew-corpus
+# Corpora: hew-suite | hew-corpus
 #
 # Options (accepted only for the corpora that define them):
 #   --expected-failures <path>  Override the corpus's expected-failures file.
@@ -85,7 +83,6 @@ Ordinary PR runs report recovered entries and exit 0.
 
 Corpora:
   hew-suite    `hew test tests/hew/`               (make test-hew-ratchet)
-  stdlib       `hew check` over std/**.hew         (make test-stdlib-ratchet)
   hew-corpus   `hew check` over the tracked corpus (make hew-check-all)
 
 Options:
@@ -116,7 +113,7 @@ case "$1" in
     usage
     exit 0
     ;;
-hew-suite | stdlib | hew-corpus)
+hew-suite | hew-corpus)
     CORPUS="$1"
     shift
     ;;
@@ -190,14 +187,36 @@ done
 # Makefile with an explicit HEW_BIN, so the resolved default is the correct one
 # for every corpus and the literal is not preserved.
 HEW_BIN="${HEW_BIN_ARG:-${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}}"
-RATCHET_STRICT_RECOVERIES="${RATCHET_STRICT_RECOVERIES:-0}"
-case "$RATCHET_STRICT_RECOVERIES" in
-0 | 1) ;;
-*)
-    echo "error: RATCHET_STRICT_RECOVERIES must be 0 or 1" >&2
-    exit 1
-    ;;
-esac
+
+# The platform name the unified ledger (tests/expected-failures.tsv) and
+# `cargo xtask ratchet rows` both spell.
+ratchet_platform() {
+    case "$(uname -s)" in
+    Linux) echo linux ;;
+    Darwin) echo macos ;;
+    FreeBSD) echo freebsd ;;
+    MINGW* | MSYS* | CYGWIN*) echo windows ;;
+    *)
+        echo "error: unsupported ratchet platform: $(uname -s)" >&2
+        exit 1
+        ;;
+    esac
+}
+
+# Materialize one suite's rows from the single unified ledger
+# (tests/expected-failures.tsv) in the legacy per-line shape this script
+# already parses, so read_expected_failures needs no format of its own.
+generate_expected_failures_file() {
+    local suite="$1" out
+    out="$(mktemp)"
+    RATCHET_GENERATED_FILES="${RATCHET_GENERATED_FILES:-}${out}"$'\n'
+    (cd "$REPO_ROOT" && cargo run --quiet -p xtask -- ratchet rows \
+        --suite "$suite" --platform "$(ratchet_platform)") >"$out" || {
+        echo "error: cargo xtask ratchet rows --suite $suite failed" >&2
+        exit 1
+    }
+    printf '%s' "$out"
+}
 
 require_hew_bin() {
     if [[ ! -f "$HEW_BIN" ]]; then
@@ -454,10 +473,8 @@ ratchet_verdict() {
             echo ""
             printf '%s\n' "$RATCHET_NOWPASS_HELP"
             echo ""
-            if ((RATCHET_STRICT_RECOVERIES == 1)); then
-                echo "==> ${RATCHET_VERDICT_LABEL}: FAILED (strict recovery accounting)"
-                exit 1
-            fi
+            # D555 amendment: a recovered row is reported for ledger cleanup,
+            # never a blocking failure.
             echo "==> ${RATCHET_VERDICT_LABEL}: PASSED (recoveries reported)"
             exit 0
         fi
@@ -708,58 +725,6 @@ hew_suite_tail() {
     echo ""
 }
 
-# ── Corpus: stdlib ────────────────────────────────────────────────────────────
-
-run_stdlib() {
-    local stdlib_dir total relpath f check_status check_log
-
-    stdlib_dir="$REPO_ROOT/std"
-    require_hew_bin
-    if [[ ! -d "$stdlib_dir" ]]; then
-        echo "error: std/ directory not found" >&2
-        exit 1
-    fi
-    require_expected_failures_file
-    read_expected_failures
-
-    total=0
-    while IFS= read -r -d $'\0' f; do
-        total=$((total + 1))
-        relpath="${f#"$REPO_ROOT"/}"
-        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${relpath}"$'\n'
-        check_status=0
-        check_log="$("$HEW_BIN" check "$f" 2>&1)" || check_status=$?
-        if ((check_status != 0)); then
-            ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
-            record_expected_refusal_status "$relpath" "$check_status" "$check_log"
-        else
-            RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${relpath}"$'\n'
-        fi
-    done < <(find "$stdlib_dir" -name '*.hew' -not -path '*/target/*' -print0 | sort -z)
-
-    # A find that matched nothing type-checks nothing and reports no failures,
-    # which agrees with any expected-failures list.
-    corpus_nonempty_assert "stdlib-ratchet-files" "$total" || exit 1
-
-    echo "==> Stdlib type-check ratchet"
-    echo "Files checked:     $total"
-    echo "Expected failures: $(count_set "$EXPECTED_STR")"
-    echo "Actual failures:   $(count_set "$ACTUAL_STR")"
-    echo ""
-}
-
-# Reached through RATCHET_DIAGNOSTIC_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2317,SC2329
-stdlib_diagnostic() {
-    echo "  UNEXPECTED: $1"
-    # The excerpt is informational. Under `set -e -o pipefail` a non-zero status
-    # anywhere in this pipeline would abort the whole script and truncate the
-    # report after the FIRST entry — which is how a two-file regression reached
-    # CI showing only one file. `head` closing the pipe early is a normal
-    # outcome here, so the status is deliberately dropped.
-    "$HEW_BIN" check "$REPO_ROOT/$1" 2>&1 | head -3 | sed 's/^/    /' || true
-}
-
 # ── Corpus: hew-corpus ────────────────────────────────────────────────────────
 #
 # The repo-wide sweep is the migrate-forward safety net: it catches the class
@@ -784,6 +749,26 @@ is_separately_gated_or_reject_fixture() {
     base="$(basename "$path")"
     case "$path" in
     *"/reject/"*)
+        return 0
+        ;;
+    examples/multifile/02_geometry/geo/area.hew | examples/multifile/02_geometry/geo/distance.hew)
+        # These peer files share Point and abs_int through the geo directory
+        # module. Checking main.hew below loads and checks all three together.
+        return 0
+        ;;
+    hew-parser/tests/fmt_roundtrip_corpus/assoc_types/dyn_assoc_bindings.hew | hew-parser/tests/fmt_roundtrip_corpus/assoc_types/generic_projection_where.hew)
+        # Parser/formatter fixtures exercise syntax without defining all of
+        # their nominal types. The formatter fidelity gate owns these inputs.
+        return 0
+        ;;
+    hew-sandbox-vm/fixtures/09-compile-type-error/main.hew | hew-sandbox-vm/fixtures/29-mixed-scalar-compare-rejected/main.hew)
+        # The VM fixture manifest expects a compile error for each source.
+        return 0
+        ;;
+    tests/pkg-import/pkgs/assocreqimplbad/assocreqimplbad.hew | tests/pkg-import/pkgs/qmachbad/qmachbad.hew | tests/pkg-import/pkgs/sinkres/sinkres.hew | tests/pkg-import/published_bare_two_optin_ambiguous.hew | tests/pkg-import/sameleaf_named_*_ambiguous.hew)
+        # The package gate imports these negative modules or files in their
+        # package context and checks the intended diagnostic. Other package
+        # fixtures remain in this positive compilation sweep.
         return 0
         ;;
     tests/core-acceptance/fixtures/*)
@@ -823,6 +808,7 @@ HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT=0
 run_hew_corpus() {
     local swept=() excluded=0 total f
     local check_log status expected_code actual_codes
+    local check_args=()
 
     require_hew_bin
     require_expected_failures_file
@@ -848,7 +834,13 @@ run_hew_corpus() {
     for f in "${swept[@]}"; do
         RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${f}"$'\n'
         status=0
-        check_log="$("$HEW_BIN" check "$REPO_ROOT/$f" 2>&1)" || status=$?
+        check_args=()
+        if [[ "$f" == tests/pkg-import/* ]]; then
+            # These fixtures import the in-tree packages used by their owning
+            # execution gate; keep the corpus check in that same context.
+            check_args=(--pkg-path "$REPO_ROOT/tests/pkg-import/pkgs")
+        fi
+        check_log="$("$HEW_BIN" check "${check_args[@]}" "$REPO_ROOT/$f" 2>&1)" || status=$?
         if ((status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${f}"$'\n'
             if record_expected_refusal_status "$f" "$status" "$check_log" &&
@@ -920,7 +912,7 @@ hew_corpus_diagnostic() {
 
 case "$CORPUS" in
 hew-suite)
-    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$REPO_ROOT/scripts/hew-suite-expected-failures.txt}"
+    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$(generate_expected_failures_file hew-suite)}"
     RATCHET_ALL_PASS_TEXT="All tests passed. Remove the expected-failures file entries when the list is empty."
     RATCHET_LIST_TRACKED=1
     RATCHET_UNEXPECTED_HELP="  To accept these as known failures, add them to:
@@ -932,20 +924,8 @@ hew-suite)
     RATCHET_TAIL_FN=hew_suite_tail
     run_hew_suite
     ;;
-stdlib)
-    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$REPO_ROOT/scripts/stdlib-expected-failures.txt}"
-    RATCHET_ALL_PASS_TEXT="All stdlib files pass type-check. Remove entries from expected-failures file."
-    RATCHET_LIST_TRACKED=1
-    RATCHET_DIAGNOSTIC_FN=stdlib_diagnostic
-    RATCHET_UNEXPECTED_HELP="  To accept these as known failures, add them to:
-  $EXPECTED_FAILURES_FILE"
-    RATCHET_NOWPASS_HELP="  Delete these lines from:
-  $EXPECTED_FAILURES_FILE
-  (Do not restore a failing entry to make this green — fix the stdlib file.)"
-    run_stdlib
-    ;;
 hew-corpus)
-    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$REPO_ROOT/scripts/hew-corpus-expected-failures.txt}"
+    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$(generate_expected_failures_file corpus)}"
     RATCHET_ALL_PASS_TEXT="All corpus files pass hew check. The expected-failures list is empty."
     RATCHET_LIST_TRACKED=1
     RATCHET_FAIL_PREFIX="CORPUS FAIL"

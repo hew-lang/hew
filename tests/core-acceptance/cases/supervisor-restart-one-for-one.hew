@@ -1,19 +1,29 @@
 actor Worker {
-    var name: string,
-    var value: i64 = 0,
+    var name: string;
+    var value: i64 = 0;
     #[on(start)]
-    fn started() { println("start " + name); }
+    fn started() {
+        println("start " + name);
+    }
     #[on(stop)]
-    fn stopping() { println("stop " + name); }
-    receive fn bump() { value = value + 1; }
-    receive fn read() -> i64 { value }
-    receive fn boom() { panic("worker failed"); }
+    fn stopping() {
+        println("stop " + name);
+    }
+    receive fn bump() {
+        value = value + 1;
+    }
+    receive fn read() -> i64 {
+        value
+    }
+    receive fn boom() {
+        panic("worker failed");
+    }
 }
 
 supervisor App(label: string) {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child worker: Worker(name: label),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker(name: label);
 }
 
 fn main() {
@@ -25,11 +35,19 @@ fn main() {
         .Err(_) => println("read failed"),
     }
     let _ = worker.boom();
-    let replacement = await_restart app.worker;
+    let replacement = {
+        let __hew_migrated_role_787 = app.worker;
+        restarted(__hew_migrated_role_787);
+        __hew_migrated_role_787
+    };
     match replacement.read() {
         .Ok(value) => println(value),
         .Err(_) => println("read failed"),
     }
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_935 = app;
+        stop(__hew_migrated_actor_935);
+        stopped(__hew_migrated_actor_935);
+    };
     println("stopped");
 }

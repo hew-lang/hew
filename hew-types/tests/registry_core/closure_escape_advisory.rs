@@ -29,7 +29,7 @@ fn returned_closure_factories_keep_escape_and_capture_facts_without_warnings() {
 }
 
 #[test]
-fn unused_and_immediately_invoked_closures_keep_conservative_facts_without_advice() {
+fn unused_and_anonymous_closures_keep_distinct_checked_facts_without_advice() {
     let output = typecheck(
         r"
         fn main() {
@@ -41,10 +41,32 @@ fn unused_and_immediately_invoked_closures_keep_conservative_facts_without_advic
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(output.warnings.is_empty(), "{:#?}", output.warnings);
     assert_eq!(output.closure_escape_facts.len(), 2);
-    for escape in output.closure_escape_facts.values() {
-        assert_eq!(escape.kind, ClosureEscapeKind::Escapes);
-        assert_eq!(escape.rule, ClosureEscapeRule::NoStaticBinding);
-    }
+    assert!(output.closure_escape_facts.values().any(|escape| {
+        escape.kind == ClosureEscapeKind::NeverInvoked
+            && escape.rule == ClosureEscapeRule::NoUsesInScope
+    }));
+    assert!(output.closure_escape_facts.values().any(|escape| {
+        escape.kind == ClosureEscapeKind::Escapes
+            && escape.rule == ClosureEscapeRule::NoStaticBinding
+    }));
+}
+
+#[test]
+fn nested_capture_prevents_a_never_invoked_fact() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let reader = || 1;
+            let outer = move || reader();
+            println(outer());
+        }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output
+        .closure_escape_facts
+        .values()
+        .all(|escape| { escape.kind != ClosureEscapeKind::NeverInvoked }));
 }
 
 #[test]

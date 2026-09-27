@@ -1,0 +1,10 @@
+[[case]]
+id = "projected-tuple-owner-active-escape"
+intent = "Ownership oracle for reading a heap leaf out of a still-live tuple owner. Shape `escape` (whole tuple escape after projection transfer runs clean) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/projected-tuple-owner-active-escape.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

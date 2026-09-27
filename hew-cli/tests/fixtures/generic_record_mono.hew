@@ -4,7 +4,7 @@
 // single-type special case. The `Box<T>` layout is registered only after
 // `make` is substituted as `make$$i64` / `make$$bool`.
 type Box<T> {
-    value: T
+    value: T;
 }
 
 fn make<T>(x: T) -> Box<T> {

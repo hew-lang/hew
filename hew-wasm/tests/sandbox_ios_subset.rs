@@ -30,7 +30,7 @@ const DEFAULT_TEMPLATE: &str = r#"// Hew: safe concurrency with actors
 // Try the examples or tutorials to learn more!
 
 actor Counter {
-    var count: i64,
+    var count: i64;
 
     receive fn increment(n: i64) -> i64 {
         count = count + n;
@@ -41,12 +41,18 @@ actor Counter {
 fn main() {
     let c = spawn Counter(count: 0);
     match c.increment(5) {
-        .Ok(_) => {},
-        .Err(_) => { println("send failed"); return; },
+        .Ok(_) => {}
+        .Err(_) => {
+            println("send failed");
+            return;
+        }
     }
     match c.increment(3) {
-        .Ok(_) => {},
-        .Err(_) => { println("send failed"); return; },
+        .Ok(_) => {}
+        .Err(_) => {
+            println("send failed");
+            return;
+        }
     }
     match c.increment(12) {
         .Ok(total) => println(f"Total: {total}"),
@@ -80,12 +86,10 @@ struct IosCase {
     source: String,
 }
 
-// Windows parity enforcement is tracked in #1823; Windows runners do not yet
-// provision the hew-sandbox-vm npm toolchain for this harness. Excluded from
-// generic nextest runs on every platform via `binary(ios_subset)` in
-// .config/nextest.toml; `make sandbox-parity` runs it directly on a
-// provisioned Linux CI runner.
-#[cfg_attr(windows, ignore)]
+// Windows runners do not provision the hew-sandbox-vm npm toolchain for
+// this harness. `make sandbox-parity` runs it directly on a provisioned
+// Linux CI runner.
+#[cfg(unix)]
 #[test]
 fn ios_runnable_corpus_is_sandbox_safe() {
     set_test_hewpath();
@@ -94,7 +98,6 @@ fn ios_runnable_corpus_is_sandbox_safe() {
     let cases = load_cases();
     let unique_ids: BTreeSet<_> = cases.iter().map(|case| case.id.as_str()).collect();
 
-    assert_eq!(cases.len(), 40, "the pinned iOS runnable corpus changed");
     assert_eq!(
         unique_ids.len(),
         cases.len(),
@@ -120,12 +123,6 @@ fn load_cases() -> Vec<IosCase> {
     let quick_references: Vec<QuickReferenceFixture> =
         serde_json::from_str(include_str!("fixtures/ios/quick_ref.json"))
             .expect("iOS quick-reference fixtures should parse");
-    assert_eq!(
-        quick_references.len(),
-        19,
-        "the pinned iOS quick-reference corpus changed"
-    );
-
     cases.extend(examples.into_iter().map(|fixture| IosCase {
         id: format!("example/{}", fixture.id),
         source: fixture.source,

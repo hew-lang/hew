@@ -961,6 +961,29 @@ mod tests {
         staged.publish(target).unwrap()
     }
 
+    /// Publish `state` and stamp its generation with `age` seconds past a
+    /// fixed epoch, so collection orders generations by publication order
+    /// instead of by filesystem timestamp granularity.
+    fn publish_state_aged(target: &Path, state: &str, age: u64) -> PathBuf {
+        let generation = publish_state(target, state);
+        let stamp =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000 + age);
+        #[cfg(unix)]
+        let dir = fs::File::open(&generation).unwrap();
+        #[cfg(windows)]
+        let dir = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_FLAG_BACKUP_SEMANTICS opens a directory handle.
+            fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(0x0200_0000)
+                .open(&generation)
+                .unwrap()
+        };
+        dir.set_modified(stamp).unwrap();
+        generation
+    }
+
     #[test]
     fn interrupted_atomic_write_keeps_original_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -1108,13 +1131,12 @@ mod tests {
     fn pinned_old_generation_is_collected_by_later_publication() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("package");
-        let first = publish_state(&target, "first");
+        let first = publish_state_aged(&target, "first", 0);
         let pinned = pin_published_dir(&target).unwrap();
         assert_eq!(pinned.path(), first);
 
         for index in 0..6 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            publish_state(&target, &format!("new-{index}"));
+            publish_state_aged(&target, &format!("new-{index}"), index + 1);
         }
 
         assert_eq!(
@@ -1130,8 +1152,7 @@ mod tests {
             first.exists(),
             "releasing a read lease must not trigger collection"
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        publish_state(&target, "cleanup-trigger");
+        publish_state_aged(&target, "cleanup-trigger", 7);
 
         assert!(!first.exists());
         assert!(generation_dirs(&target).len() <= 3);
@@ -1175,14 +1196,13 @@ mod tests {
     fn uncertain_lease_metadata_retains_collection_candidate() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("package");
-        let retained = publish_state(&target, "retained");
+        let retained = publish_state_aged(&target, "retained", 0);
         let lease_path = generation_lease_path_for(&retained).unwrap();
         fs::remove_file(&lease_path).unwrap();
         fs::create_dir(&lease_path).unwrap();
 
         for index in 0..5 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            publish_state(&target, &format!("new-{index}"));
+            publish_state_aged(&target, &format!("new-{index}"), index + 1);
         }
 
         assert!(
@@ -1350,9 +1370,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_replace_renames_over_existing_link() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
-        use std::time::Duration;
 
         let dir = tempfile::tempdir().unwrap();
         let old_target = dir.path().join("old");
@@ -1365,8 +1384,10 @@ mod tests {
 
         let stop = Arc::new(AtomicBool::new(false));
         let saw_missing = Arc::new(AtomicBool::new(false));
+        let polls = Arc::new(AtomicUsize::new(0));
         let reader_stop = Arc::clone(&stop);
         let reader_missing = Arc::clone(&saw_missing);
+        let reader_polls = Arc::clone(&polls);
         let reader_link = link.clone();
         let reader = std::thread::spawn(move || {
             while !reader_stop.load(Ordering::Relaxed) {
@@ -1374,12 +1395,20 @@ mod tests {
                     reader_missing.store(true, Ordering::Relaxed);
                     break;
                 }
+                reader_polls.fetch_add(1, Ordering::Relaxed);
                 std::thread::yield_now();
             }
         });
 
+        // Hold the replacement open until the reader has looked at the link
+        // many times inside the window.
         replace_symlink_atomic_for_test(&link, &new_target, || {
-            std::thread::sleep(Duration::from_millis(20));
+            let start = polls.load(Ordering::Relaxed);
+            while polls.load(Ordering::Relaxed) < start + 100
+                && !saw_missing.load(Ordering::Relaxed)
+            {
+                std::thread::yield_now();
+            }
             Ok(())
         })
         .unwrap();

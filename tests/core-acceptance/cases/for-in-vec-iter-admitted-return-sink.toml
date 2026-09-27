@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-vec-iter-admitted-return-sink"
+intent = "`for x in vec` cursor (`VecIter<T>`) scope-exit drop oracles: per-iteration leak slope plus a poisoned-allocator no-use-after-free pin for the place-source reuse shape (issue #1949). Shape `admitted_return_sink` (for in early return sink runs clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-vec-iter-admitted-return-sink.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1ret-alphaOK"
+exit = 0

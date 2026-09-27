@@ -1,4 +1,5 @@
 export { runBytecode } from "./interpreter.js";
+export { classifyHewFault, matchesExpectedFault } from "./expected-fault.js";
 export {
   BytecodeValidationError,
   validateBytecodePackage,

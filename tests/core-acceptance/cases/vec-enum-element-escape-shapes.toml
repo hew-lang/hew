@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-enum-element-escape-shapes"
+intent = "`Vec<enum>` local scope-exit drop oracles: per-iteration leak slope for the direct-enum element class, plus an owned-route-intact pin and a poisoned-allocator no-double-free pin for the escape shapes. Shape `escape_shapes` (vec enum escape shapes run clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-enum-element-escape-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "11OK"
+exit = 0

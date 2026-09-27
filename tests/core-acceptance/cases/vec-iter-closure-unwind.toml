@@ -1,0 +1,11 @@
+[[case]]
+id = "vec-iter-closure-unwind"
+intent = "Fresh `VecIter` temporary ownership across a trapping closure call. Shape `vec_iter_closure_unwind` (temporary vec iter closure trap releases snapshot without leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-iter-closure-unwind.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): vec-iter-closure-trap\nhew: actor crash in VecIterCrasher.boom (actor 1): UserPanic\n"
+exit = 1

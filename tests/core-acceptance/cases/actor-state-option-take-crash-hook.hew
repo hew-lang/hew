@@ -2,7 +2,7 @@ import std.failure;
 
 #[resource]
 type Socket {
-    label: string,
+    label: string;
 }
 
 impl Socket {
@@ -19,7 +19,7 @@ impl Socket {
 }
 
 actor Vault {
-    var sock: Option<Socket>,
+    var sock: Option<Socket>;
 
     receive fn swap(fail: bool) -> string {
         match sock.take() {
@@ -40,18 +40,26 @@ actor Vault {
 }
 
 supervisor Group {
-    intensity: 1 within 60s,
-    child vault: Vault(sock: .Some(Socket { label: "sock" })),
+    intensity: 1 within 60s;
+    child vault: Vault(sock: .Some(Socket { label: "sock" }));
 }
 
 fn main() {
     let group = spawn Group;
-    for _ in 0..3 {
+    for _ in 0 .. 3 {
         println(group.vault.swap(false).expect("swap"));
     }
     let _ = group.vault.swap(true);
-    let _ = await_restart group.vault;
+    let _ = {
+        let __hew_migrated_role_1081 = group.vault;
+        restarted(__hew_migrated_role_1081);
+        __hew_migrated_role_1081
+    };
     println(group.vault.swap(false).expect("fresh"));
-    close(group);
+    {
+        let __hew_migrated_actor_1166 = group;
+        stop(__hew_migrated_actor_1166);
+        stopped(__hew_migrated_actor_1166);
+    };
     println("done");
 }

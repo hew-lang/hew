@@ -23,7 +23,7 @@ pub(crate) enum StatePatternPosition {
 /// A parsed state pattern together with the authored spelling and source span.
 pub(crate) struct StatePattern {
     /// The flat leaf state name, with any `.`/qualifier prefix stripped.
-    pub name: String,
+    pub name: Ident,
     /// True when the author wrote the contextual `.Variant` form. Only ever
     /// true in `StatePatternPosition::Target`.
     pub is_contextual: bool,
@@ -80,6 +80,7 @@ impl Parser<'_> {
                     body,
                     span: member_start..self.last_token_end,
                 });
+                self.refuse_mark_after_body();
             } else if self.peek() == Some(&Token::Receive) {
                 self.validate_attributes_for(&attrs, AttrPosition::ActorReceiveFn);
                 let recv_start = self.peek_span().start;
@@ -126,6 +127,7 @@ impl Parser<'_> {
                     attributes: attrs,
                     doc_comment,
                 });
+                self.refuse_mark_after_body();
             } else if self.peek() == Some(&Token::Fn) {
                 // Lifecycle-hook attributes `#[on(start)]` and `#[on(stop)]` are
                 // permitted on plain `fn` declarations inside an actor body.
@@ -143,6 +145,7 @@ impl Parser<'_> {
                 {
                     method.doc_comment = doc_comment;
                     methods.push(method);
+                    self.refuse_mark_after_body();
                 } else {
                     // parse_function emitted its own diagnostic.  Skip to the
                     // next item boundary so one bad method name doesn't cascade.
@@ -159,7 +162,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -179,7 +182,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -205,10 +208,16 @@ impl Parser<'_> {
                     self.advance();
                     overflow_policy = self.parse_overflow_policy();
                 }
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 mailbox_span = Some(member_start..self.last_token_end);
             } else if self.peek_is_field_decl() {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
+                self.error_at_with_kind_and_hint(
+                    "actor state is declared with `let` or `var`".to_string(),
+                    member_start..member_start,
+                    "insert `let ` before the field",
+                    ParseDiagnosticKind::ActorFieldBinding,
+                );
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
@@ -217,7 +226,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -227,7 +236,11 @@ impl Parser<'_> {
                     span: member_start..self.last_token_end,
                 });
             } else {
-                self.error(format!("unexpected token in actor body: {:?}", self.peek()));
+                self.error(format!(
+                    "unexpected token in actor body: {}",
+                    self.peek()
+                        .map_or("end of file".to_string(), ToString::to_string)
+                ));
                 self.advance(); // error recovery
             }
         }
@@ -366,8 +379,13 @@ impl Parser<'_> {
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let event_start = self.peek_span().start;
                     let event_name = self.expect_ident()?;
+                    let bodied = self.peek() == Some(&Token::LeftBrace);
                     let fields = self.parse_machine_event_fields()?;
-                    self.expect_structural_separator();
+                    if bodied {
+                        self.refuse_mark_after_body();
+                    } else {
+                        self.expect_member_terminator("event");
+                    }
                     events.push(MachineEvent {
                         name: event_name,
                         fields,
@@ -375,6 +393,7 @@ impl Parser<'_> {
                     });
                 }
                 self.expect(&Token::RightBrace)?;
+                self.refuse_mark_after_body();
             } else if self.peek_machine_kw("emits") {
                 // Outputs have their own typed vocabulary, separate from inputs.
                 self.advance();
@@ -382,8 +401,13 @@ impl Parser<'_> {
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let emitted_start = self.peek_span().start;
                     let emitted = self.expect_ident()?;
+                    let bodied = self.peek() == Some(&Token::LeftBrace);
                     let fields = self.parse_machine_event_fields()?;
-                    self.expect_structural_separator();
+                    if bodied {
+                        self.refuse_mark_after_body();
+                    } else {
+                        self.expect_member_terminator("emission");
+                    }
                     emits.push(MachineEvent {
                         name: emitted,
                         fields,
@@ -391,6 +415,7 @@ impl Parser<'_> {
                     });
                 }
                 self.expect(&Token::RightBrace)?;
+                self.refuse_mark_after_body();
             } else if self.peek() == Some(&Token::State) {
                 self.parse_machine_state_or_composite(
                     &mut states,
@@ -418,7 +443,7 @@ impl Parser<'_> {
                 if self.peek() == Some(&Token::LeftBrace) {
                     let block = self.parse_block()?;
                     if !block.stmts.is_empty()
-                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Identifier(name), _)) if name == "state")
+                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Ident(name), _)) if name.name.as_str() == "state")
                     {
                         self.error("machine default must be `default { state }`; use an explicit rule for computation".to_string());
                     }
@@ -432,6 +457,7 @@ impl Parser<'_> {
                     self.eat(&Token::Semicolon);
                 }
                 has_default = true;
+                self.refuse_mark_after_body();
             } else {
                 self.error(
                     "expected `events`, `emits`, `state`, `on`, or `default` in machine body"
@@ -487,7 +513,7 @@ impl Parser<'_> {
     ) {
         for group in composite_groups {
             for parent in &group.parent_transitions {
-                if parent.source_state != "_" {
+                if parent.source_state.name != sym::UNDERSCORE {
                     continue;
                 }
                 for member in &group.members {
@@ -500,7 +526,7 @@ impl Parser<'_> {
                         continue;
                     }
                     let mut expanded = parent.clone();
-                    expanded.source_state.clone_from(member);
+                    expanded.source_state = *member;
                     transitions.push(expanded);
                 }
             }
@@ -523,13 +549,13 @@ impl Parser<'_> {
         for group in composite_groups {
             for transition in transitions.iter_mut() {
                 if transition.target_state == group.name {
-                    transition.target_composite = Some(group.name.clone());
+                    transition.target_composite = Some(group.name);
                     transition.target_state.clone_from(&group.initial);
                     // Rewrite a bare-identifier passthrough body that named the
                     // composite to name the initial substate instead.
-                    if let Expr::Identifier(name) = &transition.body.0 {
+                    if let Expr::Ident(name) = &transition.body.0 {
                         if name == &group.name {
-                            transition.body.0 = Expr::Identifier(group.initial.clone());
+                            transition.body.0 = Expr::Ident(group.initial);
                         }
                     }
                 }
@@ -537,12 +563,12 @@ impl Parser<'_> {
         }
 
         for group in composite_groups {
-            let member_set: std::collections::HashSet<String> =
-                group.members.iter().cloned().collect();
+            let member_set: std::collections::HashSet<Ident> =
+                group.members.iter().copied().collect();
             for transition in transitions.iter_mut() {
                 Self::splice_composite_hooks(
                     transition,
-                    &transition.source_state.clone(),
+                    transition.source_state,
                     &member_set,
                     group.entry.as_ref(),
                     group.exit.as_ref(),
@@ -607,22 +633,22 @@ impl Parser<'_> {
         };
 
         // Body forms:
-        //   on Event: Source => Target,                     ← no body (unit)
+        //   on Event: Source => Target;                     ← no body (unit)
         //   on Event: Source => Target { field: expr, ... } ← field list, target elided
         //   on Event: Source => Target { expression }       ← computed body
         let (body, body_form, body_start, body_end) = if self.peek() != Some(&Token::LeftBrace) {
-            self.expect_structural_separator();
+            self.expect_member_terminator("rule");
             // The implicit body is synthesized from the target state, so it is
             // spanned on the target token — not on whatever token follows the
-            // `,`. A diagnostic on this expression has to point at the text it
+            // `;`. A diagnostic on this expression has to point at the text it
             // asks the author to change.
             let body_expr = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
-                    name: target_state.clone(),
+                    name: target_state,
                     record: None,
                 })
             } else {
-                Expr::Identifier(target_state.clone())
+                Expr::Ident(target_state)
             };
             (
                 body_expr,
@@ -630,25 +656,26 @@ impl Parser<'_> {
                 target_span.start,
                 target_span.end,
             )
-        } else if target_state != "_" && self.is_struct_init_body() {
+        } else if target_state.name != sym::UNDERSCORE && self.is_struct_init_body() {
             let bs = self.peek_span().start;
             self.expect(&Token::LeftBrace)?;
             // The head already named the target, so the braces hold exactly a
             // record literal's field list — `..base` included.
-            let (fields, base) = self.parse_struct_init_fields()?;
+            let (fields, field_name_spans, base) = self.parse_struct_init_fields()?;
             let be = self.peek_span().start;
             // A contextual target keeps its contextual form when it carries a
             // payload: `=> .Faulted { error }` resolves against the machine's
             // state enum exactly as `=> .Faulted,` does.
             let payload = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
-                    name: target_state.clone(),
+                    name: target_state,
                     record: Some(Box::new(ContextVariantRecord { fields, base })),
                 })
             } else {
                 Expr::StructInit {
-                    name: target_state.clone(),
+                    path: Path::single(target_state, target_span.clone()),
                     fields,
+                    field_name_spans,
                     type_args: None,
                     base,
                 }
@@ -660,6 +687,9 @@ impl Parser<'_> {
             let be = self.peek_span().start;
             (Expr::Block(block), MachineTransitionBodyForm::Block, bs, be)
         };
+        if body_form != MachineTransitionBodyForm::Implicit {
+            self.refuse_mark_after_body();
+        }
 
         let body = if head_bindings.is_empty() {
             body
@@ -685,16 +715,14 @@ impl Parser<'_> {
 
     /// Parse the field list of a single event declaration inside `events { }`:
     /// either `;` (no fields) or `{ name: Type; … }`.
-    pub(crate) fn parse_machine_event_fields(
-        &mut self,
-    ) -> Option<Vec<(String, Spanned<TypeExpr>)>> {
+    pub(crate) fn parse_machine_event_fields(&mut self) -> Option<Vec<(Ident, Spanned<TypeExpr>)>> {
         if self.eat(&Token::LeftBrace) {
             let mut fields = Vec::new();
             while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push((field_name, ty));
             }
             self.expect(&Token::RightBrace)?;
@@ -718,11 +746,12 @@ impl Parser<'_> {
         let state_start = self.peek_span().start;
         self.expect(&Token::State)?;
         let state_name = self.expect_ident()?;
-        let mut fields: Vec<(String, Spanned<TypeExpr>)> = Vec::new();
+        let mut fields: Vec<(Ident, Spanned<TypeExpr>)> = Vec::new();
         let mut entry_block: Option<Block> = None;
         let mut exit_block: Option<Block> = None;
 
-        if self.eat(&Token::LeftBrace) {
+        let bodied = self.eat(&Token::LeftBrace);
+        if bodied {
             loop {
                 if self.at_end() || self.peek() == Some(&Token::RightBrace) {
                     break;
@@ -739,7 +768,7 @@ impl Parser<'_> {
                     // composite parser, which consumes the rest of the brace.
                     return self.parse_composite_block(
                         state_start,
-                        &state_name,
+                        state_name,
                         fields,
                         entry_block,
                         exit_block,
@@ -751,13 +780,17 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.expect_structural_separator();
+        if bodied {
+            self.refuse_mark_after_body();
+        } else {
+            self.expect_member_terminator("state");
+        }
 
         states.push(MachineState {
             name: state_name,
@@ -794,8 +827,8 @@ impl Parser<'_> {
     pub(crate) fn parse_composite_block(
         &mut self,
         composite_start: usize,
-        composite_name: &str,
-        fields: Vec<(String, Spanned<TypeExpr>)>,
+        composite_name: Ident,
+        fields: Vec<(Ident, Spanned<TypeExpr>)>,
         entry: Option<Block>,
         exit: Option<Block>,
         states: &mut Vec<MachineState>,
@@ -803,8 +836,8 @@ impl Parser<'_> {
         composite_groups: &mut Vec<CompositeGroup>,
     ) -> Option<()> {
         let mut members: Vec<MachineState> = Vec::new();
-        let mut member_names: Vec<String> = Vec::new();
-        let mut initial: Option<String> = None;
+        let mut member_names: Vec<Ident> = Vec::new();
+        let mut initial: Option<Ident> = None;
         let mut parent_transitions: Vec<MachineTransition> = Vec::new();
 
         // ── Substate + parent-rule body of the composite block. ──────────────
@@ -822,9 +855,9 @@ impl Parser<'_> {
                             self.peek_span(),
                         );
                     }
-                    initial = Some(substate.name.clone());
+                    initial = Some(substate.name);
                 }
-                member_names.push(substate.name.clone());
+                member_names.push(substate.name);
                 members.push(substate);
             } else if is_initial {
                 self.error_at(
@@ -851,7 +884,7 @@ impl Parser<'_> {
             }
         }
         self.expect(&Token::RightBrace)?;
-        self.expect_structural_separator();
+        self.refuse_mark_after_body();
 
         let Some(initial_name) = initial else {
             self.error_at(
@@ -869,7 +902,7 @@ impl Parser<'_> {
         for member in &mut members {
             for (fname, fty) in &fields {
                 if !member.fields.iter().any(|(n, _)| n == fname) {
-                    member.fields.push((fname.clone(), fty.clone()));
+                    member.fields.push((*fname, fty.clone()));
                 }
             }
         }
@@ -879,13 +912,13 @@ impl Parser<'_> {
         // here. Wildcard-source parent rules are expanded per member by the
         // post-pass, once every top-level rule is also in the list.
         for pt in &parent_transitions {
-            if pt.source_state != "_" {
+            if pt.source_state.name != sym::UNDERSCORE {
                 transitions.push(pt.clone());
             }
         }
 
         composite_groups.push(CompositeGroup {
-            name: composite_name.to_string(),
+            name: composite_name,
             members: member_names,
             initial: initial_name,
             entry,
@@ -904,14 +937,15 @@ impl Parser<'_> {
     /// Parse a single substate declaration (`state Name;` /
     /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
     /// body nests deeper than one level and is refused.
-    pub(crate) fn parse_machine_substate(&mut self, composite_name: &str) -> Option<MachineState> {
+    pub(crate) fn parse_machine_substate(&mut self, composite_name: Ident) -> Option<MachineState> {
         let state_start = self.peek_span().start;
         self.expect(&Token::State)?;
         let name = self.expect_ident()?;
         let mut fields = Vec::new();
         let mut entry_block: Option<Block> = None;
         let mut exit_block: Option<Block> = None;
-        if self.eat(&Token::LeftBrace) {
+        let bodied = self.eat(&Token::LeftBrace);
+        if bodied {
             while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                 if self.peek() == Some(&Token::Entry) {
                     self.advance();
@@ -947,13 +981,17 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.expect_structural_separator();
+        if bodied {
+            self.refuse_mark_after_body();
+        } else {
+            self.expect_member_terminator("state");
+        }
         Some(MachineState {
             name,
             fields,
@@ -976,14 +1014,14 @@ impl Parser<'_> {
     ///   * intra-composite moves splice nothing (both endpoints ∈ C).
     pub(crate) fn splice_composite_hooks(
         transition: &mut MachineTransition,
-        source_member: &str,
-        member_set: &std::collections::HashSet<String>,
+        source_member: Ident,
+        member_set: &std::collections::HashSet<Ident>,
         entry: Option<&Block>,
         exit: Option<&Block>,
     ) {
-        let target = &transition.target_state;
-        let source_in = member_set.contains(source_member);
-        let target_in = target != "_" && member_set.contains(target);
+        let target = transition.target_state;
+        let source_in = member_set.contains(&source_member);
+        let target_in = target.name != sym::UNDERSCORE && member_set.contains(&target);
 
         // Prepend order matters: statements pushed last end up first. For a
         // cross-composite move we want `exit-of-source-composite` before
@@ -1004,7 +1042,7 @@ impl Parser<'_> {
     /// Prepend a hook block's statements to the front of a transition body,
     /// wrapping a non-block body into a block whose tail is the original value.
     pub(crate) fn prepend_block_stmts(transition: &mut MachineTransition, hook: &Block) {
-        let body = std::mem::replace(&mut transition.body.0, Expr::Identifier(String::new()));
+        let body = std::mem::replace(&mut transition.body.0, Expr::Tuple(Vec::new()));
         let mut block = match body {
             Expr::Block(block) => block,
             other => Block {
@@ -1033,19 +1071,19 @@ impl Parser<'_> {
     /// are in scope as `let a = event.a; let b = event.b;` prelude statements.
     /// This lowers identically to writing `event.a` directly — no new HIR kind.
     pub(crate) fn apply_event_head_bindings(
-        bindings: &[String],
+        bindings: &[Ident],
         body: Expr,
         body_span: Span,
     ) -> Expr {
         let mut stmts: Vec<Spanned<Stmt>> = Vec::with_capacity(bindings.len());
         for name in bindings {
             let value = Expr::FieldAccess {
-                object: Box::new((Expr::Identifier("event".to_string()), 0..0)),
-                field: name.clone(),
+                object: Box::new((Expr::Ident(Ident::new("event")), 0..0)),
+                field: (*name, 0..0),
             };
             stmts.push((
                 Stmt::Let {
-                    pattern: (Pattern::Identifier(name.clone()), 0..0),
+                    pattern: (Pattern::Identifier(*name), 0..0),
                     ty: None,
                     value: Some((value, 0..0)),
                     else_block: None,
@@ -1085,7 +1123,7 @@ impl Parser<'_> {
         if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "_") {
             self.advance();
             return Some(StatePattern {
-                name: "_".to_string(),
+                name: Ident::from_symbol(sym::UNDERSCORE),
                 is_contextual: false,
                 span: start..self.last_token_end,
             });
@@ -1218,7 +1256,7 @@ impl Parser<'_> {
                         }
                         _ => None,
                     };
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                 }
                 // `intensity: N within <duration>` — the restart-budget contract.
                 // Fuses the legacy `max_restarts:` + `window:` fields. `within`
@@ -1290,7 +1328,7 @@ impl Parser<'_> {
                     if let (Some(restarts), Some(window)) = (restarts, window) {
                         intensity = Some(Intensity { restarts, window });
                     }
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                 }
                 // Legacy `max_restarts:` / `window:` fields — removed in the
                 // flat-reliability-fields cutover. Emit a migration diagnostic
@@ -1316,7 +1354,7 @@ impl Parser<'_> {
                     {
                         self.advance();
                     }
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                 }
                 Some(Token::Child | Token::Identifier("pool")) => {
                     let child_start = self.peek_span().start;
@@ -1330,12 +1368,7 @@ impl Parser<'_> {
                     // actor's qualified identity downstream (checker
                     // `type_defs["bank.Account"]`, MIR layout key); a bare
                     // name stays the root/local identity.
-                    let mut actor_type = self.expect_ident()?;
-                    while self.eat(&Token::Dot) {
-                        let type_name = self.expect_ident()?;
-                        actor_type.push('.');
-                        actor_type.push_str(&type_name);
-                    }
+                    let actor_type = self.parse_syntactic_path()?;
                     let type_args = if self.eat(&Token::Less) {
                         self.parse_type_args()?
                     } else {
@@ -1346,7 +1379,7 @@ impl Parser<'_> {
                     // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
                     // Positional args (no `name:` prefix) are rejected with a migration
                     // diagnostic to guide users to the named form.
-                    let mut args: Vec<(String, Spanned<Expr>)> = Vec::new();
+                    let mut args: Vec<(Ident, Spanned<Expr>)> = Vec::new();
                     if self.eat(&Token::LeftParen) {
                         while !self.at_end() && !matches!(self.peek(), Some(Token::RightParen)) {
                             // Try to parse `ident_or_kw: expr` (named form). Speculatively
@@ -1404,7 +1437,9 @@ impl Parser<'_> {
                     // On a pool child with no arity clause it is instead the
                     // retired arity spelling; the decision needs the clause
                     // loop's result, so remember the position for now.
-                    let paren_count_pos = args.iter().position(|(name, _)| name == "count");
+                    let paren_count_pos = args
+                        .iter()
+                        .position(|(name, _)| name.name.as_str() == "count");
 
                     // A supervisor child accepts restart policy only through the
                     // `restart: <policy>` clause.
@@ -1434,12 +1469,12 @@ impl Parser<'_> {
 
                     // Per-child suffix clauses, accepted in any order:
                     //   restart: permanent | transient | temporary
-                    //   shutdown: <duration> | brutal_kill | infinity
+                    //   stop: <duration>
                     //   wired_to: { param: sibling, bare_sibling }
                     //   count: <expr>            (pool children only)
                     let mut restart: Option<RestartPolicy> = None;
                     let mut count: Option<Spanned<Expr>> = None;
-                    let mut shutdown: Option<ShutdownDirective> = None;
+                    let mut stop: Option<Spanned<Expr>> = None;
                     let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
                     loop {
                         match self.peek() {
@@ -1471,32 +1506,30 @@ impl Parser<'_> {
                                     }
                                 };
                             }
-                            // `shutdown: <duration> | brutal_kill | infinity` clause.
-                            // `infinity` is accepted without a per-child deadline
-                            // wheel and is a contextual keyword.
-                            Some(Token::Identifier(s)) if *s == "shutdown" => {
+                            // The retired `shutdown:` spelling is recognised
+                            // for migration, but strict parsing never lowers it.
+                            Some(Token::Identifier(s)) if *s == "stop" || *s == "shutdown" => {
+                                let retired = *s == "shutdown";
+                                let clause_start = self.peek_span().start;
                                 self.advance();
                                 self.expect(&Token::Colon)?;
-                                shutdown = match self.peek() {
-                                    Some(Token::Duration(d)) => {
-                                        let d = d.to_string();
+                                let value = match self.peek() {
+                                    Some(Token::Identifier(k))
+                                        if *k == "brutal_kill" && retired =>
+                                    {
+                                        let span = self.peek_span();
                                         self.advance();
-                                        Some(ShutdownDirective::Timeout(d))
+                                        Some((Expr::Literal(Literal::Duration(0)), span))
                                     }
-                                    Some(Token::BrutalKill) => {
+                                    Some(Token::Identifier(k)) if *k == "infinity" && retired => {
                                         self.advance();
-                                        Some(ShutdownDirective::BrutalKill)
-                                    }
-                                    Some(Token::Identifier(k)) if *k == "infinity" => {
-                                        self.advance();
-                                        Some(ShutdownDirective::Infinity)
+                                        None
                                     }
                                     Some(Token::Integer(n)) => {
                                         let n = n.to_string();
                                         self.error_with_hint(
                                             format!(
-                                                "supervisor child `shutdown:` must be a duration \
-                                                 literal, `brutal_kill`, or `infinity`, \
+                                                "supervisor child `stop:` needs a duration, \
                                                  not a bare integer `{n}`"
                                             ),
                                             format!("write `{n}s` (or another unit: {n}ms, {n}m)"),
@@ -1504,17 +1537,42 @@ impl Parser<'_> {
                                         self.advance();
                                         None
                                     }
-                                    _ => {
+                                    Some(Token::Comma | Token::Semicolon | Token::RightBrace)
+                                    | None => {
                                         self.error_with_hint(
-                                            "supervisor child `shutdown:` requires a duration, \
-                                             `brutal_kill`, or `infinity`"
+                                            "supervisor child `stop:` requires a duration"
                                                 .to_string(),
-                                            "write `shutdown: 30s`, `shutdown: brutal_kill`, \
-                                             or `shutdown: infinity`",
+                                            "write `stop: 30s` or `stop: 0s` to terminate at once",
                                         );
                                         None
                                     }
+                                    _ => self.parse_expr(),
                                 };
+                                if retired {
+                                    let hint = if value.as_ref().is_some_and(|(expr, _)| {
+                                        matches!(expr, Expr::Literal(Literal::Duration(0)))
+                                    }) {
+                                        "replace `shutdown: brutal_kill` with `stop: 0s`"
+                                    } else if value.is_none() {
+                                        "remove `shutdown: infinity` on a supervisor child"
+                                    } else {
+                                        "replace `shutdown:` with `stop:`"
+                                    };
+                                    self.error_at_with_kind_and_hint(
+                                        "E_SUPERVISOR_STOP_CLAUSE: `shutdown:` is retired"
+                                            .to_string(),
+                                        clause_start..self.last_token_end,
+                                        hint,
+                                        ParseDiagnosticKind::SupervisorStopClauseRetired,
+                                    );
+                                }
+                                if stop.is_some() {
+                                    self.error_at(
+                                        "duplicate supervisor child `stop:` clause".to_string(),
+                                        clause_start..self.last_token_end,
+                                    );
+                                }
+                                stop = value;
                             }
                             // `wired_to: { key: sibling, bare_sibling }` clause.
                             Some(Token::Identifier(s)) if *s == "wired_to" => {
@@ -1523,10 +1581,10 @@ impl Parser<'_> {
                                 self.expect(&Token::LeftBrace)?;
                                 let mut map = std::collections::HashMap::new();
                                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                                    let key = self.expect_ident()?;
+                                    let key = self.expect_ident()?.to_string();
                                     if self.eat(&Token::Colon) {
                                         // explicit `key: sibling_name` form
-                                        let val = self.expect_ident()?;
+                                        let val = self.expect_ident()?.to_string();
                                         map.insert(key, val);
                                     } else {
                                         // shorthand `sibling_name` — key == value
@@ -1540,7 +1598,7 @@ impl Parser<'_> {
                                 wired_to = if map.is_empty() { None } else { Some(map) };
                             }
                             // `count: <expr>` clause — pool arity. Contextual,
-                            // like `shutdown` and `wired_to`, so `count` stays
+                            // like `stop` and `wired_to`, so `count` stays
                             // an ordinary identifier everywhere else (including
                             // as an actor field name inside the init-arg list).
                             Some(Token::Identifier(s)) if *s == "count" => {
@@ -1595,7 +1653,7 @@ impl Parser<'_> {
                         }
                     }
 
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     children.push(ChildSpec {
                         name: child_name,
                         actor_type,
@@ -1604,7 +1662,7 @@ impl Parser<'_> {
                         restart,
                         wired_to,
                         is_pool,
-                        shutdown,
+                        stop,
                         count,
                         span: child_start..self.last_token_end,
                     });

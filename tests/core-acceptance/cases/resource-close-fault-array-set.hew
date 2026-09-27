@@ -2,7 +2,9 @@
 // failing `close` is the frame's failure and the array's remaining elements
 // are still released, in index order.
 #[resource]
-type Conn { fd: i64, }
+type Conn {
+    fd: i64;
+}
 
 impl Conn {
     fn close(consume self) {

@@ -1,0 +1,10 @@
+[[case]]
+id = "funcupdate-owned-field-drop-funcupdate-carry-bytes-field"
+intent = "Functional-update owned-field drop leak oracle. Shape `funcupdate_carry_bytes_field_high` (funcupdate carry bytes field no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/funcupdate-owned-field-drop-funcupdate-carry-bytes-field.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 32

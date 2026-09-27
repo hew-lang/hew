@@ -5,7 +5,9 @@
 import std.net;
 
 actor Clock {
-    receive fn tick(n: i64) -> i64 { n + 1 }
+    receive fn tick(n: i64) -> i64 {
+        n + 1
+    }
 }
 
 fn show(data: Option<bytes>) -> string {
@@ -22,35 +24,35 @@ fn main() {
     let server = listener.accept();
     let (input, output) = server.split();
     let clock = spawn Clock;
-
     select {
         data from input.recv() => println(f"idle socket answered: {show(data)}"),
         after 20ms => println("timer beat an idle socket"),
-    }
+    };
     select {
         data from input.recv() => println(f"idle socket answered: {show(data)}"),
         n from clock.tick(41) => println(f"actor call beat an idle socket: {n.expect("tick")}"),
-    }
-
+    };
     client.send(b"hello").expect("send");
     select {
         data from input.recv() => println(f"readable socket won: {show(data)}"),
         after 10s => println("timer beat a readable socket"),
-    }
-
+    };
     select {
         data from input.recv() => println(f"idle socket answered: {show(data)}"),
         after 20ms => println("timer beat an idle socket again"),
-    }
+    };
     client.send(b"world!").expect("send");
     println(f"next receive: {show(input.recv())}");
-
     client.close();
     select {
         data from input.recv() => println(f"closed peer won: {show(data)}"),
         after 10s => println("timer beat a closed peer"),
-    }
+    };
     output.close();
     listener.close();
-    close(clock);
+    {
+        let __hew_migrated_actor_1884 = clock;
+        stop(__hew_migrated_actor_1884);
+        stopped(__hew_migrated_actor_1884);
+    };
 }

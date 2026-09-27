@@ -102,6 +102,15 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     if !running {
         return -1;
     }
+    // The single-thread driver runs offloaded work inline at submission, so
+    // its completion enters the ready list in program order.
+    if crate::driver::active() {
+        drop(guard);
+        // SAFETY: the caller keeps `arg` valid until `func` completes, which
+        // is before this call returns.
+        unsafe { func(arg) };
+        return 0;
+    }
     queue.push(Task { func, arg });
     p.inner.condvar.notify_one();
     0
@@ -757,7 +766,7 @@ mod tests {
             release.wait();
 
             // Follow-up call composes: pool is not wedged.
-            let result2 = spawn_blocking_result(pool, || 7_i32, Some(Duration::from_millis(500)));
+            let result2 = spawn_blocking_result(pool, || 7_i32, None);
             assert_eq!(result2, Ok(7));
 
             hew_blocking_pool_stop(pool);

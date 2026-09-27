@@ -20,6 +20,6 @@ fn main() {
             // exits, `e` is dropped via hew_string_drop → free_cstring.
             // The old raw-malloc path caused libc::abort here.
             println("error surfaced and dropped cleanly")
-        },
+        }
     }
 }

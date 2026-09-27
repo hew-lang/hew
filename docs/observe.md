@@ -38,7 +38,10 @@ import std.observe;
 
 println(observe.read("heap.live_bytes").unwrap_or(0));
 println(observe.read("actors.turns_total") ?? 0);
-println(observe.read("does.not.exist")); // None
+match observe.read("does.not.exist") {
+    .Some(value) => println(value),
+    .None => println("None"),
+}
 ```
 
 Unknown names return `None`. Runtime `u64` values are converted to `i64`; values
@@ -96,7 +99,7 @@ Save this as `observe_demo.hew`:
 import std.observe;
 
 actor Counter {
-    var count: i64,
+    var count: i64;
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -116,7 +119,7 @@ let _barrier = observe.barrier().expect("barrier succeeds");
 println(total);
 println(observe.read("actors.turns_total") ?? 0);
 println(observe.series());
-observe.scrape()
+println(observe.scrape());
 ```
 
 Run it with hot counters enabled:
@@ -233,7 +236,9 @@ questions such as:
 
 Use this pattern in examples and tests that need deterministic scrape output:
 
-```hew
+This fragment uses the `Counter` actor and `std.observe` import from the example above.
+
+```hew,ignore
 let counter = spawn Counter(count: 0);
 counter.increment(1).expect("increment completes");
 let value = counter.total().expect("total query completes");

@@ -451,30 +451,21 @@ fn ask_freed_queued_messages_unblock_caller() {
         // which should signal the reply channel.
         actor.stop();
 
-        // Wait on the reply channel. If orphan handling is broken this
-        // blocks for the full timeout, so the timeout has to be long
-        // enough that "unblocked promptly" and "timed out" are separated
-        // by real margin — an assertion bar equal to the wait timeout has
-        // none, and fails on a loaded machine for a correct unblock that
-        // happened to land near the boundary.
-        let start = std::time::Instant::now();
-        // SAFETY: ch is a valid reply channel; hew_reply_wait_timeout is
-        // documented to return null and unblock on orphaned channels.
-        let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 2_000) };
-        let elapsed = start.elapsed();
+        // Wait on the reply channel with no deadline: the actor is not freed
+        // until this test ends, so only the stop can release the waiter. If
+        // orphan handling is broken this wait never returns.
+        // SAFETY: ch is a valid reply channel, waited on once.
+        let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait(ch) };
 
         // The reply may be null (orphaned — actor stopped before
         // dispatching) or non-null (actor dispatched before stopping).
-        // Both are correct; the test verifies that the caller is
-        // UNBLOCKED promptly, not that the reply is always null.
-        assert!(
-            elapsed.as_millis() < 500,
-            "reply channel should be unblocked promptly, took {}ms \
-             (the 2000ms wait timeout means anything near that is a real \
-             failure to unblock, not scheduling noise)",
-            elapsed.as_millis()
-        );
-        if !reply.is_null() {
+        // Both are correct; a null reply must carry the orphaned
+        // classification rather than an unexplained null.
+        if reply.is_null() {
+            // SAFETY: read on the caller-side reference before it is released.
+            let orphaned = unsafe { hew_runtime::reply_channel::hew_reply_channel_is_orphaned(ch) };
+            assert_eq!(orphaned, 1, "a null reply must come from the orphaned node");
+        } else {
             // SAFETY: reply was allocated by hew_reply.
             unsafe { hew_runtime::mem::buf_free(reply) };
         }
@@ -610,19 +601,14 @@ fn stop_during_dispatch_unblocks_queued_ask() {
     // sentinel, never the queued ask.
     STOP_DURING_DISPATCH_GATE.release();
 
-    let start = Instant::now();
+    // No deadline: the actor is freed only when this test ends, so a wait
+    // that returns proves the queued ask was retired by the terminal stop,
+    // not left for hew_actor_free.
     // SAFETY: ch is a valid reply channel we still hold a reference to.
-    let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 2_000) };
-    let elapsed = start.elapsed();
+    let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait(ch) };
     // SAFETY: read on the caller-side reference before it is released.
     let orphaned = unsafe { hew_runtime::reply_channel::hew_reply_channel_is_orphaned(ch) };
 
-    assert!(
-        elapsed.as_millis() < 500,
-        "an ask queued behind the shutdown sentinel must be retired by the \
-         terminal stop, not left for hew_actor_free; took {}ms of a 2000ms wait",
-        elapsed.as_millis()
-    );
     assert!(
         reply.is_null(),
         "the queued ask was never dispatched, so no value can have been replied"

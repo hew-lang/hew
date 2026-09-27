@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-drop-usercall-escape-shapes"
+intent = "Bytes ownership leak oracles: sender-local scope-exit drop and actor-state-field overwrite drop. Shape `usercall_escape_shapes` (bytes usercall escape shapes run clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/bytes-drop-usercall-escape-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "42OK"
+exit = 0

@@ -4,27 +4,24 @@
 import std.stream;
 
 fn main() {
-    let (txa, rxa): (stream.Sink<string>, stream.Stream<string>) =
-        match stream.pipe(4) {
-            .Ok(pair) => pair,
-            .Err(error) => {
-                println(error);
-                return;
-            },
-        };
-    let (txb, rxb): (stream.Sink<string>, stream.Stream<string>) =
-        match stream.pipe(4) {
-            .Ok(pair) => pair,
-            .Err(error) => {
-                println(error);
-                return;
-            },
-        };
+    let (txa, rxa): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => {
+            println(error);
+            return;
+        }
+    };
+    let (txb, rxb): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => {
+            println(error);
+            return;
+        }
+    };
     txa.send("a1").expect("send");
     txb.send("b1").expect("send");
     txa.send("a2").expect("send");
     txb.send("b2").expect("send");
-
     var items = 0;
     while items < 4 {
         select {
@@ -32,19 +29,18 @@ fn main() {
                 .Some(item) => {
                     println(f"a {item}");
                     items = items + 1;
-                },
+                }
                 .None => println("a closed early"),
-            },
+            }
             v from rxb.recv() => match v {
                 .Some(item) => {
                     println(f"b {item}");
                     items = items + 1;
-                },
+                }
                 .None => println("b closed early"),
-            },
+            }
         }
     }
-
     // A finished pipe is permanently ready, so under source order it would
     // win every later round. Observe each close on its own receive instead.
     txa.close();

@@ -1,11 +1,10 @@
-// Exercises `supervisor_stop(sup)` end-to-end.
+// Exercises cooperative supervisor stop and terminal observation end-to-end.
 //
 // Verifies:
 //   - `spawn AppSupervisor` routes through the synthesised bootstrap body
 //     (hew_supervisor_new + add_child_spec + hew_supervisor_start).
-//   - `supervisor_stop(sup)` lowers to `hew_supervisor_stop` via the
-//     user-name bridge and emits a CallRuntimeAbi with dest: None.
-//   - main returns 0 after the stop call.
+//   - `stop(sup)` requests shutdown and `stopped(sup)` waits for cleanup.
+//   - main returns 0 once the supervisor is terminal.
 actor Worker {
     receive fn ping(_n: i64) {
         _n;
@@ -13,14 +12,15 @@ actor Worker {
 }
 
 supervisor AppSupervisor {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child w1: Worker,
+    child w1: Worker;
 }
 
 fn main() -> i64 {
     let sup = spawn AppSupervisor;
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     0
 }

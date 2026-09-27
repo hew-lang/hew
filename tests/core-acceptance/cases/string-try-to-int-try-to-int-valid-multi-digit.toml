@@ -1,0 +1,10 @@
+[[case]]
+id = "string-try-to-int-try-to-int-valid-multi-digit"
+intent = "Leak oracle for `std::string::try_to_int`. Shape `try_to_int_valid_multi_digit_high` (valid multi digit parse has no per digit leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-try-to-int-try-to-int-valid-multi-digit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

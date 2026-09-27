@@ -1,0 +1,12 @@
+fn main() {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    var sum: i64 = 0;
+    for x in v {
+        sum = sum + x;
+    }
+    sum = sum + v[0] + v[1] + v.len();
+    print(sum);
+    print("OK");
+}

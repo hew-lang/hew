@@ -4,22 +4,24 @@
 import "imported_supervisor_child_identity_support/worker.hew";
 
 supervisor ImportedWorkerPool {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
 
-    child worker: ImportedWorker(id: 17),
+    child worker: ImportedWorker(id: 17);
 }
 
 fn main() -> i64 {
     let sup = spawn ImportedWorkerPool;
     match sup.worker.identify() {
         .Ok(id) => {
-            supervisor_stop(sup);
+            stop(sup);
+            stopped(sup);
             id
-        },
+        }
         .Err(_) => {
-            supervisor_stop(sup);
+            stop(sup);
+            stopped(sup);
             1
-        },
+        }
     }
 }

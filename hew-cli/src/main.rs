@@ -1156,10 +1156,33 @@ fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
     0
 }
 
+/// Body of `hew tool compile --dump-defs`: the declaration table the whole
+/// pipeline indexes, printed in mint order.
+fn cmd_dump_defs(a: &args::CompileArgs, json: bool) -> i32 {
+    let sir = match lower_file_to_sir(
+        &a.input,
+        a.target.as_deref(),
+        &compile::CompileOptions::default(),
+    ) {
+        Ok(sir) => sir,
+        Err(channel) => return channel.exit_code(),
+    };
+    let dump = hew_types::dump::dump_defs(&sir.module.defs);
+    if json {
+        eprint!("{dump}");
+    } else {
+        print!("{dump}");
+    }
+    0
+}
+
 fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
     if a.dump_sir {
         return cmd_dump_sir(a, json);
+    }
+    if a.dump_defs {
+        return cmd_dump_defs(a, json);
     }
     let target = match target::TargetSpec::from_requested(a.target.as_deref()) {
         Ok(target) => target,
@@ -1613,7 +1636,12 @@ fn cmd_run_wasi(
     let artifact = compile_temp_wasi_module(input, options, target)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
 
-    match wasi_runner::run_module(artifact.path(), &a.program_args, timeout) {
+    match wasi_runner::run_module(
+        artifact.path(),
+        &a.program_args,
+        timeout,
+        a.deterministic_env().as_deref(),
+    ) {
         Ok(wasi_runner::WasiRunOutcome::Exited(status)) => {
             drop(artifact);
             std::process::exit(status.code().unwrap_or(1));
@@ -1646,6 +1674,10 @@ fn cmd_run_native(
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);
+    match a.deterministic_env() {
+        Some(config) => command.env("HEW_DETERMINISTIC", config),
+        None => command.env_remove("HEW_DETERMINISTIC"),
+    };
     if a.profile && std::env::var_os("HEW_PPROF").is_none() {
         command.env("HEW_PPROF", default_profile_endpoint());
     }
@@ -1992,7 +2024,15 @@ fn cmd_fmt(a: &args::FmtArgs) {
         }
     };
 
-    if checked_migration_in_snapshot(a, &files) {
+    if a.migrate {
+        let root = a
+            .files
+            .is_empty()
+            .then(|| a.root.as_deref().unwrap_or_else(|| Path::new(".")));
+        match migrate_in_snapshot(&files, root, a.check) {
+            Ok(false) => {}
+            Ok(true) | Err(()) => std::process::exit(1),
+        }
         return;
     }
 
@@ -2011,39 +2051,12 @@ fn cmd_fmt(a: &args::FmtArgs) {
             }
         };
 
-        let migrated = if a.migrate {
-            if let Ok(migrated) = migrate_source_file(file_path, &file, &source) {
-                migrated
-            } else {
-                had_errors = true;
-                continue;
-            }
-        } else {
-            source.clone()
-        };
-
-        let Some(formatted) = format_for_display(&file, &migrated) else {
+        let Some(formatted) = format_for_display(&file, &source) else {
             had_errors = true;
             continue;
         };
 
         formatted_files.push((file_path, file, source, formatted));
-    }
-
-    // A migration is a cross-file rewrite.  Compute every checker-backed edit
-    // against the original tree before writing anything, so one migrated import
-    // cannot affect the semantic decision for a later source file.
-    if a.migrate && had_errors {
-        std::process::exit(1);
-    }
-    if a.migrate {
-        let outputs = formatted_files
-            .iter()
-            .map(|(path, file, _, formatted)| (path.as_path(), file.as_str(), formatted.as_str()))
-            .collect::<Vec<_>>();
-        if !recheck_migrated_sources(&outputs) {
-            std::process::exit(1);
-        }
     }
 
     for (file_path, file, source, formatted) in formatted_files {
@@ -2143,6 +2156,12 @@ fn insert_format_file(
     Ok(())
 }
 
+fn skip_format_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') || matches!(name, "target" | "node_modules"))
+}
+
 fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|error| format!("cannot read format directory `{}`: {error}", dir.display()))?;
@@ -2160,10 +2179,7 @@ fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), 
             .map_err(|error| format!("cannot inspect format path `{}`: {error}", path.display()))?;
 
         if file_type.is_dir() {
-            if !matches!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".git" | "target" | ".hew")
-            ) {
+            if !skip_format_directory(&path) {
                 collect_format_directory(&path, files)?;
             }
         } else if file_type.is_file()
@@ -2174,20 +2190,6 @@ fn collect_format_directory(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), 
     }
 
     Ok(())
-}
-
-fn checked_migration_in_snapshot(a: &args::FmtArgs, files: &[PathBuf]) -> bool {
-    if !a.migrate || !a.check {
-        return false;
-    }
-    let root = a
-        .files
-        .is_empty()
-        .then(|| a.root.as_deref().unwrap_or_else(|| Path::new(".")));
-    match migration_snapshot_needs_changes(files, root) {
-        Ok(false) => true,
-        Ok(true) | Err(()) => std::process::exit(1),
-    }
 }
 
 fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -2207,10 +2209,7 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
             let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
             let path = entry.path();
             if path.is_dir() {
-                if !matches!(
-                    path.file_name().and_then(|name| name.to_str()),
-                    Some(".git" | "target")
-                ) {
+                if !skip_format_directory(&path) {
                     pending.push(path);
                 }
             } else if path.extension().is_some_and(|extension| extension == "hew") {
@@ -2228,7 +2227,11 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> Result<bool, ()> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "snapshot migration prepares, checks, and commits files as one transaction"
+)]
+fn migrate_in_snapshot(files: &[PathBuf], root: Option<&Path>, check: bool) -> Result<bool, ()> {
     let snapshot = tempfile::tempdir().map_err(|error| {
         eprintln!("Error: cannot create migration check snapshot: {error}");
     })?;
@@ -2236,7 +2239,7 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
 
     if let Some(root) = root {
         let snapshot_root = snapshot.path().join("root");
-        copy_migration_snapshot_tree(root, &snapshot_root).map_err(|error| {
+        copy_migration_snapshot_tree(root, &snapshot_root, snapshot.path()).map_err(|error| {
             eprintln!("Error: cannot create migration check snapshot: {error}");
         })?;
         for file in files {
@@ -2249,15 +2252,27 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
             mapped_files.push((file.clone(), snapshot_root.join(relative)));
         }
     } else {
-        for (index, file) in files.iter().enumerate() {
+        let mut snapshot_parents: std::collections::BTreeMap<PathBuf, PathBuf> =
+            std::collections::BTreeMap::new();
+        for file in files {
             let parent = file
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
-            let snapshot_parent = snapshot.path().join(format!("input-{index}"));
-            copy_migration_snapshot_tree(parent, &snapshot_parent).map_err(|error| {
-                eprintln!("Error: cannot create migration check snapshot: {error}");
-            })?;
+            let snapshot_parent = if let Some(mapped) = snapshot_parents.get(parent) {
+                mapped.clone()
+            } else {
+                let mapped = snapshot
+                    .path()
+                    .join(format!("input-{}", snapshot_parents.len()));
+                copy_migration_snapshot_tree(parent, &mapped, snapshot.path()).map_err(
+                    |error| {
+                        eprintln!("Error: cannot create migration check snapshot: {error}");
+                    },
+                )?;
+                snapshot_parents.insert(parent.to_path_buf(), mapped.clone());
+                mapped
+            };
             let Some(file_name) = file.file_name() else {
                 eprintln!(
                     "Error: migration input has no file name: {}",
@@ -2267,6 +2282,41 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
             };
             mapped_files.push((file.clone(), snapshot_parent.join(file_name)));
         }
+    }
+
+    // Punctuation is parsed before type checking. Rewrite every snapshot file
+    // first so imported modules use the same grammar during checker-selected
+    // lifecycle and variant migration. Refusals leave the original tree alone.
+    let mut punctuation = Vec::with_capacity(mapped_files.len());
+    let mut refused = false;
+    for (original, mapped) in &mapped_files {
+        let file = original.display().to_string();
+        let source = std::fs::read_to_string(mapped).map_err(|error| {
+            eprintln!("Error: cannot read migration snapshot for {file}: {error}");
+        })?;
+        match hew_parser::fmt::migrate_punctuation(&source) {
+            Ok(formatted) => punctuation.push((mapped, formatted)),
+            Err(error) => {
+                refused = true;
+                for site in error.refusals {
+                    eprintln!(
+                        "Error: migration refused {file}:{}-{}: {}",
+                        site.span.start, site.span.end, site.reason
+                    );
+                }
+            }
+        }
+    }
+    if refused {
+        return Err(());
+    }
+    for (mapped, formatted) in punctuation {
+        std::fs::write(mapped, formatted).map_err(|error| {
+            eprintln!(
+                "Error: cannot write migration snapshot {}: {error}",
+                mapped.display()
+            );
+        })?;
     }
 
     let mut regenerated = Vec::with_capacity(mapped_files.len());
@@ -2320,14 +2370,25 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
             );
         })?;
         if original_bytes != regenerated_bytes {
-            eprintln!("{}: needs formatting", original.display());
+            if check {
+                eprintln!("{}: needs formatting", original.display());
+            } else {
+                std::fs::write(&original, regenerated_bytes).map_err(|error| {
+                    eprintln!("Error: cannot write {}: {error}", original.display());
+                })?;
+                eprintln!("Formatted {}", original.display());
+            }
             needs_changes = true;
         }
     }
-    Ok(needs_changes)
+    Ok(check && needs_changes)
 }
 
-fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_migration_snapshot_tree(
+    source: &Path,
+    destination: &Path,
+    snapshot_root: &Path,
+) -> Result<(), String> {
     std::fs::create_dir_all(destination)
         .map_err(|error| format!("cannot create `{}`: {error}", destination.display()))?;
     let entries = std::fs::read_dir(source)
@@ -2337,11 +2398,14 @@ fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(),
         let path = entry.path();
         let target = destination.join(entry.file_name());
         if path.is_dir() {
-            if !matches!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".git" | "target")
-            ) {
-                copy_migration_snapshot_tree(&path, &target)?;
+            if path
+                .canonicalize()
+                .is_ok_and(|canonical| canonical.starts_with(snapshot_root))
+            {
+                continue;
+            }
+            if !skip_format_directory(&path) {
+                copy_migration_snapshot_tree(&path, &target, snapshot_root)?;
             }
             continue;
         }
@@ -2363,18 +2427,166 @@ fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(),
     Ok(())
 }
 
-#[expect(
+fn actor_lifecycle_migration(
+    source: &str,
+    error: &hew_types::error::TypeError,
+) -> Result<Option<hew_parser::fmt::SelectedMigration>, String> {
+    use hew_types::error::TypeErrorKind;
+    if !matches!(
+        error.kind,
+        TypeErrorKind::ActorLifecycleRetired | TypeErrorKind::ActorHandleMethodRetired
+    ) {
+        return Ok(None);
+    }
+    let text = source
+        .get(error.span.clone())
+        .ok_or("retired actor operation has no source span")?;
+    let trimmed = text.trim();
+    let replacement = if trimmed.starts_with("#[on(") && trimmed.ends_with(")]") {
+        if !trimmed.contains("exit") {
+            return Err("retired hook does not name `exit`".into());
+        }
+        trimmed.replacen("exit", "link", 1)
+    } else if let Some(inner) = trimmed
+        .strip_prefix("closed(")
+        .and_then(|call| call.strip_suffix(')'))
+    {
+        format!("stopped({inner})")
+    } else if let Some(inner) = trimmed
+        .strip_prefix("close(")
+        .or_else(|| trimmed.strip_prefix("supervisor_stop("))
+        .and_then(|call| call.strip_suffix(')'))
+    {
+        if inner.trim().is_empty() {
+            return Err("retired lifecycle call has no handle".into());
+        }
+        let handle = format!("__hew_migrated_actor_{}", error.span.start);
+        format!("{{ let {handle} = {inner}; stop({handle}); stopped({handle}); }}")
+    } else if let Some(call) = trimmed.strip_suffix(')') {
+        let call = call.trim_end();
+        let call = call
+            .strip_suffix('(')
+            .ok_or("retired actor method is not a zero-argument call")?;
+        let (receiver, method) = call
+            .rsplit_once('.')
+            .ok_or("retired actor method has no receiver")?;
+        match method.trim() {
+            "stop" => format!("stop({receiver})"),
+            "close" => {
+                let handle = format!("__hew_migrated_actor_{}", error.span.start);
+                format!("{{ let {handle} = {receiver}; stop({handle}); stopped({handle}); }}")
+            }
+            _ => return Err("retired actor method is not `stop` or `close`".into()),
+        }
+    } else {
+        return Err("retired actor operation has no supported edit".into());
+    };
+    Ok(Some(hew_parser::fmt::SelectedMigration {
+        span: error.span.clone(),
+        replacement,
+    }))
+}
+
+fn actor_parser_migration(
+    source: &str,
+    error: &hew_parser::ParseError,
+) -> Result<Option<hew_parser::fmt::SelectedMigration>, String> {
+    use hew_parser::ParseDiagnosticKind;
+    match &error.kind {
+        ParseDiagnosticKind::SupervisorStopClauseRetired => {
+            let clause = source
+                .get(error.span.clone())
+                .ok_or("retired supervisor clause has no source span")?;
+            let replacement = if clause.trim() == "shutdown: infinity" {
+                String::new()
+            } else if clause.trim() == "shutdown: brutal_kill" {
+                "stop: 0s".to_string()
+            } else if let Some(value) = clause.trim().strip_prefix("shutdown:") {
+                format!("stop:{value}")
+            } else {
+                return Err("retired supervisor clause is not `shutdown:`".into());
+            };
+            Ok(Some(hew_parser::fmt::SelectedMigration {
+                span: error.span.clone(),
+                replacement,
+            }))
+        }
+        ParseDiagnosticKind::AwaitRestartRetired => {
+            let tokens = hew_lexer::lex(source);
+            let mut index = tokens
+                .iter()
+                .position(|(_, span)| span.start >= error.span.end)
+                .ok_or("`await_restart` has no role operand")?;
+            if !matches!(tokens[index].0, hew_lexer::Token::Identifier(_)) {
+                return Err("`await_restart` needs a supervised role path".into());
+            }
+            let start = tokens[index].1.start;
+            let mut end = tokens[index].1.end;
+            index += 1;
+            let role_segment = |span: &hew_lexer::Span| {
+                source.get(span.start..span.end).is_some_and(|word| {
+                    let mut chars = word.chars();
+                    chars
+                        .next()
+                        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+                        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                })
+            };
+            while index < tokens.len() {
+                match tokens[index].0 {
+                    hew_lexer::Token::Dot
+                        if index + 1 < tokens.len() && role_segment(&tokens[index + 1].1) =>
+                    {
+                        end = tokens[index + 1].1.end;
+                        index += 2;
+                    }
+                    hew_lexer::Token::LeftBracket => {
+                        let mut depth = 1usize;
+                        index += 1;
+                        while index < tokens.len() && depth != 0 {
+                            match tokens[index].0 {
+                                hew_lexer::Token::LeftBracket => depth += 1,
+                                hew_lexer::Token::RightBracket => depth -= 1,
+                                _ => {}
+                            }
+                            end = tokens[index].1.end;
+                            index += 1;
+                        }
+                        if depth != 0 {
+                            return Err("`await_restart` has an unfinished role index".into());
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            let role = source
+                .get(start..end)
+                .ok_or("`await_restart` role has no source span")?;
+            let binding = format!("__hew_migrated_role_{}", error.span.start);
+            Ok(Some(hew_parser::fmt::SelectedMigration {
+                span: error.span.start..end,
+                replacement: format!(
+                    "{{ let {binding} = {role}; restarted({binding}); {binding} }}"
+                ),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[allow(
     clippy::too_many_lines,
-    reason = "the migration must keep checker resolution, refusal reporting, and source edits in one transaction"
+    reason = "one source migration reconciles checker-selected edits before writing any output"
 )]
 fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
     let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
-    let state = match hew_compile::run_file_frontend_to_typecheck_for_migration(
-        &file_path.display().to_string(),
-        &options,
-    ) {
-        Ok(state) => state,
-        Err(failure) => {
+    let label = file_path.display().to_string();
+    let initial = hew_compile::run_source_frontend_for_migration(source, &label, &options);
+    let source = migrate_machine_event_spellings(source, &initial.program);
+    let state = hew_compile::run_source_frontend_for_migration(&source, &label, &options);
+    let state = match &state.stopped {
+        None => state,
+        Some(failure) => {
             compile::render_frontend_diagnostics(&failure.diagnostics);
             let mut listed_site = false;
             for diagnostic in &failure.diagnostics {
@@ -2409,7 +2621,11 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         }
     };
 
-    let Some(typecheck) = state.typecheck_result.tco.as_ref() else {
+    let Some(typecheck) = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+    else {
         eprintln!("{file}: migration requires checker output");
         return Err(());
     };
@@ -2425,29 +2641,56 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         .iter()
         .flat_map(|graph| graph.modules.values())
         .filter(|module| {
-            !module.id.path.is_empty()
+            !module.id.segments.is_empty()
                 && module.source_paths.len() == 1
                 && std::fs::canonicalize(&module.source_paths[0]).ok() == own_path
         })
-        .map(|module| module.id.path.join("."))
+        .map(|module| module.id.dotted())
         .collect();
-    let tokens = hew_lexer::lex(source);
+    let tokens = hew_lexer::lex(&source);
     let mut variants = Vec::new();
+    let mut selected = Vec::new();
     let mut refusals = Vec::new();
+    if let Some(parse) = &state.parse_result {
+        for error in &parse.errors {
+            match actor_parser_migration(&source, error) {
+                Ok(Some(edit)) => selected.push(edit),
+                Err(reason) => refusals.push(format!(
+                    "{}:{}-{}: {reason}",
+                    file, error.span.start, error.span.end
+                )),
+                Ok(None) => {}
+            }
+        }
+    }
     for error in &typecheck.warnings {
+        if error
+            .source_module
+            .as_ref()
+            .is_some_and(|module| !own_modules.contains(module))
+        {
+            continue;
+        }
+        match actor_lifecycle_migration(&source, error) {
+            Ok(Some(edit)) => {
+                selected.push(edit);
+                continue;
+            }
+            Err(reason) => {
+                refusals.push(format!(
+                    "{}:{}-{}: {reason}",
+                    file, error.span.start, error.span.end
+                ));
+                continue;
+            }
+            Ok(None) => {}
+        }
         let is_expression = matches!(error.kind, hew_types::error::TypeErrorKind::BareVariantExpr);
         let is_pattern = matches!(
             error.kind,
             hew_types::error::TypeErrorKind::BareVariantPattern
         );
         if !is_expression && !is_pattern {
-            continue;
-        }
-        if error
-            .source_module
-            .as_ref()
-            .is_some_and(|module| !own_modules.contains(module))
-        {
             continue;
         }
         let Some((name, span)) = tokens.iter().find_map(|(token, span)| {
@@ -2537,7 +2780,7 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         return Err(());
     }
 
-    match hew_parser::fmt::migrate_legacy_syntax(source, &variants) {
+    match hew_parser::fmt::migrate_legacy_syntax_with_selected(&source, &variants, &selected) {
         Ok(migrated) => Ok(migrated),
         Err(error) => {
             for refusal in error.refusals {
@@ -2549,6 +2792,107 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
             Err(())
         }
     }
+}
+
+/// Replace the former flat machine companion only when a loaded declaration
+/// proves its owner. Lexer tokens keep strings and comments intact; an
+/// authored declaration with the same flat spelling wins and is left alone.
+fn migrate_machine_event_spellings(source: &str, program: &hew_parser::ast::Program) -> String {
+    use hew_parser::ast::{ImportSpec, Item};
+
+    let mut machines = std::collections::HashSet::new();
+    let mut authored = std::collections::HashSet::new();
+    let mut collect = |items: &[hew_parser::ast::Spanned<Item>]| {
+        for (item, _) in items {
+            match item {
+                Item::Machine(machine) => {
+                    machines.insert(machine.name.to_string());
+                }
+                Item::TypeDecl(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Trait(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Record(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::TypeAlias(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Const(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Function(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Actor(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                Item::Supervisor(decl) => {
+                    authored.insert(decl.name.to_string());
+                }
+                _ => {}
+            }
+        }
+    };
+    collect(&program.items);
+    if let Some(graph) = &program.module_graph {
+        for module in graph.modules.values() {
+            collect(&module.items);
+        }
+    }
+
+    let mut edits = Vec::new();
+    for (token, span) in hew_lexer::lex(source) {
+        let hew_lexer::Token::Identifier(name) = token else {
+            continue;
+        };
+        let Some(machine) = name.strip_suffix("Event") else {
+            continue;
+        };
+        if !machines.contains(machine) || authored.contains(name) {
+            continue;
+        }
+        let import = program.items.iter().find_map(|(item, item_span)| {
+            (item_span.start <= span.start && span.end <= item_span.end)
+                .then_some((item, item_span))
+        });
+        let replacement = if let Some((Item::Import(import), import_span)) = import {
+            match &import.spec {
+                Some(ImportSpec::Names(names))
+                    if names
+                        .iter()
+                        .any(|item| item.name.name.as_str() == name && item.alias.is_some()) =>
+                {
+                    continue
+                }
+                Some(ImportSpec::Names(names))
+                    if names.iter().any(|item| item.name.name.as_str() == machine) =>
+                {
+                    if let Some(offset) = source[import_span.start..span.start].rfind(',') {
+                        edits.push((import_span.start + offset..span.end, String::new()));
+                    } else if let Some(offset) = source[span.end..import_span.end].find(',') {
+                        edits.push((span.start..span.end + offset + 1, String::new()));
+                    } else {
+                        continue;
+                    }
+                    continue;
+                }
+                Some(ImportSpec::Names(_)) => machine.to_string(),
+                _ => continue,
+            }
+        } else {
+            format!("{machine}.Event")
+        };
+        edits.push((span.start..span.end, replacement));
+    }
+    edits.sort_by_key(|(span, _)| (span.start, span.end));
+    let mut migrated = source.to_string();
+    for (span, replacement) in edits.into_iter().rev() {
+        migrated.replace_range(span, &replacement);
+    }
+    migrated
 }
 
 /// Check every migrated source as it would be written, with the whole
@@ -2595,16 +2939,7 @@ fn unlisted_bare_variant_refusals(
         if expression_span.module_idx != 0 {
             continue;
         }
-        let Some(owner) = ty.type_name() else {
-            continue;
-        };
-        let type_def = typecheck.type_defs.get(owner).or_else(|| {
-            typecheck
-                .type_defs
-                .values()
-                .find(|type_def| type_def.name == owner)
-        });
-        let Some(type_def) = type_def else {
+        let Some(type_def) = typecheck.types().of_ty(ty) else {
             continue;
         };
         for (index, (token, span)) in tokens.iter().enumerate() {

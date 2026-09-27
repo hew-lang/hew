@@ -1,8 +1,18 @@
-type Label<T> { value: T, text: string }
-type Wrapped<T> { value: T }
-impl<T> Eq for Label<T> {
-    fn eq(self, other: Label<T>) -> bool { self.text.len() == other.text.len() }
+type Label<T> {
+    value: T;
+    text: string;
 }
+
+type Wrapped<T> {
+    value: T;
+}
+
+impl<T> Eq for Label<T> {
+    fn eq(self, other: Label<T>) -> bool {
+        self.text.len() == other.text.len()
+    }
+}
+
 fn main() -> i64 {
     let left = ["one".to_upper(), "two".to_upper()];
     var right = ["one".to_upper(), "two".to_upper()];

@@ -1,4 +1,5 @@
 import std.arena;
+
 fn main() {
     var store: arena.Arena<string> = arena.new();
     var other: arena.Arena<string> = arena.new();

@@ -7,11 +7,19 @@ pub(super) use super::*;
 #[test]
 fn contextual_dotted_enum_payload_rejects_integer_overflow() {
     let (errors, _) = parse_and_check(
-        r"
-enum Payload<T> { Value(T) }
-enum Envelope<T> { Wrapped(T) }
+        r"enum Payload<T> {
+    Value(T);
+}
+
+enum Envelope<T> {
+    Wrapped(T);
+}
+
 fn read(value: Envelope<Payload<u8>>) {}
-fn main() { read(Envelope.Wrapped(Payload.Value(256))); }
+
+fn main() {
+    read(Envelope.Wrapped(Payload.Value(256)));
+}
 ",
     );
     assert!(
@@ -25,9 +33,15 @@ fn main() { read(Envelope.Wrapped(Payload.Value(256))); }
 #[test]
 fn nested_generic_payload_literal_retains_checked_type_constraints() {
     let (errors, _) = parse_and_check(
-        r#"
-enum Inner<T> { Value(T), Empty }
-enum Outer<T> { Value(Inner<T>) }
+        r#"enum Inner<T> {
+    Value(T);
+    Empty;
+}
+
+enum Outer<T> {
+    Value(Inner<T>);
+}
+
 fn inspect(value: Outer<bool>) -> i64 {
     match value {
         .Value(.Value("wrong")) => 1,
@@ -47,9 +61,16 @@ fn inspect(value: Outer<bool>) -> i64 {
 #[test]
 fn same_leaf_qualified_unit_variant_cannot_cover_foreign_enum() {
     let (errors, _) = parse_and_check(
-        r"
-enum Left { Same, Other }
-enum Right { Same, Other }
+        r"enum Left {
+    Same;
+    Other;
+}
+
+enum Right {
+    Same;
+    Other;
+}
+
 fn inspect(value: Left) -> i64 {
     match value {
         Right.Same => 1,
@@ -76,9 +97,16 @@ fn inspect(value: Left) -> i64 {
 #[test]
 fn same_leaf_qualified_tuple_variant_cannot_cover_foreign_enum() {
     let (errors, _) = parse_and_check(
-        r"
-enum Left { Same(i64), Other }
-enum Right { Same(i64), Other }
+        r"enum Left {
+    Same(i64);
+    Other;
+}
+
+enum Right {
+    Same(i64);
+    Other;
+}
+
 fn inspect(value: Left) -> i64 {
     match value {
         Right.Same(v) => v,
@@ -105,9 +133,16 @@ fn inspect(value: Left) -> i64 {
 #[test]
 fn same_leaf_qualified_struct_variant_cannot_cover_or_construct_foreign_enum() {
     let (pattern_errors, _) = parse_and_check(
-        r"
-enum Left { Same { value: i64 }, Other }
-enum Right { Same { value: i64 }, Other }
+        r"enum Left {
+    Same { value: i64;  }
+    Other;
+}
+
+enum Right {
+    Same { value: i64;  }
+    Other;
+}
+
 fn inspect(value: Left) -> i64 {
     match value {
         Right.Same { value } => value,
@@ -131,9 +166,16 @@ fn inspect(value: Left) -> i64 {
     );
 
     let (init_errors, _) = parse_and_check(
-        r"
-enum Left { Same { value: i64 }, Other }
-enum Right { Same { value: i64 }, Other }
+        r"enum Left {
+    Same { value: i64;  }
+    Other;
+}
+
+enum Right {
+    Same { value: i64;  }
+    Other;
+}
+
 fn make() -> Left {
     Right.Same { value: 1 }
 }
@@ -309,13 +351,13 @@ fn foo(opt: Option<i64>) -> i64 {
     #[test]
     fn option_some_wildcard_payload_emits_no_binding() {
         let resolutions = pattern_resolutions(
-            r"
-fn foo(opt: Option<i64>) {
+            r"fn foo(opt: Option<i64>) {
     match opt {
-        .Some(_) => {},
-        .None => {},
+        .Some(_) => {}
+        .None => {}
     }
-}",
+}
+",
         );
         let some_arm = resolutions
             .values()
@@ -379,15 +421,20 @@ fn foo(r: Result<i64, string>) -> i64 {
     #[test]
     fn user_enum_unit_variant_records_variant_ctor_no_payload() {
         let resolutions = pattern_resolutions(
-            r"
-enum Color { Red, Green, Blue }
+            r"enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
 fn foo(c: Color) {
     match c {
-        .Red => {},
-        .Green => {},
-        .Blue => {},
+        .Red => {}
+        .Green => {}
+        .Blue => {}
     }
-}",
+}
+",
         );
         assert_eq!(resolutions.len(), 3);
         for arm in resolutions.values() {
@@ -401,14 +448,18 @@ fn foo(c: Color) {
     #[test]
     fn user_enum_tuple_variant_records_payload_bindings() {
         let resolutions = pattern_resolutions(
-            r"
-enum Shape { Circle(i64), Square(i64) }
+            r"enum Shape {
+    Circle(i64);
+    Square(i64);
+}
+
 fn foo(s: Shape) -> i64 {
     match s {
         .Circle(r) => r,
         .Square(side) => side,
     }
-}",
+}
+",
         );
         assert_eq!(resolutions.len(), 2);
 
@@ -429,14 +480,18 @@ fn foo(s: Shape) -> i64 {
     #[test]
     fn dotted_tuple_variant_resolves_from_path_segments() {
         let resolutions = pattern_resolutions(
-            r"
-enum Shape { Circle(i64), Square(i64) }
+            r"enum Shape {
+    Circle(i64);
+    Square(i64);
+}
+
 fn foo(s: Shape) -> i64 {
     match s {
         Shape.Circle(radius) => radius,
         Shape.Square(side) => side,
     }
-}",
+}
+",
         );
         assert_eq!(resolutions.len(), 2);
         let circle = resolutions
@@ -507,17 +562,17 @@ fn foo(pair: (i64, i64)) -> i64 {
     #[test]
     fn record_pattern_uses_declaration_order_for_field_indices() {
         let resolutions = pattern_resolutions(
-            r"
-type Weird {
-    z: i64,
-    a: i64,
+            r"type Weird {
+    z: i64;
+    a: i64;
 }
 
 fn foo(w: Weird) -> i64 {
     match w {
         Weird { z, a } => z - a,
     }
-}",
+}
+",
         );
         let arm = resolutions.values().next().unwrap();
         assert_eq!(arm.pattern_kind, PatternKind::StructPattern);
@@ -531,10 +586,9 @@ fn foo(w: Weird) -> i64 {
     #[test]
     fn let_else_record_variant_records_payload_bindings() {
         let resolutions = pattern_resolutions(
-            r"
-enum Packet {
-    Data { a: string, b: string },
-    Empty,
+            r"enum Packet {
+    Data { a: string; b: string;  }
+    Empty;
 }
 
 fn probe(packet: Packet) -> i64 {
@@ -563,17 +617,17 @@ fn probe(packet: Packet) -> i64 {
     #[test]
     fn record_match_omitted_field_without_rest_fails_closed() {
         let output = check_source(
-            r"
-type Point {
-    x: i64,
-    y: i64,
+            r"type Point {
+    x: i64;
+    y: i64;
 }
 
 fn foo(p: Point) -> i64 {
     match p {
         Point { x } => x,
     }
-}",
+}
+",
         );
         assert!(
             output.errors.iter().any(|error| {
@@ -592,17 +646,17 @@ fn foo(p: Point) -> i64 {
 
     #[test]
     fn record_match_rest_builds_full_declaration_order_plan() {
-        let source = r"
-type Point {
-    x: i64,
-    y: i64,
+        let source = r"type Point {
+    x: i64;
+    y: i64;
 }
 
 fn foo(p: Point) -> i64 {
     match p {
         Point { x, .. } => x,
     }
-}";
+}
+";
         let output = check_source(source);
         assert!(
             output.errors.is_empty(),
@@ -625,10 +679,9 @@ fn foo(p: Point) -> i64 {
     #[test]
     fn qualified_record_variant_builds_pattern_plan() {
         let output = check_source(
-            r#"
-enum State {
-    Loaded { label: string },
-    Empty,
+            r#"enum State {
+    Loaded { label: string;  }
+    Empty;
 }
 
 fn label(state: State) -> string {
@@ -655,19 +708,31 @@ fn label(state: State) -> string {
     fn record_rest_unknown_or_duplicate_fields_publish_no_plan() {
         for (source, expected) in [
             (
-                r"
-type Point { x: i64, y: i64 }
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
 fn foo(p: Point) -> i64 {
-    match p { Point { z, .. } => 0 }
-}",
+    match p {
+        Point { z, .. } => 0,
+    }
+}
+",
                 "no field `z`",
             ),
             (
-                r"
-type Point { x: i64, y: i64 }
+                r"type Point {
+    x: i64;
+    y: i64;
+}
+
 fn foo(p: Point) -> i64 {
-    match p { Point { x, x, .. } => x }
-}",
+    match p {
+        Point { x, x, .. } => x,
+    }
+}
+",
                 "duplicate field `x`",
             ),
         ] {
@@ -690,12 +755,16 @@ fn foo(p: Point) -> i64 {
     #[test]
     fn record_shorthand_rest_builds_wildcard_plan() {
         let output = check_source(
-            r"
-type Point { x: i64, y: i64 }
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
 fn foo(p: Point) -> i64 {
     let { x, .. } = p;
     x
-}",
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -729,10 +798,9 @@ fn foo(pair: (i64, i64)) -> i64 {
     #[test]
     fn record_match_literal_subpattern_is_supported() {
         let output = check_source(
-            r"
-type Point {
-    x: i64,
-    y: i64,
+            r"type Point {
+    x: i64;
+    y: i64;
 }
 
 fn foo(p: Point) -> i64 {
@@ -740,7 +808,8 @@ fn foo(p: Point) -> i64 {
         Point { x: 0, y } => y,
         _ => 0,
     }
-}",
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -754,13 +823,13 @@ fn foo(p: Point) -> i64 {
     #[test]
     fn or_pattern_records_each_leaf_resolution() {
         let resolutions = pattern_resolutions(
-            r"
-fn foo(x: i64) {
+            r"fn foo(x: i64) {
     match x {
-        1 | 2 => {},
-        _ => {},
+        1 | 2 => {}
+        _ => {}
     }
-}",
+}
+",
         );
         assert_eq!(resolutions.len(), 3);
         assert_eq!(
@@ -836,13 +905,16 @@ fn foo(opt: Option<i64>) -> i64 {
         // (the declaration position), not field_idx == 0 (alphabetical
         // position of "a" among ["a","b","c"]).
         let resolutions = pattern_resolutions(
-            r"
-enum Tri { Bar { c: i64, a: i64, b: i64 } }
+            r"enum Tri {
+    Bar { c: i64; a: i64; b: i64;  }
+}
+
 fn foo(t: Tri) -> i64 {
     match t {
         Tri.Bar { a } => a,
     }
-}",
+}
+",
         );
         let bar_arm = resolutions
             .values()
@@ -955,20 +1027,25 @@ fn foo(opt: Option<i64>) -> i64 {
     #[test]
     fn plain_project_literal_subpatterns_are_admitted() {
         let output = check_source(
-            r"
-type Point { x: i64, y: i64 }
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
 fn tuple_case(t: (i64, i64)) -> i64 {
     match t {
         (0, y) => y,
         (x, y) => x + y,
     }
 }
+
 fn record_case(p: Point) -> i64 {
     match p {
         Point { x: 0, y } => y,
         Point { x, y } => x + y,
     }
-}",
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -1010,14 +1087,18 @@ fn record_case(p: Point) -> i64 {
         // in `unsupported_payload_subpattern_label` caused a false
         // `UnsupportedPayloadSubpattern` error for this shape.
         let output = check_source(
-            r"
-enum Packet { Data { value: i64 }, Empty }
+            r"enum Packet {
+    Data { value: i64;  }
+    Empty;
+}
+
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: MAX } => MAX,
         .Empty => 0,
     }
-}",
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -1033,16 +1114,24 @@ fn f(p: Packet) -> i64 {
         // `Packet::Data { value: Red }` where `Red` is a unit variant of `Color`
         // must remain an `UnsupportedPayloadSubpattern` error.
         let output = check_source(
-            r"
-enum Color { Red, Blue }
-enum Packet { Data { value: Color }, Empty }
+            r"enum Color {
+    Red;
+    Blue;
+}
+
+enum Packet {
+    Data { value: Color;  }
+    Empty;
+}
+
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: .Red } => 1,
         Packet.Data { value: _ } => 2,
         .Empty => 0,
     }
-}",
+}
+",
         );
         let has_unsupported = output.errors.iter().any(|e| {
             matches!(
@@ -1066,14 +1155,18 @@ fn f(p: Packet) -> i64 {
         // A path-qualified identifier like `Packet::Empty` in struct field position
         // is always a constructor path regardless of resolution.
         let output = check_source(
-            r"
-enum Packet { Data { value: i64 }, Empty }
+            r"enum Packet {
+    Data { value: i64;  }
+    Empty;
+}
+
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: Packet.Empty } => 0,
         _ => 1,
     }
-}",
+}
+",
         );
         let has_unsupported = output.errors.iter().any(|e| {
             matches!(
@@ -1094,13 +1187,17 @@ fn f(p: Packet) -> i64 {
         // A plain record (not an enum struct-variant) with an uppercase binder in
         // a field subpattern position must also be accepted after the casing fix.
         let output = check_source(
-            r"
-type Point { x: i64, y: i64 }
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
 fn f(p: Point) -> i64 {
     match p {
         Point { x: MAX, y: _ } => MAX,
     }
-}",
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -1134,14 +1231,18 @@ fn f(pair: (i64, i64)) -> i64 {
         // NonExhaustiveMatch error even after the casing-to-resolution migration.
         // An uppercase binder must NOT make an otherwise non-exhaustive match pass.
         let output = check_source(
-            r"
-enum Packet { Data { value: i64 }, Empty }
+            r"enum Packet {
+    Data { value: i64;  }
+    Empty;
+}
+
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: MAX } => MAX,
         // Empty arm intentionally omitted
     }
-}",
+}
+",
         );
         let has_non_exhaustive = output
             .errors
@@ -1166,8 +1267,11 @@ fn f(p: Packet) -> i64 {
 #[test]
 fn constructor_payload_literal_is_accepted() {
     let output = check_source(
-        r"
-enum Shape { Line(i64), Square(i64) }
+        r"enum Shape {
+    Line(i64);
+    Square(i64);
+}
+
 fn main() -> i64 {
     let s = Shape.Line(2);
     match s {
@@ -1175,7 +1279,8 @@ fn main() -> i64 {
         Shape.Line(x) => x,
         Shape.Square(_) => 0,
     }
-}",
+}
+",
     );
     assert!(
         !output.errors.iter().any(|e| matches!(
@@ -1195,9 +1300,16 @@ fn main() -> i64 {
 #[test]
 fn constructor_payload_nested_ctor_is_accepted_and_recorded() {
     let output = check_source(
-        r"
-enum Color { Red, Green }
-enum Shape { Line(Color), Square(i64) }
+        r"enum Color {
+    Red;
+    Green;
+}
+
+enum Shape {
+    Line(Color);
+    Square(i64);
+}
+
 fn main() -> i64 {
     let s = Shape.Line(Color.Red);
     match s {
@@ -1205,7 +1317,8 @@ fn main() -> i64 {
         Shape.Line(_) => 0,
         Shape.Square(_) => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1316,15 +1429,19 @@ fn main() -> i64 {
 #[test]
 fn record_field_nested_ctor_is_accepted_and_recorded() {
     let output = check_source(
-        r"
-type Slot { tag: i64, load: Option<i64> }
+        r"type Slot {
+    tag: i64;
+    load: Option<i64>;
+}
+
 fn main() -> i64 {
     let slot = Slot { tag: 1, load: .Some(2) };
     match slot {
         Slot { tag: tag, load: .Some(v) } => tag + v,
         Slot { tag: tag, load: _ } => tag,
     }
-}",
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1347,17 +1464,22 @@ fn main() -> i64 {
 #[test]
 fn tuple_element_nested_ctor_of_wrong_enum_errors() {
     let output = check_source(
-        r"
-enum Other { Raw(i64), Gone }
+        r"enum Other {
+    Raw(i64);
+    Gone;
+}
+
 fn pair() -> (Option<i64>, i64) {
     (.Some(1), 2)
 }
+
 fn main() -> i64 {
     match pair() {
         (.Raw(n), m) => n + m,
         (_, m) => m,
     }
-}",
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -1369,15 +1491,19 @@ fn main() -> i64 {
 #[test]
 fn constructor_payload_tuple_destructure_is_accepted() {
     let output = check_source(
-        r"
-enum Pair { Both((i64, i64)), None }
+        r"enum Pair {
+    Both((i64, i64));
+    None;
+}
+
 fn main() -> i64 {
     let p = Pair.Both((1, 2));
     match p {
         Pair.Both((a, b)) => a,
         Pair.None => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1393,16 +1519,24 @@ fn main() -> i64 {
 #[test]
 fn constructor_payload_record_destructure_is_accepted() {
     let output = check_source(
-        r"
-type Point { x: i64, y: i64 }
-enum Shape { At(Point), Nowhere }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
+
+enum Shape {
+    At(Point);
+    Nowhere;
+}
+
 fn main() -> i64 {
     let s = Shape.At(Point { x: 1, y: 2 });
     match s {
         Shape.At(Point { x: a, y: b }) => a,
         Shape.Nowhere => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1417,16 +1551,24 @@ fn main() -> i64 {
 #[test]
 fn constructor_payload_record_shorthand_is_refused() {
     let output = check_source(
-        r"
-type Point { x: i64, y: i64 }
-enum Shape { At(Point), Nowhere }
+        r"type Point {
+    x: i64;
+    y: i64;
+}
+
+enum Shape {
+    At(Point);
+    Nowhere;
+}
+
 fn main() -> i64 {
     let s = Shape.At(Point { x: 1, y: 2 });
     match s {
         Shape.At({ x, y }) => x,
         Shape.Nowhere => 0,
     }
-}",
+}
+",
     );
     assert!(
         output.errors.iter().any(|e| matches!(
@@ -1444,14 +1586,18 @@ fn main() -> i64 {
 #[test]
 fn constructor_payload_binding_and_wildcard_are_accepted() {
     let output = check_source(
-        r"
-enum Shape { Line(i64), Square(i64) }
+        r"enum Shape {
+    Line(i64);
+    Square(i64);
+}
+
 fn foo(s: Shape) -> i64 {
     match s {
         Shape.Line(x) => x,
         Shape.Square(_) => 0,
     }
-}",
+}
+",
     );
     assert!(
         !output.errors.iter().any(|e| matches!(
@@ -1472,22 +1618,24 @@ fn foo(s: Shape) -> i64 {
 #[test]
 fn composite_machine_transition_checks_against_the_flattened_states() {
     let output = check_source(
-        r"
-        machine Connection {
-            events { Connect, }
+        r"machine Connection {
+    events {
+        Connect;
+    }
 
-            state Disconnected,
-            state Connected {
-                initial state Authenticating,
-                state Active,
-            },
+    state Disconnected;
+    state Connected {
+        initial state Authenticating;
+        state Active;
+    }
 
-            on Connect: Disconnected => .Authenticating,
-            on Connect: Authenticating => .Active,
-            on Connect: Active => .Disconnected,
-        }
-        fn main() {}
-        ",
+    on Connect: Disconnected => .Authenticating;
+    on Connect: Authenticating => .Active;
+    on Connect: Active => .Disconnected;
+}
+
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1502,18 +1650,20 @@ fn machine_transition_contextual_target_rejects_unknown_state() {
     // that is not a state must be a hard error, not a silently-accepted
     // identifier.
     let output = check_source(
-        r"
-        machine Switch {
-            events { Toggle, }
+        r"machine Switch {
+    events {
+        Toggle;
+    }
 
-            state Off,
-            state On,
+    state Off;
+    state On;
 
-            on Toggle: Off => .Nope,
-            on Toggle: On => .Off,
-        }
-        fn main() {}
-        ",
+    on Toggle: Off => .Nope;
+    on Toggle: On => .Off;
+}
+
+fn main() {}
+",
     );
     assert!(
         output.errors.iter().any(|error| error
@@ -1530,23 +1680,22 @@ fn machine_transition_contextual_target_rejects_unknown_state() {
 #[test]
 fn generic_machine_struct_state_bare_constructor_infers() {
     let output = check_source(
-        r"
-        machine Work<T> {
-            events {
-                Crash { code: i64, }
-            }
+        r"machine Work<T> {
+    events {
+        Crash { code: i64; }
+    }
 
-            state Running { handle: T, },
-            state Faulted { code: i64, },
+    state Running { handle: T; }
+    state Faulted { code: i64; }
 
+    on Crash: Running => .Faulted { code: event.code }
+    on Crash: Faulted => .Faulted {
+        state
+    }
+}
 
-            on Crash: Running => .Faulted { code: event.code }
-            on Crash: Faulted => .Faulted {
-                state
-            }
-        }
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1561,25 +1710,24 @@ fn generic_machine_struct_state_bare_constructor_infers() {
 #[test]
 fn generic_machine_struct_state_qualified_constructor_infers() {
     let output = check_source(
-        r"
-        machine Work<T> {
-            events {
-                Crash { code: i64, }
-            }
+        r"machine Work<T> {
+    events {
+        Crash { code: i64; }
+    }
 
-            state Running { handle: T, },
-            state Faulted { code: i64, },
+    state Running { handle: T; }
+    state Faulted { code: i64; }
 
+    on Crash: Running => _ {
+        Work.Faulted { code: event.code }
+    }
+    on Crash: Faulted => .Faulted {
+        state
+    }
+}
 
-            on Crash: Running => _ {
-                Work.Faulted { code: event.code }
-            }
-            on Crash: Faulted => .Faulted {
-                state
-            }
-        }
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1594,28 +1742,27 @@ fn generic_machine_struct_state_qualified_constructor_infers() {
 #[test]
 fn non_generic_machine_struct_state_constructor_regression_free() {
     let output = check_source(
-        r"
-        machine Door {
-            events {
-                OpenDoor { id: i64, }
-                ,CloseDoor,
-            }
+        r"machine Door {
+    events {
+        OpenDoor { id: i64; }
+        CloseDoor;
+    }
 
-            state Closed,
-            state Opened { handle: i64, },
+    state Closed;
+    state Opened { handle: i64; }
 
+    on OpenDoor: Closed => _ {
+        Door.Opened { handle: event.id }
+    }
+    on CloseDoor: Opened => .Closed;
+    on OpenDoor: Opened => _ {
+        Door.Opened { handle: event.id }
+    }
+    on CloseDoor: Closed => .Closed;
+}
 
-            on OpenDoor: Closed => _ {
-                Door.Opened { handle: event.id }
-            }
-            on CloseDoor: Opened => .Closed,
-            on OpenDoor: Opened => _ {
-                Door.Opened { handle: event.id }
-            }
-            on CloseDoor: Closed => .Closed,
-        }
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1628,24 +1775,23 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
 #[test]
 fn machine_transition_state_field_reads_source_payload() {
     let output = check_source(
-        r"
-        machine Counter {
-            events {
-                Inc,
-                Reset,
-            }
+        r"machine Counter {
+    events {
+        Inc;
+        Reset;
+    }
 
-            state Zero,
-            state NonZero { value: i64, },
+    state Zero;
+    state NonZero { value: i64; }
 
+    on Inc: Zero => .NonZero { value: 1 }
+    on Inc: NonZero => .NonZero reenter { value: state.value + 1 }
+    on Reset: NonZero => .Zero;
+    on Reset: Zero => .Zero reenter;
+}
 
-            on Inc: Zero => .NonZero { value: 1 }
-            on Inc: NonZero => .NonZero reenter { value: state.value + 1 }
-            on Reset: NonZero => .Zero,
-            on Reset: Zero => .Zero reenter,
-        }
-        fn main() {}
-        ",
+fn main() {}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1661,22 +1807,22 @@ fn machine_transition_state_field_reads_source_payload() {
 #[test]
 fn machine_transition_body_must_produce_the_fixed_target() {
     let output = check_source(
-        r"
-        machine Counter {
-            events {
-                Reset,
-            }
+        r"machine Counter {
+    events {
+        Reset;
+    }
 
-            state Zero,
-            state NonZero { value: i64, },
+    state Zero;
+    state NonZero { value: i64; }
 
-            on Reset: NonZero => .Zero {
-                state
-            }
-            on Reset: Zero => .Zero reenter,
-        }
-        fn main() {}
-        ",
+    on Reset: NonZero => .Zero {
+        state
+    }
+    on Reset: Zero => .Zero reenter;
+}
+
+fn main() {}
+",
     );
     assert!(
         output
@@ -1696,31 +1842,30 @@ fn machine_transition_body_must_produce_the_fixed_target() {
 #[test]
 fn generic_machine_step_bare_event_propagates_receiver_args() {
     let output = check_source(
-        r"
-        machine Work<T> {
-            events {
-                Initialise,
-                Started { handle: T, }
-            }
+        r"machine Work<T> {
+    events {
+        Initialise;
+        Started { handle: T; }
+    }
 
-            state Created,
-            state Running { handle: T, },
+    state Created;
+    state Running { handle: T; }
 
+    on Initialise: Created => .Created;
+    on Initialise: Running => .Running {
+        state
+    }
+    on Started: Created => .Running { handle: event.handle }
+    on Started: Running => .Running {
+        state
+    }
+}
 
-            on Initialise: Created => .Created,
-            on Initialise: Running => .Running {
-                state
-            }
-            on Started: Created => .Running { handle: event.handle }
-            on Started: Running => .Running {
-                state
-            }
-        }
-        fn main() {
-            var w: Work<i64> = .Created;
-            w.step(.Initialise);
-        }
-        ",
+fn main() {
+    var w: Work<i64> = .Created;
+    w.step(.Initialise);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -1739,15 +1884,15 @@ fn machine_transition_block_body_types_let_binding_and_contextual_tail() {
     let source = concat!(
         "fn compute() -> i64 { 42 }\n",
         "machine Counter {\n",
-        "    events { Tick, }\n",
-        "    state Idle,\n",
-        "    state Busy,\n",
+        "    events { Tick; }\n",
+        "    state Idle;\n",
+        "    state Busy;\n",
         "    on Tick: Idle => .Busy {\n",
         "        let step = compute();\n",
         "        let _ = step;\n",
         "        .Busy\n",
         "    }\n",
-        "    on Tick: Busy => .Idle,\n",
+        "    on Tick: Busy => .Idle;\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1773,7 +1918,7 @@ fn machine_transition_block_body_types_let_binding_and_contextual_tail() {
         .find(|(key, _)| key.start == tail)
         .map(|(_, ty)| ty);
     assert!(
-        matches!(tail_ty, Some(Ty::Named { name, .. }) if name == "Counter"),
+        matches!(tail_ty, Some(Ty::Named { head: name_head, .. }) if name_head.spelling() == "Counter"),
         "the contextual tail must resolve to the machine type, got {tail_ty:?}"
     );
 }
@@ -1788,14 +1933,14 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
     let source = concat!(
         "fn compute() -> i64 { 42 }\n",
         "machine Counter {\n",
-        "    events { Tick, }\n",
-        "    state Idle,\n",
-        "    state Busy { n: i64, },\n",
+        "    events { Tick; }\n",
+        "    state Idle;\n",
+        "    state Busy { n: i64; }\n",
         "    on Tick: Idle => .Busy {\n",
         "        let result = compute();\n",
         "        .Busy { n: result == 1 }\n",
         "    }\n",
-        "    on Tick: Busy => .Idle,\n",
+        "    on Tick: Busy => .Idle;\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1842,11 +1987,7 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
     );
     assert_eq!(
         block_ty,
-        Some(Ty::Named {
-            name: "Counter".to_string(),
-            args: vec![],
-            builtin: None,
-        }),
+        Some(Ty::named_in(&output.defs, "Counter", vec![])),
         "a transition body produces the machine's state type"
     );
 }

@@ -1,0 +1,7 @@
+[[case]]
+id = "gen_block_final_expr_returns"
+intent = "gen{} with a tail expression but no yield. The checker accepts it with no diagnostics."
+source = "../vertical-slice/accept/gen_block_final_expr_returns.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"

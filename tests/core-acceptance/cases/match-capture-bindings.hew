@@ -1,11 +1,11 @@
 type Spec {
-    nodes: Vec<i64>,
+    nodes: Vec<i64>;
 }
 
 enum Job {
-    Named { label: string, spec: Spec },
-    Left(string),
-    Right(string),
+    Named { label: string; spec: Spec;  }
+    Left(string);
+    Right(string);
 }
 
 fn route(spec: Spec, apply: fn(i64) -> i64) -> i64 {

@@ -6,7 +6,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //! import std.net.tls;
 //!
@@ -14,7 +14,7 @@
 //!     let stream = tls.connect("example.com", 443);
 //!     let request = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
 //!     match tls.write(stream, request.to_bytes()) {
-//!         .Ok(_) => {},
+//!         .Ok(_) => {}
 //!         .Err(err) => panic(to_string(err)),
 //!     }
 //!     let _response = match tls.read(stream, 4096) {
@@ -36,13 +36,13 @@ pub type TlsStream {
 }
 
 type TlsWriteFfiResult {
-    written: i32,
-    status: i32,
+    written: i32;
+    status: i32;
 }
 
 type TlsReadFfiResult {
-    data: bytes,
-    status: i32,
+    data: bytes;
+    status: i32;
 }
 
 const TLS_STATUS_SUCCESS: i32 = 0;
@@ -91,9 +91,12 @@ fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // IN
 /// import std.net.tls;
 ///
 /// actor TlsEcho {
-///     let stream: tls.TlsStream,
+///     let stream: tls.TlsStream;
 ///     receive fn on_data(data: bytes) {
-///         stream.write(data);
+///         match stream.write(data) {
+///             .Ok(_) => {}
+///             .Err(err) => panic(to_string(err)),
+///         }
 ///     }
 ///     receive fn on_close() {
 ///         println("tls connection closed");
@@ -173,7 +176,7 @@ impl TlsStream {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.tls;
 ///
 /// fn main() {
@@ -186,7 +189,7 @@ pub fn connect(host: string, port: i64) -> TlsStream {
         .Err(err) => {
             panic(f"tls.connect failed");
             0
-        },
+        }
     };
     unsafe {
         hew_tls_connect(host, checked as i32) // INTERNAL-ABI: range-checked above

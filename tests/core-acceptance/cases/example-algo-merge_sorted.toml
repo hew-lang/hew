@@ -1,0 +1,13 @@
+[[case]]
+id = "example-algo-merge_sorted"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/algos/merge_sorted.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout_file = "../../examples/algos/merge_sorted.expected"
+exit = 0

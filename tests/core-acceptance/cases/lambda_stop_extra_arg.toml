@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_stop_extra_arg"
+intent = "Reject an extra argument to the actor stop operation."
+source = "../vertical-slice/reject/lambda_stop_extra_arg.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ArityMismatch"
+line = 6
+column = 5
+message = "`stop` takes 1 argument(s) but 2 were supplied"

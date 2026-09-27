@@ -2401,8 +2401,8 @@ machine Acc {
     on Add: Total => Total reenter { sum: state.sum + event.n }
 }
 
-fn make_add(n: i64) -> AccEvent {
-    AccEvent.Add { n: n }
+fn make_add(n: i64) -> Acc.Event {
+    Acc.Event.Add { n: n }
 }
 
 fn main() {
@@ -2418,8 +2418,8 @@ fn main() {
 
 The head binding `on Add(n): ...` names the payload fields at the rule site;
 `event.n` is the equivalent spelling without it. The compiler generates a
-companion enum `{MachineName}Event` you can name in signatures and construct
-with `AccEvent.Add { n: 1 }`.
+companion event type `{MachineName}.Event` you can name in signatures and construct
+with `Acc.Event.Add { n: 1 }`.
 
 ### State field holding a Vec
 
@@ -2574,7 +2574,7 @@ fn drive(door: Door) -> string {
 actor Porter {
     var door: Door = .Shut;
 
-    receive fn accept(event: DoorEvent) {
+    receive fn accept(event: Door.Event) {
         let _report = door.step(event);
         println(door.state_name());
     }

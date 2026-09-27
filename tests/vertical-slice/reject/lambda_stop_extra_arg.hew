@@ -1,0 +1,7 @@
+// Reject an extra argument to the actor lifecycle operation before lowering.
+fn main() {
+    let printer = actor |x: i64| {
+        println(x);
+    };
+    stop(printer, 12345);
+}

@@ -24,11 +24,13 @@ fn named_and_aliased_actors_run_as_supervised_children() {
         .Ok(id) => assert(id == 31),
         .Err(_) => assert(false),
     }
-    supervisor_stop(direct);
+    stop(direct);
+    stopped(direct);
     let aliased = spawn AliasedPool;
     match aliased.worker.identify() {
         .Ok(id) => assert(id == 47),
         .Err(_) => assert(false),
     }
-    supervisor_stop(aliased);
+    stop(aliased);
+    stopped(aliased);
 }

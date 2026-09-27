@@ -17,5 +17,6 @@ fn imported_actor_is_a_supervised_child() {
         .Ok(id) => assert(id == 17),
         .Err(_) => assert(false),
     }
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
 }

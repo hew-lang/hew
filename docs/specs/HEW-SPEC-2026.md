@@ -4229,7 +4229,7 @@ machine Tcp {
 actor ConnectionManager {
     var tcp: Tcp = .Closed;
 
-    receive fn handle(event: TcpEvent) {
+    receive fn handle(event: Tcp.Event) {
         let _report = tcp.step(event);
         match tcp {
             .Established { port } => println(f"established on {port}"),

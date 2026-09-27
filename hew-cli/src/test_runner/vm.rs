@@ -102,8 +102,10 @@ pub(super) fn execute_test(
     step_budget: u64,
     timeout: Duration,
     report: &Path,
+    trace_path: Option<&Path>,
     scratch: &Path,
     capture: bool,
+    merge_output: bool,
 ) -> Result<crate::process::BinaryRunOutcome, String> {
     let mut command = Command::new("node");
     command
@@ -119,8 +121,17 @@ pub(super) fn execute_test(
         .env("TMPDIR", scratch)
         .env("TMP", scratch)
         .env("TEMP", scratch);
+    if let Some(path) = trace_path {
+        command.env("HEW_TEST_TRACE_PATH", path);
+    } else {
+        command.env_remove("HEW_TEST_TRACE_PATH");
+    }
     if capture {
-        crate::process::run_command_captured_merged(&mut command, timeout)
+        if merge_output {
+            crate::process::run_command_captured_merged(&mut command, timeout)
+        } else {
+            crate::process::run_command_captured(&mut command, timeout)
+        }
     } else {
         crate::process::run_command_uncaptured(&mut command, timeout)
     }

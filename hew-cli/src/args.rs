@@ -703,6 +703,9 @@ pub struct TestArgs {
     /// Stream child output directly to the terminal; runs one test at a time.
     #[arg(long, conflicts_with = "show_output")]
     pub no_capture: bool,
+    /// Save traces from failing runs in this directory.
+    #[arg(long, value_name = "DIR")]
+    pub trace: Option<PathBuf>,
     /// Rerun the failures recorded by the previous `hew test` invocation.
     #[arg(long, conflicts_with = "paths")]
     pub rerun_failed: bool,

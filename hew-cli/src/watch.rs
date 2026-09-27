@@ -69,6 +69,10 @@ pub fn cmd_watch(args: &crate::args::WatchArgs) {
 
 /// Reuse the watcher for isolated `hew test` child runs. A child may fail a
 /// test without ending the watch loop; each changed file gets its own rerun.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one watch loop owns filesystem events, process replacement, and test selection"
+)]
 pub fn cmd_test_watch(args: &crate::args::TestArgs) {
     let selections = if args.paths.is_empty() {
         vec![PathBuf::from(".")]
@@ -152,6 +156,18 @@ pub fn cmd_test_watch(args: &crate::args::TestArgs) {
         let changed = (*changed).clone();
         while rx.recv_timeout(Duration::from_millis(100)).is_ok() {}
         emit_changed_file(&changed.display().to_string(), &watch_palette());
+        let focused = changed.is_file()
+            && (changed
+                .file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().ends_with("_test"))
+                || (args.doc && changed.extension().is_some_and(|ext| ext == "md")));
+        if !focused {
+            // A helper, production peer, or deletion can affect any selected
+            // test, so refresh discovery and rerun the full selection.
+            run_test_child(&original);
+            emit_watch_ready(&watch_palette());
+            continue;
+        }
         let mut invocation = original.clone();
         for selection in &args.paths {
             if let Some(position) = invocation

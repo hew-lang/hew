@@ -364,14 +364,20 @@ pub(crate) fn run_binary_with_timeout(
 /// Execute a native binary with bounded wall-clock time under an explicit
 /// driver configuration: `Some` sets `HEW_DETERMINISTIC`, `None` removes it so
 /// the program runs on the threaded scheduler.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one selected test supplies its driver, report, trace, scratch, and capture policy"
+)]
 pub(crate) fn run_binary_with_driver(
     binary: &Path,
     timeout: Duration,
     deterministic: Option<&str>,
     selected_test: Option<u32>,
     test_report: &Path,
+    trace_path: Option<&Path>,
     scratch_dir: &Path,
     capture: bool,
+    merge_output: bool,
 ) -> Result<BinaryRunOutcome, String> {
     let mut command = Command::new(binary);
     command
@@ -387,12 +393,16 @@ pub(crate) fn run_binary_with_driver(
         Some(ordinal) => command.env("HEW_TEST", ordinal.to_string()),
         None => command.env_remove("HEW_TEST"),
     };
+    match trace_path {
+        Some(path) => command.env("HEW_TEST_TRACE_PATH", path),
+        None => command.env_remove("HEW_TEST_TRACE_PATH"),
+    };
     // The playground's trusted outer sandbox owns the inherited process
     // group. Never create or signal a nested group in that mode.
     let inherit_group =
         std::env::var("HEW_TEST_INHERIT_PROCESS_GROUP").is_ok_and(|value| value == "1");
     if capture {
-        capture_command(&mut command, timeout, inherit_group, true)
+        capture_command(&mut command, timeout, inherit_group, merge_output)
     } else {
         run_command_uncaptured_with_group(&mut command, timeout, inherit_group)
     }
@@ -463,7 +473,7 @@ fn capture_command(
 ) -> Result<BinaryRunOutcome, String> {
     let merged_reader = if merged {
         let (reader, writer) =
-            os_pipe::pipe().map_err(|error| format!("cannot create child output pipe: {error}"))?;
+            std::io::pipe().map_err(|error| format!("cannot create child output pipe: {error}"))?;
         command
             .stdout(Stdio::from(writer.try_clone().map_err(|error| {
                 format!("cannot clone child output pipe: {error}")

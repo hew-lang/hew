@@ -35,7 +35,6 @@ toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 notify = "8"
-os_pipe = "1"
 dirs.workspace = true
 wasmparser = "0.252.0"
 

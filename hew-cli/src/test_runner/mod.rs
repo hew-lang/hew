@@ -200,6 +200,15 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
+    if let Some(directory) = &args.trace {
+        std::fs::create_dir_all(directory).unwrap_or_else(|error| {
+            eprintln!(
+                "Error: cannot create trace directory {}: {error}",
+                directory.display()
+            );
+            std::process::exit(1);
+        });
+    }
     let (paths, selected_names) = requested_test_paths(args);
 
     let doc_sources = args.doc.then(|| {
@@ -316,6 +325,17 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         std::process::exit(i32::from(!args.allow_empty));
     }
 
+    if args.no_capture
+        && all_tests.iter().any(|test| {
+            test.doc
+                .as_ref()
+                .is_some_and(|doc| doc.expected_stdout.is_some())
+        })
+    {
+        eprintln!("Error: --no-capture cannot verify a documentation Output block");
+        std::process::exit(2);
+    }
+
     if args.list {
         output_test_list(&all_tests, None, &root, format);
         return;
@@ -355,6 +375,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             vm_runner: vm_runner.as_deref(),
             step_budget: args.step_budget,
             capture: !args.no_capture,
+            trace_dir: args.trace.as_deref(),
             timeout,
             jobs: if args.no_capture {
                 1

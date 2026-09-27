@@ -199,6 +199,29 @@ fn captured_test_output_preserves_stdout_before_fault_stderr() {
 }
 
 #[test]
+fn doc_output_compares_stdout_without_log_stderr() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "guide.md",
+        "```hew\nimport std.misc.log;\nprintln(\"wanted\");\nlog.error(\"stderr only\");\n// Output:\n// wanted\n```\n",
+    );
+    let output = run_hew_in(
+        dir.path(),
+        &["test", "--doc", "guide.md", "--format", "json"],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("\"output\":\"wanted\\n\""), "{events}");
+}
+
+#[test]
 fn should_panic_matches_checked_trap_and_fragment() {
     require_codegen();
     let output = run_suite(

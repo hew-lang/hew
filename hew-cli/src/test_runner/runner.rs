@@ -264,6 +264,7 @@ pub struct TestRunOptions<'a> {
     pub vm_runner: Option<&'a Path>,
     pub step_budget: u64,
     pub capture: bool,
+    pub trace_dir: Option<&'a Path>,
     pub timeout: Duration,
     pub jobs: usize,
     pub schedules: ScheduleOptions,
@@ -824,6 +825,7 @@ fn execute_test_run(
     execution: &Execution,
     ordinal: u32,
     options: &TestRunOptions<'_>,
+    merge_output: bool,
 ) -> (
     Result<crate::process::BinaryRunOutcome, String>,
     Option<TestReport>,
@@ -840,6 +842,7 @@ fn execute_test_run(
         }
     };
     let path = dir.path().join("report.json");
+    let trace_path = options.trace_dir.map(|_| dir.path().join("trace.json"));
     let scratch = dir.path().join("tmp");
     let run = std::fs::create_dir(&scratch)
         .map_err(|error| format!("cannot create test scratch directory: {error}"))
@@ -851,8 +854,10 @@ fn execute_test_run(
                     execution.environment(options.step_budget).as_deref(),
                     Some(ordinal),
                     &path,
+                    trace_path.as_deref(),
                     &scratch,
                     options.capture,
+                    merge_output,
                 )
             }
             CompiledTestArtifact::Vm { packages, .. } => super::vm::execute_test(
@@ -866,8 +871,10 @@ fn execute_test_run(
                 options.step_budget,
                 timeout,
                 &path,
+                trace_path.as_deref(),
                 &scratch,
                 options.capture,
+                merge_output,
             ),
         });
     let report = std::fs::read(&path)
@@ -907,9 +914,15 @@ fn run_compiled_test(
     let mut first_report = None;
     let mut first_failure: Option<(Execution, TestFailure, String, Option<TestReport>)> = None;
     let mut failed_runs = 0usize;
-    for execution in &runs {
+    for (run_index, execution) in runs.iter().enumerate() {
+        // An Output contract compares stdout exactly, so keep its stderr on
+        // a separate pipe. Other tests retain write-ordered combined output.
+        let merge_output = test
+            .doc
+            .as_ref()
+            .is_none_or(|doc| doc.expected_stdout.is_none());
         let (run_result, report, report_dir) =
-            execute_test_run(artifact, timeout, execution, ordinal, options);
+            execute_test_run(artifact, timeout, execution, ordinal, options, merge_output);
         let (mut outcome, output) = judge_run(test, run_result, timeout, report.as_ref());
         if matches!(outcome, TestOutcome::Passed) {
             if let Some(expected) = test
@@ -928,6 +941,31 @@ fn run_compiled_test(
         match outcome {
             TestOutcome::Failed(mut failure) => {
                 failed_runs += 1;
+                if let (Some(trace_dir), Some(dir)) = (options.trace_dir, report_dir.as_ref()) {
+                    let source = dir.path().join("trace.json");
+                    let hash = super::stable_hash(&super::test_selector(test));
+                    let target = trace_dir.join(format!("test-{hash:016x}-{run_index}.trace.json"));
+                    if !source.is_file() {
+                        if let Err(error) =
+                            write_incomplete_trace(&source, execution, options, &failure)
+                        {
+                            let _ = write!(failure.message, "\ntrace unavailable: {error}");
+                        } else if first_failure.is_none() {
+                            failure
+                                .message
+                                .push_str("\ntrace incomplete: child emitted no trace");
+                        }
+                    }
+                    match std::fs::copy(&source, &target) {
+                        Ok(_) if first_failure.is_none() => {
+                            let _ = write!(failure.message, "\ntrace: {}", target.display());
+                        }
+                        Err(error) if first_failure.is_none() => {
+                            let _ = write!(failure.message, "\ntrace unavailable: {error}");
+                        }
+                        _ => {}
+                    }
+                }
                 if first_failure.is_none() {
                     if let Some(dir) = report_dir {
                         if dir.path().join("tmp").is_dir() {
@@ -997,6 +1035,56 @@ fn run_compiled_test(
         duration,
         report,
     }
+}
+
+fn write_incomplete_trace(
+    path: &Path,
+    execution: &Execution,
+    options: &TestRunOptions<'_>,
+    failure: &TestFailure,
+) -> Result<(), String> {
+    let seed = execution
+        .driver
+        .map_or_else(|| "0".to_string(), |(_, seed)| seed.to_string());
+    let clock = serde_json::json!({"epoch_ms": 0, "tick_ms": 1, "current_ms": 0});
+    let message = format!("{}; child emitted no trace", failure.message);
+    let runtime_failure = serde_json::json!({
+        "kind": "internal_error",
+        "message": message,
+        "span": null,
+        "trap_kind": null,
+    });
+    let trace = serde_json::json!({
+        "schema_version": "hew.sandbox.trace.v0",
+        "trace_id": "trace:hew-test-incomplete",
+        "fixture_id": "hew-test",
+        "profile": "incomplete",
+        "hew_version": env!("CARGO_PKG_VERSION"),
+        "sandbox_version": "incomplete",
+        "result": "runtime_failure",
+        "replay": {"seed": seed, "step_budget": options.step_budget, "virtual_clock": clock, "inputs": []},
+        "events": [
+            {"seq": 0, "type": "trace.started", "phase": "run", "span": null},
+            {"seq": 1, "type": "runtime.failure", "phase": "run", "span": null, "failure": runtime_failure},
+            {"seq": 2, "type": "trace.ended", "phase": "run", "span": null, "message": "runtime_failure"},
+        ],
+        "final_state": {
+            "status": "runtime_failure",
+            "exit_code": null,
+            "step_count": 0,
+            "budget_remaining": options.step_budget,
+            "virtual_clock": clock,
+            "stdout": [],
+            "stderr": [],
+            "ids": {"actors": [], "channels": [], "tasks": [], "supervisors": [], "machines": []},
+            "diagnostics": ["child emitted no trace"],
+            "sandbox_rejections": [],
+            "runtime_failures": [runtime_failure],
+            "globals": [],
+        },
+    });
+    std::fs::write(path, format!("{trace}\n"))
+        .map_err(|error| format!("cannot write incomplete trace: {error}"))
 }
 
 /// Operands shorter than this that fit on one line are compared by eye.
@@ -1129,12 +1217,15 @@ fn judge_run(
                                 stdout.clone()
                             }
                         });
-                    if let Some(assertion) = report.and_then(|report| report.assertion.as_ref()) {
-                        let _ = write!(
-                            message,
-                            "\n  left: {}\n right: {}",
-                            assertion.left, assertion.right
-                        );
+                    if !message.contains("\n  left: ") {
+                        if let Some(assertion) = report.and_then(|report| report.assertion.as_ref())
+                        {
+                            let _ = write!(
+                                message,
+                                "\n  left: {}\n right: {}",
+                                assertion.left, assertion.right
+                            );
+                        }
                     }
                     with_operand_diff(message)
                 } else {
@@ -1384,6 +1475,7 @@ mod tests {
                 schedules,
                 root: Path::new("/"),
                 capture: true,
+                trace_dir: None,
                 on_event: None,
             },
         );
@@ -1411,6 +1503,7 @@ mod tests {
                 schedules: FIFO_ONCE,
                 root: Path::new("/"),
                 capture: true,
+                trace_dir: None,
                 on_event: None,
             },
         )
@@ -1802,6 +1895,7 @@ fn test_timeout() {
                 schedules: FIFO_ONCE,
                 root: Path::new("/"),
                 capture: true,
+                trace_dir: None,
                 on_event: None,
             },
         );

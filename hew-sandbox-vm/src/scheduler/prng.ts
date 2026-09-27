@@ -1,7 +1,7 @@
 export class SeededPrng {
   private state: bigint;
 
-  constructor(seed: number) {
+  constructor(seed: number | string) {
     this.state = BigInt.asUintN(64, BigInt(seed) + 0x9e3779b97f4a7c15n);
   }
 

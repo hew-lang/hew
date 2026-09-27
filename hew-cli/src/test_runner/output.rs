@@ -4,13 +4,16 @@
 
 #[cfg(test)]
 use super::runner::TestFailureKind;
-use super::runner::{TestOutcome, TestSummary};
+use super::runner::{TestEvent, TestOutcome, TestSummary};
+use std::io::Write as _;
 
 /// Output format for test results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     /// Human-readable coloured text (default).
     Text,
+    /// Newline-delimited machine-readable test events.
+    Json,
     /// `JUnit` XML for CI systems.
     Junit,
 }
@@ -20,6 +23,7 @@ struct Colors {
     green: &'static str,
     red: &'static str,
     yellow: &'static str,
+    #[cfg(test)]
     bold: &'static str,
     reset: &'static str,
 }
@@ -28,6 +32,7 @@ const COLORS: Colors = Colors {
     green: "\x1b[32m",
     red: "\x1b[31m",
     yellow: "\x1b[33m",
+    #[cfg(test)]
     bold: "\x1b[1m",
     reset: "\x1b[0m",
 };
@@ -36,6 +41,7 @@ const NO_COLORS: Colors = Colors {
     green: "",
     red: "",
     yellow: "",
+    #[cfg(test)]
     bold: "",
     reset: "",
 };
@@ -48,16 +54,183 @@ pub fn output_results(
     invocation_root: &std::path::Path,
 ) {
     let rendered = match format {
-        OutputFormat::Text => render_results(summary, use_color),
+        OutputFormat::Text => render_stream_summary(summary, use_color, invocation_root),
+        OutputFormat::Json => {
+            serde_json::json!({
+                "event": "run_finished",
+                "passed": summary.passed,
+                "failed": summary.failed,
+                "ignored": summary.ignored,
+            })
+            .to_string()
+                + "\n"
+        }
         OutputFormat::Junit => render_junit(summary, invocation_root),
     };
     print!("{rendered}");
+}
+
+pub fn run_started(tests: usize, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::json!({ "event": "run_started", "tests": tests })
+        ),
+        OutputFormat::Text => println!("hew test ({tests} tests)"),
+        OutputFormat::Junit => {}
+    }
+    let _ = std::io::stdout().flush();
+}
+
+pub fn output_event(
+    event: TestEvent,
+    format: OutputFormat,
+    root: &std::path::Path,
+    use_color: bool,
+    show_output: bool,
+) {
+    use serde_json::json;
+    match (format, event) {
+        (
+            OutputFormat::Json,
+            TestEvent::FileCompiled {
+                file,
+                tests,
+                diagnostics,
+            },
+        ) => {
+            println!(
+                "{}",
+                json!({ "event": "file_compiled", "file": file, "tests": tests, "ok": diagnostics.is_none(), "diagnostics": diagnostics })
+            );
+        }
+        (OutputFormat::Json, TestEvent::TestStarted(test)) => {
+            println!(
+                "{}",
+                json!({ "event": "test_started", "identity": super::test_identity(&test, root) })
+            );
+        }
+        (OutputFormat::Json, TestEvent::TestFinished(result)) => {
+            let (outcome, kind, message) = match &result.outcome {
+                TestOutcome::Passed => ("passed", None, None),
+                TestOutcome::Ignored(_) => ("ignored", None, None),
+                TestOutcome::Failed(failure) => (
+                    "failed",
+                    Some(failure.kind.as_str()),
+                    Some(failure.message.as_str()),
+                ),
+            };
+            let reason = match &result.outcome {
+                TestOutcome::Ignored(reason) => Some(*reason),
+                _ => None,
+            };
+            println!(
+                "{}",
+                json!({ "event": "test_finished", "identity": super::test_identity(&result.test, root), "outcome": outcome, "kind": kind, "message": message, "reason": reason, "duration_ms": result.duration.as_millis(), "output": result.output, "report": result.report })
+            );
+        }
+        (
+            OutputFormat::Text,
+            TestEvent::FileCompiled {
+                file,
+                diagnostics: Some(message),
+                ..
+            },
+        ) => {
+            println!("FAIL  {file} (compile)\n{message}");
+        }
+        (OutputFormat::Text, TestEvent::TestFinished(result)) => {
+            let c = if use_color { &COLORS } else { &NO_COLORS };
+            let (status, detail) = match &result.outcome {
+                TestOutcome::Passed => (format!("{}ok{}", c.green, c.reset), None),
+                TestOutcome::Ignored(reason) => {
+                    (format!("{}skip{}", c.yellow, c.reset), Some(*reason))
+                }
+                TestOutcome::Failed(failure) => (
+                    format!("{}FAIL{}", c.red, c.reset),
+                    Some(failure.message.as_str()),
+                ),
+            };
+            let elapsed = (result.duration.as_millis() > 100)
+                .then(|| format!("  {} ms", result.duration.as_millis()))
+                .unwrap_or_default();
+            println!(
+                "{status}  {}{elapsed}",
+                super::test_identity(&result.test, root)
+            );
+            if let Some(detail) =
+                detail.filter(|_| matches!(&result.outcome, TestOutcome::Failed(_)))
+            {
+                println!("{detail}");
+                if !result.output.is_empty() {
+                    print!("output:\n{}", result.output);
+                }
+            } else if let TestOutcome::Ignored(reason) = &result.outcome {
+                println!("  {reason}");
+            } else if show_output && !result.output.is_empty() {
+                print!("output:\n{}", result.output);
+            }
+        }
+        _ => {}
+    }
+    let _ = std::io::stdout().flush();
+}
+
+fn render_stream_summary(summary: &TestSummary, use_color: bool, root: &std::path::Path) -> String {
+    let c = if use_color { &COLORS } else { &NO_COLORS };
+    let mut out = String::new();
+    let result_word = if summary.failed > 0 {
+        format!("{}FAILED{}", c.red, c.reset)
+    } else {
+        format!("{}ok{}", c.green, c.reset)
+    };
+    let _ = writeln!(
+        out,
+        "\n{result_word}  {} passed, {} failed, {} ignored",
+        summary.passed, summary.failed, summary.ignored
+    );
+    if summary.failed > 0 {
+        out.push_str("failures:\n");
+        for file in &summary.compile_failures {
+            let _ = writeln!(out, "  {} (compile): {}", file.file, file.message);
+        }
+        for result in &summary.results {
+            if let TestOutcome::Failed(failure) = &result.outcome {
+                let _ = writeln!(
+                    out,
+                    "  {}: {}",
+                    super::test_identity(&result.test, root),
+                    failure.message
+                );
+            }
+        }
+        out.push_str("rerun failures: hew test --rerun-failed\n");
+    }
+    let mut slowest = summary
+        .results
+        .iter()
+        .filter(|result| result.duration.as_millis() > 100)
+        .collect::<Vec<_>>();
+    slowest.sort_unstable_by(|left, right| right.duration.cmp(&left.duration));
+    if !slowest.is_empty() {
+        out.push_str("slowest:\n");
+        for result in slowest.into_iter().take(5) {
+            let _ = writeln!(
+                out,
+                "  {}  {} ms",
+                super::test_identity(&result.test, root),
+                result.duration.as_millis()
+            );
+        }
+    }
+    out
 }
 
 use std::fmt::Write as _;
 
 /// Render test results as coloured text.
 #[must_use]
+#[cfg(test)]
 pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
     let c = if use_color { &COLORS } else { &NO_COLORS };
     let total = summary.results.len()
@@ -74,7 +247,7 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
         let status = match &result.outcome {
             TestOutcome::Passed => format!("{}ok{}", c.green, c.reset),
             TestOutcome::Failed(_) => format!("{}FAILED{}", c.red, c.reset),
-            TestOutcome::Ignored => format!("{}ignored{}", c.yellow, c.reset),
+            TestOutcome::Ignored(_) => format!("{}ignored{}", c.yellow, c.reset),
         };
         let _ = writeln!(out, "test {} ... {status}", result.test.name);
     }
@@ -194,7 +367,7 @@ fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> Str
             + usize::from(compile_failure.is_some());
         let suite_skipped = results
             .iter()
-            .filter(|r| matches!(r.outcome, TestOutcome::Ignored))
+            .filter(|r| matches!(r.outcome, TestOutcome::Ignored(_)))
             .count();
         let suite_time: f64 = results
             .iter()
@@ -239,7 +412,7 @@ fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> Str
                         .unwrap();
                     }
                 }
-                TestOutcome::Ignored => {
+                TestOutcome::Ignored(_) => {
                     writeln!(out, "      <skipped/>").unwrap();
                 }
             }
@@ -367,6 +540,7 @@ mod tests {
                 outcome: TestOutcome::Passed,
                 output: String::new(),
                 duration: std::time::Duration::from_millis(42),
+                report: None,
             }],
             passed: 1,
             failed: 0,
@@ -401,6 +575,7 @@ mod tests {
                 outcome: TestOutcome::failed(TestFailureKind::Runtime, "assertion failed"),
                 output: "debug line".into(),
                 duration: std::time::Duration::from_millis(13),
+                report: None,
             }],
             passed: 0,
             failed: 1,
@@ -437,6 +612,7 @@ mod tests {
                     outcome: TestOutcome::Passed,
                     output: String::new(),
                     duration: std::time::Duration::from_millis(100),
+                    report: None,
                 },
                 TestResult {
                     test: TestCase {
@@ -457,6 +633,7 @@ mod tests {
                     outcome: TestOutcome::failed(TestFailureKind::Runtime, "expected 4, got 5"),
                     output: "debug output".into(),
                     duration: std::time::Duration::from_millis(50),
+                    report: None,
                 },
                 TestResult {
                     test: TestCase {
@@ -474,9 +651,10 @@ mod tests {
                         serial: false,
                         clock: crate::test_runner::discovery::TestClock::Deterministic,
                     },
-                    outcome: TestOutcome::Ignored,
+                    outcome: TestOutcome::Ignored("ignored"),
                     output: String::new(),
                     duration: std::time::Duration::ZERO,
+                    report: None,
                 },
             ],
             passed: 1,

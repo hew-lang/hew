@@ -105,7 +105,8 @@ export interface TraceEvent {
 }
 
 export interface ReplayConfig {
-  seed: number;
+  // Decimal strings preserve the full u64 seed used by `hew test`.
+  seed: number | string;
   step_budget: number;
   virtual_clock: VirtualClock;
   inputs: Array<{ kind: string; data: JsonValue }>;

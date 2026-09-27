@@ -1,7 +1,7 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::{TestCase, TestClock};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -75,14 +75,14 @@ fn physical_core_count() -> Option<usize> {
 const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Result of running a single test.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TestOutcome {
     /// Test passed.
     Passed,
     /// Test failed with a semantic kind and diagnostic.
     Failed(TestFailure),
     /// Test was ignored (not run).
-    Ignored,
+    Ignored(&'static str),
 }
 
 impl TestOutcome {
@@ -99,10 +99,19 @@ impl TestOutcome {
 pub enum TestFailureKind {
     /// The compiled program ran and reported failure.
     Runtime,
+    Assertion,
+    Panic,
+    Trap,
+    ErrorReturn,
+    Deadlock,
+    StepBudget,
+    Crash,
     /// The compiled program exceeded its execution deadline.
     Timeout,
     /// The compiled program could not be started.
     Launch,
+    /// The sandbox VM refused a native-only or unsupported capability.
+    Refused,
 }
 
 impl TestFailureKind {
@@ -111,14 +120,22 @@ impl TestFailureKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Runtime => "runtime",
+            Self::Assertion => "assertion",
+            Self::Panic => "panic",
+            Self::Trap => "trap",
+            Self::ErrorReturn => "error_return",
+            Self::Deadlock => "deadlock",
+            Self::StepBudget => "step_budget",
+            Self::Crash => "crash",
             Self::Timeout => "timeout",
             Self::Launch => "launch",
+            Self::Refused => "refused",
         }
     }
 }
 
 /// Diagnostic attached to a failed compiled Hew test.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TestFailure {
     /// Semantic stage at which the test failed.
     pub kind: TestFailureKind,
@@ -127,7 +144,7 @@ pub struct TestFailure {
 }
 
 /// Result of a single test execution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TestResult {
     /// The test case that was run.
     pub test: TestCase,
@@ -137,6 +154,8 @@ pub struct TestResult {
     pub output: String,
     /// Wall-clock duration of the test (compile + run).
     pub duration: Duration,
+    /// Structured runtime report, when the process wrote one.
+    pub report: Option<TestReport>,
 }
 
 /// Summary of a full test run.
@@ -234,17 +253,40 @@ impl TestCompilePaths {
 ///
 /// Keeping this as one value prevents test-runner entry points from gaining a
 /// new positional argument every time the compiler pipeline gains a mode.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct TestRunOptions<'a> {
     pub filter: Option<&'a str>,
     pub include_ignored: bool,
     pub ffi_lib: Option<&'a str>,
-    pub compile_paths: &'a TestCompilePaths,
+    pub compile_paths: Option<&'a TestCompilePaths>,
+    pub project_dir: &'a Path,
+    pub engine: crate::args::TestEngine,
+    pub vm_runner: Option<&'a Path>,
+    pub step_budget: u64,
+    pub capture: bool,
     pub timeout: Duration,
     pub jobs: usize,
     pub schedules: ScheduleOptions,
     /// Directory test identities (`path::name`) are relative to.
     pub root: &'a Path,
+    pub on_event: Option<&'a (dyn Fn(TestEvent) + Sync)>,
+}
+
+/// Events emitted as compilation and isolated executions finish.
+pub enum TestEvent {
+    FileCompiled {
+        file: String,
+        tests: Vec<String>,
+        diagnostics: Option<String>,
+    },
+    TestStarted(TestCase),
+    TestFinished(TestResult),
+}
+
+fn emit(options: &TestRunOptions<'_>, event: TestEvent) {
+    if let Some(sink) = options.on_event {
+        sink(event);
+    }
 }
 
 /// How the single-thread driver orders a deterministic test.
@@ -257,7 +299,7 @@ pub enum Schedule {
 }
 
 impl Schedule {
-    const fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Fifo => "fifo",
             Self::Random => "random",
@@ -284,18 +326,36 @@ struct Execution {
 }
 
 /// Private record written by the runtime after the selected test settles.
-#[derive(Debug, Deserialize)]
-struct TestReport {
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TestReport {
+    #[serde(default)]
+    version: Option<u32>,
     outcome: String,
     status: i32,
     fault_kind: Option<String>,
+    #[serde(default)]
+    fault_code: Option<i32>,
+    #[serde(default)]
+    message: Option<String>,
     site_offset: Option<u32>,
+    #[serde(default)]
+    schedule: Option<String>,
+    #[serde(default)]
+    seed: Option<String>,
+    #[serde(default)]
+    steps: Option<u64>,
+    #[serde(default)]
+    virtual_time_ms: Option<u64>,
 }
 
 impl Execution {
-    fn environment(self) -> Option<String> {
-        self.driver
-            .map(|(schedule, seed)| format!("schedule={},seed={seed:#x}", schedule.as_str()))
+    fn environment(self, step_budget: u64) -> Option<String> {
+        self.driver.map(|(schedule, seed)| {
+            format!(
+                "schedule={},seed={seed:#x},budget={step_budget}",
+                schedule.as_str()
+            )
+        })
     }
 }
 
@@ -350,7 +410,7 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
     let mut by_file: Vec<(&str, Vec<&TestCase>)> = Vec::new();
     for test in tests {
         if let Some(pat) = options.filter {
-            if !test.name.contains(pat) {
+            if !super::test_identity(test, options.root).contains(pat) {
                 continue;
             }
         }
@@ -368,15 +428,37 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
         let selected: Vec<_> = file_tests
             .iter()
             .copied()
-            .filter(|test| !test.ignored || options.include_ignored)
+            .filter(|test| {
+                (!test.ignored || options.include_ignored)
+                    && !(options.engine == crate::args::TestEngine::Vm
+                        && test.clock == TestClock::RealTime)
+            })
             .collect();
         let compilation = if selected.is_empty() {
             None
         } else {
             let start = std::time::Instant::now();
-            match compile_test(&selected, options.ffi_lib, options.compile_paths) {
-                Ok(artifact) => Some(artifact),
+            match compile_test(&selected, options) {
+                Ok(artifact) => {
+                    emit(
+                        options,
+                        TestEvent::FileCompiled {
+                            file: selected[0].file.clone(),
+                            tests: selected.iter().map(|test| test.name.clone()).collect(),
+                            diagnostics: None,
+                        },
+                    );
+                    Some(artifact)
+                }
                 Err(message) => {
+                    emit(
+                        options,
+                        TestEvent::FileCompiled {
+                            file: selected[0].file.clone(),
+                            tests: selected.iter().map(|test| test.name.clone()).collect(),
+                            diagnostics: Some(message.clone()),
+                        },
+                    );
                     compile_failures.push(FileCompileFailure {
                         file: selected[0].file.clone(),
                         tests: selected.iter().map(|test| test.name.clone()).collect(),
@@ -388,13 +470,28 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
             }
         };
         for test in file_tests {
-            if test.ignored && !options.include_ignored {
-                results.push(TestResult {
+            if (test.ignored && !options.include_ignored)
+                || (options.engine == crate::args::TestEngine::Vm
+                    && test.clock == TestClock::RealTime)
+            {
+                let result = TestResult {
                     test: test.clone(),
-                    outcome: TestOutcome::Ignored,
+                    outcome: TestOutcome::Ignored(
+                        if options.engine == crate::args::TestEngine::Vm
+                            && test.clock == TestClock::RealTime
+                        {
+                            "real_time"
+                        } else {
+                            "ignored"
+                        },
+                    ),
                     output: String::new(),
                     duration: Duration::ZERO,
-                });
+                    report: None,
+                };
+                emit(options, TestEvent::TestStarted(test.clone()));
+                emit(options, TestEvent::TestFinished(result.clone()));
+                results.push(result);
                 continue;
             }
             if let Some(artifact) = compilation.as_ref() {
@@ -402,7 +499,10 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                     .iter()
                     .position(|candidate| std::ptr::eq(*candidate, test))
                     .expect("selected test has a dispatcher ordinal");
-                results.push(run_compiled_test(test, ordinal, artifact, options));
+                emit(options, TestEvent::TestStarted(test.clone()));
+                let result = run_compiled_test(test, ordinal, artifact, options);
+                emit(options, TestEvent::TestFinished(result.clone()));
+                results.push(result);
             }
         }
     }
@@ -422,7 +522,7 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
     for test in tests {
         if options
             .filter
-            .is_some_and(|pattern| !test.name.contains(pattern))
+            .is_some_and(|pattern| !super::test_identity(test, options.root).contains(pattern))
         {
             continue;
         }
@@ -437,7 +537,7 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
     }
 
     let result_count = by_file.iter().map(|(_, tests)| tests.len()).sum();
-    let mut result_slots: Vec<Option<TestResult>> =
+    let result_slots: Vec<Option<TestResult>> =
         std::iter::repeat_with(|| None).take(result_count).collect();
     let mut tasks = Vec::new();
     let mut result_index = 0;
@@ -445,21 +545,10 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
     for (_, file_tests) in by_file {
         let mut file_task = Vec::new();
         for test in file_tests {
-            if test.ignored && !options.include_ignored {
-                result_slots[result_index] = Some(TestResult {
-                    test: test.clone(),
-                    outcome: TestOutcome::Ignored,
-                    output: String::new(),
-                    duration: Duration::ZERO,
-                });
-            } else {
-                file_task.push((result_index, test.clone()));
-            }
+            file_task.push((result_index, test.clone()));
             result_index += 1;
         }
-        if !file_task.is_empty() {
-            tasks.push(TestTask { tests: file_task });
-        }
+        tasks.push(TestTask { tests: file_task });
     }
 
     let next_task = AtomicUsize::new(0);
@@ -478,12 +567,47 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                     let Some(task) = tasks.get(task_index) else {
                         break;
                     };
-                    let selected: Vec<_> = task.tests.iter().map(|(_, test)| test).collect();
+                    let selected: Vec<_> = task
+                        .tests
+                        .iter()
+                        .map(|(_, test)| test)
+                        .filter(|test| {
+                            (!test.ignored || options.include_ignored)
+                                && !(options.engine == crate::args::TestEngine::Vm
+                                    && test.clock == TestClock::RealTime)
+                        })
+                        .collect();
                     let start = std::time::Instant::now();
-                    let artifact =
-                        match compile_test(&selected, options.ffi_lib, options.compile_paths) {
-                            Ok(artifact) => artifact,
+                    let artifact = if selected.is_empty() {
+                        None
+                    } else {
+                        match compile_test(&selected, options) {
+                            Ok(artifact) => {
+                                emit(
+                                    options,
+                                    TestEvent::FileCompiled {
+                                        file: selected[0].file.clone(),
+                                        tests: selected
+                                            .iter()
+                                            .map(|test| test.name.clone())
+                                            .collect(),
+                                        diagnostics: None,
+                                    },
+                                );
+                                Some(artifact)
+                            }
                             Err(message) => {
+                                emit(
+                                    options,
+                                    TestEvent::FileCompiled {
+                                        file: selected[0].file.clone(),
+                                        tests: selected
+                                            .iter()
+                                            .map(|test| test.name.clone())
+                                            .collect(),
+                                        diagnostics: Some(message.clone()),
+                                    },
+                                );
                                 compile_failures
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -496,18 +620,61 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                                         message,
                                         duration: start.elapsed(),
                                     });
-                                continue;
+                                None
                             }
-                        };
-                    for (ordinal, (result_index, test)) in task.tests.iter().enumerate() {
-                        let result = if test.serial {
+                        }
+                    };
+                    for (result_index, test) in &task.tests {
+                        let skipped = (test.ignored && !options.include_ignored)
+                            || (options.engine == crate::args::TestEngine::Vm
+                                && test.clock == TestClock::RealTime);
+                        if !skipped && artifact.is_none() {
+                            continue;
+                        }
+                        emit(options, TestEvent::TestStarted(test.clone()));
+                        let result = if skipped {
+                            TestResult {
+                                test: test.clone(),
+                                outcome: TestOutcome::Ignored(
+                                    if options.engine == crate::args::TestEngine::Vm
+                                        && test.clock == TestClock::RealTime
+                                    {
+                                        "real_time"
+                                    } else {
+                                        "ignored"
+                                    },
+                                ),
+                                output: String::new(),
+                                duration: Duration::ZERO,
+                                report: None,
+                            }
+                        } else if test.serial {
+                            let ordinal = selected
+                                .iter()
+                                .position(|candidate| std::ptr::eq(*candidate, test))
+                                .expect("selected test has a dispatcher ordinal");
                             let _serial_guard = serial_gate
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            run_compiled_test(test, ordinal, &artifact, options)
+                            run_compiled_test(
+                                test,
+                                ordinal,
+                                artifact.as_ref().expect("compiled test"),
+                                options,
+                            )
                         } else {
-                            run_compiled_test(test, ordinal, &artifact, options)
+                            let ordinal = selected
+                                .iter()
+                                .position(|candidate| std::ptr::eq(*candidate, test))
+                                .expect("selected test has a dispatcher ordinal");
+                            run_compiled_test(
+                                test,
+                                ordinal,
+                                artifact.as_ref().expect("compiled test"),
+                                options,
+                            )
                         };
+                        emit(options, TestEvent::TestFinished(result.clone()));
                         result_slots
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)[*result_index] =
@@ -541,7 +708,7 @@ fn summarize(results: Vec<TestResult>, compile_failures: Vec<FileCompileFailure>
         match result.outcome {
             TestOutcome::Passed => passed += 1,
             TestOutcome::Failed(_) => failed += 1,
-            TestOutcome::Ignored => ignored += 1,
+            TestOutcome::Ignored(_) => ignored += 1,
         }
     }
     TestSummary {
@@ -553,15 +720,20 @@ fn summarize(results: Vec<TestResult>, compile_failures: Vec<FileCompileFailure>
     }
 }
 
-struct CompiledTestArtifact {
-    _emit_dir: tempfile::TempDir,
-    binary_path: PathBuf,
+pub(super) enum CompiledTestArtifact {
+    Native {
+        _emit_dir: tempfile::TempDir,
+        binary_path: PathBuf,
+    },
+    Vm {
+        _emit_dir: tempfile::TempDir,
+        packages: Vec<PathBuf>,
+    },
 }
 
 fn compile_test(
     tests: &[&TestCase],
-    ffi_lib: Option<&str>,
-    compile_paths: &TestCompilePaths,
+    options: &TestRunOptions<'_>,
 ) -> Result<CompiledTestArtifact, String> {
     let test = tests
         .first()
@@ -569,6 +741,12 @@ fn compile_test(
     if tests.iter().any(|candidate| candidate.file != test.file) {
         return Err("selected test entries span multiple source files".into());
     }
+    if options.engine == crate::args::TestEngine::Vm {
+        return super::vm::compile_test(tests, options.project_dir);
+    }
+    let compile_paths = options
+        .compile_paths
+        .ok_or("native test compilation has no compiler paths")?;
     let emit_dir = tempfile::Builder::new()
         .prefix("hew_test_emit_")
         .tempdir_in(std::env::temp_dir())
@@ -582,7 +760,11 @@ fn compile_test(
     let binary_path = compile_paths
         .target
         .executable_path(emit_dir.path(), binary_name);
-    let extra_libs = ffi_lib.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let extra_libs = options
+        .ffi_lib
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
 
     let options = crate::compile::CompileOptions {
         project_dir: Some(compile_paths.paths.project_dir.clone()),
@@ -616,17 +798,18 @@ fn compile_test(
         });
     }
 
-    Ok(CompiledTestArtifact {
+    Ok(CompiledTestArtifact::Native {
         _emit_dir: emit_dir,
         binary_path,
     })
 }
 
 fn execute_test_run(
-    binary: &Path,
+    artifact: &CompiledTestArtifact,
     timeout: Duration,
     execution: &Execution,
     ordinal: u32,
+    options: &TestRunOptions<'_>,
 ) -> (
     Result<crate::process::BinaryRunOutcome, String>,
     Option<TestReport>,
@@ -646,15 +829,32 @@ fn execute_test_run(
     let scratch = dir.path().join("tmp");
     let run = std::fs::create_dir(&scratch)
         .map_err(|error| format!("cannot create test scratch directory: {error}"))
-        .and_then(|()| {
-            crate::process::run_binary_with_driver(
-                binary,
+        .and_then(|()| match artifact {
+            CompiledTestArtifact::Native { binary_path, .. } => {
+                crate::process::run_binary_with_driver(
+                    binary_path,
+                    timeout,
+                    execution.environment(options.step_budget).as_deref(),
+                    Some(ordinal),
+                    &path,
+                    &scratch,
+                    options.capture,
+                )
+            }
+            CompiledTestArtifact::Vm { packages, .. } => super::vm::execute_test(
+                packages
+                    .get(ordinal as usize)
+                    .ok_or("VM test ordinal is missing")?,
+                options.vm_runner.ok_or("VM runner is unavailable")?,
+                execution
+                    .driver
+                    .ok_or("real-time test cannot run in the VM")?,
+                options.step_budget,
                 timeout,
-                execution.environment().as_deref(),
-                Some(ordinal),
                 &path,
                 &scratch,
-            )
+                options.capture,
+            ),
         });
     let report = std::fs::read(&path)
         .ok()
@@ -673,11 +873,12 @@ fn run_compiled_test(
 
     let runs = executions(test, options);
     let mut first_output = None;
-    let mut first_failure: Option<(Execution, TestFailure, String)> = None;
+    let mut first_report = None;
+    let mut first_failure: Option<(Execution, TestFailure, String, Option<TestReport>)> = None;
     let mut failed_runs = 0usize;
     for execution in &runs {
         let (run_result, report, report_dir) =
-            execute_test_run(&artifact.binary_path, options.timeout, execution, ordinal);
+            execute_test_run(artifact, options.timeout, execution, ordinal, options);
         let (outcome, output) = judge_run(test, run_result, options.timeout, report.as_ref());
         match outcome {
             TestOutcome::Failed(mut failure) => {
@@ -690,22 +891,26 @@ fn run_compiled_test(
                                 write!(failure.message, "\ntest scratch: {}", scratch.display());
                         }
                     }
-                    first_failure = Some((*execution, failure, output));
+                    first_failure = Some((*execution, failure, output, report));
                 }
             }
-            TestOutcome::Passed | TestOutcome::Ignored => {
+            TestOutcome::Passed | TestOutcome::Ignored(_) => {
                 first_output.get_or_insert(output);
+                if first_report.is_none() {
+                    first_report = report;
+                }
             }
         }
     }
 
     let duration = start.elapsed();
-    let Some((execution, failure, output)) = first_failure else {
+    let Some((execution, failure, output, report)) = first_failure else {
         return TestResult {
             test: test.clone(),
             outcome: TestOutcome::Passed,
             output: first_output.unwrap_or_default(),
             duration,
+            report: first_report,
         };
     };
     let message = match execution.driver {
@@ -735,6 +940,7 @@ fn run_compiled_test(
         outcome: TestOutcome::failed(failure.kind, message),
         output,
         duration,
+        report,
     }
 }
 
@@ -839,9 +1045,11 @@ fn judge_run(
                 (TestOutcome::Passed, stdout)
             } else {
                 let mut msg = if stderr.is_empty() {
-                    "test exited with non-zero status".to_string()
+                    report
+                        .and_then(|report| report.message.clone())
+                        .unwrap_or_else(|| "test exited with non-zero status".to_string())
                 } else {
-                    with_operand_diff(stderr)
+                    with_operand_diff(stderr.clone())
                 };
                 if let Some(site) = report
                     .and_then(|report| report.site_offset)
@@ -852,7 +1060,28 @@ fn judge_run(
                 if test.should_panic {
                     msg = format!("expected a user panic, got another failure: {msg}");
                 }
-                (TestOutcome::failed(TestFailureKind::Runtime, msg), stdout)
+                let kind = match report.map(|report| report.outcome.as_str()) {
+                    Some("refused") => TestFailureKind::Refused,
+                    Some("launch") => TestFailureKind::Launch,
+                    Some("fault")
+                        if report.is_some_and(|record| {
+                            record.fault_kind.as_deref() == Some("UserPanic")
+                        }) =>
+                    {
+                        if stderr.contains("assertion failed") {
+                            TestFailureKind::Assertion
+                        } else {
+                            TestFailureKind::Panic
+                        }
+                    }
+                    Some("fault") => TestFailureKind::Trap,
+                    Some("error_return") => TestFailureKind::ErrorReturn,
+                    Some("exit") => TestFailureKind::Runtime,
+                    _ if stderr.contains("step budget") => TestFailureKind::StepBudget,
+                    _ if stderr.contains("deadlock") => TestFailureKind::Deadlock,
+                    _ => TestFailureKind::Crash,
+                };
+                (TestOutcome::failed(kind, msg), stdout)
             }
         }
         Ok(crate::process::BinaryRunOutcome::Timeout) => (
@@ -993,7 +1222,7 @@ mod tests {
                 TestOutcome::Failed(failure) => {
                     Some(format!("{} FAILED: {}", result.test.name, failure.message))
                 }
-                TestOutcome::Ignored => Some(format!("{} ignored", result.test.name)),
+                TestOutcome::Ignored(_) => Some(format!("{} ignored", result.test.name)),
                 TestOutcome::Passed => None,
             })
             .chain(
@@ -1051,11 +1280,17 @@ mod tests {
                 filter: None,
                 include_ignored: false,
                 ffi_lib: None,
-                compile_paths: cargo_test_compile_paths(),
+                compile_paths: Some(cargo_test_compile_paths()),
+                project_dir: Path::new("/"),
+                engine: crate::args::TestEngine::Native,
+                vm_runner: None,
+                step_budget: 10_000_000,
                 timeout,
                 jobs: 1,
                 schedules,
                 root: Path::new("/"),
+                capture: true,
+                on_event: None,
             },
         );
         drop(source_dir);
@@ -1072,11 +1307,17 @@ mod tests {
                 filter: None,
                 include_ignored: false,
                 ffi_lib: None,
-                compile_paths: cargo_test_compile_paths(),
+                compile_paths: Some(cargo_test_compile_paths()),
+                project_dir: Path::new("/"),
+                engine: crate::args::TestEngine::Native,
+                vm_runner: None,
+                step_budget: 10_000_000,
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 1,
                 schedules: FIFO_ONCE,
                 root: Path::new("/"),
+                capture: true,
+                on_event: None,
             },
         )
     }
@@ -1436,11 +1677,17 @@ fn test_timeout() {
                 filter: None,
                 include_ignored: false,
                 ffi_lib: None,
-                compile_paths: &unused_paths,
+                compile_paths: Some(&unused_paths),
+                project_dir: Path::new("/"),
+                engine: crate::args::TestEngine::Native,
+                vm_runner: None,
+                step_budget: 10_000_000,
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 2,
                 schedules: FIFO_ONCE,
                 root: Path::new("/"),
+                capture: true,
+                on_event: None,
             },
         );
         let names: Vec<_> = summary

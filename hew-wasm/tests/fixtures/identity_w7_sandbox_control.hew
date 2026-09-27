@@ -11,5 +11,6 @@ fn main() {
         .Ok(value) => println(value),
         .Err(_) => println(-1),
     }
-    close(echo);
+    stop(echo);
+    stopped(echo);
 }

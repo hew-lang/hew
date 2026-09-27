@@ -1,7 +1,7 @@
 // Regression fixture: a supervised handler stops its own supervisor tree, then
 // main returns through the immediate scheduler-shutdown cleanup tail.
 //
-// With one worker, the handler queues sibling work, requests stop and waits,
+// With one worker, the handler queues sibling work, requests stop,
 // signals main, and remains Running briefly. Main therefore starts its exit
 // tail before the worker can activate the Runnable sibling.
 import std.stream;
@@ -16,7 +16,6 @@ actor Stopper {
     receive fn stop_tree(sup: App, ready: stream.Sink<i64>) {
         let _ = sup.busy.work(1);
         stop(sup);
-        stopped(sup);
         ready.send(42).expect("send");
         sleep(200ms);
     }

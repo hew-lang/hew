@@ -691,7 +691,7 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
     for later in [r#"{ holder.items = ["new"]; 0 }"#, "indices[99]"] {
         let lowered = lower_source(&format!(
             r#"
-            type Holder {{ items: Vec<string> }}
+            type Holder {{ items: Vec<string>; }}
             fn read(items: Vec<string>, index: i64) -> string {{ items[index] }}
             fn main() -> i64 {{
                 var holder = Holder {{ items: ["old"] }};

@@ -734,8 +734,8 @@ fn result_propagation_lowers_expression_return_without_a_fake_value() {
         }
 
         fn main() {
-            pair(.Ok("first"));
-            pair(.Err("failure"));
+            let _ = pair(.Ok("first"));
+            let _ = pair(.Err("failure"));
         }
         "#,
     );
@@ -767,7 +767,7 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
         }
 
         fn main() {
-            stop();
+            let _ = stop();
         }
         "#,
     );

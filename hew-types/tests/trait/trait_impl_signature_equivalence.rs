@@ -46,8 +46,8 @@ fn impl_with_correct_signature_typechecks_clean() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{
@@ -234,8 +234,8 @@ fn impl_with_wrong_return_type_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{
@@ -274,8 +274,8 @@ fn impl_with_wrong_receiver_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{
@@ -301,8 +301,8 @@ fn impl_with_extra_parameter_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64,
-    limit: i64,
+    n: i64;
+    limit: i64;
 }}
 
 impl Iterator for Counter {{

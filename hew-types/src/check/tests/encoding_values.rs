@@ -150,7 +150,7 @@ fn generic_equality_preserves_opaque_encoding_type_arguments() {
         let source = format!(
             r"
             {VALUE_SOURCE}
-            type Holder<T> {{ value: T }}
+            type Holder<T> {{ value: T; }}
             impl<T> Eq for Holder<T> {{ fn eq(self, other: Holder<T>) -> bool {{ true }} }}
         "
         );
@@ -280,8 +280,8 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
                 "Selected"
             };
             items.extend(parsed_items(&format!(
-                "type Value {{ number: i64 }}\n\
-                 type Envelope<T> {{ payload: T }}\n\
+                "type Value {{ number: i64; }}\n\
+                 type Envelope<T> {{ payload: T; }}\n\
                  fn identity(value: Envelope<Option<{spelling}>>) -> Envelope<Option<{spelling}>> {{ value }}"
             )));
             let output = check_items(items);

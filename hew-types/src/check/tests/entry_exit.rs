@@ -122,7 +122,7 @@ fn selected_test_occurrence_must_belong_to_the_root_program() {
 fn app_error_source(main_body: &str) -> String {
     format!(
         r"
-        enum AppError {{ Failed(string), }}
+        enum AppError {{ Failed(string); }}
 
         impl Display for AppError {{
             fn fmt(self) -> string {{

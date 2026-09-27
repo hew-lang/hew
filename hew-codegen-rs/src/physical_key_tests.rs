@@ -406,10 +406,10 @@ fn aggregate_hash_ignores_padding_and_composes_exact_user_field_methods() {
     for optimized in [false, true] {
         let physical = physical(
             r"
-        type Inner { id: i64 }
+        type Inner { id: i64; }
         impl Hash for Inner { fn hash(self) -> i64 { self.id % 10 } }
         impl Eq for Inner { fn eq(self, other: Inner) -> bool { self.id % 10 == other.id % 10 } }
-        type Outer { tag: u8, inner: Inner }
+        type Outer { tag: u8; inner: Inner; }
         fn main() { let values: HashMap<Outer, i64> = HashMap.new(); }
     ",
         );
@@ -828,7 +828,7 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
 fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
     let mut physical = physical(
         r"
-        type Key { id: i64 }
+        type Key { id: i64; }
         fn main() { let values: HashMap<Key, i64> = HashMap.new(); }
     ",
     );
@@ -884,7 +884,7 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
 #[test]
 fn key_callback_layouts_and_private_calls_verify_on_windows_and_macos() {
     let source = r"
-        type Key { name: string }
+        type Key { name: string; }
         impl Hash for Key { fn hash(self) -> i64 { 55 } }
         impl Eq for Key { fn eq(self, other: Key) -> bool { true } }
         fn main() {

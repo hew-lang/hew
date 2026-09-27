@@ -28,7 +28,7 @@ fn handled_and_explicitly_discarded_results_are_accepted() {
     for body in [
         "let _ = might_fail();",
         "let outcome = might_fail(); let _ = outcome;",
-        "match might_fail() { .Ok(_) => {}, .Err(_) => {} }",
+        "match might_fail() { .Ok(_) => {} .Err(_) => {} }",
         "might_fail() handle failure { };",
     ] {
         let source = format!(

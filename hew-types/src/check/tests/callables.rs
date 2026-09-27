@@ -371,7 +371,7 @@ fn callable_qualifiers_survive_aggregate_erasure() {
 fn once_callable_fields_allow_independent_owned_use() {
     for qualifier in ["once", "once, clone"] {
         let declarations = format!(
-            "type Callbacks {{ first: fn[{qualifier}]() -> i64, second: fn[{qualifier}]() -> i64 }}"
+            "type Callbacks {{ first: fn[{qualifier}]() -> i64; second: fn[{qualifier}]() -> i64; }}"
         );
         for invocation in ["pair.first()", "(pair.first)()"] {
             let output = check_source(&format!(
@@ -487,9 +487,9 @@ fn declined_affine_pattern_guard_keeps_the_field_for_the_next_arm() {
         "match booking { Booking { ticket: t, .. } if false => { t.close(); } Booking { ticket: _, .. } => { println(booking.ticket.id); } }",
     ] {
         let output = check_source(&format!(
-            "#[resource] type Ticket {{ id: i64 }}
+            "#[resource] type Ticket {{ id: i64; }}
              impl Ticket {{ fn close(consume self) {{}} }}
-             type Booking {{ ticket: Ticket, label: string }}
+             type Booking {{ ticket: Ticket; label: string; }}
              fn main() {{ let booking = Booking {{ ticket: Ticket {{ id: 7 }}, label: \"seat\" }}; {matched} }}"
         ));
         assert!(output.errors.is_empty(), "{matched}: {:?}", output.errors);
@@ -512,7 +512,7 @@ fn affine_tuple_patterns_track_only_named_fields() {
         "let (_, label) = pair; pair.0.close(); println(label);",
     ] {
         let output = check_source(&format!(
-            "#[resource] type Ticket {{ id: i64 }}
+            "#[resource] type Ticket {{ id: i64; }}
              impl Ticket {{ fn close(consume self) {{}} }}
              fn main() {{ let pair = (Ticket {{ id: 7 }}, \"seat\"); {pattern} }}"
         ));
@@ -555,7 +555,7 @@ fn partial_move_complete_job_keeps_siblings_usable() {
 fn partial_move_nested_records_and_tuples_preserve_siblings() {
     let output = check_source(&format!(
         "{PARTIAL_JOB}
-        type Batch {{ pair: (Job, fn[once]() -> i64), label: string }}
+        type Batch {{ pair: (Job, fn[once]() -> i64); label: string; }}
         fn complete(consume batch: Batch) {{
             batch.pair.0.done(); println(batch.pair.0.label);
             batch.pair.1(); println(batch.label);
@@ -569,7 +569,7 @@ fn partial_move_nested_records_and_tuples_preserve_siblings() {
     ] {
         let output = check_source(&format!(
             "{PARTIAL_JOB}
-            type Batch {{ job: Job, label: string }}
+            type Batch {{ job: Job; label: string; }}
             fn complete_job(consume job: Job) {{ job.done(); }}
             fn complete(consume batch: Batch) {{ {body} }}"
         ));
@@ -714,9 +714,9 @@ fn book() -> Booking {
 fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
     for prefix in ["#[resource]", "#[linear]"] {
         let declarations = format!(
-            "{prefix} type Bundle {{ done: fn[once]() -> i64 }}
+            "{prefix} type Bundle {{ done: fn[once]() -> i64; }}
             impl Bundle {{ fn close(consume self) {{ }} }}
-            type Outer {{ inner: (Bundle, string) }}"
+            type Outer {{ inner: (Bundle, string); }}"
         );
         for body in [
             "outer.inner.0.done();",
@@ -1158,7 +1158,7 @@ fn borrowed_mutable_callable_accepts_definite_replacement() {
         "cb = fresh_owned(); cb();",
         "if flag { cb = fresh_owned(); } else { cb = fresh_owned(); } cb();",
         "if flag { return; } else { cb = fresh_owned(); } cb();",
-        "match flag { true => { cb = fresh_owned(); }, false => { cb = fresh_owned(); } } cb();",
+        "match flag { true => { cb = fresh_owned(); } false => { cb = fresh_owned(); } } cb();",
         "cb = fresh_owned(); if flag { cb(); } cb();",
     ] {
         let source = format!(
@@ -1176,7 +1176,7 @@ fn borrowed_mutable_callable_keeps_borrow_on_any_reaching_branch() {
         "if flag { cb = fresh_owned(); } else {} cb();",
         "if flag {} else { cb = fresh_owned(); } cb();",
         "if flag { cb = fresh_owned(); } else { cb(); }",
-        "match flag { true => { cb = fresh_owned(); }, false => {} } cb();",
+        "match flag { true => { cb = fresh_owned(); } false => {} } cb();",
     ] {
         let source = format!(
             "{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64, flag: bool) {{ {body} }}"

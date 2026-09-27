@@ -51,7 +51,7 @@ fn package_native_ffi_is_built_and_linked() {
     }
 
     let output = Command::new(hew_binary())
-        .args(["test", "ffi_test.hew", "--no-color", "--jobs", "1"])
+        .args(["test", "ffi_test.hew", "--color", "never", "--jobs", "1"])
         .env("CARGO_TARGET_DIR", dir.path().join("target"))
         .current_dir(dir.path())
         .output()
@@ -90,7 +90,7 @@ fn passing_suite_exits_zero() {
             "passing_test.hew",
             "#[test]\nfn passes() {\n    assert(true);\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(output.status.success());
@@ -117,7 +117,7 @@ fn selected_unit_test_calls_its_helper() {
     );
     let mut command = Command::new(hew_binary());
     command
-        .args(["test", ".", "--no-color", "--jobs", "1"])
+        .args(["test", ".", "--color", "never", "--jobs", "1"])
         // Integration builds may place the compiler in an SSD target directory
         // outside the checkout, where its dev-layout stdlib discovery cannot
         // infer this source tree from a temporary test project.
@@ -144,7 +144,7 @@ fn project_test_imports_source_module_from_project_root() {
     require_codegen();
 
     let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test_project_root_fixture");
-    let output = run_hew_in(&project, &["test", ".", "--no-color"]);
+    let output = run_hew_in(&project, &["test", ".", "--color", "never"]);
 
     assert!(
         output.status.success(),
@@ -184,7 +184,7 @@ fn relative_string_import_resolves_from_test_file() {
                 "import \"support.hew\";\n\n#[test]\nfn imports_relative_file() {\n    assert(expected() == 42);\n}\n",
             ),
         ],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(
@@ -205,7 +205,7 @@ fn failing_suite_exits_non_zero() {
             "failing_test.hew",
             "#[test]\nfn fails() {\n    panic(\"expected failure\");\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(!output.status.success());
@@ -229,7 +229,14 @@ fn test_processes_get_isolated_scratch_and_keep_failed_run() {
          #[test]\nfn fails() { panic(os.temp_dir()); }\n",
     );
     let output = Command::new(hew_binary())
-        .args(["test", "scratch_test.hew", "--no-color", "--jobs", "1"])
+        .args([
+            "test",
+            "scratch_test.hew",
+            "--color",
+            "never",
+            "--jobs",
+            "1",
+        ])
         .env("HEW_STD", repo_root().join("std"))
         .env("TMPDIR", &pool)
         .env("TMP", &pool)
@@ -275,7 +282,7 @@ fn mixed_suite_reports_each_test_and_exits_non_zero() {
                 "#[test]\nfn beta() {\n    panic(\"boom\");\n}\n",
             ),
         ],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(!output.status.success());
@@ -294,7 +301,7 @@ fn parallel_suite_reports_in_discovery_order() {
             "ordered_test.hew",
             "#[test]\nfn slow_first() {\n    sleep(100ms);\n}\n\n#[test]\nfn fast_second() {\n    assert(true);\n}\n",
         )],
-        &["--no-color", "--jobs", "2"],
+        &["--color", "never", "--jobs", "2"],
     );
 
     assert!(output.status.success());
@@ -324,7 +331,8 @@ fn parallel_csv_test_compilation_uses_compiler_stack_budget() {
         &[
             "test",
             "tests/hew/csv_test.hew",
-            "--no-color",
+            "--color",
+            "never",
             "--jobs",
             "2",
             "--filter",
@@ -375,7 +383,7 @@ fn serial_tests_do_not_overlap() {
 
     let output = run_suite(
         &[("serial_test.hew", source.as_str())],
-        &["--no-color", "--jobs", "2"],
+        &["--color", "never", "--jobs", "2"],
     );
 
     assert!(
@@ -407,7 +415,7 @@ fn ignored_test_is_skipped_and_counted() {
             "ignored_test.hew",
             "#[test]\n#[ignore]\nfn skipped() {\n    panic(\"ignored tests should not run\");\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(output.status.success());
@@ -425,7 +433,7 @@ fn include_ignored_flag_runs_skipped_tests() {
             "ignored_test.hew",
             "#[test]\n#[ignore]\nfn skipped() {\n    panic(\"ignored test ran\");\n}\n",
         )],
-        &["--no-color", "--include-ignored"],
+        &["--color", "never", "--include-ignored"],
     );
 
     assert!(!output.status.success());
@@ -450,7 +458,7 @@ fn filter_narrows_to_matching_tests() {
                 "#[test]\nfn skip_me() {\n    panic(\"filtered test should not run\");\n}\n",
             ),
         ],
-        &["--no-color", "--filter", "keeps"],
+        &["--color", "never", "--filter", "keeps"],
     );
 
     assert!(output.status.success());
@@ -547,7 +555,7 @@ fn should_panic_test_passes_when_it_panics() {
             "should_panic_test.hew",
             "#[test]\n#[should_panic]\nfn expected_panic() {\n    panic(\"boom\");\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(output.status.success());
@@ -565,7 +573,7 @@ fn should_panic_test_fails_when_it_does_not_panic() {
             "should_panic_test.hew",
             "#[test]\n#[should_panic]\nfn expected_panic() {\n    assert(true);\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(!output.status.success());
@@ -584,7 +592,7 @@ fn should_panic_rejects_an_explicit_nonzero_exit() {
             "should_panic_exit_test.hew",
             "#[test]\n#[should_panic]\nfn exits() {\n    exit(7);\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -602,7 +610,7 @@ fn failed_assertion_reports_its_source_site() {
             "assert_site_test.hew",
             "#[test]\nfn fails() {\n    assert(1 == 2);\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -619,7 +627,7 @@ fn should_panic_rejects_a_checked_trap_with_its_site() {
             "trap_site_test.hew",
             "#[test]\n#[should_panic]\nfn traps() {\n    let values = [1, 2];\n    var index = 3;\n    let _ = values[index];\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -636,7 +644,8 @@ fn no_test_files_in_directory_exits_non_zero() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg(".")
-        .arg("--no-color")
+        .arg("--color")
+        .arg("never")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -660,7 +669,8 @@ fn no_test_files_allow_empty_exits_zero() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg(".")
-        .arg("--no-color")
+        .arg("--color")
+        .arg("never")
         .arg("--allow-empty")
         .current_dir(dir.path())
         .output()
@@ -681,7 +691,7 @@ fn no_test_files_allow_empty_exits_zero() {
 fn test_zero_functions_exits_nonzero() {
     let output = run_suite(
         &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -702,7 +712,7 @@ fn test_zero_functions_exits_nonzero() {
 fn test_zero_functions_allow_empty_exits_zero() {
     let output = run_suite(
         &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],
-        &["--no-color", "--allow-empty"],
+        &["--color", "never", "--allow-empty"],
     );
 
     assert_eq!(output.status.code(), Some(0));
@@ -739,7 +749,8 @@ fn multi_path_invocation_aggregates_results() {
         .arg("test")
         .arg("suite_a")
         .arg("suite_b")
-        .arg("--no-color")
+        .arg("--color")
+        .arg("never")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -770,14 +781,16 @@ fn test_runner_relative_path_invocation_discovers_same_tests_as_absolute_path() 
     let relative = Command::new(hew_binary())
         .arg("test")
         .arg("suite/relative_discovery_test.hew")
-        .arg("--no-color")
+        .arg("--color")
+        .arg("never")
         .current_dir(dir.path())
         .output()
         .unwrap();
     let absolute = Command::new(hew_binary())
         .arg("test")
         .arg(&absolute_path)
-        .arg("--no-color")
+        .arg("--color")
+        .arg("never")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -806,7 +819,7 @@ fn parse_errors_fail_the_suite() {
             "broken_test.hew",
             "#[test]\nfn broken( {\n    assert(true);\n}\n",
         )],
-        &["--no-color"],
+        &["--color", "never"],
     );
 
     assert!(!output.status.success());
@@ -823,7 +836,7 @@ fn timeout_exit_code_is_non_zero() {
             "timeout_test.hew",
             "#[test]\nfn forever() {\n    loop {\n        println(\"spin\");\n    }\n}\n",
         )],
-        &["--no-color", "--timeout", "1"],
+        &["--color", "never", "--timeout", "1"],
     );
 
     assert!(!output.status.success());
@@ -838,7 +851,8 @@ fn missing_path_exits_non_zero() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg(dir.path().join("missing"))
-        .arg("--no-color")
+        .arg("--color")
+        .arg("never")
         .output()
         .unwrap();
 
@@ -852,7 +866,8 @@ fn test_nonexistent_path_still_exits_one() {
     let output = Command::new(hew_binary())
         .arg("test")
         .arg("/no/such/path")
-        .arg("--no-color")
+        .arg("--color")
+        .arg("never")
         .output()
         .unwrap();
 
@@ -966,7 +981,12 @@ fn filter_with_no_matching_tests_exits_zero_and_reports_zero_tests() {
             "filter_target_test.hew",
             "#[test]\nfn alpha() {\n    assert(true);\n}\n",
         )],
-        &["--no-color", "--filter", "this_pattern_matches_nothing"],
+        &[
+            "--color",
+            "never",
+            "--filter",
+            "this_pattern_matches_nothing",
+        ],
     );
 
     assert!(

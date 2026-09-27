@@ -198,7 +198,10 @@ fn var_self_verifier_rejects_stale_receiver_bindings_and_types() {
 #[test]
 fn projected_var_self_receiver_preserves_the_writeback_place() {
     let source = COUNTDOWN_SOURCE
-        .replace("fn step()", "type Holder { counter: Countdown }\nfn step()")
+        .replace(
+            "fn step()",
+            "type Holder { counter: Countdown; }\nfn step()",
+        )
         .replace(
             "var cd = Countdown { n: 1 };",
             "var owner = Holder { counter: Countdown { n: 1 } };",

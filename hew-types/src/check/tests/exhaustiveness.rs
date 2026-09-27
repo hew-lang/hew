@@ -1134,7 +1134,7 @@ fn typecheck_int_scrutinee_struct_pattern_errors_without_binding_cascade() {
         "        Point { x } => {\n",
         "            let _ = x;\n",
         "            0\n",
-        "        },\n",
+        "        }\n",
         "    };\n",
         "}\n",
     ));
@@ -1180,7 +1180,7 @@ fn typecheck_bool_scrutinee_tuple_pattern_errors_without_binding_cascade() {
         "            let _ = left;\n",
         "            let _ = right;\n",
         "            0\n",
-        "        },\n",
+        "        }\n",
         "        _ => 0,\n",
         "    };\n",
         "}\n",

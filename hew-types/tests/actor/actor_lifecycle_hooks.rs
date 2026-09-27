@@ -1,5 +1,5 @@
 //! Type-checker fixtures for actor lifecycle hooks
-//! (`#[on(start)]` / `#[on(stop)]` / `#[on(crash)]` / `#[on(exit)]` /
+//! (`#[on(start)]` / `#[on(stop)]` / `#[on(crash)]` / `#[on(link)]` /
 //! `#[on(down)]`). `upgrade` is no longer a hook kind (HEW-SPEC-2026 §12.6);
 //! `#[on(upgrade)]` is exercised here only as an unrecognised-kind case.
 //!
@@ -175,7 +175,7 @@ fn typecheck_link_monitor_import_edge(
     let target_items = common::parse_program(target_source).items;
     let mut consumer = common::parse_program(&format!(
         "import {}.{{CrashKind}};\n\
-         pub enum ImportedReason {{ Crashed(CrashKind), }}",
+         pub enum ImportedReason {{ Crashed(CrashKind); }}",
         target_path.join(".")
     ));
     for (item, _) in &mut consumer.items {
@@ -239,7 +239,7 @@ fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
         import std.failure.{CrashNotification};
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
                 let _id = note.actor_id;
             }
@@ -265,7 +265,7 @@ fn aliased_imported_exit_payload_keeps_canonical_lifecycle_identity() {
         import std.failure.{CrashNotification as ExitNote};
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: ExitNote) {
                 let _id = note.actor_id;
             }
@@ -285,7 +285,7 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         import std.link_monitor as lm;
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: f.CrashNotification) {
                 let _id = note.actor_id;
             }
@@ -297,9 +297,9 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         }
 
         fn main() {
-            let _kind = f.CrashKind.Crashed;
+            let _kind = f.CrashKind.Fault;
             let _target = lm.DownTarget.Local(7);
-            let _reason = lm.DownReason.Exited;
+            let _reason = lm.DownReason.Stopped;
         }
         ",
     );
@@ -333,7 +333,7 @@ fn user_backed_std_module_ids_do_not_grant_lifecycle_authority() {
             &["std", "failure"][..],
             r"
             actor Watcher {
-                #[on(exit)]
+                #[on(link)]
                 fn on_peer_exit(note: failure.CrashNotification) {}
             }
             ",
@@ -415,7 +415,7 @@ fn single_segment_owner_module_ids_do_not_grant_lifecycle_authority() {
             &["failure"][..],
             r"
             actor Watcher {
-                #[on(exit)]
+                #[on(link)]
                 fn on_peer_exit(note: failure.CrashNotification) {}
             }
             ",
@@ -476,7 +476,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.failure.{CrashAction};
         fn main() {
-            let _kind = failure.CrashKind.Crashed;
+            let _kind = failure.CrashKind.Fault;
         }
         ",
             None,
@@ -485,7 +485,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.failure.{CrashKind};
         fn main() {
-            let _kind = failure.CrashKind.Crashed;
+            let _kind = failure.CrashKind.Fault;
         }
         ",
             Some("std.failure.CrashKind"),
@@ -494,7 +494,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.link_monitor.{MonitorId};
         fn main() {
-            let _reason = link_monitor.DownReason.Exited;
+            let _reason = link_monitor.DownReason.Stopped;
         }
         ",
             None,
@@ -503,7 +503,7 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
             r"
         import std.link_monitor.{DownReason};
         fn main() {
-            let _reason = link_monitor.DownReason.Exited;
+            let _reason = link_monitor.DownReason.Stopped;
         }
         ",
             Some("std.link_monitor.DownReason"),
@@ -534,11 +534,11 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
     for source in [
         r"
             import std.failure;
-            actor Watcher { #[on(exit)] fn on_peer_exit(note: CrashNotification) {} }
+            actor Watcher { #[on(link)] fn on_peer_exit(note: CrashNotification) {} }
             fn main() {}
         ",
         r"
-            actor Watcher { #[on(exit)] fn on_peer_exit(note: CrashNotification) {} }
+            actor Watcher { #[on(link)] fn on_peer_exit(note: CrashNotification) {} }
             fn main() {}
         ",
     ] {
@@ -557,7 +557,7 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
         r"
         import std.failure;
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: failure.CrashNotification) { let _id = note.actor_id; }
         }
         fn main() {}
@@ -603,7 +603,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
         import app.helper;
 
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: failure.CrashNotification) {}
         }
 
@@ -645,7 +645,8 @@ fn named_imported_down_payload_and_nested_types_consume_import() {
                     DownTarget.Remote(location) => { let _location = location; }
                 }
                 match note.reason {
-                    DownReason.Exited => {}
+                    DownReason.Stopped => {}
+                    DownReason.Terminated => {}
                     DownReason.Crashed(kind) => { let _kind = kind; }
                     DownReason.MonitorLost => {}
                     DownReason.LocalShutdown => {}
@@ -861,7 +862,7 @@ type CrashNotification {
 }
 
 actor Watcher {
-    #[on(exit)]
+    #[on(link)]
     fn on_peer_exit(note: CrashNotification) {
         let _value = note.value;
     }
@@ -1464,7 +1465,7 @@ fn accept_crash_action_return_inside_if_then_more_code() {
         if flag == 1 {
             return CrashAction.Escalate;
         }
-        CrashAction.Kill
+        CrashAction.GiveUp
     }
 }
 
@@ -1541,7 +1542,7 @@ fn main() {}
     );
 }
 
-// ── M-7-R: `#[on(exit)]` linked-actor exit hook ──────────────────────
+// ── M-7-R: `#[on(link)]` linked-actor exit hook ──────────────────────
 //
 // The exit hook fires when an actor THIS actor is linked to crashes/exits,
 // delivering a typed `CrashNotification { actor_id, kind }`. Signature:
@@ -1552,7 +1553,7 @@ fn accept_on_exit_hook_canonical_shape() {
     let output = typecheck(
         r"
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
                 let _id = note.actor_id;
             }
@@ -1563,7 +1564,7 @@ fn accept_on_exit_hook_canonical_shape() {
     );
     assert!(
         output.errors.is_empty(),
-        "`#[on(exit)] fn on_peer_exit(note: CrashNotification)` should type-check cleanly: {:?}",
+        "`#[on(link)] fn on_peer_exit(note: CrashNotification)` should type-check cleanly: {:?}",
         output.errors
     );
 }
@@ -1573,7 +1574,7 @@ fn reject_on_exit_hook_wrong_param_type() {
     let output = typecheck(
         r"
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashInfo) {
             }
         }
@@ -1586,7 +1587,7 @@ fn reject_on_exit_hook_wrong_param_type() {
             matches!(&e.kind, TypeErrorKind::InvalidOperation)
                 && e.message.contains("CrashNotification")
         }),
-        "`#[on(exit)]` with a non-CrashNotification param must reject: {:?}",
+        "`#[on(link)]` with a non-CrashNotification param must reject: {:?}",
         output.errors
     );
 }
@@ -1596,7 +1597,7 @@ fn reject_on_exit_hook_nonunit_return() {
     let output = typecheck(
         r"
         actor Watcher {
-            #[on(exit)]
+            #[on(link)]
             fn on_peer_exit(note: CrashNotification) -> i64 {
                 42
             }
@@ -1610,7 +1611,7 @@ fn reject_on_exit_hook_nonunit_return() {
             matches!(&e.kind, TypeErrorKind::InvalidOperation)
                 && e.message.contains("must return `()`")
         }),
-        "`#[on(exit)]` with a non-unit return must reject: {:?}",
+        "`#[on(link)]` with a non-unit return must reject: {:?}",
         output.errors
     );
 }
@@ -1749,10 +1750,10 @@ fn reject_on_crash_wrong_return_type() {
 #[test]
 fn crash_action_variants_recognised_by_type_checker() {
     // The `CrashAction` enum carries three variants per Q46/A23:
-    // `Restart | Escalate | Kill`. The type-checker recognises each variant as
+    // `Restart | Escalate | GiveUp`. The type-checker recognises each variant as
     // a valid `CrashAction` expression and (M-4) accepts it as the hook return
     // — no signature mismatch, no fail-closed gate, no error at all.
-    for variant in ["Restart", "Escalate", "Kill"] {
+    for variant in ["Restart", "Escalate", "GiveUp"] {
         let src = format!(
             "
             actor Worker {{

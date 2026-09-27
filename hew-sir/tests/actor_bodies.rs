@@ -35,7 +35,8 @@ const COUNTER: &str = r#"actor Counter {
 fn main() {
     let counter = spawn Counter();
     let _ = counter.increment(2);
-    close(counter);
+    stop(counter);
+    stopped(counter);
 }
 "#;
 
@@ -134,7 +135,8 @@ fn main() {
         .Ok(label) => println(label),
         .Err(_) => panic("show failed"),
     }
-    close(ledger);
+    stop(ledger);
+    stopped(ledger);
 }
 "#;
     let module = lower_source(SOURCE);
@@ -249,7 +251,8 @@ fn main() {
     for item in source.items(3) {
         println(item);
     }
-    close(source);
+    stop(source);
+    stopped(source);
 }
 ";
 

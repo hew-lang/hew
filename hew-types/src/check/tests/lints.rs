@@ -1027,7 +1027,7 @@ fn no_warn_unused_println() {
 fn no_warn_unused_spawn() {
     // spawn is a side-effect expression — don't warn about discarded return
     let (_, warnings) = parse_and_check(concat!(
-        "actor Worker { count: i32,\n",
+        "actor Worker { let count: i32;\n",
         "    receive fn work() {} }\n",
         "fn main() { let _w = spawn Worker(count: 0); }\n",
     ));

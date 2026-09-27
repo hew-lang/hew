@@ -3109,7 +3109,10 @@ pub(super) fn finalize_user_record_value_classes(
     record_layouts: &[RecordLayout],
     extern_backed_records: &HashSet<String>,
     type_classes: &mut crate::value_class::TypeClassTable,
-    declarations: &std::collections::BTreeMap<String, hew_types::value_class::DeclaredType>,
+    declarations: &std::collections::BTreeMap<
+        hew_types::NominalId,
+        hew_types::value_class::DeclaredType,
+    >,
 ) {
     for name in record_registry.keys() {
         type_classes

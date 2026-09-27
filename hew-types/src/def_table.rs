@@ -1381,18 +1381,26 @@ impl DefTable {
     /// declares it.
     #[must_use]
     pub fn builtin_declaration(&self, builtin: crate::BuiltinType) -> Option<NominalId> {
-        self.builtin_declarations
-            .get(&builtin)
-            .copied()
-            .map(NominalId::from_minted_declaration)
+        KnownDecl::of_builtin(builtin)
+            .map(KnownDecl::nominal)
+            .or_else(|| {
+                self.builtin_declarations
+                    .get(&builtin)
+                    .copied()
+                    .map(NominalId::from_minted_declaration)
+            })
     }
 
     /// The builtin a declaration is, when it is one.
     #[must_use]
     pub fn declared_builtin(&self, declaration: DefId) -> Option<crate::BuiltinType> {
-        self.builtin_declarations
-            .iter()
-            .find_map(|(builtin, id)| (*id == declaration).then_some(*builtin))
+        KnownDecl::of(NominalId::from_minted_declaration(declaration))
+            .and_then(|known| known.head().builtin())
+            .or_else(|| {
+                self.builtin_declarations
+                    .iter()
+                    .find_map(|(builtin, id)| (*id == declaration).then_some(*builtin))
+            })
     }
 
     /// Bind a FURTHER occurrence to the declaration already established under

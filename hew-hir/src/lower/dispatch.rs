@@ -109,7 +109,7 @@ impl LowerCtx {
         for argument in &arguments {
             match ResolvedTy::from_ty(argument) {
                 Ok(argument) => {
-                    resolved.push(self.qualify_current_module_record_ty(argument));
+                    resolved.push(self.restore_type_declaration_facts(argument));
                 }
                 Err(error) => {
                     self.diagnostics.push(HirDiagnostic::new(

@@ -384,7 +384,7 @@ impl LowerCtx {
             .cloned()
             .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
             .map_or(ResolvedTy::Unit, |ty| {
-                self.qualify_current_module_record_ty(ty)
+                self.restore_type_declaration_facts(ty)
             });
         self.assert_resolved_ty_totality(span);
         let resolved_ref = match &target {
@@ -648,7 +648,7 @@ impl LowerCtx {
         let checker_key = self.mk_key(span);
         let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => self.qualify_current_module_record_ty(resolved),
+                Ok(resolved) => self.restore_type_declaration_facts(resolved),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {

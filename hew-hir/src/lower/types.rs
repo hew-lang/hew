@@ -33,7 +33,7 @@ impl LowerCtx {
         let definition = self.checked_member_definition(declaration, &span)?;
         let facts = self
             .type_declarations
-            .get(self.defs.path(declaration))
+            .get(&hew_types::NominalId::of_declaration(declaration))
             .cloned()
             .unwrap_or_else(|| {
                 self.diagnostics.push(HirDiagnostic::new(
@@ -268,26 +268,24 @@ impl LowerCtx {
         clippy::too_many_lines,
         reason = "one recursive checker-to-HIR identity authority covers every ResolvedTy wrapper"
     )]
-    pub(super) fn qualify_current_module_record_ty(&self, ty: ResolvedTy) -> ResolvedTy {
+    pub(super) fn restore_type_declaration_facts(&self, ty: ResolvedTy) -> ResolvedTy {
         let ty = match ty {
             ResolvedTy::Tuple(elements) => {
                 return ResolvedTy::Tuple(
                     elements
                         .into_iter()
-                        .map(|element| self.qualify_current_module_record_ty(element))
+                        .map(|element| self.restore_type_declaration_facts(element))
                         .collect(),
                 );
             }
             ResolvedTy::Array(element, size) => {
                 return ResolvedTy::Array(
-                    Box::new(self.qualify_current_module_record_ty(*element)),
+                    Box::new(self.restore_type_declaration_facts(*element)),
                     size,
                 );
             }
             ResolvedTy::Slice(element) => {
-                return ResolvedTy::Slice(Box::new(
-                    self.qualify_current_module_record_ty(*element),
-                ));
+                return ResolvedTy::Slice(Box::new(self.restore_type_declaration_facts(*element)));
             }
             ResolvedTy::Function {
                 capabilities,
@@ -298,9 +296,9 @@ impl LowerCtx {
                     capabilities,
                     params: params
                         .into_iter()
-                        .map(|param| self.qualify_current_module_record_ty(param))
+                        .map(|param| self.restore_type_declaration_facts(param))
                         .collect(),
-                    ret: Box::new(self.qualify_current_module_record_ty(*ret)),
+                    ret: Box::new(self.restore_type_declaration_facts(*ret)),
                 };
             }
             ResolvedTy::Closure {
@@ -313,12 +311,12 @@ impl LowerCtx {
                     capabilities,
                     params: params
                         .into_iter()
-                        .map(|param| self.qualify_current_module_record_ty(param))
+                        .map(|param| self.restore_type_declaration_facts(param))
                         .collect(),
-                    ret: Box::new(self.qualify_current_module_record_ty(*ret)),
+                    ret: Box::new(self.restore_type_declaration_facts(*ret)),
                     captures: captures
                         .into_iter()
-                        .map(|capture| self.qualify_current_module_record_ty(capture))
+                        .map(|capture| self.restore_type_declaration_facts(capture))
                         .collect(),
                 };
             }
@@ -328,12 +326,12 @@ impl LowerCtx {
             } => {
                 return ResolvedTy::Pointer {
                     is_mutable,
-                    pointee: Box::new(self.qualify_current_module_record_ty(*pointee)),
+                    pointee: Box::new(self.restore_type_declaration_facts(*pointee)),
                 };
             }
             ResolvedTy::Borrow { pointee } => {
                 return ResolvedTy::Borrow {
-                    pointee: Box::new(self.qualify_current_module_record_ty(*pointee)),
+                    pointee: Box::new(self.restore_type_declaration_facts(*pointee)),
                 };
             }
             ResolvedTy::TraitObject { traits } => {
@@ -346,19 +344,19 @@ impl LowerCtx {
                             args: bound
                                 .args
                                 .into_iter()
-                                .map(|arg| self.qualify_current_module_record_ty(arg))
+                                .map(|arg| self.restore_type_declaration_facts(arg))
                                 .collect(),
                             assoc_bindings: bound
                                 .assoc_bindings
                                 .into_iter()
-                                .map(|(name, ty)| (name, self.qualify_current_module_record_ty(ty)))
+                                .map(|(name, ty)| (name, self.restore_type_declaration_facts(ty)))
                                 .collect(),
                         })
                         .collect(),
                 };
             }
             ResolvedTy::Task(result) => {
-                return ResolvedTy::Task(Box::new(self.qualify_current_module_record_ty(*result)));
+                return ResolvedTy::Task(Box::new(self.restore_type_declaration_facts(*result)));
             }
             other => other,
         };
@@ -372,133 +370,18 @@ impl LowerCtx {
         };
         let args: Vec<ResolvedTy> = args
             .into_iter()
-            .map(|arg| self.qualify_current_module_record_ty(arg))
+            .map(|arg| self.restore_type_declaration_facts(arg))
             .collect();
-        let name = head.registry_key();
-        if let Some(expected) = head.builtin().filter(|kind| kind.is_encoding_value()) {
-            if let Some(checked) = self
-                .checked_encoding_type(name, &args)
-                .filter(|ty| ty.is_builtin(expected))
-            {
-                return checked;
-            }
+        let is_opaque = is_opaque
+            || head
+                .declaration(&self.defs)
+                .and_then(|id| self.type_declarations.get(&id))
+                .is_some_and(|declaration| declaration.is_opaque);
+        ResolvedTy::Named {
+            head,
+            args,
+            is_opaque,
         }
-        // A resolved head already names its declaration; `Ty::Named` carries
-        // no opacity bit, so restore it from the declaration registry here.
-        let hew_types::TypeHead::Unresolved(_) = head else {
-            let is_opaque = is_opaque || (head.is_user() && self.declared_type_is_opaque(name));
-            return ResolvedTy::Named {
-                head,
-                args,
-                is_opaque,
-            };
-        };
-        // TRANSITION(A1): a spelling HIR's own type resolution left unresolved
-        // is qualified to its declaration; deleted by B1 with that resolver.
-        let name = name.to_string();
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if !name.contains('.')
-            && self.current_scope_declares_source_type(&name, current_module_is_file_import)
-        {
-            let canonical = self.canonical_current_module_record_name(&name);
-            if canonical.contains('.') {
-                if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                    return Self::resolved_source_builtin_ty(&canonical, builtin, args);
-                }
-            }
-            if self.declared_type_is_opaque(&canonical) {
-                return ResolvedTy::named_opaque_path(&self.defs, &canonical, args);
-            }
-            return ResolvedTy::named_path(&self.defs, &canonical, args);
-        }
-        if let Some(canonical) =
-            self.canonical_monomorphic_builtin_enum_name(&name, None, current_module_is_file_import)
-        {
-            return ResolvedTy::named_path(&self.defs, canonical, args);
-        }
-        if !name.contains('.')
-            && self.current_module_name.is_none()
-            && self.declared_type_is_opaque(&name)
-        {
-            return ResolvedTy::named_opaque_path(&self.defs, &name, args);
-        }
-        if !name.contains('.') {
-            if let Some(module_owner) = self.current_module_name.as_deref() {
-                let qualified = format!("{module_owner}.{name}");
-                if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                    return Self::resolved_source_builtin_ty(&qualified, builtin, args);
-                }
-                if self.declared_type_is_opaque(&qualified) {
-                    return ResolvedTy::named_opaque_path(&self.defs, &qualified, args);
-                }
-            }
-        }
-        if !name.contains('.') && self.current_module_name.is_none() {
-            if let Some(canonical) = self.file_import_root_type_aliases.get(&name) {
-                return self.qualify_current_module_record_ty(ResolvedTy::named_path(
-                    &self.defs, canonical, args,
-                ));
-            }
-        }
-        if self.declared_type_is_opaque(&name) {
-            return ResolvedTy::named_opaque_path(&self.defs, &name, args);
-        }
-        if !name.contains('.')
-            && !self.current_scope_declares_source_type(&name, current_module_is_file_import)
-        {
-            if let Some(imported) = self.import_type_name_aliases.get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                name.clone(),
-            )) {
-                return self.qualify_current_module_record_ty(ResolvedTy::named_path(
-                    &self.defs,
-                    &imported.clone(),
-                    args,
-                ));
-            }
-        }
-        let canonical = self.canonical_current_module_record_name(&name);
-        if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-            return Self::resolved_source_builtin_ty(&canonical, builtin, args);
-        }
-        if self.declared_type_is_opaque(&canonical) {
-            ResolvedTy::named_opaque_path(&self.defs, &canonical, args)
-        } else {
-            ResolvedTy::named_path(&self.defs, &canonical, args)
-        }
-    }
-
-    /// Map a checker/presentation spelling of a generated monomorphic builtin
-    /// enum to its exact source owner. A bare leaf is admitted only when the
-    /// current source scope does not declare that leaf itself; an explicitly
-    /// qualified foreign owner is never retried by leaf.
-    pub(super) fn canonical_monomorphic_builtin_enum_name(
-        &self,
-        name: &str,
-        builtin: Option<BuiltinType>,
-        current_module_is_file_import: bool,
-    ) -> Option<&'static str> {
-        for fact in MONOMORPHIC_BUILTIN_ENUMS {
-            if name == fact.canonical_name {
-                return Some(fact.canonical_name);
-            }
-            if name.contains('.') || name != fact.name {
-                continue;
-            }
-            if self.current_scope_declares_source_type(name, current_module_is_file_import)
-                && self.current_module_name.as_deref() != Some(fact.owner)
-            {
-                continue;
-            }
-            if builtin.is_none_or(|kind| kind.canonical_name() == fact.name) {
-                return Some(fact.canonical_name);
-            }
-        }
-        None
     }
 
     pub(super) fn canonical_current_module_record_name(&self, name: &str) -> String {
@@ -596,142 +479,7 @@ impl LowerCtx {
             )
     }
 
-    /// Whether bare `name` is authored by the scope currently being lowered.
-    ///
-    /// Root declarations use the root namespace. Every imported module,
-    /// including a flattened file import, uses the exact declaration
-    /// identities harvested from the module graph. This is deliberately narrower than
-    /// `record_registry`, which is a global layout index containing imports.
-    pub(super) fn current_scope_declares_source_type(
-        &self,
-        name: &str,
-        _current_module_is_file_import: bool,
-    ) -> bool {
-        if self.current_module_name.is_none() {
-            return self.root_visible_source_type_short_names.contains(name);
-        }
-        self.current_module_name
-            .as_deref()
-            .is_some_and(|module_full_path| {
-                self.source_type_identities
-                    .contains(&format!("{module_full_path}.{name}"))
-            })
-    }
-
-    /// Read encoding identity and opacity from the checker-owned declaration.
-    /// Neither a catalogue match nor an opaque annotation supplies authority.
-    pub(super) fn checked_encoding_type(
-        &self,
-        name: &str,
-        args: &[ResolvedTy],
-    ) -> Option<ResolvedTy> {
-        let declaration = self.type_declarations.get(name)?;
-        let builtin = declaration
-            .builtin
-            .filter(|kind| kind.is_encoding_value())?;
-        if !args.is_empty() || !declaration.type_params.is_empty() {
-            return None;
-        }
-        Some(ResolvedTy::Named {
-            args: Vec::new(),
-            head: hew_types::TypeHead::Builtin(builtin),
-            is_opaque: declaration.is_opaque,
-        })
-    }
-
-    /// Resolve an owner-qualified compiler carrier using source provenance.
-    ///
-    /// The ordinary catalog covers opaque/substrate carriers such as
-    /// `stream.Sink`. Lifecycle records are source-defined and therefore need
-    /// an exact owner mapping as well. In both cases a colliding user package
-    /// declaration wins unless the module graph proves the declaration came
-    /// from canonical `std.*`.
-    pub(super) fn qualified_source_builtin(&self, name: &str) -> Option<BuiltinType> {
-        if !name.contains('.') {
-            return hew_types::lookup_builtin_type(name)
-                .filter(|builtin| !builtin.requires_source_import());
-        }
-
-        // Parser/checker compatibility spellings for the core channel/stream
-        // carriers omit the leading `std.`.  While lowering a canonical stdlib
-        // module, project only those fixed catalog identities to their exact
-        // source declarations, and require that declaration provenance to be
-        // present. This is not a module-leaf retry: arbitrary `stream.Sink`
-        // source outside `std.*` remains a user nominal.
-        let canonical_compat = self
-            .current_module_name
-            .as_deref()
-            .filter(|module| module.starts_with("std."))
-            .and(match name {
-                "stream.Stream" => Some(("std.stream.Stream", BuiltinType::Stream)),
-                "stream.Sink" => Some(("std.stream.Sink", BuiltinType::Sink)),
-                _ => None,
-            });
-        if let Some((canonical, builtin)) = canonical_compat {
-            if self
-                .canonical_std_source_type_identities
-                .contains(canonical)
-            {
-                return Some(builtin);
-            }
-        }
-
-        let owner = name.rsplit_once('.').map(|(owner, _)| owner);
-        let current_std_owner = self.current_module_name.as_deref().is_some_and(|module| {
-            owner == Some(module)
-                && self
-                    .canonical_std_source_type_identities
-                    .iter()
-                    .any(|identity| identity.starts_with(&format!("{module}.")))
-        });
-        let canonical_std_owner =
-            current_std_owner || self.canonical_std_source_type_identities.contains(name);
-
-        // The catalog still contains leaf aliases such as `stream.Sink`.
-        // They describe ABI, not source ownership: a user module named
-        // `stream` is not thereby the shipped std module.  A
-        // qualified source spelling becomes a builtin only after an exact
-        // canonical-stdlib provenance check; do not retry by its final path
-        // segment or by a catalog alias.
-        if !canonical_std_owner {
-            return None;
-        }
-        if let Some(builtin) = hew_types::lookup_builtin_type(name).or_else(|| {
-            // Lifecycle declarations are source-owned.  Their old short-owner
-            // compatibility spellings (`failure.CrashNotification`) remain
-            // readable as ordinary nominal identities, but do not acquire
-            // compiler representation authority.  Only the exact canonical
-            // `std.failure` / `std.link_monitor` declaration identity can
-            // carry that authority across this boundary.
-            (name.starts_with("std.failure.") || name.starts_with("std.link_monitor."))
-                .then(|| hew_types::lookup_source_owned_lifecycle_type(name))
-                .flatten()
-        }) {
-            return Some(builtin);
-        }
-        None
-    }
-
-    /// Retain the exact declaration identity for source-owned lifecycle
-    /// carriers while also attaching their runtime representation class.
-    /// Ordinary compiler carriers continue to use the catalog's canonical
-    /// presentation name. A lifecycle record needs both facts: its qualified
-    /// source name selects the nominal layout, while `builtin` selects the ABI.
-    pub(super) fn resolved_source_builtin_ty(
-        _source_name: &str,
-        builtin: BuiltinType,
-        args: Vec<ResolvedTy>,
-    ) -> ResolvedTy {
-        ResolvedTy::named_builtin(builtin, args)
-    }
-
-    /// Opacity belongs to the checker declaration at this exact identity.
-    pub(super) fn declared_type_is_opaque(&self, identity: &str) -> bool {
-        self.type_declarations
-            .get(identity)
-            .is_some_and(|decl| decl.is_opaque)
-    }
-
+    /// Consume the checker-resolved annotation at its exact source occurrence.
     pub(super) fn lower_type(&mut self, ty: &Spanned<TypeExpr>) -> ResolvedTy {
         let key = SpanKey::in_module(&ty.1, self.current_module_idx);
         if let Some(resolved) = self.resolved_annotation_types.get(&key) {
@@ -900,7 +648,7 @@ impl LowerCtx {
         let Ok(resolved) = ResolvedTy::from_ty(&checker_ty) else {
             return;
         };
-        let resolved = self.qualify_current_module_record_ty(resolved);
+        let resolved = self.restore_type_declaration_facts(resolved);
         self.try_register_enum_instantiation_ty(&resolved, span);
     }
 

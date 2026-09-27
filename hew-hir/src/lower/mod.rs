@@ -1113,7 +1113,8 @@ struct LowerCtx {
     type_facts: std::collections::BTreeMap<hew_types::TypeInstanceKey, hew_types::TypeFacts>,
     /// Checked declaration metadata supplies representation facts that the
     /// source annotation and `Ty::Named` expression spelling cannot carry.
-    type_declarations: std::collections::BTreeMap<String, hew_types::value_class::DeclaredType>,
+    type_declarations:
+        std::collections::BTreeMap<hew_types::NominalId, hew_types::value_class::DeclaredType>,
     interpolation_display_types: HashMap<SpanKey, Ty>,
     unrendered_assertion_operands: HashSet<SpanKey>,
     /// Depth of `defer` bodies being lowered. A deferred body runs on every

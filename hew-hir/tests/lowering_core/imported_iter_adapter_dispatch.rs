@@ -61,9 +61,9 @@ fn std_iter_output(root_body: &str) -> hew_hir::LowerOutput {
     };
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let checked = checker.check_program(&program);
-    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
-    hew_hir::lower_program_host_target(&program, &checked, &hew_hir::ResolutionCtx)
+    let output = checker.check_program(&program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    hew_hir::lower_program_host_target(&program, &output, &hew_hir::ResolutionCtx)
 }
 
 #[test]

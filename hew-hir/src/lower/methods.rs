@@ -886,7 +886,7 @@ impl LowerCtx {
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .map_or(ResolvedTy::Unit, |ty| {
-                        self.qualify_current_module_record_ty(ty)
+                        self.restore_type_declaration_facts(ty)
                     });
                 let reply_ty = match &ret_ty {
                     ResolvedTy::Named {
@@ -969,7 +969,7 @@ impl LowerCtx {
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .map_or(ResolvedTy::Unit, |ty| {
-                        self.qualify_current_module_record_ty(ty)
+                        self.restore_type_declaration_facts(ty)
                     });
                 if matches!(target, CallTarget::DeclaredRuntime { .. }) {
                     return self.lower_declared_runtime_invocation(

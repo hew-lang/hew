@@ -134,11 +134,15 @@ impl Checker {
                 continue;
             };
             let name = head.registry_key();
-            let marker = crate::value_class::ClassDeclarations::declared_type(
-                &self.class_declarations(),
-                name,
-            )
-            .map(|declared| declared.marker);
+            let marker = head
+                .nominal()
+                .and_then(|id| {
+                    crate::value_class::ClassDeclarations::declared_type(
+                        &self.class_declarations(),
+                        id,
+                    )
+                })
+                .map(|declared| declared.marker);
             if !matches!(
                 marker,
                 Some(

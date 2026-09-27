@@ -15,8 +15,6 @@ use crate::common;
 use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::traits::{MethodSig, TraitDef, TraitRegistry};
-use hew_types::ty::Ty;
 use hew_types::Checker;
 
 use common::parse_program;
@@ -93,46 +91,6 @@ fn consume_receiver_records_per_call_site_flag() {
          method_call_consumes_receiver; got {:?}",
         output.method_call_consumes_receiver,
     );
-}
-
-/// Construction-side: `MethodSig` carries `consumes_receiver` as a
-/// public field with `false` as the conventional default. Registering an
-/// impl preserves the flag through `lookup_impl`.
-#[test]
-fn method_sig_round_trips_consumes_receiver_flag() {
-    let mut reg = TraitRegistry::new();
-    reg.register_trait(TraitDef {
-        name: "Sink".to_string(),
-        type_params: vec![],
-        super_traits: vec![],
-        methods: vec![MethodSig {
-            name: "close".to_string(),
-            params: vec![],
-            return_type: Ty::Unit,
-            takes_self: true,
-            self_mutable: false,
-            consumes_receiver: true,
-        }],
-        associated_types: vec![],
-    });
-    reg.register_impl(
-        "Server".to_string(),
-        "Sink".to_string(),
-        vec![MethodSig {
-            name: "close".to_string(),
-            params: vec![],
-            return_type: Ty::Unit,
-            takes_self: true,
-            self_mutable: false,
-            consumes_receiver: true,
-        }],
-    );
-
-    let trait_def = reg.lookup_trait("Sink").expect("trait registered");
-    assert!(trait_def.methods[0].consumes_receiver);
-
-    let impl_methods = reg.lookup_impl("Server", "Sink").expect("impl registered");
-    assert!(impl_methods[0].consumes_receiver);
 }
 
 /// Sanity: the per-call-site flag in the checker output is keyed by the

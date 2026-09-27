@@ -281,7 +281,9 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
         let fields = &find_type(&hir, "Envelope").fields;
-        let published = &checked.type_fact_context.declarations()["Envelope"].members;
+        let published = &checked.type_fact_context.declarations()
+            [&checked.defs.lookup_nominal("Envelope").unwrap()]
+            .members;
         assert_eq!(
             published,
             &fields
@@ -312,7 +314,9 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             .flat_map(hew_hir::HirVariant::field_tys)
             .collect();
         assert_eq!(
-            checked.type_fact_context.declarations()["Payload"].members,
+            checked.type_fact_context.declarations()
+                [&checked.defs.lookup_nominal("Payload").unwrap()]
+                .members,
             payloads
         );
         assert_eq!(payloads, vec![expected.clone(), option(vector(expected))]);

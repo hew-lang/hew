@@ -705,7 +705,7 @@ impl LowerCtx {
             Vec::with_capacity(plan.fields.len());
         for field in plan.fields {
             let field_ty = match ResolvedTy::from_ty(&field.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
+                Ok(ty) => self.restore_type_declaration_facts(ty),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -1395,7 +1395,7 @@ impl LowerCtx {
             let mut binding_error = false;
             for payload in &resolution.payload_bindings {
                 let ty = match ResolvedTy::from_ty(&payload.ty) {
-                    Ok(ty) => self.qualify_current_module_record_ty(ty),
+                    Ok(ty) => self.restore_type_declaration_facts(ty),
                     Err(err) => {
                         self.unsupported(
                             pattern_span.clone(),
@@ -1891,7 +1891,7 @@ impl LowerCtx {
         pattern_span: &Span,
     ) -> Option<HirPayloadVariantPredicate> {
         let payload_ty = match ResolvedTy::from_ty(&pvp.payload_ty) {
-            Ok(ty) => self.qualify_current_module_record_ty(ty),
+            Ok(ty) => self.restore_type_declaration_facts(ty),
             Err(err) => {
                 self.unsupported(
                     pattern_span.clone(),
@@ -1928,7 +1928,7 @@ impl LowerCtx {
         let mut bindings = Vec::with_capacity(pvp.bindings.len());
         for payload in &pvp.bindings {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
+                Ok(ty) => self.restore_type_declaration_facts(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),
@@ -1972,7 +1972,7 @@ impl LowerCtx {
                 return None;
             };
             let ty = match ResolvedTy::from_ty(&predicate.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
+                Ok(ty) => self.restore_type_declaration_facts(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),

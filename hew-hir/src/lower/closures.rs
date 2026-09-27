@@ -372,7 +372,7 @@ impl LowerCtx {
             };
             let fact = remaining_facts.remove(fact_idx);
             let ty = match ResolvedTy::from_ty(&fact.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
+                Ok(ty) => self.restore_type_declaration_facts(ty),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {

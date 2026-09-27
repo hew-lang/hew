@@ -212,32 +212,32 @@ pub(crate) struct CheckerClassDeclarations<'a> {
 }
 
 impl CheckerClassDeclarations<'_> {
-    fn is_opaque_type(&self, name: &str) -> bool {
-        self.checker.user_opaque_type_names.contains(name)
-            || self.checker.module_registry.is_handle_type(name)
+    fn is_opaque_type(&self, id: crate::NominalId) -> bool {
+        self.checker.opaque_type_ids.contains(&id)
     }
 }
 
 impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
-    fn declared_type(&self, name: &str) -> Option<crate::value_class::DeclaredType> {
+    fn builtin_declaration(&self, builtin: crate::BuiltinType) -> Option<crate::NominalId> {
+        self.checker.defs.builtin_declaration(builtin)
+    }
+
+    fn declared_type(&self, id: crate::NominalId) -> Option<crate::value_class::DeclaredType> {
         use crate::value_class::{DeclarationMarker, DeclaredType};
 
         // The `#[opaque]` attribute is a declaration fact, carried for a
         // program's own declarations by the checker's set and for an imported
         // handle by the module registry.
-        let is_opaque = self.is_opaque_type(name);
-        let marker = if self.checker.registry.is_resource(name) {
+        let is_opaque = self.is_opaque_type(id);
+        let marker = if self.checker.registry.is_resource(id) {
             DeclarationMarker::Resource
-        } else if self.checker.registry.is_linear(name) {
+        } else if self.checker.registry.is_linear(id) {
             DeclarationMarker::Linear
         } else {
             DeclarationMarker::None
         };
-        let definition = self.checker.type_def_view().at_path(name);
+        let definition = self.checker.type_defs.get(&id);
         let Some(definition) = definition else {
-            if self.checker.supervisor_children.contains_key(name) {
-                return Some(DeclaredType::default());
-            }
             // A marker with no field table still decides the class outright.
             return (marker != DeclarationMarker::None).then(|| DeclaredType {
                 builtin: None,
@@ -249,7 +249,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         };
         let mut member_tys: Vec<Ty> = Vec::new();
         if definition.kind == TypeDefKind::Record && definition.fields.is_empty() {
-            if let Some(signature) = self.checker.fn_sig(name) {
+            if let Some(signature) = self.checker.fn_sigs.get(&id.declaration()) {
                 member_tys.extend(signature.params.iter().cloned());
             }
         }
@@ -284,19 +284,6 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             }
         }
 
-        // §1.1's recursion cut (`classify_declaration`'s `walk.on_path`) keys a
-        // declaration by the exact name this lookup was asked for. A member
-        // that refers back to its own declaration is spelled bare inside the
-        // declaration's own source (name resolution never qualifies a
-        // self-reference), while an importer reaches the declaration through
-        // its qualified key — so the recursive occurrence and the declaration
-        // it recurses into carry two different keys and the cut never fires.
-        // `name` here is that qualified key whenever the lookup found one, so
-        // canonicalizing every bare member reference that also has a
-        // `{prefix}.{bare}` twin in `type_defs` gives the whole declaration
-        // one spelling, matching `ir-ladder.md` §1.1: one canonical key per
-        // declaration, the qualified one, with the bare twin staying a lookup
-        // alias never used as a fact key.
         let mut members = Vec::with_capacity(member_tys.len());
         for ty in member_tys {
             let ty = self
@@ -347,7 +334,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
 /// conversion alone is insufficient.
 pub(crate) fn restore_member_opacity(
     ty: ResolvedTy,
-    is_opaque_type: &impl Fn(&str) -> bool,
+    is_opaque_type: &impl Fn(crate::NominalId) -> bool,
 ) -> ResolvedTy {
     let resolve = |ty| restore_member_opacity(ty, is_opaque_type);
     match ty {
@@ -361,7 +348,7 @@ pub(crate) fn restore_member_opacity(
                 && !head
                     .builtin()
                     .is_some_and(crate::BuiltinType::is_substrate_handle)
-                && (is_opaque || is_opaque_type(head.registry_key()));
+                && (is_opaque || head.nominal().is_some_and(is_opaque_type));
             ResolvedTy::Named {
                 head,
                 args,
@@ -685,24 +672,13 @@ impl Checker {
     /// Snapshot the declaration authority used to classify accepted types.
     fn type_fact_context(&self) -> TypeFactContext {
         let declarations = self.class_declarations();
-        let mut names: std::collections::BTreeSet<String> = self
-            .type_defs
-            .keys()
-            .map(|id| self.defs.path(id.declaration()).to_string())
-            .collect();
-        names.extend(self.registry.resource_type_names().iter().cloned());
-        names.extend(self.user_opaque_type_names.iter().cloned());
-        names.extend(self.module_registry.all_handle_types());
-        names.extend(self.supervisor_children.keys().cloned());
-        let rendered = names
-            .into_iter()
-            .filter_map(|name| {
-                crate::value_class::ClassDeclarations::declared_type(&declarations, &name).map(
+        let identities = self.type_defs.keys().copied();
+        let rendered = identities
+            .filter_map(|id| {
+                crate::value_class::ClassDeclarations::declared_type(&declarations, id).map(
                     |mut declaration| {
-                        declaration.builtin = self
-                            .resolved_builtin_type(&name)
-                            .filter(|kind| kind.is_encoding_value());
-                        (name, declaration)
+                        declaration.builtin = self.defs.declared_builtin(id.declaration());
+                        (id, declaration)
                     },
                 )
             })
@@ -3128,21 +3104,22 @@ impl Checker {
             (TypeFactContext::default(), BTreeMap::new())
         };
         // Machine purity follows each resource's release into its `close`.
-        let resource_closes: HashMap<String, crate::DefId> = if normalized_machines.is_some() {
-            self.registry
-                .resource_type_names()
-                .iter()
-                .filter_map(|name| {
-                    self.inherent_impl_method_declaration(
-                        &self.named_ty_for_key(name, Vec::new()),
-                        "close",
-                    )
-                    .map(|close| (name.clone(), close))
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let resource_closes: HashMap<crate::NominalId, crate::DefId> =
+            if normalized_machines.is_some() {
+                self.registry
+                    .resource_type_ids()
+                    .iter()
+                    .filter_map(|id| {
+                        self.inherent_impl_method_declaration(
+                            &Ty::named_head(self.head_of_declaration(*id), Vec::new()),
+                            "close",
+                        )
+                        .map(|close| (*id, close))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
         // Flush any pending dirty registration before the handle-bearing set is
         // moved out: the output layer uses it for codegen decisions, and it
         // reads the declaration table the output takes next.

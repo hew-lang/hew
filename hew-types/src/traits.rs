@@ -101,45 +101,6 @@ impl MarkerTrait {
     }
 }
 
-/// A method signature in a trait or impl.
-#[derive(Debug, Clone)]
-pub struct MethodSig {
-    /// Method name
-    pub name: String,
-    /// Parameter types (not including self)
-    pub params: Vec<Ty>,
-    /// Return type
-    pub return_type: Ty,
-    /// Whether the method takes self by reference
-    pub takes_self: bool,
-    /// Whether the method takes self by mutable reference
-    pub self_mutable: bool,
-    /// Whether the method consumes its receiver (i.e. takes `self` by value
-    /// and ends the receiver binding's lifetime). When `true`, every call
-    /// site marks the receiver moved so the move-checker rejects subsequent
-    /// uses and the codegen scope-exit drop becomes a null-guarded no-op.
-    ///
-    /// PR 1 (issue #1295) ships this field with the recognised set empty:
-    /// no Hew surface syntax sets it today. PR 2 populates it for
-    /// a consuming trait method. No attribute syntax is exposed.
-    pub consumes_receiver: bool,
-}
-
-/// A trait definition.
-#[derive(Debug, Clone)]
-pub struct TraitDef {
-    /// Trait name
-    pub name: String,
-    /// Type parameters
-    pub type_params: Vec<crate::ParamHead>,
-    /// Super traits this trait extends
-    pub super_traits: Vec<String>,
-    /// Methods defined by this trait
-    pub methods: Vec<MethodSig>,
-    /// Associated types
-    pub associated_types: Vec<String>,
-}
-
 /// Registry of type definitions for trait checking.
 ///
 /// This tracks type definitions and trait implementations to enable
@@ -147,25 +108,21 @@ pub struct TraitDef {
 #[derive(Debug, Clone, Default)]
 pub struct TraitRegistry {
     /// Struct/enum definitions: name → field types
-    type_fields: HashMap<String, Vec<Ty>>,
+    type_fields: HashMap<crate::TypeHead, Vec<Ty>>,
     /// Explicit negative impls: types that DO NOT implement a trait
-    negative_impls: HashMap<String, HashSet<MarkerTrait>>,
-    /// Trait declarations with methods
-    trait_decls: HashMap<String, TraitDef>,
-    /// Trait implementations: (`type_name`, `trait_name`) → methods
-    trait_impls: HashMap<(String, String), Vec<MethodSig>>,
+    negative_impls: HashMap<crate::TypeHead, HashSet<MarkerTrait>>,
     /// Actor definitions (actors are always Send)
-    actors: HashSet<String>,
+    actors: HashSet<crate::TypeHead>,
     /// Opaque handle types from loaded modules (e.g. "json.Value", "net.Connection").
-    handle_types: HashSet<String>,
+    handle_types: HashSet<crate::TypeHead>,
     /// Drop types from loaded modules (e.g. "http.Request").
-    drop_types: HashSet<String>,
+    drop_types: HashSet<crate::TypeHead>,
     /// Record types declared with the `record` keyword.
     ///
     /// Records are value types: marker derivation is entirely field-driven, and
     /// the `Resource` marker is always false regardless of field types (a record
     /// wrapping a resource field is not itself an OS/runtime resource).
-    records: HashSet<String>,
+    records: HashSet<crate::TypeHead>,
     /// Names of types declared with the `#[resource]` marker.
     ///
     /// A `#[resource]` type's inherent `close(self)` is BOTH the implicit-drop
@@ -177,36 +134,22 @@ pub struct TraitRegistry {
     /// fact. The structural `MarkerTrait::Resource` derivation in
     /// `implements_marker` covers the built-in resource handles (`Duplex`,
     /// `CancellationToken`) on their type shape; this set covers the
-    /// user/stdlib `#[resource]` declarations keyed by name. Both are owned by
+    /// user/stdlib `#[resource]` declarations keyed by nominal identity. Both are owned by
     /// the registry so the checker no longer keeps a parallel allowlist.
-    resource_types: HashSet<String>,
+    resource_types: HashSet<crate::NominalId>,
     /// Names of types declared with the `#[linear]` marker. Single-owner, no
     /// implicit drop; tracked so the unused-binding lint can treat their handles
     /// as RAII (suppress) rather than nagging for an `_` prefix. See
     /// `register_linear_type` / `is_linear`.
-    linear_types: HashSet<String>,
+    linear_types: HashSet<crate::NominalId>,
     /// Declared type-parameter names for generic user types.
     ///
-    /// Maps a type's declared (bare) name to the ordered list of its type
-    /// parameter names as they appear in the declaration
-    /// (`type Pair<A, B> { … }` → `"Pair"` → `["A", "B"]`).
-    ///
-    /// Used by `is_type_param_placeholder` to authoritative distinguish a
-    /// genuine type-param placeholder field (e.g. `A` or `B` in `Pair<A, B>`)
-    /// from a concrete user-defined type whose bare name happens to look like a
-    /// single-letter param. Without this table the placeholder detector falls
-    /// back to a heuristic (absence from `type_fields` + absence from
-    /// `negative_impls`); with it, placeholder classification is deterministic
-    /// and fail-closed: only names that appear in the declared param list are
-    /// skipped during the concrete-field pass.
-    ///
-    /// Populated by `register_type_params`, called alongside `register_type` at
-    /// every type / record / machine declaration site.
-    type_params: HashMap<String, Vec<crate::ParamHead>>,
+    /// The declaration-owned binders used by each structural member set.
+    type_params: HashMap<crate::TypeHead, Vec<crate::ParamHead>>,
 }
 
 struct MarkerDerivation<'a> {
-    visiting: HashSet<String>,
+    visiting: HashSet<crate::TypeHead>,
     type_param_bound: &'a dyn Fn(&str, MarkerTrait) -> bool,
 }
 
@@ -218,86 +161,14 @@ impl TraitRegistry {
     }
 
     /// Register a type definition with its field types.
-    pub fn register_type(&mut self, name: String, field_types: Vec<Ty>) {
+    pub fn register_type(&mut self, name: crate::TypeHead, field_types: Vec<Ty>) {
         self.type_fields.insert(name, field_types);
     }
 
-    /// Mirror every name-keyed marker-derivation record from `bare` onto a
-    /// module-`qualified` alias so the qualified name derives the SAME markers
-    /// as the bare declaration.
-    ///
-    /// Marker derivation for a `Ty::Named` keys every name-indexed table on the
-    /// type's `name` string: `type_fields` (the structural Send/Copy/… member
-    /// set), `negative_impls`, and
-    /// the `records` / `actors` / `handle_types` / `drop_types` membership sets.
-    /// The bare name is last-write-wins across modules: two imported packages
-    /// that each export a `Reply` collide on the single `"Reply"` key, so the
-    /// loser's fields are lost and a non-Send reply can derive `Send` from the
-    /// winner's fields (or a Send reply be rejected from the loser's). The
-    /// importer keeps a per-module-qualified `type_defs` alias (`badpkg.Reply`)
-    /// already; mirror the marker tables under the same qualified key so a
-    /// qualified lookup is collision-free. Bare lookups are unchanged.
-    ///
-    /// Called when the importer creates the qualified `type_defs` alias, at
-    /// which point the bare records still hold THIS type's freshly-registered
-    /// members (the alias runs in the same registration step). A bare name with
-    /// no record is a no-op for that table.
-    pub fn alias_type_markers(&mut self, bare: &str, qualified: &str) {
-        if qualified == bare {
-            return;
-        }
-        if let Some(fields) = self.type_fields.get(bare).cloned() {
-            self.type_fields.insert(qualified.to_string(), fields);
-        }
-        if let Some(negatives) = self.negative_impls.get(bare).cloned() {
-            self.negative_impls.insert(qualified.to_string(), negatives);
-        }
-        if self.records.contains(bare) {
-            self.records.insert(qualified.to_string());
-        }
-        if self.actors.contains(bare) {
-            self.actors.insert(qualified.to_string());
-        }
-        if self.handle_types.contains(bare) {
-            self.handle_types.insert(qualified.to_string());
-        }
-        if self.drop_types.contains(bare) {
-            self.drop_types.insert(qualified.to_string());
-        }
-        if let Some(params) = self.type_params.get(bare).cloned() {
-            self.type_params.insert(qualified.to_string(), params);
-        }
-    }
-
-    /// Remove a non-canonical registration key from every marker table.
-    ///
-    /// Imported declarations are assembled under their source leaf while the
-    /// declaring module is checked, then published under their full owner.
-    /// Once publication completes, the source leaf and lexical module spelling
-    /// are lookup aliases rather than identities and must leave all marker
-    /// tables together; retaining only a subset would let derivation disagree
-    /// about which spelling names the declaration.
-    pub(crate) fn remove_type_marker_key(&mut self, name: &str) {
-        self.type_fields.remove(name);
-        self.negative_impls.remove(name);
-        self.records.remove(name);
-        self.actors.remove(name);
-        self.handle_types.remove(name);
-        self.drop_types.remove(name);
-        self.resource_types.remove(name);
-        self.linear_types.remove(name);
-        self.type_params.remove(name);
-    }
-
-    /// Report whether marker derivation has a structural member set registered
-    /// for `name` (under `type_fields`). Used by the ask-reply Send gate to
-    /// confirm a module-qualified reply identity (`badpkg.Reply`) resolves to a
-    /// real member set before keying the lookup on it; otherwise the gate keeps
-    /// the bare type. A `name` with no entry would otherwise hit the
-    /// unknown-type fail-closed branch and spuriously reject.
+    /// Whether this resolved type has registered structural members.
     #[must_use]
-    pub fn has_type_markers(&self, name: &str) -> bool {
-        self.type_fields.contains_key(name)
+    pub fn has_type_markers(&self, name: crate::TypeHead) -> bool {
+        self.type_fields.contains_key(&name)
     }
 
     /// The registered structural member types for `name`, if any.
@@ -308,41 +179,48 @@ impl TraitRegistry {
     /// resource — read it here rather than re-deriving field lists, so the two
     /// walks cannot disagree about what a type contains.
     #[must_use]
-    pub fn member_types(&self, name: &str) -> Option<&[Ty]> {
-        self.type_fields.get(name).map(Vec::as_slice)
+    pub fn member_types(&self, name: crate::TypeHead) -> Option<&[Ty]> {
+        self.type_fields.get(&name).map(Vec::as_slice)
     }
 
     /// Register a `record` declaration so the marker-derivation path knows to
     /// suppress `Resource` and apply field-driven derivation exhaustively.
     ///
     /// Must be called in addition to `register_type` for every `record` decl.
-    pub fn register_record_type(&mut self, name: String) {
+    pub fn register_record_type(&mut self, name: crate::TypeHead) {
         self.records.insert(name);
     }
 
     /// Register an actor type.
-    pub fn register_actor(&mut self, name: String) {
+    pub fn register_actor(&mut self, name: crate::TypeHead) {
         self.actors.insert(name);
     }
 
     /// Register an opaque handle type (e.g. "json.Value").
-    pub fn register_handle_type(&mut self, name: String) {
+    pub fn register_handle_type(&mut self, name: crate::TypeHead) {
         self.handle_types.insert(name);
     }
 
     /// Register a drop type (e.g. "http.Request").
-    pub fn register_drop_type(&mut self, name: String) {
+    pub fn register_drop_type(&mut self, name: crate::TypeHead) {
         self.drop_types.insert(name);
     }
 
     /// Check a canonical handle declaration identity.
-    fn is_handle_type_any(&self, name: &str) -> bool {
-        self.handle_types.contains(name)
+    fn is_handle_type_any(&self, name: crate::TypeHead) -> bool {
+        self.handle_types.contains(&name)
     }
 
     /// Check a canonical drop declaration identity.
-    fn is_drop_type_any(&self, name: &str) -> bool {
-        self.drop_types.contains(name)
+    fn is_drop_type_any(&self, name: crate::TypeHead) -> bool {
+        self.drop_types.contains(&name)
+    }
+
+    /// Ownership metadata attached to the selected declaration or compiler carrier.
+    pub(crate) fn is_owned_handle(&self, head: crate::TypeHead) -> bool {
+        self.handle_types.contains(&head)
+            || self.drop_types.contains(&head)
+            || head.nominal().is_some_and(|id| self.is_resource(id))
     }
 
     /// Register a `#[resource]` type by its canonical declaration path.
@@ -350,7 +228,7 @@ impl TraitRegistry {
     /// Called at type-decl registration for every user/stdlib `#[resource]`
     /// declaration. The registry is the single authority for this fact;
     /// `is_resource` is the only query path.
-    pub fn register_resource_type(&mut self, name: String) {
+    pub fn register_resource_type(&mut self, name: crate::NominalId) {
         self.resource_types.insert(name);
     }
 
@@ -360,46 +238,23 @@ impl TraitRegistry {
     /// no implicit drop: leaving its handle unconsumed is already a hard
     /// `MustConsume` error, so the diagnostic layer treats it as a RAII handle and
     /// suppresses the redundant unused-binding warning. `is_linear` is the query.
-    pub fn register_linear_type(&mut self, name: String) {
+    pub fn register_linear_type(&mut self, name: crate::NominalId) {
         self.linear_types.insert(name);
     }
 
-    /// Register the declared type-parameter names for a generic type.
-    ///
-    /// **Must be called alongside `register_type`** at every type, record, or
-    /// machine declaration site. Non-generic types pass an empty `params` list.
-    ///
-    /// **Always last-write-wins, matching `register_type` / `type_fields`.**
-    /// Both tables are written together at every declaration site; they must
-    /// have the same write policy so they always describe the same type. If
-    /// this table were first-write-wins while `type_fields` is last-write-wins,
-    /// a cross-module type-name collision would leave stale params in the table
-    /// while the fields are updated — a concrete field whose bare name matched a
-    /// stale param name would be misclassified as a placeholder and skipped in
-    /// the concrete-field pass, granting Send to a type that holds a non-Send
-    /// field (data-race / UAF soundness hole).
-    ///
-    /// Non-generic types register an empty param list, which is a valid sentinel:
-    /// `is_type_param_placeholder` treats `Some([])` as "no params → no field is
-    /// a placeholder → check every field directly", which is correct for
-    /// non-generic types and faster than falling through to the heuristic.
-    ///
-    /// After registration, `is_type_param_placeholder` resolves field names
-    /// against this list rather than the absence-based heuristic, making
-    /// placeholder classification deterministic and fail-closed.
-    pub fn register_type_params(&mut self, name: String, params: Vec<crate::ParamHead>) {
-        // Unconditionally last-write-wins to stay in lockstep with
-        // `register_type` / `type_fields`. See doc comment above.
+    /// Register the binders belonging to the same declaration as its fields.
+    /// Re-registration replaces both facts; unrelated declarations never share a row.
+    pub fn register_type_params(&mut self, name: crate::TypeHead, params: Vec<crate::ParamHead>) {
         self.type_params.insert(name, params);
     }
 
     /// Report whether `name` is a `#[resource]` type.
     ///
-    /// `resource_types` is keyed by the canonical declaration path. Missing
+    /// `resource_types` is keyed by nominal declaration identity. Missing
     /// metadata fails closed instead of retrying with a leaf spelling.
     #[must_use]
-    pub fn is_resource(&self, name: &str) -> bool {
-        self.resource_types.contains(name)
+    pub fn is_resource(&self, name: crate::NominalId) -> bool {
+        self.resource_types.contains(&name)
     }
 
     /// Return the canonical `#[resource]` declaration identities.
@@ -407,51 +262,22 @@ impl TraitRegistry {
     /// Collection admission needs the complete set so it can reject a marker
     /// nested inside a value-type field walk, not only the outer key spelling.
     #[must_use]
-    pub fn resource_type_names(&self) -> &HashSet<String> {
+    pub fn resource_type_ids(&self) -> &HashSet<crate::NominalId> {
         &self.resource_types
     }
 
     /// Report whether `name` is a canonical `#[linear]` declaration.
     #[must_use]
-    pub fn is_linear(&self, name: &str) -> bool {
-        self.linear_types.contains(name)
+    pub fn is_linear(&self, name: crate::NominalId) -> bool {
+        self.linear_types.contains(&name)
     }
 
     /// Register a negative impl (type does NOT implement trait).
-    pub fn register_negative_impl(&mut self, type_name: String, marker: MarkerTrait) {
+    pub fn register_negative_impl(&mut self, type_name: crate::TypeHead, marker: MarkerTrait) {
         self.negative_impls
             .entry(type_name)
             .or_default()
             .insert(marker);
-    }
-
-    /// Register a trait declaration.
-    pub fn register_trait(&mut self, def: TraitDef) {
-        self.trait_decls.insert(def.name.clone(), def);
-    }
-
-    /// Register a trait implementation for a type.
-    pub fn register_impl(
-        &mut self,
-        type_name: String,
-        trait_name: String,
-        methods: Vec<MethodSig>,
-    ) {
-        self.trait_impls.insert((type_name, trait_name), methods);
-    }
-
-    /// Look up a trait definition.
-    #[must_use]
-    pub fn lookup_trait(&self, name: &str) -> Option<&TraitDef> {
-        self.trait_decls.get(name)
-    }
-
-    /// Look up methods from a trait impl.
-    #[must_use]
-    pub fn lookup_impl(&self, type_name: &str, trait_name: &str) -> Option<&[MethodSig]> {
-        self.trait_impls
-            .get(&(type_name.to_string(), trait_name.to_string()))
-            .map(Vec::as_slice)
     }
 
     /// Check if a type implements a marker trait (automatic derivation).
@@ -691,18 +517,21 @@ impl TraitRegistry {
 
             // Named types: check all fields
             Ty::Named { head, args } => {
-                // TRANSITION(A1 commit 3): the registry is keyed by name.
-                let name = head.registry_key();
+                let name = *head;
                 let builtin = head.builtin();
                 // Affine declarations are never bitwise-copyable, even when
                 // their representation is a single pointer/integer or all of
                 // their visible fields are Copy. Their declaration carries one
                 // close/consume obligation that must move, not duplicate.
-                if marker == MarkerTrait::Copy && (self.is_resource(name) || self.is_linear(name)) {
+                if marker == MarkerTrait::Copy
+                    && head
+                        .nominal()
+                        .is_some_and(|id| self.is_resource(id) || self.is_linear(id))
+                {
                     return false;
                 }
                 // Check negative impls first
-                if let Some(negatives) = self.negative_impls.get(name) {
+                if let Some(negatives) = self.negative_impls.get(&name) {
                     if negatives.contains(&marker) {
                         return false;
                     }
@@ -721,7 +550,7 @@ impl TraitRegistry {
                     );
                 }
                 // Actors are always Send + Sync
-                if self.actors.contains(name)
+                if self.actors.contains(&name)
                     && matches!(marker, MarkerTrait::Send | MarkerTrait::Sync)
                 {
                     return true;
@@ -797,7 +626,7 @@ impl TraitRegistry {
                 // obligation; the result is decided by the non-recursive
                 // members. (Direct infinite-size cycles are rejected by
                 // `cycle.rs`; this only keeps the derivation total.)
-                if !visiting.visiting.insert(name.to_string()) {
+                if !visiting.visiting.insert(name) {
                     return true;
                 }
                 // Record types: value types declared with `record`. Markers are
@@ -807,7 +636,7 @@ impl TraitRegistry {
                 // The two genuine exceptions (Resource, Num) are explicit; all
                 // other markers share the structural `field_derives(marker)` rule
                 // via the fallthrough.
-                let result = if self.records.contains(name) {
+                let result = if self.records.contains(&name) {
                     match marker {
                         // Records are not OS/runtime resources or scalar numeric values.
                         MarkerTrait::Resource | MarkerTrait::Num => false,
@@ -815,16 +644,16 @@ impl TraitRegistry {
                         // member list so the `&self` borrow does not alias the
                         // `&mut visiting` recursion below.
                         _ => {
-                            let fields = self.type_fields.get(name).cloned().unwrap_or_default();
+                            let fields = self.type_fields.get(&name).cloned().unwrap_or_default();
                             self.check_structural_fields(name, &fields, args, marker, visiting)
                         }
                     }
-                } else if let Some(fields) = self.type_fields.get(name).cloned() {
+                } else if let Some(fields) = self.type_fields.get(&name).cloned() {
                     self.check_structural_fields(name, &fields, args, marker, visiting)
                 } else {
                     false // Unknown type — conservatively fail
                 };
-                visiting.visiting.remove(name);
+                visiting.visiting.remove(&name);
                 result
             }
 
@@ -877,38 +706,11 @@ impl TraitRegistry {
             // first.
             Ty::Var(_) | Ty::AssocType { .. } => false,
 
-            // Trait objects: `dyn T + Send` carries the marker directly as a
-            // named bound. Route derivation through the bound names first, then
-            // fall back to super-trait lookup in the registered `trait_decls`
-            // (populated via `register_trait`; empty in production — seeded only
-            // by test fixtures — but retained so that `dyn Drawable` where
-            // `Drawable` extends `Send` resolves correctly in those contexts).
-            //
-            // The direct-bound path is the production fix for #3: the ghost
-            // `trait_decls` table is always empty at the compiler's type-check
-            // phase because `register_trait` has no production call-sites.
-            // `dyn T + Send` now resolves Send correctly via the direct check.
-            //
-            // Control: `dyn T` (without `+ Send`) has no Send bound and no
-            // registered super-traits → returns false for `MarkerTrait::Send`.
-            Ty::TraitObject { traits } => traits.iter().any(|bound| {
-                // Direct bound: `dyn T + Marker` — marker appears in the list.
-                // A declared trait spelled like the marker is not the marker.
-                if bound.trait_id.is_none() && bound.trait_name == marker.to_string() {
-                    return true;
-                }
-                // Super-trait lookup: `dyn Drawable` where Drawable: Marker.
-                if let Some(trait_def) = self.trait_decls.get(&bound.trait_name) {
-                    if trait_def
-                        .super_traits
-                        .iter()
-                        .any(|s| s == &marker.to_string())
-                    {
-                        return true;
-                    }
-                }
-                false
-            }),
+            // Checker-expanded object bounds carry marker obligations directly.
+            // A declared trait with the same display spelling is not a marker.
+            Ty::TraitObject { traits } => traits
+                .iter()
+                .any(|bound| bound.trait_id.is_none() && bound.trait_name == marker.to_string()),
 
             // Task<T> is a compiler-internal consume-once handle. It is NOT
             // Copy, Clone, Frozen, or Eq. It IS Send iff T is Send (the task
@@ -977,7 +779,7 @@ impl TraitRegistry {
     /// non-Send type arg is correctly rejected.
     fn check_structural_fields(
         &self,
-        parent_name: &str,
+        parent_name: crate::TypeHead,
         fields: &[Ty],
         args: &[Ty],
         marker: MarkerTrait,
@@ -987,7 +789,7 @@ impl TraitRegistry {
         // placeholder. For non-generic types all fields are concrete and this
         // is the only pass.
         let concrete_ok = fields.iter().all(|f| {
-            if !args.is_empty() && self.is_type_param_placeholder(parent_name, f, marker) {
+            if !args.is_empty() && self.is_type_param_placeholder(parent_name, f) {
                 // Placeholder covered by the type-args sweep; vacuously ok here.
                 true
             } else {
@@ -1004,29 +806,9 @@ impl TraitRegistry {
             .all(|a| self.implements_marker_guarded(a, marker, visiting))
     }
 
-    /// Returns `true` when `ty` is a bare type-parameter placeholder in the
-    /// context of `parent_name`'s declaration.
-    ///
-    /// **Primary path — explicit params (fail-closed, deterministic):**
-    /// If `register_type_params` was called for `parent_name`, a field is a
-    /// placeholder iff its bare name appears in that declared list. Anything
-    /// not in the declared list is a concrete type and is checked directly —
-    /// even if it has no `type_fields` entry and no negative impl.
-    ///
-    /// **Fallback path — heuristic (for types without explicit param registration):**
-    /// A bare `Ty::Named` with no builtin tag, no type arguments, no `type_fields`
-    /// entry, and no registered negative marker fact is treated as a placeholder.
-    /// This covers test fixtures and any pre-existing path that does not call
-    /// `register_type_params`.
-    ///
-    /// The `negative_impls` guard in the fallback path is the soundness seal:
-    /// a type registered via `register_negative_impl` is a KNOWN concrete type,
-    /// not a generic param. Without this guard a field like `NoSend` (explicitly
-    /// not-Send, but not in `type_fields`) would be misclassified as a
-    /// placeholder and skipped in the concrete-field pass, allowing a
-    /// `Wrapper<i64>` that holds a `NoSend` field to be granted Send — a
-    /// data-race / UAF soundness hole.
-    fn is_type_param_placeholder(&self, parent_name: &str, ty: &Ty, marker: MarkerTrait) -> bool {
+    /// Only this declaration's own binder can stand for its concrete argument.
+    /// An absent binder inventory or a foreign binder is checked as a member.
+    fn is_type_param_placeholder(&self, parent_name: crate::TypeHead, ty: &Ty) -> bool {
         // Only a binder head is a placeholder: a nominal field that merely
         // shares a binder's spelling is a concrete type (rule R6).
         let Ty::Named {
@@ -1039,10 +821,9 @@ impl TraitRegistry {
         if !args.is_empty() {
             return false;
         }
-        let _ = marker;
         self.type_params
-            .get(parent_name)
-            .is_none_or(|params| params.iter().any(|p| p == param))
+            .get(&parent_name)
+            .is_some_and(|params| params.iter().any(|p| p == param))
     }
 }
 
@@ -1088,7 +869,10 @@ mod tests {
     #[test]
     fn test_named_type_with_fields() {
         let mut registry = TraitRegistry::new();
-        registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
+        registry.register_type(
+            crate::Ty::user_for_test("Point", vec![]).head().unwrap(),
+            vec![Ty::I32, Ty::I32],
+        );
         let point = Ty::named_for_test("Point", vec![]);
         assert!(registry.is_send(&point));
         assert!(registry.implements_marker(&point, MarkerTrait::Copy));
@@ -1098,10 +882,13 @@ mod tests {
     fn affine_declarations_are_not_copy_even_with_copy_fields() {
         let mut registry = TraitRegistry::new();
         for name in ["ResourceHandle", "LinearHandle"] {
-            registry.register_type(name.to_string(), vec![Ty::I64]);
+            registry.register_type(
+                Ty::user_for_test(name, vec![]).head().unwrap(),
+                vec![Ty::I64],
+            );
         }
-        registry.register_resource_type("ResourceHandle".to_string());
-        registry.register_linear_type("LinearHandle".to_string());
+        registry.register_resource_type(crate::NominalId::for_test("ResourceHandle"));
+        registry.register_linear_type(crate::NominalId::for_test("LinearHandle"));
 
         for name in [
             "ResourceHandle",
@@ -1120,8 +907,14 @@ mod tests {
     #[test]
     fn test_negative_impl() {
         let mut registry = TraitRegistry::new();
-        registry.register_type("Handle".to_string(), vec![Ty::I32]);
-        registry.register_negative_impl("Handle".to_string(), MarkerTrait::Send);
+        registry.register_type(
+            crate::Ty::user_for_test("Handle", vec![]).head().unwrap(),
+            vec![Ty::I32],
+        );
+        registry.register_negative_impl(
+            crate::Ty::user_for_test("Handle", vec![]).head().unwrap(),
+            MarkerTrait::Send,
+        );
         let handle = Ty::named_for_test("Handle", vec![]);
         assert!(!registry.is_send(&handle));
     }
@@ -1173,7 +966,10 @@ mod tests {
     #[test]
     fn test_struct_with_send_fields_is_sync() {
         let mut registry = TraitRegistry::new();
-        registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
+        registry.register_type(
+            crate::Ty::user_for_test("Point", vec![]).head().unwrap(),
+            vec![Ty::I32, Ty::I32],
+        );
         let point = Ty::named_for_test("Point", vec![]);
         assert!(registry.is_sync(&point));
     }
@@ -1280,7 +1076,12 @@ mod tests {
             head: crate::TypeHead::Builtin(BuiltinType::Vec),
             args: vec![reply.clone()],
         };
-        registry.register_type("RedisReply".to_string(), vec![vec_of_reply]);
+        registry.register_type(
+            crate::Ty::user_for_test("RedisReply", vec![])
+                .head()
+                .unwrap(),
+            vec![vec_of_reply],
+        );
 
         // Terminates (no overflow) and a Vec-bearing enum is not Copy.
         assert!(!registry.implements_marker(&reply, MarkerTrait::Copy));
@@ -1351,16 +1152,16 @@ mod tests {
     fn registry_is_sole_authority_for_resource_types() {
         let mut registry = TraitRegistry::new();
         // Unregistered type is not a resource.
-        assert!(!registry.is_resource("Child"));
+        assert!(!registry.is_resource(crate::NominalId::for_test("Child")));
 
-        registry.register_resource_type("Child".to_string());
+        registry.register_resource_type(crate::NominalId::for_test("Child"));
         // Registered bare name resolves through the registry alone.
-        assert!(registry.is_resource("Child"));
+        assert!(registry.is_resource(crate::NominalId::for_test("Child")));
         // A qualified declaration is a different nominal; no leaf retry is
         // permitted at the registry boundary.
-        assert!(!registry.is_resource("process.Child"));
+        assert!(!registry.is_resource(crate::NominalId::for_test("process.Child")));
         // Nor is an unrelated qualified type admitted.
-        assert!(!registry.is_resource("process.Parent"));
+        assert!(!registry.is_resource(crate::NominalId::for_test("process.Parent")));
     }
 
     #[test]
@@ -1458,7 +1259,10 @@ mod tests {
         };
         let stream_rc = stream_of(rc_i64);
         // type Worker { half: Stream<Rc<i64>>; id: i64 }
-        registry.register_type("Worker".to_string(), vec![stream_rc, Ty::I64]);
+        registry.register_type(
+            crate::Ty::user_for_test("Worker", vec![]).head().unwrap(),
+            vec![stream_rc, Ty::I64],
+        );
         let worker = Ty::named_for_test("Worker", vec![]);
         assert!(
             !registry.is_send(&worker),
@@ -1526,11 +1330,18 @@ mod tests {
     #[test]
     fn user_generic_struct_with_send_arg_is_send() {
         let mut registry = TraitRegistry::new();
+        registry.register_type_params(
+            Ty::user_for_test("Box", vec![]).head().unwrap(),
+            vec![crate::ParamHead::for_test("T")],
+        );
         // Simulates: type Box<T> { v: T }
         // Registration stores the field as Ty::Named { name: "T" } — the type
         // parameter placeholder.
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
-        registry.register_type("Box".to_string(), vec![t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Box", vec![]).head().unwrap(),
+            vec![t_param],
+        );
 
         // Box<i64> — T instantiated to i64
         let box_i64 = Ty::named_for_test("Box", vec![Ty::I64]);
@@ -1545,9 +1356,16 @@ mod tests {
     #[test]
     fn user_generic_enum_with_send_arg_is_send() {
         let mut registry = TraitRegistry::new();
+        registry.register_type_params(
+            Ty::user_for_test("Tree", vec![]).head().unwrap(),
+            vec![crate::ParamHead::for_test("T")],
+        );
         // Simulates: enum Tree<T> { Leaf(T); Empty }
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
-        registry.register_type("Tree".to_string(), vec![t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Tree", vec![]).head().unwrap(),
+            vec![t_param],
+        );
 
         let tree_i64 = Ty::named_for_test("Tree", vec![Ty::I64]);
         assert!(
@@ -1561,9 +1379,16 @@ mod tests {
     #[test]
     fn user_generic_struct_with_concrete_and_param_fields_is_send() {
         let mut registry = TraitRegistry::new();
+        registry.register_type_params(
+            Ty::user_for_test("Msg", vec![]).head().unwrap(),
+            vec![crate::ParamHead::for_test("T")],
+        );
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
         // type Msg<T> { payload: T; id: i64 }
-        registry.register_type("Msg".to_string(), vec![t_param, Ty::I64]);
+        registry.register_type(
+            crate::Ty::user_for_test("Msg", vec![]).head().unwrap(),
+            vec![t_param, Ty::I64],
+        );
 
         let msg_i64 = Ty::named_for_test("Msg", vec![Ty::I64]);
         assert!(registry.is_send(&msg_i64), "Msg<i64> must be Send");
@@ -1580,7 +1405,10 @@ mod tests {
     fn user_generic_struct_with_rc_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
-        registry.register_type("Box".to_string(), vec![t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Box", vec![]).head().unwrap(),
+            vec![t_param],
+        );
 
         // Box<Rc<i64>> — Rc is explicitly not-Send
         let rc_i64 = Ty::Named {
@@ -1603,7 +1431,10 @@ mod tests {
     fn user_generic_struct_with_stream_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
-        registry.register_type("Box".to_string(), vec![t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Box", vec![]).head().unwrap(),
+            vec![t_param],
+        );
 
         let rc_i64 = Ty::Named {
             head: crate::TypeHead::Builtin(BuiltinType::Rc),
@@ -1626,7 +1457,10 @@ mod tests {
             args: vec![Ty::I64],
         };
         // type Holder { half: Stream<Rc<i64>>; value: i64 }
-        registry.register_type("Holder".to_string(), vec![stream_of(rc_i64), Ty::I64]);
+        registry.register_type(
+            crate::Ty::user_for_test("Holder", vec![]).head().unwrap(),
+            vec![stream_of(rc_i64), Ty::I64],
+        );
         let holder = Ty::named_for_test("Holder", vec![]);
         assert!(
             !registry.is_send(&holder),
@@ -1639,7 +1473,10 @@ mod tests {
     #[test]
     fn concrete_struct_with_all_send_fields_still_send_after_generic_fix() {
         let mut registry = TraitRegistry::new();
-        registry.register_type("Point".to_string(), vec![Ty::I64, Ty::I64]);
+        registry.register_type(
+            crate::Ty::user_for_test("Point", vec![]).head().unwrap(),
+            vec![Ty::I64, Ty::I64],
+        );
         let point = Ty::named_for_test("Point", vec![]);
         assert!(
             registry.is_send(&point),
@@ -1663,12 +1500,22 @@ mod tests {
     #[test]
     fn negative_impl_field_not_laundered_by_generic_wrapper() {
         let mut registry = TraitRegistry::new();
+        registry.register_type_params(
+            Ty::user_for_test("PureWrapper", vec![]).head().unwrap(),
+            vec![crate::ParamHead::for_test("T")],
+        );
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
         let no_send = Ty::named_for_test("NoSend", vec![]);
         // NoSend is a concrete type explicitly opted out of Send.
-        registry.register_negative_impl("NoSend".to_string(), MarkerTrait::Send);
+        registry.register_negative_impl(
+            crate::Ty::user_for_test("NoSend", vec![]).head().unwrap(),
+            MarkerTrait::Send,
+        );
         // type Wrapper<T> { hidden: NoSend; value: T }
-        registry.register_type("Wrapper".to_string(), vec![no_send, t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Wrapper", vec![]).head().unwrap(),
+            vec![no_send, t_param],
+        );
 
         let wrapper_i64 = Ty::named_for_test("Wrapper", vec![Ty::I64]);
         assert!(
@@ -1677,7 +1524,12 @@ mod tests {
         );
         // Positive control: a wrapper with a genuine param field only IS Send.
         let t_only = Ty::param(crate::ParamHead::for_test("T"));
-        registry.register_type("PureWrapper".to_string(), vec![t_only]);
+        registry.register_type(
+            crate::Ty::user_for_test("PureWrapper", vec![])
+                .head()
+                .unwrap(),
+            vec![t_only],
+        );
         let pure_i64 = Ty::named_for_test("PureWrapper", vec![Ty::I64]);
         assert!(
             registry.is_send(&pure_i64),
@@ -1694,9 +1546,17 @@ mod tests {
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
         let bad_sync = Ty::named_for_test("BadSync", vec![]);
         // BadSync has a negative Sync fact but NOT a negative Send fact.
-        registry.register_negative_impl("BadSync".to_string(), MarkerTrait::Sync);
+        registry.register_negative_impl(
+            crate::Ty::user_for_test("BadSync", vec![]).head().unwrap(),
+            MarkerTrait::Sync,
+        );
         // type Container<T> { bad: BadSync; item: T }
-        registry.register_type("Container".to_string(), vec![bad_sync, t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Container", vec![])
+                .head()
+                .unwrap(),
+            vec![bad_sync, t_param],
+        );
 
         let container_i64 = Ty::named_for_test("Container", vec![Ty::I64]);
         // Must fail Sync (BadSync has negative Sync fact, must not be skipped).
@@ -1721,9 +1581,12 @@ mod tests {
         let mut registry = TraitRegistry::new();
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
         // type Envelope<T> { id: i64; payload: T }
-        registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Envelope", vec![]).head().unwrap(),
+            vec![Ty::I64, t_param],
+        );
         registry.register_type_params(
-            "Envelope".to_string(),
+            crate::Ty::user_for_test("Envelope", vec![]).head().unwrap(),
             vec![crate::ParamHead::for_test("T")],
         );
 
@@ -1744,9 +1607,12 @@ mod tests {
     fn register_type_params_negative_non_send_arg() {
         let mut registry = TraitRegistry::new();
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
-        registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Envelope", vec![]).head().unwrap(),
+            vec![Ty::I64, t_param],
+        );
         registry.register_type_params(
-            "Envelope".to_string(),
+            crate::Ty::user_for_test("Envelope", vec![]).head().unwrap(),
             vec![crate::ParamHead::for_test("T")],
         );
 
@@ -1781,7 +1647,9 @@ mod tests {
 
         // ConcreteBad has a Rc<i64> field — NOT Send.
         registry.register_type(
-            "ConcreteBad".to_string(),
+            crate::Ty::user_for_test("ConcreteBad", vec![])
+                .head()
+                .unwrap(),
             vec![Ty::Named {
                 head: crate::TypeHead::Builtin(BuiltinType::Rc),
                 args: vec![Ty::I64],
@@ -1791,9 +1659,15 @@ mod tests {
         let t_param = Ty::param(crate::ParamHead::for_test("T"));
         let concrete_bad = Ty::named_for_test("ConcreteBad", vec![]);
         // type Wrapper<T> { bad: ConcreteBad; item: T }
-        registry.register_type("Wrapper".to_string(), vec![concrete_bad, t_param]);
+        registry.register_type(
+            crate::Ty::user_for_test("Wrapper", vec![]).head().unwrap(),
+            vec![concrete_bad, t_param],
+        );
         // Declare T as the only type parameter; ConcreteBad is NOT a param.
-        registry.register_type_params("Wrapper".to_string(), vec![crate::ParamHead::for_test("T")]);
+        registry.register_type_params(
+            crate::Ty::user_for_test("Wrapper", vec![]).head().unwrap(),
+            vec![crate::ParamHead::for_test("T")],
+        );
 
         let wrapper_i64 = Ty::named_for_test("Wrapper", vec![Ty::I64]);
         assert!(
@@ -1806,84 +1680,16 @@ mod tests {
     // Cross-module name-collision regression (lockstep write policy)
     // =========================================================================
 
-    /// CRITICAL REGRESSION GUARD: `register_type_params` must be last-write-wins
-    /// to match `register_type` / `type_fields`. When two modules export a type
-    /// with the same bare name (`Collision`), the later registration overwrites
-    /// `type_fields` (last-write-wins). If `register_type_params` were
-    /// first-write-wins, the stale param list from the first module would remain
-    /// after the second module's fields are written, making them inconsistent:
-    ///
-    /// - module a: `type Collision<T> { value: T }` — params `["T"]`, fields `[T_a]`
-    /// - module b: `type T { rc: Rc<i64> }` — concrete, NOT Send
-    /// - module b: `type Collision<U> { hidden: T }` — params `["U"]`, fields `[T_b]`
-    ///
-    /// After both registrations (last-write-wins fix):
-    /// - bare `Collision`: params `["U"]`, fields `[T_b]` (b's definition)
-    /// - `a.Collision`: params `["T"]`, fields `[T_a]` (a's snapshot at alias time)
-    /// - `b.Collision`: params `["U"]`, fields `[T_b]` (b's snapshot at alias time)
-    ///
-    /// Checking `b.Collision<i64>`:
-    /// - `b.Collision` has params `["U"]`
-    /// - field `T` is NOT in `["U"]` — checked directly as concrete
-    /// - `type_fields["T"]` = `[Rc<i64>]` — Rc not Send — b.Collision<i64> NOT Send ✓
-    ///
-    /// With the stale first-write-wins bug:
-    /// - bare `Collision` kept params `["T"]` (a's list, never overwritten)
-    /// - `b.Collision` copied those stale params — params `["T"]`
-    /// - field `T` matched stale param `"T"` — classified as placeholder, SKIPPED
-    /// - args sweep only saw i64 (Send) — wrongly granted Send (UAF hole)
     #[test]
-    fn cross_module_name_collision_params_must_be_last_write_wins() {
+    fn same_spelling_declarations_keep_distinct_marker_fields() {
+        let first = crate::NominalId::for_test("first.Collision");
+        let second = crate::NominalId::for_test("second.Collision");
+        let head = |id, spelling| crate::TypeHead::Nominal(crate::NominalHead::new(id, spelling));
         let mut registry = TraitRegistry::new();
-
-        // --- module a: type Collision<T> { value: T } ---
-        let t_a_param = Ty::param(crate::ParamHead::for_test("T"));
-        registry.register_type("Collision".to_string(), vec![t_a_param]);
-        registry.register_type_params(
-            "Collision".to_string(),
-            vec![crate::ParamHead::for_test("T")],
-        );
-        // Simulate alias_type_markers("Collision", "a.Collision") when module a
-        // is imported — snapshots a's fields and params under the qualified key.
-        registry.alias_type_markers("Collision", "a.Collision");
-
-        // --- module b: type T { rc: Rc<i64> } (concrete, NOT Send) ---
-        let rc_i64 = Ty::Named {
-            head: crate::TypeHead::Builtin(BuiltinType::Rc),
-            args: vec![Ty::I64],
-        };
-        registry.register_type("T".to_string(), vec![rc_i64]);
-        // Non-generic; register empty params (last-write-wins sentinel).
-        registry.register_type_params("T".to_string(), vec![]);
-
-        // --- module b: type Collision<U> { hidden: T } ---
-        // Field "T" here refers to b's concrete type, not a type parameter.
-        let t_b_field = Ty::param(crate::ParamHead::for_test("T"));
-        // last-write-wins: overwrites a's fields.
-        registry.register_type("Collision".to_string(), vec![t_b_field]);
-        // last-write-wins (the fix): overwrites a's stale params ["T"] with ["U"].
-        registry.register_type_params(
-            "Collision".to_string(),
-            vec![crate::ParamHead::for_test("U")],
-        );
-        // Snapshot b's fields and params under the qualified key.
-        registry.alias_type_markers("Collision", "b.Collision");
-
-        // b.Collision<i64>: field "T" is NOT in params ["U"] → checked directly
-        // → T has Rc<i64> → NOT Send. This is the laundering hole test.
-        let b_collision_i64 = Ty::named_for_test("b.Collision", vec![Ty::I64]);
-        assert!(
-            !registry.is_send(&b_collision_i64),
-            "b.Collision<i64> must NOT be Send: field 'T' is concrete (holds Rc<i64>). \
-             Stale params would misclassify it as a placeholder and launder Send."
-        );
-
-        // a.Collision<i64>: params ["T"] snapshotted when a was aliased;
-        // field "T" IS in params → placeholder → args sweep checks i64 → Send ✓.
-        let a_collision_i64 = Ty::named_for_test("a.Collision", vec![Ty::I64]);
-        assert!(
-            registry.is_send(&a_collision_i64),
-            "a.Collision<i64> must be Send: field T is a genuine type param (= i64 here)"
-        );
+        registry.register_type(head(first, "Collision"), vec![Ty::I64]);
+        registry.register_type(head(second, "Collision"), vec![Ty::rc(Ty::I64)]);
+        assert!(registry.is_send(&Ty::named_head(head(first, "Collision"), vec![])));
+        assert!(!registry.is_send(&Ty::named_head(head(second, "Collision"), vec![])));
+        assert!(registry.is_send(&Ty::named_head(head(first, "renamed.alias"), vec![])));
     }
 }

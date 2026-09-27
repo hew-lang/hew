@@ -583,7 +583,8 @@ impl Checker {
             // would silently no-op. The consume *detection* is supplied by the
             // `#[resource]` inherent-close path, so no `consume_receiver_methods`
             // entry is needed.
-            self.registry.register_drop_type("MonitorRef".to_string());
+            self.registry
+                .register_drop_type(crate::TypeHead::Builtin(crate::BuiltinType::MonitorRef));
         }
     }
 

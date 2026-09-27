@@ -1283,7 +1283,7 @@ impl Checker {
             } else if is_moved && !is_write_target {
                 let is_linear = matches!(
                     &ty,
-                    Ty::Named { head, .. } if self.registry.is_linear(head.registry_key())
+                    Ty::Named { head, .. } if head.nominal().is_some_and(|id| self.registry.is_linear(id))
                 );
                 let mut err = TypeError::new(
                     if is_linear {

@@ -33,7 +33,8 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let ty = &output.sigs()[&format!("std.encoding.{format}.identity")].return_type;
         assert_eq!(ty, &encoding_ty(kind));
-        let declaration = &output.type_fact_context.declarations()[kind.canonical_name()];
+        let declaration = &output.type_fact_context.declarations()
+            [&output.defs.builtin_declaration(kind).unwrap()];
         assert_eq!(declaration.builtin, Some(kind));
         assert!(declaration.is_opaque);
         assert_ne!(
@@ -77,7 +78,11 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
             }
         ));
         assert_eq!(
-            lookalike.type_fact_context.declarations()[kind.canonical_name()].builtin,
+            lookalike.type_fact_context.declarations()[&lookalike
+                .defs
+                .lookup_nominal(kind.canonical_name())
+                .unwrap()]
+                .builtin,
             None
         );
 

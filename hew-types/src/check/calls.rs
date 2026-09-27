@@ -1389,9 +1389,8 @@ impl Checker {
             CallTarget::Builtin { endpoint } => Intrinsic::from_key(endpoint),
             CallTarget::User(declaration) => self
                 .intrinsic_declarations
-                .iter()
-                .find(|(key, _)| self.lookup_declaration(key) == Some(*declaration))
-                .and_then(|(_, key)| Intrinsic::from_key(key)),
+                .get(self.defs.path(*declaration))
+                .and_then(|key| Intrinsic::from_key(key)),
             _ => None,
         };
         if let Some(

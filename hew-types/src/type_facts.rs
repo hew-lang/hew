@@ -264,6 +264,8 @@ fn require_concrete_capability_type(ty: &ResolvedTy) -> Result<(), ClassError> {
 pub(crate) enum ImplMethodSlot {
     Declared(crate::DefId),
     Value(ValueCapability),
+    OrdLt,
+    PartialOrdLt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

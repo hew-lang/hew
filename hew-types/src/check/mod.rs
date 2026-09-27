@@ -1893,10 +1893,8 @@ impl Checker {
                     return;
                 }
                 let owner = declare(kind, 0, name, parent, path.clone(), false);
-                if !generated_event {
-                    if let Some(alias) = nominal_alias(name.as_str()) {
-                        declare(kind, 0, name, None, alias, true);
-                    }
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
+                    declare(kind, 0, name, parent, alias, true);
                 }
                 // An enum's variants and a desugared machine's states are
                 // members of their declaration.

@@ -2184,6 +2184,8 @@ impl Checker {
         match (MarkerTrait::from_name(trait_name), method_name) {
             (Some(MarkerTrait::Hash), "hash") => Some(ImplMethodSlot::Value(ValueCapability::Hash)),
             (Some(MarkerTrait::Eq), "eq") => Some(ImplMethodSlot::Value(ValueCapability::Eq)),
+            (Some(MarkerTrait::Ord), "lt") => Some(ImplMethodSlot::OrdLt),
+            (Some(MarkerTrait::PartialOrd), "lt") => Some(ImplMethodSlot::PartialOrdLt),
             _ => self
                 .trait_method_call_target_ids(trait_name, method_name)
                 .map(|(_, method)| ImplMethodSlot::Declared(method)),

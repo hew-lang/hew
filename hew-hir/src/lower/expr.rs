@@ -651,22 +651,16 @@ impl LowerCtx {
                 base,
                 ..
             } => {
-                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                    // Inside a machine body, check if the struct-init name is a state
-                                                    // with payload fields (e.g. `SynReceived { remote_port: remote_port }`).
-                                                    // Resolve to `MachineVariantCtor` before the record-layout path.
-                                                    //
-                                                    // HIR-side authority: same deviation as `MachineVariantCtor` for bare
-                                                    // identifiers — the checker has no side-table for state-ctor sites.
-                                                    // Payload fields are validated structurally (field names matched against
-                                                    // the state's declared fields). The `base` functional-update form is not
-                                                    // supported for machine state ctors and is rejected below if present.
-                                                    // Enum struct-variant ctor (`Shape::Box { w: 3, h: 4 }`).
-                                                    // Looks like a struct literal but resolves to a registered
-                                                    // enum variant in `enum_variants_by_name`. Resolved before
-                                                    // the machine-state path so a qualified `Shape::Box` is
-                                                    // routed correctly even outside any machine body.
-                let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+                let name = &named_path.to_string();
+                // A coercion changes the published expression type, while the
+                // initializer still constructs the checked concrete value.
+                let checked_constructor = self
+                    .dyn_trait_coercions
+                    .get(&self.mk_key(&span))
+                    .map(|coercion| &coercion.concrete_type)
+                    .or_else(|| self.expr_types.get(&self.mk_key(&span)));
+                let checker_ctor_ty =
+                    checked_constructor.and_then(|ty| ResolvedTy::from_ty(ty).ok());
                 let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
                     self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
                 {
@@ -765,13 +759,11 @@ impl LowerCtx {
                         result_ty,
                     )
                 } else {
-                    let Some(checked) = self.expr_types.get(&self.mk_key(&span)) else {
-                        return self
-                            .unsupported_expr(span, "record initializer has no checked type");
-                    };
-                    let Ok(result_ty) = ResolvedTy::from_ty(checked) else {
-                        return self
-                            .unsupported_expr(span, "record initializer type is unresolved");
+                    let Some(result_ty) = checker_ctor_ty else {
+                        return self.unsupported_expr(
+                            span,
+                            "record initializer has no resolved checked type",
+                        );
                     };
                     let result_ty = self.restore_type_declaration_facts(result_ty);
                     let ResolvedTy::Named { head, args, .. } = &result_ty else {

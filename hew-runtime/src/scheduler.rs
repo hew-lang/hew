@@ -3296,6 +3296,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enqueue_resume_rechecks_each_competing_park_cycle() {
+        static RETRIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn another_activation(actor: *mut HewActor) {
+            if RETRIES.fetch_add(1, Ordering::SeqCst) == 0 {
+                // A competing pending-wake drain enqueued and resumed the actor
+                // after our Suspended recheck but before our retry CAS.
+                // SAFETY: the test retains this tracked actor across the hook.
+                let actor = unsafe { &*actor };
+                actor
+                    .actor_state
+                    .store(HewActorState::Idle as i32, Ordering::Release);
+                let _ = crate::coro_exec::take_pending_wake(actor);
+            }
+        }
+        struct ResetRetry;
+        impl Drop for ResetRetry {
+            fn drop(&mut self) {
+                crate::activation::ENQUEUE_RESUME_RETRY_HOOK.access(|hook| *hook = None);
+            }
+        }
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        actor
+            .suspended_cont
+            .store(ptr::dangling_mut::<u8>().cast(), Ordering::Release);
+        actor
+            .actor_state
+            .store(HewActorState::Idle as i32, Ordering::Release);
+        RETRIES.store(0, Ordering::SeqCst);
+        crate::activation::ENQUEUE_RESUME_RETRY_HOOK
+            .access(|hook| *hook = Some(another_activation));
+        let _reset = ResetRetry;
+        let _hook = EnqueueResumeCasFailHookGuard::install(park_completes_inside_cas_fail_gap);
+        // SAFETY: tracked actor; the sentinel continuation is never resumed.
+        unsafe { enqueue_resume_pinned(actor.ptr(), ptr::null_mut()) };
+        assert_eq!(RETRIES.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32
+        );
+        assert_eq!(sched.pop_global(), Some(actor.ptr()));
+        assert_eq!(sched.pop_global(), None);
+        assert!(!crate::coro_exec::take_pending_wake(&actor));
+    }
+
     /// W6.010 waiter-kind: a reply to a channel whose waiter is a PARKED
     /// CONTINUATION wakes the caller actor via `enqueue_resume` (CAS
     /// Suspended -> Runnable + enqueue), NOT the condvar. The resumed

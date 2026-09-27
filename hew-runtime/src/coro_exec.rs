@@ -210,7 +210,11 @@ pub fn take_pending_wake(a: &HewActor) -> bool {
 /// yet published as `Suspended`. The suspend edge drains this via
 /// [`take_pending_wake`] and re-enqueues, so the wake is observed exactly once.
 pub fn mark_pending_wake(a: &HewActor) {
-    a.pending_wake.store(true, Ordering::Release);
+    // Read the park edge's drain as well as publishing readiness. If that
+    // drain already ran, its release orders the preceding Suspended state
+    // before the waker's following state recheck. A release-only store permits
+    // that recheck to observe Running while the drain misses this marker.
+    a.pending_wake.swap(true, Ordering::AcqRel);
 }
 
 // ── FG2/FG4: resume ───────────────────────────────────────────────────────

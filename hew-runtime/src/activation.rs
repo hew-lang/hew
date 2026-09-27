@@ -2308,10 +2308,9 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
         let queue_entry = unsafe { SchedulerQueueEntry::retain(actor) };
 
         // CAS Suspended → Runnable; only enqueue on success (fail-closed against
-        // a terminal or not-yet-parked actor). The loop runs AT MOST twice: the
-        // second iteration exists only for the mark-after-drain window (see the
-        // `Err(_)` arm) and every second-iteration outcome is terminal.
-        let mut retried = false;
+        // a terminal or not-yet-parked actor). A competing wake can drive a
+        // complete resume/park cycle between attempts, so every failed attempt
+        // must close its own mark-after-drain window.
         loop {
             match a.actor_state.compare_exchange(
                 HewActorState::Suspended as i32,
@@ -2372,21 +2371,15 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
                     // has no second drain; the dispatch park's is equally
                     // one-shot). Re-check: if the state now reads `Suspended`,
                     // retry the CAS ourselves — the `Ok` arm consumes the
-                    // marker, so the retry self-cleans. ONE retry suffices;
-                    // every retry outcome is terminal:
-                    // - `Ok`: delivered, marker consumed;
-                    // - `Err(Runnable)`: another delivery is in flight (the
-                    //   no-mark arm's safety argument applies; the residual
-                    //   marker is at worst one honest respark);
-                    // - `Err(Running|Idle)`: a NEW park cycle began after our
-                    //   mark, so its future drain (which runs after it publishes
-                    //   `Suspended`) is ordered after our mark and consumes it —
-                    //   the strand needs mark-after-drain, and our mark is now
-                    //   provably before that park's drain.
-                    if !retried
-                        && a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32
-                    {
-                        retried = true;
+                    // marker, so the retry self-cleans. A competing delivery can
+                    // run another park cycle before the retry's CAS. If that CAS
+                    // loses, its new mark needs the same post-mark recheck;
+                    // bounding retries can strand Suspended with a set marker.
+                    if a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32 {
+                        #[cfg(test)]
+                        if let Some(hook) = ENQUEUE_RESUME_RETRY_HOOK.access(|hook| *hook) {
+                            hook(actor);
+                        }
                         continue;
                     }
                     break (None, actor_runtime_id);
@@ -2552,6 +2545,10 @@ pub(crate) static ACTIVATE_POST_CAS_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> 
 /// stranding the actor `Suspended` with a set marker.
 #[cfg(test)]
 pub(crate) static ENQUEUE_RESUME_CAS_FAIL_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> =
+    PoisonSafe::new(None);
+/// A competing activation can run after the retry selected Suspended.
+#[cfg(test)]
+pub(crate) static ENQUEUE_RESUME_RETRY_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> =
     PoisonSafe::new(None);
 #[cfg(test)]
 pub(crate) static ACTIVATE_PRE_CLAIM_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =

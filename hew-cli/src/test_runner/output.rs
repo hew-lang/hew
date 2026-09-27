@@ -392,6 +392,19 @@ fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> Str
             )
             .unwrap();
 
+            if let Some(seed) = result
+                .report
+                .as_ref()
+                .and_then(|report| report.seed.as_deref())
+            {
+                writeln!(
+                    out,
+                    "      <properties><property name=\"seed\" value=\"{}\"/></properties>",
+                    xml_escape(seed)
+                )
+                .unwrap();
+            }
+
             match &result.outcome {
                 TestOutcome::Passed => {}
                 TestOutcome::Failed(failure) => {

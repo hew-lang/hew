@@ -1864,6 +1864,7 @@ dependencies = [
  "hew-lexer",
  "hew-parser",
  "hew-types",
+ "serde",
  "serde_json",
  "tokio",
  "tower-lsp-server",

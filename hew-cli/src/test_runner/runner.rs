@@ -341,7 +341,7 @@ pub struct TestReport {
     #[serde(default)]
     schedule: Option<String>,
     #[serde(default)]
-    seed: Option<String>,
+    pub(crate) seed: Option<String>,
     #[serde(default)]
     steps: Option<u64>,
     #[serde(default)]
@@ -1473,7 +1473,7 @@ fn test_bad_eq() {
         );
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
         if let TestOutcome::Failed(failure) = &summary.results[0].outcome {
-            assert_eq!(failure.kind, TestFailureKind::Runtime);
+            assert_eq!(failure.kind, TestFailureKind::Assertion);
             // The desugar reports the condition's text and both rendered
             // operands, so a failure says what went wrong without a rerun.
             assert!(

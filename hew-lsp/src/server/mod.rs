@@ -36,15 +36,13 @@ use self::navigation::{
 use self::uri::FileUriExt;
 #[cfg(test)]
 use self::workspace::collect_workspace_symbols;
-use self::workspace::{build_code_lenses, collect_project_workspace_symbols};
+use self::workspace::{build_code_lenses, collect_project_workspace_symbols, test_inventory};
 
 // Items additionally needed by the test module (only compiled in test builds).
 #[cfg(test)]
 use self::analysis::{analyze_document, diagnostic_data};
 #[cfg(test)]
 use self::convert::analysis_symbol_kind_to_lsp;
-#[cfg(test)]
-use self::workspace::has_test_attribute;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -59,9 +57,9 @@ use hew_analysis::references::count_all_references;
 #[cfg(test)]
 use hew_analysis::util::compute_line_offsets;
 use hew_analysis::util::{non_empty, offset_to_line_col, word_at_offset};
-use hew_parser::ast::Span;
 #[cfg(test)]
-use hew_parser::ast::{Attribute, Item};
+use hew_parser::ast::Item;
+use hew_parser::ast::Span;
 use hew_parser::ParseResult;
 #[cfg(test)]
 use hew_types::error::TypeErrorKind;
@@ -81,7 +79,7 @@ use tower_lsp_server::lsp_types::{
 use tower_lsp_server::lsp_types::{
     CodeActionContext, CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol,
     InlayHintTooltip, InsertTextFormat, PartialResultParams, SemanticToken, SymbolKind,
-    TextDocumentIdentifier, WorkDoneProgressParams,
+    WorkDoneProgressParams,
 };
 use tower_lsp_server::lsp_types::{
     CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
@@ -93,9 +91,18 @@ use tower_lsp_server::lsp_types::{
     MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
     SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri as Url, WorkDoneProgressOptions, WorkspaceEdit,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentIdentifier,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri as Url,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
+
+/// Parameters for the `hew/tests` editor request. Omitting the document lists
+/// tests across the open workspace.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestsParams {
+    text_document: Option<TextDocumentIdentifier>,
+}
 use tower_lsp_server::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp_server::lsp_types::{
     InlayHint, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, SignatureHelp,
@@ -333,15 +340,14 @@ fn hew_cli_executable() -> PathBuf {
     PathBuf::from(format!("hew{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf, Vec<String>) {
+fn build_run_test_invocation(selector: &str, _workspace_root: &Path) -> (PathBuf, Vec<String>) {
     (
         hew_cli_executable(),
         vec![
             "test".to_string(),
-            "--no-color".to_string(),
-            "--filter".to_string(),
-            test_name.to_string(),
-            workspace_root.display().to_string(),
+            selector.to_string(),
+            "--format".to_string(),
+            "json".to_string(),
         ],
     )
 }
@@ -413,6 +419,20 @@ impl HewLanguageServer {
                 .to_file_path()
                 .and_then(|path| path.parent().map(Path::to_path_buf))
         })
+    }
+
+    /// Return stable identities and ranges from the same discovery used by
+    /// `hew test`. An omitted document requests the workspace inventory.
+    pub async fn tests(&self, params: TestsParams) -> Result<Value> {
+        let roots = self
+            .workspace_roots
+            .read()
+            .map_or_else(|_| Vec::new(), |roots| roots.clone());
+        Ok(Value::Array(test_inventory(
+            &self.documents,
+            &roots,
+            params.text_document.as_ref().map(|document| &document.uri),
+        )))
     }
 
     /// Re-lex, re-parse, and re-typecheck the document and any open importers,
@@ -2499,7 +2519,7 @@ impl Worker {
         let source = "fn foo() -> i32 { 0 }\nfn bar() -> i32 { foo() }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let lenses = build_code_lenses(source, &lo, &parse_result);
+        let lenses = build_code_lenses(source, &lo, &parse_result, "sample.hew");
         assert!(
             lenses.len() >= 2,
             "expected at least 2 code lenses (one per function), got {}",
@@ -2516,7 +2536,7 @@ impl Worker {
         let source = "fn helper() -> i32 { 42 }\nfn main() { helper() }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let lenses = build_code_lenses(source, &lo, &parse_result);
+        let lenses = build_code_lenses(source, &lo, &parse_result, "sample.hew");
         let helper_lens = lenses
             .iter()
             .find(|l| {
@@ -2543,7 +2563,7 @@ impl Worker {
         let source = "#[test]\nfn test_add() { 0 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let lenses = build_code_lenses(source, &lo, &parse_result);
+        let lenses = build_code_lenses(source, &lo, &parse_result, "sample.hew");
         let run_test_lens = lenses.iter().find(|l| {
             l.command
                 .as_ref()
@@ -2553,6 +2573,34 @@ impl Worker {
             run_test_lens.is_some(),
             "expected a 'Run test' code lens for #[test] function"
         );
+        assert!(lenses
+            .iter()
+            .any(|lens| lens.command.as_ref().is_some_and(|command| {
+                command.title.contains("Run file")
+                    && command
+                        .arguments
+                        .as_ref()
+                        .is_some_and(|args| args[0] == "sample.hew")
+            })));
+        assert_eq!(
+            run_test_lens
+                .and_then(|lens| lens.command.as_ref())
+                .and_then(|command| command.arguments.as_ref())
+                .and_then(|args| args.first()),
+            Some(&json!("sample.hew::test_add"))
+        );
+    }
+
+    #[test]
+    fn test_inventory_uses_open_document_and_exact_identity() {
+        let uri = Url::parse("file:///project/cart_test.hew").unwrap();
+        let documents = DashMap::new();
+        documents.insert(uri.clone(), make_doc("#[test]\nfn totals() {}\n"));
+        let entries = test_inventory(&documents, &[PathBuf::from("/project")], Some(&uri));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["identity"], "cart_test.hew::totals");
+        assert_eq!(entries[0]["uri"], uri.as_str());
+        assert_eq!(entries[0]["ignored"], false);
     }
 
     #[test]
@@ -2597,10 +2645,9 @@ impl Worker {
             args,
             vec![
                 "test".to_string(),
-                "--no-color".to_string(),
-                "--filter".to_string(),
                 "test_add".to_string(),
-                "workspace-root".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
             ]
         );
     }
@@ -3668,33 +3715,6 @@ fn label(colour: Colour) -> string {
             logs.is_empty(),
             "expected no warnings for a normal empty code-action response, got: {logs}"
         );
-    }
-
-    // ── has_test_attribute tests ─────────────────────────────────────
-
-    #[test]
-    fn has_test_attribute_true() {
-        let attrs = vec![Attribute {
-            name: "test".to_string(),
-            args: vec![],
-            span: 0..0,
-        }];
-        assert!(has_test_attribute(&attrs));
-    }
-
-    #[test]
-    fn has_test_attribute_false() {
-        let attrs = vec![Attribute {
-            name: "inline".to_string(),
-            args: vec![],
-            span: 0..0,
-        }];
-        assert!(!has_test_attribute(&attrs));
-    }
-
-    #[test]
-    fn has_test_attribute_empty() {
-        assert!(!has_test_attribute(&[]));
     }
 
     // ── count_all_references tests ──────────────────────────────────

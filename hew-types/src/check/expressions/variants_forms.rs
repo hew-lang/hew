@@ -776,35 +776,11 @@ else needs `impl Display for {rendered}`)"
         let name = head.registry_key();
         let builtin = head.builtin();
 
-        if !name.contains('.') {
-            if let Some(owners) = self.published_bare_type_owners.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                name.to_string(),
-            )) {
-                if owners.len() > 1 {
-                    let candidates = owners.iter().cloned().collect::<Vec<_>>();
-                    self.report_error_with_suggestions(
-                        TypeErrorKind::ContextVariantAmbiguous,
-                        span,
-                        format!(
-                            "E_CONTEXT_VARIANT_AMBIGUOUS: expected type `{name}` has {} imported owners",
-                            candidates.len()
-                        ),
-                        candidates
-                            .iter()
-                            .map(|candidate| format!("use an owner-qualified type such as `{candidate}`"))
-                            .collect(),
-                    );
-                    return None;
-                }
-            }
-        }
-
         if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
             return Some(name.to_string());
         }
-        let Some(definition) = self.type_def_at(name) else {
+        let declaration = head.declaration(&self.defs);
+        let Some(definition) = declaration.and_then(|id| self.type_defs.get(&id)) else {
             self.report_error(
                 TypeErrorKind::ContextVariantNoType,
                 span,
@@ -824,7 +800,11 @@ else needs `impl Display for {rendered}`)"
             );
             return None;
         }
-        Some(name.to_string())
+        Some(
+            self.defs
+                .path(declaration.expect("definition has an owner").declaration())
+                .to_string(),
+        )
     }
 
     pub(in crate::check) fn context_variant_definition(

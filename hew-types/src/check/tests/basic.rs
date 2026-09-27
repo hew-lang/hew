@@ -71,21 +71,23 @@ fn contextual_variant_missing_from_expected_enum_is_rejected() {
 }
 
 #[test]
-fn contextual_variant_reports_ambiguous_expected_owner() {
+fn contextual_variant_keeps_its_resolved_owner() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let parsed = hew_parser::parse("enum State { Ready; }");
+    let output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let expected = checker.named_ty_for_key("State", vec![]);
     checker
         .published_bare_type_owners
         .entry((None, 0, "State".to_string()))
         .or_default()
         .extend(["left.State".to_string(), "right.State".to_string()]);
 
-    assert!(checker
-        .context_variant_expected_owner(&Ty::named_for_test("State", vec![]), &(0..6))
-        .is_none());
-    assert!(checker.errors.iter().any(|error| {
-        error.kind == TypeErrorKind::ContextVariantAmbiguous
-            && error.message.contains("E_CONTEXT_VARIANT_AMBIGUOUS")
-    }));
+    assert_eq!(
+        checker.context_variant_expected_owner(&expected, &(0..6)),
+        Some("State".to_string())
+    );
+    assert!(checker.errors.is_empty(), "{:?}", checker.errors);
 }
 
 /// Both spellings are refused since v0.6.0. The pattern form covers every

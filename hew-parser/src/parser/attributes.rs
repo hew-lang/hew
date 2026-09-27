@@ -81,7 +81,9 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         // `FreeFn` like `#[test]` and `#[export]`; the co-occurrence half of
         // their `#[test]`-only rule is enforced by
         // `Parser::validate_attributes_for`, not by this table.
-        "test" | "export" | "ignore" | "should_panic" | "serial" | "real_time" => &[FreeFn],
+        "test" | "export" | "ignore" | "should_panic" | "serial" | "real_time" | "timeout" => {
+            &[FreeFn]
+        }
         "on" => &[ActorMemberFn],
         "every" => &[ActorReceiveFn],
         "max_heap" => &[ActorDecl],
@@ -100,6 +102,38 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
 }
 
 impl Parser<'_> {
+    /// Validate literal shapes before positional strings lose their token kind.
+    pub(crate) fn validate_test_attribute_arguments(
+        &mut self,
+        attr: &Attribute,
+        argument_count: usize,
+        quoted_arguments: bool,
+    ) {
+        let (valid, hint) = match attr.name.as_str() {
+            "test" | "serial" | "real_time" => (argument_count == 0, "remove the arguments"),
+            "ignore" | "should_panic" => (
+                argument_count <= 1 && quoted_arguments,
+                "use no argument or one quoted string, such as (\"reason\")",
+            ),
+            "timeout" => (
+                matches!(attr.args.as_slice(), [AttributeArg::Duration(ns)] if *ns > 0),
+                "use one positive duration literal, such as #[timeout(5s)]",
+            ),
+            _ => return,
+        };
+        if !valid {
+            self.error_at_with_kind_and_hint(
+                format!(
+                    "invalid arguments for `#[{}]` [E_ATTRIBUTE_ARGUMENT]",
+                    attr.name
+                ),
+                attr.span.clone(),
+                hint,
+                ParseDiagnosticKind::AttributeArgument,
+            );
+        }
+    }
+
     /// Validate every attribute in `attrs` against the closed table for
     /// `position`, emitting `E_UNKNOWN_ATTRIBUTE` for any name the table does
     /// not know, or that is not legal in `position`.
@@ -116,7 +150,7 @@ impl Parser<'_> {
             // `#[test]` must not leave them silently accepted either.
             let requires_test = matches!(
                 attr.name.as_str(),
-                "ignore" | "should_panic" | "serial" | "real_time"
+                "ignore" | "should_panic" | "serial" | "real_time" | "timeout"
             );
             let legal = in_table && (!requires_test || has_test);
             if !legal {
@@ -129,5 +163,68 @@ impl Parser<'_> {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{parse, ParseDiagnosticKind};
+
+    #[test]
+    fn test_attributes_preserve_valid_literal_arguments() {
+        for attribute in [
+            "#[test]",
+            "#[ignore]",
+            "#[ignore(\"reason\")]",
+            "#[should_panic]",
+            "#[should_panic(\"IndexOutOfBounds\")]",
+            "#[should_panic(r\"message\")]",
+            "#[serial]",
+            "#[real_time]",
+            "#[timeout(1ns)]",
+            "#[timeout(5s)]",
+        ] {
+            let source = format!("#[test]\n{attribute}\nfn example() {{}}\n");
+            let parsed = parse(&source);
+            assert!(parsed.errors.is_empty(), "{attribute}: {:?}", parsed.errors);
+        }
+    }
+
+    #[test]
+    fn test_attribute_argument_errors_name_the_attribute_and_repair() {
+        for attribute in [
+            "#[test(timeout = \"1ms\")]",
+            "#[serial(1)]",
+            "#[real_time(yes)]",
+            "#[ignore(reason)]",
+            "#[ignore(1)]",
+            "#[ignore(\"a\", \"b\")]",
+            "#[should_panic(expected = \"x\")]",
+            "#[should_panic(IndexOutOfBounds)]",
+            "#[should_panic(\"x\", \"y\")]",
+            "#[should_panic(5s)]",
+            "#[timeout]",
+            "#[timeout(0s)]",
+            "#[timeout(\"5s\")]",
+            "#[timeout(5)]",
+            "#[timeout(1s, 2s)]",
+            "#[timeout(value = 5)]",
+        ] {
+            let source = format!("#[test]\n{attribute}\nfn example() {{}}\n");
+            let parsed = parse(&source);
+            let error = parsed
+                .errors
+                .iter()
+                .find(|error| error.kind == ParseDiagnosticKind::AttributeArgument)
+                .unwrap_or_else(|| panic!("{attribute}: {:?}", parsed.errors));
+            assert_eq!(&source[error.span.clone()], attribute);
+            assert_eq!(error.kind.as_kind_str(), "E_ATTRIBUTE_ARGUMENT");
+            assert!(error.hint.as_ref().is_some_and(|hint| !hint.is_empty()));
+        }
+        let parsed = parse("#[timeout(1s)] fn ordinary() {}");
+        assert!(parsed
+            .errors
+            .iter()
+            .any(|error| error.message.contains("E_UNKNOWN_ATTRIBUTE")));
     }
 }

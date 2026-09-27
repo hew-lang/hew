@@ -12,6 +12,7 @@
 //! exercised directly.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -177,6 +178,140 @@ fn lsp_initialize_didopen_diagnostics_roundtrip() {
     );
 
     shutdown(&mut stdin);
+}
+
+struct TestProject(PathBuf);
+
+impl Drop for TestProject {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("hew-lsp-test-{}-{unique}", std::process::id()));
+    std::fs::create_dir(&root).expect("create test project");
+    let _project = TestProject(root.clone());
+    let file = root.join("main.hew");
+    let failing = "#[test]\nfn fails() { assert(1 == 2); }\n";
+    std::fs::write(&file, failing).expect("write test source");
+    let uri = url::Url::from_file_path(&file)
+        .expect("test file URI")
+        .to_string();
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("test root URI")
+        .to_string();
+
+    let mut server = ServerProcess {
+        child: Command::new(server_binary())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn hew-lsp"),
+    };
+    let mut stdin = server.child.stdin.take().expect("child stdin");
+    let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));
+    let deadline = Instant::now() + Duration::from_mins(1);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"processId":null,"capabilities":{},"rootUri":root_uri}}),
+    );
+    recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(1)));
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri":uri,"languageId":"hew","version":1,"text":failing}}}),
+    );
+    recv_until(&rx, deadline, |m| {
+        m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri
+    });
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":2,"method":"hew/tests",
+        "params":{"textDocument":{"uri":uri}}}),
+    );
+    let inventory = recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(2)));
+    let selector = inventory["result"][0]["selector"]
+        .as_str()
+        .expect("discovered test selector");
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand",
+        "params":{"command":"hew.runTest","arguments":[selector]}}),
+    );
+    let failed = recv_until(&rx, deadline, |m| {
+        m["method"] == "textDocument/publishDiagnostics"
+            && m["params"]["uri"] == uri
+            && m["params"]["diagnostics"]
+                .as_array()
+                .is_some_and(|diagnostics| diagnostics.iter().any(|d| d["source"] == "hew test"))
+    });
+    let diagnostic = failed["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["source"] == "hew test")
+        .unwrap();
+    assert_eq!(diagnostic["range"]["start"]["line"], 1);
+    assert_eq!(diagnostic["range"]["start"]["character"], 13);
+    assert!(diagnostic["message"].as_str().unwrap().contains("left: 1"));
+    assert!(diagnostic["message"].as_str().unwrap().contains("right: 2"));
+
+    assert_seeded_rerun_and_edit_clear(&mut stdin, &rx, deadline, &uri);
+    shutdown(&mut stdin);
+}
+
+fn assert_seeded_rerun_and_edit_clear(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<serde_json::Value>,
+    deadline: Instant,
+    uri: &str,
+) {
+    send(
+        stdin,
+        &json!({"jsonrpc":"2.0","id":4,"method":"textDocument/codeLens",
+        "params":{"textDocument":{"uri":uri}}}),
+    );
+    let lenses = recv_until(rx, deadline, |m| m.get("id") == Some(&json!(4)));
+    let rerun = lenses["result"]
+        .as_array()
+        .expect("code lenses")
+        .iter()
+        .find(|lens| {
+            lens["command"]["title"]
+                .as_str()
+                .is_some_and(|title| title.contains("Rerun with seed"))
+        })
+        .expect("seeded rerun lens");
+    assert!(rerun["command"]["arguments"][0]["seed"]
+        .as_str()
+        .and_then(|seed| seed.parse::<u64>().ok())
+        .is_some());
+
+    let passing = "#[test]\nfn fails() { assert(1 == 1); }\n";
+    send(
+        stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didChange",
+        "params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":passing}]}}),
+    );
+    let cleared = recv_until(rx, deadline, |m| {
+        m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri
+    });
+    assert!(cleared["params"]["diagnostics"]
+        .as_array()
+        .is_some_and(|diagnostics| diagnostics.iter().all(|d| d["source"] != "hew test")));
 }
 
 // The MIR dead-store lint went with the legacy MIR pipeline, so there is no

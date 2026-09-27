@@ -67,7 +67,14 @@ fn main() -> i64 {
     }
     println("[kv-client] local node started");
     sleep(500ms);
-    Node.connect(remote_addr);
+    match Node.connect(remote_addr) {
+        .Ok(_) => {}
+        .Err(_) => {
+            println(f"[kv-client] FAIL: could not connect to {remote_addr}");
+            Node.shutdown();
+            return 1;
+        }
+    }
     println(f"[kv-client] connected to {remote_addr}");
     // Wait for the connection handshake to complete and registry gossip to arrive.
     // hew_node_connect is non-blocking; gossip propagates asynchronously.

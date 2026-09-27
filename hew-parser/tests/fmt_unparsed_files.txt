@@ -7,8 +7,6 @@
 # to match exactly: remove a file when it starts to parse, and fix rather
 # than add a file that stops parsing.
 hew-lsp/tests/fixtures/v05_async_await.hew
-hew-parser/fuzz/corpus/fuzz_machine_decls/seed.hew
-hew-parser/fuzz/corpus/fuzz_supervisor_decls/seed.hew
 tests/core-acceptance/cases/machine-composite-depth-refused.hew
 tests/core-acceptance/cases/named-argument-after-positional-gap.hew
 tests/core-acceptance/cases/spread-parse-refusals.hew

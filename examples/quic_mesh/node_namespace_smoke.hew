@@ -7,9 +7,8 @@
 // Node.start.
 //
 // Node.connect targets a loopback address with no listener; the underlying
-// hew_node_api_connect returns -1 and sets the last-error string, but since
-// the builtin is typed Unit the return value is discarded.  The program still
-// exits 0, which is the expected outcome for this smoke gate.
+// hew_node_api_connect may report a connection error. This smoke checks that
+// the Node API resolves and runs, so either connection result is acceptable.
 //
 // Run:
 //   hew run examples/quic_mesh/node_namespace_smoke.hew
@@ -19,7 +18,7 @@ fn main() {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),
     }
-    Node.connect("127.0.0.1:9001");
+    let _ = Node.connect("127.0.0.1:9001");
     Node.shutdown();
     println("node_namespace_smoke: ok");
 }

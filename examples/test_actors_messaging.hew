@@ -87,7 +87,8 @@ fn test_lambda_actor() -> i64 {
     };
     let _ = doubler.send(21);
     let _ = doubler.send(5);
-    doubler.close();
+    stop(doubler);
+    stopped(doubler);
     println("PASS: lambda actor");
     1
 }
@@ -97,7 +98,8 @@ fn test_actor_factory() -> i64 {
     let m = make_multiplier(3);
     let _ = m.send(10);
     let _ = m.send(7);
-    m.close();
+    stop(m);
+    stopped(m);
     println("PASS: actor factory");
     1
 }
@@ -119,7 +121,8 @@ fn test_complex_lambda() -> i64 {
     };
     let _ = processor.send(5);
     let _ = processor.send(15);
-    processor.close();
+    stop(processor);
+    stopped(processor);
     println("PASS: complex lambda actor");
     1
 }

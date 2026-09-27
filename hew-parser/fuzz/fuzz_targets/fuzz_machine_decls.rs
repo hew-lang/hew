@@ -25,18 +25,18 @@ impl MachineInput {
             format!("Active {{ value: {} }}", self.active_value)
         };
         let read_active = if self.padded {
-            "Active { tag_byte: self.tag_byte, value: self.value + 1 }"
+            "{ tag_byte: state.tag_byte, value: state.value + 1 }"
         } else {
-            "Active { value: self.value + 1 }"
+            "{ value: state.value + 1 }"
         };
         let calls = if self.drive_calls {
             r#"
 fn drive_machine() {
-    var m = Idle;
+    var m: FuzzMachine = .Idle;
     let _before = m.state_name();
-    m.step(Activate);
-    m.step(Bump);
-    m.step(Deactivate);
+    m.step(.Activate);
+    m.step(.Bump);
+    m.step(.Deactivate);
     let _after = m.state_name();
 }
 "#
@@ -46,24 +46,19 @@ fn drive_machine() {
 
         format!(
             r#"machine FuzzMachine {{
+    events {{
+        Activate;
+        Bump;
+        Deactivate;
+    }}
+
     state Idle;
 {extra_state}
-    event Activate;
-    event Bump;
-    event Deactivate;
-
-    on Activate: Idle -> Active {{
-        {active_ctor}
-    }}
-    on Bump: Active -> Active @reenter {{
-        {read_active}
-    }}
-    on Deactivate: Active -> Idle {{
-        Idle
-    }}
-    on Deactivate: Idle -> Idle @reenter {{
-        Idle
-    }}
+    on Activate: Idle => {active_ctor}
+    on Bump: Active => Active reenter {read_active}
+    on Deactivate: Active => Idle;
+    on Deactivate: Idle => Idle reenter;
+    default {{ state }}
 }}
 {calls}
 "#

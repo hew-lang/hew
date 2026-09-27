@@ -59,7 +59,13 @@ fn main() {
 
     // Connect to the server node over QUIC.
     println("[client] connecting to server at 127.0.0.1:9000...");
-    Node.connect("127.0.0.1:9000");
+    match Node.connect("127.0.0.1:9000") {
+        .Ok(_) => {}
+        .Err(_) => {
+            Node.shutdown();
+            panic("failed to connect to QUIC mesh server");
+        }
+    }
     println("[client] connected (QUIC/TLS 1.3 encrypted)");
 
     // Look up the remote Counter actor via cross-node registry gossip.

@@ -751,6 +751,26 @@ is_separately_gated_or_reject_fixture() {
     *"/reject/"*)
         return 0
         ;;
+    examples/multifile/02_geometry/geo/area.hew | examples/multifile/02_geometry/geo/distance.hew)
+        # These peer files share Point and abs_int through the geo directory
+        # module. Checking main.hew below loads and checks all three together.
+        return 0
+        ;;
+    hew-parser/tests/fmt_roundtrip_corpus/assoc_types/dyn_assoc_bindings.hew | hew-parser/tests/fmt_roundtrip_corpus/assoc_types/generic_projection_where.hew)
+        # Parser/formatter fixtures exercise syntax without defining all of
+        # their nominal types. The formatter fidelity gate owns these inputs.
+        return 0
+        ;;
+    hew-sandbox-vm/fixtures/09-compile-type-error/main.hew | hew-sandbox-vm/fixtures/29-mixed-scalar-compare-rejected/main.hew)
+        # The VM fixture manifest expects a compile error for each source.
+        return 0
+        ;;
+    tests/pkg-import/pkgs/assocreqimplbad/assocreqimplbad.hew | tests/pkg-import/pkgs/qmachbad/qmachbad.hew | tests/pkg-import/pkgs/sinkres/sinkres.hew | tests/pkg-import/published_bare_two_optin_ambiguous.hew | tests/pkg-import/sameleaf_named_*_ambiguous.hew)
+        # The package gate imports these negative modules or files in their
+        # package context and checks the intended diagnostic. Other package
+        # fixtures remain in this positive compilation sweep.
+        return 0
+        ;;
     tests/core-acceptance/fixtures/*)
         # Manifests exercise these multi-file programs and support modules in
         # their owning context, including deliberate diagnostic cases.

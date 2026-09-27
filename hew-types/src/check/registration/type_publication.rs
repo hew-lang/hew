@@ -700,19 +700,6 @@ impl Checker {
                     }
                     self.record_module_type_export(module_short, td.name.name.as_str());
                     self.record_module_type_export(module_full_path, td.name.name.as_str());
-                    // The importer-scope bare binding obeys the qualified-by-
-                    // default gate: `Prelude` (compiled-in bootstrap surfaces)
-                    // always publishes bare; a real `import` publishes bare only
-                    // on a named/glob/aliased opt-in, exactly like a user module.
-                    if let Some(binding) = import_spec.bare_binding(td.name.name.as_str()) {
-                        let source_identity = format!("{module_full_path}.{}", td.name);
-                        self.publish_stdlib_hew_type_binding(
-                            module_short,
-                            binding,
-                            source_identity,
-                            import_spec,
-                        );
-                    }
                 }
                 Item::Machine(md) => {
                     // Record visibility for all Machines (both pub and non-pub).
@@ -764,27 +751,6 @@ impl Checker {
                     self.record_module_type_export(module_short, &event_name);
                     self.record_module_type_export(module_full_path, md.name.name.as_str());
                     self.record_module_type_export(module_full_path, &event_name);
-                    // Bare publication of the machine and its companion event
-                    // enum is gated together so a named/glob import exposes both
-                    // or neither; `Prelude` publishes both unconditionally.
-                    if let Some(binding) = import_spec.bare_binding(md.name.name.as_str()) {
-                        let source_identity = format!("{module_full_path}.{}", md.name);
-                        self.publish_stdlib_hew_type_binding(
-                            module_short,
-                            binding,
-                            source_identity,
-                            import_spec,
-                        );
-                    }
-                    if let Some(binding) = import_spec.bare_binding(&event_name) {
-                        let source_identity = format!("{module_full_path}.{event_name}");
-                        self.publish_stdlib_hew_type_binding(
-                            module_short,
-                            binding,
-                            source_identity,
-                            import_spec,
-                        );
-                    }
                 }
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
@@ -876,19 +842,6 @@ impl Checker {
                         self.module_fn_exports.insert(qualified.clone());
                     }
                     self.insert_fn_sig_at(&qualified, sig);
-                    // Mirror user-module named/glob import publication. The
-                    // parser has already selected `fd.name`; an alias only
-                    // changes the importing binding, never the declaration
-                    // identity retained in `import_fn_name_aliases`.
-                    if fd.visibility.is_pub() {
-                        if let Some(binding) = import_spec.bare_binding(fd.name.name.as_str()) {
-                            self.publish_stdlib_hew_function_binding(
-                                binding,
-                                &format!("{module_full_path}.{}", fd.name),
-                                import_spec,
-                            );
-                        }
-                    }
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
@@ -927,16 +880,6 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.register_actor_base(ad, Some(module_full_path));
                     self.current_module = saved_importer_module;
-                    if ad.visibility.is_pub() {
-                        if let Some(binding) = import_spec.bare_binding(ad.name.name.as_str()) {
-                            self.publish_stdlib_hew_type_binding(
-                                module_short,
-                                binding,
-                                format!("{module_full_path}.{}", ad.name),
-                                import_spec,
-                            );
-                        }
-                    }
                 }
                 // Register pub consts from C-backed stdlib modules that also
                 // ship Hew source (e.g. `std::misc::log` with `pub const JSON`).
@@ -1173,6 +1116,10 @@ impl Checker {
         self.registration_origin_module = saved_registration_origin;
         self.current_item_source = importer_source;
         self.current_module_idx = importer_file;
+        // Declaration annotations belong to their source file. Bare bindings
+        // belong to the importing file and are published after its frame is
+        // restored, including when this visit first registered the source.
+        self.publish_imported_hew_bindings(module_short, module_full_path, items, import_spec);
     }
 
     /// Publish a selected stdlib free function into one importer's bare scope.

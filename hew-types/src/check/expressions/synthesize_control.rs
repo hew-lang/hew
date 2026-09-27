@@ -1907,7 +1907,7 @@ impl Checker {
                         common_ty
                     } else {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "`{op}` requires compatible integer types; found `{}` and `{}`",
@@ -1930,7 +1930,7 @@ impl Checker {
                     left_ty
                 } else {
                     self.report_error(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::BinaryOperandTypes,
                         &left.1,
                         format!(
                             "`{op}` requires integer operands; found `{}` and `{}`",
@@ -1968,7 +1968,7 @@ impl Checker {
                         common_ty
                     } else {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
@@ -1985,7 +1985,7 @@ impl Checker {
                         self.pointer_width(),
                     ) {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
@@ -2001,7 +2001,7 @@ impl Checker {
                         common_ty
                     } else {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
@@ -2030,7 +2030,7 @@ impl Checker {
                     Ty::String // string concatenation
                 } else {
                     self.report_error(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::BinaryOperandTypes,
                         &left.1,
                         format!(
                             "cannot apply `{op}` to `{}` and `{}`",
@@ -2056,7 +2056,7 @@ impl Checker {
                         common_ty
                     } else {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "bitwise `{op}` requires compatible integer types; found `{}` and `{}`",
@@ -2076,7 +2076,7 @@ impl Checker {
                     left_ty
                 } else {
                     self.report_error(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::BinaryOperandTypes,
                         &left.1,
                         format!(
                             "bitwise `{op}` requires integer operands, found `{}` and `{}`",
@@ -2102,7 +2102,7 @@ impl Checker {
                         );
                     } else {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
@@ -2118,7 +2118,7 @@ impl Checker {
                         self.pointer_width(),
                     ) {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
@@ -2132,7 +2132,7 @@ impl Checker {
                         .is_none()
                     {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::BinaryOperandTypes,
                             &left.1,
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
@@ -2272,7 +2272,7 @@ impl Checker {
                         }
                     } else {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            TypeErrorKind::RangeBoundTypes,
                             &left.1,
                             format!(
                                 "range bounds require compatible integer types; found `{}` and `{}`",

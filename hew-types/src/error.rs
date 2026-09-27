@@ -729,6 +729,12 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// Distinct closures cannot share the required callable shape.
+    ClosureShapeMismatch,
+    /// Binary operands have incompatible types for the selected operator.
+    BinaryOperandTypes,
+    /// Range bounds have no common integer type.
+    RangeBoundTypes,
     /// A former actor lifecycle spelling was used; only migration mode may
     /// inspect it as a warning and no executable operation is published.
     ActorLifecycleRetired,
@@ -1516,6 +1522,9 @@ impl TypeErrorKind {
             Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::ClosureShapeMismatch => "E_CLOSURE_SHAPE_MISMATCH",
+            Self::BinaryOperandTypes => "E_BINARY_OPERAND_TYPES",
+            Self::RangeBoundTypes => "E_RANGE_BOUND_TYPES",
             Self::ActorLifecycleRetired => "E_ACTOR_LIFECYCLE_RETIRED",
             Self::ActorHandleMethodRetired => "E_ACTOR_HANDLE_METHOD_RETIRED",
             Self::ActorWaitsOnSelf => "E_ACTOR_WAITS_ON_SELF",

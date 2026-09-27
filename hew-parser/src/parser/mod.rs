@@ -746,6 +746,8 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum ParseDiagnosticKind {
+    /// A reserved keyword was used as a declaration name.
+    ReservedName,
     /// A declaration member needs a semicolon.
     MemberTerminator,
     /// A mark follows a body that already ends its member or arm.
@@ -823,6 +825,7 @@ impl ParseDiagnosticKind {
             Self::NoAsyncGen => "E_NO_ASYNC_GEN",
             Self::ForAwait => "E_FOR_AWAIT",
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
+            Self::ReservedName => "E_RESERVED_NAME",
             Self::Other => "Other",
         }
     }

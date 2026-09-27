@@ -850,9 +850,10 @@ fn reassigning_a_closure_binding_joins_it_to_the_shape_both_hold() {
         .first()
         .expect("a closure of another shape has no shared type");
     assert_eq!(
-        error.message,
-        "type mismatch: each closure literal has its own type"
+        error.kind,
+        crate::error::TypeErrorKind::ClosureShapeMismatch
     );
+    assert!(error.message.contains("compatible callable shapes"));
 }
 
 #[test]

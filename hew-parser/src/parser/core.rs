@@ -860,19 +860,20 @@ impl<'src> Parser<'src> {
                 } else if let Some(kw) = tok.keyword_str() {
                     // Reserved keyword in a name position — emit a targeted
                     // diagnostic so the user knows the word is off-limits.
-                    self.error_at_with_hint(
+                    self.error_at_with_kind_and_hint(
                         format!("`{kw}` is a reserved word and cannot be used as a name"),
                         self.peek_span(),
                         format!("rename this item to something other than `{kw}`"),
+                        ParseDiagnosticKind::ReservedName,
                     );
                     None
                 } else {
-                    self.error(format!("expected identifier, found {tok}"));
+                    self.error_unexpected_token("identifier", format!("{tok}"));
                     None
                 }
             }
             None => {
-                self.error("expected identifier, found end of file".to_string());
+                self.error_unexpected_eof("identifier");
                 None
             }
         }

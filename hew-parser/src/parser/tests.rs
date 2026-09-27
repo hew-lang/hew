@@ -471,6 +471,8 @@ fn actor_method_reserved_keyword_name_emits_single_clear_error() {
         result.errors.len(),
         result.errors
     );
+    assert_eq!(result.errors[0].kind, ParseDiagnosticKind::ReservedName);
+    assert_eq!(&source[result.errors[0].span.clone()], "match");
     let msg = &result.errors[0].message;
     assert!(
         msg.contains("match"),
@@ -617,13 +619,13 @@ fn non_keyword_invalid_pattern_keeps_generic_message() {
 fn toplevel_fn_actor_name_still_reports_reserved_word() {
     let source = "fn actor() {}";
     let result = parse(source);
-    assert!(
-        result.errors.iter().any(|err| err
-            .message
-            .contains("`actor` is a reserved word and cannot be used as a name")),
-        "expected reserved-word diagnostic for actor function name, got: {:?}",
-        result.errors
-    );
+    let diagnostic = result
+        .errors
+        .iter()
+        .find(|err| err.kind == ParseDiagnosticKind::ReservedName)
+        .expect("reserved-name diagnostic");
+    assert_eq!(&source[diagnostic.span.clone()], "actor");
+    assert!(diagnostic.message.contains("`actor`"));
 }
 
 /// A valid actor with non-keyword names continues to parse cleanly.

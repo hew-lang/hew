@@ -142,13 +142,17 @@ fn absolute_selectors_distinguish_same_named_tests_across_roots() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let selectors = String::from_utf8_lossy(&output.stdout)
+    let mut selectors = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|event| event["event"] == "test_finished")
         .filter_map(|event| event["selector"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
-    assert_eq!(selectors, [first, second]);
+    assert_eq!(selectors.len(), 2);
+    selectors.sort();
+    let mut expected = [first, second];
+    expected.sort();
+    assert_eq!(selectors, expected);
 }
 
 #[test]
@@ -705,7 +709,7 @@ fn should_panic_test_fails_when_it_does_not_panic() {
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(has_test_line(&stdout, "expected_panic", "FAIL"));
-    assert!(stdout.contains("expected test to panic, but it completed successfully"));
+    assert!(stdout.contains("expected a Hew fault, but test completed successfully"));
     assert!(stdout.contains("0 passed, 1 failed, 0 ignored"));
 }
 
@@ -724,7 +728,10 @@ fn should_panic_rejects_an_explicit_nonzero_exit() {
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(has_test_line(&stdout, "exits", "FAIL"), "{stdout}");
-    assert!(stdout.contains("expected a user panic"), "{stdout}");
+    assert!(
+        stdout.contains("expected a Hew fault, got another failure"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -745,20 +752,24 @@ fn failed_assertion_reports_its_source_site() {
 }
 
 #[test]
-fn should_panic_rejects_a_checked_trap_with_its_site() {
+fn should_panic_rejects_a_mismatched_checked_trap_with_its_site() {
     require_codegen();
 
     let output = run_suite(
         &[(
             "trap_site_test.hew",
-            "#[test]\n#[should_panic]\nfn traps() {\n    let values = [1, 2];\n    var index = 3;\n    let _ = values[index];\n}\n",
+            "#[test]\n#[should_panic(\"DivideByZero\")]\nfn traps() {\n    let values = [1, 2];\n    var index = 3;\n    let _ = values[index];\n}\n",
         )],
         &["--color=never"],
     );
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("expected a user panic"), "{stdout}");
+    assert!(
+        stdout.contains("expected fault containing \"DivideByZero\""),
+        "{stdout}"
+    );
+    assert!(stdout.contains("IndexOutOfBounds"), "{stdout}");
     assert!(stdout.contains("trap_site_test.hew:6:"), "{stdout}");
 }
 

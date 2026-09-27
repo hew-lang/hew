@@ -692,7 +692,7 @@ type DefaultBodyKey = (DefId, NominalInstance, Symbol);
 /// module and declaration identity. The checker owns it mutably while it
 /// inventories the program and publishes it as `TypeCheckOutput.defs`;
 /// every later stage reads the same `Arc`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DefTable {
     modules: Vec<ModuleEntry>,
     module_by_source: HashMap<PathBuf, ModuleId>,
@@ -711,6 +711,18 @@ pub struct DefTable {
     /// Each owner's members by declared name; the first declaration of a
     /// name wins, and a duplicate is reported by the checker.
     members: HashMap<(DefId, Symbol), Vec<DefId>>,
+}
+
+impl std::fmt::Debug for DefTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Print the authoritative rows in identity order. Lookup indexes repeat
+        // those rows and their randomized iteration would destabilize IR dumps.
+        f.debug_struct("DefTable")
+            .field("modules", &self.modules)
+            .field("root", &self.root)
+            .field("defs", &self.defs)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for DefTable {

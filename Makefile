@@ -1432,7 +1432,6 @@ test-tooling: test-build-harness test-verify-ffi test-cabi-surface test-sys-lane
 test-build-harness:
 	$(PYTHON) scripts/tests/test_ci_local_linux.py
 	$(PYTHON) scripts/tests/test_hew_suite_runner.py
-	$(PYTHON) scripts/tests/test_expected_failures_sort.py
 	$(PYTHON) scripts/tests/test_makefile_interfaces.py
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py

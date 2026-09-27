@@ -356,57 +356,10 @@ impl LowerCtx {
             .lookup_variant_ctor(name, checker_owner.as_ref())
             .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
-            let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
-            let checker_agrees = match checker_owner.as_ref() {
-                None => !self.expr_types.contains_key(&key),
-                Some(ResolvedTy::Named { head, .. }) => {
-                    let name = head.registry_key();
-                    name == tagged_union_name
-                        || (!name.contains('.')
-                            && self
-                                .machine_ctor_registry
-                                .get(&tagged_union_surface_ctor_key(name, variant_name))
-                                .is_some_and(|(owner, _)| owner == &tagged_union_name))
-                }
-                Some(_) => false,
-            };
-            if checker_agrees {
+            if let Some(result_ty) = checker_owner {
                 // Register the generic-enum instantiation before building
                 // result_ty so codegen's mangled-key lookup finds the entry.
                 self.try_register_enum_instantiation(&span);
-                // Checker-authoritative result type: the checker records the
-                // full `Named { name: "Option", args: [I64] }` at this
-                // identifier span. Using it preserves type args so codegen
-                // can compute the mangled registry key (e.g. `"Option$$i64"`).
-                // Fall back to bare-name with a diagnostic if expr_types has
-                // no entry — absence is a real signal; the checker should
-                // always populate accepted unit-ctor reference sites.
-                let result_ty = if let Some(ty) = self.expr_types.get(&key).cloned() {
-                    match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => self.restore_type_declaration_facts(resolved),
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: tagged_union_name.clone(),
-                                    reason: err.to_string(),
-                                },
-                                span.clone(),
-                                "checker-authoritative unit-variant result type failed boundary conversion",
-                            ));
-                            ResolvedTy::named_path(&self.defs, &tagged_union_name, Vec::new())
-                        }
-                    }
-                } else {
-                    // None means the checker had no entry at this span.
-                    // Treat as bare-name rather than a hard diagnostic so
-                    // synthesised/non-typed paths don't regress.
-                    ResolvedTy::named_path(&self.defs, &tagged_union_name, Vec::new())
-                };
-                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-                // bare-name unit-ctor site (the B1 archetype; no behaviour
-                // change). When the checker stamped the span (W4.042), the
-                // typed map carries the concrete `Named` type and this assert
-                // confirms it; when the span is genuinely absent, both miss.
                 self.assert_resolved_ty_totality(&span);
                 return (
                     HirExprKind::MachineVariantCtor {

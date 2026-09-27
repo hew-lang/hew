@@ -753,31 +753,9 @@ impl LowerCtx {
                     // Register the generic-enum instantiation before building
                     // result_ty so codegen's mangled-key lookup finds the entry.
                     self.try_register_enum_instantiation(&span);
-                    // Checker-authoritative result type: the checker records the
-                    // full `Named { name: "Maybe", args: [I64] }` at the
-                    // struct-init expression span. Using it preserves type args
-                    // so codegen computes the mangled registry key.
-                    // Fall back to bare-name with a diagnostic if expr_types
-                    // has no entry or boundary conversion fails.
-                    let checker_key = self.mk_key(&span);
-                    let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                        match ResolvedTy::from_ty(&ty) {
-                            Ok(resolved) => self.restore_type_declaration_facts(resolved),
-                            Err(err) => {
-                                self.diagnostics.push(HirDiagnostic::new(
-                                    HirDiagnosticKind::CheckerBoundaryViolation {
-                                        name: type_name.clone(),
-                                        reason: err.to_string(),
-                                    },
-                                    span.clone(),
-                                    "checker-authoritative struct-variant result type failed boundary conversion",
-                                ));
-                                ResolvedTy::named_path(&self.defs, &type_name, Vec::new())
-                            }
-                        }
-                    } else {
-                        ResolvedTy::named_path(&self.defs, &type_name, Vec::new())
-                    };
+                    let result_ty = self.restore_type_declaration_facts(
+                        checker_ctor_ty.expect("variant selection requires a checked owner"),
+                    );
                     (
                         HirExprKind::MachineVariantCtor {
                             machine_name: type_name,
@@ -787,39 +765,26 @@ impl LowerCtx {
                         result_ty,
                     )
                 } else {
-                    // Not a machine state — regular record init path.
-                    // Record the per-instantiation `RecordLayout` for
-                    // generic user records and capture the concrete type-args
-                    // for propagation onto this expression's resolved type.
-                    // `None` is legitimate for monomorphic/builtin records
-                    // (args: [] is correct).  For generic records with a
-                    // checker-accepted span but missing type-arg entry,
-                    // `record_record_layout` emits `RecordLayoutMissing`
-                    // before returning `None` — fail-closed, not pretend.
-                    // The surface constructor spelling can be a bare local
-                    // name while the declaration is owned by a nested module.
-                    // Select the current source owner before looking up the
-                    // generic layout entry; the bare registry key is only a
-                    // compatibility alias and may name a same-leaf sibling.
-                    let record_identity = self
-                        .expr_types
-                        .get(&self.mk_key(&span))
-                        .and_then(|ty| match ty {
-                            Ty::Named {
-                                head:
-                                    head @ (hew_types::TypeHead::Nominal(_)
-                                    | hew_types::TypeHead::Param(_)
-                                    | hew_types::TypeHead::Unresolved(_)),
-                                ..
-                            } if self.record_registry.contains_key(head.registry_key()) => {
-                                Some(head.registry_key().to_string())
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| self.canonical_current_module_record_name(name));
-                    let resolved_type_args = self
-                        .record_record_layout(&record_identity, &span)
-                        .unwrap_or_default();
+                    let Some(checked) = self.expr_types.get(&self.mk_key(&span)) else {
+                        return self
+                            .unsupported_expr(span, "record initializer has no checked type");
+                    };
+                    let Ok(result_ty) = ResolvedTy::from_ty(checked) else {
+                        return self
+                            .unsupported_expr(span, "record initializer type is unresolved");
+                    };
+                    let result_ty = self.restore_type_declaration_facts(result_ty);
+                    let ResolvedTy::Named { head, args, .. } = &result_ty else {
+                        return self
+                            .unsupported_expr(span, "record initializer type is not nominal");
+                    };
+                    let Some(declaration) = head.declaration(&self.defs) else {
+                        return self
+                            .unsupported_expr(span, "record initializer has no declaration");
+                    };
+                    let record_identity = self.defs.path(declaration.declaration()).to_string();
+                    let resolved_type_args = args.clone();
+                    self.record_record_layout(&record_identity, &span);
                     let hir_fields = fields
                         .iter()
                         .map(|(fname, expr)| {
@@ -837,69 +802,14 @@ impl LowerCtx {
                                 IntentKind::Read,
                             ))
                         });
-                    // A bare construction (`Widget { … }`) constrained by a
-                    // module-qualified expected type is checked against the
-                    // qualified type def, and the checker records the QUALIFIED
-                    // `Named { name: "widgeti8.Widget" }` at this span. Carry
-                    // that qualifier onto the init expression's type so MIR can
-                    // resolve the per-module layout when two packages export a
-                    // same-bare-name type; a single-module construction records
-                    // the bare name and keeps `name` byte-identically. For a
-                    // non-colliding qualified reference MIR keeps the bare layout
-                    // key and codegen resolves the qualified name to the single
-                    // bare struct by short-name, so this is safe even when the
-                    // type does not collide.
-                    //
-                    // The recorded short name does NOT always equal the syntactic
-                    // construction name. For an ALIASED import (`import m::{
-                    // Payload as Tag }; Tag { … }`) the checker resolves `Tag`
-                    // through `published_bare_type_qualified` to the SOURCE
-                    // identity `m.Payload` and records `Named { name: "m.Payload"
-                    // }` — short form `Payload`, not the binding `Tag`. Keying
-                    // MIR's field-order lookup off the bare binding `Tag` finds no
-                    // registered record (the layout is registered under the source
-                    // `Payload`), tripping the field-order fail-closed. So adopt
-                    // the checker-recorded qualified identity whenever its short
-                    // form is a registered record — the same-name qualified case
-                    // (`short == name`) and the aliased case (`short` names the
-                    // source record) both route through the source identity, never
-                    // the bare binding. The `record_registry` membership check
-                    // mirrors the checker's `type_defs.contains_key(qualified)`
-                    // guard in `published_bare_type_qualified`, so an unrelated or
-                    // unregistered qualified name is never adopted.
-                    let result_name = self
-                        .expr_types
-                        .get(&self.mk_key(&span))
-                        .and_then(|ty| match ty {
-                            Ty::Named {
-                                head:
-                                    head @ (hew_types::TypeHead::Nominal(_)
-                                    | hew_types::TypeHead::Param(_)
-                                    | hew_types::TypeHead::Unresolved(_)),
-                                ..
-                            } if head.registry_key().contains('.') => {
-                                let recorded = head.registry_key();
-                                let short = hew_types::short_name(recorded);
-                                (short == name.as_str() || self.record_registry.contains_key(short))
-                                    .then(|| recorded.to_string())
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| name.clone());
-                    let result_name = self.canonical_current_module_record_name(&result_name);
-                    let result_name = if name == "NodeConfig" {
-                        "std.builtins.NodeConfig".to_string()
-                    } else {
-                        result_name
-                    };
                     (
                         HirExprKind::StructInit {
-                            name: result_name.clone(),
-                            type_args: resolved_type_args.clone(),
+                            name: record_identity,
+                            type_args: resolved_type_args,
                             fields: hir_fields,
                             base: hir_base,
                         },
-                        ResolvedTy::named_path(&self.defs, &result_name, resolved_type_args),
+                        result_ty,
                     )
                 }
             }

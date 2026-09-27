@@ -458,11 +458,8 @@ pub fn lower_program_with_mono_cap(
             }
             let module_full_path = mod_id.dotted();
             if let Some(module) = mg.modules.get(mod_id) {
-                // #2202: lower this imported module's type-decl/record members
-                // under its OWN module context so a member typed by an import
-                // alias canonicalises through `import_type_name_aliases` (keyed
-                // by the full dotted path) instead of freezing as a bare name
-                // that MIR cannot resolve.
+                // Preserve the declaring module while consuming its checked
+                // member types and attaching source diagnostics.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
                 let saved_module_idx = ctx.current_module_idx;
                 let private_closure =
@@ -1872,9 +1869,7 @@ pub fn lower_program_with_mono_cap(
     // (e.g. "subpkg.helper"). Used alongside `file_import_module_idx` to set
     // `current_module_name` when lowering file-import items, mirroring the
     // checker's `Checker::current_module` (`mod_id.dotted()`). Keying by
-    // the full path — not the short last segment — is what lets HIR's
-    // `import_type_name_aliases` lookups hit the keys the checker wrote for
-    // depth-≥2 importers.
+    // the full path keeps source attribution aligned with checker facts.
     // Prelude declarations must precede lazy body checking, independently of
     // whether their executable methods are needed or have checked successfully.
     let scope_failure = builtin_declarations.as_ref().and_then(|builtins| {
@@ -2289,10 +2284,7 @@ pub fn lower_program_with_mono_cap(
                 let module_idx = span_indices.module_base(mod_id).unwrap_or_default();
                 ctx.current_module_idx = module_idx;
                 let source_module = mod_id.dotted();
-                // Match the checker's `current_module` key (full dotted path,
-                // `mod_id.dotted()`) so `import_type_name_aliases` lookups
-                // resolve for depth-≥2 modules (e.g. "subpkg.helper"); the short
-                // last segment would miss the checker-written alias key.
+                // Keep source attribution under the checker's full module owner.
                 ctx.current_module_name = Some(source_module.clone());
                 let diag_start = ctx.diagnostics.len();
                 let item_start = items.len();

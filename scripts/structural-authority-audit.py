@@ -9,7 +9,6 @@ or hide authority findings.
 from __future__ import annotations
 
 import argparse
-import bisect
 import csv
 import json
 import re
@@ -29,8 +28,6 @@ COMPILER_ROOTS = (
     "hew-codegen-rs/src",
 )
 ALL_GROUPS = {
-    "semantic-owner-shortening-sink",
-    "string-method-identity",
     "legacy-heap-reader",
     "checker-hir-publication",
     "mir-ownership-sink",
@@ -41,7 +38,6 @@ ALL_GROUPS = {
     "checker-hir-fact-relation",
     "call-target-authority",
     "runtime-call-authority",
-    "lifecycle-identity-authority",
     "suspend-authority",
     "owner-retirement-path",
     "monomorphic-enum-leaf-synthesis",
@@ -54,46 +50,7 @@ ALL_GROUPS = {
     # `hir-ast-boundary` inventories hew-hir reading the parser's own closed
     # AST shape (Item/Expr/Stmt/Pattern variants, ImportDecl.resolved_items)
     # instead of the checker's resolved TypeCheckOutput.
-    # `sir-hir-fact-rederivation` inventories hew-sir re-deriving a checker/HIR
-    # fact (a payload's variant shape, a match arm's predicate classification)
-    # instead of consuming one published decision.
     "hir-ast-boundary",
-    "sir-hir-fact-rederivation",
-}
-SEMANTIC_KEY_BUILDERS = {
-    "scoped_module_item_name",
-    "module_item_name",
-    "qualified_item_name",
-    "qualified_name",
-}
-RUNTIME_RESOLUTION_SINKS = {
-    "resolve_runtime_symbol",
-    "runtime_symbol_for_call_expr",
-    "runtime_symbol_for_method",
-}
-CANONICAL_OWNER_NAMES = re.compile(
-    r"^(?:canonical_owner|declaring_module|module_full_path|module_identity|resolved_module|source_module)$"
-)
-SEMANTIC_MAP_NAMES = {
-    "by_module",
-    "call_targets",
-    "const_registry",
-    "declarations",
-    "direct_call_targets",
-    "fn_registry",
-    "fn_sigs",
-    "import_spans",
-    "machine_ctor_registry",
-    "methods",
-    "module_import_bindings",
-    "modules",
-    "nominal_ids",
-    "opaque",
-    "record_registry",
-    "resolved_calls",
-    "supers",
-    "type_defs",
-    "user_modules",
 }
 ITEM_KINDS = (
     "mod_item",
@@ -382,337 +339,12 @@ def single_meta(match: dict[str, object], name: str) -> str:
     return str(meta.get("single", {}).get(name, {}).get("text", ""))  # type: ignore[union-attr]
 
 
-def single_meta_range(match: dict[str, object], name: str) -> SyntaxRange | None:
-    meta = match.get("metaVariables", {})
-    value = meta.get("single", {}).get(name)  # type: ignore[union-attr]
-    if not isinstance(value, dict) or "range" not in value:
-        return None
-    offsets = value["range"]["byteOffset"]
-    return SyntaxRange(str(match["file"]), int(offsets["start"]), int(offsets["end"]))
-
-
 def range_contains(outer: SyntaxRange, inner: SyntaxRange) -> bool:
     return (
         outer.path == inner.path
         and outer.byte_start <= inner.byte_start
         and inner.byte_end <= outer.byte_end
     )
-
-
-def semantic_map_receiver(receiver: str) -> bool:
-    leaf = receiver.split(".")[-1].strip()
-    return (
-        leaf in SEMANTIC_MAP_NAMES
-        or leaf.endswith("_registry")
-        or leaf.endswith("_registries")
-        or leaf.endswith("_layouts")
-        or leaf.endswith("_definitions")
-        or leaf.endswith("_declarations")
-    ) and leaf not in {"diagnostics", "errors", "messages"}
-
-
-def leaf_path_receiver(receiver: str) -> bool:
-    compact = "".join(receiver.split())
-    return bool(
-        re.search(
-            r"(?:^|[.])(?:path|segments|module_path|module_id|mod_id|owner)(?:$|[.])",
-            compact,
-        )
-    )
-
-
-def separator_is_qualification(separator: str) -> bool:
-    return separator.strip() in {'"::"', "'::'", '"."', "'.'"}
-
-
-def implicit_format_names(text: str) -> set[str]:
-    """Return Rust captured-format identifiers, excluding escaped braces."""
-    return set(re.findall(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)[^{}]*\}(?!\})", text))
-
-
-def semantic_owner_shortening_findings(
-    ast_grep: Path, root: Path, test_ranges: list[SyntaxRange]
-) -> set[Finding]:
-    """Find leaf module spellings that flow into executable identity sinks.
-
-    This is deliberately an intraprocedural parsed-AST taint pass.  It catches
-    the common two-step escape from a direct ast-grep rule (`module_short`, then
-    `key`, then `registry.insert(key, ...)`) without treating formatting,
-    diagnostics, or ordinary collection `.last()` calls as identity authority.
-    """
-    identifier_items: list[tuple[str, str, SyntaxRange]] = []
-    for identifier in run_query(ast_grep, root, kind="identifier"):
-        identifier_range = node_range(identifier)
-        identifier_items.append(
-            (identifier_range.path, str(identifier["text"]), identifier_range)
-        )
-    literal_items: list[tuple[str, SyntaxRange]] = []
-    for literal_kind in ("string_literal", "raw_string_literal"):
-        for literal in run_query(ast_grep, root, kind=literal_kind):
-            literal_items.append((str(literal["text"]), node_range(literal)))
-
-    source_ranges: list[SyntaxRange] = []
-    for match in run_query(ast_grep, root, pattern="short_name($X)"):
-        source_ranges.append(node_range(match))
-    for pattern in (
-        "current_module_short()",
-        "$X.current_module_short()",
-        "module_short_name($X)",
-        "$X.module_short_name()",
-    ):
-        source_ranges.extend(
-            node_range(match) for match in run_query(ast_grep, root, pattern=pattern)
-        )
-    for match in run_query(ast_grep, root, pattern="$X.last()"):
-        if leaf_path_receiver(single_meta(match, "X")):
-            source_ranges.append(node_range(match))
-    for pattern in ("$X.rsplit($SEP).next()", "$X.split($SEP).last()"):
-        for match in run_query(ast_grep, root, pattern=pattern):
-            if separator_is_qualification(single_meta(match, "SEP")):
-                source_ranges.append(node_range(match))
-    for match in run_query(ast_grep, root, pattern="$X.module_alias"):
-        source_ranges.append(node_range(match))
-
-    bindings: list[tuple[str, SyntaxRange]] = []
-    for pattern in (
-        "let $V = $E;",
-        "let mut $V = $E;",
-        "let $V: $T = $E;",
-        "let mut $V: $T = $E;",
-        "if let Some($V) = $E { $$$BODY }",
-        "let Some($V) = $E else { $$$BODY };",
-        "$V = $E",
-    ):
-        for match in run_query(ast_grep, root, pattern=pattern):
-            name = single_meta(match, "V")
-            expression = single_meta_range(match, "E")
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and expression:
-                bindings.append((name, expression))
-
-    sink_matches: list[tuple[str, dict[str, object], SyntaxRange]] = []
-    identifier_index: defaultdict[str, list[tuple[int, str, SyntaxRange]]] = (
-        defaultdict(list)
-    )
-    for path, name, identifier_range in identifier_items:
-        identifier_index[path].append(
-            (identifier_range.byte_start, name, identifier_range)
-        )
-    for items in identifier_index.values():
-        items.sort(key=lambda item: item[0])
-    identifier_starts = {
-        path: [item[0] for item in items] for path, items in identifier_index.items()
-    }
-    for method in ("insert", "entry", "get", "get_mut", "contains_key", "remove"):
-        for pattern in (
-            f"$R.{method}($KEY)",
-            f"$R.{method}($KEY, $$$REST)",
-        ):
-            for match in run_query(ast_grep, root, pattern=pattern):
-                if semantic_map_receiver(single_meta(match, "R")):
-                    key = single_meta_range(match, "KEY")
-                    if key:
-                        sink_matches.append(("registry-key", match, key))
-    for pattern in ("$F($KEY)", "$F($KEY, $$$REST)"):
-        for match in run_query(ast_grep, root, pattern=pattern):
-            callee = "".join(single_meta(match, "F").split())
-            leaf = callee.split("::")[-1]
-            if "CallTarget::" in callee:
-                form = "call-target"
-            elif leaf in RUNTIME_RESOLUTION_SINKS:
-                form = "runtime-resolution"
-            elif leaf in SEMANTIC_KEY_BUILDERS:
-                form = "registry-key"
-            else:
-                continue
-            key = single_meta_range(match, "KEY")
-            if key:
-                sink_matches.append((form, match, key))
-    # A shortening source can cross one helper boundary before the actual map
-    # operation (`visit_items(..., module_short, ..., methods)`). Treat a call
-    # that also carries an explicitly named semantic registry/map as the sink;
-    # diagnostic/display helpers do not carry one of these authorities.
-    for match in run_query(ast_grep, root, pattern="$F($$$ARGS)"):
-        call_range = node_range(match)
-        callee = "".join(single_meta(match, "F").split())
-        callee_leaf = callee.split("::")[-1]
-        if "." in callee or not callee_leaf.startswith(
-            (
-                "build_",
-                "collect_",
-                "lower_",
-                "register_",
-                "resolve_",
-                "scan_",
-                "seed_",
-                "visit_",
-            )
-        ):
-            continue
-        path_identifiers = identifier_index.get(call_range.path, [])
-        start = bisect.bisect_left(
-            identifier_starts.get(call_range.path, []), call_range.byte_start
-        )
-        if any(
-            range_contains(call_range, identifier_range) and semantic_map_receiver(name)
-            for _, name, identifier_range in path_identifiers[start:]
-            if identifier_range.byte_start < call_range.byte_end
-        ):
-            sink_matches.append(("registry-key", match, call_range))
-
-    function_ranges = [
-        node_range(match) for match in run_query(ast_grep, root, kind="function_item")
-    ]
-    # Include a file-wide fallback for const/static initializers and future
-    # generated authorities outside functions.
-    paths = set(identifier_index)
-    file_scopes = {path: SyntaxRange(path, 0, 1 << 62) for path in paths}
-    functions_by_path: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
-    for item in function_ranges:
-        functions_by_path[item.path].append(item)
-    function_starts: dict[str, list[int]] = {}
-    for path, items in functions_by_path.items():
-        items.sort(key=lambda item: item.byte_start)
-        function_starts[path] = [item.byte_start for item in items]
-
-    def enclosing_scope(item: SyntaxRange) -> SyntaxRange | None:
-        candidates = functions_by_path.get(item.path, [])
-        index = bisect.bisect_right(function_starts.get(item.path, []), item.byte_start)
-        # The latest-starting enclosing function is the narrowest scope. Rust
-        # permits nested function items, so walk backwards until containment.
-        for candidate in reversed(candidates[:index]):
-            if range_contains(candidate, item):
-                return candidate
-        return file_scopes.get(item.path)
-
-    sink_scopes: list[tuple[str, dict[str, object], SyntaxRange, SyntaxRange]] = []
-    for form, sink_match, key_range in sink_matches:
-        scope = enclosing_scope(key_range)
-        if scope is not None:
-            sink_scopes.append((form, sink_match, key_range, scope))
-
-    sources_by_scope: defaultdict[SyntaxRange, list[SyntaxRange]] = defaultdict(list)
-    for item in source_ranges:
-        if scope := enclosing_scope(item):
-            sources_by_scope[scope].append(item)
-    identifiers_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
-        defaultdict(list)
-    )
-    for _, name, item_range in identifier_items:
-        if scope := enclosing_scope(item_range):
-            identifiers_by_scope[scope].append((name, item_range))
-    literals_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
-        defaultdict(list)
-    )
-    for text, item_range in literal_items:
-        if scope := enclosing_scope(item_range):
-            literals_by_scope[scope].append((text, item_range))
-    bindings_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
-        defaultdict(list)
-    )
-    for name, expression in bindings:
-        if scope := enclosing_scope(expression):
-            bindings_by_scope[scope].append((name, expression))
-
-    scope_inputs: dict[
-        SyntaxRange,
-        tuple[
-            list[SyntaxRange],
-            list[tuple[str, SyntaxRange]],
-            list[tuple[str, SyntaxRange]],
-            dict[str, list[SyntaxRange]],
-        ],
-    ] = {}
-    for scope in {item[3] for item in sink_scopes}:
-        scoped_sources = sources_by_scope[scope]
-        scoped_bindings = bindings_by_scope[scope]
-        scoped_identifiers = identifiers_by_scope[scope]
-        scoped_literals = literals_by_scope[scope]
-        bindings_by_name: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
-        for name, expression in scoped_bindings:
-            bindings_by_name[name].append(expression)
-        for expressions in bindings_by_name.values():
-            expressions.sort(key=lambda item: item.byte_end)
-        scope_inputs[scope] = (
-            scoped_sources,
-            scoped_identifiers,
-            scoped_literals,
-            dict(bindings_by_name),
-        )
-
-    results: set[Finding] = set()
-    for form, sink_match, key_range, scope in sink_scopes:
-        sink = finding("semantic-owner-shortening-sink", form, sink_match)
-        if excluded(sink, test_ranges):
-            continue
-        (
-            scoped_sources,
-            scoped_identifiers,
-            scoped_literals,
-            scoped_bindings,
-        ) = scope_inputs[scope]
-
-        def name_is_tainted(
-            name: str, before: int, visiting: set[tuple[str, int]]
-        ) -> bool:
-            candidates = [
-                expression
-                for expression in scoped_bindings.get(name, [])
-                if expression.byte_end <= before
-            ]
-            if not candidates:
-                return False
-            expression = candidates[-1]
-            marker = (name, expression.byte_end)
-            if marker in visiting:
-                return False
-            return expression_is_tainted(expression, visiting | {marker})
-
-        def expression_is_tainted(
-            expression: SyntaxRange, visiting: set[tuple[str, int]]
-        ) -> bool:
-            if (
-                form == "call-target"
-                and any(
-                    CANONICAL_OWNER_NAMES.fullmatch(name)
-                    and range_contains(expression, item_range)
-                    for name, item_range in scoped_identifiers
-                )
-                or (
-                    form == "call-target"
-                    and any(
-                        range_contains(expression, literal_range)
-                        and any(
-                            CANONICAL_OWNER_NAMES.fullmatch(name)
-                            for name in implicit_format_names(text)
-                        )
-                        for text, literal_range in scoped_literals
-                    )
-                )
-            ):
-                # Re-attaching an item leaf to a checker-resolved full owner is
-                # canonicalization, not owner shortening. The full owner is the
-                # authority consumed by the resulting structured ID.
-                return False
-            if any(range_contains(expression, item) for item in scoped_sources):
-                return True
-            for name, item_range in scoped_identifiers:
-                if range_contains(expression, item_range) and name_is_tainted(
-                    name, item_range.byte_start, visiting
-                ):
-                    return True
-            for text, literal_range in scoped_literals:
-                if not range_contains(expression, literal_range):
-                    continue
-                if any(
-                    name_is_tainted(name, literal_range.byte_start, visiting)
-                    for name in implicit_format_names(text)
-                ):
-                    return True
-            return False
-
-        if expression_is_tainted(key_range, set()):
-            results.add(sink)
-    return results
 
 
 class CfgPredicateParser:
@@ -957,31 +589,6 @@ def rc1_structural_authority_findings(
     # semantics without parsing a linker label.
     closed_enum("CallTarget", "call-target-authority", "call-target")
     closed_enum("RuntimeCallFamily", "runtime-call-authority", "runtime-call-family")
-
-    # The checker-owned lifecycle graph is not yet consumed by HIR, but its
-    # candidate shape and conflict discriminator are already real authority.
-    # Inventorying declarations now makes the later HIR cutover an explicit
-    # reviewed addition rather than a new provisional carrier.
-    lifecycle_ranges = [
-        node_range(match)
-        for match in run_query(
-            ast_grep,
-            root,
-            pattern="pub struct OpaqueResourceLifecycleCandidate { $$$BODY }",
-        )
-    ]
-    for match in run_query(ast_grep, root, kind="field_declaration"):
-        if any(range_contains(item, node_range(match)) for item in lifecycle_ranges):
-            results.add(
-                finding(
-                    "lifecycle-identity-authority", "lifecycle-candidate-field", match
-                )
-            )
-    closed_enum(
-        "OpaqueResourceLifecycleConflictKind",
-        "lifecycle-identity-authority",
-        "lifecycle-conflict",
-    )
 
     # SuspendKind has a real side-table carrier.  Count declaration variants,
     # every executable path use (producer or consumer), and the canonical
@@ -1336,49 +943,6 @@ def hir_ast_boundary_findings(ast_grep: Path, root: Path) -> set[Finding]:
     return results
 
 
-SIR_FACT_RERIVATION_SCOPE = ["hew-sir/src"]
-
-
-def sir_hir_fact_rederivation_findings(ast_grep: Path, root: Path) -> set[Finding]:
-    """D486 stage one: SIR must consume HIR's already-decided shape facts.
-
-    `require_variant_shape` computes a payload's variant descriptor from a
-    `ResolvedTy` on every call rather than reading a shape HIR published once.
-    Independent `arm.predicate` shape matches scattered across
-    `lower_match.rs` re-derive the same arm classification (wildcard,
-    binding, literal, enum-variant) separately in each of several functions
-    instead of consuming one shared classifier. This inventory is exact and
-    presence-only by path; it freezes the boundary and shrinks as each fact
-    moves onto a published HIR/SIR contract field.
-    """
-    scope = SIR_FACT_RERIVATION_SCOPE
-    governed = test_governed_ranges(ast_grep, root, scope)
-    results: set[Finding] = set()
-
-    def admit(group_form: str, match: dict[str, object]) -> None:
-        item = finding("sir-hir-fact-rederivation", group_form, match)
-        if not is_source_path(item.path):
-            return
-        if any(scope_range.contains(item) for scope_range in governed):
-            return
-        results.add(item)
-
-    for pattern in (
-        "require_variant_shape($$$ARGS)",
-        "$R.require_variant_shape($$$ARGS)",
-    ):
-        for match in run_query_at(ast_grep, root, scope, pattern=pattern):
-            admit("require-variant-shape-call", match)
-    for match in run_query_at(ast_grep, root, scope, kind="field_expression"):
-        if str(match["text"]) == "arm.predicate":
-            admit("predicate-shape-match", match)
-    for match in run_query_at(
-        ast_grep, root, scope, pattern="matches!(arm.predicate, $$$REST)"
-    ):
-        admit("predicate-shape-match", match)
-    return results
-
-
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -1423,36 +987,9 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                     )
                 )
 
-    literals_by_path: defaultdict[str, list[tuple[int, int, str]]] = defaultdict(list)
-    for kind in ("string_literal", "raw_string_literal"):
-        for literal in run_query(ast_grep, root, kind=kind):
-            literal_range = node_range(literal)
-            literals_by_path[literal_range.path].append(
-                (literal_range.byte_start, literal_range.byte_end, str(literal["text"]))
-            )
-    literal_indexes: dict[str, tuple[list[int], list[tuple[int, int, str]]]] = {}
-    for path, literals in literals_by_path.items():
-        literals.sort()
-        literal_indexes[path] = ([start for start, _, _ in literals], literals)
-
-    for match in run_query(ast_grep, root, pattern="$M!"):
-        macro_path = "".join(single_meta(match, "M").split())
-        if macro_path.split("::")[-1] != "format":
-            continue
-        macro_range = node_range(match)
-        starts, literals = literal_indexes.get(macro_range.path, ([], []))
-        literal_index = bisect.bisect_left(starts, macro_range.byte_start)
-        first = literals[literal_index] if literal_index < len(literals) else None
-        if first is not None and first[1] <= macro_range.byte_end and "::" in first[2]:
-            findings.add(
-                finding("string-method-identity", "qualified-format-macro", match)
-            )
-
-    findings.update(semantic_owner_shortening_findings(ast_grep, root, test_ranges))
     reject_raw_codegen_call_dispatch(ast_grep, root)
     findings.update(rc1_structural_authority_findings(ast_grep, root, test_ranges))
     findings.update(hir_ast_boundary_findings(ast_grep, root))
-    findings.update(sir_hir_fact_rederivation_findings(ast_grep, root))
     return {item for item in findings if not excluded(item, test_ranges)}, test_ranges
 
 
@@ -1562,47 +1099,8 @@ def scalar_span_site_findings(
     return sorted(set(result))
 
 
-def forbidden_context_free_nominal_findings(
-    ast_grep: Path, root: Path, test_ranges: list[SyntaxRange]
-) -> list[Finding]:
-    """Reject checker/codegen bypasses of the owner-aware nominal authority."""
-    result = []
-    for match in run_query(ast_grep, root, pattern="$F($$$ARGS)"):
-        callee = single_meta(match, "F")
-        path = str(match["file"])
-        leaf = callee.rsplit("::", 1)[-1]
-        item = finding("forbidden-context-free-nominal", leaf, match)
-        if excluded(item, test_ranges):
-            continue
-        if leaf == "names_match_qualified":
-            if path not in {
-                "hew-types/src/unify.rs",
-                "hew-types/src/check/resolution.rs",
-            } and not path.startswith("hew-analysis/src/"):
-                result.append(item)
-        elif leaf == "unify":
-            if path not in {
-                "hew-types/src/unify.rs",
-                "hew-types/src/check/coerce.rs",
-            }:
-                result.append(item)
-    return sorted(set(result))
-
-
 def canonical_stage(group: str, form: str, path: str) -> str:
     """Return the stage at which the plan can actually retire this seam."""
-    if group == "semantic-owner-shortening-sink" and form in {
-        "registry-key",
-        "call-target",
-        "runtime-resolution",
-    }:
-        if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
-            return "stage-1"
-        if path.startswith("hew-codegen-rs/"):
-            return "stage-5"
-        if path.endswith(("lower/drop_plan.rs", "lower/mod.rs")):
-            return "stage-3"
-        return "stage-4"
     if group == "checker-hir-publication":
         return "stage-2"
     if group == "checker-hir-fact-relation":
@@ -1611,8 +1109,6 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-4"
     if group == "runtime-call-authority":
         return "stage-4"
-    if group == "lifecycle-identity-authority":
-        return "stage-2"
     if group in {"suspend-authority", "owner-retirement-path"}:
         return "stage-3"
     if group == "monomorphic-enum-leaf-synthesis":
@@ -1629,14 +1125,6 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-1"
     if group == "hir-ast-boundary":
         return "stage-2"
-    if group == "sir-hir-fact-rederivation":
-        return "stage-3"
-    if group == "string-method-identity":
-        if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
-            return "stage-1"
-        if path.endswith(("lower/drop_plan.rs", "lower/mod.rs")):
-            return "stage-3"
-        return "stage-5"
 
 
 def load_inventory(path: Path) -> set[tuple[str, str, str]]:
@@ -2509,12 +1997,6 @@ def main() -> int:
             f"forbidden scalar SpanKey -> SiteId authority at "
             f"{item.path}:{item.line}:{item.column}: {item.text}"
             for item in scalar_span_site_findings(ast_grep, root, test_ranges)
-        ] + [
-            f"forbidden context-free nominal authority at "
-            f"{item.path}:{item.line}:{item.column}: {item.text}"
-            for item in forbidden_context_free_nominal_findings(
-                ast_grep, root, test_ranges
-            )
         ]
         if blocked:
             print("\n".join(f"  - {item}" for item in blocked), file=sys.stderr)
@@ -2530,11 +2012,6 @@ def main() -> int:
     for item in forbidden:
         failures.append(
             f"forbidden scalar SpanKey -> SiteId authority at "
-            f"{item.path}:{item.line}:{item.column}: {item.text}"
-        )
-    for item in forbidden_context_free_nominal_findings(ast_grep, root, test_ranges):
-        failures.append(
-            f"forbidden context-free nominal authority at "
             f"{item.path}:{item.line}:{item.column}: {item.text}"
         )
     poisoned_findings, poisoned_reached = poisoned_allocator_gate_findings(root)

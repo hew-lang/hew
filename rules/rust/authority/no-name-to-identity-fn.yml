@@ -1,20 +1,25 @@
 id: no-name-to-identity-fn
 language: rust
-severity: warning
+severity: error
 message: >-
   A function turns a rendered name/spelling into a semantic identity or
   decision outside the resolver.
 note: >-
-  Identity-authority batch (plans/identity-authority-final.md section 4.2).
-  `Scope::resolve`/`resolve_prefix` (check/scope.rs) is meant to be the only
-  function that turns an identifier into an identity once the carriers land.
-  A second `fn f(name: &str) -> Option<TypeDef | FnSig | DefId | ...>` is a
-  second resolver. Severity is `warning` during L0 scaffolding; L0-final
-  raises it to `error`.
+  Resolved type-fact services, HIR expression consumers and lower IRs consume checker
+  identities. Source scopes, declaration registration, diagnostics and external
+  ABI spelling tables remain lexical inputs outside this boundary.
 files:
-  - "hew-types/src/check/**"
-  - "hew-hir/src/**"
-  - "hew-analysis/src/**"
+  - "hew-sir/src/**"
+  - "hew-mir/src/**"
+  - "hew-types/src/type_facts.rs"
+  - "hew-types/src/value_class.rs"
+  - "hew-types/src/traits.rs"
+  - "hew-hir/src/lower/types.rs"
+  - "hew-hir/src/lower/expr.rs"
+  - "hew-hir/src/lower/identifiers.rs"
+  - "hew-hir/src/lower/private_refs.rs"
+  - "hew-hir/src/lower/calls.rs"
+  - "hew-hir/src/lower/collections.rs"
 ignores:
   - "**/tests/**"
   - "**/test/**"
@@ -25,7 +30,7 @@ ignores:
   - "hew-types/src/check/diagnostics.rs"
 rule:
   kind: function_item
-  regex: 'fn\s+\w+\s*\([^{]*\b\w*(name|key|path|spelling|ident)\w*\s*:\s*(&(\s*''\w+\s*)?str|String|Symbol)\b[^{]*\)\s*->\s*(Option\s*<\s*&?\s*(TypeDef|FnSig|TraitInfo|DefId|NominalId|TypeParamId|ModuleId|CallTarget|MarkerTrait|BuiltinType|Ty|Binding|Resolution)|bool)\b'
+  regex: 'fn\s+\w+\s*\([^{]*\b\w*(name|key|path|spelling|ident)\w*\s*:\s*(&(\s*''\w+\s*)?str|String|Symbol)\b[^{]*\)\s*->\s*(Option\s*<\s*&?\s*(TypeDef|FnSig|TraitInfo|DefId|NominalId|TypeParamId|ModuleId|CallTarget|MarkerTrait|BuiltinType|Ty|Binding|Resolution))\b'
   not:
     inside:
       kind: mod_item

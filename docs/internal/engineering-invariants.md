@@ -46,6 +46,9 @@ specifications.
   and wire facts retain declaration IDs rather than joining display names.
 - HIR registers callable and constant bodies under checker declaration IDs.
   Import aliases and repeated inventory visits must reuse those body entries.
+- HIR record and variant construction selects the checker-published result
+  declaration. A variant spelling selects a member only within that owner;
+  import aliases and short type names cannot select another declaration.
 - Source annotations cross the checker boundary as resolved types keyed by
   their source file and span. HIR must reject a missing annotation fact rather
   than resolve its spelling again.

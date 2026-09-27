@@ -18,10 +18,12 @@ RULE = ROOT / "rules/rust/authority/no-name-to-identity-fn.yml"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 
-def findings(source: str) -> list[dict[str, object]]:
+def findings(
+    source: str, path: str = "hew-types/src/type_facts.rs"
+) -> list[dict[str, object]]:
     with tempfile.TemporaryDirectory(prefix="hew-name-to-identity-") as temp:
         root = Path(temp)
-        target = root / "hew-types/src/check/resolution.rs"
+        target = root / path
         target.parent.mkdir(parents=True)
         target.write_text(source, encoding="utf-8")
         result = subprocess.run(
@@ -59,6 +61,13 @@ def main() -> None:
     green = findings("fn lookup_type_def(id: NominalId) -> Option<TypeDef> { None }\n")
     if green:
         raise SystemExit(f"id-keyed lookup counterfactual was flagged: {green}")
+
+    lexical = findings(
+        "fn lookup_type_def(name: &str) -> Option<TypeDef> { None }\n",
+        "hew-types/src/check/scope.rs",
+    )
+    if lexical:
+        raise SystemExit(f"lexical source resolution was flagged: {lexical}")
 
     print("no-name-to-identity-fn counterfactuals: PASS")
 

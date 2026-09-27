@@ -306,7 +306,9 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                     members: Vec::new(),
                 });
             };
-            let resolved = restore_member_opacity(resolved, &|name| self.is_opaque_type(name));
+            let resolved = restore_member_opacity(resolved, &self.checker.defs, &|name| {
+                self.is_opaque_type(name)
+            });
             members.push(resolved);
         }
         // A declaration with no fields and no variants is still a declaration:
@@ -334,9 +336,10 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
 /// conversion alone is insufficient.
 pub(crate) fn restore_member_opacity(
     ty: ResolvedTy,
+    defs: &crate::DefTable,
     is_opaque_type: &impl Fn(crate::NominalId) -> bool,
 ) -> ResolvedTy {
-    let resolve = |ty| restore_member_opacity(ty, is_opaque_type);
+    let resolve = |ty| restore_member_opacity(ty, defs, is_opaque_type);
     match ty {
         ResolvedTy::Named {
             head,
@@ -348,7 +351,7 @@ pub(crate) fn restore_member_opacity(
                 && !head
                     .builtin()
                     .is_some_and(crate::BuiltinType::is_substrate_handle)
-                && (is_opaque || head.nominal().is_some_and(is_opaque_type));
+                && (is_opaque || head.declaration(defs).is_some_and(is_opaque_type));
             ResolvedTy::Named {
                 head,
                 args,
@@ -3097,7 +3100,7 @@ impl Checker {
             self.current_module = module;
             let ty = self.finalize_type_for_handoff(&ty);
             if let Ok(ty) = ResolvedTy::from_ty(&ty) {
-                let ty = restore_member_opacity(ty, &|name| {
+                let ty = restore_member_opacity(ty, &self.defs, &|name| {
                     self.class_declarations().is_opaque_type(name)
                 });
                 resolved_annotation_types.insert(site, ty);

@@ -18,10 +18,12 @@ RULE = ROOT / "rules/rust/authority/no-leaf-name-join.yml"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 
-def findings(source: str) -> list[dict[str, object]]:
+def findings(
+    source: str, path: str = "hew-types/src/type_facts.rs"
+) -> list[dict[str, object]]:
     with tempfile.TemporaryDirectory(prefix="hew-leaf-name-join-") as temp:
         root = Path(temp)
-        target = root / "hew-types/src/check/methods.rs"
+        target = root / path
         target.parent.mkdir(parents=True)
         target.write_text(source, encoding="utf-8")
         result = subprocess.run(
@@ -52,18 +54,25 @@ def main() -> None:
         "fn leaf(owner_path: &str) -> &str {\n"
         "    owner_path.rsplit_once('.').map(|(_, leaf)| leaf).unwrap_or(owner_path)\n"
         "}\n"
-        "fn is_qualified(name: &str) -> bool { name.contains('.') }\n"
     )
-    if len(red) != 2:
+    if len(red) != 1:
         raise SystemExit(
-            f"no-leaf-name-join counterfactual found {len(red)}, want 2: {red}"
+            f"no-leaf-name-join counterfactual found {len(red)}, want 1: {red}"
         )
 
     green = findings(
         "fn leaf(id: DefId, defs: &DefTable) -> Symbol { defs.name(id) }\n"
+        "fn visited(path: &HashSet<NominalId>, id: NominalId) -> bool { path.contains(&id) }\n"
     )
     if green:
         raise SystemExit(f"resolver-consuming counterfactual was flagged: {green}")
+
+    lexical = findings(
+        "fn leaf(owner_path: &str) -> &str { owner_path.rsplit_once('.').map(|(_, leaf)| leaf).unwrap_or(owner_path) }\n",
+        "hew-types/src/check/scope.rs",
+    )
+    if lexical:
+        raise SystemExit(f"lexical source resolution was flagged: {lexical}")
 
     print("no-leaf-name-join counterfactuals: PASS")
 

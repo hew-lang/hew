@@ -1558,8 +1558,12 @@ impl Builder<'_, '_> {
                     hew_types::actor_delivery::request_parts(payload_ty)
                         .ok_or("recovery input lacks its sealed completion protocol")?;
                 if source_policy != *policy
-                    || source_method.spelling.as_str().rsplit("::").next()
-                        != method_id.rsplit("::").next()
+                    || self
+                        .service
+                        .module
+                        .defs
+                        .name(source_method.id.declaration())
+                        != self.service.module.defs.name(handler.declaration)
                     || *params
                         != hew_types::Ty::Tuple(
                             handler.params.iter().map(ResolvedTy::to_ty).collect(),

@@ -1144,12 +1144,13 @@ impl TypeFactService {
                     ResolvedTy::from_ty(member).map_err(|_| ClassError::UnknownDeclaration {
                         name: name.to_string(),
                     })?;
-                let member = crate::check::restore_member_opacity(member, &|name| {
-                    self.context
-                        .declarations
-                        .get(&name)
-                        .is_some_and(|decl| decl.is_opaque)
-                });
+                let member =
+                    crate::check::restore_member_opacity(member, &self.context.defs, &|name| {
+                        self.context
+                            .declarations
+                            .get(&name)
+                            .is_some_and(|decl| decl.is_opaque)
+                    });
                 Ok(crate::value_class::substitute(
                     &member,
                     &declaration.type_params,

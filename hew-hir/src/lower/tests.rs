@@ -691,29 +691,6 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
 }
 
 #[test]
-fn checker_import_binding_nominal_facts_use_the_declaring_std_owner() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    ctx.current_module_name = Some("std.net.tls".to_string());
-    ctx.module_import_bindings.insert(
-        (Some("std.net.tls".to_string()), 0, "net".to_string()),
-        "std.net".to_string(),
-    );
-    ctx.canonical_std_source_type_identities
-        .insert("std.net.NetError".to_string());
-
-    assert_eq!(
-            ctx.restore_type_declaration_facts(ResolvedTy::named_path(&ctx.defs, "net.NetError", Vec::new(),
-            )),
-            ResolvedTy::named_path(&ctx.defs, "std.net.NetError", Vec::new()),
-            "a checker-produced lexical module binding must agree with the exact std declaration identity"
-        );
-}
-
-#[test]
 fn imported_const_key_uses_the_checker_module_owner() {
     let mut ctx = LowerCtx::new(
         &TypeCheckOutput::default(),
@@ -762,32 +739,6 @@ fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
     );
 }
 
-#[test]
-fn checker_result_type_uses_flat_file_import_identity() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    ctx.file_import_root_type_aliases
-        .insert("Box".to_string(), "support.file_render.Box".to_string());
-
-    assert_eq!(
-        ctx.restore_type_declaration_facts(ResolvedTy::named_path(&ctx.defs, "Box", Vec::new())),
-        ResolvedTy::named_path(&ctx.defs, "support.file_render.Box", Vec::new())
-    );
-}
-
-/// Every synthetic-builtin sentinel `ItemId` minted into the
-/// `u32::MAX / 2` band is pairwise distinct. A collision is SILENT —
-/// two `FnEntry` rows simply overwrite each other in `fn_registry`
-/// (the `unlink` × stream-layout alias was caught by inspection, not
-/// by a test). This list mirrors the seeding sites exactly:
-/// `seed_typed_builtin_fn_registry` (the `supervisor_stop` inline id,
-/// `link/monitor/unlink/link_remote/instant::now`) and the pipe
-/// layout-witness sentinels (the four `hew_stream_*_layout` entries).
-/// Adding a sentinel without extending this list leaves the new id
-/// unguarded — extend both together.
 #[test]
 fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
     let ids: Vec<(&str, ItemId)> = vec![

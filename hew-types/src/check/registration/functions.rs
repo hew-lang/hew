@@ -1398,7 +1398,9 @@ impl Checker {
         let signature_matches = self.fn_sig(key).is_some_and(|signature| {
             let resolve = |ty: &Ty| {
                 crate::ResolvedTy::from_ty(ty).map(|ty| {
-                    super::restore_member_opacity(ty, &|name| self.opaque_type_ids.contains(&name))
+                    super::restore_member_opacity(ty, &self.defs, &|name| {
+                        self.opaque_type_ids.contains(&name)
+                    })
                 })
             };
             let Ok(params) = signature

@@ -22,10 +22,12 @@ RULE = ROOT / "rules/rust/authority/no-format-symbol.yml"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 
-def findings(source: str) -> list[dict[str, object]]:
+def findings(
+    source: str, path: str = "hew-types/src/type_facts.rs"
+) -> list[dict[str, object]]:
     with tempfile.TemporaryDirectory(prefix="hew-format-symbol-") as temp:
         root = Path(temp)
-        target = root / "hew-types/src/check/scope.rs"
+        target = root / path
         target.parent.mkdir(parents=True)
         target.write_text(source, encoding="utf-8")
         result = subprocess.run(
@@ -69,6 +71,13 @@ def main() -> None:
     )
     if green:
         raise SystemExit(f"named exemption counterfactual was flagged: {green}")
+
+    lexical = findings(
+        'fn source_name(name: &str) { Symbol::intern(&format!("{name}")); }\n',
+        "hew-types/src/check/scope.rs",
+    )
+    if lexical:
+        raise SystemExit(f"lexical source resolution was flagged: {lexical}")
 
     print("no-format-symbol counterfactuals: PASS")
 

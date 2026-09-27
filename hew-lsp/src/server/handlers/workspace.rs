@@ -5,6 +5,7 @@ use tower_lsp_server::lsp_types::{
     WorkspaceSymbolParams,
 };
 
+use super::super::uri::FileUriExt;
 use super::super::{
     build_code_lenses, collect_project_workspace_symbols, non_empty, HewLanguageServer,
     RUN_TEST_COMMAND,
@@ -30,7 +31,17 @@ pub(crate) fn code_lens(
     let uri = &params.text_document.uri;
     let doc = server.documents.get(uri)?;
 
-    let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result);
+    let Some(path) = uri.to_file_path() else {
+        return None;
+    };
+    let root = server.workspace_root();
+    let file = root
+        .as_deref()
+        .and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result, &file);
     non_empty(lenses)
 }
 

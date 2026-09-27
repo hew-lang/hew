@@ -2133,7 +2133,7 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
     let old_incarnation = old.incarnation();
     println(f"READY_STALE_CAPTURED node={old_node.display()} incarnation={old_incarnation}");
     let _ = wait_for_file(f"{kx}/server.restarted");
-    Node.connect(f"1@127.0.0.1:{port}");
+    let _ = Node.connect(f"1@127.0.0.1:{port}");
     var attempts: i64 = 0;
     loop {
         let candidate: Result<RemotePid<KeyValue>, LookupError> = Node.lookup("kv");
@@ -2188,7 +2188,7 @@ fn run_client(port: string, scenario: string) -> i64 {
     start_pinned(kx, "client", "server", "127.0.0.1:0");
     wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
-    Node.connect(remote_addr);
+    let _ = Node.connect(remote_addr);
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()
     } else if scenario == "quarantine_rejoin" {

@@ -394,10 +394,12 @@ fn init_actor_scaffold_with_let_field_fails_to_check() {
     );
 
     let main_path = project_dir.join("main.hew");
-    let broken =
-        fs::read_to_string(&main_path)
-            .unwrap()
-            .replacen("var count: i32,", "let count: i32,", 1);
+    let original = fs::read_to_string(&main_path).unwrap();
+    let broken = original.replacen("var count: i32;", "let count: i32;", 1);
+    assert_ne!(
+        original, broken,
+        "the control must make the field immutable"
+    );
     fs::write(&main_path, broken).unwrap();
 
     let check_out = run_hew(&project_dir, &["check", "main.hew"]);

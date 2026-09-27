@@ -944,8 +944,8 @@ fn main() {
     var it = words.into_iter();
     let _first = it.next();
     match it.next() {
-        .Some(v2) => { println(v2); },
-        .None => { println("none"); },
+        .Some(v2) => { println(v2); }
+        .None => { println("none"); }
     }
 }
 "#,

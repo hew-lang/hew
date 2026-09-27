@@ -38,7 +38,7 @@ import std.net;
 import std.encoding.utf8;
 
 actor Handler {{
-    let addr: string,
+    let addr: string;
 
     receive fn run(unused: i64) {{
         let listener = match net.listen(addr) {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};

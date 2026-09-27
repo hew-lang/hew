@@ -182,7 +182,7 @@ fn main() {
     var f1 = sup.f1;
     let _ = f1.work();
     let _ = f1.boom();
-    f1 = restarted(sup.f1);
+    restarted(sup.f1);
     let _ = f1.work();
     println("MAIN_DONE");
 }
@@ -208,7 +208,7 @@ fn main() {
     let sup = spawn Pool;
     var f1 = sup.f1;
     let _ = f1.boom();
-    f1 = restarted(sup.f1);
+    restarted(sup.f1);
     let _ = f1.boom();
     let _ = restarted(sup.f1);
     println("MAIN_DONE");
@@ -518,11 +518,11 @@ fn main() {
     var f1 = inner.f1;
     let _ = f1.work();
     let _ = f1.boom();
-    f1 = restarted(inner.f1);
+    restarted(inner.f1);
     let _ = f1.boom();
     // The inner budget is spent, so the escalation hands the subtree to the
     // outer supervisor, which restarts it.
-    inner = restarted(outer.inner);
+    restarted(outer.inner);
     f1 = inner.f1;
     let _ = f1.work();
     println("MAIN_DONE");
@@ -563,11 +563,11 @@ fn main() {
     let bad = spawn GivingUp;
     var r1 = good.r1;
     let _ = r1.boom();
-    r1 = restarted(good.r1);
+    restarted(good.r1);
     let _ = r1.work();
     var g1 = bad.g1;
     let _ = g1.boom();
-    g1 = restarted(bad.g1);
+    restarted(bad.g1);
     let _ = g1.boom();
     let _ = restarted(bad.g1);
     println("MAIN_DONE");

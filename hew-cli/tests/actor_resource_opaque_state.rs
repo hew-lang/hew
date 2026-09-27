@@ -227,7 +227,7 @@ extern "C" {{
 fn main() {{
     let keeper = spawn {actor}();
     match keeper.ping() {{
-        .Ok(n) => if n != 1 {{ panic("wrong reply") }},
+        .Ok(n) => if n != 1 {{ panic("wrong reply") }}
         .Err(_) => panic("ask failed"),
     }}
 }}

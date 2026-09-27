@@ -97,7 +97,7 @@ fn collection_module(map: bool) -> PhysicalModule {
     };
     physical(&format!(
         r"
-        type Entry {{ key: string, value: string }}
+        type Entry {{ key: string; value: string; }}
         fn inspect(index: i64, take: bool) -> i64 {{
             {setup}
             let entry = entries[index];

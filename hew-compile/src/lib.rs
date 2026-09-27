@@ -4503,6 +4503,38 @@ mod tests {
     }
 
     #[test]
+    fn imported_http_and_json_preserve_checked_return_identity() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root");
+        let dir = tempfile::tempdir().expect("create stdlib return fixture");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.net.http.http_async_server;\nimport std.net.http.http_async_client;\nimport std.encoding.json;\nfn main() {}\n",
+        );
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                module_search_paths: Some(vec![repo_root.to_path_buf()]),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("stdlib imports must type-check");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            state.typecheck_result.tco.as_ref().expect("checked output"),
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "imported return expressions must retain their checked identities: {:#?}",
+            hir.diagnostics
+        );
+    }
+
+    #[test]
     fn check_file_accepts_shipped_directory_peer_reimports() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -5009,8 +5041,8 @@ mod tests {
 
         let source = fs::read_to_string(&input).expect("read mixed-import fixture");
         let reversed_source = source.replacen(
-            "import hew.testffi;\nimport \"mixed_import_impl_collision_lib.hew\";",
-            "import \"mixed_import_impl_collision_lib.hew\";\nimport hew.testffi;",
+            "import hew.testffi;\n\nimport \"mixed_import_impl_collision_lib.hew\";",
+            "import \"mixed_import_impl_collision_lib.hew\";\n\nimport hew.testffi;",
             1,
         );
         assert_ne!(

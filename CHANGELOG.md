@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### v0.6.0-rc4
+
+This candidate updates declaration syntax, actor lifecycle operations and the
+native/sandbox testing workflow. See the [release notes](docs/releases/v0.6.0-rc4.md)
+for migration details and candidate scope.
+
+- Use semicolons after bodyless declaration members, explicit `let`/`var` actor
+  state fields and dotted builtin enum variants.
+- Distinguish actor stop requests, forceful termination and completion observers;
+  use `let _ =` when deliberately discarding a `Result`.
+- Run deterministic source and documentation tests with exact selectors, structured
+  failures, typed assertion operands, watch mode and saved failure traces.
+- Show test failures and seeded reruns in editors through the shared test stream.
+- Preserve imported declaration identity, concrete dyn construction and declared
+  ordering capabilities through compilation.
+- Prevent lost actor wake-ups while owned pipelines drain under concurrent load.
+
 ## [0.6.0-rc3] - 2026-09-16
 
 This native-focused candidate replaces the compiler core and expands value,

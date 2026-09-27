@@ -12,7 +12,7 @@
 //! and `finish()` half-closes. Other protocol modules have their own result
 //! types; check their signatures when handling errors:
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //!
 //! fn dial(addr: string) -> Result<net.Connection, net.NetError> {
@@ -35,7 +35,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //!
 //! fn main() {
@@ -461,7 +461,7 @@ trait ConnectionMethods {
 ///
 /// # Example
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net;
 ///
 /// actor InboundLogger {
@@ -612,7 +612,7 @@ impl Connection {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net;
 ///
 /// fn main() {
@@ -642,7 +642,7 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net;
 ///
 /// fn main() {

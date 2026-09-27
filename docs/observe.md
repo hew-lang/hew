@@ -96,7 +96,7 @@ Save this as `observe_demo.hew`:
 import std.observe;
 
 actor Counter {
-    var count: i64,
+    var count: i64;
 
     receive fn increment(n: i64) {
         count = count + n;

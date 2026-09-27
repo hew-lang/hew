@@ -14,7 +14,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net.http.http_client;
 //!
 //! fn main() {
@@ -134,7 +134,7 @@ fn content_type_headers(content_type: string) -> Vec<(string, string)> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.http.http_client;
 ///
 /// fn main() {
@@ -160,7 +160,7 @@ pub fn request(method: string, url: string, body: string, headers: Vec<(string, 
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.http.http_client;
 ///
 /// fn main() {
@@ -217,7 +217,7 @@ pub fn last_error() -> string {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.http.http_client;
 ///
 /// fn main() {
@@ -234,7 +234,7 @@ pub fn get(url: string) -> Response {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.http.http_client;
 ///
 /// fn main() {
@@ -257,7 +257,7 @@ pub fn post(url: string, content_type: string, body: string) -> Response {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.http.http_client;
 ///
 /// fn main() {
@@ -279,7 +279,7 @@ pub fn get_string(url: string) -> Option<string> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.http.http_client;
 ///
 /// fn main() {

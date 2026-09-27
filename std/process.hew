@@ -8,7 +8,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.process;
 //!
 //! fn main() {

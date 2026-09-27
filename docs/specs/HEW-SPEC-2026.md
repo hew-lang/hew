@@ -253,9 +253,7 @@ actor Counter {
 
 **Calling named actors:**
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let counter = spawn Counter(count: 0);
 
 // No return type: the call waits until the handler has finished
@@ -272,9 +270,7 @@ let n = counter.get()?;
 
 Lambda actors receive messages via call-syntax. Named actors expose typed receive methods:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 // Lambda actor: call the handle directly
 let worker = actor |msg: i64| { println(msg * 2); };
 let _ = worker(42);             // wait for completion
@@ -525,7 +521,7 @@ string or another ordinary value.
 
 **Operations:**
 
-```hew
+```hew,no_run
 fn main() {
     let worker = actor |msg: i64| { println(msg); };
     let _ = worker(42);                              // wait for completion
@@ -1087,9 +1083,7 @@ mailbox submission, the receiver observes a **logical snapshot** — an
 independent value — and the sender's binding stays valid. An affine resource
 instead transfers its sole ownership and cannot be reused by the sender:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 type Message {
     body: string;
 }
@@ -1143,9 +1137,7 @@ Hew provides two syntactic forms for duplication:
 Cloning is not required to keep using ordinary sendable data after a call or
 submission. Fan-out to multiple receivers is ordinary code:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 type Message {
     body: string;
 }
@@ -1180,7 +1172,7 @@ independent snapshot; capturing an affine resource transfers its owner. An
 explicit `move` requests transfer. The parent cannot reuse a transferred
 resource, and no capture creates shared mutable actor state.
 
-```hew
+```hew,no_run
 fn main() {
     let prefix = "received: ";
     let worker = actor |message: string| {
@@ -1231,9 +1223,7 @@ collection loans still enforce ownership boundaries. Mutation uses `var`.
 
 #### 3.4.7 What is NOT Allowed
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 actor Example {
     receive fn bad_examples(other: Other) {
         // Sending a non-Send value - ERROR
@@ -1308,7 +1298,7 @@ instead.
 
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:
 
-```hew
+```hew,no_run
 import std.net.http; // Available as "http", not "std.net.http"
 import std.fs; // Available as "fs"
 import std.io; // Available as "io"
@@ -1387,9 +1377,9 @@ myapp/
 
 `main.hew`:
 
-<!-- doctest: skip: needs the sibling `greeting/` directory module shown below; the single-file doc-fence harness cannot resolve it -->
+<!-- Requires the sibling `greeting/` directory module shown below. -->
 
-```hew
+```hew,ignore
 import greeting;
 
 fn main() {
@@ -1479,9 +1469,9 @@ Types defined in different modules are distinct even if they share a name. A
 types; the qualified names `geometry.Point` and `graphics.Point` disambiguate
 them everywhere — in type annotations, `match` patterns, and aggregate literals.
 
-<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
+<!-- `geometry` and `graphics` are illustrative modules outside this standalone fence. -->
 
-```hew
+```hew,ignore
 import geometry;
 import graphics;
 
@@ -1491,9 +1481,9 @@ let sp: graphics.Point = graphics.Point { x: 0,   y: 0   };
 
 **Import aliasing** resolves ambiguity at the module level:
 
-<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
+<!-- `geometry` and `graphics` are illustrative modules outside this standalone fence. -->
 
-```hew
+```hew,ignore
 import geometry as geo;
 import graphics  as gfx;
 
@@ -1792,9 +1782,7 @@ actor Example {
 
 **Trait bounds on generics:**
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 type Message {
     body: string;
 }
@@ -2254,8 +2242,7 @@ Semantics:
 A correct use (illustrative — `Database` and `Transaction` are hypothetical
 types showing the `#[linear]` pattern):
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 fn transfer(db: Database, from: AccountId, to: AccountId, amount: Money)
     -> Result<(), DbError>
 {
@@ -2269,8 +2256,7 @@ fn transfer(db: Database, from: AccountId, to: AccountId, amount: Money)
 
 The compile error for forgetting to consume (illustrative):
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 fn forgot_to_commit(db: Database) -> Result<(), DbError> {
     let tx = db.begin_transaction()?;
     tx.debit(account, money)?;
@@ -2504,9 +2490,7 @@ needs an explicit `impl Trait for T` block.
 
 **Inline bounds:**
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 type Message {
     body: string;
 }
@@ -2628,9 +2612,7 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 
 **Actor boundary enforcement:**
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 // Error: T might not be Send
 receive fn forward_unsafe<T>(message: T, target: Handler<T>) {
     let _ = target.process(message);    // Compile error: T not bounded by Send
@@ -3006,8 +2988,7 @@ Hew provides FFI capabilities for interoperating with C libraries and system cal
 
 External C functions are declared in `extern` blocks:
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 extern "C" {
     fn malloc(size: usize) -> *mut u8;
     fn free(ptr: *mut u8);
@@ -3049,8 +3030,7 @@ the same `E_OWN_CONSUME_BORROWED` diagnosis, fixed the same way.
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 #[repr(C)]
 type Point {
     x: f64,
@@ -3128,8 +3108,7 @@ fn my_callback(value: i32) -> i32 {
 
 **All FFI calls are `unsafe`:**
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 fn allocate_buffer(size: usize) -> *mut u8 {
     unsafe {
         malloc(size)
@@ -3156,8 +3135,7 @@ fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, string> {
 
 **Safe wrapper pattern:**
 
-<!-- doctest: skip -->
-```hew
+```hew,ignore
 // Raw FFI (internal, unsafe)
 extern "C" {
     fn open(path: *u8, flags: i32) -> i32;
@@ -3356,9 +3334,9 @@ name is not conforming.
 
 **Option and Result** are first-class generic enums:
 
-<!-- doctest: skip: illustrates the built-in `Option`/`Result` shape; redeclaring them collides with the protected prelude bindings -->
+<!-- Illustrates built-in `Option` and `Result`; these declarations would collide with the prelude. -->
 
-```hew
+```hew,ignore
 enum Option<T> {
     Some(T);
     None;
@@ -3572,7 +3550,7 @@ Available `HashSet<T>` methods (supported element types: `i64` and
 The standard library exposes concrete modules rather than a large trait
 hierarchy. Representative APIs include:
 
-```hew
+```hew,no_run
 import std.deque;
 import std.fmt;
 import std.io;
@@ -4657,9 +4635,9 @@ user-implementable `Awaitable` trait — the four forms are exhaustive.
 
 **Canonical syntax:**
 
-<!-- doctest: skip: shows all four select arm forms together; native actor-call registration is pending (§2.1.1) -->
+<!-- Illustrates all four select arm forms; native actor-call registration is pending (§2.1.1). -->
 
-```hew
+```hew,ignore
 select {
     reply   from worker.call(x)        => use(reply),     // actor call
     item    from inbox.recv()          => use(item),      // stream receive
@@ -4761,9 +4739,7 @@ complete. Completion is completion: an operand that returns an ordinary
 `Err` wins the race exactly as an `Ok` does, because a result is a result.
 Every loser is cancelled and drained before the expression returns.
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let fastest = race {
     primary.fetch(key),
     replica.fetch(key),
@@ -4801,9 +4777,7 @@ are cancelled and the trap propagates to the enclosing context.
 
 `after` marks the timer arm of a `select`:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 select {
     result from server.fetch() => result,
     after 5s => default_value,
@@ -4813,9 +4787,7 @@ select {
 That is its only position. A deadline over a region of code is a `scope`
 with a `within` clause:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let total = scope within 1s {
     let count = fork counter.get_count();
     await count
@@ -5071,9 +5043,7 @@ When a child supervisor's restart budget is exhausted, it escalates to its paren
 
 ### 5.6 Spawning and Accessing Supervised Children
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 fn main() {
     let pool = spawn MyPool();
     sleep(50ms);
@@ -6652,9 +6622,7 @@ A select timer and `scope within d` use `duration`. Socket timeout setters
 use their declared API units; current `net.Connection` setters accept an
 integer count of milliseconds. Neither form adds a timeout operator to calls.
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 let result = scope within 5s {
     let task = fork calculate(input);
     await task

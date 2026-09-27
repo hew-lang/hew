@@ -7,7 +7,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net.http;
 //!
 //! fn main() {
@@ -127,7 +127,7 @@ trait RequestMethods {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```hew,no_run
     /// import std.net.http;
     ///
     /// fn main() {
@@ -154,7 +154,7 @@ trait RequestMethods {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```hew,no_run
     /// import std.net.http;
     ///
     /// fn main() {
@@ -313,7 +313,7 @@ pub fn listen_error() -> string {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net;
 /// import std.net.http;
 ///

@@ -26,7 +26,7 @@
 //!
 //! ## Server
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //! import std.net.quic;
 //!
@@ -61,7 +61,7 @@
 //!
 //! ## Client
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //! import std.net.quic;
 //!
@@ -424,7 +424,7 @@ impl QUICEvent {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.quic;
 ///
 /// fn main() {
@@ -454,7 +454,7 @@ pub fn new_client_with_ca(ca_pem: string) -> QUICEndpoint {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.quic;
 ///
 /// fn main() {

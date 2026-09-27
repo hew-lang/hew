@@ -7,9 +7,7 @@ for the full contract.
 
 An actor gets its own handle by writing `self`, so it can hand another actor a way to call back:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 actor Worker {
     var registry: Registry;
     receive fn enrol() {
@@ -2000,7 +1998,7 @@ An `actor |params| { .. }` expression declares an actor with no source name.
 Its captures become the actor's state, its body becomes its one handler, and
 it evaluates to an `actor(Msg) -> Reply` handle, which mirrors an `fn` type.
 
-```hew
+```hew,no_run
 fn main() {
     let factor = 3;
     let scale = actor |n: i64| -> i64 {
@@ -2032,7 +2030,7 @@ the reply. `policy(handle)` completes like the handle and chooses only how a
 full mailbox is answered. A lambda actor declares no mailbox, so both views
 default to `.Wait`.
 
-```hew
+```hew,no_run
 fn main() {
     let log = actor |line: string| {
         println(line);
@@ -2975,9 +2973,7 @@ mutable local, and returns the rebuilt stack. The old stack is no longer usable;
 A monomorphic function exported from another module can be passed as a
 first-class value; its type is recovered from the declared signature.
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 import math_utils;
 
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
@@ -2996,9 +2992,7 @@ fn main() {
 
 Where `math_utils.hew` exports:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 pub fn add_one(x: i64) -> i64 { x + 1 }
 pub fn square(x: i64) -> i64 { x * x }
 pub fn identity<T>(x: T) -> T { x }
@@ -3948,9 +3942,7 @@ for constructors and collection operations.
 
 ### Importing your own modules
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 import "helpers.hew";
 
 fn main() {
@@ -4218,9 +4210,7 @@ contains a `bytes` field. The checker emits a diagnostic rather than
 comparing raw buffer bytes, which would produce unreliable results for
 refcounted heap handles:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 type Packet {
     data: bytes;
 }
@@ -4751,9 +4741,7 @@ it never becomes the peer's identity and may differ on every node.
 Starting a node is one call, and it returns `Result<(), NodeError>`, so a
 refused start stops the program instead of printing and carrying on:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 var config = NodeConfig.at("0.0.0.0:9000");
 config.transport = "quic-mesh";
 config.key = "node.key";
@@ -4779,9 +4767,7 @@ A client selects its local pin when connecting. The slot it names is the
 server's position in the client's own `NodeConfig.peers`, so a client that
 lists the server first dials slot `1`:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 match Node.connect("1@127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),
@@ -4819,9 +4805,7 @@ publishes cluster-wide once one has.
 
 Remote monitors deliver one typed notification through `#[on(down)]`:
 
-<!-- doctest: skip -->
-
-```hew
+```hew,ignore
 import std.link_monitor.{DownNotification, DownReason};
 
 actor Watcher {
@@ -4847,7 +4831,7 @@ surfaces.
 
 ### TLS client — free-function surface
 
-```hew
+```hew,no_run
 import std.net.tls;
 
 fn main() {
@@ -4880,7 +4864,7 @@ Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 
 ### `process.run` vs `process.run_argv` — shell vs no-shell
 
-```hew
+```hew,no_run
 import std.process;
 
 fn main() {

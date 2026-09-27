@@ -6,7 +6,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```hew,no_run
 //! import std.net;
 //! import std.net.tls;
 //!
@@ -176,7 +176,7 @@ impl TlsStream {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.net.tls;
 ///
 /// fn main() {

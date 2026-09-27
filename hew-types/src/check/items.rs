@@ -1268,7 +1268,11 @@ impl Checker {
                         intrinsic: None,
                         consumes_self: false,
                     };
-                    let qualified = format!("{}::{}", td.name, method.name);
+                    let trait_declaration = self
+                        .lookup_declaration(&self.declaration_identity(td.name.name.as_str()))
+                        .expect("registered trait owns its default methods");
+                    let qualified =
+                        format!("{}::{}", self.defs.path(trait_declaration), method.name);
 
                     // Bind the trait's own method-set to the abstract `Self`
                     // receiver for the duration of this default-body check.
@@ -1283,10 +1287,7 @@ impl Checker {
                     // in those traits.  We inject `Self → [TraitName]` into the
                     // registered sig for `Trait::method` so the same path
                     // resolves sibling trait-method calls on the `Self` receiver.
-                    let self_parameter = crate::ParamHead::receiver(
-                        self.lookup_declaration(&self.declaration_identity(td.name.name.as_str()))
-                            .expect("registered trait owns Self"),
-                    );
+                    let self_parameter = crate::ParamHead::receiver(trait_declaration);
                     let prev_sig = self.fn_sig(&qualified).cloned();
                     if let Some(sig) = self.fn_sig_mut(&qualified) {
                         if !sig.type_params.contains(&self_parameter) {

@@ -1753,7 +1753,6 @@ impl Checker {
         // not reconstruct it from the trait's leaf spelling.
         if let Some(bound) = trait_bound {
             let type_identity = self.trait_impl_type_identity(type_name);
-            let trait_identity = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             let receiver_args = self
                 .current_self_type
                 .as_ref()
@@ -1782,44 +1781,18 @@ impl Checker {
                     method_params: method_parameters,
                 },
             );
-            let exact_type_identity = impl_type_params
-                .is_none_or(Vec::is_empty)
-                .then(|| {
-                    self.current_self_type
-                        .as_ref()
-                        .filter(|(self_type_name, args)| {
-                            self_type_name == type_name && !args.is_empty()
-                        })
-                        .and_then(|(_, args)| {
-                            args.iter()
-                                .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
-                                .collect::<Option<Vec<_>>>()
-                        })
-                        .and_then(|args| {
-                            crate::resolved_ty::mangle_impl_self_name(&type_identity, &args)
-                        })
-                })
-                .flatten();
-            if let Some(exact_type_identity) = exact_type_identity {
+            if let (Some(slot), Ok(receiver)) = (
+                self.impl_method_slot(&bound.path.to_string(), method.name.name.as_str()),
+                ResolvedTy::from_ty(&receiver),
+            ) {
                 self.trait_impl_method_declaration_ids.insert(
-                    (
-                        exact_type_identity,
-                        trait_identity.clone(),
-                        method.name.to_string(),
+                    crate::type_facts::ImplMethodKey::new(
+                        &receiver,
+                        slot,
+                        impl_type_params.is_some_and(|params| !params.is_empty()),
                     ),
                     declaration_id,
                 );
-            }
-            let nominal_key = (type_identity, trait_identity, method.name.to_string());
-            if impl_type_params.is_some_and(|params| !params.is_empty()) {
-                // A concrete specialization must not occupy the generic fallback
-                // simply because it was registered before the generic impl.
-                self.trait_impl_method_declaration_ids
-                    .insert(nominal_key, declaration_id);
-            } else {
-                self.trait_impl_method_declaration_ids
-                    .entry(nominal_key)
-                    .or_insert_with(|| declaration_id);
             }
             if let Some(ids) = self
                 .trait_method_call_target_ids(&bound.path.to_string(), method.name.name.as_str())

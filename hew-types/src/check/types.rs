@@ -3576,7 +3576,8 @@ pub struct Checker {
     pub(super) trait_impl_method_names: HashMap<(String, String), HashSet<String>>,
     /// Resolver-minted implementation method identities keyed by the exact
     /// implemented type, trait, and method selected during type checking.
-    pub(super) trait_impl_method_declaration_ids: HashMap<(String, String, String), crate::DefId>,
+    pub(super) trait_impl_method_declaration_ids:
+        HashMap<crate::type_facts::ImplMethodKey, crate::DefId>,
     pub(super) trait_impl_method_binders:
         HashMap<crate::DefId, crate::type_facts::ImplMethodBinders>,
     /// Trait impls keyed by canonical receiver kind for primitives and

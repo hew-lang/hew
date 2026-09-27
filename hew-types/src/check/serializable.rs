@@ -15,7 +15,7 @@ impl Checker {
         self.serializable_within(ty, &mut Vec::new())
     }
 
-    fn serializable_within(&self, ty: &ResolvedTy, visiting: &mut Vec<String>) -> bool {
+    fn serializable_within(&self, ty: &ResolvedTy, visiting: &mut Vec<crate::NominalId>) -> bool {
         let param = |name: &str, marker: MarkerTrait| match marker {
             MarkerTrait::Serializable => self.type_param_carries_bound(name, "Serializable"),
             marker => self.type_param_has_marker_bound(name, marker),
@@ -46,10 +46,14 @@ impl Checker {
         identity: &str,
         members: Vec<(String, Ty, hew_parser::ast::Span)>,
     ) {
+        let declaration = self
+            .lookup_declaration(identity)
+            .map(crate::NominalId::of_declaration)
+            .expect("wire declaration was registered before its encoding is checked");
         for (member, ty, span) in members {
             let ty = self.normalize_for_use(&ty);
             let admitted = ResolvedTy::from_ty(&ty)
-                .is_ok_and(|ty| self.serializable_within(&ty, &mut vec![identity.to_string()]));
+                .is_ok_and(|ty| self.serializable_within(&ty, &mut vec![declaration]));
             if !admitted {
                 self.report_error_with_suggestions(
                     TypeErrorKind::BoundsNotSatisfied,

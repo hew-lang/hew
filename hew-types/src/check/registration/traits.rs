@@ -2175,36 +2175,34 @@ impl Checker {
             })
     }
 
+    pub(in crate::check) fn impl_method_slot(
+        &self,
+        trait_name: &str,
+        method_name: &str,
+    ) -> Option<crate::type_facts::ImplMethodSlot> {
+        use crate::type_facts::{ImplMethodSlot, ValueCapability};
+        match (MarkerTrait::from_name(trait_name), method_name) {
+            (Some(MarkerTrait::Hash), "hash") => Some(ImplMethodSlot::Value(ValueCapability::Hash)),
+            (Some(MarkerTrait::Eq), "eq") => Some(ImplMethodSlot::Value(ValueCapability::Eq)),
+            _ => self
+                .trait_method_call_target_ids(trait_name, method_name)
+                .map(|(_, method)| ImplMethodSlot::Declared(method)),
+        }
+    }
+
     pub(in crate::check) fn trait_impl_method_declaration(
         &self,
         ty: &Ty,
         trait_name: &str,
         method_name: &str,
-    ) -> Option<(crate::DefId, String)> {
-        let Ty::Named { head, args } = ty else {
-            return None;
-        };
-        let name = head.registry_key();
-        let type_identity = self.trait_impl_type_identity(name);
-        let trait_identity = self.trait_defs_key_for_bound(trait_name);
-        let args = args
-            .iter()
-            .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
-            .collect::<Option<Vec<_>>>()
-            .unwrap_or_default();
+    ) -> Option<crate::DefId> {
+        let slot = self.impl_method_slot(trait_name, method_name)?;
+        let receiver = ResolvedTy::from_ty(&self.subst.resolve(ty)).ok()?;
         crate::type_facts::selected_impl_method(
             &self.trait_impl_method_declaration_ids,
-            &type_identity,
-            &args,
-            &trait_identity,
-            method_name,
+            &receiver,
+            slot,
         )
-        .map(|(declaration, owner)| {
-            (
-                declaration,
-                Self::method_declaration_key(&owner, method_name),
-            )
-        })
     }
 
     pub(in crate::check) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {

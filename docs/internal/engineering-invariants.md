@@ -40,6 +40,10 @@ specifications.
 - Ownership markers, opacity and recursive value classification use nominal
   IDs. Structural marker derivation uses resolved type heads; changing a
   head's display spelling cannot change its fields, bounds or capabilities.
+- Capability implementations are selected by the resolved receiver and the
+  trait method's declaration ID, or the compiler's Hash/Eq operation enum.
+  Concrete specializations precede the generic receiver entry. Alias rendering
+  and wire facts retain declaration IDs rather than joining display names.
 - HIR registers callable and constant bodies under checker declaration IDs.
   Import aliases and repeated inventory visits must reuse those body entries.
 - Source annotations cross the checker boundary as resolved types keyed by

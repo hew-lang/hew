@@ -200,7 +200,17 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
     let file = root.join("main.hew");
     let failing = "#[test]\nfn fails() { assert(1 == 2); }\n";
     std::fs::write(&file, failing).expect("write test source");
-    let uri = url::Url::from_file_path(&file)
+    // Exercise an editor URI that names the same file differently from the
+    // canonical selector returned by test discovery.
+    #[cfg(unix)]
+    let editor_file = {
+        let alias = root.join("editor-alias");
+        std::os::unix::fs::symlink(&root, &alias).expect("create editor path alias");
+        alias.join("main.hew")
+    };
+    #[cfg(not(unix))]
+    let editor_file = file.clone();
+    let uri = url::Url::from_file_path(&editor_file)
         .expect("test file URI")
         .to_string();
     let root_uri = url::Url::from_file_path(&root)

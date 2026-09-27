@@ -1053,8 +1053,9 @@ impl Checker {
         // Reject duplicate type parameter names — same check as `register_type_decl`.
         {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            for name in &type_param_names {
-                if !seen.insert(name.spelling.as_str()) {
+            for parameter in td.type_params.as_deref().unwrap_or_default() {
+                let name = parameter.name;
+                if !seen.insert(name.name.as_str()) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::DuplicateDefinition,
                         0..0,
@@ -1369,8 +1370,9 @@ impl Checker {
         // seen-name accumulator; the checker is the authoritative gatekeeper.
         {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            for name in &type_param_names {
-                if !seen.insert(name.spelling.as_str()) {
+            for parameter in td.type_params.as_deref().unwrap_or_default() {
+                let name = parameter.name;
+                if !seen.insert(name.name.as_str()) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::DuplicateDefinition,
                         0..0,

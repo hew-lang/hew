@@ -1319,8 +1319,8 @@ impl Checker {
         let return_type =
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
 
-        let fn_assoc_bindings = fn_scope.assoc_bindings;
         let sig = FnSig {
+            type_param_assoc_bindings: fn_scope.assoc_bindings,
             type_params: self
                 .source_parameter_heads(fd.type_params.as_deref().unwrap_or_default(), &fd.fn_span),
             type_param_bounds: self
@@ -1361,7 +1361,7 @@ impl Checker {
         // rc1-F1 stage A: mint the fn-sig key from the CANONICAL owning
         // module — a root free function keys `{root_module}.{name}`,
         // identical to the key the same declaration mints when its module is
-        // imported. The side registries (`fn_type_param_assoc_bindings`, `fn_sig_inference_holes`,
+        // imported. The side registries (`fn_sig_inference_holes`,
         // `intrinsic_declarations`) are co-minted under this same key.
         let key = scoped_module_item_name(self.canonical_fn_owner(), name)
             .unwrap_or_else(|| name.to_string());
@@ -1369,8 +1369,6 @@ impl Checker {
             Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
             None => self.insert_fn_sig_at(&key, sig),
         }
-        self.fn_type_param_assoc_bindings
-            .insert(key.clone(), fn_assoc_bindings);
         self.record_fn_sig_inference_holes(&key, hole_vars);
         // If the declaration carries `#[intrinsic("name")]`, validate its
         // placement and (if accepted) record the mapping so HIR lowering can
@@ -1880,10 +1878,8 @@ impl Checker {
             );
             let impl_bounds = impl_scope.bounds;
             let impl_assoc_bindings = impl_scope.assoc_bindings;
-            let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
-                .unwrap_or_else(|| method_key.clone());
             let impl_parameters = self.source_parameter_heads(impl_tps, &method.fn_span);
-            if let Some(sig) = self.fn_sig_mut(&key) {
+            if let Some(sig) = self.fn_sigs.get_mut(&declaration_id) {
                 for parameter in impl_parameters {
                     if !sig.type_params.contains(&parameter) {
                         sig.type_params.push(parameter);
@@ -1895,10 +1891,7 @@ impl Checker {
                         Self::push_unique_bound(entry, &bound);
                     }
                 }
-            }
-            let bindings = self.fn_type_param_assoc_bindings.entry(key).or_default();
-            for (assoc_key, ty) in impl_assoc_bindings {
-                bindings.entry(assoc_key).or_insert(ty);
+                sig.type_param_assoc_bindings.extend(impl_assoc_bindings);
             }
         }
 
@@ -1992,7 +1985,8 @@ impl Checker {
         let registered_key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
             .unwrap_or_else(|| method_key.clone());
         let registered = self
-            .fn_sig(&registered_key)
+            .fn_sigs
+            .get(&declaration_id)
             .expect("register_fn_sig_with_name must publish the impl method");
         let params = registered.params.clone();
         let return_type = registered.return_type.clone();
@@ -2024,6 +2018,7 @@ impl Checker {
                 },
             }),
             param_ownership: registered.param_ownership.clone(),
+            type_param_assoc_bindings: registered.type_param_assoc_bindings.clone(),
             type_params: all_type_params,
             type_param_bounds,
             param_names,
@@ -2503,6 +2498,7 @@ impl Checker {
         let type_param_bounds =
             self.collect_type_param_bounds(rf.type_params.as_ref(), rf.where_clause.as_ref());
         let sig = FnSig {
+            type_param_assoc_bindings: rf_scope.assoc_bindings,
             type_params: self
                 .source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span),
             type_param_bounds,
@@ -2524,16 +2520,11 @@ impl Checker {
         }
         self.actor_receive_methods.insert(method_name.clone());
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
-        self.fn_type_param_assoc_bindings
-            .insert(method_name.clone(), rf_scope.assoc_bindings);
         self.insert_fn_sig_at(&method_name, sig);
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).
-    pub(in crate::check) fn build_fn_sig_from_decl_with_assoc(
-        &mut self,
-        fd: &FnDecl,
-    ) -> (FnSig, HashMap<(String, String, String), Ty>) {
+    pub(in crate::check) fn build_fn_sig_from_decl(&mut self, fd: &FnDecl) -> FnSig {
         let mut hole_vars = Vec::new();
         let scope = self.collect_type_param_scope_with_assoc_bindings(
             fd.type_params.as_ref(),
@@ -2561,8 +2552,8 @@ impl Checker {
         // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
         let return_type =
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
-        let assoc_bindings = scope.assoc_bindings;
-        let sig = FnSig {
+        FnSig {
+            type_param_assoc_bindings: scope.assoc_bindings,
             type_params,
             type_param_bounds: self
                 .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
@@ -2576,7 +2567,6 @@ impl Checker {
             return_type,
             doc_comment: fd.doc_comment.clone(),
             ..FnSig::default()
-        };
-        (sig, assoc_bindings)
+        }
     }
 }

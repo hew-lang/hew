@@ -401,11 +401,7 @@ impl Checker {
                         method,
                         span,
                     );
-                    let assoc_bindings = self
-                        .fn_type_param_assoc_bindings
-                        .get(&key)
-                        .cloned()
-                        .unwrap_or_default();
+                    let assoc_bindings = sig.type_param_assoc_bindings.clone();
                     let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,
                         &assoc_bindings,
@@ -2379,19 +2375,18 @@ impl Checker {
                 // 2. Collect all hits, deduplicate by declaring_trait
                 // 3. 0 hits → UndefinedMethod, >1 distinct declaring traits → AmbiguousTraitMethod,
                 //    1 → record StaticTraitDispatch rewrite
-                let bounds_for_type_param = self.current_function.as_ref().and_then(|fn_name| {
-                    self.fn_sig(fn_name).and_then(|sig| {
-                        if sig
-                            .type_params
-                            .iter()
-                            .any(|param| param.spelling.as_str() == name)
-                        {
-                            sig.type_param_bounds.get(name).cloned()
-                        } else {
-                            None
-                        }
-                    })
-                });
+                let bounds_for_type_param = match &resolved {
+                    Ty::Named {
+                        head: crate::TypeHead::Param(parameter),
+                        ..
+                    } => self
+                        .checking_declaration
+                        .and_then(|declaration| self.fn_sigs.get(&declaration))
+                        .filter(|sig| sig.type_params.contains(parameter))
+                        .and_then(|sig| sig.type_param_bounds.get(parameter.spelling.as_str()))
+                        .cloned(),
+                    _ => None,
+                };
                 if let (
                     Ty::Named {
                         head: crate::TypeHead::Param(receiver_parameter),

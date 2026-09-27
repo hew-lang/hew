@@ -67,7 +67,7 @@ fn inner_generic_call_inside_generic_body_closes_under_substitution() {
 #[test]
 fn call_site_type_args_records_symbolic_inner_calls() {
     // Inner call `id(y)` inside `outer<U>` records
-    // `call_site_type_args[site] = [Named "U"]` so MIR can substitute
+    // `call_site_type_args[site] = [TypeParam U]` so MIR can substitute
     // and emit the mangled symbol per monomorphisation.
     let source = r"
         pub fn id<T>(x: T) -> T {
@@ -90,8 +90,8 @@ fn call_site_type_args_records_symbolic_inner_calls() {
         v.iter().any(|t| {
             matches!(
                 t,
-                hew_types::ResolvedTy::Named { head: name_head, args, .. }
-                    if args.is_empty() && (name_head.spelling() == "U" || name_head.spelling() == "T")
+                hew_types::ResolvedTy::TypeParam { name }
+                    if name.spelling.as_str() == "U"
             )
         })
     });

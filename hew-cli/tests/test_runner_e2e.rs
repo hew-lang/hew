@@ -31,6 +31,44 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
 }
 
 #[test]
+fn absolute_selectors_distinguish_same_named_tests_across_roots() {
+    require_codegen();
+    let dir = support::tempdir();
+    for root in ["first", "second"] {
+        write_file(
+            dir.path(),
+            &format!("{root}/cart_test.hew"),
+            "#[test]\nfn totals() { assert(true); }\n",
+        );
+    }
+    let first = format!(
+        "{}::totals",
+        dir.path().join("first/cart_test.hew").display()
+    );
+    let second = format!(
+        "{}::totals",
+        dir.path().join("second/cart_test.hew").display()
+    );
+    let output = run_hew_in(
+        &dir.path().join("first"),
+        &["test", &first, &second, "--format", "json"],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let selectors = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "test_finished")
+        .filter_map(|event| event["selector"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert_eq!(selectors, [first, second]);
+}
+
+#[test]
 fn package_native_ffi_is_built_and_linked() {
     require_codegen();
 

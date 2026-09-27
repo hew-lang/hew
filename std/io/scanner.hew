@@ -42,7 +42,7 @@
 //! returns `Result<Scanner, fs.IoError>` and reads the whole file before
 //! scanning:
 //!
-//! ```
+//! ```hew,no_run
 //! import std.fs;
 //! import std.io.scanner;
 //!

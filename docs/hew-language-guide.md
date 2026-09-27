@@ -1004,7 +1004,7 @@ fn main() -> i32 {
 }
 ```
 
-```hew
+```hew,no_run
 // Pattern 3: exit() builtin from a unit main
 fn main() {
     println("something failed");
@@ -1744,9 +1744,9 @@ that result remains an ordinary value. Other waiting operations are calls:
 | --------------------------------- | ------------------------------------ |
 | a reply from an actor             | `pid.method(args)`                   |
 | that reply concurrently           | `let t = fork pid.method(args);` then `await t` |
-| an actor to stop, and to wait     | `close(pid)`                         |
-| an actor to stop, without waiting | `fork close(pid)`                    |
-| to wait for a stop someone else asked for | `closed(pid)`                |
+| an actor to stop, and to wait     | `stop(pid); stopped(pid);`           |
+| an actor to stop, without waiting | `stop(pid)`                          |
+| to wait for a stop someone else asked for | `stopped(pid)`               |
 | each item of another actor's stream | `for x in pid.stream()`            |
 
 Do not put `await` on an actor call, actor handle or generator operation.
@@ -2022,8 +2022,8 @@ multi-parameter lambda is called with one argument per parameter.
 An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
 `Vec` and call it where it is stored; a handle read out of a collection is
 borrowed, and the call addresses the actor through the borrow without taking
-it. `close(handle)` stops the actor and waits for its terminal cleanup, and
-`closed(handle)` observes a stop someone else requested.
+it. `stop(handle)` requests its termination, and `stopped(handle)` waits for
+terminal cleanup, including a stop someone else requested.
 
 Both delivery views apply to a lambda handle. `mailbox(handle)` submits one
 way, so it accepts only a lambda that owes its caller nothing; a lambda that

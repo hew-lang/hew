@@ -478,7 +478,7 @@ selects completion admission. There is no lambda-specific `.send()` operation.
 
 A lambda actor lowers to an ordinary actor declaration: captures become state
 fields and its body becomes one receive handler. Its handle supports
-`close(handle)` and `closed(handle)`. A handle can be stored in a record or
+`stop(handle)` and `stopped(handle)`. A handle can be stored in a record or
 collection and called through that place; it cannot be split into pipe
 halves. Copies retain the same actor identity rather than duplicating its state.
 
@@ -542,9 +542,9 @@ become a sibling task's fault merely because its handle was created in a
 `scope`. A completion caller receives the actor error envelope. Structured
 child tasks created with `fork` retain their own scope obligations.
 
-Handles follow ordinary ownership cleanup. Use `close(worker)` when the code
-requires the actor's terminal cleanup to complete at a particular point; use
-`closed(worker)` to observe termination without requesting it.
+Handles follow ordinary ownership cleanup. Use `stop(worker)` to request
+termination and `stopped(worker)` when the code requires terminal cleanup to
+complete; use `stopped(worker)` alone to observe an earlier stop request.
 
 **Limitations:**
 
@@ -6072,9 +6072,9 @@ Actors start `Idle` after spawn. There is no separate `Blocked` state — actors
 for messages are `Idle` (or `Suspended` during a cooperative suspension) and become
 `Runnable` when a message arrives.
 
-Cooperative termination is requested through `close(pid)` or supervision.
-`closed(pid)` observes that transition without requesting it. A repeated
-close of a terminal actor changes nothing and returns unit (§2.1).
+Cooperative termination is requested through `stop(pid)` or supervision.
+`stopped(pid)` waits for terminal cleanup without requesting termination. A
+repeated stop of a terminal actor changes nothing and returns unit (§2.1).
 
 **Key distinctions from task states (§4.1):**
 

@@ -119,7 +119,7 @@ impl GlobResult {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.path;
 ///
 /// fn main() {

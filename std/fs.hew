@@ -132,7 +132,7 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
 ///
 /// For network errors see `impl Display for net.NetError` in `std.net`.
 ///
-/// ```
+/// ```hew,no_run
 /// import std.fs;
 ///
 /// fn main() {
@@ -277,7 +277,7 @@ pub fn size(path: string) -> i64 {
 ///
 /// # Examples
 ///
-/// ```
+/// ```hew,no_run
 /// import std.fs;
 ///
 /// fn main() {

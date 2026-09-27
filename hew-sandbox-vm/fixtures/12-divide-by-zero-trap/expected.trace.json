@@ -9,6 +9,10 @@
     },
     {
       "failure": {
+        "hew_fault": {
+          "code": 202,
+          "kind": "DivideByZero"
+        },
         "kind": "trap",
         "message": "divide by zero",
         "span": null,
@@ -43,14 +47,14 @@
     },
     "runtime_failures": [
       {
-        "kind": "trap",
-        "message": "divide by zero",
-        "span": null,
-        "trap_kind": "divide_by_zero",
         "hew_fault": {
           "code": 202,
           "kind": "DivideByZero"
-        }
+        },
+        "kind": "trap",
+        "message": "divide by zero",
+        "span": null,
+        "trap_kind": "divide_by_zero"
       }
     ],
     "sandbox_rejections": [],

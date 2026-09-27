@@ -3279,6 +3279,7 @@
             }
           ],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 7
@@ -3413,15 +3414,15 @@
   "regex_patterns": [],
   "resources": [
     {
-      "kind": "sink"
+      "kind": "nominal",
+      "release": "hew_stream_pair_free",
+      "ty": "std.stream.StreamPair"
     },
     {
       "kind": "stream"
     },
     {
-      "kind": "nominal",
-      "release": "hew_stream_pair_free",
-      "ty": "std.stream.StreamPair"
+      "kind": "sink"
     }
   ],
   "runtime_families": [

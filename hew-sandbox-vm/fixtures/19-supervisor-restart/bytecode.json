@@ -874,6 +874,7 @@
           ],
           "params": [],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 1
@@ -1366,6 +1367,7 @@
             }
           ],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 7

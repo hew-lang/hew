@@ -867,6 +867,7 @@
           ],
           "params": [],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 1

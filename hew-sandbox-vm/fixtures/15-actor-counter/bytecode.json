@@ -854,6 +854,7 @@
             }
           ],
           "term": {
+            "assertion": null,
             "cleanup": {
               "args": [],
               "to": 7

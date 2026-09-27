@@ -70,6 +70,13 @@ def main() -> None:
     if green:
         raise SystemExit(f"id-keyed map counterfactual was flagged: {green}")
 
+    lexical = findings(
+        "pub struct SourceScope { bindings: HashMap<String, Binding> }\n"
+        "pub struct RenderingMembers { fields: HashMap<String, Ty> }\n"
+    )
+    if lexical:
+        raise SystemExit(f"scoped lexical selectors were flagged: {lexical}")
+
     print("no-string-keyed-semantic-map counterfactuals: PASS")
 
 

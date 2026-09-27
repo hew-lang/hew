@@ -540,6 +540,7 @@ impl Checker {
             .cloned()
             .unwrap_or_default();
         let importer_source = self.current_item_source.clone();
+        let importer_file = self.current_module_idx;
         if self.defs.module_has_source_declarations(identity_module) {
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
                 self.declare_item_type_parameter_scopes(
@@ -569,6 +570,12 @@ impl Checker {
             .replace(module_full_path.to_string());
         for (index, (item, _span)) in items.iter().enumerate() {
             self.current_item_source = item_sources.get(index).cloned();
+            self.current_module_idx = self
+                .current_item_source
+                .as_ref()
+                .and_then(|source| self.source_file_span_indices.get(source))
+                .copied()
+                .unwrap_or(importer_file);
             let Item::Import(decl) = item else {
                 continue;
             };
@@ -582,13 +589,13 @@ impl Checker {
                 // span cannot be resolved to any user source, mis-attributing a
                 // stdlib-internal offset to the user's document.
                 let saved_current_module = self.current_module.clone();
-                self.current_module = Some(module_short.to_string());
+                self.current_module = Some(module_full_path.to_string());
                 self.register_import(decl, None);
                 self.current_module = saved_current_module;
             }
         }
 
-        self.record_trait_import_bindings(module_short, items);
+        self.record_trait_import_bindings(module_full_path, items);
 
         // Resolve imported declarations in the defining module's lexical scope.
         let saved_local_type_defs = self.local_type_defs.clone();
@@ -610,6 +617,12 @@ impl Checker {
         // Pass 1: Register types, traits, and functions first
         for (index, (item, span)) in items.iter().enumerate() {
             self.current_item_source = item_sources.get(index).cloned();
+            self.current_module_idx = self
+                .current_item_source
+                .as_ref()
+                .and_then(|source| self.source_file_span_indices.get(source))
+                .copied()
+                .unwrap_or(importer_file);
             match item {
                 Item::TypeDecl(td) => {
                     // Record visibility for all TypeDecls (both pub and non-pub)
@@ -959,6 +972,12 @@ impl Checker {
         // Pass 2: Register impl methods (after types exist)
         for (index, (item, span)) in items.iter().enumerate() {
             self.current_item_source = item_sources.get(index).cloned();
+            self.current_module_idx = self
+                .current_item_source
+                .as_ref()
+                .and_then(|source| self.source_file_span_indices.get(source))
+                .copied()
+                .unwrap_or(importer_file);
             if let Item::Impl(id) = item {
                 if Self::impl_decl_is_drop_impl(id) {
                     self.report_unsupported_impl_drop(span);
@@ -1070,6 +1089,12 @@ impl Checker {
         // only the full owner survives this pass.
         for (index, (item, _span)) in items.iter().enumerate() {
             self.current_item_source = item_sources.get(index).cloned();
+            self.current_module_idx = self
+                .current_item_source
+                .as_ref()
+                .and_then(|source| self.source_file_span_indices.get(source))
+                .copied()
+                .unwrap_or(importer_file);
             match item {
                 Item::TypeDecl(td) => {
                     if let Some(source_def) = self
@@ -1147,6 +1172,7 @@ impl Checker {
         self.source_type_defs = saved_source_type_defs;
         self.registration_origin_module = saved_registration_origin;
         self.current_item_source = importer_source;
+        self.current_module_idx = importer_file;
     }
 
     /// Publish a selected stdlib free function into one importer's bare scope.

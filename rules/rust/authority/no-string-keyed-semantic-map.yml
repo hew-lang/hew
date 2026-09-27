@@ -1,15 +1,13 @@
 id: no-string-keyed-semantic-map
 language: rust
-severity: warning
+severity: error
 message: >-
   A semantic map or set is keyed by a rendered string instead of a
   resolver-minted identity (DefId, NominalId, TypeParamId, ModuleId, Symbol).
 note: >-
-  Identity-authority batch (plans/identity-authority-final.md section 4.2).
-  Once the DefId/Symbol carriers land, key semantic tables by the resolver's
-  identity; a String/&str (or Cow<str>, Box<str>, Rc<str>, Arc<str>) key is a
-  name join waiting to diverge across modules. Severity is `warning` during
-  L0 scaffolding; L0-final raises it to `error` once the carriers exist.
+  Declaration-wide facts must use minted identities. Lexical import bindings,
+  source spellings, member selectors inside an already selected declaration,
+  diagnostic labels and external ABI symbols are separate input namespaces.
 files:
   - "hew-types/src/**"
   - "hew-hir/src/**"
@@ -32,11 +30,18 @@ ignores:
   - "hew-types/src/extern_symbol.rs"
   - "hew-types/src/vec_authority.rs"
 rule:
-  any:
-    - kind: field_declaration
-      regex: '(HashMap|HashSet|BTreeMap|BTreeSet|IndexMap|IndexSet)\s*<\s*(&(\s*''\w+\s*)?str|String|Cow\s*<\s*str\s*>|Box\s*<\s*str\s*>|Rc\s*<\s*str\s*>|Arc\s*<\s*str\s*>)\s*[,>]'
-    - kind: let_declaration
-      regex: '(HashMap|HashSet|BTreeMap|BTreeSet|IndexMap|IndexSet)\s*<\s*(&(\s*''\w+\s*)?str|String|Cow\s*<\s*str\s*>|Box\s*<\s*str\s*>|Rc\s*<\s*str\s*>|Arc\s*<\s*str\s*>)\s*[,>]'
+  kind: field_declaration
+  all:
+    - has:
+        field: name
+        regex: "^(type_defs|trait_defs|fn_sigs|declarations|type_declarations|method_ids|method_binders|resource_types|linear_types|handle_types|drop_types|opaque_type_ids|handle_bearing_structs|rendering_members|wire_types|aliases)$"
+    - regex: '(HashMap|HashSet|BTreeMap|BTreeSet|IndexMap|IndexSet)\s*<\s*(&(\s*''\w+\s*)?str|String|Cow\s*<\s*str\s*>|Box\s*<\s*str\s*>|Rc\s*<\s*str\s*>|Arc\s*<\s*str\s*>)\s*[,>]'
+    - inside:
+        kind: struct_item
+        stopBy: end
+        has:
+          field: name
+          regex: "^(TypeCheckOutput|Checker|TypeFactContext|TraitRegistry|LowerCtx|ClassContext|HirModule|SemModule|PhysicalModule)$"
   not:
     inside:
       kind: mod_item

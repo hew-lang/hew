@@ -184,7 +184,6 @@ impl LowerCtx {
             lowering_injected_items: false,
             current_module_name: None,
             declaration_module_by_file_index: HashMap::new(),
-            import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
             published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
             defs: std::sync::Arc::clone(&tc_output.defs),

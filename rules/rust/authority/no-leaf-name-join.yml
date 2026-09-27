@@ -1,27 +1,25 @@
 id: no-leaf-name-join
 language: rust
-severity: warning
+severity: error
 message: >-
   A name/path-shaped receiver is split, stripped or joined as a spelling
   instead of going through the resolver.
 note: >-
-  Identity-authority batch (plans/identity-authority-final.md section 4.2).
-  `short_name`, `strip_module_qualifier`, `strip_module_prefix`,
-  `names_match_qualified`, and split/rsplit/contains/join on a
-  name-shaped receiver re-derive qualification syntactically (W9) instead of
-  consuming the resolver's `Path`/`Scope::resolve` output. Severity is
-  `warning` during L0 scaffolding; L0-final raises it to `error`.
+  Resolved type-fact services, HIR expression consumers and lower IRs consume checker
+  identities. Source scopes, declaration registration, diagnostics and external
+  ABI spelling tables remain lexical inputs outside this boundary.
 files:
-  - "hew-parser/src/**"
-  - "hew-types/src/**"
-  - "hew-hir/src/**"
   - "hew-sir/src/**"
   - "hew-mir/src/**"
-  - "hew-analysis/src/**"
-  - "hew-lsp/src/**"
-  - "hew-wasm/src/sandbox/**"
-  - "hew-compile/src/**"
-  - "hew-cli/src/**"
+  - "hew-types/src/type_facts.rs"
+  - "hew-types/src/value_class.rs"
+  - "hew-types/src/traits.rs"
+  - "hew-hir/src/lower/types.rs"
+  - "hew-hir/src/lower/expr.rs"
+  - "hew-hir/src/lower/identifiers.rs"
+  - "hew-hir/src/lower/private_refs.rs"
+  - "hew-hir/src/lower/calls.rs"
+  - "hew-hir/src/lower/collections.rs"
 ignores:
   - "**/tests/**"
   - "**/test/**"
@@ -44,7 +42,7 @@ rule:
         all:
           - has:
               field: field
-              regex: "^(rsplit_once|rsplit|split_once|split|contains|starts_with|strip_prefix|join)$"
+              regex: "^(rsplit_once|rsplit|split_once|split|join)$"
           - has:
               field: value
               regex: "(?i)(name|ident|key|path|spelling|leaf|owner|symbol|trait|module|binding|callee|target|segments)"

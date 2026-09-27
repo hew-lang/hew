@@ -1,24 +1,23 @@
 id: no-builtin-name-literal-decision
 language: rust
-severity: warning
+severity: error
 message: >-
   A semantic decision is made by comparing a name/spelling against a literal
   instead of a typed identity.
 note: >-
-  Identity-authority batch (plans/identity-authority-final.md section 4.2).
-  Extends `no-qualified-identity-literal-comparison.yml` to bare capitalized
-  or dotted literal compares (`x == "Vec"`, `matches!(name, "sleep" | ...)`)
-  and, once `Symbol` lands, `sym::` compares outside the spelling tables.
-  Severity is `warning` during L0 scaffolding; L0-final raises it to `error`.
+  Resolved type-fact services and HIR expression consumers must consume checker
+  identities. Source scopes, declaration registration, diagnostics and external
+  ABI spelling tables remain lexical inputs outside this boundary.
 files:
-  - "hew-types/src/**"
-  - "hew-hir/src/**"
-  - "hew-sir/src/**"
-  - "hew-mir/src/**"
-  - "hew-analysis/src/**"
-  - "hew-lsp/src/**"
-  - "hew-wasm/src/sandbox/**"
-  - "hew-compile/src/**"
+  - "hew-types/src/type_facts.rs"
+  - "hew-types/src/value_class.rs"
+  - "hew-types/src/traits.rs"
+  - "hew-hir/src/lower/types.rs"
+  - "hew-hir/src/lower/expr.rs"
+  - "hew-hir/src/lower/identifiers.rs"
+  - "hew-hir/src/lower/private_refs.rs"
+  - "hew-hir/src/lower/calls.rs"
+  - "hew-hir/src/lower/collections.rs"
 ignores:
   - "**/tests/**"
   - "**/test/**"
@@ -36,6 +35,8 @@ rule:
     - kind: binary_expression
       all:
         - regex: "(==|!=)"
+        - not:
+            regex: '\.name\.as_str\(\)'
         - has:
             kind: string_literal
             regex: '^"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*"$'

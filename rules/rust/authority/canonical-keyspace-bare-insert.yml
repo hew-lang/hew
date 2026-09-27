@@ -2,29 +2,27 @@ id: canonical-keyspace-bare-insert
 language: rust
 severity: hint
 message: >-
-  Bare identifier key inserted into a symbol-table-shaped collection. The
-  canonical keyspace auditor requires an approved constructor or a reviewed
-  inventory entry with an owner and follow-on work ID.
+  Check whether this table publishes semantic facts or indexes source spellings.
 note: >-
-  Use machine_layout_key(...), mangle_instantiation(...), or
-  format!("{module_full_path}.{name}"). The companion parsed-declaration audit
-  promotes HashMap<String, _>/HashSet<String> candidates to fail-closed errors.
+  Published semantic tables use resolver identities; no-string-keyed-semantic-map
+  protects that boundary. Source scopes, diagnostic rendering and external ABI
+  spelling tables may retain their lexical keys.
 files:
-  - 'hew-types/src/**'
-  - 'hew-hir/src/**'
-  - 'hew-analysis/src/**'
-  - 'hew-mir/src/**'
-  - 'hew-codegen-rs/src/**'
+  - "hew-types/src/**"
+  - "hew-hir/src/**"
+  - "hew-analysis/src/**"
+  - "hew-mir/src/**"
+  - "hew-codegen-rs/src/**"
 ignores:
-  - '**/tests/**'
-  - '**/test/**'
-  - '**/*_test.rs'
-  - '**/*_tests.rs'
-  - '**/tests.rs'
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
 rule:
   pattern: $TABLE.insert($KEY, $$$REST)
 constraints:
   TABLE:
-    regex: '.*[A-Za-z_][A-Za-z0-9_]*_(names|defs|layouts|sigs|registry)$'
+    regex: ".*[A-Za-z_][A-Za-z0-9_]*_(names|defs|layouts|sigs|registry)$"
   KEY:
     kind: identifier

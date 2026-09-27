@@ -1592,20 +1592,6 @@ struct LowerCtx {
     declaration_module_by_file_index: HashMap<u32, hew_types::ModuleId>,
     /// Immutable checker declaration authority. This view cannot mint.
     defs: std::sync::Arc<hew_types::DefTable>,
-    /// Checker-authoritative import resolution table: maps `(importer_module,
-    /// source spelling)` → canonical qualified source identity for named/glob
-    /// imports and canonical lifecycle whole-module aliases.
-    ///
-    /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
-    /// at `LowerCtx::new` time and consulted in:
-    /// - `lookup_variant_ctor`: `Tag::Variant` enum-constructor paths.
-    ///
-    /// Per-module keying prevents a same-named alias from a different imported
-    /// module from hijacking the lookup (last-write-wins flat map defect).
-    /// Type references consult the source binding before the builtin catalog,
-    /// so an explicitly imported user `Stream` cannot become the pipe
-    /// half. Local-shadow filtering remains checker-authoritative.
-    import_type_name_aliases: HashMap<(Option<String>, u32, String), String>,
     /// Exact owner identities for lexical module qualifiers. Both whole and
     /// selective module-path imports carry this fact: after
     /// `import hew::closableerr::{ Closable as C }`,

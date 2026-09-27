@@ -18,10 +18,12 @@ RULE = ROOT / "rules/rust/authority/no-builtin-name-literal-decision.yml"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 
-def findings(source: str) -> list[dict[str, object]]:
+def findings(
+    source: str, path: str = "hew-types/src/type_facts.rs"
+) -> list[dict[str, object]]:
     with tempfile.TemporaryDirectory(prefix="hew-builtin-name-literal-") as temp:
         root = Path(temp)
-        target = root / "hew-types/src/check/registration.rs"
+        target = root / path
         target.parent.mkdir(parents=True)
         target.write_text(source, encoding="utf-8")
         result = subprocess.run(
@@ -65,6 +67,13 @@ def main() -> None:
     )
     if green:
         raise SystemExit(f"typed identity counterfactual was flagged: {green}")
+
+    lexical = findings(
+        'fn source_builtin(name: &str) -> bool { name == "Vec" }\n',
+        "hew-types/src/check/scope.rs",
+    )
+    if lexical:
+        raise SystemExit(f"lexical source resolution was flagged: {lexical}")
 
     print("no-builtin-name-literal-decision counterfactuals: PASS")
 

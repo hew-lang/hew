@@ -210,51 +210,23 @@ impl LowerCtx {
         name: &str,
         owner_ty: Option<&ResolvedTy>,
     ) -> Option<(String, usize, &HirVariantKind)> {
+        let ResolvedTy::Named { head, .. } = owner_ty? else {
+            return None;
+        };
+        let owner = match head {
+            hew_types::TypeHead::Builtin(_) => head.registry_key(),
+            _ => self.defs.path(head.declaration(&self.defs)?.declaration()),
+        };
         let variant_name = name
             .rsplit_once("::")
             .or_else(|| name.rsplit_once('.'))
             .map_or(name, |(_, variant)| variant);
-        let mut candidates = Vec::with_capacity(5);
-        if let Some(ResolvedTy::Named { head, .. }) = owner_ty {
-            let owner = head.registry_key();
-            candidates.push(format!("{owner}::{variant_name}"));
-            if !owner.contains('.') {
-                if let Some(module) = self.current_module_name.as_deref() {
-                    candidates.push(format!("{module}.{owner}::{variant_name}"));
-                }
-            }
-        }
-        if let Some((prefix, variant)) = name.rsplit_once("::") {
-            if let Some(canonical_prefix) = self.import_type_name_aliases.get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                prefix.to_string(),
-            )) {
-                candidates.push(format!("{canonical_prefix}::{variant}"));
-            }
-            if let Some(module) = self.current_module_name.as_deref() {
-                candidates.push(format!("{module}.{name}"));
-            }
-        }
-        // A checker-proven owner must not be replaced by an unrelated bare
-        // constructor, such as NodeError.Config for a user record Config.
-        if !matches!(owner_ty, Some(ResolvedTy::Named { .. })) {
-            candidates.push(name.to_string());
-        }
-
-        for candidate in candidates {
-            let Some((type_name, idx)) = self.machine_ctor_registry.get(&candidate) else {
-                continue;
-            };
-            let Some(variants) = self.enum_variants_by_name.get(type_name) else {
-                continue;
-            };
-            let Some(variant) = variants.get(*idx) else {
-                continue;
-            };
-            return Some((type_name.clone(), *idx, &variant.kind));
-        }
-        None
+        let variants = self.enum_variants_by_name.get(owner)?;
+        let (index, variant) = variants
+            .iter()
+            .enumerate()
+            .find(|(_, variant)| variant.name == variant_name)?;
+        Some((owner.to_string(), index, &variant.kind))
     }
 
     /// Instantiate the declaration's payload types using the checked enum

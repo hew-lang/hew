@@ -230,29 +230,17 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
     let option = |inner| ResolvedTy::named_builtin(BuiltinType::Option, vec![inner]);
     let vector = |inner| ResolvedTy::named_builtin(BuiltinType::Vec, vec![inner]);
 
-    for (definition, name, expected) in [
-        (
-            "#[opaque] type Handle {}",
-            "Handle",
-            ResolvedTy::opaque_for_test("Handle", vec![]),
-        ),
+    for (definition, name, builtin) in [
+        ("#[opaque] type Handle {}", "Handle", None),
         (
             "import std.encoding.json;",
             "json.Value",
-            ResolvedTy::Named {
-                args: vec![],
-                head: hew_types::TypeHead::Builtin(BuiltinType::JsonValue),
-                is_opaque: true,
-            },
+            Some(BuiltinType::JsonValue),
         ),
         (
             "import std.encoding.yaml;",
             "yaml.Value",
-            ResolvedTy::Named {
-                args: vec![],
-                head: hew_types::TypeHead::Builtin(BuiltinType::YamlValue),
-                is_opaque: true,
-            },
+            Some(BuiltinType::YamlValue),
         ),
     ] {
         let source = format!(
@@ -277,6 +265,21 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             .unwrap()
             .to_path_buf();
         let checked = Checker::new(ModuleRegistry::new(vec![root])).check_program(&parsed.program);
+        let head = match builtin {
+            Some(builtin) => hew_types::TypeHead::Builtin(builtin),
+            None => hew_types::TypeHead::Nominal(hew_types::NominalHead::new(
+                checked
+                    .defs
+                    .lookup_nominal("Handle")
+                    .expect("Handle declaration"),
+                "Handle",
+            )),
+        };
+        let expected = ResolvedTy::Named {
+            head,
+            args: Vec::new(),
+            is_opaque: true,
+        };
         let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);

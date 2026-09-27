@@ -319,8 +319,7 @@ impl Checker {
                 ..
             } = left_resolved
             {
-                if let Some((method, _)) =
-                    self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
+                if let Some(method) = self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
                 {
                     self.record_user_comparison_dispatch(
                         expr_span,
@@ -338,16 +337,14 @@ impl Checker {
             ..
         } = left_resolved
         {
-            if let Some((method, _)) =
-                self.trait_impl_method_declaration(left_resolved, "Ord", "lt")
-            {
+            if let Some(method) = self.trait_impl_method_declaration(left_resolved, "Ord", "lt") {
                 self.record_user_comparison_dispatch(
                     expr_span,
                     UserComparisonDispatch::Ord { method },
                 );
                 return;
             }
-            if let Some((method, _)) =
+            if let Some(method) =
                 self.trait_impl_method_declaration(left_resolved, "PartialOrd", "lt")
             {
                 self.record_user_comparison_dispatch(

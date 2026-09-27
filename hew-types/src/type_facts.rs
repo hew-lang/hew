@@ -260,26 +260,48 @@ fn require_concrete_capability_type(ty: &ResolvedTy) -> Result<(), ClassError> {
 }
 
 /// Shared exact-specialization-then-nominal lookup over checker registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ImplMethodSlot {
+    Declared(crate::DefId),
+    Value(ValueCapability),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ImplMethodKey {
+    receiver: ResolvedTy,
+    arguments: Option<Vec<ResolvedTy>>,
+    method: ImplMethodSlot,
+}
+
+impl ImplMethodKey {
+    pub(crate) fn new(receiver: &ResolvedTy, method: ImplMethodSlot, generic: bool) -> Self {
+        let (receiver, arguments) = match receiver {
+            ResolvedTy::Named { head, args, .. } => (
+                ResolvedTy::Named {
+                    head: *head,
+                    args: Vec::new(),
+                    is_opaque: false,
+                },
+                (!generic).then(|| args.clone()),
+            ),
+            receiver => (receiver.clone(), (!generic).then(Vec::new)),
+        };
+        Self {
+            receiver,
+            arguments,
+            method,
+        }
+    }
+}
+
 pub(crate) fn selected_impl_method(
-    ids: &HashMap<(String, String, String), crate::DefId>,
-    owner: &str,
-    args: &[ResolvedTy],
-    trait_name: &str,
-    method_name: &str,
-) -> Option<(crate::DefId, String)> {
-    crate::resolved_ty::mangle_impl_self_name(owner, args)
-        .filter(|_| !args.is_empty())
-        .into_iter()
-        .chain(std::iter::once(owner.to_string()))
-        .find_map(|owner| {
-            ids.get(&(
-                owner.clone(),
-                trait_name.to_string(),
-                method_name.to_string(),
-            ))
-            .copied()
-            .map(|id| (id, owner))
-        })
+    ids: &HashMap<ImplMethodKey, crate::DefId>,
+    receiver: &ResolvedTy,
+    method: ImplMethodSlot,
+) -> Option<crate::DefId> {
+    ids.get(&ImplMethodKey::new(receiver, method, false))
+        .or_else(|| ids.get(&ImplMethodKey::new(receiver, method, true)))
+        .copied()
 }
 
 /// Checker-owned declaration context for concrete fact expansion.
@@ -293,15 +315,15 @@ pub struct TypeFactContext {
     declarations: BTreeMap<crate::NominalId, DeclaredType>,
     registry: TraitRegistry,
     type_defs: HashMap<crate::NominalId, TypeDef>,
-    method_ids: HashMap<(String, String, String), crate::DefId>,
+    method_ids: HashMap<ImplMethodKey, crate::DefId>,
     method_binders: HashMap<crate::DefId, ImplMethodBinders>,
     /// The declaration table every `DefId` above indexes.
     defs: std::sync::Arc<crate::DefTable>,
-    display_trait: String,
-    aliases: HashMap<String, crate::check::TypeAliasDef>,
-    rendering_members: HashMap<String, RenderingMembers>,
+    display_method: Option<crate::DefId>,
+    aliases: HashMap<crate::DefId, crate::check::TypeAliasDef>,
+    rendering_members: HashMap<crate::NominalId, RenderingMembers>,
     /// Declarations with a checked `#[wire]` layout, by canonical identity.
-    wire_types: HashSet<String>,
+    wire_types: HashSet<crate::NominalId>,
 }
 
 /// Source type identities before storage normalization expands aliases.
@@ -366,7 +388,7 @@ impl TypeFactContext {
             method_ids: HashMap::new(),
             method_binders: HashMap::new(),
             defs: std::sync::Arc::default(),
-            display_trait: "Display".to_string(),
+            display_method: None,
             aliases: HashMap::new(),
             rendering_members: HashMap::new(),
             wire_types: HashSet::new(),
@@ -375,7 +397,7 @@ impl TypeFactContext {
 
     pub(crate) fn with_impl_methods(
         mut self,
-        ids: HashMap<(String, String, String), crate::DefId>,
+        ids: HashMap<ImplMethodKey, crate::DefId>,
         binders: HashMap<crate::DefId, ImplMethodBinders>,
     ) -> Self {
         self.method_ids = ids;
@@ -400,27 +422,27 @@ impl TypeFactContext {
         &self.defs
     }
 
-    pub(crate) fn with_display_trait(mut self, identity: String) -> Self {
-        self.display_trait = identity;
+    pub(crate) fn with_display_method(mut self, display: Option<crate::DefId>) -> Self {
+        self.display_method = display;
         self
     }
 
     pub(crate) fn with_aliases(
         mut self,
-        aliases: HashMap<String, crate::check::TypeAliasDef>,
+        aliases: HashMap<crate::DefId, crate::check::TypeAliasDef>,
     ) -> Self {
         self.aliases = aliases;
         self
     }
 
-    pub(crate) fn with_wire_types(mut self, wire_types: HashSet<String>) -> Self {
+    pub(crate) fn with_wire_types(mut self, wire_types: HashSet<crate::NominalId>) -> Self {
         self.wire_types = wire_types;
         self
     }
 
     pub(crate) fn with_rendering_members(
         mut self,
-        members: HashMap<String, RenderingMembers>,
+        members: HashMap<crate::NominalId, RenderingMembers>,
     ) -> Self {
         self.rendering_members = members;
         self
@@ -624,28 +646,14 @@ impl TypeFactService {
         if !visiting.insert(ty.clone()) {
             return Ok(None);
         }
-        let builtin_owner = crate::Checker::canonical_primitive_or_builtin_key(&source.to_ty());
-        let (owner, args) = match source {
-            ResolvedTy::Named { head, args, .. } => {
-                let name = head.registry_key();
-                (
-                    if self.context.aliases.contains_key(name) {
-                        name
-                    } else {
-                        builtin_owner.as_deref().unwrap_or(name)
-                    },
-                    args.as_slice(),
-                )
-            }
-            _ => (builtin_owner.as_deref().unwrap_or(""), &[][..]),
-        };
-        let Some((method, _)) = selected_impl_method(
-            &self.context.method_ids,
-            owner,
-            args,
-            &self.context.display_trait,
-            "fmt",
-        ) else {
+        let method = self.context.display_method.and_then(|slot| {
+            selected_impl_method(
+                &self.context.method_ids,
+                source,
+                ImplMethodSlot::Declared(slot),
+            )
+        });
+        let Some(method) = method else {
             visiting.remove(ty);
             return Ok(None);
         };
@@ -679,11 +687,13 @@ impl TypeFactService {
         let mut source = source.clone();
         let mut visited = HashSet::new();
         while let ResolvedTy::Named { head, args, .. } = &source {
-            let name = head.registry_key();
-            let Some(alias) = self.context.aliases.get(name) else {
+            let Some(declaration) = head.declaration(&self.context.defs) else {
                 break;
             };
-            if !visited.insert(name.to_string()) {
+            let Some(alias) = self.context.aliases.get(&declaration.declaration()) else {
+                break;
+            };
+            if !visited.insert(declaration) {
                 return Err("recursive rendering alias".into());
             }
             let target = alias
@@ -708,7 +718,10 @@ impl TypeFactService {
         let ResolvedTy::Named { head, args, .. } = source else {
             return Ok(None);
         };
-        let Some(definition) = self.context.rendering_members.get(head.registry_key()) else {
+        let Some(definition) = head
+            .declaration(&self.context.defs)
+            .and_then(|id| self.context.rendering_members.get(&id))
+        else {
             return Ok(None);
         };
         let ty = if let Some(variant) = variant {
@@ -752,26 +765,12 @@ impl TypeFactService {
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
         crate::value_class::classify_ty(ty, &ClassContext::new(&self.context.declarations))?;
         require_concrete_capability_type(ty)?;
-        let as_ty = ty.to_ty();
-        let (trait_name, method_name) = match capability {
-            ValueCapability::Hash => ("Hash", "hash"),
-            ValueCapability::Eq => ("Eq", "eq"),
-        };
-        let builtin_owner = crate::Checker::canonical_primitive_or_builtin_key(&as_ty);
-        let (owner, args) = match ty {
-            ResolvedTy::Named { head, args, .. } => (
-                builtin_owner.as_deref().unwrap_or(head.registry_key()),
-                args.as_slice(),
-            ),
-            _ => (builtin_owner.as_deref().unwrap_or(""), &[][..]),
-        };
-        if let Some((method, _)) = selected_impl_method(
+        let method = selected_impl_method(
             &self.context.method_ids,
-            owner,
-            args,
-            trait_name,
-            method_name,
-        ) {
+            ty,
+            ImplMethodSlot::Value(capability),
+        );
+        if let Some(method) = method {
             if capability == ValueCapability::Hash {
                 let admitted_shape = match ty {
                     ResolvedTy::Named {
@@ -966,7 +965,7 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         param: &dyn Fn(&str, MarkerTrait) -> bool,
-        visiting: &mut Vec<String>,
+        visiting: &mut Vec<crate::NominalId>,
     ) -> bool {
         match ty {
             ResolvedTy::I8
@@ -1021,10 +1020,12 @@ impl TypeFactService {
                 args,
                 is_opaque: false,
             } => {
-                let name = head.registry_key();
+                let Some(declaration) = head.declaration(&self.context.defs) else {
+                    return false;
+                };
                 if !args.is_empty()
-                    || !self.context.wire_types.contains(name)
-                    || visiting.iter().any(|visited| visited == name)
+                    || !self.context.wire_types.contains(&declaration)
+                    || visiting.contains(&declaration)
                     || head
                         .declaration(&self.context.defs)
                         .and_then(|id| self.context.declarations.get(&id))
@@ -1037,7 +1038,7 @@ impl TypeFactService {
                 let Ok(members) = self.declared_capability_members(ty) else {
                     return false;
                 };
-                visiting.push(name.to_string());
+                visiting.push(declaration);
                 let ok = members
                     .iter()
                     .all(|member| self.serializable_within(member, param, visiting));
@@ -1348,7 +1349,9 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
 
 #[cfg(test)]
 mod tests {
+    use super::{selected_impl_method, ImplMethodKey};
     use std::collections::BTreeMap;
+    use std::collections::HashMap;
 
     use super::{
         CloneKind, SendFact, TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey,
@@ -1421,6 +1424,37 @@ mod tests {
             ResolvedTy::Named { args, .. }
                 if matches!(&args[0], ResolvedTy::Named { is_opaque: true, .. })
         ));
+    }
+
+    #[test]
+    fn method_selection_keeps_declarations_and_specializations_distinct() {
+        let mut defs = crate::DefTable::new();
+        let left = crate::NominalId::of_declaration(defs.mint_for_test("left.Box"));
+        let right = crate::NominalId::of_declaration(defs.mint_for_test("right.Box"));
+        let slot = super::ImplMethodSlot::Declared(defs.mint_for_test("Show::show"));
+        let other_slot = super::ImplMethodSlot::Declared(defs.mint_for_test("OtherShow::show"));
+        let generic = defs.mint_for_test("left.generic");
+        let exact = defs.mint_for_test("left.i64");
+        let receiver = |id, args| ResolvedTy::Named {
+            head: crate::TypeHead::Nominal(crate::NominalHead::new(id, "Box")),
+            args,
+            is_opaque: false,
+        };
+        let concrete = receiver(left, vec![ResolvedTy::I64]);
+        let methods = HashMap::from([
+            (ImplMethodKey::new(&concrete, slot, true), generic),
+            (ImplMethodKey::new(&concrete, slot, false), exact),
+        ]);
+        assert_eq!(selected_impl_method(&methods, &concrete, slot), Some(exact));
+        assert_eq!(
+            selected_impl_method(&methods, &receiver(left, vec![ResolvedTy::String]), slot),
+            Some(generic)
+        );
+        assert_eq!(
+            selected_impl_method(&methods, &receiver(right, vec![ResolvedTy::I64]), slot),
+            None
+        );
+        assert_eq!(selected_impl_method(&methods, &concrete, other_slot), None);
     }
 
     /// Declarations the §1.1 Aggregate rule needs for the cases below.
@@ -2575,8 +2609,19 @@ mod tests {
         let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parsed.program);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let declaration = output
+            .defs
+            .lookup_path("Key")
+            .expect("checked Key declaration");
+        let key = ResolvedTy::Named {
+            head: crate::TypeHead::Nominal(crate::NominalHead::new(
+                crate::NominalId::of_declaration(declaration),
+                "Key",
+            )),
+            args: Vec::new(),
+            is_opaque: false,
+        };
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
-        let key = ResolvedTy::named_for_test("Key", vec![]);
         assert!(matches!(
             service
                 .capability_plan(&key, super::ValueCapability::Hash)

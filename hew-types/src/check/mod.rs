@@ -685,16 +685,34 @@ impl Checker {
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
             .with_defs(std::sync::Arc::new(self.defs.clone()))
-            .with_aliases(self.type_aliases.clone())
-            .with_wire_types(self.wire_layouts.keys().cloned().collect())
+            .with_aliases(
+                self.type_aliases
+                    .values()
+                    .map(|alias| (alias.declaration, alias.clone()))
+                    .collect(),
+            )
+            .with_wire_types(
+                self.wire_layouts
+                    .keys()
+                    .filter_map(|name| {
+                        self.lookup_declaration(name)
+                            .map(crate::NominalId::of_declaration)
+                    })
+                    .collect(),
+            )
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
                 self.trait_impl_method_binders.clone(),
             )
-            .with_display_trait(self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
-                || self.trait_defs_key_for_bound("Display"),
-                |binding| self.defs.path(binding.trait_id).to_string(),
-            ))
+            .with_display_method(
+                self.lang_items
+                    .get(crate::LANG_ITEM_DISPLAY)
+                    .and_then(|binding| {
+                        self.trait_method_ids_for_key(self.defs.path(binding.trait_id), "fmt")
+                    })
+                    .or_else(|| self.trait_method_call_target_ids("Display", "fmt"))
+                    .map(|(_, method)| method),
+            )
     }
 
     /// The §1.1 declaration lookup backed by this checker's tables.
@@ -1294,7 +1312,7 @@ impl Checker {
                         display: EntryDisplayTarget::DynSlot { slot, method },
                     });
                 }
-                let Some((display_declaration, display_signature_key)) =
+                let Some(display_declaration) =
                     self.trait_impl_method_declaration(&error_ty, "Display", "fmt")
                 else {
                     self.errors.push(TypeError::new(
@@ -1312,7 +1330,7 @@ impl Checker {
                     ResolvedTy::Named { args, .. } => args.clone(),
                     _ => Vec::new(),
                 };
-                let Some(display_signature) = resolved_fn_sigs.get(&display_signature_key) else {
+                let Some(display_signature) = resolved_fn_sigs.of(display_declaration) else {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         span.clone(),
@@ -1405,9 +1423,8 @@ impl Checker {
         if matches!(error_ty, Ty::String) {
             return Some(crate::actor_protocol::ReceiveFailureDisplay::Identity);
         }
-        let (declaration, signature_key) =
-            self.trait_impl_method_declaration(error_ty, "Display", "fmt")?;
-        let signature = resolved_fn_sigs.get(&signature_key)?;
+        let declaration = self.trait_impl_method_declaration(error_ty, "Display", "fmt")?;
+        let signature = resolved_fn_sigs.of(declaration)?;
         let instance = if signature.type_params.is_empty() {
             EntryCallableInstance::Declared
         } else {
@@ -1615,6 +1632,7 @@ impl Checker {
             let path = self.defs.module_path(owner);
             (path != "#synthetic-root").then(|| path.to_string())
         });
+        let occurrence_owner = module.map(|file| self.defs.module_path(file).to_string());
         let fn_path = |leaf: &str| {
             module_path
                 .as_ref()
@@ -1813,7 +1831,12 @@ impl Checker {
                     0,
                     Symbol::intern("impl"),
                     None,
-                    fn_path(&format!("<impl@{}:{}>", span.start, span.end)),
+                    format!(
+                        "{}.<impl@{}:{}>",
+                        occurrence_owner.as_deref().unwrap_or("#synthetic-root"),
+                        span.start,
+                        span.end
+                    ),
                     false,
                 );
             }
@@ -2818,7 +2841,7 @@ impl Checker {
             .iter()
             .map(|(id, definition)| {
                 (
-                    self.defs.path(id.declaration()).to_string(),
+                    *id,
                     crate::type_facts::RenderingMembers::new(definition, |ty| {
                         self.subst.resolve(ty).materialize_literal_defaults()
                     }),

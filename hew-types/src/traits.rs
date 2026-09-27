@@ -218,9 +218,7 @@ impl TraitRegistry {
 
     /// Ownership metadata attached to the selected declaration or compiler carrier.
     pub(crate) fn is_owned_handle(&self, head: crate::TypeHead) -> bool {
-        self.handle_types.contains(&head)
-            || self.drop_types.contains(&head)
-            || head.nominal().is_some_and(|id| self.is_resource(id))
+        self.handle_types.contains(&head) || self.drop_types.contains(&head)
     }
 
     /// Register a `#[resource]` type by its canonical declaration path.

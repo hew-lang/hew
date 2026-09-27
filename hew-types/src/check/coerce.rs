@@ -741,7 +741,6 @@ impl Checker {
                     &slot.trait_key,
                     &slot.method_name,
                 )
-                .map(|(declaration, _)| declaration)
             };
             let qualified = if multi {
                 format!("{}::{}", slot.trait_spelling, slot.method_name)

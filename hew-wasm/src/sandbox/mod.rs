@@ -236,6 +236,100 @@ pub struct TestCompileOutput {
     pub bytecodes: Vec<SandboxBytecodePackageV1>,
 }
 
+/// Compile every test in one editor buffer once, returning one selected VM
+/// package per discovered declaration. The browser chooses the package by its
+/// returned identity and runs it with `runBytecode` in the sandbox VM.
+#[must_use]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = compileTestsToSandboxBytecode)]
+pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String {
+    let parsed = hew_parser::parse(source);
+    let tests = hew_analysis::test_discovery::discover_tests(&parsed.program);
+    let parse_diagnostics = convert_parse_diagnostics(&parsed.errors);
+    if parse_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error")
+    {
+        return serde_json::json!({"diagnostics": parse_diagnostics, "tests": []}).to_string();
+    }
+    if tests.is_empty() {
+        return serde_json::json!({"diagnostics": parse_diagnostics, "tests": []}).to_string();
+    }
+    let eligible = tests
+        .iter()
+        .filter(|test| !test.real_time)
+        .collect::<Vec<_>>();
+    let selections = eligible
+        .iter()
+        .map(|test| {
+            hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                None,
+                &test.span,
+                test.item_ordinal,
+                hew_types::DeclarationKind::Function,
+                0,
+            )
+        })
+        .collect::<Vec<_>>();
+    let path = std::path::Path::new(file);
+    let project_dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if eligible.is_empty() {
+        return serde_json::json!({
+            "diagnostics": parse_diagnostics,
+            "tests": tests.iter().map(|test| serde_json::json!({
+                "identity": format!("{file}::{}", test.name),
+                "name": test.name,
+                "range": {"start": test.span.start, "end": test.span.end},
+                "ignored": test.ignored,
+                "real_time": test.real_time,
+                "bytecode": null,
+            })).collect::<Vec<_>>(),
+        })
+        .to_string();
+    }
+    match compile_tests_to_sandbox_bytecode(source, path, &selections, None, project_dir) {
+        Ok(output) => {
+            if output.bytecodes.len() != eligible.len() {
+                if output
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == "error")
+                {
+                    return serde_json::json!({"diagnostics": output.diagnostics, "tests": []})
+                        .to_string();
+                }
+                return serde_json::json!({"error": "compiler emitted an incomplete test package set"}).to_string();
+            }
+            let mut bytecodes = output.bytecodes.into_iter();
+            let packages = tests
+                .into_iter()
+                .map(|test| {
+                    let bytecode = if test.real_time {
+                        None
+                    } else {
+                        bytecodes.next()
+                    };
+                    serde_json::json!({
+                        "identity": format!("{file}::{}", test.name),
+                        "name": test.name,
+                        "range": {"start": test.span.start, "end": test.span.end},
+                        "ignored": test.ignored,
+                        "real_time": test.real_time,
+                        "bytecode": bytecode,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({"diagnostics": output.diagnostics, "tests": packages}).to_string()
+        }
+        Err(error) => {
+            serde_json::json!({"error": format!("internal compiler error: {}", error.message)})
+                .to_string()
+        }
+    }
+}
+
 /// Compile Hew source into a sandbox bytecode package and return the result
 /// as a JSON-encoded string.
 ///

@@ -156,9 +156,12 @@ test("runProgram panics map to non-zero exit code and a trap diagnostic", () => 
 });
 
 function buildSandboxWasmBridge() {
+  const mode = process.env.HEW_WASM_PACK_MODE;
+  const args = ["build", path.join(repoRoot, "hew-wasm"), "--target", "nodejs", "--dev", "--out-dir", wasmDir];
+  if (mode) args.push("--mode", mode);
   const result = spawnSync(
     "wasm-pack",
-    ["build", path.join(repoRoot, "hew-wasm"), "--target", "nodejs", "--dev", "--out-dir", wasmDir],
+    args,
     {
       cwd: repoRoot,
       encoding: "utf8"

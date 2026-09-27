@@ -265,6 +265,7 @@ export function runtimeFailure(
   span: TraceSpan | null,
   unsupported?: UnsupportedDiagnostic,
   assertion?: RuntimeFailure["assertion"],
+  hewFault?: RuntimeFailure["hew_fault"],
 ): RuntimeFailure {
   return {
     kind,
@@ -273,5 +274,6 @@ export function runtimeFailure(
     trap_kind: trapKind,
     ...(unsupported ? { unsupported } : {}),
     ...(assertion ? { assertion } : {}),
+    ...(hewFault ? { hew_fault: hewFault } : {}),
   };
 }

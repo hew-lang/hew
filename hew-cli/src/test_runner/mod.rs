@@ -5,6 +5,7 @@
 //! with coloured output.
 
 pub mod discovery;
+mod doc_examples;
 pub mod output;
 pub mod runner;
 pub mod vm;
@@ -61,6 +62,9 @@ fn stable_hash(value: &str) -> u64 {
 }
 
 fn test_identity(test: &discovery::TestCase, root: &Path) -> String {
+    if let Some(doc) = &test.doc {
+        return doc.identity.clone();
+    }
     let file = Path::new(&test.file);
     let relative = file.strip_prefix(root).unwrap_or(file);
     format!(
@@ -71,6 +75,9 @@ fn test_identity(test: &discovery::TestCase, root: &Path) -> String {
 }
 
 fn test_selector(test: &discovery::TestCase) -> String {
+    if let Some(doc) = &test.doc {
+        return doc.selector.clone();
+    }
     format!("{}::{}", test.file, test.name)
 }
 
@@ -93,17 +100,28 @@ fn output_test_list(
     let mut identities: Vec<_> = tests
         .iter()
         .filter(|test| filter.is_none_or(|pattern| test_identity(test, root).contains(pattern)))
-        .map(|test| (test_identity(test, root), test_selector(test)))
+        .map(|test| {
+            (
+                test_identity(test, root),
+                test_selector(test),
+                test.ignored,
+                test.ignore_reason.clone(),
+            )
+        })
         .collect();
     identities.sort();
-    for (identity, selector) in identities {
+    for (identity, selector, ignored, ignore_reason) in identities {
         if format == output::OutputFormat::Json {
             println!(
                 "{}",
-                serde_json::json!({ "event": "test_discovered", "identity": identity, "selector": selector })
+                serde_json::json!({ "event": "test_discovered", "identity": identity, "selector": selector, "ignored": ignored, "ignore_reason": ignore_reason })
             );
         } else {
-            println!("{identity}");
+            match ignore_reason {
+                Some(reason) => println!("{identity} (ignored: {reason})"),
+                None if ignored => println!("{identity} (ignored)"),
+                None => println!("{identity}"),
+            }
         }
     }
 }
@@ -134,7 +152,9 @@ fn requested_test_paths(args: &crate::args::TestArgs) -> (Vec<String>, Vec<Optio
         .map(|path| {
             let value = path.to_string_lossy();
             if let Some((file, name)) = value.rsplit_once("::") {
-                if file.ends_with(".hew") && !name.is_empty() {
+                if (file.ends_with(".hew") || (args.doc && file.ends_with(".md")))
+                    && !name.is_empty()
+                {
                     return (PathBuf::from(file), Some(name.to_string()));
                 }
             }
@@ -177,12 +197,22 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     });
     let (paths, selected_names) = requested_test_paths(args);
 
+    let doc_sources = args.doc.then(|| {
+        doc_examples::prepare(&paths).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        })
+    });
+
     // Discover test files and test cases.
     let mut all_tests = Vec::new();
     let mut discovered_files = 0usize;
     let mut had_parse_errors = false;
     let mut seen_files = HashSet::new();
     for path in &paths {
+        if args.doc {
+            continue;
+        }
         let p = Path::new(path);
         if p.is_file() {
             if !seen_files.insert(path.clone()) {
@@ -224,6 +254,11 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         }
     }
 
+    if let Some(doc_sources) = &doc_sources {
+        discovered_files = doc_sources.tests.len();
+        all_tests.extend(doc_sources.tests.iter().cloned());
+    }
+
     if had_parse_errors {
         std::process::exit(1);
     }
@@ -243,8 +278,19 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         .unwrap_or_else(|_| PathBuf::from("."));
     all_tests.retain(|test| {
         paths.iter().zip(&selected_names).any(|(path, name)| {
-            Path::new(&test.file).starts_with(Path::new(path))
-                && name.as_ref().is_none_or(|name| test.name == *name)
+            Path::new(
+                test.doc
+                    .as_ref()
+                    .map_or(test.file.as_str(), |doc| doc.origin.as_str()),
+            )
+            .starts_with(Path::new(path))
+                && name.as_ref().is_none_or(|name| {
+                    test.name == *name
+                        || test
+                            .doc
+                            .as_ref()
+                            .is_some_and(|doc| doc.identity.ends_with(&format!("::{name}")))
+                })
         })
     });
     if args.ignored {
@@ -322,7 +368,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             on_event: Some(&emit),
         },
     );
-    if let Err(error) = save_failed_tests(&summary, &root) {
+    if let Err(error) = save_failed_tests(&summary, &all_tests, &root) {
         eprintln!("Warning: cannot save failed test identities: {error}");
     }
     output::output_results(&summary, use_color, format, &root);
@@ -332,7 +378,11 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     }
 }
 
-fn save_failed_tests(summary: &runner::TestSummary, root: &Path) -> Result<(), String> {
+fn save_failed_tests(
+    summary: &runner::TestSummary,
+    tests: &[discovery::TestCase],
+    root: &Path,
+) -> Result<(), String> {
     let mut failures = summary
         .results
         .iter()
@@ -342,6 +392,18 @@ fn save_failed_tests(summary: &runner::TestSummary, root: &Path) -> Result<(), S
         })
         .collect::<Vec<_>>();
     for failure in &summary.compile_failures {
+        let doc_failures = tests
+            .iter()
+            .filter(|test| {
+                test.doc.as_ref().is_some_and(|doc| {
+                    doc.origin == failure.file && failure.tests.contains(&doc.identity)
+                })
+            })
+            .collect::<Vec<_>>();
+        if !doc_failures.is_empty() {
+            failures.extend(doc_failures.into_iter().map(|test| test_selector(test)));
+            continue;
+        }
         let relative = Path::new(&failure.file)
             .strip_prefix(root)
             .unwrap_or_else(|_| Path::new(&failure.file));
@@ -502,9 +564,13 @@ mod partition_tests {
             ),
             companion: None,
             ignored: false,
+            ignore_reason: None,
             should_panic: false,
+            should_panic_message: None,
+            timeout_ns: None,
             serial: false,
             clock: crate::test_runner::discovery::TestClock::Deterministic,
+            doc: None,
         };
         assert_eq!(
             test_identity(&test, Path::new("/repo")),

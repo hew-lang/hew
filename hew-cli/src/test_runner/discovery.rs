@@ -19,13 +19,32 @@ pub struct TestCase {
     pub companion: Option<String>,
     /// Whether the test has `#[ignore]`.
     pub ignored: bool,
+    /// Optional reason attached to `#[ignore]`.
+    pub ignore_reason: Option<String>,
     /// Whether the test has `#[should_panic]`.
     pub should_panic: bool,
+    /// Optional text that the expected fault must contain.
+    pub should_panic_message: Option<String>,
+    /// Per-test timeout override from `#[timeout(D)]`.
+    pub timeout_ns: Option<i64>,
     /// Whether the test must run exclusively with other serial tests.
     pub serial: bool,
     /// Where the test runs: the deterministic driver, or host threads and the
     /// host clock for a `#[real_time]` test.
     pub clock: TestClock,
+    /// Original source identity and output contract for an executable doc fence.
+    pub doc: Option<DocTest>,
+}
+
+/// Metadata retained while a doc fence runs from a generated source file.
+#[derive(Debug, Clone)]
+pub struct DocTest {
+    pub identity: String,
+    pub selector: String,
+    pub origin: String,
+    pub expected_stdout: Option<String>,
+    pub no_run: bool,
+    pub parse_error: Option<String>,
 }
 
 /// The runtime a test executes on.
@@ -79,13 +98,17 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
             ),
             companion: companion.clone(),
             ignored: declaration.ignored,
+            ignore_reason: declaration.ignore_reason,
             should_panic: declaration.should_panic,
+            should_panic_message: declaration.should_panic_message,
+            timeout_ns: declaration.timeout_ns,
             serial: declaration.serial,
             clock: if declaration.real_time {
                 TestClock::RealTime
             } else {
                 TestClock::Deterministic
             },
+            doc: None,
         });
     }
     tests

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import process from "node:process";
-import { runBytecode } from "../dist/interpreter/index.js";
+import { classifyHewFault, runBytecode } from "../dist/interpreter/index.js";
 
 function parseArgs(args) {
   if (args.length !== 7 || args[1] !== "--schedule" || args[3] !== "--seed" || args[5] !== "--step-budget") {
@@ -32,16 +32,17 @@ try {
   const final = trace.final_state;
   const rejection = final.sandbox_rejections[0];
   const fault = final.runtime_failures[0];
+  const hewFault = classifyHewFault(trace);
   const passed = trace.result === "ok" && final.exit_code === 0;
   const outcome = passed ? "passed" : rejection ? "refused" : fault ? "fault" : "exit";
   const message = rejection?.message ?? fault?.message ?? (passed ? null : `VM result: ${trace.result}`);
-  const faultKind = fault?.kind === "panic" ? "UserPanic" : fault?.kind ?? null;
+  const faultKind = hewFault?.kind ?? fault?.kind ?? null;
   const report = {
     version: 1,
     outcome,
     status: passed ? 0 : 1,
     fault_kind: faultKind,
-    fault_code: null,
+    fault_code: hewFault?.code ?? null,
     message,
     site_offset: null,
     assertion: fault?.assertion ?? null,

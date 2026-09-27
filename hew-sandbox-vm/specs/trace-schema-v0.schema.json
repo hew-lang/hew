@@ -428,6 +428,15 @@
             "right": { "type": "string" }
           }
         },
+        "hew_fault": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "kind"],
+          "properties": {
+            "code": { "type": "integer" },
+            "kind": { "type": "string" }
+          }
+        },
         "span": {
           "$ref": "#/$defs/span_or_null"
         },

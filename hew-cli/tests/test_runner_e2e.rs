@@ -31,6 +31,64 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
 }
 
 #[test]
+fn doc_output_mismatch_names_the_fence() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "guide.md",
+        "```hew\nprintln(3);\n// Output:\n// 4\n```\n",
+    );
+    let output = run_hew_in(
+        dir.path(),
+        &["test", "--doc", "guide.md", "--format", "json"],
+    );
+    assert!(!output.status.success());
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("guide.md::doc(module)#1"), "{events}");
+    assert!(events.contains("doc output differs"), "{events}");
+}
+
+#[test]
+fn doc_no_run_still_rejects_a_type_error() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "guide.md",
+        "```hew,no_run\nlet count: i64 = \"wrong\";\n```\n",
+    );
+    let output = run_hew_in(
+        dir.path(),
+        &["test", "--doc", "guide.md", "--format", "json"],
+    );
+    assert!(!output.status.success());
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("guide.md::doc(module)#1"), "{events}");
+    assert!(events.contains("\"ok\":false"), "{events}");
+}
+
+#[test]
+fn should_panic_matches_checked_trap_and_fragment() {
+    require_codegen();
+    let output = run_suite(
+        &[(
+            "fault_test.hew",
+            "#[test]\n#[should_panic(\"IndexOutOfBounds\")]\nfn bounds() {\n    let values: Vec<i64> = [1, 2];\n    println(values[7]);\n}\n#[test]\n#[should_panic(\"known fragment\")]\nfn panic_with_text() { panic(\"known fragment present\"); }\n",
+        )],
+        &["--format", "json"],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("\"passed\":2"), "{events}");
+}
+
+#[test]
 fn absolute_selectors_distinguish_same_named_tests_across_roots() {
     require_codegen();
     let dir = support::tempdir();

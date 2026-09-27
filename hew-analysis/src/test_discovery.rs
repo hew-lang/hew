@@ -15,9 +15,12 @@ pub struct TestDeclaration {
     pub span: Range<usize>,
     pub item_ordinal: usize,
     pub ignored: bool,
+    pub ignore_reason: Option<String>,
     pub should_panic: bool,
+    pub should_panic_message: Option<String>,
     pub serial: bool,
     pub real_time: bool,
+    pub timeout_ns: Option<i64>,
 }
 
 /// Return every top-level `#[test]` function in source order.
@@ -42,9 +45,27 @@ pub fn discover_tests(program: &Program) -> Vec<TestDeclaration> {
                 span: span.clone(),
                 item_ordinal,
                 ignored: has("ignore"),
+                ignore_reason: function
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.name == "ignore")
+                    .and_then(|attribute| attribute.args.first())
+                    .map(|argument| argument.as_str().to_string()),
                 should_panic: has("should_panic"),
+                should_panic_message: function
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.name == "should_panic")
+                    .and_then(|attribute| attribute.args.first())
+                    .map(|argument| argument.as_str().to_string()),
                 serial: has("serial"),
                 real_time: has("real_time"),
+                timeout_ns: function
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.name == "timeout")
+                    .and_then(|attribute| attribute.args.first())
+                    .and_then(hew_parser::ast::AttributeArg::as_duration_ns),
             })
         })
         .collect()
@@ -94,14 +115,19 @@ mod test_cases {
     #[test]
     fn discovers_only_test_functions_with_source_selection() {
         let source =
-            "fn helper() {}\n#[test]\n#[ignore]\nfn a() {}\n#[test]\n#[real_time]\nfn b() {}\n";
+            "fn helper() {}\n#[test]\n#[ignore(\"needs a server\")]\nfn a() {}\n#[test]\n#[real_time]\n#[should_panic(\"IndexOutOfBounds\")]\nfn b() {}\n";
         let parsed = hew_parser::parse(source);
         let tests = discover_tests(&parsed.program);
         assert_eq!(tests.len(), 2);
         assert_eq!(tests[0].name, "a");
         assert!(tests[0].ignored);
+        assert_eq!(tests[0].ignore_reason.as_deref(), Some("needs a server"));
         assert!(source[tests[0].span.clone()].contains("fn a() {}"));
         assert_eq!(tests[1].name, "b");
         assert!(tests[1].real_time);
+        assert_eq!(
+            tests[1].should_panic_message.as_deref(),
+            Some("IndexOutOfBounds")
+        );
     }
 }

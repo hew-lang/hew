@@ -3588,6 +3588,7 @@ class ExecutorV1 {
     const message = isPanic
       ? fault.message
       : (fault.message ?? trapMessage(fault.trap));
+    const [code, kind] = faultInfo(fault);
     // A failing run reports no exit code: native exits 1 for every fault and
     // names the kind in its message, so the kind is what travels, in
     // `runtime_failures`. The page turns it into an exit code of its own.
@@ -3601,6 +3602,7 @@ class ExecutorV1 {
         null,
         undefined,
         fault.kind === "panic" ? fault.assertion : undefined,
+        { code, kind },
       ),
     );
     throw new Halt(status);

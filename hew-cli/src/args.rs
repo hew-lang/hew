@@ -669,6 +669,9 @@ pub enum TestColour {
 pub struct TestArgs {
     /// Files or directories to test.
     pub paths: Vec<PathBuf>,
+    /// Run executable Hew code fences in source comments or Markdown files.
+    #[arg(long)]
+    pub doc: bool,
     /// List discovered test identities without compiling or running them.
     #[arg(long)]
     pub list: bool,

@@ -82,7 +82,7 @@ pub enum TestOutcome {
     /// Test failed with a semantic kind and diagnostic.
     Failed(TestFailure),
     /// Test was ignored (not run).
-    Ignored(&'static str),
+    Ignored(String),
 }
 
 impl TestOutcome {
@@ -411,6 +411,33 @@ pub fn run_tests(tests: &[TestCase], options: TestRunOptions<'_>) -> TestSummary
     run_tests_parallel(tests, &options)
 }
 
+fn skip_reason(test: &TestCase, engine: crate::args::TestEngine) -> String {
+    if engine == crate::args::TestEngine::Vm && test.clock == TestClock::RealTime {
+        "real_time requires the native engine".to_string()
+    } else {
+        test.ignore_reason
+            .clone()
+            .unwrap_or_else(|| "ignored".to_string())
+    }
+}
+
+fn reported_file(test: &TestCase) -> String {
+    test.doc
+        .as_ref()
+        .map_or_else(|| test.file.clone(), |doc| doc.origin.clone())
+}
+
+fn reported_test_names(tests: &[&TestCase]) -> Vec<String> {
+    tests
+        .iter()
+        .map(|test| {
+            test.doc
+                .as_ref()
+                .map_or_else(|| test.name.clone(), |doc| doc.identity.clone())
+        })
+        .collect()
+}
+
 fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSummary {
     let mut results = Vec::new();
     let mut compile_failures = Vec::new();
@@ -452,8 +479,8 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                     emit(
                         options,
                         TestEvent::FileCompiled {
-                            file: selected[0].file.clone(),
-                            tests: selected.iter().map(|test| test.name.clone()).collect(),
+                            file: reported_file(selected[0]),
+                            tests: reported_test_names(&selected),
                             diagnostics: None,
                         },
                     );
@@ -463,14 +490,14 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                     emit(
                         options,
                         TestEvent::FileCompiled {
-                            file: selected[0].file.clone(),
-                            tests: selected.iter().map(|test| test.name.clone()).collect(),
+                            file: reported_file(selected[0]),
+                            tests: reported_test_names(&selected),
                             diagnostics: Some(message.clone()),
                         },
                     );
                     compile_failures.push(FileCompileFailure {
-                        file: selected[0].file.clone(),
-                        tests: selected.iter().map(|test| test.name.clone()).collect(),
+                        file: reported_file(selected[0]),
+                        tests: reported_test_names(&selected),
                         message,
                         duration: start.elapsed(),
                     });
@@ -485,15 +512,7 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
             {
                 let result = TestResult {
                     test: test.clone(),
-                    outcome: TestOutcome::Ignored(
-                        if options.engine == crate::args::TestEngine::Vm
-                            && test.clock == TestClock::RealTime
-                        {
-                            "real_time"
-                        } else {
-                            "ignored"
-                        },
-                    ),
+                    outcome: TestOutcome::Ignored(skip_reason(test, options.engine)),
                     output: String::new(),
                     duration: Duration::ZERO,
                     report: None,
@@ -595,11 +614,8 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                                 emit(
                                     options,
                                     TestEvent::FileCompiled {
-                                        file: selected[0].file.clone(),
-                                        tests: selected
-                                            .iter()
-                                            .map(|test| test.name.clone())
-                                            .collect(),
+                                        file: reported_file(selected[0]),
+                                        tests: reported_test_names(&selected),
                                         diagnostics: None,
                                     },
                                 );
@@ -609,11 +625,8 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                                 emit(
                                     options,
                                     TestEvent::FileCompiled {
-                                        file: selected[0].file.clone(),
-                                        tests: selected
-                                            .iter()
-                                            .map(|test| test.name.clone())
-                                            .collect(),
+                                        file: reported_file(selected[0]),
+                                        tests: reported_test_names(&selected),
                                         diagnostics: Some(message.clone()),
                                     },
                                 );
@@ -621,11 +634,8 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .push(FileCompileFailure {
-                                        file: selected[0].file.clone(),
-                                        tests: selected
-                                            .iter()
-                                            .map(|test| test.name.clone())
-                                            .collect(),
+                                        file: reported_file(selected[0]),
+                                        tests: reported_test_names(&selected),
                                         message,
                                         duration: start.elapsed(),
                                     });
@@ -644,15 +654,7 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                         let result = if skipped {
                             TestResult {
                                 test: test.clone(),
-                                outcome: TestOutcome::Ignored(
-                                    if options.engine == crate::args::TestEngine::Vm
-                                        && test.clock == TestClock::RealTime
-                                    {
-                                        "real_time"
-                                    } else {
-                                        "ignored"
-                                    },
-                                ),
+                                outcome: TestOutcome::Ignored(skip_reason(test, options.engine)),
                                 output: String::new(),
                                 duration: Duration::ZERO,
                                 report: None,
@@ -747,6 +749,9 @@ fn compile_test(
     let test = tests
         .first()
         .ok_or("cannot compile a file with no selected tests")?;
+    if let Some(error) = test.doc.as_ref().and_then(|doc| doc.parse_error.as_ref()) {
+        return Err(error.clone());
+    }
     if tests.iter().any(|candidate| candidate.file != test.file) {
         return Err("selected test entries span multiple source files".into());
     }
@@ -878,6 +883,20 @@ fn run_compiled_test(
     options: &TestRunOptions<'_>,
 ) -> TestResult {
     let start = std::time::Instant::now();
+    let timeout = test
+        .timeout_ns
+        .and_then(|nanos| u64::try_from(nanos).ok())
+        .map(Duration::from_nanos)
+        .unwrap_or(options.timeout);
+    if test.doc.as_ref().is_some_and(|doc| doc.no_run) {
+        return TestResult {
+            test: test.clone(),
+            outcome: TestOutcome::Passed,
+            output: String::new(),
+            duration: start.elapsed(),
+            report: None,
+        };
+    }
     let ordinal = u32::try_from(ordinal).expect("test dispatcher ordinal exceeds u32");
 
     let runs = executions(test, options);
@@ -887,8 +906,22 @@ fn run_compiled_test(
     let mut failed_runs = 0usize;
     for execution in &runs {
         let (run_result, report, report_dir) =
-            execute_test_run(artifact, options.timeout, execution, ordinal, options);
-        let (outcome, output) = judge_run(test, run_result, options.timeout, report.as_ref());
+            execute_test_run(artifact, timeout, execution, ordinal, options);
+        let (mut outcome, output) = judge_run(test, run_result, timeout, report.as_ref());
+        if matches!(outcome, TestOutcome::Passed) {
+            if let Some(expected) = test
+                .doc
+                .as_ref()
+                .and_then(|doc| doc.expected_stdout.as_ref())
+            {
+                if &output != expected {
+                    outcome = TestOutcome::failed(
+                        TestFailureKind::Runtime,
+                        format!("doc output differs: expected {expected:?}, got {output:?}"),
+                    );
+                }
+            }
+        }
         match outcome {
             TestOutcome::Failed(mut failure) => {
                 failed_runs += 1;
@@ -933,14 +966,24 @@ fn run_compiled_test(
                     runs.len()
                 );
             }
-            let _ = write!(
-                message,
-                "\nschedule {}, seed {seed:#x}\nreproduce: hew test {} --filter {} --schedule {} --seed {seed:#x}",
-                schedule.as_str(),
-                test.file,
-                test.name,
-                schedule.as_str(),
-            );
+            if test.doc.is_some() {
+                let _ = write!(
+                    message,
+                    "\nschedule {}, seed {seed:#x}\nreproduce: hew test --doc {} --schedule {} --seed {seed:#x}",
+                    schedule.as_str(),
+                    super::test_selector(test),
+                    schedule.as_str(),
+                );
+            } else {
+                let _ = write!(
+                    message,
+                    "\nschedule {}, seed {seed:#x}\nreproduce: hew test {} --filter {} --schedule {} --seed {seed:#x}",
+                    schedule.as_str(),
+                    test.file,
+                    test.name,
+                    schedule.as_str(),
+                );
+            }
             message
         }
     };
@@ -1030,7 +1073,7 @@ fn judge_run(
                 (
                     TestOutcome::failed(
                         TestFailureKind::Runtime,
-                        "expected test to panic, but it completed successfully",
+                        "expected a Hew fault, but test completed successfully",
                     ),
                     stdout,
                 )
@@ -1044,13 +1087,29 @@ fn judge_run(
             exit_code,
             signal,
         }) => {
-            let reported_panic = signal.is_none()
-                && report.is_some_and(|report| {
-                    report.status == exit_code
+            let expected_fault = signal
+                .is_none()
+                .then_some(report)
+                .flatten()
+                .and_then(|report| {
+                    (report.status == exit_code
                         && report.outcome == "fault"
-                        && report.fault_kind.as_deref() == Some("UserPanic")
+                        && report.fault_code.is_some_and(|code| code > 0))
+                    .then(|| {
+                        let kind = report.fault_kind.as_deref().unwrap_or("HewFault");
+                        match report.message.as_deref() {
+                            Some(message) => format!("{kind}: {message}"),
+                            None => kind.to_string(),
+                        }
+                    })
                 });
-            if test.should_panic && reported_panic {
+            if test.should_panic
+                && expected_fault.as_ref().is_some_and(|actual| {
+                    test.should_panic_message
+                        .as_ref()
+                        .is_none_or(|fragment| actual.contains(fragment))
+                })
+            {
                 (TestOutcome::Passed, stdout)
             } else {
                 let mut msg = if stderr.is_empty() {
@@ -1067,7 +1126,12 @@ fn judge_run(
                     let _ = write!(msg, "\n  at {site}");
                 }
                 if test.should_panic {
-                    msg = format!("expected a user panic, got another failure: {msg}");
+                    msg = match (&test.should_panic_message, expected_fault) {
+                        (Some(fragment), Some(actual)) => {
+                            format!("expected fault containing {fragment:?}, got {actual:?}\n{msg}")
+                        }
+                        _ => format!("expected a Hew fault, got another failure: {msg}"),
+                    };
                 }
                 let kind = match report.map(|report| report.outcome.as_str()) {
                     Some("refused") => TestFailureKind::Refused,
@@ -1644,9 +1708,13 @@ fn test_timeout() {
                 ),
                 companion: None,
                 ignored: true,
+                ignore_reason: None,
                 should_panic: false,
+                should_panic_message: None,
+                timeout_ns: None,
                 serial: false,
                 clock: crate::test_runner::discovery::TestClock::Deterministic,
+                doc: None,
             },
             TestCase {
                 name: "beta".into(),
@@ -1659,9 +1727,13 @@ fn test_timeout() {
                 ),
                 companion: None,
                 ignored: true,
+                ignore_reason: None,
                 should_panic: false,
+                should_panic_message: None,
+                timeout_ns: None,
                 serial: false,
                 clock: crate::test_runner::discovery::TestClock::Deterministic,
+                doc: None,
             },
             TestCase {
                 name: "gamma".into(),
@@ -1674,9 +1746,13 @@ fn test_timeout() {
                 ),
                 companion: None,
                 ignored: true,
+                ignore_reason: None,
                 should_panic: false,
+                should_panic_message: None,
+                timeout_ns: None,
                 serial: false,
                 clock: crate::test_runner::discovery::TestClock::Deterministic,
+                doc: None,
             },
         ];
 

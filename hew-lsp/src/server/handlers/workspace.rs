@@ -36,9 +36,7 @@ pub(crate) fn code_lens(
     let uri = &params.text_document.uri;
     let doc = server.documents.get(uri)?;
 
-    let Some(path) = uri.to_file_path() else {
-        return None;
-    };
+    let path = uri.to_file_path()?;
     let file = normalize_workspace_path(&path).display().to_string();
     let lenses = build_code_lenses_with_seeds(
         &doc.source,

@@ -57,7 +57,8 @@ pub(super) fn failure_from_event(
             assertion.get("right").and_then(Value::as_str),
         ) {
             if !message.contains("left:") && !message.contains("right:") {
-                message.push_str(&format!("\nleft: {left}\nright: {right}"));
+                use std::fmt::Write;
+                let _ = write!(message, "\nleft: {left}\nright: {right}");
             }
         }
     }

@@ -407,6 +407,13 @@ type AnalysisVersions = Arc<DashMap<Url, u64>>;
 /// typical files while coalescing rapid-fire keystrokes into a single run.
 const DEBOUNCE_MS: u64 = 100;
 
+struct TestRunState {
+    affected: HashSet<Url>,
+    target_uri: Option<Url>,
+    run_version: Option<u64>,
+    edit_version: Option<u64>,
+}
+
 /// Hew language server providing IDE features via LSP.
 #[derive(Debug)]
 pub struct HewLanguageServer {
@@ -473,6 +480,14 @@ impl HewLanguageServer {
 
     /// Return stable identities and ranges from the same discovery used by
     /// `hew test`. An omitted document requests the workspace inventory.
+    ///
+    /// # Errors
+    ///
+    /// The LSP request signature returns `Result`; discovery itself cannot fail.
+    #[expect(
+        clippy::unused_async,
+        reason = "custom_method requires an async handler"
+    )]
     pub async fn tests(&self, params: TestsParams) -> Result<Value> {
         let roots = self
             .workspace_roots
@@ -549,17 +564,7 @@ impl HewLanguageServer {
         }
     }
 
-    async fn run_test_command(&self, test_name: &str, seed: Option<&str>) -> Result<Option<Value>> {
-        let Some(workspace_root) = self.workspace_root() else {
-            self.client
-                .show_message(
-                    MessageType::ERROR,
-                    "Cannot run Hew test: no workspace root is available.",
-                )
-                .await;
-            return Ok(None);
-        };
-
+    async fn begin_test_run(&self, test_name: &str) -> TestRunState {
         let file = test_name
             .rsplit_once("::")
             .map_or(test_name, |(file, _)| file);
@@ -598,6 +603,31 @@ impl HewLanguageServer {
                 .retain(|selector, _| !selector.starts_with(&prefix));
         }
         self.publish_test_diagnostics_for(&affected).await;
+        TestRunState {
+            affected,
+            target_uri,
+            run_version,
+            edit_version,
+        }
+    }
+
+    async fn run_test_command(&self, test_name: &str, seed: Option<&str>) -> Result<Option<Value>> {
+        let Some(workspace_root) = self.workspace_root() else {
+            self.client
+                .show_message(
+                    MessageType::ERROR,
+                    "Cannot run Hew test: no workspace root is available.",
+                )
+                .await;
+            return Ok(None);
+        };
+
+        let TestRunState {
+            mut affected,
+            target_uri,
+            run_version,
+            edit_version,
+        } = self.begin_test_run(test_name).await;
 
         let (program, args) = build_seeded_test_invocation(test_name, seed);
         self.client

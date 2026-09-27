@@ -1418,6 +1418,9 @@ unsafe fn close_supervisor_access(
     let control = runtime
         .local_handles
         .supervisor_control_for_raw(token, sup)?;
+    // Cancellation waits behind any roster publisher that acquired its lock
+    // first. Later publishers refuse it, so this observer snapshot is final.
+    request_supervisor_shutdown(sup);
     // SAFETY: this teardown owner keeps the raw allocation live until close.
     control.retain_role_wait_targets(unsafe { snapshot_role_wait_targets(sup) });
     let won_close = control.begin_close();

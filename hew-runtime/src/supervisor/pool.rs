@@ -670,7 +670,7 @@ pub extern "C" fn hew_supervisor_native_role_owner(
 /// Freeze exact child completions before closing the owner's direct route.
 ///
 /// # Safety
-/// `supervisor` is pinned by the caller until this snapshot returns.
+/// `supervisor` is pinned or exclusively owned until this snapshot returns.
 pub(crate) unsafe fn snapshot_role_wait_targets(
     supervisor: *mut HewSupervisor,
 ) -> (

@@ -16,7 +16,7 @@ type Boxed {
 }
 
 fn main() {
-    let p: aliassrc.Payload = Payload { code: 50 };
+    let p: aliassrc.Payload = aliassrc.Payload { code: 50 };
     let b = Boxed { item: p };
     println(b.item.code);
 }

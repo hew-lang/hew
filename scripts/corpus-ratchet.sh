@@ -788,6 +788,7 @@ HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT=0
 run_hew_corpus() {
     local swept=() excluded=0 total f
     local check_log status expected_code actual_codes
+    local check_args=()
 
     require_hew_bin
     require_expected_failures_file
@@ -813,7 +814,13 @@ run_hew_corpus() {
     for f in "${swept[@]}"; do
         RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${f}"$'\n'
         status=0
-        check_log="$("$HEW_BIN" check "$REPO_ROOT/$f" 2>&1)" || status=$?
+        check_args=()
+        if [[ "$f" == tests/pkg-import/* ]]; then
+            # These fixtures import the in-tree packages used by their owning
+            # execution gate; keep the corpus check in that same context.
+            check_args=(--pkg-path "$REPO_ROOT/tests/pkg-import/pkgs")
+        fi
+        check_log="$("$HEW_BIN" check "${check_args[@]}" "$REPO_ROOT/$f" 2>&1)" || status=$?
         if ((status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${f}"$'\n'
             if record_expected_refusal_status "$f" "$status" "$check_log" &&

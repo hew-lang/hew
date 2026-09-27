@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOCK_FILE="$REPO_ROOT/tools/downstream/tree-sitter.lock"
 CLONE_DIR="$REPO_ROOT/.tmp/tree-sitter-hew"
-GIT_URL="https://github.com/hew-lang/tree-sitter-hew.git"
+GIT_URL="$(sed -n 's/^repository = "\([^"]*\)"$/\1/p' "$LOCK_FILE")"
 
 # shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
@@ -46,6 +46,11 @@ if [[ ! "$LOCK_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
     echo "grammar-parity: tools/downstream/tree-sitter.lock's commit is not a 40-character hex sha (got '$LOCK_COMMIT')" >&2
     exit 1
 fi
+if [[ "$GIT_URL" != "https://github.com/hew-lang/tree-sitter-hew" ]]; then
+    echo "grammar-parity: invalid repository in tools/downstream/tree-sitter.lock" >&2
+    exit 1
+fi
+GIT_URL="$GIT_URL.git"
 
 # ── Resolve the tree-sitter-hew checkout ────────────────────────────────
 if [[ -n "${HEW_SYNC_TREE_SITTER:-}" ]]; then

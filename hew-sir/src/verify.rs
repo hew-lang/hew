@@ -2012,8 +2012,9 @@ fn verify_callable_table<'a>(
                 None => Some("selected test callable is absent"),
                 Some(callable)
                     if callable.declaration != test.declaration
-                        || callable.source_origin != crate::FunctionSourceOrigin::RootUnit
-                        || !module.root_unit_callables.contains(&test.callable) =>
+                        || callable.source_origin == crate::FunctionSourceOrigin::Unknown
+                        || (callable.source_origin == crate::FunctionSourceOrigin::RootUnit
+                            && !module.root_unit_callables.contains(&test.callable)) =>
                 {
                     Some("selected test callable has wrong source declaration or provenance")
                 }

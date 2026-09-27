@@ -4198,6 +4198,9 @@ mod tests {
             "std.concurrency.lifecycle_i64_happy_path_state_names"
         );
         assert!(output.entry_exit_plan.is_none());
+        Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, &output)
+            .expect("selected private std test and its helpers must lower through SIR");
     }
 
     #[test]

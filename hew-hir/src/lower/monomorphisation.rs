@@ -68,7 +68,7 @@ impl LowerCtx {
             .or_insert_with(|| type_args.clone());
         if type_args
             .iter()
-            .any(|t| self.contains_abstract_type_param(t))
+            .any(super::substitution::contains_abstract_symbol)
         {
             return;
         }
@@ -324,7 +324,7 @@ impl LowerCtx {
         // these sites with concrete args via substitution.
         if type_args
             .iter()
-            .any(|t| self.contains_abstract_type_param(t))
+            .any(super::substitution::contains_abstract_symbol)
         {
             return;
         }
@@ -466,7 +466,7 @@ impl LowerCtx {
         // recovers `Box<i64>` → `Box$$i64`. Never fires at a concrete site.
         if type_args
             .iter()
-            .any(|t| self.contains_abstract_type_param(t))
+            .any(super::substitution::contains_abstract_symbol)
         {
             return Some(type_args);
         }

@@ -765,7 +765,7 @@ impl LowerCtx {
         // `crate::layout_mono`'s enum-decl table). A concrete operand never
         // takes this branch, so every concrete synthetic-Option path is
         // byte-identical.
-        if self.contains_abstract_type_param(operand_ty) {
+        if super::substitution::contains_abstract_symbol(operand_ty) {
             return;
         }
         let key = EnumMonoKey {
@@ -815,7 +815,7 @@ impl LowerCtx {
     ) {
         if type_args
             .iter()
-            .any(|ty| self.contains_abstract_type_param(ty))
+            .any(super::substitution::contains_abstract_symbol)
         {
             return;
         }
@@ -935,7 +935,7 @@ impl LowerCtx {
             }
             if args
                 .iter()
-                .any(|arg| self.contains_abstract_type_param(arg))
+                .any(super::substitution::contains_abstract_symbol)
             {
                 continue;
             }

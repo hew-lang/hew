@@ -545,7 +545,7 @@ fn register_and_lookup_trait() {
     let mut reg = TraitRegistry::new();
     reg.register_trait(TraitDef {
         name: "Printable".to_string(),
-        type_params: vec!["T".to_string()],
+        type_params: vec![hew_types::ParamHead::for_test("T")],
         super_traits: vec![],
         methods: vec![MethodSig {
             name: "print".to_string(),
@@ -562,7 +562,7 @@ fn register_and_lookup_trait() {
         .lookup_trait("Printable")
         .expect("trait should be found");
     assert_eq!(def.name, "Printable");
-    assert_eq!(def.type_params, vec!["T"]);
+    assert_eq!(def.type_params, vec![hew_types::ParamHead::for_test("T")]);
     assert_eq!(def.methods.len(), 1);
     assert_eq!(def.methods[0].name, "print");
     assert!(def.methods[0].takes_self);

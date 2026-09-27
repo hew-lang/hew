@@ -738,9 +738,8 @@ pub(super) fn check_builtin_callable_impl_program(
     // collide with root user nominals of the same leaf. The executable HIR is
     // still lowered from the original source AST, preserving all source spans.
     let mut checker_program = program.clone();
-    // These externs are already registered under their std.builtins owner.
-    // Re-declaring them in the isolated checker's root would give a close
-    // wrapper a different release identity from its lifecycle contract.
+    // Externs retain their canonical registration. Source declarations reuse
+    // their std.builtins identities while providing local field visibility.
     checker_program
         .items
         .retain(|(item, _)| !matches!(item, Item::ExternBlock(_)));
@@ -765,7 +764,7 @@ pub(super) fn check_builtin_callable_impl_program(
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
     // The run mints into a fork of the compilation's table, so every id its
     // facts carry indexes that table (TRANSITION(P2): see
-    // `DefTable::fork_for_embedded`).
+    // `DefTable::fork_for_embedded_builtins`).
     let output = checker.check_embedded_builtins(&checker_program, defs);
     assert!(
         output.defs.extends(defs),

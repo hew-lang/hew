@@ -1040,20 +1040,21 @@ impl DefTable {
 
     /// The table a second checker run over the embedded builtin source mints
     /// into: every row of `self` keeps its id, so the std.builtins
-    /// declarations the run re-declares resolve to the same identities, while
-    /// the run's own synthetic root starts with an empty namespace.
+    /// declarations the run re-declares resolve to the same identities. Its
+    /// root is the builtin source module; caller-root names are hidden.
     ///
     /// TRANSITION(P2): WHY HIR type-checks the injected builtin impls with a
     /// second `Checker`; WHEN B1 deletes that run; WHAT one `Checker` per
     /// compilation (identity plan §3.2).
     #[must_use]
-    pub(crate) fn fork_for_embedded(&self) -> DefTable {
+    pub(crate) fn fork_for_embedded_builtins(&self) -> DefTable {
         let mut fork = self.clone();
         if let Some(root) = fork.root.take() {
             let defs = &fork.defs;
             fork.by_path
                 .retain(|_, id| defs[id.index()].module != Some(root));
         }
+        fork.root = Some(fork.mint_module("std.builtins", &[]));
         fork
     }
 
@@ -1679,21 +1680,22 @@ mod tests {
                 "Cursor",
             )
             .unwrap();
-        let mut fork = table.fork_for_embedded();
+        let mut fork = table.fork_for_embedded_builtins();
         assert_eq!(fork.lookup_path("std.builtins.Cursor"), Some(shared));
         assert_eq!(fork.lookup_path("Cursor"), None);
         let fork_root = fork.mint_synthetic_root();
-        assert_ne!(fork_root, root);
-        fork.declare(
-            DeclarationOccurrence::new(Some(fork_root), &(0..8), DeclarationKind::Type, 0),
-            Symbol::intern("Cursor"),
-            None,
-            "Cursor",
-        )
-        .expect("the fork's root namespace starts empty");
+        assert_eq!(fork_root, builtins);
+        let embedded_cursor = fork
+            .declare(
+                DeclarationOccurrence::new(Some(fork_root), &(0..8), DeclarationKind::Type, 0),
+                Symbol::intern("Cursor"),
+                None,
+                "std.builtins.Cursor",
+            )
+            .expect("the same builtin source occurrence reuses its declaration");
+        assert_eq!(embedded_cursor, shared);
         assert!(fork.extends(&table));
         let source_cursor = table.lookup_path("Cursor").unwrap();
-        let embedded_cursor = fork.lookup_path("Cursor").unwrap();
         table.include_embedded(&fork);
         assert_eq!(table.root_module(), Some(root));
         assert_eq!(table.lookup_path("Cursor"), Some(source_cursor));

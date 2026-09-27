@@ -230,15 +230,22 @@ impl LowerCtx {
         None
     }
 
+    fn replace_root_declaration_module(
+        &mut self,
+        root: Option<hew_types::ModuleId>,
+    ) -> Option<hew_types::ModuleId> {
+        match root {
+            Some(root) => self.declaration_module_by_file_index.insert(0, root),
+            None => self.declaration_module_by_file_index.remove(&0),
+        }
+    }
+
     pub(super) fn with_typecheck_facts<T>(
         &mut self,
         tc_output: &TypeCheckOutput,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let saved_root = self.declaration_module_by_file_index.get(&0).copied();
-        if let Some(root) = tc_output.defs.root_module() {
-            self.declaration_module_by_file_index.insert(0, root);
-        }
+        let saved_root = self.replace_root_declaration_module(tc_output.defs.root_module());
         let saved_direct_calls = std::mem::replace(
             &mut self.direct_call_targets,
             tc_output.direct_call_targets.clone(),
@@ -336,11 +343,7 @@ impl LowerCtx {
         self.direct_call_targets = saved_direct_calls;
         self.resolutions = saved_resolutions;
         self.numeric_operand_coercions = saved_numeric_coercions;
-        if let Some(root) = saved_root {
-            self.declaration_module_by_file_index.insert(0, root);
-        } else {
-            self.declaration_module_by_file_index.remove(&0);
-        }
+        self.replace_root_declaration_module(saved_root);
 
         result
     }
@@ -615,80 +618,6 @@ impl LowerCtx {
         id
     }
 
-    /// Try to record a generic-fn callsite in the monomorphisation
-    /// registry. Returns silently for non-generic callees, callees not
-    /// in `fn_registry` (builtins/runtime symbols/lambda bindings), and
-    /// callsites with no `call_type_args` entry — the latter being the
-    /// trivially-monomorphic case from the checker's perspective (an
-    /// explicit `<T>` instantiation that already resolved to concrete
-    /// types and was not recorded per `calls.rs:183` `record_call_type_args`).
-    ///
-    /// Emits `MonomorphisationCallTypeArgsViolation` when a recorded
-    /// entry fails the `ResolvedTy::from_ty` boundary conversion, and
-    /// `MonomorphisationCapExceeded` (at most once per invocation) when
-    /// the registry cap is hit.
-    /// Recursive check: does this `ResolvedTy` contain a `Named` whose
-    /// name matches any type parameter declared on any top-level fn in
-    /// this module? If so, the value is "still abstract" — the call
-    /// site we're looking at is inside a generic body and the type-arg
-    /// has not yet been substituted. Such entries must not enter the
-    /// monomorphisation registry; G-1.b's body substitution pass will
-    /// re-walk these callsites with substituted args and produce real
-    /// entries.
-    ///
-    /// The check is a conservative over-approximation: a user-declared
-    /// type with the same name as a type param (e.g. `pub type T { ... }`)
-    /// would also be skipped. This is fine — that's not idiomatic Hew,
-    /// and the checker uses `Named` for both cases; the only correct
-    /// resolution requires bound-symbol metadata the checker side-table
-    /// does not currently expose. Skipping is safe at G-1.a (no false
-    /// emissions); a real `T`-named user type still produces the entry
-    /// at the outer non-generic callsite where `type_args` is `[]`.
-    pub(super) fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
-        match ty {
-            ResolvedTy::Named { head, args, .. } => {
-                if head.is_param() {
-                    return true;
-                }
-                args.iter().any(|a| self.contains_abstract_type_param(a))
-            }
-            ResolvedTy::Tuple(items) => items.iter().any(|t| self.contains_abstract_type_param(t)),
-            ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
-                self.contains_abstract_type_param(elem)
-            }
-            ResolvedTy::Function { params, ret, .. } => {
-                params.iter().any(|p| self.contains_abstract_type_param(p))
-                    || self.contains_abstract_type_param(ret)
-            }
-            ResolvedTy::Closure {
-                params,
-                ret,
-                captures,
-                ..
-            } => {
-                params.iter().any(|p| self.contains_abstract_type_param(p))
-                    || self.contains_abstract_type_param(ret)
-                    || captures
-                        .iter()
-                        .any(|c| self.contains_abstract_type_param(c))
-            }
-            ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
-                self.contains_abstract_type_param(pointee)
-            }
-            ResolvedTy::TraitObject { traits } => traits.iter().any(|tb| {
-                tb.args.iter().any(|a| self.contains_abstract_type_param(a))
-                    || tb
-                        .assoc_bindings
-                        .iter()
-                        .any(|(_, t)| self.contains_abstract_type_param(t))
-            }),
-            ResolvedTy::Task(inner) => self.contains_abstract_type_param(inner),
-            // A structural type parameter is abstract by construction.
-            ResolvedTy::TypeParam { .. } => true,
-            _ => false,
-        }
-    }
-
     /// Read a source callable through its exact checker declaration. Ordinary
     /// functions retain an `ItemId` seal against same-spelled registration;
     /// externs retain their own entry even when the C symbol is shared.
@@ -778,10 +707,7 @@ impl LowerCtx {
         span: &Span,
     ) -> ResolvedTy {
         match ResolvedTy::from_ty(ty) {
-            Ok(resolved) => {
-                let qualified = self.qualify_current_module_record_ty(resolved);
-                qualified
-            }
+            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
             Err(error) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

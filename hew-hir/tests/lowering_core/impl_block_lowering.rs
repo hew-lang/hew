@@ -119,7 +119,14 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
         .expect("HirItem::Impl metadata anchor must be emitted");
     assert_eq!(impl_block.trait_name.as_deref(), Some("Iterator"));
     assert_eq!(impl_block.self_type_name, "VecIter");
-    assert_eq!(impl_block.type_params, vec!["T".to_string()]);
+    assert_eq!(
+        impl_block
+            .type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["T".to_string()]
+    );
     let emitted = method_fn.expect("method body checked above");
     assert_eq!(impl_block.method_item_ids, vec![emitted.id]);
     assert_eq!(impl_block.method_ids, vec![Some(emitted.declaration)]);

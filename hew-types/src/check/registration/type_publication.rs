@@ -160,7 +160,7 @@ impl Checker {
                 .collect(),
             HashMap::new(),
             vec![],
-            Ty::Named {
+            &Ty::Named {
                 head: crate::TypeHead::Builtin(builtin),
                 args: type_params
                     .iter()
@@ -533,12 +533,10 @@ impl Checker {
         // table before any semantic registration; aliases and later graph
         // visits resolve the existing module/path rows and cannot mint again.
         let identity_module = self.defs.mint_module(module_full_path, &[]);
-        if !self.defs.module_has_source_declarations(identity_module) {
+        if self.defs.module_has_source_declarations(identity_module) {
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
-                self.mint_item_declaration_identities(
+                self.declare_item_type_parameter_scopes(
                     Some(identity_module),
-                    Some(identity_module),
-                    crate::check::NominalNamespace::Owned,
                     item_ordinal,
                     item,
                     span,
@@ -546,8 +544,10 @@ impl Checker {
             }
         } else {
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
-                self.declare_item_type_parameter_scopes(
+                self.mint_item_declaration_identities(
                     Some(identity_module),
+                    Some(identity_module),
+                    crate::check::NominalNamespace::Owned,
                     item_ordinal,
                     item,
                     span,

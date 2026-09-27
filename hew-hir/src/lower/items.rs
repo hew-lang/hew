@@ -182,7 +182,7 @@ impl LowerCtx {
         });
         let previous_type_params = std::mem::replace(
             &mut self.current_fn_type_params,
-            type_params.iter().cloned().collect(),
+            type_params.iter().copied().collect(),
         );
         let mut resolved_impl_self_ty = self.lower_type(&decl.target_type);
         self.current_fn_type_params = previous_type_params;
@@ -991,10 +991,6 @@ impl LowerCtx {
             intrinsic_id: None,
         })
     }
-
-    /// Concatenate impl-level and method-level type parameters for a lowered
-    /// function. A method MAY shadow an impl-level type param name; that is a
-    /// checker-level concern, so here we just concatenate.
 
     /// Lower a `gen fn` body into a `(HirBlock, Generator<Yield, Return>)` pair.
     ///

@@ -240,7 +240,7 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
         assert!(service
             .capability_plan(
                 &ResolvedTy::TypeParam {
-                    name: crate::ParamHead::for_test("T")
+                    name: hew_types::ParamHead::for_test("T")
                 },
                 capability
             )
@@ -326,7 +326,7 @@ fn value_capabilities_refuse_unresolved_method_binders_independently() {
     let abstract_fn = ResolvedTy::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![ResolvedTy::TypeParam {
-            name: crate::ParamHead::for_test("U"),
+            name: hew_types::ParamHead::for_test("U"),
         }],
         ret: Box::new(ResolvedTy::Unit),
     };

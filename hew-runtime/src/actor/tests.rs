@@ -5604,6 +5604,11 @@ fn an_injected_drop_fault_loses_a_native_submission_and_says_so() {
 
     crate::deterministic::hew_deterministic_reset();
     retire_native_submit_actor(actor);
+    // The route retirement does not own the test's actor or mailbox storage.
+    unsafe {
+        mailbox::hew_mailbox_free(mailbox);
+        drop(Box::from_raw(actor));
+    }
 }
 
 #[test]

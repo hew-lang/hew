@@ -4743,6 +4743,7 @@ mod tests {
                 "before set_child_state_clone, actor.state_clone_fn must be None"
             );
 
+            hew_supervisor_set_child_state_drop(sup, 0, heap_state_drop);
             hew_supervisor_set_child_state_clone(sup, 0, heap_state_clone);
 
             let stored = (*child)
@@ -4755,9 +4756,9 @@ mod tests {
             // The spec template was re-cloned during registration.
             assert_eq!(CLONE_CALL_COUNT.load(Ordering::SeqCst), 1);
 
-            // Stop without enabling clone-from-fail; cleans up the heap
-            // allocations via state_drop_fn on actor.state and buf_free of
-            // the cloned spec template.
+            // The source wrapper was byte-copied into the initial actor.
+            // Registering the drop callback lets actor cleanup release its
+            // shared payload; the cloned spec releases its distinct payload.
             hew_supervisor_stop(sup);
         }
     }

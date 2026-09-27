@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-imported-generic-method-owner"
+intent = "Imported generic method bounds retain their source declaration when a local nominal shares the receiver spelling."
+source = "cases/resolved-imported-generic-method-owner.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first!\nsecond!\n"
+exit = 0

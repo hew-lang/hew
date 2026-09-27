@@ -2320,6 +2320,7 @@ mod tests {
                 impl_method: None,
                 type_params: vec![crate::ParamHead::for_test("T")],
                 type_param_bounds: HashMap::new(),
+                type_param_assoc_bindings: HashMap::new(),
                 param_names: vec!["item".to_string()],
                 params: vec![Ty::param(crate::ParamHead::for_test("T"))],
                 return_type: Ty::Unit,

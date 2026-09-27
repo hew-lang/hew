@@ -2854,6 +2854,8 @@ pub struct FnSig {
     pub impl_method: Option<ImplMethodProvenance>,
     pub type_params: Vec<crate::ParamHead>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
+    /// Associated-type constraints owned by this selected callable signature.
+    pub type_param_assoc_bindings: HashMap<(String, String, String), Ty>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
     /// Ownership explicitly declared for each parameter, aligned with `params`.
@@ -2935,6 +2937,7 @@ impl Default for FnSig {
             impl_method: None,
             type_params: vec![],
             type_param_bounds: HashMap::new(),
+            type_param_assoc_bindings: HashMap::new(),
             param_names: vec![],
             params: vec![],
             param_ownership: vec![],
@@ -3342,7 +3345,6 @@ pub struct Checker {
     pub(super) impl_method_declaration_ids: HashMap<String, crate::DefId>,
     pub(super) consuming_inherent_methods: HashSet<crate::DefId>,
     pub(super) root_value_bindings: HashSet<String>,
-    pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
     /// Names of every user-declared `#[opaque]` type in this module.
     /// Populated by `register_type_decl` whenever `td.is_opaque` is true.
@@ -4420,7 +4422,6 @@ impl Checker {
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
-            fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
             user_opaque_type_names: HashSet::new(),
             wire_struct_types: HashSet::new(),

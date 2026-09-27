@@ -1680,7 +1680,10 @@ mod tests {
         let td = TypeDef {
             kind: TypeDefKind::Struct,
             name: "Pair".to_string(),
-            type_params: vec!["A".to_string(), "B".to_string()],
+            type_params: vec![
+                hew_types::ParamHead::for_test("A"),
+                hew_types::ParamHead::for_test("B"),
+            ],
             bounds: HashMap::new(),
             fields: HashMap::new(),
             field_order: vec![],

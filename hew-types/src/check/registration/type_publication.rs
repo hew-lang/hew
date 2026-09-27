@@ -829,7 +829,7 @@ impl Checker {
                     // whether a registry slot already exists.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
-                    let (mut sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                    let mut sig = self.build_fn_sig_from_decl(fd);
                     self.current_module = saved_importer_module;
                     sig.params = sig
                         .params
@@ -850,8 +850,6 @@ impl Checker {
                     if fd.visibility == hew_parser::ast::Visibility::Pub {
                         self.module_fn_exports.insert(qualified.clone());
                     }
-                    self.fn_type_param_assoc_bindings
-                        .insert(qualified.clone(), assoc_bindings);
                     self.insert_fn_sig_at(&qualified, sig);
                     // Mirror user-module named/glob import publication. The
                     // parser has already selected `fd.name`; an alias only
@@ -1164,14 +1162,6 @@ impl Checker {
         } else {
             // Implicit language-floor bindings are ambient; explicit imports
             // only publish a lexical binding to the canonical signature.
-            if let Some(assoc_bindings) = self
-                .fn_type_param_assoc_bindings
-                .get(source_identity)
-                .cloned()
-            {
-                self.fn_type_param_assoc_bindings
-                    .insert(binding.clone(), assoc_bindings);
-            }
             self.alias_fn_sig(&binding, source_identity);
         }
         self.record_published_bare_function(&binding, source_identity);
@@ -1309,7 +1299,7 @@ impl Checker {
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
-                    let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                    let sig = self.build_fn_sig_from_decl(fd);
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
                     // Only `Pub` functions are module exports: `package fn` must
@@ -1323,16 +1313,9 @@ impl Checker {
                             self.module_fn_exports.insert(surface_qualified.clone());
                         }
                     }
-                    self.fn_type_param_assoc_bindings
-                        .insert(qualified.clone(), assoc_bindings.clone());
                     self.insert_fn_sig_at(&qualified, sig);
-                    if spec.is_none() {
-                        self.fn_type_param_assoc_bindings
-                            .entry(surface_qualified.clone())
-                            .or_insert_with(|| assoc_bindings.clone());
-                        if !self.has_fn_sig(&surface_qualified) {
-                            self.alias_fn_sig(&surface_qualified, &qualified);
-                        }
+                    if spec.is_none() && !self.has_fn_sig(&surface_qualified) {
+                        self.alias_fn_sig(&surface_qualified, &qualified);
                     }
 
                     // Direct resolved-item publication is a second module

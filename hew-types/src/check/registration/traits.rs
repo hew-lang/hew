@@ -1468,7 +1468,7 @@ impl Checker {
     /// through the super chain keys on the supertrait's own name (`Base`), never
     /// the sub-trait's (`Sub`).
     pub(super) fn trait_defs_key_for_identity(&self, identity: &ResolvedTraitIdentity) -> String {
-        identity
+        let key = identity
             .owner
             .as_ref()
             .map(|owner| {
@@ -1483,7 +1483,9 @@ impl Checker {
                 format!("{canonical_owner}.{}", identity.source_trait_name)
             })
             .filter(|q| self.has_trait_def(q))
-            .unwrap_or_else(|| identity.source_trait_name.clone())
+            .unwrap_or_else(|| identity.source_trait_name.clone());
+        self.trait_key_id(&key)
+            .map_or(key, |declaration| self.defs.path(declaration).to_string())
     }
 
     /// The owner-qualified `trait_defs` key for a bare trait-bound name spelled in

@@ -27,13 +27,7 @@ impl Checker {
                 for param in &sig.type_params {
                     bounds.entry(param.spelling.to_string()).or_default();
                 }
-                TypeParamScope::new(
-                    bounds,
-                    self.fn_type_param_assoc_bindings
-                        .get(fn_name)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
+                TypeParamScope::new(bounds, sig.type_param_assoc_bindings.clone())
             })
             .unwrap_or_default();
         for param in fd.type_params.iter().flatten() {
@@ -1037,7 +1031,9 @@ impl Checker {
         if let Some(body) = body {
             self.effect_graph.bodies.entry(body).or_default();
         }
+        let previous_declaration = std::mem::replace(&mut self.checking_declaration, declaration);
         self.check_function_body_as(fd, fn_name);
+        self.checking_declaration = previous_declaration;
         if let Some(declaration) = declaration {
             self.record_callable_body_return(declaration, &fd.body);
             let formals = fd

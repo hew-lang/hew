@@ -1258,10 +1258,6 @@ impl Checker {
     /// a visibility violation), and `None` when `func_name` is not a
     /// module-qualified call, the module is unknown, or no `module.fn` key
     /// exists — leaving the existing `undefined function` diagnostic to fire.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "module-qualified calls validate visibility, target support, and ownership"
-    )]
     fn try_check_namespaced_module_call(
         &mut self,
         func_name: &str,
@@ -1344,11 +1340,7 @@ impl Checker {
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
-        let assoc_bindings = self
-            .fn_type_param_assoc_bindings
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
+        let assoc_bindings = sig.type_param_assoc_bindings.clone();
         let applied_sig = self.apply_instantiated_call_signature_with_assoc(
             &sig,
             &assoc_bindings,
@@ -2468,11 +2460,7 @@ impl Checker {
                     .materialize_literal_defaults();
                 self.require_actor_handle_argument(&resolved, "Node.register", handle_span);
             }
-            let assoc_bindings = self
-                .fn_type_param_assoc_bindings
-                .get(&resolved_fn_name)
-                .cloned()
-                .unwrap_or_default();
+            let assoc_bindings = sig.type_param_assoc_bindings.clone();
             // `assert` takes one optional parameter, the failure message.
             let assertion = self.call_target_for_signature(&resolved_fn_name)
                 == CallTarget::Builtin {

@@ -1779,6 +1779,7 @@ dependencies = [
  "hew-sir",
  "hew-testutil",
  "hew-types",
+ "hew-wasm",
  "libc",
  "notify",
  "object 0.39.1",

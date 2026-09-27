@@ -7,7 +7,7 @@ export class DeterministicIds {
   private supervisorCounter = 0;
   private monitorCounter = 0;
 
-  constructor(readonly seed: number) {}
+  constructor(readonly seed: number | string) {}
 
   actor(): string {
     this.actorCounter += 1;

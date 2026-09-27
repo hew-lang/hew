@@ -136,6 +136,21 @@ pub(crate) fn active() -> bool {
     config().is_some()
 }
 
+/// Snapshot the deterministic driver's replay coordinates at test exit.
+pub(crate) fn report_state() -> Option<(&'static str, u64, u64, u64)> {
+    let config = config().filter(|config| config.virtual_clock)?;
+    let schedule = match config.schedule {
+        Schedule::Fifo => "fifo",
+        Schedule::Random => "random",
+    };
+    Some((
+        schedule,
+        config.seed,
+        STEPS.load(Ordering::Relaxed),
+        crate::deterministic::simtime_now().unwrap_or(0),
+    ))
+}
+
 /// Initialize the clock mode before a program's first time read, which may
 /// precede its first scheduler step.
 pub fn initialize_clock() {

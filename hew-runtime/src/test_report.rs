@@ -61,6 +61,7 @@ pub(crate) fn finish(status: i32) {
     } else {
         "exit"
     };
+    let driver = crate::driver::report_state();
     let record = serde_json::json!({
         "version": 1,
         "outcome": outcome,
@@ -69,6 +70,10 @@ pub(crate) fn finish(status: i32) {
         "fault_code": fault.as_ref().map(|fault| fault.code),
         "message": fault.as_ref().and_then(|fault| fault.message.as_deref()),
         "site_offset": fault.as_ref().and_then(|fault| fault.site_offset),
+        "schedule": driver.map(|(schedule, _, _, _)| schedule),
+        "seed": driver.map(|(_, seed, _, _)| seed.to_string()),
+        "steps": driver.map(|(_, _, steps, _)| steps),
+        "virtual_time_ms": driver.map(|(_, _, _, time)| time),
     });
     if let Err(error) = std::fs::write(path, record.to_string()) {
         eprintln!("hew: cannot write test report: {error}");

@@ -1,16 +1,26 @@
 actor Oracle {
-    receive fn hash() -> i64 { 7 }
-    receive fn equal(left: i64, right: i64) -> bool { left == right }
+    receive fn hash() -> i64 {
+        7
+    }
+    receive fn equal(left: i64, right: i64) -> bool {
+        left == right
+    }
 }
 
 #[wire]
-type Key { id: i64 @1 }
+type Key {
+    id: i64 @1;
+}
 
 impl Hash for Key {
     fn hash(self) -> i64 {
         let oracle = spawn Oracle;
         let hash = oracle.hash().expect("hash reply");
-        close(oracle);
+        {
+            let __hew_migrated_actor_330 = oracle;
+            stop(__hew_migrated_actor_330);
+            stopped(__hew_migrated_actor_330);
+        };
         hash
     }
 }
@@ -19,22 +29,26 @@ impl Eq for Key {
     fn eq(self, other: Key) -> bool {
         let oracle = spawn Oracle;
         let equal = oracle.equal(self.id, other.id).expect("equality reply");
-        close(oracle);
+        {
+            let __hew_migrated_actor_544 = oracle;
+            stop(__hew_migrated_actor_544);
+            stopped(__hew_migrated_actor_544);
+        };
         equal
     }
 }
 
 #[wire]
 type Registry {
-    groups: Vec<HashMap<Key, Vec<string>>> @1,
-    keys: HashSet<Key> @2,
+    groups: Vec<HashMap<Key, Vec<string>>> @1;
+    keys: HashSet<Key> @2;
 }
 
 actor Decoder {
     receive fn exercise() -> string {
         var values: HashMap<Key, Vec<string>> = HashMap.new();
         var keys: HashSet<Key> = HashSet.new();
-        for id in 0..8 {
+        for id in 0 .. 8 {
             let key = Key { id: id };
             values.insert(key, [f"item {id}"]);
             keys.insert(key);
@@ -56,5 +70,9 @@ actor Decoder {
 fn main() {
     let decoder = spawn Decoder;
     println(decoder.exercise().expect("wire exercise"));
-    close(decoder);
+    {
+        let __hew_migrated_actor_1801 = decoder;
+        stop(__hew_migrated_actor_1801);
+        stopped(__hew_migrated_actor_1801);
+    };
 }

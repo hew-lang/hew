@@ -6,7 +6,9 @@
 // against the BUILT NATIVE binary so the double free cannot hide behind
 // `hew run`'s masking.
 fn main() {
-    for x in { [7; 3] } {
+    for x in {
+        [7; 3]
+    } {
         println(x);
     }
 }

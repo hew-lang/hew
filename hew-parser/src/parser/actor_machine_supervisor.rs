@@ -80,6 +80,7 @@ impl Parser<'_> {
                     body,
                     span: member_start..self.last_token_end,
                 });
+                self.refuse_mark_after_body();
             } else if self.peek() == Some(&Token::Receive) {
                 self.validate_attributes_for(&attrs, AttrPosition::ActorReceiveFn);
                 let recv_start = self.peek_span().start;
@@ -126,6 +127,7 @@ impl Parser<'_> {
                     attributes: attrs,
                     doc_comment,
                 });
+                self.refuse_mark_after_body();
             } else if self.peek() == Some(&Token::Fn) {
                 // Lifecycle-hook attributes `#[on(start)]` and `#[on(stop)]` are
                 // permitted on plain `fn` declarations inside an actor body.
@@ -143,6 +145,7 @@ impl Parser<'_> {
                 {
                     method.doc_comment = doc_comment;
                     methods.push(method);
+                    self.refuse_mark_after_body();
                 } else {
                     // parse_function emitted its own diagnostic.  Skip to the
                     // next item boundary so one bad method name doesn't cascade.
@@ -159,7 +162,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -179,7 +182,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -205,10 +208,16 @@ impl Parser<'_> {
                     self.advance();
                     overflow_policy = self.parse_overflow_policy();
                 }
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 mailbox_span = Some(member_start..self.last_token_end);
             } else if self.peek_is_field_decl() {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
+                self.error_at_with_kind_and_hint(
+                    "actor state is declared with `let` or `var`".to_string(),
+                    member_start..member_start,
+                    "insert `let ` before the field",
+                    ParseDiagnosticKind::ActorFieldBinding,
+                );
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
@@ -217,7 +226,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -227,7 +236,11 @@ impl Parser<'_> {
                     span: member_start..self.last_token_end,
                 });
             } else {
-                self.error(format!("unexpected token in actor body: {:?}", self.peek()));
+                self.error(format!(
+                    "unexpected token in actor body: {}",
+                    self.peek()
+                        .map_or("end of file".to_string(), ToString::to_string)
+                ));
                 self.advance(); // error recovery
             }
         }
@@ -366,8 +379,13 @@ impl Parser<'_> {
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let event_start = self.peek_span().start;
                     let event_name = self.expect_ident()?;
+                    let bodied = self.peek() == Some(&Token::LeftBrace);
                     let fields = self.parse_machine_event_fields()?;
-                    self.expect_structural_separator();
+                    if bodied {
+                        self.refuse_mark_after_body();
+                    } else {
+                        self.expect_member_terminator("event");
+                    }
                     events.push(MachineEvent {
                         name: event_name,
                         fields,
@@ -375,6 +393,7 @@ impl Parser<'_> {
                     });
                 }
                 self.expect(&Token::RightBrace)?;
+                self.refuse_mark_after_body();
             } else if self.peek_machine_kw("emits") {
                 // Outputs have their own typed vocabulary, separate from inputs.
                 self.advance();
@@ -382,8 +401,13 @@ impl Parser<'_> {
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let emitted_start = self.peek_span().start;
                     let emitted = self.expect_ident()?;
+                    let bodied = self.peek() == Some(&Token::LeftBrace);
                     let fields = self.parse_machine_event_fields()?;
-                    self.expect_structural_separator();
+                    if bodied {
+                        self.refuse_mark_after_body();
+                    } else {
+                        self.expect_member_terminator("emission");
+                    }
                     emits.push(MachineEvent {
                         name: emitted,
                         fields,
@@ -391,6 +415,7 @@ impl Parser<'_> {
                     });
                 }
                 self.expect(&Token::RightBrace)?;
+                self.refuse_mark_after_body();
             } else if self.peek() == Some(&Token::State) {
                 self.parse_machine_state_or_composite(
                     &mut states,
@@ -432,6 +457,7 @@ impl Parser<'_> {
                     self.eat(&Token::Semicolon);
                 }
                 has_default = true;
+                self.refuse_mark_after_body();
             } else {
                 self.error(
                     "expected `events`, `emits`, `state`, `on`, or `default` in machine body"
@@ -607,14 +633,14 @@ impl Parser<'_> {
         };
 
         // Body forms:
-        //   on Event: Source => Target,                     ← no body (unit)
+        //   on Event: Source => Target;                     ← no body (unit)
         //   on Event: Source => Target { field: expr, ... } ← field list, target elided
         //   on Event: Source => Target { expression }       ← computed body
         let (body, body_form, body_start, body_end) = if self.peek() != Some(&Token::LeftBrace) {
-            self.expect_structural_separator();
+            self.expect_member_terminator("rule");
             // The implicit body is synthesized from the target state, so it is
             // spanned on the target token — not on whatever token follows the
-            // `,`. A diagnostic on this expression has to point at the text it
+            // `;`. A diagnostic on this expression has to point at the text it
             // asks the author to change.
             let body_expr = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
@@ -661,6 +687,9 @@ impl Parser<'_> {
             let be = self.peek_span().start;
             (Expr::Block(block), MachineTransitionBodyForm::Block, bs, be)
         };
+        if body_form != MachineTransitionBodyForm::Implicit {
+            self.refuse_mark_after_body();
+        }
 
         let body = if head_bindings.is_empty() {
             body
@@ -693,7 +722,7 @@ impl Parser<'_> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
-                self.expect_structural_separator();
+                self.expect_member_terminator("field");
                 fields.push((field_name, ty));
             }
             self.expect(&Token::RightBrace)?;
@@ -721,7 +750,8 @@ impl Parser<'_> {
         let mut entry_block: Option<Block> = None;
         let mut exit_block: Option<Block> = None;
 
-        if self.eat(&Token::LeftBrace) {
+        let bodied = self.eat(&Token::LeftBrace);
+        if bodied {
             loop {
                 if self.at_end() || self.peek() == Some(&Token::RightBrace) {
                     break;
@@ -750,13 +780,17 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.expect_structural_separator();
+        if bodied {
+            self.refuse_mark_after_body();
+        } else {
+            self.expect_member_terminator("state");
+        }
 
         states.push(MachineState {
             name: state_name,
@@ -850,7 +884,7 @@ impl Parser<'_> {
             }
         }
         self.expect(&Token::RightBrace)?;
-        self.expect_structural_separator();
+        self.refuse_mark_after_body();
 
         let Some(initial_name) = initial else {
             self.error_at(
@@ -910,7 +944,8 @@ impl Parser<'_> {
         let mut fields = Vec::new();
         let mut entry_block: Option<Block> = None;
         let mut exit_block: Option<Block> = None;
-        if self.eat(&Token::LeftBrace) {
+        let bodied = self.eat(&Token::LeftBrace);
+        if bodied {
             while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                 if self.peek() == Some(&Token::Entry) {
                     self.advance();
@@ -946,13 +981,17 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.expect_structural_separator();
+        if bodied {
+            self.refuse_mark_after_body();
+        } else {
+            self.expect_member_terminator("state");
+        }
         Some(MachineState {
             name,
             fields,
@@ -1217,7 +1256,7 @@ impl Parser<'_> {
                         }
                         _ => None,
                     };
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                 }
                 // `intensity: N within <duration>` — the restart-budget contract.
                 // Fuses the legacy `max_restarts:` + `window:` fields. `within`
@@ -1289,7 +1328,7 @@ impl Parser<'_> {
                     if let (Some(restarts), Some(window)) = (restarts, window) {
                         intensity = Some(Intensity { restarts, window });
                     }
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                 }
                 // Legacy `max_restarts:` / `window:` fields — removed in the
                 // flat-reliability-fields cutover. Emit a migration diagnostic
@@ -1315,7 +1354,7 @@ impl Parser<'_> {
                     {
                         self.advance();
                     }
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                 }
                 Some(Token::Child | Token::Identifier("pool")) => {
                     let child_start = self.peek_span().start;
@@ -1430,12 +1469,12 @@ impl Parser<'_> {
 
                     // Per-child suffix clauses, accepted in any order:
                     //   restart: permanent | transient | temporary
-                    //   shutdown: <duration> | brutal_kill | infinity
+                    //   stop: <duration>
                     //   wired_to: { param: sibling, bare_sibling }
                     //   count: <expr>            (pool children only)
                     let mut restart: Option<RestartPolicy> = None;
                     let mut count: Option<Spanned<Expr>> = None;
-                    let mut shutdown: Option<ShutdownDirective> = None;
+                    let mut stop: Option<Spanned<Expr>> = None;
                     let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
                     loop {
                         match self.peek() {
@@ -1467,32 +1506,30 @@ impl Parser<'_> {
                                     }
                                 };
                             }
-                            // `shutdown: <duration> | brutal_kill | infinity` clause.
-                            // `infinity` is accepted without a per-child deadline
-                            // wheel and is a contextual keyword.
-                            Some(Token::Identifier(s)) if *s == "shutdown" => {
+                            // The retired `shutdown:` spelling is recognised
+                            // for migration, but strict parsing never lowers it.
+                            Some(Token::Identifier(s)) if *s == "stop" || *s == "shutdown" => {
+                                let retired = *s == "shutdown";
+                                let clause_start = self.peek_span().start;
                                 self.advance();
                                 self.expect(&Token::Colon)?;
-                                shutdown = match self.peek() {
-                                    Some(Token::Duration(d)) => {
-                                        let d = d.to_string();
+                                let value = match self.peek() {
+                                    Some(Token::Identifier(k))
+                                        if *k == "brutal_kill" && retired =>
+                                    {
+                                        let span = self.peek_span();
                                         self.advance();
-                                        Some(ShutdownDirective::Timeout(d))
+                                        Some((Expr::Literal(Literal::Duration(0)), span))
                                     }
-                                    Some(Token::BrutalKill) => {
+                                    Some(Token::Identifier(k)) if *k == "infinity" && retired => {
                                         self.advance();
-                                        Some(ShutdownDirective::BrutalKill)
-                                    }
-                                    Some(Token::Identifier(k)) if *k == "infinity" => {
-                                        self.advance();
-                                        Some(ShutdownDirective::Infinity)
+                                        None
                                     }
                                     Some(Token::Integer(n)) => {
                                         let n = n.to_string();
                                         self.error_with_hint(
                                             format!(
-                                                "supervisor child `shutdown:` must be a duration \
-                                                 literal, `brutal_kill`, or `infinity`, \
+                                                "supervisor child `stop:` needs a duration, \
                                                  not a bare integer `{n}`"
                                             ),
                                             format!("write `{n}s` (or another unit: {n}ms, {n}m)"),
@@ -1500,17 +1537,42 @@ impl Parser<'_> {
                                         self.advance();
                                         None
                                     }
-                                    _ => {
+                                    Some(Token::Comma | Token::Semicolon | Token::RightBrace)
+                                    | None => {
                                         self.error_with_hint(
-                                            "supervisor child `shutdown:` requires a duration, \
-                                             `brutal_kill`, or `infinity`"
+                                            "supervisor child `stop:` requires a duration"
                                                 .to_string(),
-                                            "write `shutdown: 30s`, `shutdown: brutal_kill`, \
-                                             or `shutdown: infinity`",
+                                            "write `stop: 30s` or `stop: 0s` to terminate at once",
                                         );
                                         None
                                     }
+                                    _ => self.parse_expr(),
                                 };
+                                if retired {
+                                    let hint = if value.as_ref().is_some_and(|(expr, _)| {
+                                        matches!(expr, Expr::Literal(Literal::Duration(0)))
+                                    }) {
+                                        "replace `shutdown: brutal_kill` with `stop: 0s`"
+                                    } else if value.is_none() {
+                                        "remove `shutdown: infinity` on a supervisor child"
+                                    } else {
+                                        "replace `shutdown:` with `stop:`"
+                                    };
+                                    self.error_at_with_kind_and_hint(
+                                        "E_SUPERVISOR_STOP_CLAUSE: `shutdown:` is retired"
+                                            .to_string(),
+                                        clause_start..self.last_token_end,
+                                        hint,
+                                        ParseDiagnosticKind::SupervisorStopClauseRetired,
+                                    );
+                                }
+                                if stop.is_some() {
+                                    self.error_at(
+                                        "duplicate supervisor child `stop:` clause".to_string(),
+                                        clause_start..self.last_token_end,
+                                    );
+                                }
+                                stop = value;
                             }
                             // `wired_to: { key: sibling, bare_sibling }` clause.
                             Some(Token::Identifier(s)) if *s == "wired_to" => {
@@ -1536,7 +1598,7 @@ impl Parser<'_> {
                                 wired_to = if map.is_empty() { None } else { Some(map) };
                             }
                             // `count: <expr>` clause — pool arity. Contextual,
-                            // like `shutdown` and `wired_to`, so `count` stays
+                            // like `stop` and `wired_to`, so `count` stays
                             // an ordinary identifier everywhere else (including
                             // as an actor field name inside the init-arg list).
                             Some(Token::Identifier(s)) if *s == "count" => {
@@ -1591,7 +1653,7 @@ impl Parser<'_> {
                         }
                     }
 
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     children.push(ChildSpec {
                         name: child_name,
                         actor_type,
@@ -1600,7 +1662,7 @@ impl Parser<'_> {
                         restart,
                         wired_to,
                         is_pool,
-                        shutdown,
+                        stop,
                         count,
                         span: child_start..self.last_token_end,
                     });

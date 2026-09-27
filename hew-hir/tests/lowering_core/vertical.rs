@@ -533,16 +533,23 @@ fn select_task_and_timer_preserve_typed_binding_and_result() {
 #[test]
 fn select_actor_await_uses_checked_dispatch() {
     let output = lower_checked_task(
-        r"
-        actor Worker { receive fn process(value: i64) -> i64 { value + 1 } }
-        fn main() {
-            let worker = spawn Worker;
-            let result: i64 = select {
-                reply from worker.process(41) => match reply { .Ok(value) => value, .Err(_) => -1 },
-                after 5ms => 0,
-            };
+        r"actor Worker {
+    receive fn process(value: i64) -> i64 {
+        value + 1
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let result: i64 = select {
+        reply from worker.process(41) => match reply {
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
-    ",
+        after 5ms => 0,
+    };
+}
+",
     );
     let select = find_first_select(&output);
     assert!(

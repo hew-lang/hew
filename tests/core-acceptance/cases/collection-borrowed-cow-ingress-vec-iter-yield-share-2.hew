@@ -6,7 +6,9 @@ fn keep_expensive(totals: HashMap<string, i64>) -> i64 {
             kept.insert(category, cents);
         }
         let probe = totals.len();
-        if probe < 0 { return -1; }
+        if probe < 0 {
+            return -1;
+        }
     }
     return kept.len();
 }

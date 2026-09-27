@@ -147,13 +147,20 @@ fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
 #[test]
 fn user_hashmap_iter_shadow_cannot_capture_the_compiler_cursor_impl() {
     let output = std_iter_output(
-        r"
-type HashMapIter<T> { value: Option<T>, }
+        r"type HashMapIter<T> {
+    value: Option<T>;
+}
+
 impl<T> Iterator for HashMapIter<T> {
     type Item = T;
-    fn next(var self) -> Option<T> { .None }
+    fn next(var self) -> Option<T> {
+        .None
+    }
 }
-fn main() -> i64 { 0 }
+
+fn main() -> i64 {
+    0
+}
 ",
     );
     let index = build_trait_impl_method_index(&output.module.items);
@@ -208,13 +215,20 @@ fn main() -> i64 { 0 }
 #[test]
 fn user_map_shadow_does_not_capture_imported_iter_map_dispatch() {
     let output = std_iter_output(
-        r"
-type Map<T> { value: Option<T>, }
+        r"type Map<T> {
+    value: Option<T>;
+}
+
 impl<T> Iterator for Map<T> {
     type Item = T;
-    fn next(var self) -> Option<T> { .None }
+    fn next(var self) -> Option<T> {
+        .None
+    }
 }
-fn main() -> i64 { 0 }
+
+fn main() -> i64 {
+    0
+}
 ",
     );
     let index = build_trait_impl_method_index(&output.module.items);

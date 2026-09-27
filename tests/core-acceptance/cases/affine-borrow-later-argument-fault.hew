@@ -1,11 +1,17 @@
 #[resource]
-type Token { label: string }
-
-impl Token {
-    fn close(consume self) { println(f"close {self.label}"); }
+type Token {
+    label: string;
 }
 
-type Holder { token: Token }
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}");
+    }
+}
+
+type Holder {
+    token: Token;
+}
 
 fn later(token: Token, divisor: i64) -> i64 {
     let temporary = Token { label: "temporary".to_upper() };

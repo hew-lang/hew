@@ -23,5 +23,5 @@ fn main() {
         // one order.
         let _ = e.ping();
     }
-    println("unreached-eof");  // the consumer traps first; this must not print
+    println("unreached-eof"); // the consumer traps first; this must not print
 }

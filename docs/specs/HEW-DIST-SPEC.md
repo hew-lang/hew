@@ -303,10 +303,10 @@ actor Watcher {
         match note.target {
             DownTarget.Remote(location) => {
                 println(f"remote actor down: {location}");
-            },
+            }
             DownTarget.Local(slot) => {
                 println(f"local actor {slot} down");
-            },
+            }
         }
         match note.reason {
             DownReason.Exited => println("clean exit"),

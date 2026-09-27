@@ -1,14 +1,21 @@
-enum Box { 
-    Full(Vec<i64>), 
-    Empty, 
+enum Box {
+    Full(Vec<i64>);
+    Empty;
+}
 
- }
-fn mk() -> Box { Box.Full(seed()) }
+fn mk() -> Box {
+    Box.Full(seed())
+}
 
 fn main() -> i64 {
     var out = 0;
     match mk() {
-        Box.Full(v) => { out = v.len(); var w = v; w = seed(); out = out + w.len(); }
+        Box.Full(v) => {
+            out = v.len();
+            var w = v;
+            w = seed();
+            out = out + w.len();
+        }
         Box.Empty => {}
     }
     out

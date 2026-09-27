@@ -17,19 +17,16 @@
 //! string leaf and abort at `free_cstring`'s sentinel.
 
 type Inner {
-    value: string,
+    value: string;
 }
 
 type Outer {
-    name: string,
-    inner: Inner,
+    name: string;
+    inner: Inner;
 }
 
 fn make() -> Outer {
-    Outer {
-        name: ("name-" + "x"),
-        inner: Inner { value: ("v-" + "x") },
-    }
+    Outer { name: ("name-" + "x"), inner: Inner { value: ("v-" + "x") } }
 }
 
 fn main() -> i64 {

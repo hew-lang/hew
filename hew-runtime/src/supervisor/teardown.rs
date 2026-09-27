@@ -117,6 +117,14 @@ fn actor_is_supervisor_quiescent(actor: *mut HewActor) -> bool {
     state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32
 }
 
+fn progress_supervisor_wait() {
+    if crate::driver::active() {
+        crate::driver::step();
+    } else {
+        std::thread::yield_now();
+    }
+}
+
 pub(crate) fn wait_for_supervisor_self_actor_quiescent(
     sup: *mut HewSupervisor,
     deadline: Instant,
@@ -140,7 +148,7 @@ pub(crate) fn wait_for_supervisor_self_actor_quiescent(
             if supervisor_quiescence_expired(deadline) {
                 return false;
             }
-            std::thread::yield_now();
+            progress_supervisor_wait();
         }
     }
 }
@@ -169,9 +177,72 @@ pub(crate) fn wait_for_child_quiescent(child: *mut HewActor, deadline: Instant) 
         if supervisor_quiescence_expired(deadline) {
             return false;
         }
-        std::thread::yield_now();
+        progress_supervisor_wait();
     }
     true
+}
+
+unsafe extern "C" fn supervisor_stop_deadline_elapsed(data: *mut c_void) {
+    // SAFETY: the driver's single thread owns the stack flag until the timer
+    // fires or is removed before this wait returns.
+    unsafe { &*data.cast::<AtomicBool>() }.store(true, Ordering::Release);
+}
+
+fn wait_for_child_stop_deadline(
+    child: *mut HewActor,
+    stop_ns: i64,
+    control: &crate::lifetime::local_handles::SupervisorControl,
+) -> bool {
+    // SAFETY: the teardown owner keeps this child live through the wait.
+    let completion = unsafe { (*child).native_completion.clone() };
+    let done = || {
+        completion.as_ref().map_or_else(
+            || actor_is_supervisor_quiescent(child),
+            |completion| completion.is_finished(),
+        )
+    };
+    if !crate::driver::active() {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_nanos(stop_ns.cast_unsigned()))
+            .unwrap_or(Instant::now() + SUPERVISOR_QUIESCENCE_TIMEOUT);
+        while !done() {
+            if control.terminating() || supervisor_quiescence_expired(deadline) {
+                return false;
+            }
+            std::thread::yield_now();
+        }
+        return true;
+    }
+
+    let elapsed = AtomicBool::new(false);
+    let wheel = crate::driver::global_wheel();
+    let delay_ms = stop_ns.cast_unsigned().div_ceil(1_000_000).max(1);
+    // SAFETY: the driver's timer wheel and this stack flag remain live until
+    // the timer fires or the identity-bearing handle is removed below.
+    let timer = unsafe {
+        crate::timer_wheel::hew_timer_wheel_schedule_handle(
+            wheel,
+            delay_ms,
+            supervisor_stop_deadline_elapsed,
+            std::ptr::from_ref(&elapsed).cast_mut().cast(),
+        )
+    };
+    if timer.entry.is_null() {
+        return false;
+    }
+    let completed = loop {
+        if done() {
+            break true;
+        }
+        if control.terminating() || elapsed.load(Ordering::Acquire) {
+            break false;
+        }
+        crate::driver::step();
+    };
+    // SAFETY: the driver is single threaded and cannot be executing this
+    // timer callback while the wait removes its matching generation.
+    unsafe { crate::timer_wheel::hew_timer_wheel_remove(wheel, timer.entry, timer.generation) };
+    completed
 }
 
 unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
@@ -271,8 +342,20 @@ pub(crate) fn take_nested_supervisor_roster(
         .collect()
 }
 
-fn wait_for_retiring_children(supervisor: &HewSupervisor, deadline: Instant) -> bool {
+fn wait_for_retiring_children(
+    supervisor: &HewSupervisor,
+    deadline: Instant,
+    escalation: Option<(
+        &crate::lifetime::local_handles::SupervisorControl,
+        &crate::lifetime::local_handles::SupervisorControl,
+    )>,
+) -> bool {
     loop {
+        if let Some((parent, child)) = escalation {
+            if parent.terminating() {
+                child.request_terminate();
+            }
+        }
         if supervisor
             .roster
             .lock_or_recover()
@@ -285,10 +368,14 @@ fn wait_for_retiring_children(supervisor: &HewSupervisor, deadline: Instant) -> 
         if supervisor_quiescence_expired(deadline) {
             return false;
         }
-        std::thread::yield_now();
+        progress_supervisor_wait();
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one teardown owner sequences all child release and completion"
+)]
 pub(crate) unsafe fn stop_supervisor_owned(
     sup: *mut HewSupervisor,
     teardown: &crate::lifetime::local_handles::SupervisorTeardownLease,
@@ -315,6 +402,17 @@ pub(crate) unsafe fn stop_supervisor_owned(
         return;
     };
     request_supervisor_shutdown(sup);
+    // SAFETY: the supervisor retains its runtime and stable control until
+    // this unique teardown owner publishes completion.
+    let runtime = unsafe { &*(*sup).runtime };
+    // SAFETY: this unique teardown owner keeps the supervisor live.
+    let token = unsafe { (*sup).local_pid_id };
+    let Some(control) = runtime.local_handles.supervisor_control_for_raw(token, sup) else {
+        set_last_error("supervisor teardown lost its stable control");
+        // SAFETY: no ownership was consumed and the root remains live.
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
+        return;
+    };
     let quiescence_deadline = Instant::now() + SUPERVISOR_QUIESCENCE_TIMEOUT;
     if !wait_for_supervisor_self_actor_quiescent(sup, quiescence_deadline) {
         set_last_error("supervisor teardown timed out waiting for self actor quiescence");
@@ -341,48 +439,123 @@ pub(crate) unsafe fn stop_supervisor_owned(
     // raw pointer now.
     let mut s = unsafe { Box::from_raw(sup) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
-    // Recursively stop all child supervisors first.
-    for (child_sup, child_token, _child_spec) in take_nested_supervisor_roster(&raw mut *s) {
-        if !child_sup.is_null() {
-            retain_nested_completion(&raw mut *s, child_token);
-            // Claim while the parent-owned roster extraction and stable token
-            // still jointly identify the allocation. A losing path does not
-            // touch `child_sup`; the concurrent winner owns reclamation.
-            // SAFETY: pointer/token are one extracted parallel entry.
-            if unsafe { claim_nested_supervisor_for_detach(child_sup, child_token) } {
-                // SAFETY: the claim above is the unique child teardown authority.
-                unsafe {
-                    stop_supervisor_with_teardown_authority(child_sup, teardown.clone(), true);
-                };
+    // Declaration identities are shared across actor and nested-supervisor
+    // children even though their physical roster slots are separate. Merge
+    // those rosters before teardown so release order is the exact reverse of
+    // construction order rather than one kind followed by the other.
+    #[allow(
+        clippy::items_after_statements,
+        reason = "the variants describe this local teardown traversal"
+    )]
+    enum TeardownChild {
+        Actor {
+            index: usize,
+            stop_ns: i64,
+        },
+        Supervisor {
+            pointer: *mut HewSupervisor,
+            token: crate::lifetime::local_handles::HewLocalPidId,
+        },
+    }
+    let mut children = Vec::new();
+    for (pointer, token, spec) in take_nested_supervisor_roster(&raw mut *s) {
+        if !pointer.is_null() {
+            // Legacy attached supervisors without a declaration sort last.
+            let identity = spec.as_ref().map_or(0, |spec| spec.identity);
+            debug_assert!(spec.as_ref().is_none_or(|spec| spec.stop_ns == -1));
+            children.push((identity, TeardownChild::Supervisor { pointer, token }));
+        }
+    }
+    {
+        let roster = s.roster.lock_or_recover();
+        for (index, child) in roster.children.iter().enumerate() {
+            if !child.is_null() {
+                let spec = &roster.child_specs[index];
+                children.push((
+                    spec.identity,
+                    TeardownChild::Actor {
+                        index,
+                        stop_ns: spec.stop_ns,
+                    },
+                ));
             }
         }
     }
-    // Stop all children and wait for each to reach a terminal state.
-    let child_count = s.roster.lock_or_recover().child_count;
-    for i in 0..child_count {
-        let child = take_child_slot(&raw mut *s, i);
-        if !child.is_null() {
-            // SAFETY: child pointer is valid.
-            unsafe { actor::hew_actor_stop(child) };
-            if !wait_for_child_quiescent(child, quiescence_deadline) {
-                set_last_error("supervisor teardown timed out waiting for child quiescence");
-                // `take_child_slot` detached this still-live child. Restore it
-                // before returning ownership, otherwise canonical cleanup could
-                // free the supervisor while the child remains unowned/live.
-                store_child_slot(&raw mut *s, i, child);
-                let sup = Box::into_raw(s);
-                // SAFETY: Box ownership is converted back to the raw pointer
-                // expected by canonical runtime cleanup.
-                unsafe { return_supervisor_to_runtime_cleanup(sup) };
-                return;
+    children.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
+    for (_, entry) in children {
+        match entry {
+            TeardownChild::Supervisor { pointer, token } => {
+                retain_nested_completion(&raw mut *s, token);
+                let nested_control = runtime
+                    .local_handles
+                    .supervisor_control_for_raw(token, pointer);
+                if control.terminating() {
+                    if let Some(nested_control) = nested_control.as_ref() {
+                        nested_control.request_terminate();
+                    }
+                }
+                // SAFETY: the extracted pointer and token are one roster entry.
+                if unsafe { claim_nested_supervisor_for_detach(pointer, token) } {
+                    // SAFETY: this claim owns the nested teardown exactly once.
+                    unsafe {
+                        stop_supervisor_with_teardown_authority(pointer, teardown.clone(), true);
+                    }
+                }
+                if !wait_for_retiring_children(
+                    &s,
+                    quiescence_deadline,
+                    nested_control
+                        .as_deref()
+                        .map(|child| (control.as_ref(), child)),
+                ) {
+                    set_last_error("supervisor teardown retained an unfinished child subtree");
+                    let sup = Box::into_raw(s);
+                    // SAFETY: the parent remains a runtime cleanup root.
+                    unsafe { return_supervisor_to_runtime_cleanup(sup) };
+                    return;
+                }
             }
-            // SAFETY: child has reached a wake-proof terminal state.
-            unsafe { actor::hew_actor_free(child) };
+            TeardownChild::Actor { index, stop_ns } => {
+                let child = take_child_slot(&raw mut *s, index);
+                if child.is_null() {
+                    continue;
+                }
+                if !scheduler::actor_progress_available() {
+                    // Canonical cleanup may own a worker-less runtime after
+                    // shutdown. Preserve its synchronous terminal contract;
+                    // no queued request could run there.
+                    // SAFETY: this unique teardown owner keeps the child live.
+                    unsafe { actor::hew_actor_stop(child) };
+                } else if stop_ns == 0 || control.terminating() {
+                    // SAFETY: the child remains live until its completion below.
+                    unsafe { actor::hew_actor_terminate(child) };
+                } else {
+                    // SAFETY: the child remains live until its completion below.
+                    unsafe { actor::hew_actor_request_stop(child) };
+                    if !wait_for_child_stop_deadline(child, stop_ns, &control) {
+                        // SAFETY: a child that exceeded its own stop deadline
+                        // remains live and must be forcefully released.
+                        unsafe { actor::hew_actor_terminate(child) };
+                    }
+                }
+                if !wait_for_child_quiescent(child, Instant::now() + SUPERVISOR_QUIESCENCE_TIMEOUT)
+                {
+                    set_last_error("supervisor teardown timed out waiting for child quiescence");
+                    // Keep the still-live child rooted for canonical cleanup.
+                    store_child_slot(&raw mut *s, index, child);
+                    let sup = Box::into_raw(s);
+                    // SAFETY: ownership is transferred back without freeing.
+                    unsafe { return_supervisor_to_runtime_cleanup(sup) };
+                    return;
+                }
+                // SAFETY: the child's completion has finished all state release.
+                unsafe { actor::hew_actor_free(child) };
+            }
         }
     }
 
     // Detached incarnations remain part of the parent's cleanup obligation.
-    if !wait_for_retiring_children(&s, quiescence_deadline) {
+    if !wait_for_retiring_children(&s, quiescence_deadline, None) {
         set_last_error("supervisor teardown retained an unfinished child subtree");
         let sup = Box::into_raw(s);
         // SAFETY: the parent stays live until its detached children finish.
@@ -404,29 +577,6 @@ pub(crate) unsafe fn stop_supervisor_owned(
             actor::hew_actor_free(s.self_actor);
         }
         s.self_actor = ptr::null_mut();
-    }
-
-    // Drain any parked `await_restart` continuations on teardown: wake each so
-    // the resumed actor re-resolves the (now shut-down) supervisor and fails
-    // closed (`child_get` → Dead(SupervisorShutdown)) rather than hanging
-    // forever, and release the observer's retained slot ref. Mirrors the
-    // notify_restart wake discipline; teardown is the abandon-everything edge.
-    let parked: Vec<RestartAwaitWaiter> =
-        std::mem::take(&mut *s.restart_await_waiters.lock_or_recover());
-    for waiter in parked {
-        // SAFETY: the observer holds an in-flight ref; depositing readiness is
-        // the reactor-deposit contract (no-op if the abandon edge cancelled it).
-        let do_wake = unsafe {
-            crate::read_slot::read_slot_deposit_status(
-                waiter.slot,
-                crate::read_slot::ReadStatus::Data,
-            )
-        };
-        if do_wake {
-            crate::scheduler::enqueue_resume_by_incarnation(waiter.actor);
-        }
-        // SAFETY: the observer owned this ref; nothing else releases it.
-        unsafe { crate::read_slot::hew_read_slot_free(waiter.slot) };
     }
 
     let (pools, config_buf, config_drop_fn) = {

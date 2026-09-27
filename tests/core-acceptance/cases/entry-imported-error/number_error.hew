@@ -1,9 +1,14 @@
-pub enum Problem { Bad(i64) }
+pub enum Problem {
+    Bad(i64);
+}
 
 impl Display for Problem {
     fn fmt(self) -> string {
-        match self { .Bad(code) => f"number: {code}" }
+        match self {
+            .Bad(code) => f"number: {code}",
+        }
     }
 }
 
-impl Error for Problem {}
+impl Error for Problem {
+}

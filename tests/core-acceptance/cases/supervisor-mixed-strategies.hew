@@ -1,29 +1,35 @@
 actor Counter {
-    var value: i64 = 0,
-    receive fn put(next: i64) { value = next; }
-    receive fn get() -> i64 { value }
-    receive fn fail() { panic("restart mixed child"); }
+    var value: i64 = 0;
+    receive fn put(next: i64) {
+        value = next;
+    }
+    receive fn get() -> i64 {
+        value
+    }
+    receive fn fail() {
+        panic("restart mixed child");
+    }
 }
 
 supervisor Branch {
-    intensity: 1 within 60s,
-    child leaf: Counter,
+    intensity: 1 within 60s;
+    child leaf: Counter;
 }
 
 supervisor All {
-    strategy: one_for_all,
-    intensity: 5 within 60s,
-    child before: Counter,
-    child branch: Branch,
-    child after: Counter,
+    strategy: one_for_all;
+    intensity: 5 within 60s;
+    child before: Counter;
+    child branch: Branch;
+    child after: Counter;
 }
 
 supervisor Rest {
-    strategy: rest_for_one,
-    intensity: 5 within 60s,
-    child before: Counter,
-    child branch: Branch,
-    child after: Counter,
+    strategy: rest_for_one;
+    intensity: 5 within 60s;
+    child before: Counter;
+    child branch: Branch;
+    child after: Counter;
 }
 
 fn mark(before: ChildRef<Counter>, leaf: ChildRef<Counter>, after: ChildRef<Counter>) {
@@ -37,44 +43,79 @@ fn main() {
     let all_leaf = all.branch.leaf;
     mark(all.before, all_leaf, all.after);
     let _ = all.before.fail();
-    let _ = await_restart all.before;
+    let _ = {
+        let __hew_migrated_role_989 = all.before;
+        restarted(__hew_migrated_role_989);
+        __hew_migrated_role_989
+    };
     assert(all.before.get().expect("all before") == 0);
     assert(all_leaf.get().expect("all nested after actor failure") == 0);
     assert(all.after.get().expect("all after") == 0);
     mark(all.before, all_leaf, all.after);
     let _ = all_leaf.fail();
-    let _ = await_restart all.branch.leaf;
+    let _ = {
+        let __hew_migrated_role_1283 = all.branch.leaf;
+        restarted(__hew_migrated_role_1283);
+        __hew_migrated_role_1283
+    };
     assert(all.before.get().expect("local restart before") == 11);
     assert(all.after.get().expect("local restart after") == 33);
     let _ = all_leaf.fail();
-    let _ = await_restart all.branch;
+    let _ = {
+        let __hew_migrated_role_1487 = all.branch;
+        restarted(__hew_migrated_role_1487);
+        __hew_migrated_role_1487
+    };
     assert(all.before.get().expect("all before after nested failure") == 0);
     assert(all_leaf.get().expect("all nested replacement") == 0);
     assert(all.after.get().expect("all after nested failure") == 0);
-    close(all);
-
+    {
+        let __hew_migrated_actor_1729 = all;
+        stop(__hew_migrated_actor_1729);
+        stopped(__hew_migrated_actor_1729);
+    };
     let rest = spawn Rest();
     let rest_leaf = rest.branch.leaf;
     mark(rest.before, rest_leaf, rest.after);
     let _ = rest.after.fail();
-    let _ = await_restart rest.after;
+    let _ = {
+        let __hew_migrated_role_1897 = rest.after;
+        restarted(__hew_migrated_role_1897);
+        __hew_migrated_role_1897
+    };
     assert(rest.before.get().expect("rest earlier actor") == 11);
     assert(rest_leaf.get().expect("rest earlier subtree") == 22);
     assert(rest.after.get().expect("rest final actor") == 0);
     rest.after.put(33).expect("remark later actor");
     let _ = rest_leaf.fail();
-    let _ = await_restart rest.branch.leaf;
+    let _ = {
+        let __hew_migrated_role_2212 = rest.branch.leaf;
+        restarted(__hew_migrated_role_2212);
+        __hew_migrated_role_2212
+    };
     let _ = rest_leaf.fail();
-    let _ = await_restart rest.branch;
+    let _ = {
+        let __hew_migrated_role_2286 = rest.branch;
+        restarted(__hew_migrated_role_2286);
+        __hew_migrated_role_2286
+    };
     assert(rest.before.get().expect("rest preserves earlier actor") == 11);
     assert(rest_leaf.get().expect("rest replaces nested subtree") == 0);
     assert(rest.after.get().expect("rest replaces later actor") == 0);
     mark(rest.before, rest_leaf, rest.after);
     let _ = rest.before.fail();
-    let _ = await_restart rest.before;
+    let _ = {
+        let __hew_migrated_role_2623 = rest.before;
+        restarted(__hew_migrated_role_2623);
+        __hew_migrated_role_2623
+    };
     assert(rest.before.get().expect("rest first actor") == 0);
     assert(rest_leaf.get().expect("rest later subtree") == 0);
     assert(rest.after.get().expect("rest later actor") == 0);
-    close(rest);
+    {
+        let __hew_migrated_actor_2842 = rest;
+        stop(__hew_migrated_actor_2842);
+        stopped(__hew_migrated_actor_2842);
+    };
     println("mixed child kinds obey declaration-ordered restart strategies");
 }

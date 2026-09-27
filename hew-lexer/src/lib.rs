@@ -236,10 +236,6 @@ pub enum Token<'src> {
     RestForOne,
     #[token("simple_one_for_one")]
     SimpleOneForOne,
-    /// `brutal_kill` shutdown directive on a supervisor child: skip the
-    /// graceful-stop deadline and terminate the child immediately.
-    #[token("brutal_kill")]
-    BrutalKill,
     #[token("scope")]
     Scope,
     #[token("fork")]
@@ -248,8 +244,6 @@ pub enum Token<'src> {
     Spawn,
     #[token("await")]
     Await,
-    #[token("await_restart")]
-    AwaitRestart,
     #[token("receive")]
     Receive,
     #[token("init")]
@@ -658,12 +652,10 @@ define_keywords! {
     OneForAll        => "one_for_all",
     RestForOne       => "rest_for_one",
     SimpleOneForOne  => "simple_one_for_one",
-    BrutalKill       => "brutal_kill",
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
     Await      => "await",
-    AwaitRestart => "await_restart",
     Receive    => "receive",
     Init       => "init",
     Type       => "type",

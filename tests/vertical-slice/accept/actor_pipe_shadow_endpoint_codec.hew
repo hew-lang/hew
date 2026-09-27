@@ -6,15 +6,15 @@
 // handle transfers, and the cross-node codec seeder must emit their codecs
 // rather than silently skipping them by bare name.
 type Sink {
-    x: i64,
+    x: i64;
 }
 
 type Stream {
-    y: i64,
+    y: i64;
 }
 
 actor Collector {
-    var total: i64,
+    var total: i64;
 
     receive fn accept_sink(msg: Sink) {
         total = total + msg.x;

@@ -5,9 +5,11 @@ fn build(n: i64) -> i64 {
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for i in 0..64 {
+    for i in 0 .. 64 {
         total = total + build(i);
     }
-    if total != 192 { return 75; }
+    if total != 192 {
+        return 75;
+    }
     0
 }

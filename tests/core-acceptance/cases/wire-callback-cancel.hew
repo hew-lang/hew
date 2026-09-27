@@ -1,7 +1,9 @@
 import std.encoding.wire;
 
 #[wire]
-type Key { id: i64 @1 }
+type Key {
+    id: i64 @1;
+}
 
 impl Hash for Key {
     fn hash(self) -> i64 {
@@ -19,9 +21,14 @@ fn decode() -> i64 {
     decoded.len()
 }
 
-fn winner() -> i64 { 42 }
+fn winner() -> i64 {
+    42
+}
 
 fn main() {
-    let value = race { decode(), winner() };
+    let value = race {
+        decode(),
+        winner(),
+    };
     println(value);
 }

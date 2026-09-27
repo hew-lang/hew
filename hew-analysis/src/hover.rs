@@ -335,7 +335,7 @@ fn hover_field_access_at_offset(
 
 fn field_hover_result(name: &str, ty_text: &str, span: OffsetSpan) -> HoverResult {
     HoverResult {
-        contents: format!("```hew\n(field) {name}: {ty_text}\n```"),
+        contents: format!("```hew\n(field) {name}: {ty_text};\n```"),
         span: Some(span),
     }
 }
@@ -1468,26 +1468,36 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
     if has_body {
         parts.push_str(" {\n");
         for (field_name, field_ty) in &type_def.fields {
-            let _ = writeln!(parts, "    {field_name}: {},", field_ty.user_facing());
+            if type_def.kind == TypeDefKind::Actor {
+                // TypeDef does not carry actor-field mutability. Keep the
+                // field visible without claiming `let` or `var` for it.
+                let _ = writeln!(
+                    parts,
+                    "    // state {field_name}: {}",
+                    field_ty.user_facing()
+                );
+            } else {
+                let _ = writeln!(parts, "    {field_name}: {};", field_ty.user_facing());
+            }
         }
         for (variant_name, payload) in &type_def.variants {
             match payload {
                 VariantDef::Unit => {
-                    let _ = writeln!(parts, "    {variant_name},");
+                    let _ = writeln!(parts, "    {variant_name};");
                 }
                 VariantDef::Tuple(types) => {
                     let types: Vec<String> = types
                         .iter()
                         .map(|ty| ty.user_facing().to_string())
                         .collect();
-                    let _ = writeln!(parts, "    {variant_name}({}),", types.join(", "));
+                    let _ = writeln!(parts, "    {variant_name}({});", types.join(", "));
                 }
                 VariantDef::Struct(fields) => {
                     let fields: Vec<String> = fields
                         .iter()
-                        .map(|(n, t)| format!("{n}: {}", t.user_facing()))
+                        .map(|(n, t)| format!("{n}: {};", t.user_facing()))
                         .collect();
-                    let _ = writeln!(parts, "    {variant_name} {{ {} }},", fields.join(", "));
+                    let _ = writeln!(parts, "    {variant_name} {{ {} }}", fields.join(" "));
                 }
             }
         }
@@ -1797,7 +1807,7 @@ mod tests {
 
     #[test]
     fn hover_finds_type_def() {
-        let source = "type Point {\n    x: f64,\n    y: f64,\n}";
+        let source = "type Point {\n    x: f64;\n    y: f64;\n}\n";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("Point").unwrap();
@@ -1810,7 +1820,7 @@ mod tests {
     #[test]
     fn hover_shows_struct_field_declaration_type() {
         let source =
-            "type Point {\n    x: i32,\n    y: i32,\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("x: i32").unwrap();
@@ -1829,7 +1839,7 @@ mod tests {
     #[test]
     fn hover_shows_struct_field_access_type() {
         let source =
-            "type Point {\n    x: i32,\n    y: i32,\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n    p.x\n}\n";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.rfind("p.x").unwrap() + 2;
@@ -1941,7 +1951,7 @@ mod tests {
 
     #[test]
     fn hover_same_named_fields_is_stable_by_declaring_type() {
-        let source = "type A { w: i64 }\ntype B { w: bool }\nfn main() { let a = A { w: 1 }; let b = B { w: true }; println(a.w); println(b.w); }";
+        let source = "type A {\n    w: i64;\n}\n\ntype B {\n    w: bool;\n}\n\nfn main() {\n    let a = A { w: 1 };\n    let b = B { w: true };\n    println(a.w);\n    println(b.w);\n}\n";
         let parsed = hew_parser::parse(source);
         let output = type_check(&parsed);
         let a_offset = source.find("a.w").unwrap() + 2;

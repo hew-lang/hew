@@ -27,20 +27,16 @@ fn main() {
     var m: HashMap<string, i64> = HashMap.new();
     m.insert("live", 7);
     println(duplicate(m).len());
-
     var m2: HashMap<string, i64> = HashMap.new();
     m2.insert("live", 8);
     println(index(m2));
-
     let xs: Vec<string> = ["a", "b", "c", "d"];
     match first(xs) {
         .Some(x) => println(x),
         .None => println("none"),
     }
-
     let ys: Vec<string> = ["a", "b", "c", "d"];
     println(middle(ys).len());
-
     let zs: Vec<string> = ["a", "b"];
     println(count(zs));
 }

@@ -1,6 +1,5 @@
-// Historical supervisor-stop fixture; its executable spelling needs migration.
-// The decided public lifecycle forms are close(sup) and closed(sup), including
-// waiting for child cleanup. Their implementation is still pending.
+// A supervisor accepts a graceful stop request and releases its child before
+// stopped(sup) returns.
 actor Worker {
     receive fn ping(_n: i64) {
         _n;
@@ -8,16 +7,20 @@ actor Worker {
 }
 
 supervisor AppSupervisor {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child w1: Worker,
+    child w1: Worker;
 }
 
 fn main() -> i64 {
     let sup = spawn AppSupervisor;
     let w = sup.w1;
     let _ = w.ping(1);
-    supervisor_stop(sup);
+    {
+        let __hew_migrated_actor_506 = sup;
+        stop(__hew_migrated_actor_506);
+        stopped(__hew_migrated_actor_506);
+    };
     0
 }

@@ -1,6 +1,8 @@
 import std.string;
 
-fn byte_count(value: string) -> i64 { value.byte_len() }
+fn byte_count(value: string) -> i64 {
+    value.byte_len()
+}
 
 fn main() -> i64 {
     let value = "Aé中🙂";

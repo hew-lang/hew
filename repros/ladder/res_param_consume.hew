@@ -1,11 +1,18 @@
 #[resource]
-type Conn { fd: i64 }
-impl Conn {
-    fn close(consume self) { println(f"close {self.fd}"); }
+type Conn {
+    fd: i64;
 }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+    }
+}
+
 fn shutdown(c: Conn) {
     c.close();
 }
+
 fn main() {
     let conn = Conn { fd: 3 };
     shutdown(conn);

@@ -4,9 +4,13 @@
 import std.stream;
 
 actor Producer {
-    out: stream.Sink<i64>,
-    receive fn emit(n: i64) { self.out.send(n).expect("send"); }
-    receive fn boom() { panic("producer crashed"); }
+    let out: stream.Sink<i64>;
+    receive fn emit(n: i64) {
+        self.out.send(n).expect("send");
+    }
+    receive fn boom() {
+        panic("producer crashed");
+    }
 }
 
 fn main() {

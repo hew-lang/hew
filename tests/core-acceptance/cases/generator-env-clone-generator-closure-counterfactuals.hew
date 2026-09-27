@@ -1,5 +1,5 @@
 type Label {
-    text: string,
+    text: string;
 }
 
 fn ordinary_factory(label: Label) -> fn() -> i64 {
@@ -8,10 +8,7 @@ fn ordinary_factory(label: Label) -> fn() -> i64 {
 
 fn noncapturing_generator_factory() -> fn() -> Generator<i64, ()> {
     || {
-        gen {
-            yield 1;
-            yield 2;
-        }
+        gen { yield 1; yield 2; }
     }
 }
 
@@ -29,8 +26,12 @@ fn noncapturing_generator() {
     var total: i64 = 0;
     loop {
         match g.next() {
-            .Some(value) => { total = total + value; },
-            .None => { break; },
+            .Some(value) => {
+                total = total + value;
+            }
+            .None => {
+                break;
+            }
         }
     }
     if total != 3 {

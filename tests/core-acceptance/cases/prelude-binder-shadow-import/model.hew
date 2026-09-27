@@ -1,15 +1,15 @@
 // Every spelling here is also a type parameter of a prelude std module
 // (`std.iter`'s `Map<I, A, B>`, `std.result`'s `Result<T, E>`).
 pub type A {
-    code: i64,
+    code: i64;
 }
 
 pub type B {
-    label: string,
+    label: string;
 }
 
 pub type E {
-    reason: string,
+    reason: string;
 }
 
 pub fn make(code: i64) -> A {

@@ -1,17 +1,32 @@
 actor Slow {
-    var value: i64 = 1,
-    #[on(stop)] fn stopping() {
+    var value: i64 = 1;
+    #[on(stop)]
+    fn stopping() {
         sleep(1ms);
         println(f"stopped {value}");
     }
-    receive fn get() -> i64 { value }
+    receive fn get() -> i64 {
+        value
+    }
 }
 
 fn main() {
     let a0 = spawn Slow;
-    close(a0);
+    {
+        let __hew_migrated_actor_230 = a0;
+        stop(__hew_migrated_actor_230);
+        stopped(__hew_migrated_actor_230);
+    };
     let a1 = spawn Slow;
-    close(a1);
+    {
+        let __hew_migrated_actor_270 = a1;
+        stop(__hew_migrated_actor_270);
+        stopped(__hew_migrated_actor_270);
+    };
     let a2 = spawn Slow;
-    close(a2);
+    {
+        let __hew_migrated_actor_310 = a2;
+        stop(__hew_migrated_actor_310);
+        stopped(__hew_migrated_actor_310);
+    };
 }

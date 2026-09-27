@@ -1,7 +1,7 @@
 type Job {
-    run: fn[once](i64) -> i64,
-    label: string,
-    payload: bytes,
+    run: fn[once](i64) -> i64;
+    label: string;
+    payload: bytes;
 }
 
 fn make_job(label: string) -> Job {

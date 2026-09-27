@@ -4,7 +4,7 @@
 // compiled clean and silently debited a throwaway copy, and now produces a
 // different hard error.
 type Account {
-    balance: i64
+    balance: i64;
 }
 
 fn withdraw(acc: Account, amount: i64) -> i64 {

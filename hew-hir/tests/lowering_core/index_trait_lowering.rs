@@ -42,28 +42,27 @@ fn function_tail<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hi
 #[test]
 fn index_trait_user_impl_lowers_to_at_call() {
     let output = lower(
-        r"
-        type Grid {
-            bias: i32,
-        }
+        r"type Grid {
+    bias: i32;
+}
 
-        impl Index for Grid {
-            type Output = i32;
+impl Index for Grid {
+    type Output = i32;
 
-            fn get(g: Grid, index: i32) -> Option<i32> {
-                .Some(g.bias + index)
-            }
+    fn get(g: Grid, index: i32) -> Option<i32> {
+        .Some(g.bias + index)
+    }
 
-            fn at(g: Grid, index: i32) -> i32 {
-                g.bias + index
-            }
-        }
+    fn at(g: Grid, index: i32) -> i32 {
+        g.bias + index
+    }
+}
 
-        fn f() -> i32 {
-            let g = Grid { bias: 40 };
-            g[2]
-        }
-        ",
+fn f() -> i32 {
+    let g = Grid { bias: 40 };
+    g[2]
+}
+",
     );
 
     let tail = function_tail(&output, "f");

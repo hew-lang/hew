@@ -32,19 +32,19 @@ import std.text.regex;
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 type Config {
-    pattern: string, // raw pattern string as given on argv
-    flag_i: bool, // -i  case-insensitive
-    flag_n: bool, // -n  line numbers
-    flag_v: bool, // -v  invert match
-    flag_c: bool, // -c  count-only
-    flag_r: bool, // -r  recursive directory walk
-    files: Vec<string>, // remaining positional arguments (files/dirs)
+    pattern: string; // raw pattern string as given on argv
+    flag_i: bool; // -i  case-insensitive
+    flag_n: bool; // -n  line numbers
+    flag_v: bool; // -v  invert match
+    flag_c: bool; // -c  count-only
+    flag_r: bool; // -r  recursive directory walk
+    files: Vec<string>; // remaining positional arguments (files/dirs)
 }
 
 // ── Match state ────────────────────────────────────────────────────────────────
 type MatchState {
-    found_any: bool, // any match seen across all files
-    had_error: bool, // any file open / read error
+    found_any: bool; // any match seen across all files
+    had_error: bool; // any file open / read error
 }
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: boo
             let msg = to_string(e);
             io.write_err(f"grep: {file_path}: {msg}\n");
             MatchState { found_any: state.found_any, had_error: true }
-        },
+        }
         .Ok(content) => {
             let count = grep_content(content, pat, cfg, label, show_label);
             if cfg.flag_c {
@@ -190,7 +190,7 @@ fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: boo
                 }
             }
             MatchState { found_any: state.found_any || count > 0, had_error: state.had_error }
-        },
+        }
     }
 }
 
@@ -206,7 +206,7 @@ fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState
             let msg = to_string(e);
             io.write_err(f"grep: {dir_path}: {msg}\n");
             MatchState { found_any: state.found_any, had_error: true }
-        },
+        }
         .Ok(entries) => {
             let n = entries.len();
             var ei = 0;
@@ -222,7 +222,7 @@ fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState
                 ei = ei + 1;
             }
             s
-        },
+        }
     }
 }
 
@@ -245,7 +245,7 @@ fn main() -> i64 {
         .Err(msg) => {
             io.write_err(f"{msg}\n");
             2
-        },
+        }
         .Ok(cfg) => {
             // For -i, fold the pattern to lowercase so it matches lowercased input.
             let compiled_pattern = if cfg.flag_i {
@@ -285,6 +285,6 @@ fn main() -> i64 {
                 return 0;
             }
             1
-        },
+        }
     }
 }

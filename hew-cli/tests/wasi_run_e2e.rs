@@ -616,8 +616,8 @@ fn main() {
 // The same program is run natively below; the two stdouts must match
 // byte-for-byte (native↔wasm parity).
 const HASHMAP_HASHSET_LAYOUT_SOURCE: &str = r#"type Point {
-    x: i64,
-    y: i64
+    x: i64;
+    y: i64;
 }
 
 fn main() {
@@ -650,7 +650,6 @@ fn main() {
     }
     let n2 = m.len();
     println(f"len_after_remove={n2}");
-
     var s: HashSet<string> = HashSet.new();
     s.insert("alpha");
     s.insert("beta");
@@ -946,7 +945,7 @@ fn native_cooperative_sleep_matches_wasi_output() {
 // inside an actor is still gated on wasm (see backlog #1451), so an ask-based
 // variant would fail at codegen and prove nothing about the timer.
 const COOPERATIVE_PERIODIC_SOURCE: &str = r#"actor Pulse {
-    var count: i64 = 0,
+    var count: i64 = 0;
 
     #[every(20ms)]
     receive fn tick() {
@@ -981,8 +980,8 @@ fn main() {
 const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.stream;
 
 actor Pulse {
-    let ready: stream.Sink<i64>,
-    var count: i64 = 0,
+    let ready: stream.Sink<i64>;
+    var count: i64 = 0;
 
     #[every(20ms)]
     receive fn tick() {
@@ -995,7 +994,10 @@ actor Pulse {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let _p = spawn Pulse(ready: ready_tx, count: 0);
     println("spawned");
     let _ = ready_rx.recv();

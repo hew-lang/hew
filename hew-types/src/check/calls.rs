@@ -2099,57 +2099,80 @@ impl Checker {
                 self.record_construct_call(span);
                 return result;
             }
-            // `close(actor)` requests a cooperative stop and waits until the
-            // actor's terminal cleanup has run; `fork close(actor)` is the
-            // non-waiting request. `closed(actor)` waits without requesting.
-            // A source declaration of the name owns it: the handle builtin
-            // applies only where nothing in scope declares `close`/`closed`.
-            "close" | "closed" if !self.declares_function(&func_name) => {
+            // Lifecycle requests and waits are distinct checked operations.
+            // A source declaration with the same name owns its call site.
+            "stop" | "terminate" | "stopped" | "restarted"
+                if !self.declares_function(&func_name) =>
+            {
                 if !self.check_arity(args, 1, &format!("`{func_name}`"), span) {
                     return Ty::Error;
                 }
                 let (expr, sp) = args[0].expr();
                 let actor_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&actor_ty);
-                // Supervisor close uses the tree's terminal contract, which
-                // tears down every child before returning.
-                if let Some(Ty::Named { head, .. }) = resolved.as_local_actor_ref() {
-                    if self.supervisor_children.contains_key(head.registry_key()) {
-                        if func_name == "close" {
-                            self.record_direct_call_target(
-                                span,
-                                CallTarget::Runtime(
-                                    crate::runtime_call::RuntimeCallFamily::SupervisorStop,
-                                ),
-                            );
-                            self.record_submission_suspension(span, true);
-                            return Ty::Unit;
-                        }
-                        self.actor_delivery_calls.insert(
-                            SpanKey::in_module(span, self.current_module_idx),
-                            crate::actor_delivery::ActorDeliveryCall::AwaitClosed,
-                        );
-                        self.record_submission_suspension(span, true);
-                        return Ty::Unit;
-                    }
+                if func_name == "stopped"
+                    && matches!(expr, Expr::Ident(name) if name.name.as_str() == "self")
+                {
+                    self.report_error(
+                        TypeErrorKind::ActorWaitsOnSelf,
+                        span,
+                        "E_ACTOR_WAITS_ON_SELF: an actor cannot wait for its own release"
+                            .to_string(),
+                    );
+                    return Ty::Error;
                 }
-                if resolved.addresses_local_actor() {
-                    let operation = if func_name == "close" {
-                        crate::actor_delivery::ActorDeliveryCall::Close
-                    } else {
-                        crate::actor_delivery::ActorDeliveryCall::AwaitClosed
+                let valid = if func_name == "restarted" {
+                    resolved.as_child_ref().is_some()
+                } else {
+                    resolved.addresses_local_actor()
+                };
+                if valid {
+                    let operation = match func_name.as_str() {
+                        "stop" => crate::actor_delivery::ActorDeliveryCall::Stop,
+                        "terminate" => crate::actor_delivery::ActorDeliveryCall::Terminate,
+                        "stopped" => crate::actor_delivery::ActorDeliveryCall::AwaitStopped,
+                        "restarted" => crate::actor_delivery::ActorDeliveryCall::AwaitRestarted,
+                        _ => unreachable!("lifecycle spelling matched above"),
                     };
                     self.actor_delivery_calls
                         .insert(SpanKey::in_module(span, self.current_module_idx), operation);
-                    self.record_submission_suspension(span, true);
+                    if matches!(func_name.as_str(), "stopped" | "restarted") {
+                        self.record_submission_suspension(span, true);
+                    }
                     return Ty::Unit;
                 }
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("`{func_name}` expects an actor handle"),
+                    if func_name == "restarted" {
+                        "`restarted` expects a supervised role".to_string()
+                    } else {
+                        format!("`{func_name}` expects an actor handle")
+                    },
                 );
                 return Ty::Error;
+            }
+            "close" | "closed" | "supervisor_stop" if !self.declares_function(&func_name) => {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                let replacement = if func_name == "closed" {
+                    "stopped(handle)"
+                } else {
+                    "stop(handle); stopped(handle);"
+                };
+                self.report_migration_diagnostic(
+                    TypeErrorKind::ActorLifecycleRetired,
+                    format!("E_ACTOR_LIFECYCLE_RETIRED: `{func_name}` is retired for actors"),
+                    format!("write `{replacement}` using the original handle expression"),
+                    span,
+                );
+                return if self.migration_mode {
+                    Ty::Unit
+                } else {
+                    Ty::Error
+                };
             }
             "bytes::from" => {
                 self.check_arity(args, 1, "`bytes.from`", span);

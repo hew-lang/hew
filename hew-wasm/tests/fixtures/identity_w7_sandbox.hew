@@ -1,5 +1,5 @@
 type ActorRequestAdmission {
-    n: i64,
+    n: i64;
 }
 
 actor Echo {

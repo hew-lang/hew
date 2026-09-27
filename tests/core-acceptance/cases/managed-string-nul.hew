@@ -1,4 +1,6 @@
-fn preserve(value: string) -> string { value }
+fn preserve(value: string) -> string {
+    value
+}
 
 fn main() -> i64 {
     let retained = {

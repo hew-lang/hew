@@ -767,7 +767,7 @@ pub(crate) fn verify_operation(
     })())
 }
 
-/// Actor boundary selected from an exact demanded protocol.
+/// Exact actor, supervisor or stable role selected for a lifecycle operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorCallProtocol {
     pub actor: ActorId,
@@ -887,6 +887,48 @@ impl RemoteObservationKind {
 }
 
 /// Actor boundary selected from an exact demanded protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleTarget {
+    Actor(ActorId),
+    ActorRole(ActorId),
+    Supervisor(crate::SupervisorId),
+    SupervisorRole(crate::SupervisorId),
+}
+
+impl LifecycleTarget {
+    fn handle_ty(
+        self,
+        actors: &[SemActor],
+        supervisors: &[crate::SemSupervisor],
+    ) -> Result<ResolvedTy, String> {
+        match self {
+            Self::Actor(id) | Self::ActorRole(id) => {
+                let actor = actors
+                    .get(id.0 as usize)
+                    .filter(|actor| actor.id == id)
+                    .ok_or("unknown lifecycle actor identity")?;
+                Ok(if matches!(self, Self::ActorRole(_)) {
+                    actor.child_ref_ty()
+                } else {
+                    actor.handle_ty.clone()
+                })
+            }
+            Self::Supervisor(id) | Self::SupervisorRole(id) => {
+                let supervisor = supervisors
+                    .get(id.0 as usize)
+                    .filter(|supervisor| supervisor.id == id)
+                    .ok_or("unknown lifecycle supervisor identity")?;
+                Ok(if matches!(self, Self::SupervisorRole(_)) {
+                    supervisor.child_ref_ty()
+                } else {
+                    supervisor.handle_ty.clone()
+                })
+            }
+        }
+    }
+}
+
+/// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
     LocalObservation {
@@ -898,8 +940,10 @@ pub enum ActorOperation {
     CallStart(ActorCallProtocol),
     /// Consume an operation selected as ready, materializing its checked result.
     CallTake(ActorCallProtocol),
-    Close(ActorId),
-    AwaitClosed(ActorId),
+    Stop(LifecycleTarget),
+    Terminate(LifecycleTarget),
+    AwaitStopped(LifecycleTarget),
+    AwaitRestarted(LifecycleTarget),
     Spawn(ActorId),
     /// The running actor's own handle — bare `self` in an actor body. Takes no
     /// operands: the handle is the actor the boundary already runs inside.
@@ -942,25 +986,6 @@ pub enum ActorOperation {
         child: u32,
         owner_is_role: bool,
     },
-    /// Stop the supervisor and every child; each child's stop hooks run before
-    /// its terminal cleanup.
-    SupervisorStop(crate::SupervisorId),
-    /// Observe supervisor reclamation without requesting shutdown.
-    SupervisorAwaitClosed(crate::SupervisorId),
-    /// Observe the incarnation selected from a supervisor role once; close
-    /// additionally requests its stop after retaining completion.
-    SupervisorRoleAwaitClosed {
-        supervisor: crate::SupervisorId,
-        closing: bool,
-    },
-    /// Wait until one declared child is Live again after a crash, or is
-    /// permanently gone, then produce its role. The restart barrier: without
-    /// it a caller cannot tell a pre-crash incarnation from its replacement.
-    SupervisorAwaitRestart {
-        supervisor: crate::SupervisorId,
-        child: u32,
-        owner_is_role: bool,
-    },
     /// Produce a `pool` child's view: the owning supervisor and the first of
     /// the pool's consecutive member slots. The member count is a declaration
     /// fact, so the view carries only what varies at runtime.
@@ -989,11 +1014,7 @@ impl ActorOperation {
     ) -> Result<crate::SemSignature, String> {
         let (Self::SupervisorSpawn(id)
         | Self::SupervisorChild { supervisor: id, .. }
-        | Self::SupervisorAwaitRestart { supervisor: id, .. }
-        | Self::SupervisorPoolView { supervisor: id, .. }
-        | Self::SupervisorStop(id)
-        | Self::SupervisorAwaitClosed(id)
-        | Self::SupervisorRoleAwaitClosed { supervisor: id, .. }) = self
+        | Self::SupervisorPoolView { supervisor: id, .. }) = self
         else {
             return Err("operation is not a supervisor boundary".into());
         };
@@ -1020,11 +1041,6 @@ impl ActorOperation {
                 child,
                 owner_is_role,
                 ..
-            }
-            | Self::SupervisorAwaitRestart {
-                child,
-                owner_is_role,
-                ..
             } => consume(
                 vec![if *owner_is_role {
                     supervisor.child_ref_ty()
@@ -1045,9 +1061,6 @@ impl ActorOperation {
                 }],
                 supervisor.pool_view_ty(*child as usize, actors, supervisors)?,
             ),
-            Self::SupervisorRoleAwaitClosed { .. } => {
-                consume(vec![supervisor.child_ref_ty()], ResolvedTy::Unit)
-            }
             _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
         })
     }
@@ -1114,6 +1127,28 @@ impl ActorOperation {
         if matches!(self, Self::CallStart(_) | Self::CallTake(_)) {
             return self.completion_signature(defs, actors);
         }
+        if let Self::Stop(target)
+        | Self::Terminate(target)
+        | Self::AwaitStopped(target)
+        | Self::AwaitRestarted(target) = self
+        {
+            if matches!(self, Self::AwaitRestarted(_))
+                && !matches!(
+                    target,
+                    LifecycleTarget::ActorRole(_) | LifecycleTarget::SupervisorRole(_)
+                )
+            {
+                return Err("restart wait requires a supervised role".into());
+            }
+            return Ok(crate::SemSignature {
+                params: vec![crate::SemAbiParam {
+                    ty: target.handle_ty(actors, supervisors)?,
+                    passing: crate::SemParamPassing::Borrow,
+                    caller_visible_projection: false,
+                }],
+                return_ty: ResolvedTy::Unit,
+            });
+        }
         if let Self::LocalObservation {
             kind,
             target,
@@ -1145,12 +1180,14 @@ impl ActorOperation {
             Self::LocalObservation { .. }
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
-            | Self::CallTake(_) => {
+            | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             Self::Spawn(id)
-            | Self::Close(id)
-            | Self::AwaitClosed(id)
             | Self::SelfHandle(id)
             | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. } => *id,
@@ -1167,11 +1204,9 @@ impl ActorOperation {
             }
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
-            | Self::SupervisorAwaitRestart { .. }
-            | Self::SupervisorPoolView { .. }
-            | Self::SupervisorAwaitClosed(_)
-            | Self::SupervisorRoleAwaitClosed { .. }
-            | Self::SupervisorStop(_) => return self.supervisor_signature(actors, supervisors),
+            | Self::SupervisorPoolView { .. } => {
+                return self.supervisor_signature(actors, supervisors)
+            }
         };
         let actor = actors
             .get(id.0 as usize)
@@ -1182,6 +1217,10 @@ impl ActorOperation {
             | Self::RemoteObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
+            | Self::Stop(_)
+            | Self::Terminate(_)
+            | Self::AwaitStopped(_)
+            | Self::AwaitRestarted(_)
             | Self::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }
@@ -1201,15 +1240,9 @@ impl ActorOperation {
                     ResolvedTy::Unit,
                 )
             }
-            Self::Close(_) => (vec![actor.handle_ty.clone()], actor.handle_ty.clone()),
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
-            | Self::SupervisorAwaitRestart { .. }
-            | Self::SupervisorPoolView { .. }
-            | Self::SupervisorAwaitClosed(_)
-            | Self::SupervisorRoleAwaitClosed { .. }
-            | Self::SupervisorStop(_) => unreachable!("supervisor boundaries return above"),
-            Self::AwaitClosed(_) => (vec![actor.handle_ty.clone()], ResolvedTy::Unit),
+            | Self::SupervisorPoolView { .. } => unreachable!("supervisor boundaries return above"),
             Self::SelfHandle(_) => (Vec::new(), actor.handle_ty.clone()),
             // Deferred fields (D447) receive their value inside init.
             Self::Spawn(_) => (

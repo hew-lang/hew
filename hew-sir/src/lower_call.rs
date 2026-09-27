@@ -1325,10 +1325,7 @@ impl Builder<'_, '_> {
                 value_required,
             ),
             CallTarget::Runtime(hew_types::RuntimeCallFamily::SupervisorStop) => {
-                let [handle] = args.as_slice() else {
-                    return Err("supervisor stop takes exactly one handle".into());
-                };
-                self.lower_supervisor_stop(handle)
+                Err("`supervisor_stop` was replaced by `stop(supervisor)`".into())
             }
             CallTarget::Runtime(family)
             | CallTarget::DeclaredRuntime {

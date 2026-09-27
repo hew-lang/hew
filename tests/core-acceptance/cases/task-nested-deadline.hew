@@ -1,13 +1,21 @@
 import std.stream;
 
 actor Audit {
-    receive fn record() { sleep(1ms); println("child closed"); }
+    receive fn record() {
+        sleep(1ms);
+        println("child closed");
+    }
 }
 
 #[resource]
-type Ticket { audit: Audit, }
+type Ticket {
+    audit: Audit;
+}
+
 impl Ticket {
-    fn close(consume self) { self.audit.record().expect("close child"); }
+    fn close(consume self) {
+        self.audit.record().expect("close child");
+    }
 }
 
 fn child(audit: Audit, started: Sink<i64>) {
@@ -39,5 +47,9 @@ fn main() {
             .Fault { message } => panic(message),
         }
     };
-    close(audit);
+    {
+        let __hew_migrated_actor_1113 = audit;
+        stop(__hew_migrated_actor_1113);
+        stopped(__hew_migrated_actor_1113);
+    };
 }

@@ -1,11 +1,15 @@
-type Boxed { payload: [i64] }
+type Boxed {
+    payload: [i64];
+}
 
-actor ProbeSink { 
-    var seen: i64,
+actor ProbeSink {
+    var seen: i64;
     receive fn take(b: Boxed) {
         seen = seen + b.payload.len();
-  }
-    receive fn total() -> i64 { seen }
+    }
+    receive fn total() -> i64 {
+        seen
+    }
 }
 
 fn main() -> i64 {
@@ -17,7 +21,13 @@ fn main() -> i64 {
         i = i + 1;
     }
     match sink.total() {
-        .Ok(v) => { if v < 0 { 74 } else { 0 } },
+        .Ok(v) => {
+            if v < 0 {
+                74
+            } else {
+                0
+            }
+        }
         .Err(_e) => 1,
     }
 }

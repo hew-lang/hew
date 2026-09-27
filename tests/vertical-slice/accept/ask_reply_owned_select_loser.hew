@@ -23,7 +23,7 @@ actor FastWorker {
 }
 
 actor SlowWorker {
-    var gate: stream.Stream<i64>,
+    var gate: stream.Stream<i64>;
 
     receive fn label() -> string {
         // Wait on a gate main opens only after the select, so FastWorker's

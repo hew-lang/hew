@@ -25,7 +25,7 @@ trait Right: Tagged {
 }
 
 type Both {
-    n: i64,
+    n: i64;
 }
 
 impl Alpha for Both {

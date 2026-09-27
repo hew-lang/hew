@@ -1,12 +1,20 @@
-fn f() -> Option<string> { .Some("g2429-letelse-string".to_upper()) }
+fn f() -> Option<string> {
+    .Some("g2429-letelse-string".to_upper())
+}
 
 fn main() -> i64 {
     var total = 0;
     var i = 0;
     while i < 50 {
         i = i + 1;
-        let .Some(b) = f() else { continue; };
+        let .Some(b) = f() else {
+            continue;
+        };
         total = total + b.len();
     }
-    if total > 0 { 0 } else { 1 }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
 }

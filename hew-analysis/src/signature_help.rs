@@ -555,14 +555,24 @@ mod tests {
     #[test]
     fn sig_help_labels_impl_block_method_with_return_type() {
         let source = "\
-type Caps { count: i64, }
-type Matcher { id: i64, }
+type Caps {
+    count: i64;
+}
+
+type Matcher {
+    id: i64;
+}
+
 trait MatcherMethods {
     fn captures(self, input: string) -> Caps;
 }
+
 impl MatcherMethods for Matcher {
-    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
+    fn captures(m: Matcher, input: string) -> Caps {
+        Caps { count: 0 }
+    }
 }
+
 fn probe(mat: Matcher, s: string) {
     let c = mat.captures(s);
 }

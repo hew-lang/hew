@@ -68,7 +68,7 @@ fn main() {
             .Some(value) => value,
             .None => {
                 continue;
-            },
+            }
         };
         if arg.starts_with("--") {
             // Long option: check for "=" to distinguish flag from key=value

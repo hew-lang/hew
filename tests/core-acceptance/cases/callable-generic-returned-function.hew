@@ -1,4 +1,6 @@
-fn identity<T>(value: T) -> T { value }
+fn identity<T>(value: T) -> T {
+    value
+}
 
 fn factory<T>() -> fn[clone](T) -> T {
     identity<T>

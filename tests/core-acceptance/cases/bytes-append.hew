@@ -6,12 +6,10 @@ fn main() {
     assert(result == "0123456789abcdef234".to_bytes());
     assert(original == "0123456789abcdef".to_bytes());
     assert(slice == "234".to_bytes());
-
     var empty = bytes.new();
     empty.append("a\0b".to_bytes());
     empty.append(bytes.new());
     assert(empty == "a\0b".to_bytes());
-
     var sliced = original[3..6];
     sliced.append("XYZ".to_bytes());
     assert(sliced == "345XYZ".to_bytes());

@@ -9,6 +9,6 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_IMPL_PARAM_NAME_MISMATCH"
-line = 10
+line = 12
 column = 8
 message = "names parameter `ratio` where trait `Shape` names it `factor`"

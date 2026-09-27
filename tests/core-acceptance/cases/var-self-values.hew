@@ -1,5 +1,11 @@
-type Counter { value: i64 }
-trait Bump { fn bump(var self, amount: i64) -> i64; }
+type Counter {
+    value: i64;
+}
+
+trait Bump {
+    fn bump(var self, amount: i64) -> i64;
+}
+
 impl Bump for Counter {
     fn bump(var self, amount: i64) -> i64 {
         self.value += amount;
@@ -10,14 +16,26 @@ impl Bump for Counter {
 impl Bump for i64 {
     fn bump(var self, amount: i64) -> i64 {
         self += amount;
-        if amount == 2 { return self; }
+        if amount == 2 {
+            return self;
+        }
         self
     }
 }
 
-type Text { value: string }
-type Envelope { text: Text, sibling: string }
-trait Replace { fn replace(var self, value: string) -> string; }
+type Text {
+    value: string;
+}
+
+type Envelope {
+    text: Text;
+    sibling: string;
+}
+
+trait Replace {
+    fn replace(var self, value: string) -> string;
+}
+
 impl Replace for Text {
     fn replace(var self, value: string) -> string {
         let previous = self.value;
@@ -26,19 +44,32 @@ impl Replace for Text {
     }
 }
 
-trait Snapshot { fn snapshot(var self, early: bool) -> Text; }
+trait Snapshot {
+    fn snapshot(var self, early: bool) -> Text;
+}
+
 impl Snapshot for Text {
     fn snapshot(var self, early: bool) -> Text {
-        if early { return self; }
+        if early {
+            return self;
+        }
         self
     }
 }
 
-type Holder<T> { payload: T }
-trait Touch { fn touch(var self, early: bool); }
+type Holder<T> {
+    payload: T;
+}
+
+trait Touch {
+    fn touch(var self, early: bool);
+}
+
 impl<T> Touch for Holder<T> {
     fn touch(var self, early: bool) {
-        if early { return; }
+        if early {
+            return;
+        }
     }
 }
 

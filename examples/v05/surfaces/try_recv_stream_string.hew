@@ -43,10 +43,10 @@ actor TryRecvStrings {
                 .Some(frame) => {
                     println(f"poll [{frame}]");
                     received = received + 1;
-                },
+                }
                 .None => {
                     done = true;
-                },
+                }
             }
         }
         println(f"drained {received} frames");

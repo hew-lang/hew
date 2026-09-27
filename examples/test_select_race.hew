@@ -23,11 +23,11 @@ fn main() {
         r from fast.compute(5) => match r {
             .Ok(value) => value,
             .Err(_) => -1 as i32,
-        },
+        }
         r from slow.compute(5) => match r {
             .Ok(value) => value,
             .Err(_) => -1 as i32,
-        },
+        }
         after 2s => -1 as i32,
     };
     println("select result:");

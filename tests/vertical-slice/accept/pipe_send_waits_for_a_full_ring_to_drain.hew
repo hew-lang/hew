@@ -4,7 +4,7 @@ import std.stream;
 
 actor Producer {
     receive fn go(tx: stream.Sink<i64>) {
-        for i in 1..6 {
+        for i in 1 .. 6 {
             tx.send(i).expect("send");
         }
         tx.finish();

@@ -91,17 +91,17 @@
 /// `set_str`, `set_int`, `set_bool`, and `set_list`; the binding must be `var`.
 pub type Ctx {
     /// Keys for scalar (string-valued) entries.
-    skeys: Vec<string>,
+    skeys: Vec<string>;
     /// String-rendered values for scalar entries (parallel to `skeys`).
-    svals: Vec<string>,
+    svals: Vec<string>;
     /// Keys for list entries.
-    lkeys: Vec<string>,
+    lkeys: Vec<string>;
     /// Flat concatenation of all list items across all list entries.
-    litems: Vec<string>,
+    litems: Vec<string>;
     /// Start index into `litems` for each list entry (parallel to `lkeys`).
-    lstart: Vec<i64>,
+    lstart: Vec<i64>;
     /// Item count for each list entry (parallel to `lkeys`).
-    llen: Vec<i64>,
+    llen: Vec<i64>;
 }
 
 // ── Internal helper: (rendered-text, next-position) pair ─────────────
@@ -113,23 +113,23 @@ pub type Ctx {
 // WHEN: replace with `(string, i64)` tuple return once tuple returns land.
 // WHAT: the real shape is `Result<(string, i64), string>`.
 pub type RenderPair {
-    text: string,
-    next_pos: i64,
+    text: string;
+    next_pos: i64;
 }
 
 /// Opaque compiled template.
 pub type Template {
-    src: string,
+    src: string;
 }
 
 /// Structured template parse/render errors.
 pub enum TemplateError {
-    UnclosedDirective(string),
-    UnclosedBlock(string),
-    UnexpectedTag(string),
-    DotOutsideRange(string),
-    UnknownDirective(string),
-    DuplicateElse(string),
+    UnclosedDirective(string);
+    UnclosedBlock(string);
+    UnexpectedTag(string);
+    DotOutsideRange(string);
+    UnknownDirective(string);
+    DuplicateElse(string);
 }
 
 impl Display for TemplateError {
@@ -232,7 +232,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
-            },
+            }
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -240,7 +240,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
-            },
+            }
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
@@ -316,7 +316,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
-            },
+            }
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -324,7 +324,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
-            },
+            }
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         let next_pos = tag_start + close + 2;
@@ -358,10 +358,10 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             match rendered {
                 .Ok(s) => {
                     out = out + s;
-                },
+                }
                 .Err(e) => {
                     return .Err(e);
-                },
+                }
             }
         }
     }
@@ -380,7 +380,7 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             .None => {
                 out = out + rest;
                 return .Ok(out);
-            },
+            }
         };
         // Append literal text before `{{`.
         out = out + tmpl.slice(pos, pos + open);
@@ -390,7 +390,7 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` directive"));
-            },
+            }
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         pos = tag_start + close + 2;
@@ -410,10 +410,10 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
                 .Ok(pair) => {
                     out = out + pair.text;
                     pos = pair.next_pos;
-                },
+                }
                 .Err(e) => {
                     return .Err(e);
-                },
+                }
             }
         } else if tag_is_range(tag) {
             let key = range_key(tag);
@@ -422,10 +422,10 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
                 .Ok(pair) => {
                     out = out + pair.text;
                     pos = pair.next_pos;
-                },
+                }
                 .Err(e) => {
                     return .Err(e);
-                },
+                }
             }
         } else if tag == "end" {
             return .Err(TemplateError.UnexpectedTag("template: unexpected `{{end}}`"));
@@ -461,7 +461,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
                     return .Err(unclosed_block_error(top));
                 }
                 return .Ok(0);
-            },
+            }
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -469,7 +469,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` directive"));
-            },
+            }
         };
         let tag = tmpl.slice(tag_start, tag_start + close).trim();
         pos = tag_start + close + 2;
@@ -539,7 +539,7 @@ pub fn render_template(t: Template, ctx: Ctx) -> string {
         .Err(err) => {
             panic(f"{err}");
             ""
-        },
+        }
     }
 }
 
@@ -677,7 +677,7 @@ pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
                 .Ok(s) => .Ok(s),
                 .Err(err) => .Err(to_string(err)),
             }
-        },
+        }
         .Err(err) => .Err(to_string(err)),
     }
 }

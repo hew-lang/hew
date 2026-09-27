@@ -2,7 +2,7 @@ import std.failure;
 
 #[resource]
 type Conn {
-    fd: i64,
+    fd: i64;
 }
 
 impl Conn {
@@ -19,8 +19,8 @@ impl Conn {
 }
 
 type Counter {
-    n: i64,
-    label: string,
+    n: i64;
+    label: string;
 }
 
 impl Counter {
@@ -30,13 +30,13 @@ impl Counter {
 }
 
 type Outer {
-    counter: Counter,
-    conn: Conn,
-    tag: string,
+    counter: Counter;
+    conn: Conn;
+    tag: string;
 }
 
 actor Holder {
-    var outer: Outer,
+    var outer: Outer;
 
     receive fn poke(fail: bool) -> i64 {
         outer.counter.bump();
@@ -52,16 +52,24 @@ actor Holder {
 }
 
 supervisor Group {
-    intensity: 1 within 60s,
-    child holder: Holder(outer: Outer { counter: Counter { n: 0, label: "count" }, conn: Conn { fd: 1 }, tag: "outer" }),
+    intensity: 1 within 60s;
+    child holder: Holder(outer: Outer { counter: Counter { n: 0, label: "count" }, conn: Conn { fd: 1 }, tag: "outer" });
 }
 
 fn main() {
     let group = spawn Group;
     println(group.holder.poke(false).expect("poke"));
     let _ = group.holder.poke(true);
-    let _ = await_restart group.holder;
+    let _ = {
+        let __hew_migrated_role_1172 = group.holder;
+        restarted(__hew_migrated_role_1172);
+        __hew_migrated_role_1172
+    };
     println(group.holder.poke(false).expect("fresh"));
-    close(group);
+    {
+        let __hew_migrated_actor_1259 = group;
+        stop(__hew_migrated_actor_1259);
+        stopped(__hew_migrated_actor_1259);
+    };
     println("done");
 }

@@ -1,4 +1,6 @@
-type Node { id: i64, }
+type Node {
+    id: i64;
+}
 
 fn frame(flag: bool) -> i64 {
     var shared: Rc<Node> = Rc.new(Node { id: 7 });
@@ -15,7 +17,7 @@ fn frame(flag: bool) -> i64 {
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for seed in 0..50 {
+    for seed in 0 .. 50 {
         total = total + frame(seed % 2 == 0);
         println("frame");
     }

@@ -1,4 +1,6 @@
-type SetBox { words: HashSet<string> }
+type SetBox {
+    words: HashSet<string>;
+}
 
 fn make_box() -> SetBox {
     var words: HashSet<string> = HashSet.new();
@@ -18,7 +20,9 @@ fn main() -> i64 {
             total = total + word.len();
             count = count + 1;
         }
-        if count != 3 || holder.words.len() != 3 { return 91; }
+        if count != 3 || holder.words.len() != 3 {
+            return 91;
+        }
         println(total);
         i = i + 1;
     }

@@ -1,6 +1,9 @@
 import std.process;
+
 import std.stream;
+
 import std.os;
+
 import std.io;
 
 fn text_pipe() -> (Sink<string>, Stream<string>) {
@@ -26,7 +29,7 @@ fn main() -> i64 {
                 println(arguments[2]);
                 io.write_err("owned stderr\n");
                 return 23;
-            },
+            }
             "silent" => return 0,
             _ => panic("unexpected child mode"),
         }
@@ -44,14 +47,14 @@ fn main() -> i64 {
             .Err(_) => panic("child launch failed"),
         };
         println(child.wait());
-    }
+    };
     match process.run_argv("hew-missing-opaque-resource-command", Vec.new()) {
         .Ok(_) => panic("missing command unexpectedly ran"),
         .Err(_) => println("launch refused"),
     }
     {
         let _pair = text_pipe();
-    }
+    };
     println("text pipe released");
     println(early_return());
     println("bytes pipe released");

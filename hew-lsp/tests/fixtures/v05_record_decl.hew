@@ -1,6 +1,6 @@
 type AutoRecord {
-    count: i64,
-    name: string,
+    count: i64;
+    name: string;
 }
 
 fn record_decl_probe() -> i64 {

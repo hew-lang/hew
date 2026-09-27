@@ -3,11 +3,14 @@
 // the SIR verifier (RAII-1).
 #[resource]
 #[opaque]
-type Dq {}
+type Dq {
+}
 
 impl Dq {
     fn close(consume self) {
-        unsafe { hew_deque_free(self) };
+        unsafe {
+            hew_deque_free(self)
+        };
         println("closed");
     }
 }
@@ -18,11 +21,13 @@ extern "C" {
 }
 
 type Holder {
-    dq: Dq,
+    dq: Dq;
 }
 
 fn main() -> i64 {
-    let h = Holder { dq: unsafe { hew_deque_new() } };
+    let h = Holder { dq: unsafe {
+        hew_deque_new()
+    } };
     println("built");
     0
 }

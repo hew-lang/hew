@@ -3,7 +3,7 @@ import std.net;
 import std.stream;
 
 actor AttachedInput {
-    let ready: stream.Sink<i64>,
+    let ready: stream.Sink<i64>;
     receive fn on_close() {}
     receive fn on_data(data: bytes) {
         ready.send(data.len()).expect("send");
@@ -30,11 +30,11 @@ fn main() {
     let receiver = spawn AttachedInput(ready: tx);
     let server = listener.accept();
     match server.attach(receiver) {
-        .Ok(()) => {},
+        .Ok(()) => {}
         .Err(_) => panic("attach refused"),
     }
     match client.send("owned\0input".to_bytes()) {
-        .Ok(()) => {},
+        .Ok(()) => {}
         .Err(_) => panic("write failed"),
     }
     match rx.recv() {
@@ -42,9 +42,10 @@ fn main() {
         .None => panic("actor never received input"),
     }
     let _ = client.send("pending\0input".to_bytes());
-    close(receiver);
+    terminate(receiver);
+    stopped(receiver);
     client.close();
     listener.close();
     rx.close();
-    println("attached input released on actor close");
+    println("attached input released on actor termination");
 }

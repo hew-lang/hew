@@ -9,12 +9,14 @@ gen fn holds(label: string) -> string {
     yield label;
     yield "done";
 }
+
 fn produce(label: string, parked: stream.Stream<i64>) -> Generator<string, ()> {
     parked.recv();
     let values = holds(label);
     let _first = values.next();
     values
 }
+
 fn produce_after(label: string, parked: stream.Sink<i64>, gate: stream.Stream<i64>) -> Generator<string, ()> {
     let values = holds(label);
     let _first = values.next();
@@ -22,10 +24,14 @@ fn produce_after(label: string, parked: stream.Sink<i64>, gate: stream.Stream<i6
     gate.recv();
     values
 }
+
 fn main() {
     let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
     let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
-    let winner = race { produce_after("loser", parked_tx, gate), produce("winner", parked) };
+    let winner = race {
+        produce_after("loser", parked_tx, gate),
+        produce("winner", parked),
+    };
     println("selected");
     match winner.next() {
         .Some(value) => println(value),

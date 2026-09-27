@@ -8,7 +8,9 @@ trait Greeter {
     }
 }
 
-type Person { name: string }
+type Person {
+    name: string;
+}
 
 impl Greeter for Person {
     fn name(p: Person) -> string {

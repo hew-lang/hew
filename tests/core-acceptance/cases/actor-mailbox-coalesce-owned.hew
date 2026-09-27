@@ -4,12 +4,12 @@
 import std.stream;
 
 actor Latest {
-    var processed: i64 = 0,
-    var length: i64 = -1,
-    var started: stream.Sink<i64>,
-    var gate: stream.Stream<i64>,
+    var processed: i64 = 0;
+    var length: i64 = -1;
+    var started: stream.Sink<i64>;
+    var gate: stream.Stream<i64>;
 
-    mailbox 1 overflow coalesce(id) fallback drop_new,
+    mailbox 1 overflow coalesce(id) fallback drop_new;
 
     // A held update reports that it is running, then waits for the gate.
     receive fn update(id: i64, payload: string, hold: bool) {
@@ -52,5 +52,6 @@ fn main() {
         .Ok(length) => println(length),
         .Err(_) => println("failed"),
     }
-    close(worker);
+    stop(worker);
+    stopped(worker);
 }

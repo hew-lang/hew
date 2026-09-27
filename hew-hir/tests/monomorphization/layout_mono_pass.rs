@@ -44,20 +44,19 @@ fn enum_layout_names(output: &hew_hir::LowerOutput) -> Vec<String> {
 /// at i64 — even though the construction site at the origin is abstract.
 #[test]
 fn generic_record_in_generic_body_registers_concrete_layout() {
-    let source = r"
-        type Box<T> {
-            value: T,
-        }
+    let source = r"type Box<T> {
+    value: T;
+}
 
-        fn make<T>(x: T) -> Box<T> {
-            Box { value: x }
-        }
+fn make<T>(x: T) -> Box<T> {
+    Box { value: x }
+}
 
-        fn main() {
-            let b = make(7);
-            print(b.value);
-        }
-    ";
+fn main() {
+    let b = make(7);
+    print(b.value);
+}
+";
     let output = typecheck_and_lower(source);
     assert!(
         output.diagnostics.is_empty(),
@@ -76,20 +75,19 @@ fn generic_record_in_generic_body_registers_concrete_layout() {
 /// instantiations land.
 #[test]
 fn abstract_origin_layout_is_not_registered() {
-    let source = r"
-        type Box<T> {
-            value: T,
-        }
+    let source = r"type Box<T> {
+    value: T;
+}
 
-        fn make<T>(x: T) -> Box<T> {
-            Box { value: x }
-        }
+fn make<T>(x: T) -> Box<T> {
+    Box { value: x }
+}
 
-        fn main() {
-            let b = make(7);
-            print(b.value);
-        }
-    ";
+fn main() {
+    let b = make(7);
+    print(b.value);
+}
+";
     let output = typecheck_and_lower(source);
     let names = record_layout_names(&output);
     assert!(
@@ -102,22 +100,21 @@ fn abstract_origin_layout_is_not_registered() {
 /// each get their own concrete layout — proving the discovery is polymorphic.
 #[test]
 fn two_record_instantiations_register_distinct_layouts() {
-    let source = r"
-        type Box<T> {
-            value: T,
-        }
+    let source = r"type Box<T> {
+    value: T;
+}
 
-        fn make<T>(x: T) -> Box<T> {
-            Box { value: x }
-        }
+fn make<T>(x: T) -> Box<T> {
+    Box { value: x }
+}
 
-        fn main() {
-            let a = make(7);
-            let b = make(true);
-            print(a.value);
-            print(b.value);
-        }
-    ";
+fn main() {
+    let a = make(7);
+    let b = make(true);
+    print(a.value);
+    print(b.value);
+}
+";
     let output = typecheck_and_lower(source);
     let names = record_layout_names(&output);
     assert!(
@@ -134,28 +131,27 @@ fn two_record_instantiations_register_distinct_layouts() {
 /// tagged-union layout registered once the fn is instantiated.
 #[test]
 fn generic_enum_in_generic_body_registers_concrete_layout() {
-    let source = r"
-        enum Holder<T> {
-            Present(T),
-            Absent,
-        }
+    let source = r"enum Holder<T> {
+    Present(T);
+    Absent;
+}
 
-        fn wrap<T>(x: T) -> Holder<T> {
-            Holder.Present(x)
-        }
+fn wrap<T>(x: T) -> Holder<T> {
+    Holder.Present(x)
+}
 
-        fn unwrap_or<T>(h: Holder<T>, fallback: T) -> T {
-            match h {
-                Holder.Present(v) => v,
-                Holder.Absent => fallback,
-            }
-        }
+fn unwrap_or<T>(h: Holder<T>, fallback: T) -> T {
+    match h {
+        Holder.Present(v) => v,
+        Holder.Absent => fallback,
+    }
+}
 
-        fn main() {
-            let h = wrap(99);
-            print(unwrap_or(h, 0));
-        }
-    ";
+fn main() {
+    let h = wrap(99);
+    print(unwrap_or(h, 0));
+}
+";
     let output = typecheck_and_lower(source);
     assert!(
         output.diagnostics.is_empty(),
@@ -173,19 +169,18 @@ fn generic_enum_in_generic_body_registers_concrete_layout() {
 /// (never called) produces NO layout — the abstract shape never leaks.
 #[test]
 fn uninstantiated_generic_produces_no_layout() {
-    let source = r"
-        type Box<T> {
-            value: T,
-        }
+    let source = r"type Box<T> {
+    value: T;
+}
 
-        fn make<T>(x: T) -> Box<T> {
-            Box { value: x }
-        }
+fn make<T>(x: T) -> Box<T> {
+    Box { value: x }
+}
 
-        fn main() {
-            print(1);
-        }
-    ";
+fn main() {
+    print(1);
+}
+";
     let output = typecheck_and_lower(source);
     let names = record_layout_names(&output);
     assert!(

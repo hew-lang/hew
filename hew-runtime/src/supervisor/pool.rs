@@ -447,9 +447,17 @@ pub struct HewNativeChildSpec {
     /// The declared child name as a NUL-terminated string, or null. It labels
     /// the child in the profiler's restart series and tree dump.
     pub name: *const c_char,
+    /// Signed nanoseconds: `-1` for a nested supervisor, zero for immediate
+    /// termination, positive for an actor's graceful stop deadline.
+    pub stop_ns: i64,
 }
 
 fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -> Option<usize> {
+    if (child.role_kind == ROLE_KIND_SUPERVISOR && child.stop_ns != -1)
+        || (child.role_kind == ROLE_KIND_ACTOR && child.stop_ns < 0)
+    {
+        return None;
+    }
     // ROSTER-GUARDED-HELPER: construction holds the owning supervisor mutex
     // throughout registration; this helper invokes no callbacks or waits.
     let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
@@ -465,6 +473,7 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
             },
             identity: s.next_child_spec_identity,
             restart_policy: child.restart_policy,
+            stop_ns: child.stop_ns,
             spent: false,
         }));
         index
@@ -473,6 +482,7 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
         let mut spec = InternalChildSpec::default();
         spec.identity = s.next_child_spec_identity;
         spec.restart_policy = child.restart_policy;
+        spec.stop_ns = child.stop_ns;
         spec.native_spawn = Some(child.spawn);
         spec.config = s.config_buf;
         if !child.name.is_null() {
@@ -647,28 +657,6 @@ pub unsafe extern "C" fn hew_supervisor_native_child(
     }
 }
 
-/// Block the calling thread until one declared child is Live again or is
-/// permanently gone. The contextless restart barrier for `main`.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_native_await_restart(
-    token: crate::lifetime::local_handles::HewLocalPidId,
-    slot: u32,
-    role_kind: c_int,
-) {
-    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
-        return;
-    };
-    // SAFETY: the pin keeps the allocation live for the blocking wait.
-    unsafe {
-        supervisor_restart_await_blocking(
-            pin.supervisor(),
-            slot,
-            role_kind == ROLE_KIND_SUPERVISOR,
-        );
-    }
-}
-
 /// Retain a stable nested owner path for another declared child projection.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
@@ -679,8 +667,38 @@ pub extern "C" fn hew_supervisor_native_role_owner(
     crate::lifetime::local_handles::current_supervisor_role_owner(owner, slot)
 }
 
-/// Observe the incarnation occupying a nested role at this call's resolution.
-/// A closing observer retains completion before requesting cooperative stop.
+/// Request a transition for the nested supervisor selected by a stable role.
+/// The parent notification is installed before teardown so a normal stop can
+/// refill a permanent child slot.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_native_role_request(
+    owner: crate::lifetime::local_handles::HewLocalPidId,
+    slot: u32,
+    terminate: c_int,
+) {
+    let Some(owner_pin) = crate::lifetime::local_handles::pin_current_supervisor(owner) else {
+        return;
+    };
+    let Some(target) = nested_child_token(owner_pin.supervisor(), slot) else {
+        return;
+    };
+    let Some(child_pin) = crate::lifetime::local_handles::pin_current_supervisor(target) else {
+        return;
+    };
+    child_pin
+        .control()
+        .notify_parent_on_stop(owner_pin.control().direct_id(), slot);
+    drop(child_pin);
+    drop(owner_pin);
+    if terminate != 0 {
+        hew_supervisor_terminate_native(target);
+    } else {
+        hew_supervisor_stop_native(target);
+    }
+}
+
+/// Observe the incarnation occupying a role at this call's resolution.
 ///
 /// # Safety
 /// `waker` describes a live wake target for registration.
@@ -689,29 +707,39 @@ pub unsafe extern "C" fn hew_supervisor_native_role_wait_new(
     owner: crate::lifetime::local_handles::HewLocalPidId,
     slot: u32,
     waker: *const crate::wake::HewWaker,
-    closing: c_int,
+    role_kind: c_int,
 ) -> *mut crate::actor_native::HewNativeActorWait {
     let owner_pin = crate::lifetime::local_handles::pin_current_supervisor(owner);
     let target = owner_pin
         .as_ref()
-        .and_then(|pin| nested_child_token(pin.supervisor(), slot))
+        .and_then(|pin| {
+            if role_kind == ROLE_KIND_SUPERVISOR {
+                nested_child_token(pin.supervisor(), slot)
+            } else {
+                actor_child_token(pin.supervisor(), slot)
+            }
+        })
         .unwrap_or(crate::lifetime::local_handles::HewLocalPidId::INVALID);
     // SAFETY: registration clones completion and the caller supplied the waker.
     let wait = unsafe { crate::actor_native::hew_actor_wait_new(target, waker) };
-    if closing != 0 {
-        if let (Some(owner_pin), Some(child_pin)) = (
-            owner_pin.as_ref(),
-            crate::lifetime::local_handles::pin_current_supervisor(target),
-        ) {
-            child_pin
-                .control()
-                .notify_parent_on_stop(owner_pin.control().direct_id(), slot);
-        }
-        // Teardown must never drain a pin retained by its own caller.
-        drop(owner_pin);
-        stop_local_supervisor(target, true);
-    }
     wait
+}
+
+/// Copy an actor role's selected incarnation even after admission has closed.
+/// A stopped role still owes its terminal cleanup before `stopped(role)` may
+/// return, so the live-only child lookup is too narrow for this observation.
+fn actor_child_token(
+    supervisor: *mut HewSupervisor,
+    slot: u32,
+) -> Option<crate::lifetime::local_handles::HewLocalPidId> {
+    // SAFETY: the caller retains an owner pin; the roster guards its child.
+    let roster = unsafe { &(*supervisor).roster }.lock_or_recover();
+    let actor = *roster.children.get(slot as usize)?;
+    if actor.is_null() {
+        return None;
+    }
+    // SAFETY: the roster owns this child pointer until the guard is released.
+    Some(unsafe { (*actor).local_pid_id })
 }
 
 /// Copy a nested incarnation identity while the caller pins its owner.
@@ -719,13 +747,6 @@ pub(crate) fn nested_child_token(
     supervisor: *mut HewSupervisor,
     slot: u32,
 ) -> Option<crate::lifetime::local_handles::HewLocalPidId> {
-    // SAFETY: the caller retains an owner pin across these projected reads.
-    if unsafe {
-        (*supervisor).cancelled.load(Ordering::Acquire)
-            || (*supervisor).running.load(Ordering::Acquire) == 0
-    } {
-        return None;
-    }
     // SAFETY: the owner pin retains the roster's allocation through the lock.
     let roster = unsafe { &(*supervisor).roster }.lock_or_recover();
     let index = slot as usize;
@@ -1337,6 +1358,7 @@ mod tests {
                 child_index: 0,
                 child_id: (*child).id,
                 exit_state: HewActorState::Crashed as i32,
+                end_reason: crate::internal::types::ActorEndReason::Crashed,
                 crash_code: 0,
                 fault_record: 0,
             };

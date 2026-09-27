@@ -5,10 +5,16 @@ trait Show {
     fn show(val: Self) -> string;
 }
 
-type Color { r: i64, g: i64, b: i64, }
+type Color {
+    r: i64;
+    g: i64;
+    b: i64;
+}
 
 impl Show for Color {
-    fn show(c: Color) -> string { "Color" }
+    fn show(c: Color) -> string {
+        "Color"
+    }
 }
 
 fn display<T: Show>(item: T) -> string {
@@ -18,5 +24,9 @@ fn display<T: Show>(item: T) -> string {
 fn main() -> i64 {
     let c = Color { r: 255, g: 0, b: 0 };
     let s = display(c);
-    if s == "Color" { 0 } else { 1 }
+    if s == "Color" {
+        0
+    } else {
+        1
+    }
 }

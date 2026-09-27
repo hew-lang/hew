@@ -126,21 +126,22 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
 
 #[test]
 fn method_level_type_params_freshen_per_named_method_call() {
-    let source = r"
-        type Holder { value: i64 }
+    let source = r"type Holder {
+    value: i64;
+}
 
-        impl Holder {
-            fn pick<T>(h: Holder, value: T) -> T {
-                value
-            }
-        }
+impl Holder {
+    fn pick<T>(h: Holder, value: T) -> T {
+        value
+    }
+}
 
-        fn main() {
-            let h = Holder { value: 1 };
-            let n = h.pick(42);
-            let flag = h.pick(true);
-        }
-    ";
+fn main() {
+    let h = Holder { value: 1 };
+    let n = h.pick(42);
+    let flag = h.pick(true);
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -181,24 +182,30 @@ fn method_level_type_params_freshen_per_named_method_call() {
 
 #[test]
 fn generic_impl_method_level_type_params_freshen_per_call() {
-    let source = r"
-        type Box<T> { value: T }
+    let source = r"type Box<T> {
+    value: T;
+}
 
-        impl<T> Box<T> {
-            fn transform<U>(b: Box<T>, f: fn(T) -> U) -> Box<U> {
-                Box { value: f(b.value) }
-            }
-        }
+impl<T> Box<T> {
+    fn transform<U>(b: Box<T>, f: fn(T) -> U) -> Box<U> {
+        Box { value: f(b.value) }
+    }
+}
 
-        fn double(x: i64) -> i64 { x * 2 }
-        fn is_even(x: i64) -> bool { x % 2 == 0 }
+fn double(x: i64) -> i64 {
+    x * 2
+}
 
-        fn main() {
-            let b = Box { value: 42 };
-            let doubled = b.transform(double);
-            let even = b.transform(is_even);
-        }
-    ";
+fn is_even(x: i64) -> bool {
+    x % 2 == 0
+}
+
+fn main() {
+    let b = Box { value: 42 };
+    let doubled = b.transform(double);
+    let even = b.transform(is_even);
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -337,17 +344,25 @@ fn multi_param_turbofish_records_all_call_type_args() {
 /// associated fn (`Stack.new()`) and the free fn (`new_stack()`).
 #[test]
 fn return_type_polymorphic_call_records_call_type_args() {
-    let source = r"
-        type Stack<T> { items: Vec<T>, }
-        impl<T> Stack<T> {
-            fn new() -> Stack<T> { Stack { items: Vec.new() } }
-        }
-        fn new_stack<T>() -> Stack<T> { Stack { items: Vec.new() } }
-        fn main() {
-            let a: Stack<i64> = Stack.new();
-            let b: Stack<string> = new_stack();
-        }
-    ";
+    let source = r"type Stack<T> {
+    items: Vec<T>;
+}
+
+impl<T> Stack<T> {
+    fn new() -> Stack<T> {
+        Stack { items: Vec.new() }
+    }
+}
+
+fn new_stack<T>() -> Stack<T> {
+    Stack { items: Vec.new() }
+}
+
+fn main() {
+    let a: Stack<i64> = Stack.new();
+    let b: Stack<string> = new_stack();
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -446,21 +461,25 @@ fn call_type_arg_recorder_defers_inference_var_then_reresolves() {
 
 #[test]
 fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
-    let source = r"
-        enum Maybe<T> { Some(T), None, }
-        type Holder {}
+    let source = r"enum Maybe<T> {
+    Some(T);
+    None;
+}
 
-        impl Holder {
-            fn wrap<T>(h: Holder, value: Maybe<T>) -> Maybe<T> {
-                value
-            }
-        }
+type Holder {
+}
 
-        fn main() {
-            let h = Holder {};
-            let unresolved = h.wrap(.None);
-        }
-    ";
+impl Holder {
+    fn wrap<T>(h: Holder, value: Maybe<T>) -> Maybe<T> {
+        value
+    }
+}
+
+fn main() {
+    let h = Holder {  };
+    let unresolved = h.wrap(.None);
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -483,27 +502,33 @@ fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
 
 #[test]
 fn trait_method_type_params_freshen_per_call_on_bounded_type_param() {
-    let source = r"
-        trait Transform {
-            fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
-        }
+    let source = r"trait Transform {
+    fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
+}
 
-        type Holder { value: i64 }
+type Holder {
+    value: i64;
+}
 
-        impl Transform for Holder {
-            fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
-                f(item.value)
-            }
-        }
+impl Transform for Holder {
+    fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
+        f(item.value)
+    }
+}
 
-        fn double(x: i64) -> i64 { x * 2 }
-        fn is_odd(x: i64) -> bool { x % 2 != 0 }
+fn double(x: i64) -> i64 {
+    x * 2
+}
 
-        fn run<T: Transform>(item: T) {
-            let doubled = item.apply(double);
-            let odd = item.apply(is_odd);
-        }
-    ";
+fn is_odd(x: i64) -> bool {
+    x % 2 != 0
+}
+
+fn run<T: Transform>(item: T) {
+    let doubled = item.apply(double);
+    let odd = item.apply(is_odd);
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -544,34 +569,40 @@ fn trait_method_type_params_freshen_per_call_on_bounded_type_param() {
 
 #[test]
 fn trait_method_type_params_do_not_unify_across_calls() {
-    let source = r"
-        trait Transform {
-            fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
-        }
+    let source = r"trait Transform {
+    fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
+}
 
-        type Holder { value: i64 }
+type Holder {
+    value: i64;
+}
 
-        impl Transform for Holder {
-            fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
-                f(item.value)
-            }
-        }
+impl Transform for Holder {
+    fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
+        f(item.value)
+    }
+}
 
-        fn double(x: i64) -> i64 { x * 2 }
-        fn is_odd(x: i64) -> bool { x % 2 != 0 }
+fn double(x: i64) -> i64 {
+    x * 2
+}
 
-        fn run<T: Transform>(item: T) {
-            let doubled = item.apply(double);
-            let odd = item.apply(is_odd);
-            println(doubled);
-            println(odd);
-        }
+fn is_odd(x: i64) -> bool {
+    x % 2 != 0
+}
 
-        fn main() {
-            let h = Holder { value: 21 };
-            run(h);
-        }
-    ";
+fn run<T: Transform>(item: T) {
+    let doubled = item.apply(double);
+    let odd = item.apply(is_odd);
+    println(doubled);
+    println(odd);
+}
+
+fn main() {
+    let h = Holder { value: 21 };
+    run(h);
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -613,22 +644,21 @@ fn generic_lambda_in_arg_position_rejected() {
 
 #[test]
 fn test_self_with_generics_in_impl() {
-    let source = r"
-        type Pair<T> {
-            first: T,
-            second: T,
-        }
+    let source = r"type Pair<T> {
+    first: T;
+    second: T;
+}
 
-        impl<T> Pair<T> {
-            fn new(first: T, second: T) -> Self {
-                return Pair { first: first, second: second };
-            }
+impl<T> Pair<T> {
+    fn new(first: T, second: T) -> Self {
+        return Pair { first: first, second: second };
+    }
 
-            fn swap(p: Pair<T>) -> Self {
-                return Pair { first: p.second, second: p.first };
-            }
-        }
-    ";
+    fn swap(p: Pair<T>) -> Self {
+        return Pair { first: p.second, second: p.first };
+    }
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -667,30 +697,29 @@ fn test_self_with_generics_in_impl() {
 #[test]
 fn test_trait_object_type_args_substitution() {
     // Bug 2: Test that dyn Trait<Args> methods get correct substitutions
-    let source = r"
-        trait MyIter<T> {
-            fn next(iter: Self) -> Option<T>;
-        }
+    let source = r"trait MyIter<T> {
+    fn next(iter: Self) -> Option<T>;
+}
 
-        type Counter {
-            count: i64,
-        }
+type Counter {
+    count: i64;
+}
 
-        impl MyIter<i64> for Counter {
-            fn next(c: Counter) -> Option<i64> {
-                .Some(42)
-            }
-        }
+impl MyIter<i64> for Counter {
+    fn next(c: Counter) -> Option<i64> {
+        .Some(42)
+    }
+}
 
-        fn test_iterator() -> i64 {
-            let iter: dyn MyIter<i64> = Counter { count: 5 };
-            let result = iter.next(); // Should be Option<i64>, not Option<T>
-            match result {
-                .Some(x) => x,
-                .None => 0
-            }
-        }
-    ";
+fn test_iterator() -> i64 {
+    let iter: dyn MyIter<i64> = Counter { count: 5 };
+    let result = iter.next(); // Should be Option<i64>, not Option<T>
+    match result {
+        .Some(x) => x,
+        .None => 0,
+    }
+}
+";
 
     let result = hew_parser::parse(source);
     assert!(
@@ -721,40 +750,43 @@ fn test_trait_object_type_args_substitution() {
     reason = "proof assertions for all 6 call_type_args entries"
 )]
 fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
-    let source = r#"
-        trait Transform {
-            fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
-        }
+    let source = r#"trait Transform {
+    fn apply<U>(item: Self, f: fn(i64) -> U) -> U;
+}
 
-        trait Label {
-            fn tag<V>(item: Self, prefix: V) -> string;
-        }
+trait Label {
+    fn tag<V>(item: Self, prefix: V) -> string;
+}
 
-        type Holder { value: i64 }
+type Holder {
+    value: i64;
+}
 
-        impl Transform for Holder {
-            fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
-                f(item.value)
-            }
-        }
+impl Transform for Holder {
+    fn apply<U>(item: Holder, f: fn(i64) -> U) -> U {
+        f(item.value)
+    }
+}
 
-        impl Label for Holder {
-            fn tag<V>(item: Holder, prefix: V) -> string {
-                "tagged"
-            }
-        }
+impl Label for Holder {
+    fn tag<V>(item: Holder, prefix: V) -> string {
+        "tagged"
+    }
+}
 
-        fn is_odd(x: i64) -> bool { x % 2 != 0 }
+fn is_odd(x: i64) -> bool {
+    x % 2 != 0
+}
 
-        fn run<T: Transform + Label>(item: T) {
-            let odd = item.apply(is_odd);
-            let tagged_num = item.tag(42);
-            let tagged_str = item.tag("lbl");
-            println(odd);
-            println(tagged_num);
-            println(tagged_str);
-        }
-    "#;
+fn run<T: Transform + Label>(item: T) {
+    let odd = item.apply(is_odd);
+    let tagged_num = item.tag(42);
+    let tagged_str = item.tag("lbl");
+    println(odd);
+    println(tagged_num);
+    println(tagged_str);
+}
+"#;
 
     let result = hew_parser::parse(source);
     assert!(
@@ -1058,10 +1090,13 @@ fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
 #[test]
 fn recursive_value_type_self_enum_is_rejected() {
     let output = check_source(
-        r"
-        enum Tree { Leaf, Node(i64, Tree, Tree), }
-        fn main() {}
-        ",
+        r"enum Tree {
+    Leaf;
+    Node(i64, Tree, Tree);
+}
+
+fn main() {}
+",
     );
 
     let error = output
@@ -1087,11 +1122,16 @@ fn recursive_value_type_self_enum_is_rejected() {
 #[test]
 fn recursive_value_type_mutual_enums_are_rejected() {
     let output = check_source(
-        r"
-        enum A { A1(B), }
-        enum B { B1(A), }
-        fn main() {}
-        ",
+        r"enum A {
+    A1(B);
+}
+
+enum B {
+    B1(A);
+}
+
+fn main() {}
+",
     );
 
     let recursive_types: HashSet<_> = output
@@ -1113,11 +1153,17 @@ fn recursive_value_type_mutual_enums_are_rejected() {
 #[test]
 fn recursive_value_type_allows_non_recursive_nested_enum() {
     let output = check_source(
-        r"
-        enum Inner { A, B(i64), }
-        enum Outer { D(Inner), }
-        fn main() {}
-        ",
+        r"enum Inner {
+    A;
+    B(i64);
+}
+
+enum Outer {
+    D(Inner);
+}
+
+fn main() {}
+",
     );
 
     assert!(
@@ -1130,11 +1176,17 @@ fn recursive_value_type_allows_non_recursive_nested_enum() {
 #[test]
 fn recursive_value_type_rejects_record_enum_cycle() {
     let output = check_source(
-        r"
-        type Boxed { tree: Tree }
-        enum Tree { Leaf, Node(Boxed), }
-        fn main() {}
-        ",
+        r"type Boxed {
+    tree: Tree;
+}
+
+enum Tree {
+    Leaf;
+    Node(Boxed);
+}
+
+fn main() {}
+",
     );
 
     assert!(
@@ -1150,11 +1202,17 @@ fn recursive_value_type_rejects_record_enum_cycle() {
 #[test]
 fn recursive_value_type_rejects_generic_record_wrapper_cycle() {
     let output = check_source(
-        r"
-        type Wrapper<T> { value: T }
-        enum Tree { Leaf, Node(Wrapper<Tree>), }
-        fn main() {}
-        ",
+        r"type Wrapper<T> {
+    value: T;
+}
+
+enum Tree {
+    Leaf;
+    Node(Wrapper<Tree>);
+}
+
+fn main() {}
+",
     );
 
     assert!(
@@ -1182,10 +1240,12 @@ fn recursive_value_type_rejects_diverging_generic_self_reference() {
     // diverges and exhausts memory; the bound must let the value-cycle
     // detector terminate and reject `Wrap` as infinitely sized.
     let output = check_source(
-        r"
-        type Wrap<T> { w: Wrap<Wrap<T>> }
-        fn main() {}
-        ",
+        r"type Wrap<T> {
+    w: Wrap<Wrap<T>>;
+}
+
+fn main() {}
+",
     );
 
     assert!(
@@ -1207,10 +1267,12 @@ fn recursive_value_type_rejects_diverging_generic_self_reference() {
 #[test]
 fn recursive_value_type_allows_pointer_self_reference() {
     let output = check_source(
-        r"
-        type Node { next: *const Node }
-        fn main() {}
-        ",
+        r"type Node {
+    next: *const Node;
+}
+
+fn main() {}
+",
     );
 
     assert!(
@@ -2578,19 +2640,41 @@ fn main() -> i64 { 0 }
         ),
         (
             "inline type-body method",
-            r"
-fn id<T>(x: T) -> T { x }
-type Holder { v: i64, fn bad(h: Holder, x: T) -> i64 { 0 } }
-fn main() -> i64 { 0 }
+            r"fn id<T>(x: T) -> T {
+    x
+}
+
+type Holder {
+    v: i64;
+    fn bad(h: Holder, x: T) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    0
+}
 ",
         ),
         (
             "impl method",
-            r"
-fn id<T>(x: T) -> T { x }
-type Holder { v: i64 }
-impl Holder { fn bad(self, x: T) -> i64 { 0 } }
-fn main() -> i64 { 0 }
+            r"fn id<T>(x: T) -> T {
+    x
+}
+
+type Holder {
+    v: i64;
+}
+
+impl Holder {
+    fn bad(self, x: T) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    0
+}
 ",
         ),
     ];
@@ -2652,32 +2736,64 @@ fn main() -> i64 { 0 }
         ),
         (
             "inline type-body method, type-level generic",
-            r"
-type Holder<T> { value: T, fn first(h: Holder<T>) -> T { h.value } }
-fn main() -> i64 { 0 }
+            r"type Holder<T> {
+    value: T;
+    fn first(h: Holder<T>) -> T {
+        h.value
+    }
+}
+
+fn main() -> i64 {
+    0
+}
 ",
         ),
         (
             "inline type-body method's own generic",
-            r"
-type Box { v: i64, fn idm<T>(b: Box, x: T) -> T { x } }
-fn main() -> i64 { 0 }
+            r"type Box {
+    v: i64;
+    fn idm<T>(b: Box, x: T) -> T {
+        x
+    }
+}
+
+fn main() -> i64 {
+    0
+}
 ",
         ),
         (
             "impl method's own generic",
-            r"
-type Box { v: i64 }
-impl Box { fn idm<T>(self, x: T) -> T { x } }
-fn main() -> i64 { 0 }
+            r"type Box {
+    v: i64;
+}
+
+impl Box {
+    fn idm<T>(self, x: T) -> T {
+        x
+    }
+}
+
+fn main() -> i64 {
+    0
+}
 ",
         ),
         (
             "impl-level generic",
-            r"
-type Holder<T> { value: T }
-impl<T> Holder<T> { fn get(self) -> T { self.value } }
-fn main() -> i64 { 0 }
+            r"type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    fn get(self) -> T {
+        self.value
+    }
+}
+
+fn main() -> i64 {
+    0
+}
 ",
         ),
     ];
@@ -2725,8 +2841,7 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
     // `Wrapper { value: 42 }` checked against `Wrapper<i32>` coerces the
     // literal to the expected argument.
     let tco = check_source(
-        "type Wrapper<T> { value: T }\n\
-         fn make() -> Wrapper<i32> { Wrapper { value: 42 } }",
+        "type Wrapper<T> {\n    value: T;\n}\n\nfn make() -> Wrapper<i32> {\n    Wrapper { value: 42 }\n}\n",
     );
     assert!(tco.errors.is_empty(), "unexpected errors: {:?}", tco.errors);
     assert_eq!(
@@ -2739,9 +2854,7 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
 fn struct_init_infers_type_param_from_literal() {
     // Without an expected type the literal defaults at the binding boundary.
     let tco = check_source(
-        "type Wrapper<T> { value: T }\n\
-         fn read(w: Wrapper<i64>) -> i64 { w.value }\n\
-         fn main() { let w = Wrapper { value: 42 }; let _ = read(w); }",
+        "type Wrapper<T> {\n    value: T;\n}\n\nfn read(w: Wrapper<i64>) -> i64 {\n    w.value\n}\n\nfn main() {\n    let w = Wrapper { value: 42 };\n    let _ = read(w);\n}\n",
     );
     assert!(tco.errors.is_empty(), "unexpected errors: {:?}", tco.errors);
 }
@@ -2750,8 +2863,7 @@ fn struct_init_infers_type_param_from_literal() {
 fn struct_init_overflow_in_expected_type() {
     // `Wrapper { value: 256 }` checked against `Wrapper<u8>` is a range error.
     let tco = check_source(
-        "type Wrapper<T> { value: T }\n\
-         fn make() -> Wrapper<u8> { Wrapper { value: 256 } }",
+        "type Wrapper<T> {\n    value: T;\n}\n\nfn make() -> Wrapper<u8> {\n    Wrapper { value: 256 }\n}\n",
     );
     assert!(
         tco.errors
@@ -2768,12 +2880,14 @@ fn struct_init_overflow_in_expected_type() {
 fn struct_init_explicit_type_arg_seeds_substitution() {
     // `Wrapper<string> { value: "hello" }` — explicit type arg must constrain
     // field checking against string, not an unbound param.
-    let source = r#"
-        type Wrapper<T> { value: T }
-        fn main() {
-            let w = Wrapper<string> { value: "hello" };
-        }
-    "#;
+    let source = r#"type Wrapper<T> {
+    value: T;
+}
+
+fn main() {
+    let w = Wrapper<string> { value: "hello" };
+}
+"#;
     let tco = check_source(source);
     assert!(
         tco.errors.is_empty(),
@@ -2785,12 +2899,14 @@ fn struct_init_explicit_type_arg_seeds_substitution() {
 #[test]
 fn struct_init_explicit_type_arg_wrong_field_type_errors() {
     // `Wrapper<i64> { value: "hello" }` — explicit arg is i64, field is string: error.
-    let source = r#"
-        type Wrapper<T> { value: T }
-        fn main() {
-            let w = Wrapper<i64> { value: "hello" };
-        }
-    "#;
+    let source = r#"type Wrapper<T> {
+    value: T;
+}
+
+fn main() {
+    let w = Wrapper<i64> { value: "hello" };
+}
+"#;
     let parse_result = hew_parser::parse(source);
     assert!(
         parse_result.errors.is_empty(),
@@ -2856,8 +2972,14 @@ fn struct_init_explicit_type_arg_roundtrip_via_parse() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     register_generic_wrapper(&mut checker);
 
-    let source = r#"type Wrapper<T> { value: T }
-fn main() { let w = Wrapper<string> { value: "hello" }; }"#;
+    let source = r#"type Wrapper<T> {
+    value: T;
+}
+
+fn main() {
+    let w = Wrapper<string> { value: "hello" };
+}
+"#;
     let parse_result = hew_parser::parse(source);
     assert!(
         parse_result.errors.is_empty(),
@@ -2879,12 +3001,14 @@ fn struct_init_explicit_type_arg_conflicts_with_binding_type_errors() {
     // `let w: Wrapper<i64> = Wrapper<string> { value: 1 };`
     // The explicit `string` annotation conflicts with the expected `i64`.
     // The checker must reject this rather than silently ignoring it.
-    let source = r"
-        type Wrapper<T> { value: T }
-        fn main() {
-            let w: Wrapper<i64> = Wrapper<string> { value: 1 };
-        }
-    ";
+    let source = r"type Wrapper<T> {
+    value: T;
+}
+
+fn main() {
+    let w: Wrapper<i64> = Wrapper<string> { value: 1 };
+}
+";
     let parse_result = hew_parser::parse(source);
     assert!(
         parse_result.errors.is_empty(),
@@ -3043,10 +3167,14 @@ fn collect_record_init_args(tco: &TypeCheckOutput) -> Vec<Vec<Ty>> {
 fn record_init_type_args_inferred_box_int() {
     // `Box { value: 42 }` — checker must infer `[i64]` from the literal
     // (post-defaulting) and record it on the side-table.
-    let source = r"
-        type Box<T> { value: T }
-        fn main() { let _b = Box { value: 42 }; }
-    ";
+    let source = r"type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let _b = Box { value: 42 };
+}
+";
     let tco = check_source(source);
     assert!(
         tco.errors.is_empty(),
@@ -3068,10 +3196,14 @@ fn record_init_type_args_inferred_box_int() {
 
 #[test]
 fn record_init_type_args_inferred_box_string() {
-    let source = r#"
-        type Box<T> { value: T }
-        fn main() { let _b = Box { value: "hello" }; }
-    "#;
+    let source = r#"type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let _b = Box { value: "hello" };
+}
+"#;
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     let entries = collect_record_init_args(&tco);
@@ -3083,10 +3215,14 @@ fn record_init_type_args_inferred_box_string() {
 fn record_init_type_args_explicit_type_arg() {
     // Explicit `<string>` annotation should produce a single
     // record_init_type_args entry of `[string]`.
-    let source = r#"
-        type Box<T> { value: T }
-        fn main() { let _b = Box<string> { value: "hi" }; }
-    "#;
+    let source = r#"type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let _b = Box<string> { value: "hi" };
+}
+"#;
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     let entries = collect_record_init_args(&tco);
@@ -3097,10 +3233,15 @@ fn record_init_type_args_explicit_type_arg() {
 #[test]
 fn record_init_type_args_two_params() {
     // Two type params, inferred from two field values of different types.
-    let source = r#"
-        type Pair<A, B> { first: A, second: B }
-        fn main() { let _p = Pair { first: 1, second: "y" }; }
-    "#;
+    let source = r#"type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn main() {
+    let _p = Pair { first: 1, second: "y" };
+}
+"#;
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     let entries = collect_record_init_args(&tco);
@@ -3115,11 +3256,18 @@ fn record_init_type_args_generic_in_generic_user_user() {
     // initialiser site, each with its own concrete type-args:
     //   - inner `Inner { x: 1 }`  → `[i64]`
     //   - outer `Box { value: Inner { x: 1 } }` → `[Inner<i64>]`
-    let source = r"
-        type Inner<T> { x: T }
-        type Box<U> { value: U }
-        fn main() { let _b = Box { value: Inner { x: 1 } }; }
-    ";
+    let source = r"type Inner<T> {
+    x: T;
+}
+
+type Box<U> {
+    value: U;
+}
+
+fn main() {
+    let _b = Box { value: Inner { x: 1 } };
+}
+";
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     let entries = collect_record_init_args(&tco);
@@ -3136,10 +3284,14 @@ fn record_init_type_args_monomorphic_record_emits_no_entry() {
     // Fail-closed contract negative test: a record with empty `type_params`
     // must not produce a `record_init_type_args` entry. Downstream HIR
     // monomorphisation skips entries for monomorphic records.
-    let source = r"
-        type Mono { value: i64 }
-        fn main() { let _m = Mono { value: 42 }; }
-    ";
+    let source = r"type Mono {
+    value: i64;
+}
+
+fn main() {
+    let _m = Mono { value: 42 };
+}
+";
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     assert!(
@@ -3155,13 +3307,15 @@ fn record_init_type_args_field_access_returns_substituted_type() {
     // in `check_field_access` lines 3139-3146) and the side-table emission
     // agree: `b.value` on `b: Box<i64>` returns `i64`, and the init site
     // records `[i64]`.
-    let source = r"
-        type Box<T> { value: T }
-        fn main() {
-            let b = Box { value: 42 };
-            let _v = b.value;
-        }
-    ";
+    let source = r"type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let b = Box { value: 42 };
+    let _v = b.value;
+}
+";
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     // The side-table records the Box<i64> instantiation.
@@ -3180,13 +3334,15 @@ fn record_init_type_args_field_access_returns_substituted_type() {
 fn record_init_type_args_two_distinct_instantiations() {
     // Same generic record at two different T's in the same program — two
     // distinct side-table entries, one per init site.
-    let source = r#"
-        type Box<T> { value: T }
-        fn main() {
-            let _a = Box { value: 42 };
-            let _b = Box { value: "hi" };
-        }
-    "#;
+    let source = r#"type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let _a = Box { value: 42 };
+    let _b = Box { value: "hi" };
+}
+"#;
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     let entries = collect_record_init_args(&tco);
@@ -3201,15 +3357,15 @@ fn record_init_type_args_enum_struct_variant_fully_bound() {
     // Generic enum struct-variant init with an annotation that binds every
     // type parameter: `let x: Either<i64, string> = Either::Left { value: 1 }`.
     // The record_init_type_args entry resolves both T=i64 and E=string.
-    let source = r"
-        enum Either<T, E> {
-            Left { value: T },
-            Right { err: E },
-        }
-        fn main() {
-            let _x: Either<i64, string> = Either.Left { value: 1 };
-        }
-    ";
+    let source = r"enum Either<T, E> {
+    Left { value: T;  }
+    Right { err: E;  }
+}
+
+fn main() {
+    let _x: Either<i64, string> = Either.Left { value: 1 };
+}
+";
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     let entries = collect_record_init_args(&tco);
@@ -3223,13 +3379,15 @@ fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
     // type parameters can be inferred from the init's field values, the
     // entry's second arg stays a Ty::Var and must be pruned by
     // `validate_record_init_type_args_output_contract`.
-    let source = r"
-        enum Either<T, E> {
-            Left { value: T },
-            Right { err: E },
-        }
-        fn main() { let _x = Either.Left { value: 42 }; }
-    ";
+    let source = r"enum Either<T, E> {
+    Left { value: T;  }
+    Right { err: E;  }
+}
+
+fn main() {
+    let _x = Either.Left { value: 42 };
+}
+";
     let tco = check_source(source);
     // The source emits an InferenceFailed error for `_x` (E unresolved) — we
     // assert the side-table did not leak a partial entry.
@@ -3244,10 +3402,14 @@ fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
 fn record_init_type_args_unknown_field_does_not_emit_entry() {
     // `Box { wrong_field: 42 }` should produce an UndefinedField diagnostic
     // and not leak an entry into the side-table.
-    let source = r"
-        type Box<T> { value: T }
-        fn main() { let _b = Box { wrong_field: 42 }; }
-    ";
+    let source = r"type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let _b = Box { wrong_field: 42 };
+}
+";
     let tco = check_source(source);
     assert!(
         tco.errors
@@ -3282,12 +3444,14 @@ fn assert_decl_bound_rejects_no_display(source: &str) {
 #[test]
 fn generic_decl_bounds_are_stored_on_type_defs() {
     let output = check_source(
-        r"
-        type Box<T: Display> { value: T }
-        fn main() {
-            let _box = Box { value: 42 };
-        }
-        ",
+        r"type Box<T: Display> {
+    value: T;
+}
+
+fn main() {
+    let _box = Box { value: 42 };
+}
+",
     );
 
     assert!(
@@ -3305,52 +3469,70 @@ fn generic_decl_bounds_are_stored_on_type_defs() {
 #[test]
 fn generic_decl_bound_rejects_struct_init_reference_site() {
     assert_decl_bound_rejects_no_display(
-        r"
-        type NoDisplay { n: i64 }
-        type Box<T: Display> { value: T }
-        fn main() {
-            let _box = Box { value: NoDisplay { n: 1 } };
-        }
-        ",
+        r"type NoDisplay {
+    n: i64;
+}
+
+type Box<T: Display> {
+    value: T;
+}
+
+fn main() {
+    let _box = Box { value: NoDisplay { n: 1 } };
+}
+",
     );
 }
 
 #[test]
 fn generic_decl_bound_rejects_type_annotation_site() {
     assert_decl_bound_rejects_no_display(
-        r"
-        type NoDisplay { n: i64 }
-        type Box<T: Display> { value: T }
-        fn main() {
-            let _box: Box<NoDisplay> = Box { value: NoDisplay { n: 1 } };
-        }
-        ",
+        r"type NoDisplay {
+    n: i64;
+}
+
+type Box<T: Display> {
+    value: T;
+}
+
+fn main() {
+    let _box: Box<NoDisplay> = Box { value: NoDisplay { n: 1 } };
+}
+",
     );
 }
 
 #[test]
 fn generic_decl_bound_rejects_return_type_site() {
     assert_decl_bound_rejects_no_display(
-        r"
-        type NoDisplay { n: i64 }
-        type Box<T: Display> { value: T }
-        fn make() -> Box<NoDisplay> {
-            Box { value: NoDisplay { n: 1 } }
-        }
-        ",
+        r"type NoDisplay {
+    n: i64;
+}
+
+type Box<T: Display> {
+    value: T;
+}
+
+fn make() -> Box<NoDisplay> {
+    Box { value: NoDisplay { n: 1 } }
+}
+",
     );
 }
 
 #[test]
 fn generic_decl_bound_rejects_imported_type_annotation_site() {
     let mut root = hew_parser::parse(
-        r"
-        import hew.boxes.{ Box };
-        type NoDisplay { n: i64 }
-        fn take(boxed: Box<NoDisplay>) -> i64 {
-            0
-        }
-        ",
+        r"import hew.boxes.{Box};
+
+type NoDisplay {
+    n: i64;
+}
+
+fn take(boxed: Box<NoDisplay>) -> i64 {
+    0
+}
+",
     );
     assert!(
         root.errors.is_empty(),
@@ -3358,9 +3540,10 @@ fn generic_decl_bound_rejects_imported_type_annotation_site() {
         root.errors
     );
     let module = hew_parser::parse(
-        r"
-        pub type Box<T: Display> { value: T }
-        ",
+        r"pub type Box<T: Display> {
+    value: T;
+}
+",
     );
     assert!(
         module.errors.is_empty(),
@@ -3394,45 +3577,54 @@ fn generic_decl_bound_rejects_imported_type_annotation_site() {
 #[test]
 fn generic_decl_bound_rejects_tuple_record_constructor_site() {
     assert_decl_bound_rejects_no_display(
-        r"
-        type NoDisplay { n: i64 }
-        type Wrap<T: Display>(T);
-        fn main() {
-            let _wrap = Wrap(NoDisplay { n: 1 });
-        }
-        ",
+        r"type NoDisplay {
+    n: i64;
+}
+
+type Wrap<T: Display>(T);
+
+fn main() {
+    let _wrap = Wrap(NoDisplay { n: 1 });
+}
+",
     );
 }
 
 #[test]
 fn generic_decl_bound_rejects_enum_tuple_variant_constructor_site() {
     assert_decl_bound_rejects_no_display(
-        r"
-        type NoDisplay { n: i64 }
-        enum Maybe<T: Display> {
-            Some(T),
-            None,
-        }
-        fn main() {
-            let _maybe = Maybe.Some(NoDisplay { n: 1 });
-        }
-        ",
+        r"type NoDisplay {
+    n: i64;
+}
+
+enum Maybe<T: Display> {
+    Some(T);
+    None;
+}
+
+fn main() {
+    let _maybe = Maybe.Some(NoDisplay { n: 1 });
+}
+",
     );
 }
 
 #[test]
 fn generic_decl_bound_rejects_enum_struct_variant_constructor_site() {
     assert_decl_bound_rejects_no_display(
-        r"
-        type NoDisplay { n: i64 }
-        enum Maybe<T: Display> {
-            Some { value: T },
-            None,
-        }
-        fn main() {
-            let _maybe = Maybe.Some { value: NoDisplay { n: 1 } };
-        }
-        ",
+        r"type NoDisplay {
+    n: i64;
+}
+
+enum Maybe<T: Display> {
+    Some { value: T;  }
+    None;
+}
+
+fn main() {
+    let _maybe = Maybe.Some { value: NoDisplay { n: 1 } };
+}
+",
     );
 }
 
@@ -3460,17 +3652,22 @@ fn record_init_type_args_trait_rewrite_substitution_probe() {
     // **Construction-side side-table emission is the load-bearing assert.**
     // The propagation question is informational — the answer is captured in
     // the worker return prose.
-    let source = r"
-        type Wrapper<T: Display> { value: T }
-        impl<T: Display> Wrapper<T> {
-            fn show(w: Wrapper<T>) -> string { to_string(w.value) }
-        }
-        fn main() -> i64 {
-            let w = Wrapper { value: 42 };
-            let _s = w.show();
-            0
-        }
-    ";
+    let source = r"type Wrapper<T: Display> {
+    value: T;
+}
+
+impl<T: Display> Wrapper<T> {
+    fn show(w: Wrapper<T>) -> string {
+        to_string(w.value)
+    }
+}
+
+fn main() -> i64 {
+    let w = Wrapper { value: 42 };
+    let _s = w.show();
+    0
+}
+";
     let parse_result = hew_parser::parse(source);
     // If the surface (impl blocks on user generic records, `to_string` free
     // function) does not parse, the probe documents that gap and exits — the
@@ -3816,9 +4013,10 @@ fn main() -> i64 { 0 }
 
 #[test]
 fn bounded_generic_clone_instantiated_with_resource_is_refused() {
-    let source = r"
-#[resource]
-type Token { id: i64, }
+    let source = r"#[resource]
+type Token {
+    id: i64;
+}
 
 impl Token {
     fn close(consume self) {}
@@ -3930,8 +4128,9 @@ fn main() -> i64 {
 
 #[test]
 fn bare_rc_clone_stays_admitted() {
-    let source = r"
-type Node { value: i64, }
+    let source = r"type Node {
+    value: i64;
+}
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -3954,8 +4153,9 @@ fn value_aggregate_clone_with_rc_member_is_admitted() {
     let shapes = [
         (
             "tuple",
-            r#"
-type Node { value: i64, }
+            r#"type Node {
+    value: i64;
+}
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -3967,8 +4167,9 @@ fn main() -> i64 {
         ),
         (
             "option",
-            r"
-type Node { value: i64, }
+            r"type Node {
+    value: i64;
+}
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -3980,8 +4181,9 @@ fn main() -> i64 {
         ),
         (
             "result",
-            r"
-type Node { value: i64, }
+            r"type Node {
+    value: i64;
+}
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -3993,9 +4195,14 @@ fn main() -> i64 {
         ),
         (
             "record",
-            r#"
-type Node { value: i64, }
-type Holder { r: Rc<Node>, tag: string, }
+            r#"type Node {
+    value: i64;
+}
+
+type Holder {
+    r: Rc<Node>;
+    tag: string;
+}
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4018,15 +4225,15 @@ fn main() -> i64 {
 
 #[test]
 fn vec_clone_with_rc_elements_stays_admitted() {
-    let source = r"
-type Node { value: i64, }
+    let source = r"type Node {
+    value: i64;
+}
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
     var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(shared);
     let copied = clone holders;
-
     copied.len() + holders.len()
 }
 ";
@@ -4041,8 +4248,9 @@ fn main() -> i64 {
 
 #[test]
 fn tuple_clone_with_vec_of_rc_member_stays_admitted() {
-    let source = r#"
-type Node { value: i64, }
+    let source = r#"type Node {
+    value: i64;
+}
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4050,7 +4258,6 @@ fn main() -> i64 {
     holders.push(shared);
     let pair: (Vec<Rc<Node>>, string) = (holders, "tag");
     let copied = clone pair;
-
     copied.0.len()
 }
 "#;
@@ -4123,8 +4330,10 @@ fn generic_method_instantiation_with_ineligible_type_is_refused_by_checker() {
     // as free calls. `lookup_named_method_sig` substitutes the impl-level `T`
     // into the signature and drops it from `sig.type_params`, so the receiver's
     // type arguments are the only record of what `T` became.
-    let source = r"
-type Holder<T> { left: Option<T>, right: Option<T>, }
+    let source = r"type Holder<T> {
+    left: Option<T>;
+    right: Option<T>;
+}
 
 impl<T> Holder<T> {
     fn same(self) -> bool {
@@ -4165,8 +4374,10 @@ fn main() -> i64 {
 
 #[test]
 fn generic_method_instantiation_with_eligible_type_is_admitted() {
-    let source = r"
-type Holder<T> { left: Option<T>, right: Option<T>, }
+    let source = r"type Holder<T> {
+    left: Option<T>;
+    right: Option<T>;
+}
 
 impl<T> Holder<T> {
     fn same(self) -> bool {
@@ -4314,9 +4525,8 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
 // positions, and type-parameter shadowing
 // -------------------------------------------------------------------------
 
-const GENERIC_RECEIVE_ACTOR: &str = r"
-actor Store {
-    var seen: i64,
+const GENERIC_RECEIVE_ACTOR: &str = r"actor Store {
+    var seen: i64;
 
     init() {
         seen = 0;
@@ -4392,14 +4602,13 @@ fn main() -> i64 {{
     );
 }
 
-const CARRIER_TRAIT: &str = r"
-trait Carrier {
+const CARRIER_TRAIT: &str = r"trait Carrier {
     type Item;
     fn peek(self) -> Option<Self.Item>;
 }
 
 type IntBox {
-    value: i64,
+    value: i64;
 }
 
 impl Carrier for IntBox {
@@ -4410,7 +4619,7 @@ impl Carrier for IntBox {
 }
 
 type MapBox {
-    value: i64,
+    value: i64;
 }
 
 impl Carrier for MapBox {
@@ -4496,9 +4705,8 @@ fn method_type_parameter_shadowing_an_impl_parameter_is_refused() {
     // Shadowing is refused rather than scoped: `instantiate_named_method_sig`
     // substitutes the impl's arguments by name and drops every matching name
     // from the signature, so the method's own parameter cannot survive.
-    let source = r"
-type Holder<T> {
-    value: T,
+    let source = r"type Holder<T> {
+    value: T;
 }
 
 impl<T> Holder<T> {
@@ -4508,7 +4716,9 @@ impl<T> Holder<T> {
     }
 }
 
-fn main() -> i64 { 0 }
+fn main() -> i64 {
+    0
+}
 ";
     let output = check_source(source);
     assert!(
@@ -4526,9 +4736,8 @@ fn renamed_method_type_parameter_is_admitted_and_stays_independent() {
     // The renamed form is what the diagnostic asks for, and it must actually
     // work: the method parameter binds `string` while the impl parameter is
     // `i64`.
-    let source = r#"
-type Holder<T> {
-    value: T,
+    let source = r#"type Holder<T> {
+    value: T;
 }
 
 impl<T> Holder<T> {
@@ -4590,13 +4799,12 @@ fn main() -> i64 { 0 }
 fn trait_impl_method_type_parameter_shadowing_the_trait_is_refused() {
     // The impl block declares no parameters at all here — the shadowed one
     // belongs to the trait, so the impl-block check alone never sees it.
-    let source = r"
-trait Choice<T> {
+    let source = r"trait Choice<T> {
     fn same(self, marker: T) -> bool;
 }
 
 type Holder {
-    value: i64,
+    value: i64;
 }
 
 impl Choice<i64> for Holder {
@@ -4606,7 +4814,9 @@ impl Choice<i64> for Holder {
     }
 }
 
-fn main() -> i64 { 0 }
+fn main() -> i64 {
+    0
+}
 ";
     let output = check_source(source);
     assert!(
@@ -4646,9 +4856,8 @@ fn main() -> i64 { 0 }
 fn inline_type_body_method_type_parameter_shadowing_the_type_is_refused() {
     // A method declared inside the type body shadows the type's own parameter
     // just as an `impl` block method shadows the impl's.
-    let source = r"
-type Holder<T> {
-    value: T,
+    let source = r"type Holder<T> {
+    value: T;
 
     fn same<T>(holder: Holder<T>, marker: T) -> bool {
         let _ = holder;
@@ -4657,7 +4866,9 @@ type Holder<T> {
     }
 }
 
-fn main() -> i64 { 0 }
+fn main() -> i64 {
+    0
+}
 ";
     let output = check_source(source);
     assert!(
@@ -4672,9 +4883,8 @@ fn main() -> i64 { 0 }
 
 #[test]
 fn inline_type_body_method_with_a_distinct_type_parameter_is_admitted() {
-    let source = r"
-type Holder<T> {
-    value: T,
+    let source = r"type Holder<T> {
+    value: T;
 
     fn same<U>(holder: Holder<T>, marker: U) -> bool {
         let _ = holder;
@@ -4683,7 +4893,9 @@ type Holder<T> {
     }
 }
 
-fn main() -> i64 { 0 }
+fn main() -> i64 {
+    0
+}
 ";
     let output = check_source(source);
     assert!(
@@ -4763,13 +4975,12 @@ fn shadow_report_key_separates_declarations_sharing_a_span() {
 fn shadowing_both_the_impl_and_the_trait_reports_once_naming_both() {
     // `impl<T> Choice<T> for Holder<T> { fn same<T> }` shadows two owners at one
     // span. That is one mistake, so it is one diagnostic that names both.
-    let source = r"
-trait Choice<T> {
+    let source = r"trait Choice<T> {
     fn same(self, marker: T) -> bool;
 }
 
 type Holder<T> {
-    value: T,
+    value: T;
 }
 
 impl<T> Choice<T> for Holder<T> {
@@ -4779,7 +4990,9 @@ impl<T> Choice<T> for Holder<T> {
     }
 }
 
-fn main() -> i64 { 0 }
+fn main() -> i64 {
+    0
+}
 ";
     let output = check_source(source);
     let reports: Vec<&crate::error::TypeError> = output
@@ -4817,23 +5030,41 @@ fn selected_eq_generic_comparisons_admit_bytes_and_nested_bytes() {
 #[test]
 fn selected_eq_generic_bound_accepts_nested_selected_user_impl() {
     let output = check_source(
-        r"
-        type Key { id: i64, values: HashMap<string, i64> }
-        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id == other.id } }
-        fn same<T: Eq>(left: T, right: T) -> bool { left == right }
-        fn compare(left: Vec<Key>, right: Vec<Key>) -> bool { same(left, right) }
-    ",
+        r"type Key {
+    id: i64;
+    values: HashMap<string, i64>;
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.id == other.id
+    }
+}
+
+fn same<T: Eq>(left: T, right: T) -> bool {
+    left == right
+}
+
+fn compare(left: Vec<Key>, right: Vec<Key>) -> bool {
+    same(left, right)
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
 fn selected_eq_generic_bound_rejects_a_concrete_no_eq_type() {
-    let source = r"
-        type NoEq { callback: fn() -> i64 }
-        fn require<T: Eq>(value: T) {}
-        fn use_value(value: NoEq) { require(value); }
-    ";
+    let source = r"type NoEq {
+    callback: fn() -> i64;
+}
+
+fn require<T: Eq>(value: T) {}
+
+fn use_value(value: NoEq) {
+    require(value);
+}
+";
     let output = check_source(source);
     assert!(
         output
@@ -4849,11 +5080,18 @@ fn selected_eq_generic_bound_rejects_a_concrete_no_eq_type() {
 
 #[test]
 fn selected_eq_unbounded_generic_instantiation_rejects_no_eq_type_at_call() {
-    let source = r"
-        type NoEq { callback: fn() -> i64 }
-        fn same<T>(left: T, right: T) -> bool { left == right }
-        fn compare(left: NoEq, right: NoEq) -> bool { same(left, right) }
-    ";
+    let source = r"type NoEq {
+    callback: fn() -> i64;
+}
+
+fn same<T>(left: T, right: T) -> bool {
+    left == right
+}
+
+fn compare(left: NoEq, right: NoEq) -> bool {
+    same(left, right)
+}
+";
     let output = check_source(source);
     assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
     assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
@@ -4868,12 +5106,22 @@ fn selected_eq_unbounded_generic_instantiation_rejects_no_eq_type_at_call() {
 #[test]
 fn selected_eq_bound_allows_forward_declared_byte_record() {
     let output = check_source(
-        r"
-        type Box<T: Eq> { value: T }
-        type Outer { value: Box<Later> }
-        type Later { data: bytes }
-        fn same(left: Outer, right: Outer) -> bool { left == right }
-    ",
+        r"type Box<T: Eq> {
+    value: T;
+}
+
+type Outer {
+    value: Box<Later>;
+}
+
+type Later {
+    data: bytes;
+}
+
+fn same(left: Outer, right: Outer) -> bool {
+    left == right
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -4940,14 +5188,22 @@ fn selected_eq_generic_bound_does_not_grant_eq_to_a_containing_map() {
 #[test]
 fn selected_eq_bound_waits_for_forward_user_impl_registration() {
     let output = check_source(
-        r"
-        type Key { values: HashMap<string, i64> }
-        type Box<T: Eq> { value: T }
-        fn use_value(value: Box<Key>) {}
-        impl Eq for Key {
-            fn eq(self, other: Key) -> bool { self.values.len() == other.values.len() }
-        }
-    ",
+        r"type Key {
+    values: HashMap<string, i64>;
+}
+
+type Box<T: Eq> {
+    value: T;
+}
+
+fn use_value(value: Box<Key>) {}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.values.len() == other.values.len()
+    }
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -4955,12 +5211,17 @@ fn selected_eq_bound_waits_for_forward_user_impl_registration() {
 #[test]
 fn impl_target_type_arguments_read_the_impl_bounds() {
     let output = check_source(
-        r"
-        enum Slot<T: Clone> { Empty, Full { item: T }, }
-        impl<T: Clone> Slot<T> {
-            fn tag(self) -> i64 { 0 }
-        }
-    ",
+        r"enum Slot<T: Clone> {
+    Empty;
+    Full { item: T;  }
+}
+
+impl<T: Clone> Slot<T> {
+    fn tag(self) -> i64 {
+        0
+    }
+}
+",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
@@ -4968,12 +5229,17 @@ fn impl_target_type_arguments_read_the_impl_bounds() {
 #[test]
 fn impl_target_type_arguments_still_need_the_declared_bound() {
     let output = check_source(
-        r"
-        enum Slot<T: Display> { Empty, Full { item: T }, }
-        impl<T: Clone> Slot<T> {
-            fn tag(self) -> i64 { 0 }
-        }
-    ",
+        r"enum Slot<T: Display> {
+    Empty;
+    Full { item: T;  }
+}
+
+impl<T: Clone> Slot<T> {
+    fn tag(self) -> i64 {
+        0
+    }
+}
+",
     );
     assert!(
         output
@@ -5027,7 +5293,7 @@ fn display_is_satisfied_only_where_an_impl_exists() {
 /// same call the bare record is refused for.
 #[test]
 fn a_user_display_impl_satisfies_the_bound() {
-    const POINT: &str = "type Point { x: i64, y: i64 }";
+    const POINT: &str = "type Point {\n    x: i64;\n    y: i64;\n}\n";
     let refused = check_source(&format!(
         "{POINT} fn main() {{ println(Point {{ x: 1, y: 2 }}); }}"
     ));

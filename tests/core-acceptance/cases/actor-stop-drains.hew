@@ -1,0 +1,29 @@
+actor Worker {
+    receive fn job(n: i64) {
+        sleep(20ms);
+        println(n);
+    }
+
+    #[on(stop)]
+    fn done() {
+        println("hook");
+    }
+}
+
+fn main() {
+    let worker = spawn Worker();
+    let _ = mailbox(worker).job(1);
+    let _ = mailbox(worker).job(2);
+    let _ = mailbox(worker).job(3);
+    stop(worker);
+    println("after stop");
+    match mailbox(worker).job(4) {
+        .Err(failure) => match failure.reason {
+            .Dead => println("dead"),
+            _ => panic("wrong refusal"),
+        }
+        .Ok(_) => panic("accepted after stop"),
+    }
+    stopped(worker);
+    println("after stopped");
+}

@@ -16,7 +16,7 @@
 fn main() {
     let config = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: "node-namespace-smoke.key", trust: "pinned", peers: [], seeds: [] };
     match Node.start(config) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("node start failed"),
     }
     Node.connect("127.0.0.1:9001");

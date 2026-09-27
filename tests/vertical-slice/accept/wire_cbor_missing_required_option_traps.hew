@@ -3,12 +3,12 @@
 // present CBOR null is a valid None value.
 #[wire]
 type OptionalSource {
-    value: Option<i64> @1 optional,
+    value: Option<i64> @1 optional;
 }
 
 #[wire]
 type RequiredOption {
-    value: Option<i64> @1,
+    value: Option<i64> @1;
 }
 
 fn main() -> i64 {

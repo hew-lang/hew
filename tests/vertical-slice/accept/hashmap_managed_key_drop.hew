@@ -4,7 +4,10 @@
 // allocator (MallocScribble / MallocGuardEdges) in CI: each owned string key is
 // dropped exactly once, with no double-free and no scribble-read.
 
-type Person { name: string, age: i64 }
+type Person {
+    name: string;
+    age: i64;
+}
 
 fn churn() -> i64 {
     var m: HashMap<Person, i64> = HashMap.new();
@@ -17,13 +20,22 @@ fn churn() -> i64 {
     // reused (not re-cloned), the caller's probe key is the caller's to drop.
     m.insert(Person { name: "user", age: 10 }, 999);
     // Remove drops the slot key exactly once and moves the value out.
-    if m.remove(Person { name: "user", age: 20 }).is_none() { return 40; }
-    if m.len() != 63 { return 41; }
-    if match m.get(Person { name: "user", age: 10 }) { .Some(v) => v, .None => -1 } != 999 {
+    if m.remove(Person { name: "user", age: 20 }).is_none() {
+        return 40;
+    }
+    if m.len() != 63 {
+        return 41;
+    }
+    if match m.get(Person { name: "user", age: 10 }) {
+        .Some(v) => v,
+        .None => -1,
+    } != 999 {
         return 42;
     }
     // Map-free at scope end drops every remaining owned key exactly once.
     0
 }
 
-fn main() -> i64 { churn() }
+fn main() -> i64 {
+    churn()
+}

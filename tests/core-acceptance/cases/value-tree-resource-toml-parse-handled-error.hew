@@ -1,9 +1,13 @@
 import std.encoding.toml;
+
 fn main() -> i32 {
-    for _ in 0..50 {
+    for _ in 0 .. 50 {
         let n = match toml.parse("=") {
-            .Ok(parsed) => { parsed.close(); return 1; }
-            .Err(_) => 7
+            .Ok(parsed) => {
+                parsed.close();
+                return 1;
+            }
+            .Err(_) => 7,
         };
         println(f"{n}");
     }

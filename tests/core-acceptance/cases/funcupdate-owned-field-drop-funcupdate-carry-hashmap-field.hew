@@ -1,8 +1,8 @@
 import std.string;
 
 type Pair {
-    keep: HashMap<string, string>,
-    churn: string,
+    keep: HashMap<string, string>;
+    churn: string;
 }
 
 fn main() -> i64 {
@@ -11,7 +11,7 @@ fn main() -> i64 {
     var p = Pair { keep: m, churn: string.repeat("a", 32) };
     var i: i64 = 0;
     while i < 50 {
-        p = Pair { churn: string.repeat("b", 32), ..p };
+        p = Pair { ..p, churn: string.repeat("b", 32) };
         i = i + 1;
     }
     p.keep.len()

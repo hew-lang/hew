@@ -11,18 +11,22 @@
 // handle, so it resumes only after `fill` has returned and its queued work is
 // ordered ahead of the counting calls.
 actor Sink {
-    mailbox 2 overflow fail,
-    var count: i64 = 0,
-    var last: string = "",
+    mailbox 2 overflow fail;
+    var count: i64 = 0;
+    var last: string = "";
 
     receive fn take(payload: string) {
         count = count + 1;
         last = payload;
     }
 
-    receive fn total() -> i64 { count }
+    receive fn total() -> i64 {
+        count
+    }
 
-    receive fn tail_len() -> i64 { last.len() }
+    receive fn tail_len() -> i64 {
+        last.len()
+    }
 
     receive fn fill(me: Sink, backup: Sink) -> i64 {
         let inbox = mailbox(me, on_full: .Reject);
@@ -35,8 +39,8 @@ actor Sink {
                 .Err(again) => match again.message.to(backup) {
                     .Ok(_) => println("readdressed"),
                     .Err(_) => println("READDRESS_FAILED"),
-                },
-            },
+                }
+            }
         }
         0
     }
@@ -57,7 +61,7 @@ fn main() {
     let sink = spawn Sink();
     let backup = spawn Sink();
     match sink.fill(sink, backup) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("fill ask failed"),
     }
     count_of("sink", sink);

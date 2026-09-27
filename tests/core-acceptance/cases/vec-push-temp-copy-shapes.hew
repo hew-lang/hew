@@ -1,10 +1,14 @@
-type Holder { items: Vec<string> }
+type Holder {
+    items: Vec<string>;
+}
+
 fn mkItems(i: i64) -> Vec<string> {
     var xs: Vec<string> = Vec.new();
     xs.push("deep-elem-a");
     xs.push("deep-elem-b");
     return xs;
 }
+
 fn sharedTwice() -> i64 {
     var v: Vec<Holder> = Vec.new();
     var i: i64 = 0;
@@ -16,6 +20,7 @@ fn sharedTwice() -> i64 {
     }
     v.len()
 }
+
 fn readAfter() -> i64 {
     var v: Vec<Holder> = Vec.new();
     var total: i64 = 0;
@@ -28,6 +33,7 @@ fn readAfter() -> i64 {
     }
     total
 }
+
 fn main() {
     print(sharedTwice());
     print(readAfter());

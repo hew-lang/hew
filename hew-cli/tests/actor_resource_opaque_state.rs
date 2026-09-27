@@ -253,9 +253,12 @@ fn direct_resource_actor_state_closes_once_on_teardown() {
     run_teardown_close_oracle(
         "direct",
         r"actor Keeper {
-    let dq: Dq,
-    receive fn ping() -> i64 { 1 }
-}",
+    let dq: Dq;
+    receive fn ping() -> i64 {
+        1
+    }
+}
+",
         "spawn Keeper(dq: unsafe { hew_deque_new() })",
     );
 }
@@ -265,9 +268,12 @@ fn wrapped_resource_actor_state_still_closes_once_on_teardown() {
     run_teardown_close_oracle(
         "wrapped",
         r"actor Keeper {
-    let holder: Holder,
-    receive fn ping() -> i64 { 1 }
-}",
+    let holder: Holder;
+    receive fn ping() -> i64 {
+        1
+    }
+}
+",
         "spawn Keeper(holder: Holder { dq: unsafe { hew_deque_new() } })",
     );
 }

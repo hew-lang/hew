@@ -1,8 +1,7 @@
 //! # Supervision
 //!
-//! A supervisor owns named child roles and restarts failed children under its
-//! strategy and restart budget. Native declared-child supervision is available;
-//! pools and the SimpleOneForOne path remain implementation gaps.
+//! A supervisor owns named child roles and fungible pools. It restarts failed
+//! children under its strategy and restart budget.
 //!
 //! A child role resolves the current incarnation on a call. A direct incarnation
 //! handle remains tied to that actor; restarting a role does not revive a stale
@@ -13,10 +12,9 @@
 //! actor outcomes. A missing child or exhausted restart budget must be handled as
 //! failure. Do not use a sleep as proof that a replacement is ready.
 //!
-//! The decided shutdown forms are `close(supervisor)` to request cooperative stop
-//! and wait for child cleanup, `fork close(supervisor)` to start it concurrently,
-//! and `closed(supervisor)` to observe termination. Their native implementation is
-//! pending; internal runtime stop functions are not public alternatives.
+//! `stop(supervisor)` requests graceful shutdown of children in reverse
+//! declaration order; `terminate(supervisor)` requests cancellation.
+//! `stopped(supervisor)` waits for the whole tree's terminal cleanup.
 //!
 //! See the language guide's actor and lifecycle sections and the supervision
 //! contract in HEW-SPEC-2026. Source declarations alone do not establish support

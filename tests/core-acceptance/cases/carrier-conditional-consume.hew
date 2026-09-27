@@ -1,7 +1,7 @@
 // Taken and untaken destructuring paths converge with valid cleanup.
 type Packet {
-    tag: string,
-    body: string,
+    tag: string;
+    body: string;
 }
 
 fn measure(p: Packet, skip: bool) -> i64 {

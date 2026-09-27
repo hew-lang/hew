@@ -7,7 +7,9 @@
 // only by a sleep, which is not a happens-before edge.
 fn main() {
     let base = 100;
-    let log = actor |n: i64| { println(f"sum={base + n}"); };
+    let log = actor |n: i64| {
+        println(f"sum={base + n}");
+    };
     let _ = log(1);
     let _ = log(2);
 }

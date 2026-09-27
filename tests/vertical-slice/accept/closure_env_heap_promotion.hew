@@ -29,7 +29,7 @@ fn main() {
     let keep = junk > 0;
     let got = add(5);
     match keep {
-        true => println(got),  // 15
+        true => println(got), // 15
         false => println(0 - got),
     }
 }

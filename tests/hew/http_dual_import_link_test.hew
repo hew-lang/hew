@@ -28,10 +28,10 @@ fn test_server_impl_linked_in_dual_import_unit() {
             let _prev = server.set_request_timeout_ms(1000);
             server.close();
             assert(true);
-        },
+        }
         .Err(_err) => {
             assert(false);
-        },
+        }
     }
 }
 

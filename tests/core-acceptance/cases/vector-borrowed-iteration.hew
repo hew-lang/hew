@@ -4,8 +4,8 @@
 // drains it afterwards. Every element is released exactly once.
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -23,7 +23,7 @@ fn total(tokens: Vec<Token>) -> i64 {
     for token in tokens {
         sum = sum + token.id;
     }
-    return sum
+    return sum;
 }
 
 fn main() -> i64 {
@@ -31,7 +31,6 @@ fn main() -> i64 {
     tokens.push(Token { label: "t", id: 1 });
     tokens.push(Token { label: "t", id: 2 });
     tokens.push(Token { label: "t", id: 3 });
-
     for token in tokens {
         token.show();
     }

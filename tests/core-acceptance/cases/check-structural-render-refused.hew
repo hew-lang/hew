@@ -4,11 +4,13 @@
 // control: plain `{v}` still demands `Display` and says so in its own words.
 
 type Ticket {
-    code: string,
+    code: string;
 }
 
 fn main() {
-    let render = |value: i64| -> i64 { value + 1 };
+    let render = |value: i64| -> i64 {
+        value + 1
+    };
     println(f"{render:?}");
     let ticket = Ticket { code: "A1" };
     println(f"{ticket}");

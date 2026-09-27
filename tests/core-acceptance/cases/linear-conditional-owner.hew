@@ -1,9 +1,20 @@
 #[linear]
-type Tx { label: string }
+type Tx {
+    label: string;
+}
+
 impl Tx {
-    fn commit(consume self) { println(self.label); }
+    fn commit(consume self) {
+        println(self.label);
+    }
 }
+
 fn partial(consume tx: Tx, finish: bool) {
-    if finish { tx.commit(); }
+    if finish {
+        tx.commit();
+    }
 }
-fn main() { partial(Tx { label: "conditional".to_upper() }, true); }
+
+fn main() {
+    partial(Tx { label: "conditional".to_upper() }, true);
+}

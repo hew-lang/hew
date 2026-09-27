@@ -1,3 +1,5 @@
 import lib;
 
-pub fn through_relative_path() -> string { lib.describe() }
+pub fn through_relative_path() -> string {
+    lib.describe()
+}

@@ -2,6 +2,7 @@
 //! ordinary const path, not a unary-minus spelling exception.
 
 const NIL: i64 = 0 - 1;
+
 const PAREN: i16 = -(1 + 2);
 
 fn main() {

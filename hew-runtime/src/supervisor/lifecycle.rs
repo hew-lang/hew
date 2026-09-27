@@ -231,7 +231,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
             config_drop_fn: None,
         }),
         restart_epoch: (Mutex::new(0), Condvar::new()),
-        restart_await_waiters: Mutex::new(Vec::new()),
+        native_restart_wakers: crate::wake::ReadinessRegistrations::default(),
     });
     let raw = Box::into_raw(sup); // ALLOCATOR-PAIRING: GlobalAlloc
     let publication = match crate::lifetime::local_handles::begin_supervisor_publication_in(
@@ -344,6 +344,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         }),
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
+        stop_ns: 5_000_000_000,
         mailbox_capacity: sp.mailbox_capacity,
         overflow: sp.overflow,
         coalesce_key_fn: sp.coalesce_key_fn,
@@ -495,6 +496,36 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
     crash_code: c_int,
     fault_record: u64,
 ) -> bool {
+    let reason = crate::internal::types::ActorEndReason::from_terminal(exit_state, false);
+    // SAFETY: forwards the caller's live supervisor and exact child event.
+    unsafe {
+        notify_child_actor_end_event(
+            sup,
+            child_index,
+            child_id,
+            exit_state,
+            reason,
+            crash_code,
+            fault_record,
+        )
+    }
+}
+
+/// Publish the checker-independent semantic end reason selected at the actor
+/// terminal edge, including forceful termination after a stop request.
+///
+/// # Safety
+/// `sup` must be a live started supervisor and the child identity must name
+/// the incarnation whose terminal result is being published.
+pub(crate) unsafe fn notify_child_actor_end_event(
+    sup: *mut HewSupervisor,
+    child_index: u32,
+    child_id: u64,
+    exit_state: c_int,
+    end_reason: crate::internal::types::ActorEndReason,
+    crash_code: c_int,
+    fault_record: u64,
+) -> bool {
     cabi_guard!(sup.is_null(), false);
     // SAFETY: caller keeps `sup` live through this notification.
     let self_actor = unsafe { (*sup).self_actor };
@@ -506,6 +537,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
         child_index,
         child_id,
         exit_state,
+        end_reason,
         crash_code,
         fault_record,
     };
@@ -636,6 +668,33 @@ pub(crate) unsafe fn finish_claimed_supervisor(
     true
 }
 
+/// Ownership transferred from a nonblocking supervisor request to the
+/// deterministic driver's ready list. The teardown lease keeps runtime
+/// cleanup from reclaiming the allocation before this entry runs.
+pub(crate) struct QueuedSupervisorStop {
+    supervisor: *mut HewSupervisor,
+    root_unregistered: bool,
+    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+}
+
+// SAFETY: the teardown lease protects the supervisor allocation across the
+// ready-list handoff, and exactly one driver participant consumes this entry.
+unsafe impl Send for QueuedSupervisorStop {}
+
+impl QueuedSupervisorStop {
+    pub(crate) fn run(self) {
+        // SAFETY: this entry exclusively owns the already-claimed teardown.
+        unsafe {
+            finish_claimed_supervisor(
+                self.supervisor,
+                self.root_unregistered,
+                self.teardown,
+                false,
+            );
+        }
+    }
+}
+
 pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
     sup: *mut HewSupervisor,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
@@ -735,6 +794,25 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
     stop_local_supervisor(token, false)
 }
 
+/// Request a graceful supervisor stop without waiting for whole-tree release.
+#[no_mangle]
+pub extern "C" fn hew_supervisor_stop_native(token: crate::lifetime::local_handles::HewLocalPidId) {
+    let _ = stop_local_supervisor(token, true);
+}
+
+/// Escalate a supervisor stop to forceful teardown without waiting.
+#[no_mangle]
+pub extern "C" fn hew_supervisor_terminate_native(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) {
+    if let Some(control) =
+        crate::lifetime::local_handles::pin_current_supervisor(token).map(|pin| pin.control())
+    {
+        control.request_terminate();
+    }
+    let _ = stop_local_supervisor(token, true);
+}
+
 pub(crate) fn stop_local_supervisor(
     token: crate::lifetime::local_handles::HewLocalPidId,
     defer: bool,
@@ -785,6 +863,14 @@ pub(crate) fn stop_local_supervisor(
     // runtime cleanup may proceed as soon as that lease is relinquished and
     // must observe the control registry fully drained.
     drop(control);
+    if defer && crate::driver::active() {
+        crate::driver::publish_supervisor_stop(QueuedSupervisorStop {
+            supervisor: sup,
+            root_unregistered: top_level,
+            teardown,
+        });
+        return 0;
+    }
     // SAFETY: this token operation claimed teardown while pinned and already
     // removed the supervisor from the runtime cleanup root set.
     c_int::from(!unsafe { finish_claimed_supervisor(sup, top_level, teardown, defer) }) * 2
@@ -798,6 +884,92 @@ pub(crate) fn stop_local_supervisor(
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    static CHILD_STOP_ORDER: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+    unsafe extern "C-unwind" fn record_child_stop(state: *mut c_void) {
+        // SAFETY: this test installs the callback only on children whose
+        // initialized state is one copied u64 declaration label.
+        let label = unsafe { *state.cast::<u64>() };
+        CHILD_STOP_ORDER.lock_or_recover().push(label);
+    }
+
+    unsafe extern "C" fn unused_nested_restart() -> *mut HewSupervisor {
+        ptr::null_mut()
+    }
+
+    #[test]
+    fn mixed_child_kinds_stop_in_reverse_declaration_order() {
+        let _guard = crate::runtime_test_guard();
+        CHILD_STOP_ORDER.lock_or_recover().clear();
+
+        let spec = |label: &mut u64| HewChildSpec {
+            name: ptr::null(),
+            init_state: std::ptr::from_mut(label).cast(),
+            init_state_size: std::mem::size_of::<u64>(),
+            dispatch: Some(noop_child_dispatch),
+            sys_dispatch: None,
+            restart_policy: RESTART_TEMPORARY,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
+            lifecycle_fn: None,
+            init_fn: None,
+            config: ptr::null_mut(),
+            config_size: 0,
+        };
+        // SAFETY: each declaration copies its label before the stack value
+        // changes, and every returned actor/supervisor stays owned by its tree.
+        unsafe {
+            let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            let nested = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!parent.is_null() && !nested.is_null());
+            let mut first = 1_u64;
+            let mut middle = 2_u64;
+            let mut last = 3_u64;
+            let first_spec = spec(&mut first);
+            let middle_spec = spec(&mut middle);
+            let last_spec = spec(&mut last);
+            assert_eq!(
+                hew_supervisor_add_child_spec(parent, &raw const first_spec),
+                0
+            );
+            assert_eq!(
+                hew_supervisor_add_child_spec(nested, &raw const middle_spec),
+                0
+            );
+            assert_eq!(hew_supervisor_start(nested), 0);
+            assert_eq!(
+                hew_supervisor_add_child_supervisor_with_init(
+                    parent,
+                    nested,
+                    unused_nested_restart
+                ),
+                0
+            );
+            assert_eq!(
+                hew_supervisor_add_child_spec(parent, &raw const last_spec),
+                0
+            );
+            assert_eq!(hew_supervisor_start(parent), 0);
+
+            let parent_roster = (*parent).roster.lock_or_recover();
+            let first_child = parent_roster.children[0];
+            let last_child = parent_roster.children[1];
+            drop(parent_roster);
+            let middle_child = (*nested).roster.lock_or_recover().children[0];
+            actor::hew_actor_set_terminate(first_child, record_child_stop);
+            actor::hew_actor_set_terminate(middle_child, record_child_stop);
+            actor::hew_actor_set_terminate(last_child, record_child_stop);
+            hew_supervisor_stop(parent);
+        }
+        assert_eq!(*CHILD_STOP_ORDER.lock_or_recover(), [3, 2, 1]);
+    }
 
     /// Test-only shorthand that still obtains the typed roster guard. Tests
     /// own each supervisor for the complete guard lifetime.
@@ -1417,9 +1589,8 @@ mod tests {
 
             started.wait();
             actor::hew_actor_trap(child, 1);
-            hew_supervisor_restart_await_blocking(sup, 0);
             assert!(
-                *(*sup).restart_epoch.0.lock_or_recover() >= 1,
+                test_wait_for_restart(sup, 1, 5_000) >= 1,
                 "a supervisor restart must complete while live metrics reset runs"
             );
             resetter.join().expect("metrics resetter must not panic");
@@ -3252,482 +3423,6 @@ mod tests {
 
     // ── await_restart cooperative observer ───────────────────────────────────
 
-    /// Pre-park check (R4): a Live child returns READY — no park, the waiter
-    /// list stays empty. The caller binds immediately instead of suspending.
-    #[test]
-    fn restart_await_suspend_live_child_returns_ready_no_park() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, _child, _self_actor) = make_supervisor_with_child();
-            let slot = crate::read_slot::hew_read_slot_new();
-            let actor = ptr::null_mut();
-
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, actor, slot);
-
-            assert_eq!(
-                rc, RESTART_AWAIT_READY,
-                "a Live child must return READY (no park)"
-            );
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "READY path must not register a waiter"
-            );
-
-            // The caller still owns the creator ref on a READY return.
-            crate::read_slot::hew_read_slot_free(slot);
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// Pre-park check (R4 fail-closed): a permanently-Dead child (supervisor
-    /// shut down) returns READY rather than parking forever. The resumed caller
-    /// fails closed at the send re-resolve.
-    #[test]
-    fn restart_await_suspend_dead_child_returns_ready_never_hangs() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, _child, _self_actor) = make_supervisor_with_child();
-            // Force shutdown so child_get classifies the slot as Dead.
-            (*sup).running.store(0, Ordering::Release);
-            let slot = crate::read_slot::hew_read_slot_new();
-
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
-
-            assert_eq!(
-                rc, RESTART_AWAIT_READY,
-                "a permanently-Dead child must return READY (fail closed, never hang)"
-            );
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "the Dead fail-closed path must not register a waiter"
-            );
-
-            crate::read_slot::hew_read_slot_free(slot);
-            // Restore so teardown can reach the actor.
-            (*sup).running.store(1, Ordering::Release);
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// A Transient slot (mid-restart) parks: SUSPEND is returned and exactly one
-    /// waiter is registered. `notify_restart` (via wake) then drains the waiter
-    /// list — the resume-contract anchor (`store_child_slot` before notify).
-    #[test]
-    fn restart_await_suspend_transient_parks_then_notify_drains() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree; manually nulls the slot to
-        // simulate the restart-in-progress window, then restores it.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            // Null the slot under lock → child_get returns Transient(Restarting).
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            let slot = crate::read_slot::hew_read_slot_new();
-            // A null actor records `ActorIncarnation::NONE`, which never resolves,
-            // so the drain runs with no wake. The incarnation controls for this
-            // edge live in `restart_await_notify_*`.
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
-
-            assert_eq!(
-                rc, RESTART_AWAIT_SUSPEND,
-                "a Transient child must park (SUSPEND)"
-            );
-            assert_eq!(
-                (*sup).restart_await_waiters.lock_or_recover().len(),
-                1,
-                "the park path must register exactly one waiter"
-            );
-
-            // Restore the slot (the restart completed) and fire the notify wake.
-            store_child_slot(&raw mut *sup, 0, child);
-            notify_restart(sup);
-
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "notify_restart must drain every parked waiter"
-            );
-            assert_eq!(
-                crate::read_slot::read_slot_refs_for_test(slot),
-                1,
-                "notify must release only the observer ref"
-            );
-            // Match the codegen bind edge: the caller releases the creator ref.
-            crate::read_slot::hew_read_slot_free(slot);
-
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// Incarnation control for the restart-await wake edge (#3069), notify arm.
-    ///
-    /// `RestartAwaitWaiter` captures the awaiting actor's incarnation at park
-    /// time. `reincarnate` decides whether that actor dies and has its
-    /// allocation handed to a fresh, unrelated incarnation before
-    /// `notify_restart` drains the registry - the state a restart cycle
-    /// produces when the awaiting actor itself is the one that went away.
-    fn run_restart_await_notify_family(reincarnate: bool) {
-        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
-        let victim = crate::test_actor::TrackedTestActor::install_parked();
-        // SAFETY: test owns the supervisor tree; nulling the slot under lock is
-        // the documented way to present a Transient (mid-restart) child.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            let slot = crate::read_slot::hew_read_slot_new();
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, victim.ptr(), slot);
-            assert_eq!(
-                rc, RESTART_AWAIT_SUSPEND,
-                "a Transient child must park the awaiting actor"
-            );
-
-            if reincarnate {
-                victim.reincarnate_parked();
-            }
-
-            // The restart landed: restore the slot, then fire the notify wake.
-            store_child_slot(&raw mut *sup, 0, child);
-            notify_restart(sup);
-
-            if reincarnate {
-                crate::test_actor::assert_not_woken(&sched, &victim, "restart-await");
-            } else {
-                crate::test_actor::assert_woken(&sched, &victim, "restart-await");
-            }
-
-            // The caller releases the creator ref exactly as the bind edge does.
-            crate::read_slot::hew_read_slot_free(slot);
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    #[test]
-    fn restart_await_notify_does_not_resume_a_reused_address() {
-        run_restart_await_notify_family(true);
-    }
-
-    #[test]
-    fn restart_await_notify_resumes_the_registering_incarnation() {
-        run_restart_await_notify_family(false);
-    }
-
-    /// Incarnation control for the restart-await wake edge (#3069), TEARDOWN
-    /// arm. Supervisor teardown drains the same registry through a separate
-    /// call site, so it needs its own control: an awaiter that died before
-    /// teardown must not hand its wake to whatever now occupies its address.
-    fn run_restart_await_teardown_family(reincarnate: bool) {
-        let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
-        let victim = crate::test_actor::TrackedTestActor::install_parked();
-        // SAFETY: as above; the supervisor is consumed by the normal stop path.
-        unsafe {
-            let (sup, _child, _self_actor) = make_supervisor_with_child();
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            let slot = crate::read_slot::hew_read_slot_new();
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, victim.ptr(), slot);
-            assert_eq!(rc, RESTART_AWAIT_SUSPEND);
-
-            if reincarnate {
-                victim.reincarnate_parked();
-            }
-
-            // Teardown with the waiter still parked: the drain wakes it so the
-            // resumed actor re-resolves a shut-down supervisor and fails closed.
-            hew_supervisor_stop(sup);
-
-            if reincarnate {
-                crate::test_actor::assert_not_woken(&sched, &victim, "restart-await-teardown");
-            } else {
-                crate::test_actor::assert_woken(&sched, &victim, "restart-await-teardown");
-            }
-
-            crate::read_slot::hew_read_slot_free(slot);
-        }
-    }
-
-    #[test]
-    fn restart_await_teardown_does_not_resume_a_reused_address() {
-        run_restart_await_teardown_family(true);
-    }
-
-    #[test]
-    fn restart_await_teardown_resumes_the_registering_incarnation() {
-        run_restart_await_teardown_family(false);
-    }
-
-    /// The abandon edge: detach removes the waiter and releases its ref, so a
-    /// later `notify_restart` finds nothing to wake (no double-free, no leak).
-    #[test]
-    fn restart_await_detach_removes_waiter_before_notify() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            let slot = crate::read_slot::hew_read_slot_new();
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
-            assert_eq!(rc, RESTART_AWAIT_SUSPEND);
-            assert_eq!((*sup).restart_await_waiters.lock_or_recover().len(), 1);
-
-            // Abandon: detach removes the waiter and releases the retained ref.
-            hew_supervisor_restart_await_detach(sup, slot);
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "detach must remove the waiter"
-            );
-            assert_eq!(
-                crate::read_slot::read_slot_refs_for_test(slot),
-                1,
-                "detach must release only the observer ref"
-            );
-            // The direct caller still releases the creator ref after detach.
-            crate::read_slot::hew_read_slot_free(slot);
-
-            // A later notify has nothing to wake (the waiter is gone).
-            store_child_slot(&raw mut *sup, 0, child);
-            notify_restart(sup);
-            assert!((*sup).restart_await_waiters.lock_or_recover().is_empty());
-
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// Guard that clears the park-gap hook on drop so a panicking test cannot
-    /// leave the process-global hook installed for a sibling test.
-    struct RestartAwaitParkGapHookGuard;
-
-    impl Drop for RestartAwaitParkGapHookGuard {
-        fn drop(&mut self) {
-            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = None;
-        }
-    }
-
-    /// Lost-wakeup race regression (the B1-surface concurrency blocker): the
-    /// default scheduler is multi-worker, so a restart cycle can complete
-    /// (`store_child_slot` + `notify_restart`) in the gap between the pre-park
-    /// `child_get` and the waiter push. Without the under-lock counter recheck the
-    /// awaiting actor registers its waiter AFTER the drain already ran against an
-    /// empty registry, so the wake is lost and the continuation parks forever.
-    ///
-    /// This drives the restart through the test-only park-gap hook so the racing
-    /// `notify_restart` lands in exactly that window, deterministically. WITH the
-    /// fix the awaiting call observes the advanced counter and resolves READY with
-    /// no orphaned waiter; WITHOUT the fix it returns SUSPEND and leaves a waiter
-    /// that nothing will ever drain (verified: removing the recheck makes the two
-    /// assertions below fail — `rc` is SUSPEND and the registry holds one waiter).
-    #[test]
-    fn restart_await_suspend_notify_in_park_gap_does_not_lose_wakeup() {
-        let _rt = crate::runtime_test_guard();
-        let _hook_guard = RestartAwaitParkGapHookGuard;
-        // SAFETY: the test owns the supervisor tree for its whole lifetime.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            // Null the slot so the pre-park `child_get` classifies it Transient
-            // and the awaiting call proceeds toward parking.
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            // The racing restart, fired from the gap hook: restore the slot to
-            // Live and complete the restart cycle (bump counter + drain waiters).
-            // At this point the awaiting call has NOT yet pushed its waiter, so the
-            // drain sees an empty registry — the exact lost-wakeup interleaving.
-            let sup_addr = sup as usize;
-            let child_addr = child as usize;
-            let hook: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                // SAFETY: the test keeps `sup`/`child` alive until after the
-                // awaiting call returns; the hook runs synchronously within it.
-                let sup = sup_addr as *mut HewSupervisor;
-                store_child_slot(&raw mut *sup, 0, child_addr as *mut HewActor);
-                notify_restart(sup);
-            });
-            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = Some(hook);
-
-            let slot = crate::read_slot::hew_read_slot_new();
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
-
-            // Disarm the hook before any further restart machinery runs.
-            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = None;
-
-            assert_eq!(
-                rc, RESTART_AWAIT_READY,
-                "a restart completing in the park gap must resolve READY, not park \
-                 against a wake that already fired (lost-wakeup race)"
-            );
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "the lost-wakeup recheck must NOT register an orphaned waiter that \
-                 nothing will ever drain"
-            );
-
-            // READY keeps the creator ref with the caller; free it here.
-            crate::read_slot::hew_read_slot_free(slot);
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// The same lost-wakeup interleaving, but with `notify_restart` fired from a
-    /// SEPARATE worker thread (the realistic multi-worker shape) while the
-    /// awaiting actor is paused in the park gap. A bounded join backstops the
-    /// teeth: WITHOUT the fix the awaiting call parks against an already-fired,
-    /// drained-empty wake and the spawned awaiting thread never completes — the
-    /// join times out (an observable hang). WITH the fix it resolves READY and
-    /// the thread joins promptly.
-    #[test]
-    fn restart_await_suspend_concurrent_notify_in_gap_wakes_then_joins() {
-        let _rt = crate::runtime_test_guard();
-        let _hook_guard = RestartAwaitParkGapHookGuard;
-        // SAFETY: the test owns the supervisor tree for its whole lifetime.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            // Two barriers coordinate the cross-thread interleaving precisely:
-            //  - `in_gap` releases the notifier once the awaiting thread is in the
-            //    park gap (post pre-park check, pre push);
-            //  - `notified` blocks the awaiting thread until the notifier's restart
-            //    cycle (bump + drain-empty) has fully completed.
-            let in_gap = Arc::new(std::sync::Barrier::new(2));
-            let notified = Arc::new(std::sync::Barrier::new(2));
-            let in_gap_hook = Arc::clone(&in_gap);
-            let notified_hook = Arc::clone(&notified);
-            let hook: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                // Signal the notifier that we are parked in the gap, then wait for
-                // it to finish the racing restart cycle before we proceed to push.
-                in_gap_hook.wait();
-                notified_hook.wait();
-            });
-            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = Some(hook);
-
-            // Awaiting actor: runs the suspend call on its own thread.
-            let sup_addr = sup as usize;
-            let awaiting = std::thread::spawn(move || {
-                // SAFETY: the parent keeps `sup` alive until this thread joins; the
-                // slot is created and freed within this thread.
-                let sup = sup_addr as *mut HewSupervisor;
-                let slot = crate::read_slot::hew_read_slot_new();
-                let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
-                crate::read_slot::hew_read_slot_free(slot);
-                rc
-            });
-
-            // Notifier: once the awaiting thread is in the gap, drive the racing
-            // restart cycle (restore Live + bump counter + drain the still-empty
-            // registry), then release the awaiting thread to proceed to its push.
-            in_gap.wait();
-            store_child_slot(&raw mut *sup, 0, child);
-            notify_restart(sup);
-            notified.wait();
-
-            // WITHOUT the recheck the awaiting call returns SUSPEND with an
-            // orphaned waiter and (in a real run) the continuation never wakes;
-            // here the thread still finishes (it returns SUSPEND rather than
-            // parking a real coroutine), so the verdict is the rc +
-            // empty-registry assertion below.
-            let rc = awaiting.join().expect("awaiting thread panicked");
-
-            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = None;
-
-            assert_eq!(
-                rc, RESTART_AWAIT_READY,
-                "a concurrent notify in the park gap must resolve the awaiting actor \
-                 READY, not leave it parked against an already-fired wake"
-            );
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "no orphaned waiter may survive the racing restart"
-            );
-
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// The contextless barrier resolves on fault-record settlement, not on a
-    /// clock.
-    ///
-    /// Two answers from one rule. A healthy role with nothing pending returns
-    /// AT ONCE — no grace window to sit out. A role with an open record BLOCKS,
-    /// however long the ruling takes, which is what the deleted grace window got
-    /// wrong under load. The ruling releases it.
-    #[test]
-    fn restart_await_blocking_resolves_on_fault_settlement() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, _child, _self_actor) = make_supervisor_with_child();
-
-            // A live role with no fault pending under it returns at once: with
-            // nothing to wait for, a barrier that blocked would never return.
-            hew_supervisor_restart_await_blocking(sup, 0);
-
-            // Open and attribute a record exactly as a supervised crash does,
-            // without running one: the barrier's input is the record, so this
-            // isolates it from restart timing.
-            let record = crate::exit_status::open_supervised_fault();
-            crate::exit_status::attribute_supervised_fault(record, child_role_chain(sup, 0));
-
-            let sup_addr = sup as usize;
-            let awaiting = std::thread::spawn(move || {
-                // SAFETY: the test keeps `sup` alive until this thread joins.
-                let sup = sup_addr as *mut HewSupervisor;
-                // SAFETY: the supervisor outlives the wait.
-                unsafe { hew_supervisor_restart_await_blocking(sup, 0) };
-            });
-
-            // The role still reads Live, so only the open record can be holding
-            // the barrier. WHY a window: nothing reports that the waiter has
-            // parked, so this leg can pass vacuously on a slow host. WHAT the
-            // real fix is: a parked-waiter count on the restart barrier.
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            assert!(
-                !awaiting.is_finished(),
-                "an open record under a live role must hold the barrier"
-            );
-
-            crate::exit_status::settle_supervised_fault(record, FaultRuling::Handled);
-
-            // The ruling must release the barrier.
-            wait_until(|| awaiting.is_finished());
-            awaiting.join().expect("awaiting thread panicked");
-
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// The barrier holds until the child is back, not until a timer expires.
-    ///
-    /// A real crash opens the record before the terminal wake, so by the time
-    /// `hew_actor_trap` returns the fault is pending under the role; the
-    /// supervisor rules on its own dispatch. The barrier therefore observes the
-    /// replacement incarnation, however long the ruling takes to land.
-    #[test]
-    fn restart_await_blocking_returns_with_the_restarted_incarnation() {
-        let _rt = crate::runtime_test_guard();
-        let _scheduler = RealSchedulerGuard::new();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            locked_roster!(sup).child_specs[0].restart_policy = RESTART_PERMANENT;
-
-            actor::hew_actor_trap(child, 1);
-            hew_supervisor_restart_await_blocking(sup, 0);
-
-            assert!(
-                *(*sup).restart_epoch.0.lock_or_recover() >= 1,
-                "the barrier must hold until the restart cycle completes, not \
-                 return on the pre-crash live window"
-            );
-            assert_eq!(
-                hew_supervisor_child_get(sup, 0).tag,
-                0,
-                "the role must hold a live incarnation when the barrier returns"
-            );
-
-            hew_supervisor_stop(sup);
-        }
-    }
-
     /// A `temporary` child that crashes is never restarted: the decline spends
     /// the spec, so the empty slot classifies `Dead(BudgetExhausted)` instead of
     /// sitting on `Transient(Restarting)` for good.
@@ -3852,99 +3547,6 @@ mod tests {
                 "a declined restart is BudgetExhausted, not CircuitOpen"
             );
 
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// A terminal ruling drains the COOPERATIVE waiters, so a continuation
-    /// parked on a Transient slot resumes into a Dead slot and fails closed at
-    /// the bind. Before the spent wake nothing fired here and the continuation
-    /// was parked for good.
-    #[test]
-    fn spent_spec_drains_parked_restart_await_waiters() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: the test owns the supervisor tree.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            let identity = locked_roster!(sup).child_specs[0].identity;
-            // Null the slot so the pre-park lookup classifies it Transient.
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            let slot = crate::read_slot::hew_read_slot_new();
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
-            assert_eq!(rc, RESTART_AWAIT_SUSPEND, "a Transient child must park");
-            assert_eq!(
-                (*sup).restart_await_waiters.lock_or_recover().len(),
-                1,
-                "the park path must register exactly one waiter"
-            );
-
-            mark_child_spec_spent(sup, identity);
-
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "a spent spec must drain every parked waiter"
-            );
-            assert_eq!(
-                hew_supervisor_child_get(sup, 0).tag,
-                2,
-                "the resumed continuation must re-resolve a Dead slot"
-            );
-            // Match the codegen bind edge: the caller releases the creator ref.
-            crate::read_slot::hew_read_slot_free(slot);
-
-            // Restore the slot so teardown can reach the actor.
-            store_child_slot(&raw mut *sup, 0, child);
-            locked_roster!(sup).child_specs[0].spent = false;
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// Supervisor cancellation drains the COOPERATIVE waiters through the same
-    /// wake point, so a parked continuation resumes into a shut-down slot
-    /// instead of waiting on a supervisor that is going away.
-    #[test]
-    fn supervisor_cancellation_drains_parked_restart_await_waiters() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: the test owns the supervisor tree.
-        unsafe {
-            let (sup, child, _self_actor) = make_supervisor_with_child();
-            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
-
-            let slot = crate::read_slot::hew_read_slot_new();
-            let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
-            assert_eq!(rc, RESTART_AWAIT_SUSPEND, "a Transient child must park");
-
-            publish_supervisor_cancellation(sup);
-
-            assert!(
-                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
-                "cancellation must drain every parked waiter"
-            );
-            crate::read_slot::hew_read_slot_free(slot);
-
-            // Restore so teardown can reach the actor.
-            (*sup).cancelled.store(false, Ordering::Release);
-            store_child_slot(&raw mut *sup, 0, child);
-            hew_supervisor_stop(sup);
-        }
-    }
-
-    /// The contextless blocking helper returns immediately for a permanently
-    /// Dead child (shut-down supervisor) — R4 fail-closed, no hang.
-    #[test]
-    fn restart_await_blocking_dead_child_returns_immediately() {
-        let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the supervisor tree.
-        unsafe {
-            let (sup, _child, _self_actor) = make_supervisor_with_child();
-            (*sup).running.store(0, Ordering::Release);
-
-            // A permanently-Dead child returns immediately: nothing will ever
-            // change it, so a barrier that blocked would never return.
-            hew_supervisor_restart_await_blocking(sup, 0);
-
-            (*sup).running.store(1, Ordering::Release);
             hew_supervisor_stop(sup);
         }
     }
@@ -4241,6 +3843,10 @@ mod tests {
                 child_index: u32::try_from(child_index).expect("test index fits u32"),
                 child_id: (*child).id,
                 exit_state: terminal_state as c_int,
+                end_reason: crate::internal::types::ActorEndReason::from_terminal(
+                    terminal_state as c_int,
+                    false,
+                ),
                 crash_code: 0,
                 fault_record: 0,
             };

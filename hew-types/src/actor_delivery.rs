@@ -69,11 +69,14 @@ impl SendPolicy {
 /// Selected operations carried independently of source and linker spellings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorDeliveryCall {
-    Close,
-    AwaitClosed,
-    /// `pid.stop()`: request a graceful stop without waiting. HIR lowers it
-    /// to the same request `close` makes and discards the returned handle.
+    /// Close admission and drain accepted turns without waiting.
     Stop,
+    /// Close admission, discard queued turns and cancel at the next suspension.
+    Terminate,
+    /// Wait for release and transfer an unrecovered fault to the caller.
+    AwaitStopped,
+    /// Wait for the current supervised role to become live again.
+    AwaitRestarted,
     Policy {
         policy: SendPolicy,
     },

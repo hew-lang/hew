@@ -703,19 +703,35 @@ fn scalar_argument_io_handle_payload_still_compiles_and_runs() {
 /// The observable pin is exact and two-sided: three `Ok` frames each close
 /// once (no missing close, no double close) and three `Err` frames each read
 /// their payload intact.
-const RESOURCE_PAYLOAD_WITH_INTERPOLATED_ERR: &str = r#"#[resource] type Conn { fd: i64 }
-impl Conn { fn close(consume self) { println(f"closed-{self.fd}"); } }
+const RESOURCE_PAYLOAD_WITH_INTERPOLATED_ERR: &str = r#"#[resource]
+type Conn {
+    fd: i64;
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"closed-{self.fd}");
+    }
+}
 
 fn attempt(i: i64) -> Result<Conn, string> {
-    if i % 2 == 0 { .Ok(Conn { fd: i }) } else { .Err(f"refused{i}") }
+    if i % 2 == 0 {
+        .Ok(Conn { fd: i })
+    } else {
+        .Err(f"refused{i}")
+    }
 }
 
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 6 {
         match attempt(i) {
-            .Ok(c) => { c.close(); },
-            .Err(e) => { println(f"err={e}"); },
+            .Ok(c) => {
+                c.close();
+            }
+            .Err(e) => {
+                println(f"err={e}");
+            }
         }
         i = i + 1;
     }
@@ -985,7 +1001,9 @@ fn a_hew_wrapper_around_an_extern_releases_once_per_frame() {
 /// This is the non-string heap class (a record element) observed through the
 /// one field the runtime representation lets us count exactly. Measured against
 /// the pre-fix compiler it reports `releases=8` over eight frames.
-const VEC_INGRESS_RECORD_WRAPPER: &str = r#"type Holder { label: string }
+const VEC_INGRESS_RECORD_WRAPPER: &str = r#"type Holder {
+    label: string;
+}
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -994,7 +1012,11 @@ extern "C" {
     fn spy_release_one_from_host() -> i64;
 }
 
-fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
+fn wrapHolder() -> Holder {
+    unsafe {
+        spy_make_holder()
+    }
+}
 
 fn pushFrames(n: i64) -> i64 {
     var v: Vec<Holder> = Vec.new();
@@ -1008,16 +1030,24 @@ fn pushFrames(n: i64) -> i64 {
 
 fn main() -> i64 {
     let pushed = pushFrames(8);
-    let made = unsafe { spy_made() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_made()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"pushed={pushed}");
     println(f"made={made}");
     println(f"releases={releases}");
 
     // Positive control for the counter, run LAST so it cannot perturb the
     // measurement above.
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1174,7 +1204,9 @@ fn a_vec_push_of_a_wrapped_extern_record_releases_once_per_frame() {
 /// in the program could account for the decrement.
 ///
 /// Measured against the pre-fix compiler this reports `releases=8`.
-const BORROWING_CALLEE_RECORD_WRAPPER: &str = r#"type Holder { label: string }
+const BORROWING_CALLEE_RECORD_WRAPPER: &str = r#"type Holder {
+    label: string;
+}
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1183,9 +1215,15 @@ extern "C" {
     fn spy_release_one_from_host() -> i64;
 }
 
-fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
+fn wrapHolder() -> Holder {
+    unsafe {
+        spy_make_holder()
+    }
+}
 
-fn borrowHolder(h: Holder) -> i64 { h.label.len() }
+fn borrowHolder(h: Holder) -> i64 {
+    h.label.len()
+}
 
 fn main() -> i64 {
     var total: i64 = 0;
@@ -1194,14 +1232,21 @@ fn main() -> i64 {
         total = total + borrowHolder(wrapHolder());
         i = i + 1;
     }
-    let made = unsafe { spy_made() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_made()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"total={total}");
     println(f"made={made}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1267,7 +1312,9 @@ fn a_wrapped_extern_record_in_a_borrowing_argument_releases_once_per_frame() {
 /// through its taint row. Measured against the pre-fix compiler this fixture
 /// reports `releases=8` over eight frames AND STILL EXITS 0 — the exact count
 /// is what catches it.
-const MATCH_WRAPPED_EXTERN_ENUM: &str = r#"type Holder { label: string }
+const MATCH_WRAPPED_EXTERN_ENUM: &str = r#"type Holder {
+    label: string;
+}
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1276,26 +1323,39 @@ extern "C" {
     fn spy_release_one_from_host() -> i64;
 }
 
-fn wrap() -> Option<Holder> { .Some(unsafe { spy_make_holder() }) }
+fn wrap() -> Option<Holder> {
+    .Some(unsafe {
+        spy_make_holder()
+    })
+}
 
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 8 {
         match wrap() {
-            .Some(h) => { total = total + h.label.len(); }
+            .Some(h) => {
+                total = total + h.label.len();
+            }
             .None => {}
         }
         i = i + 1;
     }
-    let made = unsafe { spy_made() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_made()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"total={total}");
     println(f"made={made}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1440,8 +1500,14 @@ fn a_match_over_a_domestic_enum_keeps_working() {
 /// `Holder` the host had just returned.
 ///
 /// Measured against the pre-fix compiler this fixture reports `releases=8`.
-const RECORD_LITERAL_EMBEDDING_A_DIRECT_EXTERN: &str = r#"type Holder { label: string }
-type Outer { inner: Holder, tag: i64 }
+const RECORD_LITERAL_EMBEDDING_A_DIRECT_EXTERN: &str = r#"type Holder {
+    label: string;
+}
+
+type Outer {
+    inner: Holder;
+    tag: i64;
+}
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1450,23 +1516,34 @@ extern "C" {
     fn spy_release_one_from_host() -> i64;
 }
 
-fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() + o.tag }
+fn borrowOuter(o: Outer) -> i64 {
+    o.inner.label.len() + o.tag
+}
 
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 8 {
-        total = total + borrowOuter(Outer { inner: unsafe { spy_make_holder() }, tag: 0 });
+        total = total + borrowOuter(Outer { inner: unsafe {
+            spy_make_holder()
+        }, tag: 0 });
         i = i + 1;
     }
-    let made = unsafe { spy_made() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_made()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"total={total}");
     println(f"made={made}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1530,13 +1607,23 @@ const RECORD_LITERAL_OF_A_DOMESTIC_FIELD: &str = r#"extern "C" {
     fn spy_retain(s: string) -> i64;
 }
 
-type Holder { label: string }
-type Outer { inner: Holder, tag: i64 }
+type Holder {
+    label: string;
+}
 
-fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
+type Outer {
+    inner: Holder;
+    tag: i64;
+}
+
+fn mkHolder(i: i64) -> Holder {
+    Holder { label: f"tok{i}" }
+}
 
 fn borrowOuter(o: Outer) -> i64 {
-    unsafe { spy_retain(o.inner.label); }
+    unsafe {
+        spy_retain(o.inner.label);
+    };
     o.tag + 1
 }
 
@@ -1547,16 +1634,25 @@ fn main() -> i64 {
         total = total + borrowOuter(Outer { inner: mkHolder(i), tag: 0 });
         i = i + 1;
     }
-    let bad = unsafe { spy_bad_headers() };
+    let bad = unsafe {
+        spy_bad_headers()
+    };
     println(f"bad={bad}");
-    let made = unsafe { spy_retained() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_retained()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"total={total}");
     println(f"made={made}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1603,7 +1699,9 @@ fn a_record_literal_of_a_domestic_field_keeps_working() {
 /// domestic record, and the map's teardown is the one release it gets. The map
 /// leaves scope inside the loop body, so a frame that released twice or not at
 /// all shows up in the count.
-const HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD: &str = r#"type Holder { label: string }
+const HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD: &str = r#"type Holder {
+    label: string;
+}
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1612,7 +1710,11 @@ extern "C" {
     fn spy_release_one_from_host() -> i64;
 }
 
-fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
+fn wrapHolder() -> Holder {
+    unsafe {
+        spy_make_holder()
+    }
+}
 
 fn insertFrame(key: i64) -> i64 {
     var m: HashMap<i64, Holder> = HashMap.new();
@@ -1627,14 +1729,21 @@ fn main() -> i64 {
         inserted = inserted + insertFrame(i);
         i = i + 1;
     }
-    let made = unsafe { spy_made() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_made()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"inserted={inserted}");
     println(f"made={made}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1686,9 +1795,13 @@ fn a_hashmap_insert_of_a_wrapped_extern_record_releases_once_per_frame() {
 /// COUNTERFACTUAL for F3: the identical program over a DOMESTIC producer must
 /// still compile, still move in, and still run clean. Reverting the reject makes
 /// the case above compile; widening it into a blanket stop makes this one fail.
-const HASHMAP_INSERT_OF_A_DOMESTIC_RECORD: &str = r#"type Holder { label: string }
+const HASHMAP_INSERT_OF_A_DOMESTIC_RECORD: &str = r#"type Holder {
+    label: string;
+}
 
-fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
+fn mkHolder(i: i64) -> Holder {
+    Holder { label: f"tok{i}" }
+}
 
 fn main() -> i64 {
     var m: HashMap<i64, Holder> = HashMap.new();
@@ -1731,7 +1844,9 @@ fn a_hashmap_insert_of_a_domestic_record_still_compiles_and_runs() {
 /// gives a binder over an opaque foreign producer a scope-exit release the
 /// program never earned — the same defect as F1/F2, reached through the
 /// simplest construct in the language.
-const LET_BOUND_DIRECT_EXTERN_RECORD: &str = r#"type Holder { label: string }
+const LET_BOUND_DIRECT_EXTERN_RECORD: &str = r#"type Holder {
+    label: string;
+}
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1744,18 +1859,27 @@ fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 8 {
-        let h = unsafe { spy_make_holder() };
+        let h = unsafe {
+            spy_make_holder()
+        };
         total = total + h.label.len();
         i = i + 1;
     }
-    let made = unsafe { spy_made() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_made()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"total={total}");
     println(f"made={made}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1809,8 +1933,14 @@ fn a_let_bound_extern_record_releases_once_per_frame() {
 /// The same binder, but the foreign value is first placed in a fresh container
 /// — the fact has to travel WITH the binder, not just be read off the
 /// initializer at the moment of binding.
-const LET_BOUND_EXTERN_RECORD_INSIDE_A_CONTAINER: &str = r#"type Holder { label: string }
-type Outer { inner: Holder, tag: i64 }
+const LET_BOUND_EXTERN_RECORD_INSIDE_A_CONTAINER: &str = r#"type Holder {
+    label: string;
+}
+
+type Outer {
+    inner: Holder;
+    tag: i64;
+}
 
 extern "C" {
     fn spy_make_holder() -> Holder;
@@ -1823,19 +1953,28 @@ fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 8 {
-        let h = unsafe { spy_make_holder() };
+        let h = unsafe {
+            spy_make_holder()
+        };
         let o = Outer { inner: h, tag: 0 };
         total = total + o.inner.label.len() + o.tag;
         i = i + 1;
     }
-    let made = unsafe { spy_made() };
-    let releases = unsafe { spy_releases() };
+    let made = unsafe {
+        spy_made()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"total={total}");
     println(f"made={made}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }
@@ -1902,29 +2041,44 @@ const LET_BOUND_DOMESTIC_RECORD: &str = r#"extern "C" {
     fn spy_retain(s: string) -> i64;
 }
 
-type Holder { label: string }
+type Holder {
+    label: string;
+}
 
-fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
+fn mkHolder(i: i64) -> Holder {
+    Holder { label: f"tok{i}" }
+}
 
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 8 {
         let h = mkHolder(i);
-        unsafe { spy_retain(h.label); }
+        unsafe {
+            spy_retain(h.label);
+        };
         total = total + 1;
         i = i + 1;
     }
-    let retained = unsafe { spy_retained() };
-    let bad = unsafe { spy_bad_headers() };
-    let releases = unsafe { spy_releases() };
+    let retained = unsafe {
+        spy_retained()
+    };
+    let bad = unsafe {
+        spy_bad_headers()
+    };
+    let releases = unsafe {
+        spy_releases()
+    };
     println(f"total={total}");
     println(f"retained={retained}");
     println(f"bad={bad}");
     println(f"releases={releases}");
-
-    unsafe { spy_release_one_from_host(); }
-    let after = unsafe { spy_releases() };
+    unsafe {
+        spy_release_one_from_host();
+    };
+    let after = unsafe {
+        spy_releases()
+    };
     println(f"after_host_release={after}");
     0
 }

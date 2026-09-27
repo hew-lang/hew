@@ -3,6 +3,9 @@ fn one() {
     m.insert(1, "discard-remove".to_upper());
     m.remove(1);
 }
+
 fn main() {
-    for i in 0..50 { one(); }
+    for i in 0 .. 50 {
+        one();
+    }
 }

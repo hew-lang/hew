@@ -5,10 +5,14 @@ use hew_types::{BuiltinType, Ty};
 #[test]
 fn user_defined_option_box_does_not_get_builtin_discriminator() {
     let output = common::typecheck_isolated(
-        r"
-        pub type OptionBox { value: i64 }
-        pub type Holder { value: OptionBox }
-        ",
+        r"pub type OptionBox {
+    value: i64;
+}
+
+pub type Holder {
+    value: OptionBox;
+}
+",
     );
 
     assert!(

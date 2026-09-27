@@ -8,12 +8,12 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
-line = 26
+line = 25
 column = 18
 message = "E_ELEMENT_NO_COPY: `Vec<Token>` cannot be read with `get`"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
-line = 27
+line = 26
 column = 21
 message = "E_ELEMENT_NO_COPY: `Vec<Token>` cannot be read with `get`"

@@ -2,7 +2,7 @@
 import hew.supertraits.{Base, Left, Right, Diamond};
 
 type DM {
-    id: i64,
+    id: i64;
 }
 
 impl Base for DM {

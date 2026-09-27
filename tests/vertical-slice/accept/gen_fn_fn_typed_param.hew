@@ -31,7 +31,9 @@ gen fn mapped(n: i64, f: fn[clone](i64) -> i64) -> i64 {
     }
 }
 
-fn double(x: i64) -> i64 { x * 2 }
+fn double(x: i64) -> i64 {
+    x * 2
+}
 
 fn main() {
     var total = 0;

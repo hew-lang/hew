@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn process_entry_refuses_reachable_tcp_listen() {
-        let source = "import std.net;\nfn helper() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }\nfn main() { helper(); }";
+        let source = "import std.net;\n\nfn helper() {\n    match net.listen(\":0\") {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n\nfn main() {\n    helper();\n}\n";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -888,13 +888,13 @@ mod tests {
 
     #[test]
     fn unreachable_host_helper_does_not_block_process_entry() {
-        let source = "import std.net;\nfn unused() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }\nfn main() { println(\"safe\"); }";
+        let source = "import std.net;\n\nfn unused() {\n    match net.listen(\":0\") {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n\nfn main() {\n    println(\"safe\");\n}\n";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 
     #[test]
     fn aliased_std_module_keeps_its_host_identity() {
-        let source = "import std.net as wire;\nfn main() { match wire.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }";
+        let source = "import std.net as wire;\n\nfn main() {\n    match wire.listen(\":0\") {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn selected_test_does_not_inherit_real_time_siblings_operation() {
-        let source = "import std.net;\n#[test] fn safe() { println(\"safe\"); }\n#[test] #[real_time] fn socket() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }";
+        let source = "import std.net;\n\n#[test]\nfn safe() {\n    println(\"safe\");\n}\n\n#[test]\n#[real_time]\nfn socket() {\n    match net.listen(\":0\") {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n";
         let selection = selected_test(source, "safe");
         check_source(source, DeterministicAdmission::Tests(vec![selection])).unwrap();
     }
@@ -932,7 +932,7 @@ mod tests {
 
     #[test]
     fn dynamic_trait_call_includes_checked_implementer() {
-        let source = "import std.io;\ntrait Reader { fn read(value: Self) -> string; }\ntype Host { n: i64 }\nimpl Host { fn read(value: Host) -> string { io.read_line() } }\nfn inspect(value: dyn Reader) -> string { value.read() }\nfn main() { let erased: dyn Reader = Host { n: 1 }; println(inspect(erased)); }";
+        let source = "import std.io;\n\ntrait Reader {\n    fn read(value: Self) -> string;\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(value: Host) -> string {\n        io.read_line()\n    }\n}\n\nfn inspect(value: dyn Reader) -> string {\n    value.read()\n}\n\nfn main() {\n    let erased: dyn Reader = Host { n: 1 };\n    println(inspect(erased));\n}\n";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn static_trait_dispatch_includes_checked_implementer() {
-        let source = "import std.io;\ntrait Reader { fn read(value: Self) -> string; }\ntype Host { n: i64 }\nimpl Host { fn read(value: Host) -> string { io.read_line() } }\nfn inspect<T: Reader>(value: T) -> string { value.read() }\nfn main() { println(inspect(Host { n: 1 })); }";
+        let source = "import std.io;\n\ntrait Reader {\n    fn read(value: Self) -> string;\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(value: Host) -> string {\n        io.read_line()\n    }\n}\n\nfn inspect<T: Reader>(value: T) -> string {\n    value.read()\n}\n\nfn main() {\n    println(inspect(Host { n: 1 }));\n}\n";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert!(
             failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -952,13 +952,13 @@ mod tests {
 
     #[test]
     fn static_trait_dispatch_excludes_unused_implementer() {
-        let source = "import std.io;\ntrait Reader { fn read(value: Self) -> string; }\ntype Safe { n: i64 }\nimpl Safe { fn read(value: Safe) -> string { \"safe\" } }\ntype Host { n: i64 }\nimpl Host { fn read(value: Host) -> string { io.read_line() } }\nfn inspect<T: Reader>(value: T) -> string { value.read() }\nfn main() { println(inspect(Safe { n: 1 })); }";
+        let source = "import std.io;\n\ntrait Reader {\n    fn read(value: Self) -> string;\n}\n\ntype Safe {\n    n: i64;\n}\n\nimpl Safe {\n    fn read(value: Safe) -> string {\n        \"safe\"\n    }\n}\n\ntype Host {\n    n: i64;\n}\n\nimpl Host {\n    fn read(value: Host) -> string {\n        io.read_line()\n    }\n}\n\nfn inspect<T: Reader>(value: T) -> string {\n    value.read()\n}\n\nfn main() {\n    println(inspect(Safe { n: 1 }));\n}\n";
         check_source(source, DeterministicAdmission::ProcessEntry).unwrap();
     }
 
     #[test]
     fn remote_actor_send_and_ask_require_real_time() {
-        let declaration = "#[wire] type Ping { n: i64 @1 }\nactor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\nimpl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n";
+        let declaration = "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n\nactor Worker {\n    receive fn ping(msg: Ping) -> i64 {\n        0\n    }\n}\n\nimpl ActorMsg for Worker {\n    type Msg = Ping;\n    type Reply = i64;\n}\n";
         for call in ["pid.send(Ping { n: 0 })", "pid.ask(Ping { n: 0 }, 1000)"] {
             let source =
                 format!("{declaration}fn main() {{ let pid: RemotePid<Worker>; let _ = {call}; }}");
@@ -973,7 +973,7 @@ mod tests {
 
     #[test]
     fn one_source_call_reports_one_host_operation() {
-        let source = "import std.net;\nfn main() { match net.listen(\":0\") { .Ok(_) => {}, .Err(_) => {}, } }";
+        let source = "import std.net;\n\nfn main() {\n    match net.listen(\":0\") {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n";
         let failure = check_source(source, DeterministicAdmission::ProcessEntry).unwrap_err();
         assert_eq!(
             failure.matches("E_DETERMINISTIC_HOST_OPERATION").count(),

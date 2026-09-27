@@ -23,9 +23,11 @@ fn affine_record_clone_stops_before_native_mir_and_release() {
     let emit_dir = temp.path().join("emit");
     std::fs::write(
         &source,
-        r#"
-#[resource]
-type ResourceToken { id: i64 }
+        r#"#[resource]
+type ResourceToken {
+    id: i64;
+}
+
 impl ResourceToken {
     fn close(consume self) {
         print(self.id);
@@ -34,9 +36,14 @@ impl ResourceToken {
 }
 
 #[linear]
-type LinearTicket { id: i64 }
+type LinearTicket {
+    id: i64;
+}
+
 impl LinearTicket {
-    fn redeem(consume self) -> i64 { self.id }
+    fn redeem(consume self) -> i64 {
+        self.id
+    }
 }
 
 fn main() -> i64 {
@@ -44,22 +51,18 @@ fn main() -> i64 {
     let _r1_copy = r1.clone();
     let r2 = ResourceToken { id: 42 };
     let _r2_copy = clone r2;
-
     let l1 = LinearTicket { id: 51 };
     let _l1_copy = l1.clone();
     let _ = l1.redeem();
     let l2 = LinearTicket { id: 52 };
     let _l2_copy = clone l2;
     let _ = l2.redeem();
-
     var resources: Vec<ResourceToken> = Vec.new();
     resources.push(ResourceToken { id: 61 });
     let _resources_copy = resources.clone();
-
     var tickets: HashMap<string, LinearTicket> = HashMap.new();
     tickets.insert("one", LinearTicket { id: 62 });
     let _tickets_copy = clone tickets;
-
     var late_resources = Vec.new();
     var i = 0;
     while i < 2 {

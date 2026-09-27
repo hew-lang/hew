@@ -38,15 +38,28 @@ fn generic_trait_method_instances_preserve_owned_values() {
 
 #[test]
 fn generic_trait_method_requires_its_checked_instantiation() {
-    let source = r"
-        trait Identity { fn keep<U>(self, consume value: U) -> U; }
-        type Holder { value: i64 }
-        impl Identity for Holder {
-            fn keep<U>(self, consume value: U) -> U { value }
-        }
-        fn via<T: Identity>(item: T) -> i64 { item.keep(42) }
-        fn main() -> i64 { via(Holder { value: 0 }) }
-    ";
+    let source = r"trait Identity {
+    fn keep<U>(self, consume value: U) -> U;
+}
+
+type Holder {
+    value: i64;
+}
+
+impl Identity for Holder {
+    fn keep<U>(self, consume value: U) -> U {
+        value
+    }
+}
+
+fn via<T: Identity>(item: T) -> i64 {
+    item.keep(42)
+}
+
+fn main() -> i64 {
+    via(Holder { value: 0 })
+}
+";
     let (hir, checked) = checked_hir(source);
     let valid = lower_module(&hir, &checked);
     assert!(

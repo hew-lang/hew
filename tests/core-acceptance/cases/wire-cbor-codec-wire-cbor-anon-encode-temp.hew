@@ -1,5 +1,8 @@
 #[wire]
-type Packet { label: string @1, seq: i64 @2, }
+type Packet {
+    label: string @1;
+    seq: i64 @2;
+}
 
 fn main() -> i64 {
     var total: i64 = 0;

@@ -9,13 +9,15 @@
 // `for i in a..b` with a:i32=2, b:i64=6 sums {2,3,4,5} = 14.
 // main() returns 14 as the exit code.
 
-fn id_i64(x: i64) -> i64 { x }
+fn id_i64(x: i64) -> i64 {
+    x
+}
 
 fn main() -> i64 {
     let a: i32 = 2;
     let b: i64 = 6;
     var sum: i64 = 0;
-    for i in a..b {
+    for i in a .. b {
         sum = sum + id_i64(i);
     }
     sum

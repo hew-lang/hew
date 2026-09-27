@@ -2,7 +2,7 @@
 // authority over one context: the collection still closes it at scope exit.
 #[resource]
 type Tok {
-    id: i64
+    id: i64;
 }
 
 impl Tok {

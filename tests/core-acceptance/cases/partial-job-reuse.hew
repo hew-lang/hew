@@ -1,7 +1,7 @@
 type Job {
-    run: fn[once]() -> string,
-    label: string,
-    payload: bytes,
+    run: fn[once]() -> string;
+    label: string;
+    payload: bytes;
 }
 
 fn make_job(label: string) -> Job {

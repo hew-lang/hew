@@ -7,7 +7,7 @@ fn forward() -> bytes {
 }
 
 type Boxed {
-    payload: bytes,
+    payload: bytes;
 }
 
 fn main() {

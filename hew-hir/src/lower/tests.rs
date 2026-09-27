@@ -294,8 +294,10 @@ fn assert_ordered_aggregate_groups(main: &HirFn) {
 #[test]
 fn irrefutable_aggregate_patterns_keep_one_ordered_typed_binding_group() {
     let parsed = hew_parser::parse(
-        r#"
-type Point { x: string, payload: bytes }
+        r#"type Point {
+    x: string;
+    payload: bytes;
+}
 
 fn main() {
     let pair = ("left", b"right");
@@ -452,16 +454,24 @@ fn conflicting_impl_body_plan_is_a_checker_boundary_diagnostic_not_a_panic() {
     // with two incompatible emitted-body symbols to the HIR planner; it
     // must reject the collision at the identity boundary.
     let parsed = hew_parser::parse(
-        r"
-type Alpha { value: i64 }
-type Beta { value: i64 }
+        r"type Alpha {
+    value: i64;
+}
+
+type Beta {
+    value: i64;
+}
 
 impl Alpha {
-    fn run(self) -> i64 { self.value }
+    fn run(self) -> i64 {
+        self.value
+    }
 }
 
 impl Beta {
-    fn run(self) -> i64 { self.value }
+    fn run(self) -> i64 {
+        self.value
+    }
 }
 
 fn main() {}
@@ -912,16 +922,17 @@ fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
 #[test]
 fn resource_record_lifecycle_requires_its_exact_emitted_close_body() {
     let (_program, tco, lowered) = parse_typecheck_and_lower(
-        r"
-            #[resource]
-            type Connection { label: string }
+        r"#[resource]
+type Connection {
+    label: string;
+}
 
-            impl Connection {
-                fn close(consume self) {}
-            }
+impl Connection {
+    fn close(consume self) {}
+}
 
-            fn main() {}
-            ",
+fn main() {}
+",
     );
     assert!(
         lowered.diagnostics.is_empty(),
@@ -1057,45 +1068,50 @@ fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
 )]
 fn receiver_ownership_metadata_controls_static_and_dynamic_dispatch_intent() {
     let (_, tco, lowered) = parse_typecheck_and_lower(
-        r"
-            #[resource]
-            type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-            impl Builder {
-                fn close(consume self) {}
-            }
+impl Builder {
+    fn close(consume self) {}
+}
 
-            trait Fluent {
-                #[returns_receiver]
-                fn touch(consume self) -> Self;
-            }
+trait Fluent {
+    #[returns_receiver]
+    fn touch(consume self) -> Self;
+}
 
-            impl Fluent for Builder {
-                #[returns_receiver]
-                fn touch(consume self) -> Builder { self }
-            }
+impl Fluent for Builder {
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-            trait Finish {
-                fn finish(consume self) -> i64;
-            }
+trait Finish {
+    fn finish(consume self) -> i64;
+}
 
-            impl Finish for Builder {
-                fn finish(consume self) -> i64 { self.value }
-            }
+impl Finish for Builder {
+    fn finish(consume self) -> i64 {
+        self.value
+    }
+}
 
-            fn touch_twice<T: Fluent>(consume value: T) {
-                value.touch();
-                value.touch();
-            }
+fn touch_twice<T: Fluent>(consume value: T) {
+    value.touch();
+    value.touch();
+}
 
-            fn transfer<T: Fluent>(consume value: T) -> T {
-                value.touch()
-            }
+fn transfer<T: Fluent>(consume value: T) -> T {
+    value.touch()
+}
 
-            fn finish_dyn(consume value: dyn Finish) -> i64 {
-                value.finish()
-            }
-            ",
+fn finish_dyn(consume value: dyn Finish) -> i64 {
+    value.finish()
+}
+",
     );
     assert!(
         tco.method_call_rewrites.values().any(|rewrite| matches!(
@@ -2895,16 +2911,19 @@ fn postfix_try_in_non_result_returning_fn_stays_fail_closed() {
 #[test]
 fn generic_enum_option_i64_registered_in_enum_layouts() {
     let (_, _, lowered) = parse_typecheck_and_lower(
-        r"
-            enum Maybe<T> { Some(T), None }
-            fn main() -> i64 {
-                let x: Maybe<i64> = Maybe.Some(42);
-                match x {
-                    Maybe.Some(v) => v,
-                    Maybe.None => 0,
-                }
-            }
-            ",
+        r"enum Maybe<T> {
+    Some(T);
+    None;
+}
+
+fn main() -> i64 {
+    let x: Maybe<i64> = Maybe.Some(42);
+    match x {
+        Maybe.Some(v) => v,
+        Maybe.None => 0,
+    }
+}
+",
     );
 
     let layouts = &lowered.module.enum_layouts;
@@ -2955,13 +2974,22 @@ fn generic_enum_option_i64_registered_in_enum_layouts() {
 #[test]
 fn authored_generic_local_records_shadow_generic_builtin_spellings() {
     let (_, _, lowered) = parse_typecheck_and_lower(
-        r"
-            type Container<T> { value: T }
-            type OutputSink<T> { value: T }
+        r"type Container<T> {
+    value: T;
+}
 
-            fn keep_container(value: Container<i64>) -> Container<i64> { value }
-            fn keep_sink(value: OutputSink<i64>) -> OutputSink<i64> { value }
-            ",
+type OutputSink<T> {
+    value: T;
+}
+
+fn keep_container(value: Container<i64>) -> Container<i64> {
+    value
+}
+
+fn keep_sink(value: OutputSink<i64>) -> OutputSink<i64> {
+    value
+}
+",
     );
     assert!(
         lowered.diagnostics.is_empty(),
@@ -3058,17 +3086,21 @@ fn stdlib_option_none_registers_in_enum_layouts() {
 #[test]
 fn monomorphic_enum_does_not_appear_in_enum_layouts() {
     let (_, _, lowered) = parse_typecheck_and_lower(
-        r"
-            enum Colour { Red, Green, Blue }
-            fn main() -> i64 {
-                let c: Colour = Colour.Red;
-                match c {
-                    Colour.Red => 1,
-                    Colour.Green => 2,
-                    Colour.Blue => 3,
-                }
-            }
-            ",
+        r"enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn main() -> i64 {
+    let c: Colour = Colour.Red;
+    match c {
+        Colour.Red => 1,
+        Colour.Green => 2,
+        Colour.Blue => 3,
+    }
+}
+",
     );
 
     assert!(
@@ -3088,20 +3120,23 @@ fn monomorphic_enum_does_not_appear_in_enum_layouts() {
 #[test]
 fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
     let (_, _, lowered) = parse_typecheck_and_lower(
-        r"
-            enum Maybe<T> { Some(T), None }
-            fn main() -> i64 {
-                let inner: Maybe<i64> = Maybe.Some(5);
-                let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
-                match outer {
-                    Maybe.Some(v) => match v {
-                        Maybe.Some(n) => n,
-                        Maybe.None => 0,
-                    },
-                    Maybe.None => -1,
-                }
-            }
-            ",
+        r"enum Maybe<T> {
+    Some(T);
+    None;
+}
+
+fn main() -> i64 {
+    let inner: Maybe<i64> = Maybe.Some(5);
+    let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
+    match outer {
+        Maybe.Some(v) => match v {
+            Maybe.Some(n) => n,
+            Maybe.None => 0,
+        }
+        Maybe.None => -1,
+    }
+}
+",
     );
 
     let layouts = &lowered.module.enum_layouts;
@@ -3158,25 +3193,26 @@ fn lambda_actor_close_produces_unit_in_value_and_statement_positions() {
 #[test]
 fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
     let (_program, _tco, lowered) = parse_typecheck_and_lower(
-        r#"
-            type QueryReply { handle: i64, }
+        r#"type QueryReply {
+    handle: i64;
+}
 
-            actor Db {
-                var n: i64 = 0,
-                receive fn query(sql: string) -> QueryReply {
-                    n = n + 1;
-                    QueryReply { handle: n }
-                }
-            }
+actor Db {
+    var n: i64 = 0;
+    receive fn query(sql: string) -> QueryReply {
+        n = n + 1;
+        QueryReply { handle: n }
+    }
+}
 
-            fn main() {
-                let db = spawn Db(n: 0);
-                match db.query("SELECT 1") {
-                    .Ok(r) => println(f"handle={r.handle}"),
-                    .Err(_) => println("ask failed"),
-                }
-            }
-            "#,
+fn main() {
+    let db = spawn Db(n: 0);
+    match db.query("SELECT 1") {
+        .Ok(r) => println(f"handle={r.handle}"),
+        .Err(_) => println("ask failed"),
+    }
+}
+"#,
     );
     assert!(
         lowered.diagnostics.is_empty(),
@@ -3238,13 +3274,14 @@ fn nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir() {
     use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let mod_src = hew_parser::parse(
-        r"
-            pub enum AppErr { NotFound(string) }
+        r"pub enum AppErr {
+    NotFound(string);
+}
 
-            pub fn make_error(msg: string) -> AppErr {
-                .NotFound(msg)
-            }
-            ",
+pub fn make_error(msg: string) -> AppErr {
+    .NotFound(msg)
+}
+",
     );
     assert!(
         mod_src.errors.is_empty(),
@@ -3291,19 +3328,46 @@ fn nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir() {
 #[test]
 fn same_leaf_user_enums_keep_user_constructor_identity() {
     let (_, _, lowered) = parse_typecheck_and_lower(
-        r"
-            enum UserLinkError { UserLink, }
-            enum UserLookupError { UserLookup, }
-            enum UserMonitorError { UserMonitor, }
-            enum UserCrashAction { UserAction, }
-            enum UserCrashKind { UserKind, }
+        r"enum UserLinkError {
+    UserLink;
+}
 
-            fn user_link() -> UserLinkError { UserLinkError.UserLink }
-            fn user_lookup() -> UserLookupError { UserLookupError.UserLookup }
-            fn user_monitor() -> UserMonitorError { UserMonitorError.UserMonitor }
-            fn user_action() -> UserCrashAction { UserCrashAction.UserAction }
-            fn user_kind() -> UserCrashKind { UserCrashKind.UserKind }
-            ",
+enum UserLookupError {
+    UserLookup;
+}
+
+enum UserMonitorError {
+    UserMonitor;
+}
+
+enum UserCrashAction {
+    UserAction;
+}
+
+enum UserCrashKind {
+    UserKind;
+}
+
+fn user_link() -> UserLinkError {
+    UserLinkError.UserLink
+}
+
+fn user_lookup() -> UserLookupError {
+    UserLookupError.UserLookup
+}
+
+fn user_monitor() -> UserMonitorError {
+    UserMonitorError.UserMonitor
+}
+
+fn user_action() -> UserCrashAction {
+    UserCrashAction.UserAction
+}
+
+fn user_kind() -> UserCrashKind {
+    UserCrashKind.UserKind
+}
+",
     );
     assert!(
         lowered.diagnostics.is_empty(),
@@ -3383,9 +3447,12 @@ fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
     use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let source = hew_parser::parse(
-        r"
-            pub enum Color { Red, Green, Blue(i64), }
-            ",
+        r"pub enum Color {
+    Red;
+    Green;
+    Blue(i64);
+}
+",
     );
     assert!(
         source.errors.is_empty(),
@@ -3488,14 +3555,26 @@ fn same_leaf_enum_aliases_keep_their_source_owners_in_both_import_orders() {
     // Deliberately disagree on both ordinal and payload shape. A flat
     // `Color::Red` registry key would make one import order diagnose the
     // tuple call as a struct ctor and the other mis-tag the struct ctor.
-    let alpha_source = r"
-            pub enum Color { AlphaOnly, Red(i64), }
-            pub enum Switch { Empty, Shared, }
-        ";
-    let beta_source = r"
-            pub enum Color { Red { value: i64 }, BetaOnly, }
-            pub enum Switch { Shared, Full, }
-        ";
+    let alpha_source = r"pub enum Color {
+    AlphaOnly;
+    Red(i64);
+}
+
+pub enum Switch {
+    Empty;
+    Shared;
+}
+";
+    let beta_source = r"pub enum Color {
+    Red { value: i64;  }
+    BetaOnly;
+}
+
+pub enum Switch {
+    Shared;
+    Full;
+}
+";
     let root_with_alpha_first = r"
             import hew.alpha.{ Color as Hue, Switch };
             import hew.beta.{ Color as Shade };
@@ -3671,13 +3750,14 @@ fn nonroot_private_enum_variant_shadows_same_named_builtin_in_hir() {
     use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let mod_src = hew_parser::parse(
-        r"
-            enum AppErr { NotFound(string) }
+        r"enum AppErr {
+    NotFound(string);
+}
 
-            pub fn make_error(msg: string) -> AppErr {
-                .NotFound(msg)
-            }
-            ",
+pub fn make_error(msg: string) -> AppErr {
+    .NotFound(msg)
+}
+",
     );
     assert!(
         mod_src.errors.is_empty(),

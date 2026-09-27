@@ -7,20 +7,24 @@ pub(super) use super::*;
 #[test]
 fn user_stream_recv_is_not_a_pipe_select_source() {
     let output = check_source(
-        r"
-        type Stream<T> { value: T, }
-        impl<T> Stream<T> {
-            fn recv(self) -> T { self.value }
-        }
+        r"type Stream<T> {
+    value: T;
+}
 
-        fn main() {
-            let rx = Stream { value: 1 };
-            let _ = select {
-                value from rx.recv() => value,
-                after 1ms => 0,
-            };
-        }
-        ",
+impl<T> Stream<T> {
+    fn recv(self) -> T {
+        self.value
+    }
+}
+
+fn main() {
+    let rx = Stream { value: 1 };
+    let _ = select {
+        value from rx.recv() => value,
+        after 1ms => 0,
+    };
+}
+",
     );
 
     assert!(
@@ -38,18 +42,19 @@ fn user_stream_recv_is_not_a_pipe_select_source() {
 #[test]
 fn supervisor_stop_publishes_typed_runtime_target() {
     let output = check_source(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
-        supervisor App {
-            child worker: Worker
-        }
-        fn main() {
-            let app = spawn App;
-            supervisor_stop(app);
-        }
-        ",
+        r"actor Worker {
+    receive fn ping() {}
+}
+
+supervisor App {
+    child worker: Worker;
+}
+
+fn main() {
+    let app = spawn App;
+    supervisor_stop(app);
+}
+",
     );
 
     assert!(
@@ -159,21 +164,20 @@ mod supervisor_child_slot_tests {
     /// in the output's `supervisor_child_slots` map at the field-access span.
     #[test]
     fn static_child_resolves_with_correct_slot_index() {
-        let source = r"
-            actor Cache {
-                receive fn query() {}
-            }
+        let source = r"actor Cache {
+    receive fn query() {}
+}
 
-            supervisor App {
-                child cache: Cache
-            }
+supervisor App {
+    child cache: Cache;
+}
 
-            fn main() {
-                let app = spawn App;
-                let c = app.cache;
-                supervisor_stop(app);
-            }
-        ";
+fn main() {
+    let app = spawn App;
+    let c = app.cache;
+    supervisor_stop(app);
+}
+";
         let output = parse_and_check(source);
         assert!(
             output.errors.is_empty(),
@@ -200,27 +204,26 @@ mod supervisor_child_slot_tests {
     /// slot index 1 in the static space, distinct from the first child.
     #[test]
     fn second_static_child_gets_sequential_slot_index() {
-        let source = r"
-            actor Cache {
-                receive fn query() {}
-            }
+        let source = r"actor Cache {
+    receive fn query() {}
+}
 
-            actor Log {
-                receive fn write() {}
-            }
+actor Log {
+    receive fn write() {}
+}
 
-            supervisor App {
-                child cache: Cache,
-                child log: Log
-            }
+supervisor App {
+    child cache: Cache;
+    child log: Log;
+}
 
-            fn main() {
-                let app = spawn App;
-                let c = app.cache;
-                let l = app.log;
-                supervisor_stop(app);
-            }
-        ";
+fn main() {
+    let app = spawn App;
+    let c = app.cache;
+    let l = app.log;
+    supervisor_stop(app);
+}
+";
         let output = parse_and_check(source);
         assert!(
             output.errors.is_empty(),
@@ -248,22 +251,21 @@ mod supervisor_child_slot_tests {
     /// child that also has index 0 — the two spaces are disjoint.
     #[test]
     fn pool_child_resolves_with_pool_space_slot_index() {
-        let source = r"
-            actor Worker {
-                receive fn ping() {}
-            }
+        let source = r"actor Worker {
+    receive fn ping() {}
+}
 
-            supervisor Pool {
-                strategy: simple_one_for_one,
-                pool worker: Worker count: 2
-            }
+supervisor Pool {
+    strategy: simple_one_for_one;
+    pool worker: Worker count: 2;
+}
 
-            fn main() {
-                let p = spawn Pool;
-                let w = p.worker;
-                supervisor_stop(p);
-            }
-        ";
+fn main() {
+    let p = spawn Pool;
+    let w = p.worker;
+    supervisor_stop(p);
+}
+";
         let output = parse_and_check(source);
         assert!(
             output.errors.is_empty(),
@@ -286,26 +288,25 @@ mod supervisor_child_slot_tests {
     #[test]
     fn pool_field_view_preserves_accessor_types_after_binding() {
         let output = parse_and_check(
-            r"
-            actor Worker {
-                receive fn ping() {}
-            }
+            r"actor Worker {
+    receive fn ping() {}
+}
 
-            supervisor Pool {
-                strategy: simple_one_for_one,
-                pool workers: Worker count: 2
-            }
+supervisor Pool {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: 2;
+}
 
-            fn inspect(sup: Pool) {
-                let workers: SupervisorPool<Pool, Worker> = sup.workers;
-                let count: i64 = workers.len();
-                let first: ChildRef<Worker> = workers[0];
-                let maybe: Option<ChildRef<Worker>> = workers.get(1);
-                let _ = count;
-                let _ = first;
-                let _ = maybe;
-            }
-            ",
+fn inspect(sup: Pool) {
+    let workers: SupervisorPool<Pool, Worker> = sup.workers;
+    let count: i64 = workers.len();
+    let first: ChildRef<Worker> = workers[0];
+    let maybe: Option<ChildRef<Worker>> = workers.get(1);
+    let _ = count;
+    let _ = first;
+    let _ = maybe;
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -337,26 +338,25 @@ mod supervisor_child_slot_tests {
     /// has `(Pool, 0)`. Neither borrows an index from the other space.
     #[test]
     fn static_and_pool_indices_are_disjoint() {
-        let source = r"
-            actor Cache {
-                receive fn query() {}
-            }
+        let source = r"actor Cache {
+    receive fn query() {}
+}
 
-            actor Worker {
-                receive fn ping() {}
-            }
+actor Worker {
+    receive fn ping() {}
+}
 
-            supervisor App {
-                child cache: Cache,
-                pool worker: Worker
-            }
+supervisor App {
+    child cache: Cache;
+    pool worker: Worker;
+}
 
-            fn main() {
-                let app = spawn App;
-                let c = app.cache;
-                supervisor_stop(app);
-            }
-        ";
+fn main() {
+    let app = spawn App;
+    let c = app.cache;
+    supervisor_stop(app);
+}
+";
         // NOTE: A supervisor with mixed static+pool children may not pass all
         // strategy consistency checks (that's S-B). We only check that the
         // checker computes correct slot indices for the declared children.
@@ -386,21 +386,20 @@ mod supervisor_child_slot_tests {
     /// for this access.
     #[test]
     fn unknown_child_name_produces_type_error() {
-        let source = r"
-            actor Cache {
-                receive fn query() {}
-            }
+        let source = r"actor Cache {
+    receive fn query() {}
+}
 
-            supervisor App {
-                child cache: Cache
-            }
+supervisor App {
+    child cache: Cache;
+}
 
-            fn main() {
-                let app = spawn App;
-                let x = app.unknown;
-                supervisor_stop(app);
-            }
-        ";
+fn main() {
+    let app = spawn App;
+    let x = app.unknown;
+    supervisor_stop(app);
+}
+";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -456,7 +455,17 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn iflet_stmt_struct_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"type Point { x: i64, y: i64, } fn foo(p: Point) { if let Point { x, y } = p { x + y } }",
+            r"type Point {
+    x: i64;
+    y: i64;
+}
+
+fn foo(p: Point) {
+    if let Point { x, y } = p {
+        x + y
+    }
+}
+",
         );
         assert!(
             !errors
@@ -479,8 +488,19 @@ mod iflet_whilelet_pattern_contract {
 
     #[test]
     fn iflet_stmt_or_pattern_is_accepted() {
-        let errors =
-            check_iflet_whilelet(r"enum E { A, B, } fn foo(x: E) { if let .A | .B = x { 0 } }");
+        let errors = check_iflet_whilelet(
+            r"enum E {
+    A;
+    B;
+}
+
+fn foo(x: E) {
+    if let .A | .B = x {
+        0
+    }
+}
+",
+        );
         assert!(
             !errors
                 .iter()
@@ -525,7 +545,17 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_struct_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"enum Msg { Data { value: i64 }, Done, } fn foo(x: Msg) { while let .Data { value } = x { break; } }",
+            r"enum Msg {
+    Data { value: i64;  }
+    Done;
+}
+
+fn foo(x: Msg) {
+    while let .Data { value } = x {
+        break;
+    }
+}
+",
         );
         assert!(
             !errors
@@ -550,7 +580,17 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_or_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"enum E { A, B, } fn foo(x: E) { while let .A | .B = x { break; } }",
+            r"enum E {
+    A;
+    B;
+}
+
+fn foo(x: E) {
+    while let .A | .B = x {
+        break;
+    }
+}
+",
         );
         assert!(
             !errors
@@ -756,26 +796,25 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn user_iterator_impl_is_valid_for_loop_iterable() {
         let output = check_source(
-            r"
-            type Counter {
-                val: i32,
-            }
+            r"type Counter {
+    val: i32;
+}
 
-            impl Iterator for Counter {
-                type Item = i32;
-                fn next(var self) -> Option<i32> {
-                    .Some(self.val)
-                }
-            }
+impl Iterator for Counter {
+    type Item = i32;
+    fn next(var self) -> Option<i32> {
+        .Some(self.val)
+    }
+}
 
-            fn takes_i32(x: i32) {}
+fn takes_i32(x: i32) {}
 
-            fn main() {
-                for x in Counter { val: 0 } {
-                    takes_i32(x);
-                }
-            }
-            ",
+fn main() {
+    for x in Counter { val: 0 } {
+        takes_i32(x);
+    }
+}
+",
         );
         assert!(
             output.errors.is_empty(),
@@ -1149,17 +1188,21 @@ mod for_loop_iterable_fail_closed {
         // A closure capturing a declared actor's handle is accepted; only Duplex
         // (lambda-actor handles) is refused.
         let output = check_source(
-            r"
-            actor Counter {
-                var count: i64,
-                receive fn increment(n: i64) { count = count + n; }
-            }
-            fn main() {
-                let counter = spawn Counter(count: 0);
-                let relay = actor |n: i64| { counter.increment(n); };
-                relay(1);
-            }
-            ",
+            r"actor Counter {
+    var count: i64;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    let relay = actor |n: i64| {
+        counter.increment(n);
+    };
+    relay(1);
+}
+",
         );
         assert!(
             !output

@@ -1,7 +1,7 @@
 // HashMap<K, V>.new() accepts explicit type arguments even though the stdlib
 // catalog row declares no callable type parameters.
 type Key {
-    id: i64,
+    id: i64;
 }
 
 fn main() -> i64 {

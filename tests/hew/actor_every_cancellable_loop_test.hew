@@ -6,9 +6,9 @@
 //! each tick returns control to the mailbox.
 
 actor Worker {
-    var running: bool = true,
-    var ticks: i64 = 0,
-    var calls: i64 = 0,
+    var running: bool = true;
+    var ticks: i64 = 0;
+    var calls: i64 = 0;
 
     #[every(25ms)]
     receive fn tick() {

@@ -1,5 +1,5 @@
-actor Summer { 
-    var items: Vec<i64>,
+actor Summer {
+    var items: Vec<i64>;
 
     receive fn spin() {
         var s: i64 = 0;

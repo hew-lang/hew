@@ -6,22 +6,21 @@ use hew_types::error::TypeErrorKind;
 #[test]
 fn impl_requires_associated_type_definition() {
     let output = typecheck_builtin(
-        r"
-        trait Iterator {
-            type Item;
-            fn next(val: Self) -> Self.Item;
-        }
+        r"trait Iterator {
+    type Item;
+    fn next(val: Self) -> Self.Item;
+}
 
-        type Counter {
-            value: i64,
-        }
+type Counter {
+    value: i64;
+}
 
-        impl Iterator for Counter {
-            fn next(c: Counter) -> Self.Item {
-                c.value
-            }
-        }
-        ",
+impl Iterator for Counter {
+    fn next(c: Counter) -> Self.Item {
+        c.value
+    }
+}
+",
     );
     assert!(
         output
@@ -36,30 +35,29 @@ fn impl_requires_associated_type_definition() {
 #[test]
 fn impl_type_aliases_resolve_in_methods() {
     let output = typecheck_builtin(
-        r"
-        trait Iterator {
-            type Item;
-            fn next(val: Self) -> Self.Item;
-        }
+        r"trait Iterator {
+    type Item;
+    fn next(val: Self) -> Self.Item;
+}
 
-        type Counter {
-            value: i64,
-        }
+type Counter {
+    value: i64;
+}
 
-        impl Iterator for Counter {
-            type Item = i64;
-            fn next(c: Counter) -> Self.Item {
-                c.value
-            }
-        }
+impl Iterator for Counter {
+    type Item = i64;
+    fn next(c: Counter) -> Self.Item {
+        c.value
+    }
+}
 
-        fn takes_int(value: i64) {}
+fn takes_int(value: i64) {}
 
-        fn main() {
-            let counter = Counter { value: 1 };
-            takes_int(counter.next());
-        }
-        ",
+fn main() {
+    let counter = Counter { value: 1 };
+    takes_int(counter.next());
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -71,29 +69,28 @@ fn impl_type_aliases_resolve_in_methods() {
 #[test]
 fn trait_default_associated_type_used_in_impl() {
     let output = typecheck_isolated(
-        r"
-        trait Identity {
-            type Output = i64;
-            fn value(val: Self) -> Self.Output;
-        }
+        r"trait Identity {
+    type Output = i64;
+    fn value(val: Self) -> Self.Output;
+}
 
-        type Answer {
-            x: i64,
-        }
+type Answer {
+    x: i64;
+}
 
-        impl Identity for Answer {
-            fn value(a: Answer) -> Self.Output {
-                42
-            }
-        }
+impl Identity for Answer {
+    fn value(a: Answer) -> Self.Output {
+        42
+    }
+}
 
-        fn accepts_int(value: i64) {}
+fn accepts_int(value: i64) {}
 
-        fn main() {
-            let a = Answer { x: 1 };
-            accepts_int(a.value());
-        }
-        ",
+fn main() {
+    let a = Answer { x: 1 };
+    accepts_int(a.value());
+}
+",
     );
     assert!(
         output.errors.is_empty(),

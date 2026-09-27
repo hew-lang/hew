@@ -52,10 +52,10 @@ fn string_loop() -> i64 {
         match produce(i) {
             .Ok(s) => {
                 oks = oks + s.len();
-            },
+            }
             .Err(e) => {
                 errs = errs + e.len();
-            },
+            }
         }
         i = i + 1;
     }
@@ -69,10 +69,10 @@ fn bytes_loop() -> i64 {
         match produce_bytes(i) {
             .Ok(b) => {
                 total = total + b.len();
-            },
+            }
             .Err(e) => {
                 total = total - e.len();
-            },
+            }
         }
         i = i + 1;
     }

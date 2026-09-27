@@ -26,10 +26,10 @@ actor StringPipeline {
                 .Some(frame) => {
                     println(f"recv [{frame}]");
                     received = received + 1;
-                },
+                }
                 .None => {
                     done = true;
-                },
+                }
             }
         }
         println(f"drained {received} frames");

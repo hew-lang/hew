@@ -1,11 +1,11 @@
 type Claim {
-    run_id: string,
-    amount: i64,
+    run_id: string;
+    amount: i64;
 }
 
 type ClaimsLedger {
-    claims: Vec<Claim>,
-    terminal_runs: Vec<string>,
+    claims: Vec<Claim>;
+    terminal_runs: Vec<string>;
 }
 
 fn without_terminal_claims(ledger: ClaimsLedger) -> ClaimsLedger {
@@ -37,9 +37,13 @@ fn run_case(seed: i64) -> i64 {
 
 fn main() -> i64 {
     var checksum = 0;
-    for frame in 0..50 {
+    for frame in 0 .. 50 {
         checksum = checksum + run_case(frame);
         println("frame");
     }
-    if checksum >= 0 { 0 } else { 91 }
+    if checksum >= 0 {
+        0
+    } else {
+        91
+    }
 }

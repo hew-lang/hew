@@ -3,10 +3,12 @@
 // `state`. The lowered body keeps the checker's consumed children as source
 // anchors (hew-lang/hew#3241).
 machine Name {
-    events { EventY { payload: i64, } }
+    events {
+        EventY { payload: i64; }
+    }
 
-    state StateA,
-    state StateB { field: i64, },
+    state StateA;
+    state StateB { field: i64; }
 
     on EventY: StateA => StateB { field: event.payload }
     on EventY: StateB => StateB reenter { field: state.field }

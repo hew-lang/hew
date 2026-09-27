@@ -9,34 +9,34 @@ timeout_seconds = 30
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_OWN_PARTIAL_CONSUME"
-line = 21
-column = 38
+line = 41
+column = 9
 message = "cannot read `self.handle` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_OWN_PARTIAL_CONSUME"
-line = 22
-column = 27
+line = 44
+column = 9
 message = "cannot read `self.handle` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_OWN_PARTIAL_CONSUME"
-line = 23
-column = 33
+line = 47
+column = 9
 message = "cannot read `self.inner.h` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_OWN_PARTIAL_CONSUME"
-line = 24
-column = 36
+line = 50
+column = 9
 message = "cannot read `self.inner` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_OWN_PARTIAL_CONSUME"
-line = 25
-column = 41
+line = 53
+column = 9
 message = "cannot read `self.spare` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"

@@ -1,6 +1,6 @@
 type Item<T> {
-    value: T,
-    sibling: string,
+    value: T;
+    sibling: string;
 }
 
 fn main() -> i64 {

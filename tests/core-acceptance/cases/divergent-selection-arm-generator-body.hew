@@ -10,7 +10,10 @@ gen fn picks(n: i64) -> i64 {
     while i < n {
         let a = make();
         let b = make();
-        let out = match i % 2 == 0 { true => a, false => b };
+        let out = match i % 2 == 0 {
+            true => a,
+            false => b,
+        };
         yield out.len();
         i = i + 1;
     }

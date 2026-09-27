@@ -2,7 +2,10 @@ import std.stream;
 
 actor ForAwaitStreamBytes {
     receive fn run(unused: i64) {
-        let (sink, input) = match stream.pipe(1024) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let (sink, input) = match stream.pipe(1024) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         let b = "frame-some-long-data".to_bytes();
         var i: i64 = 0;
         while i < 50 {

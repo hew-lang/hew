@@ -1,5 +1,7 @@
 actor Echo {
-    receive fn ping() -> i64 { 0 }
+    receive fn ping() -> i64 {
+        0
+    }
 }
 
 fn main() {

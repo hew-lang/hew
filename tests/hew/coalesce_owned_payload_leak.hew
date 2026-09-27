@@ -5,10 +5,10 @@
 import std.stream;
 
 actor OwnedCoalescer {
-    var processed: i64 = 0,
-    var latest_len: i64 = -1,
+    var processed: i64 = 0;
+    var latest_len: i64 = -1;
 
-    mailbox 1 overflow coalesce(id) fallback drop_new,
+    mailbox 1 overflow coalesce(id) fallback drop_new;
 
     // Holds the actor: reports that it is running, then waits for its gate.
     receive fn hold(started: stream.Sink<i64>, gate: stream.Stream<i64>) {

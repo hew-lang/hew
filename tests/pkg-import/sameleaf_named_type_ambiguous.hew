@@ -1,4 +1,5 @@
 import ambiguity.type_left.{ClashType};
+
 import ambiguity.type_right.{ClashType};
 
 fn main() {

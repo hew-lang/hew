@@ -16,19 +16,16 @@
 //! would reject this read at check time.
 
 type Inner {
-    value: string,
+    value: string;
 }
 
 type Outer {
-    name: string,
-    inner: Inner,
+    name: string;
+    inner: Inner;
 }
 
 fn make() -> Outer {
-    Outer {
-        name: ("alpha" + ""),
-        inner: Inner { value: ("beta" + "") },
-    }
+    Outer { name: ("alpha" + ""), inner: Inner { value: ("beta" + "") } }
 }
 
 fn main() -> i64 {

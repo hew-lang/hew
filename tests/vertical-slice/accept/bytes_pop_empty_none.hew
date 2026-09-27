@@ -9,7 +9,11 @@ fn main() -> i64 {
         .None => {
             b.push(7);
             match b.pop() {
-                .Some(byte) => if byte == 7 { 0 } else { 2 },
+                .Some(byte) => if byte == 7 {
+                    0
+                } else {
+                    2
+                }
                 .None => 3,
             }
         }

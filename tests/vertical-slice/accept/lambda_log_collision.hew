@@ -28,9 +28,9 @@ fn main() {
     match r {
         .Ok(v) => {
             let _ = log(f"ask {v}");
-        },
+        }
         .Err(_) => {
             let _ = log("ask err");
-        },
+        }
     }
 }

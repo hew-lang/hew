@@ -1,6 +1,6 @@
 #[resource]
 type Tok {
-    id: i64,
+    id: i64;
 }
 
 impl Tok {
@@ -10,8 +10,8 @@ impl Tok {
 }
 
 enum Held {
-    Nothing,
-    One(Tok),
+    Nothing;
+    One(Tok);
 }
 
 fn run() -> i64 {

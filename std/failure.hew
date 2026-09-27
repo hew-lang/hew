@@ -19,10 +19,10 @@
 /// string (empty when unavailable).  Hooks may match on `code` to decide a
 /// `CrashAction`, but the canonical reading is "any non-zero code is a
 /// real fault — the hook's job is to choose between Restart, Escalate,
-/// and Kill".
+/// and GiveUp".
 pub type CrashInfo {
-    code: i64,
-    message: string,
+    code: i64;
+    message: string;
 }
 
 /// Recovery action returned by a `#[on(crash)]` hook.
@@ -31,17 +31,17 @@ pub type CrashInfo {
 ///   breaker. A `temporary` child is not restarted.
 /// - `Escalate`: transfer the failure to the parent supervisor instead of
 ///   restarting locally. At the root the failure remains unrecovered.
-/// - `Kill`: permanently spend the child's role and leave the failure
+/// - `GiveUp`: permanently spend the child's role and leave the failure
 ///   unrecovered.
 pub enum CrashAction {
-    Restart,
-    Escalate,
-    Kill,
+    Restart;
+    Escalate;
+    GiveUp;
 }
 
 /// Identity + class of a crash that propagated to a linked actor.
 ///
-/// Delivered (in a future v0.5.x / v0.6 edition) to a linked-actor exit
+/// Delivered to a linked actor's `#[on(link)]` hook
 /// hook when an actor this one is linked to crashes.  Carries the
 /// crashed actor's identity and the class of crash — nothing else.
 ///
@@ -52,12 +52,11 @@ pub enum CrashAction {
 /// is sufficient for supervisor-style decisions ("the upstream link
 /// died, drop this work item and re-establish").
 ///
-/// WHEN: the runtime substrate is already in place
+/// The runtime
 /// (`hew-runtime/src/link.rs.propagate_exit_to_links` enqueues
 /// `HewSysMsg.Exit` in the linked actor's mailbox at the crashed actor's
 /// teardown phase, before any supervisor restart decision).  The user-
-/// facing hook attribute that surfaces this delivery is reserved for a
-/// future edition; this type is the stable name it will use.
+/// facing hook receives this notification on a linked actor's crash.
 ///
 /// WHAT (v0.5 shape, integer-tag only per Q45/A22): `actor_id` carries the
 /// crashed actor's id as a raw `u64`.  Future widening to a typed
@@ -68,16 +67,15 @@ pub type CrashNotification {
     /// Numeric identity of the actor that crashed.  Raw `u64` rather
     /// than an actor handle because the linked actor does not in general
     /// know the crashed actor's static type at the hook site.
-    actor_id: u64,
+    actor_id: u64;
     /// Class of the originating crash.  Mirrors the runtime
-    /// `ExitReason` discriminator the supervisor receives.
-    kind: CrashKind,
+    /// crash discriminator the supervisor receives.
+    kind: CrashKind;
 }
 
 /// Class of a crash propagated to a linked actor.
 ///
-/// Mirrors the runtime `ExitReason` discriminator
-/// (`hew-runtime/src/internal/types.rs.ExitReason`) at the integer-tag
+/// Mirrors the runtime trap discriminator at the integer-tag
 /// level.  Adding a variant here requires a matching variant on the
 /// runtime side; the converse is not true — the runtime may carry
 /// reason discriminators that are not surfaced to linked actors when
@@ -90,10 +88,10 @@ pub type CrashNotification {
 pub enum CrashKind {
     /// Generic crash from `panic(...)`, `hew_panic()`, or an
     /// unclassified trap (SEGV / BUS / FPE / ILL / TRAP).
-    Crashed,
+    Fault;
     /// Per-actor arena cap exceeded.
-    HeapExceeded,
+    HeapExceeded;
     /// A pipe / mailbox partition was observed on a recv path the
     /// crashed actor was awaiting.
-    PartitionDetected,
+    PartitionDetected;
 }

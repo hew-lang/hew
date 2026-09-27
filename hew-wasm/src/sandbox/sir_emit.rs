@@ -1873,10 +1873,29 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         })
     }
     match operation {
+        Op::Stop(target)
+        | Op::Terminate(target)
+        | Op::AwaitStopped(target)
+        | Op::AwaitRestarted(target) => {
+            let op = match operation {
+                Op::Stop(_) => "stop",
+                Op::Terminate(_) => "terminate",
+                Op::AwaitStopped(_) => "await_stopped",
+                Op::AwaitRestarted(_) => "await_restarted",
+                _ => unreachable!(),
+            };
+            match target {
+                hew_sir::LifecycleTarget::Actor(id) | hew_sir::LifecycleTarget::ActorRole(id) => {
+                    serde_json::json!({ "op": op, "actor": id.0 })
+                }
+                hew_sir::LifecycleTarget::Supervisor(id)
+                | hew_sir::LifecycleTarget::SupervisorRole(id) => {
+                    serde_json::json!({ "op": op, "supervisor": id.0 })
+                }
+            }
+        }
         Op::Spawn(actor) => serde_json::json!({ "op": "spawn", "actor": actor.0 }),
         Op::SelfHandle(actor) => serde_json::json!({ "op": "self_handle", "actor": actor.0 }),
-        Op::Close(actor) => serde_json::json!({ "op": "close", "actor": actor.0 }),
-        Op::AwaitClosed(actor) => serde_json::json!({ "op": "await_closed", "actor": actor.0 }),
         Op::CallStart(p) => serde_json::json!({ "op": "call_start", "protocol": protocol(p) }),
         Op::CallTake(p) => serde_json::json!({ "op": "call_take", "protocol": protocol(p) }),
         Op::Submit { actor, policy, .. } => serde_json::json!({
@@ -1908,36 +1927,12 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
         Op::SupervisorSpawn(supervisor) => {
             serde_json::json!({ "op": "supervisor_spawn", "supervisor": supervisor.0 })
         }
-        Op::SupervisorStop(supervisor) => {
-            serde_json::json!({ "op": "supervisor_stop", "supervisor": supervisor.0 })
-        }
-        Op::SupervisorAwaitClosed(supervisor) => {
-            serde_json::json!({ "op": "supervisor_await_closed", "supervisor": supervisor.0 })
-        }
         Op::SupervisorChild {
             supervisor,
             child,
             owner_is_role,
         } => serde_json::json!({
             "op": "supervisor_child",
-            "supervisor": supervisor.0,
-            "child": child,
-            "owner_is_role": owner_is_role,
-        }),
-        Op::SupervisorRoleAwaitClosed {
-            supervisor,
-            closing,
-        } => serde_json::json!({
-            "op": "supervisor_role_await_closed",
-            "supervisor": supervisor.0,
-            "closing": closing,
-        }),
-        Op::SupervisorAwaitRestart {
-            supervisor,
-            child,
-            owner_is_role,
-        } => serde_json::json!({
-            "op": "supervisor_await_restart",
             "supervisor": supervisor.0,
             "child": child,
             "owner_is_role": owner_is_role,

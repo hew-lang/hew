@@ -1,6 +1,9 @@
 import std.stream;
 
-type Reader { input: Stream<string>, label: string }
+type Reader {
+    input: Stream<string>;
+    label: string;
+}
 
 fn open(path: string) -> Stream<string> {
     match stream.open(path) {

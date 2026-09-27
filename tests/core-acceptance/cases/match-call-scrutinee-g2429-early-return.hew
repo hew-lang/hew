@@ -6,7 +6,11 @@ fn run(cap: i64) -> i64 {
     var i = 0;
     while i < cap {
         match f() {
-            .Ok(b) => { if b.len() == 20 && i == cap - 1 { return i; } }
+            .Ok(b) => {
+                if b.len() == 20 && i == cap - 1 {
+                    return i;
+                }
+            }
             .Err(e) => {}
         }
         i = i + 1;
@@ -16,5 +20,9 @@ fn run(cap: i64) -> i64 {
 
 fn main() -> i64 {
     let r = run(50);
-    if r >= 0 { 0 } else { 1 }
+    if r >= 0 {
+        0
+    } else {
+        1
+    }
 }

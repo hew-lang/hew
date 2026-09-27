@@ -5,12 +5,14 @@
 //
 // Harness verb: hew check (must fail)
 actor Worker {
-    var label: string,
+    var label: string;
     init(name: string) {
         let _seen = label;
         label = name;
     }
-    receive fn label() -> string { label }
+    receive fn label() -> string {
+        label
+    }
 }
 
 fn main() {

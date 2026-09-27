@@ -2,6 +2,7 @@
 // imported-module path, whose binders must not resolve to this program's
 // same-spelled `model.A`.
 import std.iter;
+
 import model;
 
 fn main() {

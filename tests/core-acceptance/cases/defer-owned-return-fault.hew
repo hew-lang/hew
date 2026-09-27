@@ -1,5 +1,7 @@
 fn saved() -> string {
-    defer { panic("cleanup"); }
+    defer {
+        panic("cleanup");
+    }
     return "été\0saved".to_upper();
 }
 

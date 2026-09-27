@@ -1,4 +1,7 @@
-type Pair { a: i64, b: Vec<i64> }
+type Pair {
+    a: i64;
+    b: Vec<i64>;
+}
 
 fn make(n: i64) -> Pair {
     var inner: Vec<i64> = Vec.new();
@@ -14,9 +17,11 @@ fn build(n: i64) -> i64 {
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for i in 0..64 {
+    for i in 0 .. 64 {
         total = total + build(i);
     }
-    if total != 128 { return 61; }
+    if total != 128 {
+        return 61;
+    }
     0
 }

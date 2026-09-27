@@ -38,7 +38,7 @@ fn expect_parse_errors(src: &str) -> Vec<String> {
 
 #[test]
 fn parses_pub_type_box_t_has_one_type_param() {
-    let td = parse_one_type_decl("pub type Box<T> { value: T }");
+    let td = parse_one_type_decl("pub type Box<T> {\n    value: T;\n}\n");
     assert_eq!(td.name, Ident::new("Box"));
     assert_eq!(td.kind, TypeDeclKind::Struct);
     let params = td.type_params.expect("expected type_params");
@@ -49,13 +49,13 @@ fn parses_pub_type_box_t_has_one_type_param() {
 
 #[test]
 fn parses_pub_type_box_t_has_pub_visibility() {
-    let td = parse_one_type_decl("pub type Box<T> { value: T }");
+    let td = parse_one_type_decl("pub type Box<T> {\n    value: T;\n}\n");
     assert_eq!(td.visibility, hew_parser::ast::Visibility::Pub);
 }
 
 #[test]
 fn parses_pub_type_box_t_field_uses_type_param() {
-    let td = parse_one_type_decl("pub type Box<T> { value: T }");
+    let td = parse_one_type_decl("pub type Box<T> {\n    value: T;\n}\n");
     // Body has one Field item named "value"
     assert_eq!(td.body.len(), 1);
     match &td.body[0] {
@@ -70,7 +70,7 @@ fn parses_pub_type_box_t_field_uses_type_param() {
 
 #[test]
 fn parses_pub_type_pair_ab_has_two_type_params() {
-    let td = parse_one_type_decl("pub type Pair<A, B> { first: A, second: B }");
+    let td = parse_one_type_decl("pub type Pair<A, B> {\n    first: A;\n    second: B;\n}\n");
     assert_eq!(td.name, Ident::new("Pair"));
     assert_eq!(td.kind, TypeDeclKind::Struct);
     let params = td.type_params.expect("expected type_params");
@@ -81,7 +81,7 @@ fn parses_pub_type_pair_ab_has_two_type_params() {
 
 #[test]
 fn parses_pub_type_pair_ab_has_two_fields() {
-    let td = parse_one_type_decl("pub type Pair<A, B> { first: A, second: B }");
+    let td = parse_one_type_decl("pub type Pair<A, B> {\n    first: A;\n    second: B;\n}\n");
     assert_eq!(td.body.len(), 2);
 }
 
@@ -89,8 +89,8 @@ fn parses_pub_type_pair_ab_has_two_fields() {
 
 #[test]
 fn parses_pub_enum_result_te_has_two_type_params() {
-    // Hew enum variants are separated by commas.
-    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T), Err(E) }");
+    // Hew enum variants end with semicolons.
+    let td = parse_one_type_decl("pub enum Result<T, E> {\n    Ok(T);\n    Err(E);\n}\n");
     assert_eq!(td.name, Ident::new("Result"));
     assert_eq!(td.kind, TypeDeclKind::Enum);
     let params = td.type_params.expect("expected type_params");
@@ -101,7 +101,7 @@ fn parses_pub_enum_result_te_has_two_type_params() {
 
 #[test]
 fn parses_pub_enum_result_te_has_two_tuple_variants() {
-    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T), Err(E) }");
+    let td = parse_one_type_decl("pub enum Result<T, E> {\n    Ok(T);\n    Err(E);\n}\n");
     assert_eq!(td.body.len(), 2);
     // Both variants must be Variant items
     for item in &td.body {
@@ -114,7 +114,7 @@ fn parses_pub_enum_result_te_has_two_tuple_variants() {
 
 #[test]
 fn parses_pub_enum_result_te_ok_variant_has_t_payload() {
-    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T), Err(E) }");
+    let td = parse_one_type_decl("pub enum Result<T, E> {\n    Ok(T);\n    Err(E);\n}\n");
     let hew_parser::ast::TypeBodyItem::Variant(ok_variant) = &td.body[0] else {
         panic!("expected Variant");
     };
@@ -129,7 +129,7 @@ fn parses_pub_enum_result_te_ok_variant_has_t_payload() {
 
 #[test]
 fn parses_pub_type_bounded_param_preserves_bound() {
-    let td = parse_one_type_decl("pub type Showable<T: Display> { value: T }");
+    let td = parse_one_type_decl("pub type Showable<T: Display> {\n    value: T;\n}\n");
     assert_eq!(td.name, Ident::new("Showable"));
     let params = td.type_params.expect("expected type_params");
     assert_eq!(params.len(), 1);
@@ -142,7 +142,7 @@ fn parses_pub_type_bounded_param_preserves_bound() {
 
 #[test]
 fn parses_pub_type_without_params_has_none_type_params() {
-    let td = parse_one_type_decl("pub type Point { x: int, y: int }");
+    let td = parse_one_type_decl("pub type Point {\n    x: int;\n    y: int;\n}\n");
     assert_eq!(td.name, Ident::new("Point"));
     assert!(
         td.type_params.is_none(),

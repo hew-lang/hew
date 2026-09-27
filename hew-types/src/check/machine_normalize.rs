@@ -536,7 +536,7 @@ impl Builder {
         };
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
-        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>, disposition: {name}StepDisposition }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }}", name = machine.name);
+        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }}", name = machine.name);
         let parsed = hew_parser::parse(&source);
         if !parsed.errors.is_empty() {
             return Err(self.error(format!(
@@ -1616,7 +1616,7 @@ fn redundant_target_refusal(
     let hint = if fielded {
         format!("write the field list with the target elided: `=> {target} {{ field: value }}`")
     } else {
-        format!("a transition to a unit state has no body: `=> {target},`")
+        format!("a transition to a unit state has no body: `=> {target};`")
     };
     Some(
         TypeError::new(

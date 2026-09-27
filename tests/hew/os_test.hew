@@ -10,7 +10,7 @@ fn test_set_env_rejects_empty_name() {
         .Ok(_) => panic("expected empty environment name rejection"),
         .Err(err) => match err {
             EnvError.InvalidName(name) => assert(name == ""),
-        },
+        }
     }
 }
 
@@ -20,7 +20,7 @@ fn test_remove_env_rejects_equals_in_name() {
         .Ok(_) => panic("expected invalid environment name rejection"),
         .Err(err) => match err {
             EnvError.InvalidName(name) => assert(name == "HEW=INVALID"),
-        },
+        }
     }
 }
 
@@ -37,7 +37,7 @@ fn test_env_distinguishes_unset_from_empty_values() {
     let _ = os.remove_env(name);
     assert(os.env(name).is_none());
     match os.set_env(name, "") {
-        .Ok(()) => {},
+        .Ok(()) => {}
         .Err(_) => panic("expected environment variable to be set"),
     }
     match os.env(name) {

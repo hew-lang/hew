@@ -2,7 +2,7 @@
 // A consuming method owns self until method exit, where normal cleanup runs.
 #[resource]
 type Conn {
-    fd: i64,
+    fd: i64;
 }
 
 impl Conn {
@@ -48,14 +48,14 @@ fn mixed_arms(n: i64) -> i64 {
     match n {
         0 => {
             held.finish()
-        },
+        }
         1 => {
             held.close();
             100
-        },
+        }
         _ => {
             return held.finish();
-        },
+        }
     }
 }
 

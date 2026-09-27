@@ -16,11 +16,12 @@
 //
 // Harness verb: hew run
 // Expected: conformance passes, `close` returns Ok, the match prints `ok`.
-import hew.srccollidea.{ Source as A, Payload, ErrA };
+import hew.srccollidea.{Source as A, Payload, ErrA};
+
 import hew.srccollideb;
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl A for W {

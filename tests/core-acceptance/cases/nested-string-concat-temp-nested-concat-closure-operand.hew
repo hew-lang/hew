@@ -6,8 +6,15 @@ fn emit_full() -> i64 {
     };
     compose()
 }
+
 fn main() -> i64 {
     var total = 0;
-    for i in 0..200 { total = total + emit_full(); }
-    if total == 3400 { 0 } else { 94 }
+    for i in 0 .. 200 {
+        total = total + emit_full();
+    }
+    if total == 3400 {
+        0
+    } else {
+        94
+    }
 }

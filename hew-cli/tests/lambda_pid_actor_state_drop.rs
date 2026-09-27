@@ -13,9 +13,8 @@ fn lambda_pid_actor_state_runs_and_tears_down() {
     let source = dir.path().join("lambda_pid_actor_state_drop.hew");
     std::fs::write(
         &source,
-        r#"
-actor Holder {
-    let pid: actor(i64),
+        r#"actor Holder {
+    let pid: actor(i64);
 
     receive fn ping() -> i64 {
         1

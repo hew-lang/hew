@@ -1,7 +1,9 @@
-type Wrap { nested: (string, string, string) }
+type Wrap {
+    nested: (string, string, string);
+}
 
 actor Keeper {
-    var cur: Wrap,
+    var cur: Wrap;
     receive fn rewrite() {
         cur = Wrap { nested: cur.nested };
     }

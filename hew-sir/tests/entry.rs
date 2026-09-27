@@ -178,27 +178,27 @@ fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
     );
 }
 
-const RESULT_ENTRY: &str = r#"
-    enum AppError {
-        Failed(string),
-    }
+const RESULT_ENTRY: &str = r#"enum AppError {
+    Failed(string);
+}
 
-    impl Display for AppError {
-        fn fmt(self) -> string {
-            match self {
-                AppError.Failed(message) => message,
-            }
+impl Display for AppError {
+    fn fmt(self) -> string {
+        match self {
+            AppError.Failed(message) => message,
         }
     }
+}
 
-    impl Error for AppError {}
+impl Error for AppError {
+}
 
-    fn main() -> Result<(), AppError> {
-        let held = "held";
-        println(held);
-        .Err(AppError.Failed("displayed failure"))
-    }
-    "#;
+fn main() -> Result<(), AppError> {
+    let held = "held";
+    println(held);
+    .Err(AppError.Failed("displayed failure"))
+}
+"#;
 
 /// A `Result` entry exits through a synthesized adapter: the adapter is the
 /// module's entry, the checker's action is consumed and the physical-facing

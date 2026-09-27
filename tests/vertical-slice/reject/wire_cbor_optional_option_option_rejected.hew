@@ -3,7 +3,7 @@
 // so the declaration is refused at check time before any codec exists.
 #[wire]
 type NestedOptional {
-    value: Option<Option<i64>> @1 optional,
+    value: Option<Option<i64>> @1 optional;
 }
 
 fn main() {

@@ -1,8 +1,8 @@
 import std.stream;
 
 enum Box {
-    Full(string),
-    Empty,
+    Full(string);
+    Empty;
 }
 
 actor Sleeper {
@@ -12,20 +12,20 @@ actor Sleeper {
             .Full(s) => {
                 opt = Box.Empty;
                 // Park with the owned local live; only teardown ends this wait.
-        ready.send(1).expect("ready");
-        gate.recv();
+                ready.send(1).expect("ready");
+                gate.recv();
                 println(f"{s.len()}");
-            },
-            .Empty => {},
+            }
+            .Empty => {}
         }
     }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
+    strategy: one_for_one;
+    intensity: 3 within 60s;
 
-    child sleeper: Sleeper,
+    child sleeper: Sleeper;
 }
 
 fn main() {
@@ -37,6 +37,7 @@ fn main() {
     // supervisor stops it.
     mailbox(s, on_full: .Wait).work(ready_tx, gate).expect("send");
     ready.recv();
-    supervisor_stop(sup);
+    terminate(sup);
+    stopped(sup);
     println("stopped");
 }

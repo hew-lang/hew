@@ -42,29 +42,29 @@ extern "C" {
 // carry explicit @N tags and enum variants are tagged by declaration order.
 #[wire]
 type KvPut {
-    key: string @1,
-    val: string @2,
+    key: string @1;
+    val: string @2;
 }
 
 #[wire]
 enum KvReq {
-    Put(KvPut),
-    GetKey(string),
+    Put(KvPut);
+    GetKey(string);
     // Cross-node monitor scenarios: fire-and-forget commands that drive the
     // remote actor to a terminal state so a monitoring client observes the
     // cross-node DOWN with the right reason.
-    StopSelf,
-    CrashSelf,
+    StopSelf;
+    CrashSelf;
     // scenario_partition_ask phase A: hold the reply past the client's ask
     // deadline so the pending ask is deterministically resolvable ONLY by the
     // armed partition probe (no reply, no socket drop — the route stays live).
-    Stall,
+    Stall;
 }
 
 #[wire]
 enum KvResp {
-    Ack,
-    Value(string),
+    Ack;
+    Value(string);
 }
 
 // ── #[wire] cross-process body types ─────────────────────────────────────────
@@ -75,8 +75,8 @@ enum KvResp {
 // explicit-@N body is proven crossing the wire in both directions.
 #[wire]
 type WirePoint {
-    x: i64 @1,
-    y: i64 @2,
+    x: i64 @1;
+    y: i64 @2;
 }
 
 // Enum variant wire tags are the declaration ordinal (Ping = 0, Move = 1);
@@ -84,45 +84,45 @@ type WirePoint {
 // carry EXPLICIT @N tags — that is the explicit-tag body this scenario proves.
 #[wire]
 enum WireCmd {
-    Ping,
-    Move(WirePoint),
+    Ping;
+    Move(WirePoint);
 }
 
 // WireResult is the #[wire] struct reply: `tag` is which variant the server saw
 // (0 = Ping, 1 = Move); `sum` is x + y for Move, or 0 for Ping.
 #[wire]
 type WireResult {
-    tag: i64 @1,
-    sum: i64 @2,
+    tag: i64 @1;
+    sum: i64 @2;
 }
 
 actor KeyValue {
-    var store: HashMap<string, string>,
+    var store: HashMap<string, string>;
     receive fn handle(req: KvReq) -> KvResp {
         match req {
             KvReq.Put(kv) => {
                 store.insert(kv.key, kv.val);
                 KvResp.Ack
-            },
+            }
             KvReq.GetKey(k) => {
                 match store.get(k) {
                     .Some(v) => KvResp.Value(v),
                     .None => KvResp.Value(""),
                 }
-            },
+            }
             // Clean exit: the actor stops itself, transitioning to the Stopped
             // terminal state, which the cross-node monitor reports as a DOWN
             // carrying the clean-exit reason.
             KvReq.StopSelf => {
-                self.stop();
+                stop(self);
                 KvResp.Ack
-            },
+            }
             // Crash: a deliberate panic transitions the actor to the Crashed
             // terminal state, reported as a DOWN carrying the crash reason.
             KvReq.CrashSelf => {
                 panic("crash requested by cross-node monitor scenario");
                 KvResp.Ack
-            },
+            }
             // Deterministic pend for scenario_partition_ask phase A: hold the
             // reply well past the client's ask deadline (3 s) so the armed
             // partition probe is the only path that can resolve the pending ask
@@ -130,7 +130,7 @@ actor KeyValue {
             KvReq.Stall => {
                 sleep(10s);
                 KvResp.Ack
-            },
+            }
         }
     }
     receive fn count() -> i64 {
@@ -147,7 +147,7 @@ impl ActorMsg for KeyValue {
 // replies with a #[wire] struct, so the explicit-@N tagged body is exercised on
 // both the request and the reply leg of a remote ask.
 actor WireProbe {
-    let calls: i64,
+    let calls: i64;
     receive fn handle(cmd: WireCmd) -> WireResult {
         match cmd {
             WireCmd.Ping => WireResult { tag: 0, sum: 0 },
@@ -163,19 +163,19 @@ impl ActorMsg for WireProbe {
 
 #[wire]
 type DistIdentity {
-    node_id: string @1,
-    slot: u64 @2,
-    incarnation: u32 @3,
+    node_id: string @1;
+    slot: u64 @2;
+    incarnation: u32 @3;
 }
 
 #[wire]
 enum IdentityReq {
-    Inspect,
+    Inspect;
 }
 
 #[wire]
 enum IdentityResp {
-    Value(DistIdentity),
+    Value(DistIdentity);
 }
 
 actor IdentityProbe {
@@ -296,7 +296,7 @@ actor PartitionInjector {
 
 actor Linker {
     // 0 = CrashLinked (the linked actor crashes); 1 = MonitorLost (non-fatal).
-    let policy_sel: i64,
+    let policy_sel: i64;
 
     // Establish the cross-node link from inside this actor's own handler so the
     // implicit `self` subject of `link_remote` is THIS actor. The remote peer is
@@ -349,10 +349,10 @@ fn local_registration_id(setup: Result<MonitorRef, LinkError>) -> u64 {
 }
 
 actor MonitorProbe {
-    var active_monitor: Result<MonitorRef, MonitorError>,
-    var expected_monitor_id: u64 = 0,
-    var down_count: i64 = 0,
-    var down_reason: i64 = 100,
+    var active_monitor: Result<MonitorRef, MonitorError>;
+    var expected_monitor_id: u64 = 0;
+    var down_count: i64 = 0;
+    var down_reason: i64 = 100;
 
     // drive: 0 = clean stop, 1 = crash, 2 = leave target alive.
     receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
@@ -704,14 +704,14 @@ actor MonitorProbe {
             return;
         }
         match note.target {
-            DownTarget.Remote(_) => {},
+            DownTarget.Remote(_) => {}
             DownTarget.Local(_) => {
                 down_reason = -97;
                 return;
-            },
+            }
         }
         down_reason = match note.reason {
-            DownReason.Exited => 6,
+            DownReason.Stopped => 6,
             DownReason.Crashed(_) => 5,
             DownReason.MonitorLost => -1,
             DownReason.LocalShutdown => -3,
@@ -720,8 +720,8 @@ actor MonitorProbe {
 }
 
 actor SetupRaceStopper {
-    let monitor_target: KeyValue,
-    let link_target: KeyValue,
+    let monitor_target: KeyValue;
+    let link_target: KeyValue;
     receive fn run() {
         var monitor_stopped = false;
         var link_stopped = false;
@@ -749,10 +749,10 @@ actor LinkSetupRaceProbe {
     // `monitor()` on a LOCAL pid (the linker below is `spawn`ed, not remote)
     // returns Result<MonitorRef, LinkError>, not the remote-delivery
     // MonitorError vocabulary MonitorProbe uses for its RemotePid target.
-    var active_monitor: Result<MonitorRef, LinkError>,
-    var expected_monitor_id: u64 = 0,
-    var down_count: i64 = 0,
-    var down_reason: i64 = 100,
+    var active_monitor: Result<MonitorRef, LinkError>;
+    var expected_monitor_id: u64 = 0;
+    var down_count: i64 = 0;
+    var down_reason: i64 = 100;
     receive fn arm(peer: RemotePid<KeyValue>) -> i64 {
         let linker = spawn Linker(policy_sel: 0);
         active_monitor = monitor(linker);
@@ -784,15 +784,15 @@ actor LinkSetupRaceProbe {
             return;
         }
         match note.target {
-            DownTarget.Local(_) => {},
+            DownTarget.Local(_) => {}
             DownTarget.Remote(_) => {
                 down_reason = -97;
                 return;
-            },
+            }
         }
         down_reason = match note.reason {
             DownReason.Crashed(_) => 5,
-            DownReason.Exited => 6,
+            DownReason.Stopped => 6,
             DownReason.MonitorLost => -1,
             DownReason.LocalShutdown => -3,
         };
@@ -814,7 +814,7 @@ actor MonitorSetupProbe {
                         return 3;
                     }
                     sleep(100ms);
-                },
+                }
             }
         }
     }
@@ -831,13 +831,13 @@ actor MonitorCloseProbe {
                 monitor_ref.close();
                 sleep(800ms);
                 0
-            },
+            }
         }
     }
 }
 
 actor MonitorLeakProbe {
-    var down_count: i64 = 0,
+    var down_count: i64 = 0;
     receive fn run(peer: RemotePid<KeyValue>, iterations: i64) -> i64 {
         var completed: i64 = 0;
         var previous_id: u64 = 0;
@@ -853,7 +853,7 @@ actor MonitorLeakProbe {
                     previous_id = monitor_id;
                     sleep(10ms);
                     monitor_ref.close();
-                },
+                }
             }
             if unsafe {
                 hew_dist_monitor_pending_observation_count()
@@ -889,8 +889,8 @@ fn wait_for_file(path: string) -> string {
                     if !contents.is_empty() {
                         return contents;
                     }
-                },
-                .Err(_) => {},
+                }
+                .Err(_) => {}
             }
         }
         attempts = attempts + 1;
@@ -909,7 +909,7 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     let key = f"{kx}/{my_role}.key";
     let mint = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: key, trust: "pinned", peers: [], seeds: [] };
     match Node.start(mint) {
-        Result.Ok(_) => {},
+        Result.Ok(_) => {}
         Result.Err(_) => println(f"FAIL {my_role} identity-mint"),
     }
     let me = Node.identity_key();
@@ -923,7 +923,7 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     };
     let config = NodeConfig { bind: bind, transport: "tcp", key: key, trust: "pinned", peers: [configured_peer_key], seeds: [] };
     match Node.start(config) {
-        Result.Ok(_) => {},
+        Result.Ok(_) => {}
         Result.Err(_) => println(f"FAIL {my_role} pinned-start"),
     }
 }
@@ -949,14 +949,14 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
         match found {
             Result.Ok(pid) => {
                 return .Ok(pid);
-            },
+            }
             Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= max_attempts {
                     return .Err(e);
                 }
                 sleep(100ms);
-            },
+            }
         }
     }
 }
@@ -968,14 +968,14 @@ fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupEr
         match found {
             Result.Ok(pid) => {
                 return .Ok(pid);
-            },
+            }
             Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= 50 {
                     return .Err(e);
                 }
                 sleep(100ms);
-            },
+            }
         }
     }
 }
@@ -987,14 +987,14 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
         match found {
             Result.Ok(pid) => {
                 return .Ok(pid);
-            },
+            }
             Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= 50 {
                     return .Err(e);
                 }
                 sleep(100ms);
-            },
+            }
         }
     }
 }
@@ -1059,16 +1059,16 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL remote_ask put-hello-send-error");
             return 2;
-        },
-        Result.Ok(_) => {},
+        }
+        Result.Ok(_) => {}
     }
     let send2 = kv.send(KvReq.Put(KvPut { key: "count", val: "42" }));
     match send2 {
         Result.Err(_) => {
             println("FAIL remote_ask put-count-send-error");
             return 3;
-        },
-        Result.Ok(_) => {},
+        }
+        Result.Ok(_) => {}
     }
     // The ask follows both sends on the same route, so the actor sees them
     // first.
@@ -1077,7 +1077,7 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL remote_ask get-hello-ask-error");
             return 4;
-        },
+        }
         Result.Ok(resp) => {
             match resp {
                 KvResp.Value(v) => {
@@ -1087,20 +1087,20 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
                         println(f"FAIL remote_ask get-hello={v}");
                         return 5;
                     }
-                },
+                }
                 KvResp.Ack => {
                     println("FAIL remote_ask get-hello-got-ack");
                     return 5;
-                },
+                }
             }
-        },
+        }
     }
     let ask2 = kv.ask(KvReq.GetKey("count"), 5000);
     match ask2 {
         Result.Err(_) => {
             println("FAIL remote_ask get-count-ask-error");
             return 6;
-        },
+        }
         Result.Ok(resp) => {
             match resp {
                 KvResp.Value(v) => {
@@ -1110,13 +1110,13 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
                         println(f"FAIL remote_ask get-count={v}");
                         return 7;
                     }
-                },
+                }
                 KvResp.Ack => {
                     println("FAIL remote_ask get-count-got-ack");
                     return 7;
-                },
+                }
             }
-        },
+        }
     }
     0
 }
@@ -1127,7 +1127,7 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
         Result.Err(_) => {
             println("FAIL wire_cbor move-ask-error");
             return 2;
-        },
+        }
         Result.Ok(res) => {
             if res.tag == 1 {
                 println(f"PASS wire_cbor move-tag={res.tag}");
@@ -1141,14 +1141,14 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
                 println(f"FAIL wire_cbor move-sum={res.sum}");
                 return 4;
             }
-        },
+        }
     }
     let ask_ping = wp.ask(WireCmd.Ping, 5000);
     match ask_ping {
         Result.Err(_) => {
             println("FAIL wire_cbor ping-ask-error");
             return 5;
-        },
+        }
         Result.Ok(res) => {
             if res.tag == 0 {
                 println(f"PASS wire_cbor ping-tag={res.tag}");
@@ -1162,7 +1162,7 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
                 println(f"FAIL wire_cbor ping-sum={res.sum}");
                 return 7;
             }
-        },
+        }
     }
     0
 }
@@ -1173,7 +1173,7 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
         .None => {
             println("FAIL identity_location local-node-id-missing");
             return 2;
-        },
+        }
     };
     let remote_node = identity.node_id();
     let remote_slot = identity.slot();
@@ -1195,7 +1195,7 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
         Result.Err(_) => {
             println("FAIL identity_location inspect-ask-error");
             return 7;
-        },
+        }
         Result.Ok(resp) => {
             match resp {
                 IdentityResp.Value(actual) => {
@@ -1211,9 +1211,9 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
                         println("FAIL identity_location incarnation-mismatch");
                         return 10;
                     }
-                },
+                }
             }
-        },
+        }
     }
     println(f"PASS identity_location local={local_node.display()} remote={remote_node.display()} slot={remote_slot} incarnation={remote_incarnation}");
     0
@@ -1261,7 +1261,7 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
         Result.Err(_) => {
             println(f"FAIL {scenario} arm-ask-error");
             return 2;
-        },
+        }
     };
     if arm_status != 0 {
         println(f"FAIL {scenario} arm-status={arm_status}");
@@ -1273,7 +1273,7 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
         Result.Err(_) => {
             println(f"FAIL {scenario} monitor-id-ask-error");
             return 9;
-        },
+        }
     };
     if monitor_id == 0 {
         println(f"FAIL {scenario} monitor-id-zero");
@@ -1290,7 +1290,7 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
             Result.Err(_) => {
                 println(f"FAIL {scenario} status-ask-error");
                 return 4;
-            },
+            }
         };
         if observed != 100 {
             if observed != expected {
@@ -1315,11 +1315,11 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
                 println(f"FAIL {scenario} duplicate-status={value}");
                 return 7;
             }
-        },
+        }
         Result.Err(_) => {
             println(f"FAIL {scenario} duplicate-check-error");
             return 8;
-        },
+        }
     }
     println(f"PASS {scenario} no-dup");
     println(f"PASS {scenario} monitor-id-match={monitor_id}");
@@ -1355,11 +1355,11 @@ fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
                     2
                 }
             }
-        },
+        }
         Result.Err(_) => {
             println("FAIL remote_monitor_setup_after_drop probe-error");
             4
-        },
+        }
     }
 }
 
@@ -1375,7 +1375,7 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
         Result.Err(_) => {
             println("FAIL remote_setup_exit_race link-arm-error");
             return 20;
-        },
+        }
     };
     if linker_id == 0 {
         println("FAIL remote_setup_exit_race link-register-failed");
@@ -1389,7 +1389,7 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
             Result.Err(_) => {
                 println("FAIL remote_setup_exit_race link-status-error");
                 return 22;
-            },
+            }
         };
         if observed != 100 {
             if observed != 5 {
@@ -1413,11 +1413,11 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
                 println(f"FAIL remote_setup_exit_race link-duplicate={value}");
                 return 25;
             }
-        },
+        }
         Result.Err(_) => {
             println("FAIL remote_setup_exit_race link-duplicate-check-error");
             return 26;
-        },
+        }
     }
     println("PASS remote_setup_exit_race link-no-dup");
     0
@@ -1442,7 +1442,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
         Result.Ok(_) => {
             println("FAIL partition_ask probe-replied");
             return 4;
-        },
+        }
         Result.Err(e) => {
             match e {
                 ActorError.Partition => {
@@ -1451,13 +1451,13 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                         return 5;
                     }
                     println(f"PASS partition_ask probe-partition ms={probe_elapsed}");
-                },
+                }
                 _ => {
                     println(f"FAIL partition_ask probe-not-partition ms={probe_elapsed}");
                     return 6;
-                },
+                }
             }
-        },
+        }
     }
     // Phase B — the real-teardown no-hang gate: kill the server, then the ask
     // must fail closed with ANY typed cause without hanging. Re-arm the
@@ -1479,7 +1479,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                     return 2;
                 }
                 sleep(200ms);
-            },
+            }
             Result.Err(e) => {
                 let timed_out = match e {
                     ActorError.Timeout => true,
@@ -1511,7 +1511,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                     }
                     return 0;
                 }
-            },
+            }
         }
     }
 }
@@ -1522,8 +1522,8 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>, kx: string) -> i64 {
         Result.Err(_) => {
             println("FAIL repoint_preserves_ref seed-error");
             return 2;
-        },
-        Result.Ok(_) => {},
+        }
+        Result.Ok(_) => {}
     }
     publish_atomic(kx, "client.seeded", "1");
     var attempts: i64 = 0;
@@ -1537,7 +1537,7 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>, kx: string) -> i64 {
                     return 3;
                 }
                 sleep(100ms);
-            },
+            }
             Result.Ok(replacement) => {
                 if replacement == kv {
                     attempts = attempts + 1;
@@ -1552,39 +1552,39 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>, kx: string) -> i64 {
                         Result.Err(_) => {
                             println("FAIL repoint_preserves_ref captured-ref-error");
                             return 5;
-                        },
+                        }
                         Result.Ok(KvResp.Ack) => {
                             println("FAIL repoint_preserves_ref captured-ref-ack");
                             return 6;
-                        },
+                        }
                         Result.Ok(KvResp.Value(v)) => {
                             if v != "original" {
                                 println("FAIL repoint_preserves_ref captured-ref-wrong-actor");
                                 return 7;
                             }
-                        },
+                        }
                     }
                     let new_value = replacement.ask(KvReq.GetKey("owner"), 5000);
                     match new_value {
                         Result.Err(_) => {
                             println("FAIL repoint_preserves_ref replacement-error");
                             return 8;
-                        },
+                        }
                         Result.Ok(KvResp.Ack) => {
                             println("FAIL repoint_preserves_ref replacement-ack");
                             return 9;
-                        },
+                        }
                         Result.Ok(KvResp.Value(v)) => {
                             if v != "" {
                                 println("FAIL repoint_preserves_ref replacement-not-fresh");
                                 return 10;
                             }
-                        },
+                        }
                     }
                     println("PASS repoint_preserves_ref captured=live future=replacement");
                     return 0;
                 }
-            },
+            }
         }
     }
 }
@@ -1643,7 +1643,7 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
             2
-        },
+        }
         Result.Ok(status) => {
             if status != 0 {
                 println(f"FAIL monitor_watcher_node_death arm-status={status}");
@@ -1652,7 +1652,7 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
             println("READY_CLIENT_WATCHER monitor_watcher_node_death");
             sleep(2m);
             0
-        },
+        }
     }
 }
 
@@ -1664,7 +1664,7 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
         Result.Err(_) => {
             println(f"FAIL {scenario} link-ask-error");
             return 2;
-        },
+        }
     };
     if lid == 0 {
         println(f"FAIL {scenario} link-register-failed");
@@ -1677,11 +1677,11 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
                 println(f"FAIL {scenario} linker-pre-cascade-wrong value={value}");
                 return 7;
             }
-        },
+        }
         Result.Err(_) => {
             println(f"FAIL {scenario} linker-died-during-setup");
             return 7;
-        },
+        }
     }
     if drive == "stop" {
         let t = kv.send(KvReq.StopSelf);
@@ -1689,8 +1689,8 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
             Result.Err(_) => {
                 println(f"FAIL {scenario} stop-send-error");
                 return 4;
-            },
-            Result.Ok(_) => {},
+            }
+            Result.Ok(_) => {}
         }
     } else {
         if drive == "crash" {
@@ -1699,8 +1699,8 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
                 Result.Err(_) => {
                     println(f"FAIL {scenario} crash-send-error");
                     return 4;
-                },
-                Result.Ok(_) => {},
+                }
+                Result.Ok(_) => {}
             }
         }
     }
@@ -1749,7 +1749,7 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL link_remote_non_crashlinked link-ask-error");
             return 2;
-        },
+        }
     };
     if lid == 0 {
         println("FAIL link_remote_non_crashlinked link-register-failed");
@@ -1760,8 +1760,8 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL link_remote_non_crashlinked stop-send-error");
             return 4;
-        },
-        Result.Ok(_) => {},
+        }
+        Result.Ok(_) => {}
     }
     sleep(1500ms);
     let st = unsafe {
@@ -1776,11 +1776,11 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         Result.Ok(_) => {
             println("PASS link_remote_non_crashlinked linker-survived");
             0
-        },
+        }
         Result.Err(_) => {
             println("FAIL link_remote_non_crashlinked linker-unreachable");
             6
-        },
+        }
     }
 }
 
@@ -1795,48 +1795,47 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL local_route local-lookup-unresolved");
             return 1;
-        },
+        }
     };
     match local.send(KvReq.Put(KvPut { key: "colour", val: "teal" })) {
-        Result.Ok(_) => {},
+        Result.Ok(_) => {}
         Result.Err(_) => {
             println("FAIL local_route local-send");
             return 2;
-        },
+        }
     }
     match local.ask(KvReq.GetKey("colour"), 3000) {
         Result.Ok(KvResp.Value(v)) => println(f"PASS local_route local-ask={v}"),
         Result.Ok(_) => {
             println("FAIL local_route local-ask-shape");
             return 3;
-        },
+        }
         Result.Err(_) => {
             println("FAIL local_route local-ask");
             return 4;
-        },
+        }
     }
     match kv.ask(KvReq.GetKey("colour"), 3000) {
         Result.Ok(KvResp.Value(v)) => println(f"PASS local_route peer-ask=[{v}]"),
         Result.Ok(_) => {
             println("FAIL local_route peer-ask-shape");
             return 5;
-        },
+        }
         Result.Err(_) => {
             println("FAIL local_route peer-ask");
             return 6;
-        },
+        }
     }
-
     let probe = spawn MonitorProbe(active_monitor: .Err(MonitorError.NodeNotRunning));
     match probe.arm(local, 0) {
-        Result.Ok(0) => {},
+        Result.Ok(0) => {}
         _ => {
             println("FAIL local_route monitor-arm");
             return 7;
-        },
+        }
     }
     var down: i64 = 100;
-    for _ in 0..100 {
+    for _ in 0 .. 100 {
         down = match probe.status() {
             Result.Ok(value) => value,
             Result.Err(_) => -100,
@@ -1851,7 +1850,6 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
         return 8;
     }
     println("PASS local_route monitor-down=exited");
-
     let doomed_store: HashMap<string, string> = HashMap.new();
     Node.register("kv-doomed", spawn KeyValue(store: doomed_store));
     let doomed = match lookup_with_retry("kv-doomed") {
@@ -1859,19 +1857,19 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL local_route doomed-lookup-unresolved");
             return 9;
-        },
+        }
     };
     let linker = spawn Linker(policy_sel: 0);
     match linker.link_go(doomed) {
-        Result.Ok(id) if id != 0 => {},
+        Result.Ok(id) if id != 0 => {}
         _ => {
             println("FAIL local_route link-register");
             return 10;
-        },
+        }
     }
     let _ = doomed.send(KvReq.CrashSelf);
     var linker_alive = true;
-    for _ in 0..100 {
+    for _ in 0 .. 100 {
         linker_alive = match linker.ping() {
             Result.Ok(_) => true,
             Result.Err(_) => false,
@@ -1895,7 +1893,7 @@ fn scenario_linker_local_crash() -> i64 {
         Result.Ok(_) => {
             println("FAIL linker_local_crash linker-survived");
             1
-        },
+        }
         Result.Err(_) => 0,
     }
 }
@@ -1959,14 +1957,14 @@ fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
         Result.Err(_) => {
             println("FAIL cross_node_monitor_close_reclaim probe-error");
             2
-        },
+        }
         Result.Ok(status) => {
             if status != 0 {
                 println("FAIL cross_node_monitor_close_reclaim setup-error");
                 return 1;
             }
             0
-        },
+        }
     }
 }
 
@@ -2031,7 +2029,7 @@ fn scenario_client_monitor_leak(kv: RemotePid<KeyValue>, kx: string, scenario: s
         Result.Err(_) => {
             println(f"FAIL {scenario} probe-ask-error");
             2
-        },
+        }
         Result.Ok(completed) => {
             if completed != iterations {
                 println(f"FAIL {scenario} completed={completed}");
@@ -2045,7 +2043,7 @@ fn scenario_client_monitor_leak(kv: RemotePid<KeyValue>, kx: string, scenario: s
             }
             println(f"PASS {scenario} iterations={iterations} closed={completed} down=0 local=0 target=0 ids=distinct");
             0
-        },
+        }
     }
 }
 
@@ -2120,11 +2118,11 @@ fn scenario_handshake_reject() -> i64 {
         Result.Err(_) => {
             println("PASS handshake_reject unroutable");
             0
-        },
+        }
         Result.Ok(_) => {
             println("FAIL handshake_reject unauthorized-peer-routable");
             2
-        },
+        }
     }
 }
 
@@ -2145,12 +2143,12 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
                         Result.Err(_) => {
                             println("FAIL stale_incarnation_restart fresh-pid-unusable");
                             return 4;
-                        },
+                        }
                         Result.Ok(KvResp.Ack) => {
                             println("FAIL stale_incarnation_restart fresh-pid-wrong-reply");
                             return 5;
-                        },
-                        Result.Ok(KvResp.Value(_)) => {},
+                        }
+                        Result.Ok(KvResp.Value(_)) => {}
                     }
                     match old.ask(KvReq.GetKey("restart-proof"), 5000) {
                         // AskError.StaleRef (retired) has no direct ActorError equivalent;
@@ -2160,19 +2158,19 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
                         Result.Err(ActorError.Dead) => {
                             println(f"PASS stale_incarnation_restart old={old_incarnation} new={fresh_incarnation} error=Dead");
                             return 0;
-                        },
+                        }
                         Result.Err(_) => {
                             println("FAIL stale_incarnation_restart old-pid-wrong-error");
                             return 6;
-                        },
+                        }
                         Result.Ok(_) => {
                             println("FAIL stale_incarnation_restart old-pid-succeeded");
                             return 7;
-                        },
+                        }
                     }
                 }
-            },
-            Result.Err(_) => {},
+            }
+            Result.Err(_) => {}
         }
         attempts = attempts + 1;
         if attempts >= 200 {
@@ -2199,7 +2197,7 @@ fn run_client(port: string, scenario: string) -> i64 {
             Result.Err(_) => {
                 println(f"FAIL {scenario} lookup-unresolved");
                 1
-            },
+            }
             Result.Ok(identity) => {
                 if scenario == "identity_location" {
                     scenario_identity_location(identity)
@@ -2210,7 +2208,7 @@ fn run_client(port: string, scenario: string) -> i64 {
                         scenario_identity_display(identity, scenario, 50)
                     }
                 }
-            },
+            }
         }
     } else if scenario == "wire_cbor" {
         let found_wire = lookup_wire_with_retry("wire");
@@ -2218,10 +2216,10 @@ fn run_client(port: string, scenario: string) -> i64 {
             Result.Err(_) => {
                 println(f"FAIL {scenario} lookup-unresolved");
                 1
-            },
+            }
             Result.Ok(wp) => {
                 scenario_wire_cbor(wp)
-            },
+            }
         }
     } else if scenario == "remote_setup_exit_race" {
         let monitor_found = lookup_with_retry("monitor-race");
@@ -2229,19 +2227,19 @@ fn run_client(port: string, scenario: string) -> i64 {
             Result.Err(_) => {
                 println("FAIL remote_setup_exit_race monitor-lookup-unresolved");
                 1
-            },
+            }
             Result.Ok(monitor_target) => {
                 let link_found = lookup_with_retry("link-race");
                 match link_found {
                     Result.Err(_) => {
                         println("FAIL remote_setup_exit_race link-lookup-unresolved");
                         1
-                    },
+                    }
                     Result.Ok(link_target) => {
                         scenario_remote_setup_exit_race(monitor_target, link_target)
-                    },
+                    }
                 }
-            },
+            }
         }
     } else {
         let found = lookup_with_retry("kv");
@@ -2249,7 +2247,7 @@ fn run_client(port: string, scenario: string) -> i64 {
             Result.Err(_) => {
                 println(f"FAIL {scenario} lookup-unresolved");
                 1
-            },
+            }
             Result.Ok(kv) => {
                 if scenario == "stale_incarnation_restart" {
                     scenario_stale_incarnation_restart(kv, kx, port)
@@ -2319,7 +2317,7 @@ fn run_client(port: string, scenario: string) -> i64 {
                         }
                     }
                 }
-            },
+            }
         }
     };
     Node.shutdown();

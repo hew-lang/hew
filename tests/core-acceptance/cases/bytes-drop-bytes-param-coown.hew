@@ -2,6 +2,7 @@ fn share_param(value: bytes) -> i64 {
     let alias = value;
     value.len() + alias.len()
 }
+
 fn main() -> i64 {
     var total: i64 = 0;
     var i: i64 = 0;

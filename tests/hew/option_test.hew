@@ -2,7 +2,6 @@
 
 import std.option;
 
-
 // ── Predicates ─────────────────────────────────────────────────────────
 #[test]
 fn test_is_some_int_with_value() {
@@ -230,7 +229,11 @@ fn test_map_is_none_on_none() {
 #[test]
 fn test_and_then_chains_on_some() {
     let x: Option<i64> = .Some(5);
-    let chained = x.and_then(|v: i64| if v > 0 { .Some(v + 1) } else { .None });
+    let chained = x.and_then(|v: i64| if v > 0 {
+        .Some(v + 1)
+    } else {
+        .None
+    });
     assert(chained.unwrap_or(-1) == 6);
 }
 
@@ -238,7 +241,11 @@ fn test_and_then_chains_on_some() {
 fn test_and_then_short_circuits_when_f_returns_none() {
     let x: Option<i64> = .Some(-1);
     // Negative control: `f` itself returns `None` for a negative input.
-    let chained = x.and_then(|v: i64| if v > 0 { .Some(v + 1) } else { .None });
+    let chained = x.and_then(|v: i64| if v > 0 {
+        .Some(v + 1)
+    } else {
+        .None
+    });
     assert(chained.is_none());
 }
 
@@ -304,6 +311,10 @@ fn test_take_leaves_none_behind() {
 #[test]
 fn test_string_chain_moves_payload_through_each_step() {
     let name: Option<string> = .Some("hew");
-    let shout = name.map(|s: string| f"{s}!").and_then(|s: string| if s.len() > 1 { .Some(s) } else { .None });
+    let shout = name.map(|s: string| f"{s}!").and_then(|s: string| if s.len() > 1 {
+        .Some(s)
+    } else {
+        .None
+    });
     assert(shout.unwrap_or("none") == "hew!");
 }

@@ -13,25 +13,25 @@ fn seed() -> Vec<i64> {
 }
 
 enum Box {
-    Full(Vec<i64>),
-    Empty,
+    Full(Vec<i64>);
+    Empty;
 }
 
 enum Pair {
-    Both(Vec<i64>, Vec<i64>),
-    Neither,
+    Both(Vec<i64>, Vec<i64>);
+    Neither;
 }
 
 type Holder {
-    b: Box,
+    b: Box;
 }
 
 type Inner {
-    b: Box,
+    b: Box;
 }
 
 type Outer {
-    inner: Inner,
+    inner: Inner;
 }
 
 // A bare owning binding re-matched every iteration.
@@ -45,8 +45,8 @@ fn binding_reread() {
                 var w = v;
                 w = seed();
                 sum = sum + w.len();
-            },
-            Box.Empty => {},
+            }
+            Box.Empty => {}
         }
     }
     println(f"binding {sum}");
@@ -63,8 +63,8 @@ fn field_place_reread() {
                 var w = v;
                 w = seed();
                 sum = sum + w.len();
-            },
-            Box.Empty => {},
+            }
+            Box.Empty => {}
         }
     }
     println(f"field {sum}");
@@ -81,8 +81,8 @@ fn nested_field_place_reread() {
                 var w = v;
                 w = seed();
                 sum = sum + w.len();
-            },
-            Box.Empty => {},
+            }
+            Box.Empty => {}
         }
     }
     println(f"nested-field {sum}");
@@ -99,8 +99,8 @@ fn tuple_place_reread() {
                 var w = v;
                 w = seed();
                 sum = sum + w.len();
-            },
-            Box.Empty => {},
+            }
+            Box.Empty => {}
         }
     }
     println(f"tuple {sum}");
@@ -119,8 +119,8 @@ fn block_wrapped_reread() {
                 var w = v;
                 w = seed();
                 sum = sum + w.len();
-            },
-            Box.Empty => {},
+            }
+            Box.Empty => {}
         }
     }
     println(f"block {sum}");
@@ -141,8 +141,8 @@ fn if_wrapped_reread() {
                 var w = v;
                 w = seed();
                 sum = sum + w.len();
-            },
-            Box.Empty => {},
+            }
+            Box.Empty => {}
         }
     }
     println(f"if {sum}");
@@ -157,14 +157,14 @@ fn two_field_reread() {
             let wx = x;
             let wy = y;
             out = wx.len() + wy.len();
-        },
-        Pair.Neither => {},
+        }
+        Pair.Neither => {}
     }
     match b {
         Pair.Both(x2, y2) => {
             out = out + x2.len() + y2.len();
-        },
-        Pair.Neither => {},
+        }
+        Pair.Neither => {}
     }
     println(f"two-field {out}");
 }
@@ -180,11 +180,11 @@ fn guard_fallthrough() {
             w.len() > 100
         } => {
             out = 1;
-        },
+        }
         Box.Full(v2) => {
             out = v2.len();
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println(f"guard-false {out}");
 }
@@ -200,11 +200,11 @@ fn guard_taken() {
             w.len() > 2
         } => {
             out = 1;
-        },
+        }
         Box.Full(v2) => {
             out = v2.len();
-        },
-        Box.Empty => {},
+        }
+        Box.Empty => {}
     }
     println(f"guard-true {out}");
 }

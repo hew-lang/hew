@@ -1,13 +1,12 @@
 #[resource]
 pub type Sock {
-    fd: i64,
+    fd: i64;
 }
 
 impl Sock {
     pub fn fd(self) -> i64 {
         return self.fd;
     }
-
     pub fn close(consume self) {
         println("closed");
     }

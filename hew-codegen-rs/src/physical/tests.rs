@@ -1000,23 +1000,32 @@ fn owned_variant_layout_and_active_case_glue_emit_verified_llvm() {
     use inkwell::values::InstructionOpcode;
 
     let semantic = lower_source(
-        r#"
-            enum Choice { Text(string), Empty }
+        r#"enum Choice {
+    Text(string);
+    Empty;
+}
 
-            fn inspect(value: Choice) -> i64 {
-                match value {
-                    .Text(text) => { let copy = text; 1 },
-                    .Empty => 0,
-                }
-            }
+fn inspect(value: Choice) -> i64 {
+    match value {
+        .Text(text) => {
+            let copy = text;
+            1
+        }
+        .Empty => 0,
+    }
+}
 
-            fn main() -> i64 {
-                let original = Choice.Text("hello");
-                let first = inspect(original);
-                let second = inspect(original);
-                if first == 1 && second == 1 { 0 } else { 1 }
-            }
-            "#,
+fn main() -> i64 {
+    let original = Choice.Text("hello");
+    let first = inspect(original);
+    let second = inspect(original);
+    if first == 1 && second == 1 {
+        0
+    } else {
+        1
+    }
+}
+"#,
     );
     let triple = native_emission_triple();
     let inventory = hew_mir::physical::physical_type_inventory(&semantic);

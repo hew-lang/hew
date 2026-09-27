@@ -4,11 +4,14 @@
 // repeated one double-frees it under the sanitizer.
 #[resource]
 #[opaque]
-type Dq {}
+type Dq {
+}
 
 impl Dq {
     fn close(consume self) {
-        unsafe { hew_deque_free(self) };
+        unsafe {
+            hew_deque_free(self)
+        };
         println("closed");
     }
 }
@@ -19,12 +22,16 @@ extern "C" {
 }
 
 fn scope_exit() {
-    let _held = unsafe { hew_deque_new() };
+    let _held = unsafe {
+        hew_deque_new()
+    };
     println("scope");
 }
 
 fn early_return(stop: bool) {
-    let _held = unsafe { hew_deque_new() };
+    let _held = unsafe {
+        hew_deque_new()
+    };
     println("early");
     if stop {
         return;
@@ -33,7 +40,9 @@ fn early_return(stop: bool) {
 }
 
 fn failing(width: i64) -> Result<i64, string> {
-    let _held = unsafe { hew_deque_new() };
+    let _held = unsafe {
+        hew_deque_new()
+    };
     if width < 0 {
         return .Err("negative");
     }

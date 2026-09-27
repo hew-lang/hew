@@ -1,12 +1,12 @@
 #[wire]
 type SeedWire {
-    id: i64 @1,
-    label: string @2
+    id: i64 @1;
+    label: string @2;
 }
 
 type SeedPoint {
-    x: i32,
-    y: i32,
+    x: i32;
+    y: i32;
 }
 
 fn seed_structured() {

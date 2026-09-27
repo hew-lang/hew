@@ -4,9 +4,23 @@
 // cannot fail, such as a collection or string length, may run while a field is
 // out.
 #[resource]
-type Conn { fd: i64 }
-impl Conn { fn close(consume self) { println(f"close {self.fd}"); } }
-type Holder { conn: Conn, count: i64, spare: Option<Conn>, items: Vec<i64> }
+type Conn {
+    fd: i64;
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+    }
+}
+
+type Holder {
+    conn: Conn;
+    count: i64;
+    spare: Option<Conn>;
+    items: Vec<i64>;
+}
+
 trait Touch {
     fn touch(var self, divisor: i64);
     fn swap(var self, fd: i64) -> i64;
@@ -14,6 +28,7 @@ trait Touch {
     fn bump(var self);
     fn measure(var self, d: i64);
 }
+
 impl Touch for Holder {
     fn touch(var self, divisor: i64) {
         self.count = 8 / divisor;
@@ -43,6 +58,7 @@ impl Touch for Holder {
         self.count = self.count + width;
     }
 }
+
 fn main() {
     var holder = Holder { conn: Conn { fd: 1 }, count: 0, spare: .Some(Conn { fd: 5 }), items: [1, 2] };
     println(holder.swap(2));

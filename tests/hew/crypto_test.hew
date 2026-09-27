@@ -96,7 +96,7 @@ fn test_random_bytes_accepts_the_documented_public_maximum() {
 fn test_random_bytes_status_does_not_leak_into_the_next_draw() {
     match crypto.random_bytes(-1) {
         .Ok(_) => panic("expected a negative length to be rejected"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
     match crypto.random_bytes(8) {
         .Ok(drawn) => assert(drawn.len() == 8),

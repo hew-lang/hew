@@ -3,7 +3,9 @@ import std.net;
 fn drain(consume input: Stream<bytes>) -> bytes {
     var result = "".to_bytes();
     for chunk in input {
-        for byte in chunk { result.push(byte); }
+        for byte in chunk {
+            result.push(byte);
+        }
     }
     result
 }
@@ -27,7 +29,7 @@ fn main() {
         output.send("reply\0bytes".to_bytes()).expect("send");
         output.close();
         assert(await response == "reply\0bytes".to_bytes());
-    }
+    };
     listener.close();
     println("TCP streams use native readiness");
 }

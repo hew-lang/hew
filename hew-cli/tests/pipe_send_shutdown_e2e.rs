@@ -29,8 +29,8 @@ use support::{hew_binary, repo_root, require_codegen};
 const FULL_SEND_AT_SHUTDOWN_SOURCE: &str = r#"import std.stream;
 
 actor Pulse {
-    let ready: stream.Sink<i64>,
-    var count: i64 = 0,
+    let ready: stream.Sink<i64>;
+    var count: i64 = 0;
 
     #[every(1ms)]
     receive fn tick() {
@@ -43,7 +43,10 @@ actor Pulse {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let _p = spawn Pulse(ready: ready_tx, count: 0);
     let _ = ready_rx.recv();
     sleep(200ms);
@@ -108,21 +111,24 @@ fn full_send_with_draining_receiver_still_backpressures() {
         r#"import std.stream;
 
 actor Pump {
-    let out: stream.Sink<i64>,
+    let out: stream.Sink<i64>;
 
     receive fn go(count: i64) {
-        for i in 0..count {
+        for i in 0 .. count {
             out.send(i).expect("send");
         }
     }
 }
 
 fn main() {
-    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     let pump = spawn Pump(out: tx);
     let _ = fork pump.go(8);
     var seen: i64 = 0;
-    for _i in 0..8 {
+    for _i in 0 .. 8 {
         if let .Some(_) = rx.recv() {
             seen += 1;
         }

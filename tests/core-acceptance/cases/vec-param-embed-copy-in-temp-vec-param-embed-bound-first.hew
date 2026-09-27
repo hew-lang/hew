@@ -1,4 +1,6 @@
-type Wrap { f: Option<string> }
+type Wrap {
+    f: Option<string>;
+}
 
 fn pushParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
@@ -8,10 +10,14 @@ fn pushParam(p: string) -> i64 {
 }
 
 fn main() -> i64 {
-    for i in 0..50 {
+    for i in 0 .. 50 {
         let p = f"item-{i}";
-        if pushParam(p) != 1 { return 31; }
-        if p.len() < 6 { return 32; }
+        if pushParam(p) != 1 {
+            return 31;
+        }
+        if p.len() < 6 {
+            return 32;
+        }
     }
     0
 }

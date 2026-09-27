@@ -12,16 +12,16 @@
 
 pub machine Light {
     events {
-        Toggle,
-        Ping,
+        Toggle;
+        Ping;
     }
 
-    state On,
-    state Off,
+    state On;
+    state Off;
 
-    on Toggle: On => Off,
-    on Toggle: Off => On,
-    on Ping: On => On reenter,
+    on Toggle: On => Off;
+    on Toggle: Off => On;
+    on Ping: On => On reenter;
 
     default { state }
 }

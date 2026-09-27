@@ -17,21 +17,21 @@
 //
 // Harness verb: hew run
 // Expected: the code carried in the aliased state field after two steps.
-import hew.aliassrc.{ Payload as Tag };
+import hew.aliassrc.{Payload as Tag};
 
 machine Holder {
     events {
-        Fill,
-        Bump,
+        Fill;
+        Bump;
     }
 
-    state Vacant,
-    state Full { item: Tag, },
+    state Vacant;
+    state Full { item: Tag; }
 
     on Fill: Vacant => Full { item: Tag { code: 40 } }
     on Bump: Full => Full reenter { item: Tag { code: state.item.code + 2 } }
     on Fill: Full => Full reenter { item: Tag { code: state.item.code } }
-    on Bump: Vacant => Vacant reenter,
+    on Bump: Vacant => Vacant reenter;
 }
 
 fn main() {

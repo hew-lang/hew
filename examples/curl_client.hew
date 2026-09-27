@@ -115,20 +115,20 @@ fn main() {
         .Err(_) => panic("network setup failed"),
     };
     match conn.set_read_timeout(-1) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => {
             let err = f"  Error: failed to set read timeout on connection to {addr}";
             panic(err);
-        },
+        }
     }
     // Build and send HTTP request
     let request = f"GET {path} HTTP/1.0\nHost: {host}\nUser-Agent: hew-curl/1.0\nAccept: */*\nConnection: close\n\n";
     match conn.send(request.to_bytes()) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => {
             let err = f"  Error: failed to send request to {addr}";
             panic(err);
-        },
+        }
     }
     println("  Request sent");
     println("");
@@ -143,10 +143,10 @@ fn main() {
                 total_bytes = total_bytes + chunk_bytes.len();
                 response_bytes.append(chunk_bytes);
                 print(f"  Progress: {total_bytes} bytes received");
-            },
+            }
             .None => {
                 reading = false;
-            },
+            }
         }
     }
     println("");

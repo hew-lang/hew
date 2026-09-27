@@ -99,19 +99,19 @@ fn clone_on_unsupported_scalar_fails_closed() {
 
 #[test]
 fn actor_send_snapshot_does_not_suggest_clone() {
-    let source = r"
-        actor SnapshotSink {
-            let id: i64,
-            receive fn take(v: Vec<i64>) {}
-        }
-        fn main() {
-            var xs: Vec<i64> = Vec.new();
-            xs.push(1);
-            let sink = spawn SnapshotSink(id: 0);
-            let _ = sink.take(xs);
-            println(xs.len());
-        }
-    ";
+    let source = r"actor SnapshotSink {
+    let id: i64;
+    receive fn take(v: Vec<i64>) {}
+}
+
+fn main() {
+    var xs: Vec<i64> = Vec.new();
+    xs.push(1);
+    let sink = spawn SnapshotSink(id: 0);
+    let _ = sink.take(xs);
+    println(xs.len());
+}
+";
     let output = typecheck(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

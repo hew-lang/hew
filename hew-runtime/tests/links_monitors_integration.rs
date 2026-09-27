@@ -248,7 +248,7 @@ fn test_monitor_after_crash_delivers_down_without_stale_registration() {
     let down = down_messages.last().copied().expect("captured DOWN");
     assert_eq!(down.monitor_id, ref_id);
     assert_eq!(down.target_kind, 0);
-    assert_eq!(down.reason_kind, 1);
+    assert_eq!(down.reason_kind, 2);
     assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
 
     hew_actor_demonitor(ref_id);

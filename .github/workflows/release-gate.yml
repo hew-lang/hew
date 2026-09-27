@@ -621,6 +621,8 @@ jobs:
         with:
           release: "15.0"
           mem: 8192
+          # Return JUnit reports without copying the guest's build tree.
+          copyback: true
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
@@ -648,6 +650,22 @@ jobs:
             # handing the complete build and test workload to a normal user.
             ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
             chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
+            test ! -e "$GITHUB_WORKSPACE/target"
+            mkdir -p /home/hew-ci/target
+            chown hew-ci:hew-ci /home/hew-ci/target
+            ln -s /home/hew-ci/target "$GITHUB_WORKSPACE/target"
+            stage_reports() {
+              mkdir -p "$GITHUB_WORKSPACE/ci-reports"
+              for report in \
+                target/nextest/ci/junit.xml \
+                target/nextest/ci-cabi/junit.xml \
+                target/hew-test-reports/hew-suite-ratchet.xml; do
+                if test -f "$report"; then
+                  cp "$report" "$GITHUB_WORKSPACE/ci-reports/$(echo "$report" | tr / -)"
+                fi
+              done
+            }
+            trap stage_reports EXIT
             su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'
             set -eux
             export HOME=/home/hew-ci
@@ -712,16 +730,11 @@ jobs:
             HEW_FREEBSD_CI
 
       - name: Upload test reports
-        # vmactions/freebsd-vm syncs the working directory back to this host
-        # runner after the guest `run:` script exits (proven by release.yml's
-        # build-freebsd-aarch64 job, which packages a tarball entirely inside
-        # the VM's run block and then reads it from a host-side
-        # actions/upload-artifact step) — so the reports written by the
-        # guest's nextest and hew-suite-ratchet runs are present here.
+        # The guest stages only JUnit files for the action's copyback.
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
+          report_paths: "ci-reports/*.xml"
           check_name: Release Gate Test Results (FreeBSD x86_64)
           fail_on_failure: true
           fail_on_parse_error: true
@@ -776,6 +789,9 @@ jobs:
           arch: aarch64
           mem: 8192
           cpu: 4
+          # This smoke leg consumes no guest files on the host. Avoid a
+          # multi-gigabyte rsync after the build and smoke have passed.
+          copyback: false
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
@@ -839,7 +855,7 @@ jobs:
             # release-lib profile: this leg proves the compiler builds and
             # runs on FreeBSD aarch64. The debug libhew archive below is the
             # native-link input required by the smoke test.
-            cargo build -p hew-cli --release
+            gmake release-cli
 
             # `hew build` resolves its in-tree native library from the debug
             # target directory. Build the canonical consolidated archive.

@@ -1,5 +1,5 @@
 type ParseFailure {
-    detail: string,
+    detail: string;
 }
 
 impl Display for ParseFailure {
@@ -8,13 +8,14 @@ impl Display for ParseFailure {
     }
 }
 
-impl Error for ParseFailure {}
+impl Error for ParseFailure {
+}
 
 fn parse(text: string) -> i64 fails dyn Error {
     if text == "" {
-        return error ParseFailure { detail: "empty input" }
+        return error ParseFailure { detail: "empty input" };
     }
-    return text.len()
+    return text.len();
 }
 
 fn main() -> Result<(), dyn Error> {

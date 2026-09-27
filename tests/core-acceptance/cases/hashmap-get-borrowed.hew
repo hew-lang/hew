@@ -4,8 +4,8 @@
 // removal.
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -22,12 +22,11 @@ fn main() -> i64 {
     var tokens: HashMap<string, Token> = HashMap.new();
     tokens.insert("a", Token { label: "t", id: 1 });
     tokens.insert("b", Token { label: "t", id: 2 });
-
     match tokens.get("a") {
         Option.Some(token) => {
             println(token.id);
             token.show();
-        },
+        }
         Option.None => println("missing"),
     }
     // The same slot reads again: the borrow moved nothing.
@@ -40,7 +39,6 @@ fn main() -> i64 {
         Option.None => println("missing"),
     }
     println(f"len={tokens.len()}");
-
     match tokens.remove("a") {
         Option.Some(token) => token.close(),
         Option.None => println("missing"),

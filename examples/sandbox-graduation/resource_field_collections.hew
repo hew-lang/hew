@@ -3,8 +3,8 @@
 // each record closes once with its final contents.
 #[resource]
 type Log {
-    lines: Vec<string>,
-    name: string,
+    lines: Vec<string>;
+    name: string;
 }
 
 impl Log {

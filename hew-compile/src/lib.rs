@@ -1467,6 +1467,8 @@ fn parse_for_frontend(source: &str, mode: FrontendParseMode) -> hew_parser::Pars
                 error.kind,
                 hew_parser::ParseDiagnosticKind::LegacyPathSeparator
                     | hew_parser::ParseDiagnosticKind::LegacyTurbofish
+                    | hew_parser::ParseDiagnosticKind::AwaitRestartRetired
+                    | hew_parser::ParseDiagnosticKind::SupervisorStopClauseRetired
             ) {
                 error.severity = hew_parser::Severity::Warning;
             }
@@ -4407,7 +4409,7 @@ mod tests {
         let peer = write_source(
             &module_dir,
             "dog.hew",
-            "pub type Dog { label: string, }\nimpl Greeter for Dog {\n    fn name(self) -> string { self.label }\n}\npub fn describe(d: Dog) -> string { d.greet() }\n",
+            "pub type Dog {\n    label: string;\n}\n\nimpl Greeter for Dog {\n    fn name(self) -> string {\n        self.label\n    }\n}\n\npub fn describe(d: Dog) -> string {\n    d.greet()\n}\n",
         );
 
         let result = check_file(
@@ -4601,12 +4603,12 @@ mod tests {
         write_source(
             &module_dir,
             "shapes.hew",
-            "type Point { x: i64, }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point {\n    x: i64;\n}\n\npub fn ax() -> i64 {\n    let p = Point { x: 1 };\n    p.x\n}\n",
         );
         write_source(
             &module_dir,
             "circle.hew",
-            "type Point { y: i64, }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
+            "type Point {\n    y: i64;\n}\n\npub fn by() -> i64 {\n    let p = Point { y: 2 };\n    p.y\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -4663,12 +4665,12 @@ mod tests {
         write_source(
             dir.path(),
             "lib.hew",
-            "type Point { x: i64, }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point {\n    x: i64;\n}\n\npub fn lib_point() -> i64 {\n    let p = Point { x: 1 };\n    p.x\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import \"lib.hew\";\n\ntype Point { y: i64, }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
+            "import \"lib.hew\";\n\ntype Point {\n    y: i64;\n}\n\nfn main() {\n    let p = Point { y: 2 };\n    println(p.y + lib_point());\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -5214,15 +5216,22 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            r#"
-            type Holder<T> { value: T }
-            impl<T> Holder<T> { fn get(self) -> T { self.value } }
-            fn main() -> i64 {
-                let numbers = Holder { value: 7 };
-                let words = Holder { value: "kept" };
-                numbers.get() + numbers.get() + words.get().len() + words.get().len()
-            }
-        "#,
+            r#"type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    fn get(self) -> T {
+        self.value
+    }
+}
+
+fn main() -> i64 {
+    let numbers = Holder { value: 7 };
+    let words = Holder { value: "kept" };
+    numbers.get() + numbers.get() + words.get().len() + words.get().len()
+}
+"#,
         );
         let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
         let tco = state.typecheck_result.tco.as_ref().unwrap();
@@ -5535,9 +5544,7 @@ fn main() {
              pub fn render(value: Box<T>) -> string { \"generic\" }\n}\n";
         const SPECIALISED_IMPL: &str = "impl Render for Box<i64> {\n    \
              pub fn render(value: Box<i64>) -> string { \"specialised\" }\n}\n";
-        const DECLARATIONS: &str = "pub trait Render {\n    \
-             fn render(value: Self) -> string;\n}\n\n\
-             pub type Box<T> {\n    value: T,\n}\n\n";
+        const DECLARATIONS: &str = "pub trait Render {\n    fn render(value: Self) -> string;\n}\n\npub type Box<T> {\n    value: T;\n}\n";
 
         let mut mismatches: Vec<String> = Vec::new();
         for (order, first, second) in [
@@ -6030,7 +6037,7 @@ fn main() {
         let user_stream = write_source(
             dir.path(),
             "stream.hew",
-            "type Sink<T> { value: T }\ntype Stream<T> { value: T }\n",
+            "type Sink<T> {\n    value: T;\n}\n\ntype Stream<T> {\n    value: T;\n}\n",
         );
         assert!(
             super::canonical_direct_stdlib_module_for_source(Path::new(&user_stream)).is_none(),
@@ -6620,14 +6627,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6649,14 +6654,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import bank;\n\nactor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n\nfn main() -> i64 { 0 }\n",
+            "import bank;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n\nfn main() -> i64 {\n    0\n}\n",
         );
 
         check_file(&input, &FrontendOptions::default())
@@ -6672,10 +6675,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n\
-             pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n\npub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6700,14 +6700,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 1 }\n}\n",
+            "pub actor Account {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        1\n    }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Register {\n    var n: i64 = 0,\n    \
-             receive fn who() -> i64 { 2 }\n}\n",
+            "pub actor Register {\n    var n: i64 = 0;\n    receive fn who() -> i64 {\n        2\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6730,8 +6728,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "counter.hew",
-            "pub actor Counter {\n    var n: i64 = 0,\n    \
-             receive fn bump() -> i64 { n = n + 1; n }\n}\n",
+            "pub actor Counter {\n    var n: i64 = 0;\n    receive fn bump() -> i64 {\n        n = n + 1;\n        n\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
@@ -6759,15 +6756,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "secret.hew",
             // No `pub`: the actor is private to its module.
-            "actor Account {\n    var n: i64 = 0,\n    \
-             receive fn id() -> i64 { 999 }\n}\n",
+            "actor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        999\n    }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
-             receive fn id() -> i64 { 111 }\n}\n\n\
-             fn main() { let a = spawn secret.Account(); }\n",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -6803,14 +6797,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "secret.hew",
             // A public NON-actor type that shares the actor's bare name.
-            "pub type Account {\n    balance: i64,\n}\n",
+            "pub type Account {\n    balance: i64;\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
-             receive fn id() -> i64 { 111 }\n}\n\n\
-             fn main() { let a = spawn secret.Account(); }\n",
+            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    receive fn id() -> i64 {\n        111\n    }\n}\n\nfn main() {\n    let a = spawn secret.Account();\n}\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -7062,7 +7054,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             &workflow_dir,
             "workflow.hew",
-            "pub type Marker { value: i64, }\n",
+            "pub type Marker {\n    value: i64;\n}\n",
         );
         let peer_source = concat!(
             "pub machine Workflow {\n",
@@ -7588,14 +7580,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.pipeline;\n\
-             fn main() {\n\
-                 let chain = pipeline.run(pipeline.from(1));\n\
-                 let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 {\n\
-                     value: 21, label: \"probe\", crash_stage: false\n\
-                 };\n\
-                 match chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\
-             }\n",
+            "import std.pipeline;\n\nfn main() {\n    let chain = pipeline.run(pipeline.from(1));\n    let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 { value: 21, label: \"probe\", crash_stage: false };\n    match chain.push(item) {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
         );
         let state = run_file_frontend_to_typecheck(
             &input,

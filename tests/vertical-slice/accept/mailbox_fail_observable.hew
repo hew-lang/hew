@@ -5,7 +5,7 @@
 // the process main thread, not on a scheduler worker, so submitting from
 // `main` would race the worker's wake.
 actor RejectingWorker {
-    mailbox 1 overflow fail,
+    mailbox 1 overflow fail;
     receive fn work(value: i64) {
         if value == 2 {
             println("REJECTED_WORK_DELIVERED");
@@ -17,27 +17,27 @@ actor Driver {
     receive fn run(worker: RejectingWorker) {
         let inbox = mailbox(worker, on_full: .Reject);
         match inbox.work(1) {
-            .Ok(_) => {},
+            .Ok(_) => {}
             .Err(_) => {
                 println("FIRST_SEND_FAILED");
                 exit(41);
-            },
+            }
         }
         match inbox.work(2) {
             .Err(failure) => match failure.reason {
                 SendError.Full => {
                     println("FAIL_VISIBLE");
                     exit(43);
-                },
+                }
                 _ => {
                     println("UNEXPECTED_SEND_ERROR");
                     exit(44);
-                },
-            },
+                }
+            }
             .Ok(_) => {
                 println("FAIL_HIDDEN");
                 exit(45);
-            },
+            }
         }
     }
 }

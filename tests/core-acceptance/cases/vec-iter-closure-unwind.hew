@@ -3,7 +3,6 @@ actor VecIterCrasher {
         let root = Rc.new(41);
         var values: Vec<Rc<i64>> = Vec.new();
         values.push(root);
-
         let crash = |incoming: VecIter<Rc<i64>>| {
             let _ = incoming;
             panic("vec-iter-closure-trap");
@@ -20,7 +19,9 @@ actor VecIterCrasher {
 }
 
 actor VecIterProbe {
-    receive fn ping() -> i64 { 0 }
+    receive fn ping() -> i64 {
+        0
+    }
 }
 
 fn main() -> i64 {

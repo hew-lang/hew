@@ -56,29 +56,28 @@ fn string_satisfies_ord_bound() {
 
 #[test]
 fn trait_bound_violation_reports_error() {
-    let source = r"
-        trait Describable {
-            fn describe(val: Self) -> string;
-        }
+    let source = r"trait Describable {
+    fn describe(val: Self) -> string;
+}
 
-        type Dog {
-            name: string,
-        }
+type Dog {
+    name: string;
+}
 
-        impl Describable for Dog {
-            fn describe(d: Dog) -> string {
-                d.name
-            }
-        }
+impl Describable for Dog {
+    fn describe(d: Dog) -> string {
+        d.name
+    }
+}
 
-        fn show<T: Describable>(item: T) {
-            println(item.describe());
-        }
+fn show<T: Describable>(item: T) {
+    println(item.describe());
+}
 
-        fn main() {
-            show(42);
-        }
-    ";
+fn main() {
+    show(42);
+}
+";
 
     let output = typecheck(source);
     assert!(
@@ -104,17 +103,20 @@ fn trait_bound_violation_reports_error() {
 /// is made rather than at some later call that needs the inherited method.
 #[test]
 fn impl_of_subtrait_requires_its_supertrait_impl() {
-    let source = r"
-        trait Base {
-            fn base(value: Self) -> i64;
-        }
+    let source = r"trait Base {
+    fn base(value: Self) -> i64;
+}
 
-        trait Derived: Base {}
+trait Derived: Base {
+}
 
-        type Widget { size: i64 }
+type Widget {
+    size: i64;
+}
 
-        impl Derived for Widget {}
-    ";
+impl Derived for Widget {
+}
+";
 
     let output = typecheck(source);
     assert!(
@@ -132,21 +134,26 @@ fn impl_of_subtrait_requires_its_supertrait_impl() {
 /// obligation above is the missing impl and not the subtrait impl itself.
 #[test]
 fn impl_of_subtrait_with_supertrait_impl_is_accepted() {
-    let source = r"
-        trait Base {
-            fn base(value: Self) -> i64;
-        }
+    let source = r"trait Base {
+    fn base(value: Self) -> i64;
+}
 
-        trait Derived: Base {}
+trait Derived: Base {
+}
 
-        type Widget { size: i64 }
+type Widget {
+    size: i64;
+}
 
-        impl Base for Widget {
-            fn base(value: Widget) -> i64 { value.size }
-        }
+impl Base for Widget {
+    fn base(value: Widget) -> i64 {
+        value.size
+    }
+}
 
-        impl Derived for Widget {}
-    ";
+impl Derived for Widget {
+}
+";
 
     let output = typecheck(source);
     assert!(

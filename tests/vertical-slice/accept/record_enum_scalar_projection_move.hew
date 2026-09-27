@@ -1,14 +1,14 @@
-enum EnumScalarMoveChoice { Pair(string, i64), }
+enum EnumScalarMoveChoice {
+    Pair(string, i64);
+}
+
 type EnumScalarMoveCarrier {
-    choice: EnumScalarMoveChoice,
-    sibling: string,
+    choice: EnumScalarMoveChoice;
+    sibling: string;
 }
 
 fn project(i: i64) -> i64 {
-    let r = EnumScalarMoveCarrier {
-        choice: EnumScalarMoveChoice.Pair(("enum-" + "payload"), i),
-        sibling: ("sibling-" + "payload"),
-    };
+    let r = EnumScalarMoveCarrier { choice: EnumScalarMoveChoice.Pair(("enum-" + "payload"), i), sibling: ("sibling-" + "payload") };
     let moved = match r.choice {
         EnumScalarMoveChoice.Pair(_, value) => value,
     };
@@ -22,5 +22,9 @@ fn main() -> i64 {
         total = total + project(i);
         i = i + 1;
     }
-    if total == 2016 { 0 } else { 1 }
+    if total == 2016 {
+        0
+    } else {
+        1
+    }
 }

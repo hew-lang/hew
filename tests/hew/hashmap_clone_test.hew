@@ -18,10 +18,9 @@
 //! Independence is proven by mutating the SOURCE after the clone and asserting
 //! the clone is unaffected — a shallow alias would observe the mutation.
 
-
 type Point {
-    x: i64,
-    y: i64
+    x: i64;
+    y: i64;
 }
 
 #[test]

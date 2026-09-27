@@ -4,14 +4,14 @@
 //! scope.
 
 enum Dir {
-    North,
-    South,
-    East(i64),
+    North;
+    South;
+    East(i64);
 }
 
 indirect enum Tree {
-    Leaf(i64),
-    Node(Tree, Tree),
+    Leaf(i64);
+    Node(Tree, Tree);
 }
 
 fn dir_name(d: Dir) -> string {

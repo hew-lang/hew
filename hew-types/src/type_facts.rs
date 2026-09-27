@@ -2520,7 +2520,7 @@ mod tests {
     #[test]
     fn selected_capability_never_derives_after_losing_impl_metadata() {
         let parsed = hew_parser::parse(
-            "type Key { id: i64 } impl Hash for Key { fn hash(self) -> i64 { 1 } }",
+            "type Key {\n    id: i64;\n}\n\nimpl Hash for Key {\n    fn hash(self) -> i64 {\n        1\n    }\n}\n",
         );
         let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parsed.program);

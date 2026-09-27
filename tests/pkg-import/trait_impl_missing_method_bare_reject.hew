@@ -5,11 +5,12 @@
 // key collides. The impl provides only `tick`, omitting the required `close`.
 // Conformance must resolve the bare `Proc` to its owner-qualified identity and
 // REJECT for the missing method rather than read a polluted neighbour set.
-import hew.multitrait.{ Proc, Tally, ProcErr };
+import hew.multitrait.{Proc, Tally, ProcErr};
+
 import hew.multitraitb;
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl Proc for W {

@@ -17,10 +17,10 @@
 //!             req.respond_text(200, "Hello from Hew!").expect("respond_text succeeds");
 //!             req.close();
 //!             server.close();
-//!         },
+//!         }
 //!         .Err(_err) => {
 //!             println(http.listen_error());
-//!         },
+//!         }
 //!     }
 //! }
 //! ```
@@ -137,7 +137,7 @@ trait RequestMethods {
     ///             req.respond_text(200, "OK").expect("respond_text succeeds");
     ///             req.close();
     ///             server.close();
-    ///         },
+    ///         }
     ///         .Err(_err) => println(http.listen_error()),
     ///     }
     /// }
@@ -166,7 +166,7 @@ trait RequestMethods {
     ///             body.send("chunk 2").expect("send");
     ///             body.close();
     ///             server.close();
-    ///         },
+    ///         }
     ///         .Err(_err) => println(http.listen_error()),
     ///     }
     /// }

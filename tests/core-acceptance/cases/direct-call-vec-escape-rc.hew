@@ -1,7 +1,14 @@
 import std.string;
 
-type Secret { value: string, kind: string }
-enum CredErr { Missing(string), Denied(string) }
+type Secret {
+    value: string;
+    kind: string;
+}
+
+enum CredErr {
+    Missing(string);
+    Denied(string);
+}
 
 fn resolve(n: i64) -> Result<Secret, CredErr> {
     if n % 3 == 0 {
@@ -13,7 +20,9 @@ fn resolve(n: i64) -> Result<Secret, CredErr> {
 fn collect(n: i64) -> string {
     var bag: Vec<Secret> = [];
     let secret = match resolve(n) {
-        .Err(_) => { return "cred"; },
+        .Err(_) => {
+            return "cred";
+        }
         .Ok(value) => value,
     };
     bag.push(secret);

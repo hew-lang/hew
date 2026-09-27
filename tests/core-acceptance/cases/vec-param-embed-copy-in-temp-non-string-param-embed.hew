@@ -1,6 +1,15 @@
-type Holder { items: Vec<string> }
-type Wrap { f: Option<Holder> }
-type MixedWrap { s: string, items: Vec<string> }
+type Holder {
+    items: Vec<string>;
+}
+
+type Wrap {
+    f: Option<Holder>;
+}
+
+type MixedWrap {
+    s: string;
+    items: Vec<string>;
+}
 
 fn pushParam(p: Holder) {
     var v: Vec<Wrap> = [];

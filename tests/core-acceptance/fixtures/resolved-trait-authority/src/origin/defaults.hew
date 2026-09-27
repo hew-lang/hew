@@ -1,7 +1,7 @@
 import trait_authority.good.{decorate};
 
 type Badge {
-    tag: string,
+    tag: string;
 }
 
 fn make_tag(value: Badge) -> string {

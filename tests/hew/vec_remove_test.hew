@@ -4,8 +4,8 @@
 //! so a garbage move-out or a bad tail shift is caught, not just "non-empty".
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 // ── scalar (i64) ────────────────────────────────────────────────────────────

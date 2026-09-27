@@ -103,13 +103,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             _ => {}
         }
         match action.family {
-            RuntimeCallFamily::SupervisorPool(operation) => {
+            RuntimeCallFamily::SupervisorPool(_) => {
                 let option = match action.carrier {
                     PhysicalRuntimeCarrier::Variant(id) => Some(id),
                     _ => None,
                 };
                 return self.emit_supervisor_pool_member(
-                    operation,
                     option,
                     &transfers.iter().map(argument_source).collect::<Vec<_>>(),
                     required_result()?,

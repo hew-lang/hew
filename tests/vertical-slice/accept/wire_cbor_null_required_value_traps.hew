@@ -3,12 +3,12 @@
 // scalar value decoder rejects its null value.
 #[wire]
 type RequiredOption {
-    value: Option<i64> @1,
+    value: Option<i64> @1;
 }
 
 #[wire]
 type RequiredValue {
-    value: i64 @1,
+    value: i64 @1;
 }
 
 fn main() -> i64 {

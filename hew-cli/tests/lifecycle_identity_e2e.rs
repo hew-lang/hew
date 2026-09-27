@@ -23,20 +23,21 @@ fn root_and_imported_module_members_accept_canonical_lifecycle_payloads() {
     let main = workspace.path().join("main.hew");
     fs::write(
         &main,
-        r"
-import std.failure.{CrashNotification, CrashKind};
+        r"import std.failure.{CrashNotification, CrashKind};
+
 import std.link_monitor.{DownNotification, DownReason};
+
 import lifecyclepkg.events;
 
 type RootEnvelope {
-    exit: CrashNotification,
-    down: DownNotification,
+    exit: CrashNotification;
+    down: DownNotification;
 }
 
 enum RootEvent {
-    Exit(CrashNotification),
-    Kind(CrashKind),
-    Down(DownReason),
+    Exit(CrashNotification);
+    Kind(CrashKind);
+    Down(DownReason);
 }
 
 fn main() -> i64 {
@@ -47,11 +48,10 @@ fn main() -> i64 {
     .expect("write root lifecycle fixture");
     fs::write(
         workspace.path().join("src/events.hew"),
-        r"
-import std.failure.{CrashNotification};
+        r"import std.failure.{CrashNotification};
 
 pub enum PeerEvent {
-    Exit(CrashNotification),
+    Exit(CrashNotification);
 }
 
 pub fn code() -> i64 {

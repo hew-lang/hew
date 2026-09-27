@@ -1,7 +1,9 @@
 import std.testing;
 
 actor Worker {
-    receive fn ping() { println("turn"); }
+    receive fn ping() {
+        println("turn");
+    }
 }
 
 fn send_ping(worker: Worker) -> () fails ActorError {

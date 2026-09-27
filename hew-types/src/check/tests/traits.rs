@@ -7,42 +7,43 @@ pub(super) use super::*;
 #[test]
 fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
     let output = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-        }
+impl Builder {
+    fn close(consume self) {}
+}
 
-        trait Fluent {
-            #[returns_receiver]
-            fn touch(consume self) -> Self;
-        }
+trait Fluent {
+    #[returns_receiver]
+    fn touch(consume self) -> Self;
+}
 
-        impl Fluent for Builder {
-            #[returns_receiver]
-            fn touch(consume self) -> Builder {
-                self
-            }
-        }
+impl Fluent for Builder {
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn touch_twice<T: Fluent>(consume value: T) {
-            value.touch();
-            value.touch();
-        }
+fn touch_twice<T: Fluent>(consume value: T) {
+    value.touch();
+    value.touch();
+}
 
-        fn transfer(consume value: Builder) -> Builder {
-            value.touch()
-        }
+fn transfer(consume value: Builder) -> Builder {
+    value.touch()
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.touch();
-            let next = value.touch();
-            next.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.touch();
+    let next = value.touch();
+    next.touch();
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -69,26 +70,27 @@ fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
 #[test]
 fn captured_receiver_identity_result_moves_original_binding() {
     let output = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
+impl Builder {
+    fn close(consume self) {}
 
-            #[returns_receiver]
-            fn touch(consume self) -> Builder {
-                self
-            }
-        }
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            let next = value.touch();
-            value.touch();
-            next.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    let next = value.touch();
+    value.touch();
+    next.touch();
+}
+",
     );
     assert!(
         output
@@ -107,24 +109,29 @@ fn captured_receiver_identity_result_moves_original_binding() {
 #[test]
 fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
     let borrowed = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-            fn inspect(self) -> i64 { self.value }
+impl Builder {
+    fn close(consume self) {}
+    fn inspect(self) -> i64 {
+        self.value
+    }
 
-            #[returns_receiver]
-            fn touch(consume self) -> Builder { self }
-        }
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.touch().inspect();
-            value.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.touch().inspect();
+    value.touch();
+}
+",
     );
     assert!(
         borrowed.errors.is_empty(),
@@ -133,23 +140,26 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
     );
 
     let consumed = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
+impl Builder {
+    fn close(consume self) {}
 
-            #[returns_receiver]
-            fn touch(consume self) -> Builder { self }
-        }
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.touch().close();
-            value.touch();
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.touch().close();
+    value.touch();
+}
+",
     );
     assert!(
         consumed
@@ -164,46 +174,54 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
 #[test]
 fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
     for source in [
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            fn bad(consume self) -> Builder {
-                Builder { value: 2 }
-            }
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    fn bad(consume self) -> Builder {
+        Builder { value: 2 }
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    fn bad(consume self) -> Builder {
+        if self.value == 0 {
+            return self;
         }
-        ",
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            fn bad(consume self) -> Builder {
-                if self.value == 0 {
-                    return self;
-                }
-                self
-            }
-        }
-        ",
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            #[returns_receiver]
-            fn bad(consume self) -> Builder {
-                self
-            }
-        }
-        ",
-        r"
-        type Builder { value: i64 }
-        impl Builder {
-            #[returns_receiver]
-            fn bad(consume self, consume other: Builder) -> Builder {
-                other
-            }
-        }
-        ",
+        self
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    #[returns_receiver]
+    fn bad(consume self) -> Builder {
+        self
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+impl Builder {
+    #[returns_receiver]
+    fn bad(consume self, consume other: Builder) -> Builder {
+        other
+    }
+}
+",
     ] {
         let output = check_source(source);
         assert!(
@@ -220,37 +238,38 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
 #[test]
 fn receiver_identity_allows_nonreceiver_arguments() {
     let output = check_source(
-        r"
-        #[resource]
-        type Builder { value: i64 }
+        r"#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-        }
+impl Builder {
+    fn close(consume self) {}
+}
 
-        trait Fluent {
-            #[returns_receiver]
-            fn with(consume self, value: i64) -> Self;
-        }
+trait Fluent {
+    #[returns_receiver]
+    fn with(consume self, value: i64) -> Self;
+}
 
-        impl Fluent for Builder {
-            #[returns_receiver]
-            fn with(consume self, value: i64) -> Builder {
-                self
-            }
-        }
+impl Fluent for Builder {
+    #[returns_receiver]
+    fn with(consume self, value: i64) -> Builder {
+        self
+    }
+}
 
-        fn twice<T: Fluent>(consume value: T) {
-            value.with(1);
-            value.with(2);
-        }
+fn twice<T: Fluent>(consume value: T) {
+    value.with(1);
+    value.with(2);
+}
 
-        fn main() {
-            let value = Builder { value: 1 };
-            value.with(2);
-            value.with(3);
-        }
-        ",
+fn main() {
+    let value = Builder { value: 1 };
+    value.with(2);
+    value.with(3);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -262,33 +281,34 @@ fn receiver_identity_allows_nonreceiver_arguments() {
 #[test]
 fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     let output = check_source(
-        r"
-        type Box<T> { value: T }
+        r"type Box<T> {
+    value: T;
+}
 
-        impl<T> Box<T> {
-            fn get(boxed: Box<T>, value: T) -> _ {
-                value
-            }
-        }
+impl<T> Box<T> {
+    fn get(boxed: Box<T>, value: T) -> _ {
+        value
+    }
+}
 
-        trait Fluent<T> {
-            #[returns_receiver]
-            fn with(consume self, value: T) -> Self;
-        }
+trait Fluent<T> {
+    #[returns_receiver]
+    fn with(consume self, value: T) -> Self;
+}
 
-        impl<T> Fluent<T> for Box<T> {
-            #[returns_receiver]
-            fn with(consume self, value: T) -> Box<T> {
-                self
-            }
-        }
+impl<T> Fluent<T> for Box<T> {
+    #[returns_receiver]
+    fn with(consume self, value: T) -> Box<T> {
+        self
+    }
+}
 
-        fn main() {
-            let box = Box { value: 1 };
-            box.with(2);
-            box.with(3);
-        }
-        ",
+fn main() {
+    let box = Box { value: 1 };
+    box.with(2);
+    box.with(3);
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -337,16 +357,18 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
 #[test]
 fn generic_receiver_identity_rejects_changed_type_arguments() {
     let output = check_source(
-        r"
-        type Pair<T, U> { first: T, second: U }
+        r"type Pair<T, U> {
+    first: T;
+    second: U;
+}
 
-        impl<T, U> Pair<T, U> {
-            #[returns_receiver]
-            fn swap_identity(consume self) -> Pair<U, T> {
-                Pair { first: self.second, second: self.first }
-            }
-        }
-        ",
+impl<T, U> Pair<T, U> {
+    #[returns_receiver]
+    fn swap_identity(consume self) -> Pair<U, T> {
+        Pair { first: self.second, second: self.first }
+    }
+}
+",
     );
     assert!(
         output.errors.iter().any(|error| {
@@ -411,25 +433,35 @@ fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
 #[test]
 fn trait_impl_must_match_receiver_identity_and_consume_axes() {
     for source in [
-        r"
-        type Builder { value: i64 }
-        trait Fluent {
-            #[returns_receiver]
-            fn touch(consume self) -> Self;
-        }
-        impl Fluent for Builder {
-            fn touch(consume self) -> Builder { self }
-        }
-        ",
-        r"
-        type Builder { value: i64 }
-        trait Fluent {
-            fn inspect(self) -> Self;
-        }
-        impl Fluent for Builder {
-            fn inspect(consume self) -> Builder { self }
-        }
-        ",
+        r"type Builder {
+    value: i64;
+}
+
+trait Fluent {
+    #[returns_receiver]
+    fn touch(consume self) -> Self;
+}
+
+impl Fluent for Builder {
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
+",
+        r"type Builder {
+    value: i64;
+}
+
+trait Fluent {
+    fn inspect(self) -> Self;
+}
+
+impl Fluent for Builder {
+    fn inspect(consume self) -> Builder {
+        self
+    }
+}
+",
     ] {
         let output = check_source(source);
         assert!(
@@ -446,32 +478,35 @@ fn trait_impl_must_match_receiver_identity_and_consume_axes() {
 #[test]
 fn receiver_identity_trait_method_is_not_dyn_object_safe() {
     let output = check_source(
-        r"
-        trait Fluent {
-            #[returns_receiver]
-            fn touch(consume self) -> Self;
-        }
+        r"trait Fluent {
+    #[returns_receiver]
+    fn touch(consume self) -> Self;
+}
 
-        #[resource]
-        type Builder { value: i64 }
+#[resource]
+type Builder {
+    value: i64;
+}
 
-        impl Builder {
-            fn close(consume self) {}
-        }
+impl Builder {
+    fn close(consume self) {}
+}
 
-        impl Fluent for Builder {
-            #[returns_receiver]
-            fn touch(consume self) -> Builder { self }
-        }
+impl Fluent for Builder {
+    #[returns_receiver]
+    fn touch(consume self) -> Builder {
+        self
+    }
+}
 
-        fn use_dyn(value: dyn Fluent) {
-            value.touch();
-        }
+fn use_dyn(value: dyn Fluent) {
+    value.touch();
+}
 
-        fn main() {
-            use_dyn(Builder { value: 1 });
-        }
-        ",
+fn main() {
+    use_dyn(Builder { value: 1 });
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -586,11 +621,7 @@ fn qualified_dyn_trait_keeps_foreign_method_order_and_identity() {
          pub fn show(s: dyn Shape) { println(s.name() + s.kind()); }",
     );
     assert!(foreign.errors.is_empty(), "{:#?}", foreign.errors);
-    let source = "import ma; trait Shape { fn kind(self) -> string; fn name(self) -> string; } \
-        type Box { v: i64 } impl Shape for Box { \
-        fn kind(self) -> string { \"K\" } fn name(self) -> string { \"N\" } } \
-        fn announce(shape: dyn ma.Shape) -> string { shape.name() } \
-        fn main() { ma.show(Box { v: 1 }); }";
+    let source = "import ma;\n\ntrait Shape {\n    fn kind(self) -> string;\n    fn name(self) -> string;\n}\n\ntype Box {\n    v: i64;\n}\n\nimpl Shape for Box {\n    fn kind(self) -> string {\n        \"K\"\n    }\n    fn name(self) -> string {\n        \"N\"\n    }\n}\n\nfn announce(shape: dyn ma.Shape) -> string {\n    shape.name()\n}\n\nfn main() {\n    ma.show(Box { v: 1 });\n}\n";
     let mut root = hew_parser::parse(source);
     assert!(root.errors.is_empty(), "{:#?}", root.errors);
     let (Item::Import(import), _) = &mut root.program.items[0] else {
@@ -658,23 +689,24 @@ fn qualified_dyn_trait_keeps_foreign_method_order_and_identity() {
 
 #[test]
 fn dyn_trait_return_signature_is_admitted() {
-    let source = r#"
-        trait Named {
-            fn name(val: Self) -> string;
-        }
+    let source = r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        type Person {
-            name: string,
-        }
+type Person {
+    name: string;
+}
 
-        impl Named for Person {
-            fn name(person: Person) -> string { person.name }
-        }
+impl Named for Person {
+    fn name(person: Person) -> string {
+        person.name
+    }
+}
 
-        fn make_person() -> dyn Named {
-            Person { name: "Ada" }
-        }
-    "#;
+fn make_person() -> dyn Named {
+    Person { name: "Ada" }
+}
+"#;
 
     let (errors, _) = parse_and_check(source);
     assert!(
@@ -685,23 +717,24 @@ fn dyn_trait_return_signature_is_admitted() {
 
 #[test]
 fn nested_dyn_trait_return_signature_is_admitted() {
-    let source = r#"
-        trait Named {
-            fn name(val: Self) -> string;
-        }
+    let source = r#"trait Named {
+    fn name(val: Self) -> string;
+}
 
-        type Person {
-            name: string,
-        }
+type Person {
+    name: string;
+}
 
-        impl Named for Person {
-            fn name(person: Person) -> string { person.name }
-        }
+impl Named for Person {
+    fn name(person: Person) -> string {
+        person.name
+    }
+}
 
-        fn maybe_person() -> Option<dyn Named> {
-            .Some(Person { name: "Ada" })
-        }
-    "#;
+fn maybe_person() -> Option<dyn Named> {
+    .Some(Person { name: "Ada" })
+}
+"#;
 
     let (errors, _) = parse_and_check(source);
     assert!(
@@ -1904,28 +1937,27 @@ fn hashmap_bracket_index_is_a_compile_error() {
 #[test]
 fn index_trait_user_impl_runs() {
     let output = check_source(
-        r"
-        type Grid {
-            bias: i32,
-        }
+        r"type Grid {
+    bias: i32;
+}
 
-        impl Index<i32> for Grid {
-            type Output = i32;
+impl Index<i32> for Grid {
+    type Output = i32;
 
-            fn get(g: Grid, index: i32) -> Option<i32> {
-                .Some(g.bias + index)
-            }
+    fn get(g: Grid, index: i32) -> Option<i32> {
+        .Some(g.bias + index)
+    }
 
-            fn at(g: Grid, index: i32) -> i32 {
-                g.bias + index
-            }
-        }
+    fn at(g: Grid, index: i32) -> i32 {
+        g.bias + index
+    }
+}
 
-        fn f() -> i32 {
-            let g = Grid { bias: 40 };
-            g[2]
-        }
-        ",
+fn f() -> i32 {
+    let g = Grid { bias: 40 };
+    g[2]
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -2079,24 +2111,25 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
 
 #[test]
 fn generic_named_method_calls_record_method_type_args() {
-    let source = r#"
-        type Wrapper<T> { value: T }
+    let source = r#"type Wrapper<T> {
+    value: T;
+}
 
-        impl<T> Wrapper<T> {
-            fn map<U>(wrapper: Wrapper<T>, mapper: fn(T) -> U) -> U {
-                mapper(wrapper.value)
-            }
-        }
+impl<T> Wrapper<T> {
+    fn map<U>(wrapper: Wrapper<T>, mapper: fn(T) -> U) -> U {
+        mapper(wrapper.value)
+    }
+}
 
-        fn to_len(value: string) -> i64 {
-            value.len()
-        }
+fn to_len(value: string) -> i64 {
+    value.len()
+}
 
-        fn main() {
-            let wrapper = Wrapper { value: "hew" };
-            let len = wrapper.map(to_len);
-        }
-    "#;
+fn main() {
+    let wrapper = Wrapper { value: "hew" };
+    let len = wrapper.map(to_len);
+}
+"#;
 
     let result = hew_parser::parse(source);
     assert!(
@@ -2960,15 +2993,20 @@ fn second_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yiel
 // so it exercises the false branch of every other marker in one repro.
 #[test]
 fn record_field_marker_derivation_expands_top_level_alias() {
-    let source = r"
-        type GoodAlias = i64;
-        type BadAlias = Rc<i64>;
+    let source = r"type GoodAlias = i64;
 
-        type Good { v: GoodAlias }
-        type Bad { v: BadAlias }
+type BadAlias = Rc<i64>;
 
-        fn main() {}
-    ";
+type Good {
+    v: GoodAlias;
+}
+
+type Bad {
+    v: BadAlias;
+}
+
+fn main() {}
+";
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -3047,13 +3085,21 @@ fn record_field_marker_derivation_expands_top_level_alias() {
 #[test]
 fn impl_of_undeclared_trait_is_rejected() {
     let parsed = hew_parser::parse(
-        r"
-        type Point { x: i64, }
-        impl Nonexistent for Point {
-            fn shift(pt: Point) -> i64 { pt.x }
-        }
-        fn main() { let p = Point { x: 1 }; let _ = p.shift(); }
-        ",
+        r"type Point {
+    x: i64;
+}
+
+impl Nonexistent for Point {
+    fn shift(pt: Point) -> i64 {
+        pt.x
+    }
+}
+
+fn main() {
+    let p = Point { x: 1 };
+    let _ = p.shift();
+}
+",
     );
     assert!(
         parsed.errors.is_empty(),
@@ -3079,17 +3125,22 @@ fn impl_of_marker_trait_without_declared_methods_is_accepted() {
     // declare no method set, so their absence from `trait_defs` must not be
     // read as an undeclared trait.
     let parsed = hew_parser::parse(
-        r"
-        type Key { id: i64, }
-        impl Eq for Key {
-            fn eq(left: Key, right: Key) -> bool { left.id == right.id }
-        }
-        fn main() {
-            let a = Key { id: 1 };
-            let b = Key { id: 1 };
-            let _ = a.eq(b);
-        }
-        ",
+        r"type Key {
+    id: i64;
+}
+
+impl Eq for Key {
+    fn eq(left: Key, right: Key) -> bool {
+        left.id == right.id
+    }
+}
+
+fn main() {
+    let a = Key { id: 1 };
+    let b = Key { id: 1 };
+    let _ = a.eq(b);
+}
+",
     );
     assert!(
         parsed.errors.is_empty(),
@@ -3114,10 +3165,14 @@ fn impl_of_marker_trait_without_declared_methods_is_accepted() {
 fn foreign_impl_program(root_source: &str) -> TypeCheckOutput {
     let thing_path: std::path::PathBuf = "pkgs/thing.hew".into();
     let mut thing = hew_parser::parse(
-        r"
-        pub type Thing { v: i64, }
-        pub fn make() -> Thing { Thing { v: 7 } }
-        ",
+        r"pub type Thing {
+    v: i64;
+}
+
+pub fn make() -> Thing {
+    Thing { v: 7 }
+}
+",
     );
     let mut root = hew_parser::parse(root_source);
     for parsed in [&thing, &root] {

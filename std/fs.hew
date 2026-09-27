@@ -27,7 +27,7 @@
 //!                 fs.IoError.NotFound(_) => println("missing"),
 //!                 _ => println("i/o error"),
 //!             }
-//!         },
+//!         }
 //!     }
 //! }
 //! ```
@@ -44,21 +44,21 @@ import std.encoding.utf8;
 /// `net.NetError` in `std.net`.
 pub enum IoError {
     /// The target path does not exist.
-    NotFound(i64),
+    NotFound(i64);
     /// The process lacks permission for the operation.
-    PermissionDenied(i64),
+    PermissionDenied(i64);
     /// A file or directory already exists at the target path.
-    AlreadyExists(i64),
+    AlreadyExists(i64);
     /// The operation timed out (e.g. the blocking pool exceeded its deadline).
-    TimedOut(i64),
+    TimedOut(i64);
     /// Operation was cancelled (e.g., the blocking pool was shut down mid-call).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the deadline expired; `Cancelled`
     /// means the operation was abandoned for another reason.
-    Cancelled(i64),
+    Cancelled(i64);
     /// Any other I/O failure. The raw code is 0 when there is no OS error,
     /// including invalid UTF-8 file contents.
-    Other(i64),
+    Other(i64);
 }
 
 // WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
@@ -139,7 +139,7 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
 ///     let result: Result<(), fs.IoError> = fs.delete("/tmp/scratch-file");
 ///     match result {
 ///         .Err(e) => panic(f"operation failed: {e}"),
-///         .Ok(_) => {},
+///         .Ok(_) => {}
 ///     }
 /// }
 /// ```

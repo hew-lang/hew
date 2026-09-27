@@ -18,7 +18,7 @@ fn test_from_json_to_json_round_trip_int_field() {
         .Ok(val) => {
             let field = val.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
             assert(field.get_int().expect("get_int succeeds") == 42);
-        },
+        }
         .Err(_) => panic("msgpack round-trip produced unparseable JSON"),
     }
 }
@@ -45,7 +45,7 @@ fn test_try_from_json_invalid_surfaces_reason() {
         .Err(msg) => {
             assert(msg.contains("msgpack:"));
             assert(msg.contains("parse JSON"));
-        },
+        }
     }
 }
 
@@ -80,10 +80,10 @@ fn test_try_to_json_valid_ok() {
                 .Ok(val) => {
                     let field = val.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
                     assert(field.get_int().expect("get_int succeeds") == 42);
-                },
+                }
                 .Err(_) => panic("try_to_json round-trip produced unparseable JSON"),
             }
-        },
+        }
         .Err(_) => panic("expected valid msgpack bytes to succeed"),
     }
 }
@@ -100,7 +100,7 @@ fn test_string_root_round_trip() {
     match r {
         .Ok(val) => {
             assert(val.get_string().expect("get_string succeeds") == "hello");
-        },
+        }
         .Err(_) => panic("msgpack string round-trip produced unparseable JSON"),
     }
 }
@@ -116,7 +116,7 @@ fn test_array_round_trip_length() {
     match r {
         .Ok(val) => {
             assert(val.array_len().expect("array_len succeeds") == 3);
-        },
+        }
         .Err(_) => panic("msgpack array round-trip produced unparseable JSON"),
     }
 }
@@ -133,7 +133,7 @@ fn test_array_round_trip_elements() {
             let e2 = val.array_get(2).expect("array_get succeeds").expect("array_get returns a value");
             assert(e0.get_int().expect("get_int succeeds") == 10);
             assert(e2.get_int().expect("get_int succeeds") == 30);
-        },
+        }
         .Err(_) => panic("msgpack array element round-trip produced unparseable JSON"),
     }
 }
@@ -152,7 +152,7 @@ fn test_nested_object_round_trip() {
             let a_val = val.get_field("a").expect("get_field succeeds").expect("get_field returns a value");
             let b_val = a_val.get_field("b").expect("get_field succeeds").expect("get_field returns a value");
             assert(b_val.get_int().expect("get_int succeeds") == 7);
-        },
+        }
         .Err(_) => panic("msgpack nested object round-trip produced unparseable JSON"),
     }
 }
@@ -189,7 +189,7 @@ fn test_unicode_string_field_round_trip() {
             assert(s.byte_len() == 6);
             assert(s.starts_with("h"));
             assert(s.ends_with("llo"));
-        },
+        }
         .Err(_) => panic("msgpack unicode round-trip produced unparseable JSON"),
     }
 }
@@ -226,7 +226,7 @@ fn test_encode_int_zero_round_trip() {
     match r {
         .Ok(val) => {
             assert(val.get_int().expect("get_int succeeds") == 0);
-        },
+        }
         .Err(_) => panic("msgpack integer 0 round-trip produced unparseable JSON"),
     }
 }
@@ -276,7 +276,7 @@ fn test_try_encode_bytes_of_an_empty_value_is_an_empty_bin_not_a_failure() {
             assert(encoded.len() == 2);
             assert(encoded[0] == 196); // 0xc4 bin8
             assert(encoded[1] == 0);
-        },
+        }
         .Err(reason) => panic(f"an empty bytes value must encode: {reason}"),
     }
 }
@@ -285,7 +285,7 @@ fn test_try_encode_bytes_of_an_empty_value_is_an_empty_bin_not_a_failure() {
 fn test_codec_failure_does_not_leak_into_the_next_call() {
     match msgpack.from_json("{not json}") {
         .Ok(_) => panic("expected invalid JSON to fail"),
-        .Err(_) => {},
+        .Err(_) => {}
     }
     match msgpack.encode_int(7) {
         .Ok(encoded) => assert(encoded.len() > 0),

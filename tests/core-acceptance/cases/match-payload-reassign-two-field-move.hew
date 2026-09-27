@@ -1,11 +1,20 @@
-enum Pair {  Both(Vec<i64>, Vec<i64>), Neither }
-fn mk() -> Pair { Pair.Both(seed(), seed()) }
+enum Pair {
+    Both(Vec<i64>, Vec<i64>);
+    Neither;
+}
+
+fn mk() -> Pair {
+    Pair.Both(seed(), seed())
+}
+
 fn main() -> i64 {
     var out = 0;
     match mk() {
         Pair.Both(x, y) => {
-            var wx = x; var wy = y;
-            wx = seed(); wy = seed();
+            var wx = x;
+            var wy = y;
+            wx = seed();
+            wy = seed();
             out = wx.len() + wy.len();
         }
         Pair.Neither => {}

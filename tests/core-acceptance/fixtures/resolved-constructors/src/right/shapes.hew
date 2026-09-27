@@ -1,20 +1,20 @@
 pub enum Parcel {
-    Full { count: i64, label: string },
-    Empty,
+    Full { count: i64; label: string;  }
+    Empty;
 }
 
 pub type Record {
-    count: i64,
-    label: string,
+    count: i64;
+    label: string;
 }
 
 pub machine Gate {
     events {
-        Open,
+        Open;
     }
 
-    state Closed { count: i64, label: string, },
-    state Opened { count: i64, label: string, },
+    state Closed { count: i64; label: string; }
+    state Opened { count: i64; label: string; }
 
     on Open: Closed => Opened { count: state.count, label: state.label }
 

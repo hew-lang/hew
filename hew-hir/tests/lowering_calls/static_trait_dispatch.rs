@@ -173,33 +173,55 @@ fn sample() -> string {
         &[
             (
                 "left::render",
-                r#"
-pub trait Render {
+                r#"pub trait Render {
     fn render(value: Self) -> string;
 }
-pub type Box<T> { value: T, }
-pub fn identity() -> string { "left-direct" }
-impl<T> Render for Box<T> {
-    fn render(value: Box<T>) -> string { "left-generic" }
+
+pub type Box<T> {
+    value: T;
 }
+
+pub fn identity() -> string {
+    "left-direct"
+}
+
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string {
+        "left-generic"
+    }
+}
+
 impl Render for Box<i64> {
-    fn render(value: Box<i64>) -> string { "left-i64" }
+    fn render(value: Box<i64>) -> string {
+        "left-i64"
+    }
 }
 "#,
             ),
             (
                 "right::paint",
-                r#"
-pub trait Render {
+                r#"pub trait Render {
     fn render(value: Self) -> string;
 }
-pub type Box<T> { value: T, }
-pub fn identity() -> string { "right-direct" }
-impl<T> Render for Box<T> {
-    fn render(value: Box<T>) -> string { "right-generic" }
+
+pub type Box<T> {
+    value: T;
 }
+
+pub fn identity() -> string {
+    "right-direct"
+}
+
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string {
+        "right-generic"
+    }
+}
+
 impl Render for Box<string> {
-    fn render(value: Box<string>) -> string { "right-string" }
+    fn render(value: Box<string>) -> string {
+        "right-string"
+    }
 }
 "#,
             ),
@@ -377,17 +399,25 @@ impl Render for Box<string> {
 
 #[test]
 fn v1_basic_static_trait_dispatch_emits_call_trait_method_static() {
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
-type Point { x: i64, y: i64, }
-impl Show for Point {
-    fn show(p: Point) -> string { "Point" }
+
+type Point {
+    x: i64;
+    y: i64;
 }
+
+impl Show for Point {
+    fn show(p: Point) -> string {
+        "Point"
+    }
+}
+
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     let p = Point { x: 1, y: 2 };
     display(p)
@@ -411,11 +441,15 @@ fn example() -> string {
 #[test]
 fn v2_missing_impl_reports_undefined_method() {
     // Calling a method not declared by any bound trait → error
-    let src = r"
-trait Show {
+    let src = r"trait Show {
     fn show(val: Self) -> string;
 }
-type Point { x: i64, y: i64, }
+
+type Point {
+    x: i64;
+    y: i64;
+}
+
 fn display<T: Show>(item: T) -> string {
     item.nonexistent()
 }
@@ -432,23 +466,35 @@ fn display<T: Show>(item: T) -> string {
 
 #[test]
 fn v3_multiple_bounds_distinct_methods() {
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
+
 trait Size {
     fn size(val: Self) -> i64;
 }
-type Box { w: i64, h: i64, }
+
+type Box {
+    w: i64;
+    h: i64;
+}
+
 impl Show for Box {
-    fn show(b: Box) -> string { "Box" }
+    fn show(b: Box) -> string {
+        "Box"
+    }
 }
+
 impl Size for Box {
-    fn size(b: Box) -> i64 { b.w * b.h }
+    fn size(b: Box) -> i64 {
+        b.w * b.h
+    }
 }
+
 fn describe<T: Show + Size>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     describe(Box { w: 3, h: 4 })
 }
@@ -470,23 +516,34 @@ fn example() -> string {
 
 #[test]
 fn v4_supertrait_inherited_method() {
-    let src = r#"
-trait Base {
+    let src = r#"trait Base {
     fn name(val: Self) -> string;
 }
+
 trait Extended: Base {
     fn extra(val: Self) -> i64;
 }
-type Widget { label: string, }
+
+type Widget {
+    label: string;
+}
+
 impl Base for Widget {
-    fn name(w: Widget) -> string { w.label }
+    fn name(w: Widget) -> string {
+        w.label
+    }
 }
+
 impl Extended for Widget {
-    fn extra(w: Widget) -> i64 { 42 }
+    fn extra(w: Widget) -> i64 {
+        42
+    }
 }
+
 fn get_name<T: Extended>(item: T) -> string {
     item.name()
 }
+
 fn example() -> string {
     get_name(Widget { label: "ok" })
 }
@@ -511,29 +568,44 @@ fn example() -> string {
 fn v5_supertrait_dedup_same_declaring_trait() {
     // If T: A + B and both A and B inherit from Root which declares `id`,
     // we should NOT reject as ambiguous — the declaring trait is the same (Root).
-    let src = r"
-trait Root {
+    let src = r"trait Root {
     fn id(val: Self) -> i64;
 }
+
 trait A: Root {
     fn a_only(val: Self) -> i64;
 }
+
 trait B: Root {
     fn b_only(val: Self) -> i64;
 }
-type Thing { v: i64, }
+
+type Thing {
+    v: i64;
+}
+
 impl Root for Thing {
-    fn id(t: Thing) -> i64 { t.v }
+    fn id(t: Thing) -> i64 {
+        t.v
+    }
 }
+
 impl A for Thing {
-    fn a_only(t: Thing) -> i64 { 1 }
+    fn a_only(t: Thing) -> i64 {
+        1
+    }
 }
+
 impl B for Thing {
-    fn b_only(t: Thing) -> i64 { 2 }
+    fn b_only(t: Thing) -> i64 {
+        2
+    }
 }
+
 fn get_id<T: A + B>(item: T) -> i64 {
     item.id()
 }
+
 fn main() -> i64 {
     get_id(Thing { v: 99 })
 }
@@ -591,20 +663,30 @@ fn v6b_supertrait_redeclaration_is_ambiguous() {
     // error instead — the rejection site moves, but the program is
     // still rejected. Either form is acceptable for this fail-closed
     // contract; the test currently exercises the V0.5 behaviour.
-    let src = r#"
-trait A {
+    let src = r#"trait A {
     fn describe(val: Self) -> string;
 }
+
 trait B: A {
     fn describe(val: Self) -> string;
 }
-type Thing { x: i64, }
+
+type Thing {
+    x: i64;
+}
+
 impl A for Thing {
-    fn describe(t: Thing) -> string { "A" }
+    fn describe(t: Thing) -> string {
+        "A"
+    }
 }
+
 impl B for Thing {
-    fn describe(t: Thing) -> string { "B" }
+    fn describe(t: Thing) -> string {
+        "B"
+    }
 }
+
 fn report<T: B>(item: T) -> string {
     item.describe()
 }
@@ -622,17 +704,24 @@ fn report<T: B>(item: T) -> string {
 
 #[test]
 fn v7_return_type_flows_through() {
-    let src = r"
-trait Length {
+    let src = r"trait Length {
     fn len(val: Self) -> i64;
 }
-type List { count: i64, }
-impl Length for List {
-    fn len(l: List) -> i64 { l.count }
+
+type List {
+    count: i64;
 }
+
+impl Length for List {
+    fn len(l: List) -> i64 {
+        l.count
+    }
+}
+
 fn get_len<T: Length>(item: T) -> i64 {
     item.len()
 }
+
 fn main() -> i64 {
     get_len(List { count: 5 })
 }
@@ -656,17 +745,24 @@ fn main() -> i64 {
 
 #[test]
 fn v8_trait_method_with_multiple_args() {
-    let src = r"
-trait Adder {
+    let src = r"trait Adder {
     fn add(val: Self, x: i64, y: i64) -> i64;
 }
-type Calc { base: i64, }
-impl Adder for Calc {
-    fn add(c: Calc, x: i64, y: i64) -> i64 { c.base + x + y }
+
+type Calc {
+    base: i64;
 }
+
+impl Adder for Calc {
+    fn add(c: Calc, x: i64, y: i64) -> i64 {
+        c.base + x + y
+    }
+}
+
 fn compute<T: Adder>(item: T, a: i64, b: i64) -> i64 {
     item.add(a, b)
 }
+
 fn main() -> i64 {
     compute(Calc { base: 10 }, 3, 4)
 }
@@ -684,17 +780,24 @@ fn main() -> i64 {
 #[test]
 fn v9_self_substitution_in_return_type() {
     // Trait method returns Self — should substitute the type param.
-    let src = r"
-trait Clone {
+    let src = r"trait Clone {
     fn clone(val: Self) -> Self;
 }
-type Token { id: i64, }
-impl Clone for Token {
-    fn clone(t: Token) -> Token { Token { id: t.id } }
+
+type Token {
+    id: i64;
 }
+
+impl Clone for Token {
+    fn clone(t: Token) -> Token {
+        Token { id: t.id }
+    }
+}
+
 fn dup<T: Clone>(item: T) -> T {
     item.clone()
 }
+
 fn main() -> i64 {
     let t = Token { id: 1 };
     let t2 = dup(t);
@@ -733,23 +836,34 @@ fn display<T: Show>(item: T) -> i64 {
 
 #[test]
 fn v14_nested_supertrait_access() {
-    let src = r#"
-trait Printable {
+    let src = r#"trait Printable {
     fn print_str(val: Self) -> string;
 }
+
 trait Formattable: Printable {
     fn format(val: Self) -> string;
 }
-type Doc { content: string, }
+
+type Doc {
+    content: string;
+}
+
 impl Printable for Doc {
-    fn print_str(d: Doc) -> string { d.content }
+    fn print_str(d: Doc) -> string {
+        d.content
+    }
 }
+
 impl Formattable for Doc {
-    fn format(d: Doc) -> string { d.content }
+    fn format(d: Doc) -> string {
+        d.content
+    }
 }
+
 fn render<T: Formattable>(item: T) -> string {
     item.print_str()
 }
+
 fn example() -> string {
     render(Doc { content: "hello" })
 }
@@ -776,17 +890,24 @@ fn v7b_generic_impl_preserves_impl_level_type_params() {
     // `Wrapper::show.type_params` so that monomorphization can specialize
     // per concrete instantiation. Prior to the W3.022 fix this dropped
     // `U` and emitted an unsubstituted bare symbol.
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
-type Wrapper<U> { inner: U, }
-impl<U> Show for Wrapper<U> {
-    fn show(w: Wrapper<U>) -> string { "wrapped" }
+
+type Wrapper<U> {
+    inner: U;
 }
+
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string {
+        "wrapped"
+    }
+}
+
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     display(Wrapper<i64> { inner: 7 })
 }
@@ -824,17 +945,24 @@ fn v15_static_dispatch_monomorphization_keeps_canonical_owner_and_typed_args() {
     // `Wrapper<i64>`. The registry authority is the outer declaration's
     // ItemId plus this typed argument spine; it must not manufacture the
     // legacy leaf-derived `Wrapper::show` string as a second identity.
-    let src = r#"
-trait Show {
+    let src = r#"trait Show {
     fn show(val: Self) -> string;
 }
-type Wrapper<U> { inner: U, }
-impl<U> Show for Wrapper<U> {
-    fn show(w: Wrapper<U>) -> string { "wrapped" }
+
+type Wrapper<U> {
+    inner: U;
 }
+
+impl<U> Show for Wrapper<U> {
+    fn show(w: Wrapper<U>) -> string {
+        "wrapped"
+    }
+}
+
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
+
 fn example() -> string {
     display(Wrapper<i64> { inner: 7 })
 }

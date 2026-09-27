@@ -1,20 +1,28 @@
 actor Worker {
     #[on(start)]
-    fn started() { println("start"); }
-    receive fn boom() { panic("worker failed"); }
+    fn started() {
+        println("start");
+    }
+    receive fn boom() {
+        panic("worker failed");
+    }
 }
 
 supervisor App {
-    strategy: one_for_one,
-    intensity: 1 within 60s,
-    child worker: Worker,
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child worker: Worker;
 }
 
 fn main() {
     let app = spawn App;
-    for _ in 0..2 {
+    for _ in 0 .. 2 {
         let _ = app.worker.boom();
-        let _ = await_restart app.worker;
+        let _ = {
+            let __hew_migrated_role_360 = app.worker;
+            restarted(__hew_migrated_role_360);
+            __hew_migrated_role_360
+        };
     }
     println("budget spent");
 }

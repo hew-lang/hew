@@ -60,11 +60,9 @@ fn main() {
     println(nested.len());
     println(nested.get(0).unwrap_or("missing"));
     println(nested.get(1).unwrap_or("missing"));
-
     let broke = own_break_sink();
     println(broke.len());
     println(broke.get(0).unwrap_or("missing"));
-
     println(nested_return_no_sink());
     println("OK");
 }

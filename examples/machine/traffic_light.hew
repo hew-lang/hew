@@ -11,11 +11,11 @@
 //   hew machine diagram examples/machine/traffic_light.hew --format json
 machine TrafficLight {
     events {
-        Tick,
+        Tick;
     }
 
     emits {
-        Signal { label: string, },
+        Signal { label: string; }
     }
 
     state Red {
@@ -25,21 +25,21 @@ machine TrafficLight {
         exit {
             emit Signal { label: "leaving red" };
         }
-    },
+    }
     state Green {
         entry {
             emit Signal { label: "signal: GREEN — go" };
         }
-    },
+    }
     state Yellow {
         entry {
             emit Signal { label: "signal: YELLOW — prepare to stop" };
         }
-    },
+    }
 
-    on Tick: Red => Green,
-    on Tick: Green => Yellow,
-    on Tick: Yellow => Red,
+    on Tick: Red => Green;
+    on Tick: Green => Yellow;
+    on Tick: Yellow => Red;
 }
 
 fn main() {

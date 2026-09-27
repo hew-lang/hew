@@ -1,6 +1,6 @@
 // String retain-on-share coverage for every remaining co-owner mint.
 type Holder {
-    payload: string,
+    payload: string;
 }
 
 fn duplicate(value: string) -> (string, string) {

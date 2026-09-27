@@ -1,8 +1,10 @@
-// Accept fixture: gen{} with an explicit `return` but no yield.
-// `gen { return 1; }` is valid: `return` targets the Return component (i64),
-// the body never yields so Yield=Never.  Produces Generator<Never, i64>.
-// HIR/MIR lowering is still fail-closed on GenBlock; hew check exercises
-// only the type-checker accept path.
+// A generator with no yield stays lazy and exhausts without a value.
 fn main() {
-    let _g = gen { return 1; };
+    let captured = "never started";
+    let _unused = gen { println(captured); return 0; };
+    let values = gen { println("started"); return 1; };
+    match values.next() {
+        .Some(_) => panic("non-yielding generator yielded"),
+        .None => println("finished"),
+    }
 }

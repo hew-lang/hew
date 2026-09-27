@@ -278,14 +278,20 @@ fn projected_loans_require_the_exact_root_type_and_ownership() {
 /// A local nested field loan depends directly on the root, with no intermediate loan.
 fn projected_borrow_module() -> hew_sir::SemModule {
     let module = fixture::lower_source(
-        r#"
-        type Inner { items: Vec<string>, }
-        type Outer { inner: Inner, sibling: string, }
-        fn main() -> i64 {
-            let outer = Outer { inner: Inner { items: ["first", "second"] }, sibling: "keep" };
-            outer.inner.items[0].len()
-        }
-    "#,
+        r#"type Inner {
+    items: Vec<string>;
+}
+
+type Outer {
+    inner: Inner;
+    sibling: string;
+}
+
+fn main() -> i64 {
+    let outer = Outer { inner: Inner { items: ["first", "second"] }, sibling: "keep" };
+    outer.inner.items[0].len()
+}
+"#,
     );
     let main = &module.functions[0];
     let plan = hew_sir::place_plan(

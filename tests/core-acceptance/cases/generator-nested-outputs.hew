@@ -6,18 +6,24 @@ gen fn words(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = words(label);
-    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() {
+        .Some(value) => println(value),
+        .None => panic("empty"),
+    }
     values
 }
 
 fn main() {
     {
-        let values = gen {
-            yield started("yielded");
-            started("returned")
-        };
-        match values.next() { .Some(_child) => println("received"), .None => panic("missing child"), }
-        match values.next() { .Some(_child) => panic("extra child"), .None => println("finished"), }
-    }
+        let values = gen { yield started("yielded"); started("returned") };
+        match values.next() {
+            .Some(_child) => println("received"),
+            .None => panic("missing child"),
+        }
+        match values.next() {
+            .Some(_child) => panic("extra child"),
+            .None => println("finished"),
+        }
+    };
     println("done");
 }

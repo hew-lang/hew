@@ -1309,7 +1309,7 @@ mod tests {
         let user_source = user_net_dir.join("net.hew");
         fs::write(
             &user_source,
-            "pub type Handle { marker: i64, }\npub type Endpoint { marker: i64, }\n",
+            "pub type Handle {\n    marker: i64;\n}\n\npub type Endpoint {\n    marker: i64;\n}\n",
         )
         .expect("write user net lookalike");
 
@@ -1763,7 +1763,7 @@ mod tests {
         let fixture = TestDir::new("registry-signature-record-owner");
         fs::write(
             fixture.root.join("record_owner.hew"),
-            "pub type Packet { value: i64 }\n",
+            "pub type Packet {\n    value: i64;\n}\n",
         )
         .expect("write record owner");
         fs::write(
@@ -1773,7 +1773,7 @@ mod tests {
         .expect("write record importer");
         fs::write(
             fixture.root.join("lookalike.hew"),
-            "pub type Packet { other: string }\n",
+            "pub type Packet {\n    other: string;\n}\n",
         )
         .expect("write record lookalike");
 
@@ -1914,7 +1914,7 @@ mod tests {
     #[test]
     fn same_legacy_receiver_spelling_never_cross_wires_loaded_modules() {
         fn shared_info(c_symbol: &str, dispatch_through_impl: bool) -> ModuleInfo {
-            let parsed = hew_parser::parse("pub type Pattern { value: i32, }\n");
+            let parsed = hew_parser::parse("pub type Pattern {\n    value: i32;\n}\n");
             assert!(parsed.errors.is_empty());
             ModuleInfo {
                 source_path: None,

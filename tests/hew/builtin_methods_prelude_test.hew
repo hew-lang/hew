@@ -2,8 +2,8 @@
 //! `VecIter` adapter chain resolve their std methods like `.len()`.
 
 type Claim {
-    run_id: string,
-    amount: i64,
+    run_id: string;
+    amount: i64;
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn test_result_chain_recovers() {
 // A method's own type parameter stays distinct from a caller parameter of the
 // same name that the receiver carries in.
 type Boxed<T> {
-    value: T,
+    value: T;
 }
 
 impl<T> Boxed<T> {

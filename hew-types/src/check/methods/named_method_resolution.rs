@@ -853,7 +853,7 @@ impl Checker {
         &mut self,
         type_args: &[Ty],
         receiver_ty: &Ty,
-        receiver: &Spanned<Expr>,
+        _receiver: &Spanned<Expr>,
         method: &str,
         args: &[CallArg],
         span: &Span,
@@ -909,44 +909,21 @@ impl Checker {
                 self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
             }
             "close" => {
-                // No arguments expected. Synthesize any supplied args for
-                // recovery diagnostics, but do not accept them: MIR lowers only
-                // the receiver for the handle's close.
-                if !args.is_empty() {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "`close` on an actor handle expects no arguments, but {} were supplied",
-                            args.len()
-                        ),
-                    );
-                }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // `.close()` is the same terminal release `close(handle)`
-                // performs on any local actor handle.
-                self.actor_delivery_calls.insert(
-                    SpanKey::in_module(span, self.current_module_idx),
-                    crate::actor_delivery::ActorDeliveryCall::Close,
+                self.report_migration_diagnostic(
+                    TypeErrorKind::ActorHandleMethodRetired,
+                    "E_ACTOR_HANDLE_METHOD_RETIRED: lambda actor `.close()` is retired".to_string(),
+                    "write `stop(handle); stopped(handle);`".to_string(),
+                    span,
                 );
-                self.record_submission_suspension(span, true);
-                // Consuming: the actor(M) -> R handle binding is moved.
-                self.method_call_consumes_receiver
-                    .insert(SpanKey::in_module(span, self.current_module_idx));
-                let resolved_recv = self.subst.resolve(receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
-                // Returns `()` — the lambda-actor release is unconditionally
-                // successful (the runtime refcount decrement / stop signal never
-                // fails for a well-formed handle). Using `Unit` rather than
-                // `Result<(), CloseError>` avoids registering the `CloseError`
-                // enum instantiation in HIR, which would require a codegen layout
-                // for the `CloseError` payload that the pipeline does not yet have.
-                // A raw `Duplex::close()` keeps `Result<(), CloseError>` because
-                // its close CAN fail (I/O flush errors on streams and connections).
-                Ty::Unit
+                if self.migration_mode {
+                    Ty::Unit
+                } else {
+                    Ty::Error
+                }
             }
             _ => {
                 // Synthesize args for error recovery.

@@ -289,7 +289,7 @@ fn wire_actor_emits_target_walked_ctor_section() {
 
 /// A remote member whose payload has a wire schema: the one actor protocol
 /// that registers request and reply codecs.
-const WIRE_ECHO: &str = "#[wire] type Ping { seq: i64 @1 }\nactor Echo { receive fn handle(msg: Ping) -> i64 { msg.seq } }\nimpl ActorMsg for Echo { type Msg = Ping; type Reply = i64; }\n";
+const WIRE_ECHO: &str = "#[wire]\ntype Ping {\n    seq: i64 @1;\n}\n\nactor Echo {\n    receive fn handle(msg: Ping) -> i64 {\n        msg.seq\n    }\n}\n\nimpl ActorMsg for Echo {\n    type Msg = Ping;\n    type Reply = i64;\n}\n";
 
 #[cfg(target_os = "linux")]
 const ACTOR_CODEC_PROBE: &str = r#"

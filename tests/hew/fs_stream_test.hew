@@ -6,7 +6,6 @@ import std.net;
 
 import std.stream;
 
-
 // hew_stream_last_error / hew_stream_last_errno are the single shared
 // thread-local error channel declared once in hew-runtime (see
 // hew-runtime/src/stream_error.rs); std/fs.hew declares this exact same
@@ -33,14 +32,15 @@ fn test_try_read_missing_returns_not_found() {
     match fs.read(file_path) {
         .Ok(_) => panic("expected missing file error"),
         .Err(err) => match err {
-            IoError.NotFound(_) => {},
+            IoError.NotFound(_) => {}
             _ => panic("expected IoError::NotFound"),
-        },
+        }
     }
 }
 
 #[test]
 #[serial]
+#[real_time]
 fn test_read_distinguishes_empty_unicode_and_invalid_utf8() {
     let file_path = "tests/hew/_fs_stream_text_outcomes.txt";
     cleanup_file(file_path);
@@ -54,14 +54,14 @@ fn test_read_distinguishes_empty_unicode_and_invalid_utf8() {
         .Err(error) => match error {
             fs.IoError.Other(raw) => assert(raw == 0),
             _ => panic("encoding failure must not invent an OS error"),
-        },
+        }
     }
     // The checked wrapper consumes all error metadata, including errors without errno.
     unsafe {
         assert(!hew_stream_has_error());
         assert((hew_stream_last_errno() as i64) == 0);
         assert(hew_stream_last_error() == "");
-    }
+    };
     fs.write(file_path, "recovered").expect("write succeeds");
     assert(fs.read(file_path).expect("read succeeds") == "recovered");
     cleanup_file(file_path);
@@ -74,7 +74,7 @@ fn test_try_read_directory_returns_eisdir() {
         .Err(err) => match err {
             IoError.Other(errno) => assert(errno == 21),
             _ => panic("expected IoError::Other(EISDIR)"),
-        },
+        }
     }
 }
 
@@ -86,14 +86,15 @@ fn test_try_read_bytes_missing_returns_not_found() {
     match fs.read_bytes(file_path) {
         .Ok(_) => panic("expected missing file error"),
         .Err(err) => match err {
-            IoError.NotFound(_) => {},
+            IoError.NotFound(_) => {}
             _ => panic("expected IoError::NotFound"),
-        },
+        }
     }
 }
 
 #[test]
 #[serial]
+#[real_time]
 fn test_try_read_bytes_failure_drains_stale_error_message() {
     // Regression pin: try_read_bytes must drain hew_stream_last_error() on
     // its failure path, not just hew_stream_last_errno(). The two are
@@ -107,9 +108,9 @@ fn test_try_read_bytes_failure_drains_stale_error_message() {
     match fs.read_bytes(file_path) {
         .Ok(_) => panic("expected missing file error"),
         .Err(err) => match err {
-            IoError.NotFound(_) => {},
+            IoError.NotFound(_) => {}
             _ => panic("expected IoError::NotFound"),
-        },
+        }
     }
     // The failure path above must have already drained the message: a
     // direct read of the shared channel right after must come back empty.
@@ -141,7 +142,7 @@ fn test_try_write_read_size_and_delete_roundtrip() {
     let file_path = "tests/hew/_fs_stream_roundtrip.txt";
     cleanup_file(file_path);
     match fs.write(file_path, "hello") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected try_write to succeed"),
     }
     match fs.read(file_path) {
@@ -150,7 +151,7 @@ fn test_try_write_read_size_and_delete_roundtrip() {
     }
     assert(fs.size(file_path) == 5);
     match fs.delete(file_path) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected try_delete to succeed"),
     }
 }
@@ -165,9 +166,9 @@ fn test_try_rename_missing_source_returns_not_found() {
     match fs.rename(source_path, target_path) {
         .Ok(_) => panic("expected missing source error"),
         .Err(err) => match err {
-            IoError.NotFound(_) => {},
+            IoError.NotFound(_) => {}
             _ => panic("expected IoError::NotFound"),
-        },
+        }
     }
 }
 
@@ -179,11 +180,11 @@ fn test_try_rename_success() {
     cleanup_file(source_path);
     cleanup_file(target_path);
     match fs.write(source_path, "renamed") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected source write to succeed"),
     }
     match fs.rename(source_path, target_path) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected try_rename to succeed"),
     }
     assert(fs.exists(source_path) == false);
@@ -204,9 +205,9 @@ fn test_try_copy_missing_source_returns_not_found() {
     match fs.copy(source_path, target_path) {
         .Ok(_) => panic("expected missing source error"),
         .Err(err) => match err {
-            IoError.NotFound(_) => {},
+            IoError.NotFound(_) => {}
             _ => panic("expected IoError::NotFound"),
-        },
+        }
     }
 }
 
@@ -218,11 +219,11 @@ fn test_try_copy_success() {
     cleanup_file(source_path);
     cleanup_file(target_path);
     match fs.write(source_path, "copied") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected source write to succeed"),
     }
     match fs.copy(source_path, target_path) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected try_copy to succeed"),
     }
     assert(fs.exists(source_path));
@@ -240,11 +241,11 @@ fn test_try_append_and_try_read_bytes() {
     let file_path = "tests/hew/_fs_stream_bytes.txt";
     cleanup_file(file_path);
     match fs.write(file_path, "hello") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected initial write to succeed"),
     }
     match fs.append(file_path, " world") {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected try_append to succeed"),
     }
     match fs.read_bytes(file_path) {
@@ -273,7 +274,7 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
     let b3: u8 = 108;
     let b4: u8 = 111;
     match fs.write_bytes(file_path, "hello".to_bytes()) {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => panic("expected try_write_bytes to succeed"),
     }
     match fs.read_bytes(file_path) {
@@ -284,7 +285,7 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
             assert(data[2] == b2);
             assert(data[3] == b3);
             assert(data[4] == b4);
-        },
+        }
         .Err(_) => panic("expected try_read_bytes to preserve bytes"),
     }
     cleanup_file(file_path);
@@ -299,9 +300,9 @@ fn test_try_list_dir_handles_success_and_missing_paths() {
     match fs.list_dir("tests/hew/_fs_stream_missing_dir") {
         .Ok(_) => panic("expected missing directory error"),
         .Err(err) => match err {
-            IoError.NotFound(_) => {},
+            IoError.NotFound(_) => {}
             _ => panic("expected IoError::NotFound"),
-        },
+        }
     }
 }
 
@@ -316,7 +317,7 @@ fn test_try_list_dir_regular_file_returns_enotdir() {
         .Err(err) => match err {
             IoError.Other(errno) => assert(errno == 20),
             _ => panic("expected IoError::Other(ENOTDIR)"),
-        },
+        }
     }
     cleanup_file(file_path);
 }
@@ -332,7 +333,7 @@ fn test_try_write_reports_enotdir_errno() {
         .Err(err) => match err {
             IoError.Other(errno) => assert(errno == 20),
             _ => panic("expected IoError::Other(ENOTDIR)"),
-        },
+        }
     }
     cleanup_file(file_path);
 }
@@ -485,9 +486,9 @@ fn test_try_mkdir_existing_returns_already_exists() {
     match result {
         .Ok(_) => panic("expected mkdir on an existing directory to fail"),
         .Err(err) => match err {
-            IoError.AlreadyExists(_) => {},
+            IoError.AlreadyExists(_) => {}
             _ => panic("expected IoError::AlreadyExists for an existing directory"),
-        },
+        }
     }
 }
 

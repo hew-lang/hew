@@ -4,6 +4,7 @@
 //! target, and both importers see the same declaration.
 
 import probe.lib;
+
 import probe.mid;
 
 fn main() {

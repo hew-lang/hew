@@ -11,16 +11,13 @@
 //! environment box per iteration.
 
 type Holder {
-    label: string,
-    op: fn(i64) -> i64,
+    label: string;
+    op: fn(i64) -> i64;
 }
 
 fn make() -> Holder {
     let k = 3;
-    Holder {
-        label: ("label-" + "x"),
-        op: |x| x * k,
-    }
+    Holder { label: ("label-" + "x"), op: |x| x * k }
 }
 
 fn main() -> i64 {

@@ -1066,6 +1066,7 @@ pub(crate) fn fan_out_remote_monitor_down(
     watchers: Vec<crate::monitor::RemoteWatcherTarget>,
     reason: i32,
     crash_kind: u32,
+    end: crate::internal::types::ActorEndReason,
 ) {
     if watchers.is_empty() {
         return;
@@ -1089,6 +1090,7 @@ pub(crate) fn fan_out_remote_monitor_down(
                 ref_id: watcher.ref_id,
                 target,
                 reason,
+                end_reason: end as u8,
                 crash_kind: crash_kind.cast_signed(),
             };
             // A LINK watcher receives a link down (its node crashes the local
@@ -1469,8 +1471,8 @@ pub(crate) fn handle_inbound_monitor_down(payload: &crate::envelope::MonitorDown
             down.watcher_actor_id,
             down.monitor_id,
             down.target,
-            payload.reason,
             payload.crash_kind.cast_unsigned(),
+            payload.end_reason,
         );
     }
 }

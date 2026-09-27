@@ -1,10 +1,10 @@
 type Box {
-    v: Vec<i64>,
+    v: Vec<i64>;
 }
 
 actor TwoBoxes {
-    var x: Box,
-    var y: Box,
+    var x: Box;
+    var y: Box;
 
     receive fn flip() {
         let t = x;
@@ -14,16 +14,23 @@ actor TwoBoxes {
 
     receive fn sum_x() -> i64 {
         var s: i64 = 0;
-        for v in x.v { s = s + v; }
+        for v in x.v {
+            s = s + v;
+        }
         s
     }
 }
 
 fn main() -> i64 {
     var xv: Vec<i64> = Vec.new();
-    xv.push(1); xv.push(2); xv.push(3);
+    xv.push(1);
+    xv.push(2);
+    xv.push(3);
     var yv: Vec<i64> = Vec.new();
-    yv.push(10); yv.push(20); yv.push(30); yv.push(40);
+    yv.push(10);
+    yv.push(20);
+    yv.push(30);
+    yv.push(40);
     let a = spawn TwoBoxes(x: Box { v: xv }, y: Box { v: yv });
     var i: i64 = 0;
     while i < 25 {

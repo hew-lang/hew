@@ -1,7 +1,13 @@
 #[wire]
-type Inner { name: string @1, }
+type Inner {
+    name: string @1;
+}
+
 #[wire]
-enum Payload { Empty, Full(string, Vec<string>, Inner), }
+enum Payload {
+    Empty;
+    Full(string, Vec<string>, Inner);
+}
 
 fn main() -> i64 {
     var total: i64 = 0;
@@ -13,7 +19,10 @@ fn main() -> i64 {
         let p = Payload.Full("payload-label-value", tags, Inner { name: "inner-owned-name" });
         let raw = p.encode();
         let back = Payload.decode(raw);
-        let n = match back { Payload.Empty => 0, Payload.Full(_, _, _) => 1, };
+        let n = match back {
+            Payload.Empty => 0,
+            Payload.Full(_, _, _) => 1,
+        };
         total = total + n;
         i = i + 1;
     }

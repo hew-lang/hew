@@ -237,6 +237,7 @@ TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 # process signal, setup error, or malformed report. Release gates use the same
 # nextest invocation through `test-strict`, but require an all-pass exit.
 NEXTEST_WORKSPACE_FILTER ?=
+NEXTEST_PARTITION ?=
 NEXTEST_WORKSPACE_SELECTION_ARGS := --workspace --exclude hew-cabi --profile ci
 NEXTEST_WORKSPACE_ARGS := $(NEXTEST_WORKSPACE_SELECTION_ARGS) --no-fail-fast
 NEXTEST_FULL_INVENTORY := $(CARGO_TARGET_ROOT)/nextest-full-inventory.json
@@ -253,6 +254,14 @@ NEXTEST_WORKSPACE_ARGS += --filterset '$(NEXTEST_WORKSPACE_FILTER)'
 NEXTEST_RATCHET_INVENTORY_ARGS := --full-inventory "$(NEXTEST_FULL_INVENTORY)" --selected-inventory "$(NEXTEST_SELECTED_INVENTORY)"
 NEXTEST_PREPARE_FULL_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --message-format json > "$(NEXTEST_FULL_INVENTORY)"
 NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --filterset '$(NEXTEST_WORKSPACE_FILTER)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
+endif
+ifneq ($(strip $(NEXTEST_PARTITION)),)
+# Partitioned PR jobs still pass the full and selected inventories to the
+# ratchet, so expected tests in the other partition are not treated as lost.
+NEXTEST_WORKSPACE_ARGS += --partition 'hash:$(NEXTEST_PARTITION)'
+NEXTEST_RATCHET_INVENTORY_ARGS := --full-inventory "$(NEXTEST_FULL_INVENTORY)" --selected-inventory "$(NEXTEST_SELECTED_INVENTORY)"
+NEXTEST_PREPARE_FULL_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --message-format json > "$(NEXTEST_FULL_INVENTORY)"
+NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) $(if $(NEXTEST_WORKSPACE_FILTER),--filterset '$(NEXTEST_WORKSPACE_FILTER)') --partition 'hash:$(NEXTEST_PARTITION)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
 endif
 # nextest keeps its store under the workspace's `target/nextest`, not under
 # `CARGO_TARGET_DIR`, so an out-of-tree build still reports here.
@@ -446,7 +455,7 @@ stdlib: libhew-debug ## Build: build all standard-library packages
 # Internal integration-test bootstrap. Broad artifacts are explicit here and
 # are not imposed on every host-only gate.
 .PHONY: test-artifacts
-test-artifacts: shared-host-debug libhew-cross-release-lib wasm-runtime
+test-artifacts: hew-native libhew-cross-release-lib wasm-runtime
 
 # Cargo owns freshness for its configurable output tree. This target remains
 # phony deliberately: a fixed Make stamp cannot distinguish two different
@@ -881,7 +890,10 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 
 # Host release product. Other release gates and scripts consume this target
 # instead of repeating its Cargo package/profile selection.
-.PHONY: release-host
+.PHONY: release-cli release-host
+release-cli: require-host-cargo-target
+	cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
+
 release-host: require-host-cargo-target
 	cargo build -p hew-cli -p hew-lsp -p hew-observe --release $(CARGO_TARGET_FLAG)
 	cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
@@ -1459,7 +1471,7 @@ hew-fmt-check: hew-native hew-fmt-fidelity
 # Exercise representative migration inputs in an isolated copy so the proof
 # never edits the checkout. The second pass must leave the first-pass snapshot
 # byte-identical.
-test-migrate-corpus: hew
+test-migrate-corpus: hew-native
 	@set -e; migration_root=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
 	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
 	cp -R tests/corpus/migrate/. "$$migration_root/"; \
@@ -1467,7 +1479,7 @@ test-migrate-corpus: hew
 		cp "$$migration_input" "$${migration_input%.input}.hew"; \
 	done; \
 	echo "1/6 migrate accepted representative sources"; \
-	"$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/accept"; \
+	"$(DEBUG_HEW)" fmt --migrate --root "$$migration_root/accept"; \
 	echo "2/6 compare exact migrated sources"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \
 		migration_expected="$${migration_source%.hew}.expected"; \
@@ -1475,7 +1487,7 @@ test-migrate-corpus: hew
 	done; \
 	echo "3/6 require the unresolvable source to fail loudly"; \
 	migration_refusal="$$migration_root/refusal.log"; \
-	if "$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
+	if "$(DEBUG_HEW)" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
 		cat "$$migration_refusal"; \
 		echo "error: migration accepted the unresolvable representative site" >&2; \
 		exit 1; \
@@ -1484,14 +1496,14 @@ test-migrate-corpus: hew
 	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
 	echo "4/6 prove the migrated snapshot reaches a successful typecheck"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \
-		"$(BUILD_DIR)/bin/hew" check "$$migration_source"; \
+		"$(DEBUG_HEW)" check "$$migration_source"; \
 	done; \
 	echo "5/6 require a byte-identical second migration pass"; \
 	cp -R "$$migration_root/accept/." "$$migration_fixed/"; \
-	"$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/accept"; \
+	"$(DEBUG_HEW)" fmt --migrate --root "$$migration_root/accept"; \
 	diff -ru "$$migration_fixed" "$$migration_root/accept"; \
 	echo "6/6 require check mode to recognize the fixed point"; \
-	"$(BUILD_DIR)/bin/hew" fmt --migrate --check --root "$$migration_root/accept"
+	"$(DEBUG_HEW)" fmt --migrate --check --root "$$migration_root/accept"
 
 # Repo-wide hew check sweep over all tracked .hew files (excluding intentional
 # reject fixtures).  Ratchets against tests/expected-failures.tsv (suite = corpus).
@@ -1571,6 +1583,8 @@ COV_DIR          := coverage-out
 # Rust-only coverage (cargo test) — unchanged stable default.
 coverage:
 	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
+	cargo llvm-cov report --lcov --output-path $(COV_DIR)/lcov.info
+	cargo llvm-cov report
 	@echo "==> Open $(COV_DIR)/html/index.html"
 
 # Runtime FFI coverage via compiled-and-run Hew programs. Builds an

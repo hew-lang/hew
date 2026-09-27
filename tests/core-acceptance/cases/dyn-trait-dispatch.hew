@@ -3,7 +3,7 @@ trait Named {
 }
 
 type Person {
-    label: string,
+    label: string;
 }
 
 impl Named for Person {
@@ -13,7 +13,7 @@ impl Named for Person {
 }
 
 type Machine {
-    id: i64,
+    id: i64;
 }
 
 impl Named for Machine {

@@ -5,11 +5,17 @@ trait Shape {
     fn name(self) -> string;
 }
 
-type Box { v: i64 }
+type Box {
+    v: i64;
+}
 
 impl Shape for Box {
-    fn kind(self) -> string { "K" }
-    fn name(self) -> string { "N" }
+    fn kind(self) -> string {
+        "K"
+    }
+    fn name(self) -> string {
+        "N"
+    }
 }
 
 fn local_kind(s: dyn Shape) -> string {

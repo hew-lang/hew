@@ -9,13 +9,13 @@
 //! memory-safety leak oracle that pins the source's exactly-once field drop.
 
 type Boxed {
-    payload: [i64],
+    payload: [i64];
 }
 
 enum Reply {
-    Nil,
-    Num(i64),
-    Arr([Reply]),
+    Nil;
+    Num(i64);
+    Arr([Reply]);
 }
 
 // ── record-with-Vec-field: copy-in independence ────────────────────────────

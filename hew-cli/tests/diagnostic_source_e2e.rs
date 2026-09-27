@@ -333,7 +333,7 @@ fn cross_module_sir_unsupported_renders_without_a_caret() {
         ("main.hew", "import \"dep.hew\";\n\nfn main() {\n    let registry = Registry { conns: HashMap.new() };\n    fill(registry);\n}\n"),
         (
             "dep.hew",
-            "#[resource]\ntype Conn {\n    fd: i64,\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>,\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\npub fn fill(consume var registry: Registry) {\n    let conn = Conn { fd: 1 };\n    registry.conns.insert(\"a\", conn);\n}\n",
+            "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\npub fn fill(consume var registry: Registry) {\n    let conn = Conn { fd: 1 };\n    registry.conns.insert(\"a\", conn);\n}\n",
         ),
     ]);
     let main_path = fixture.path().join("main.hew");

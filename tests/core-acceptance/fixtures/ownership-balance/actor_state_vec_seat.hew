@@ -6,7 +6,7 @@
 // element slot per dispatch.
 
 actor Basket {
-    var items: Vec<string> = Vec.new(),
+    var items: Vec<string> = Vec.new();
     receive fn add(label: string) {
         items.push(label);
     }

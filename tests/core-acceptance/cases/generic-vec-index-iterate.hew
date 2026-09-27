@@ -1,11 +1,18 @@
 // A generic function reads and walks a `Vec<T>`. The element read is pinned as
 // a borrow while `T` is abstract; the exact instance decides whether that is a
 // real loan or an ordinary independent value.
-type Point { x: i64, y: i64 }
+type Point {
+    x: i64;
+    y: i64;
+}
 
-fn first<T: Clone>(xs: Vec<T>) -> T { xs[0] }
+fn first<T: Clone>(xs: Vec<T>) -> T {
+    xs[0]
+}
 
-fn maybe_first<T: Clone>(xs: Vec<T>) -> Option<T> { xs.get(0) }
+fn maybe_first<T: Clone>(xs: Vec<T>) -> Option<T> {
+    xs.get(0)
+}
 
 fn count<T>(xs: Vec<T>) -> i64 {
     var n = 0;
@@ -23,7 +30,11 @@ fn main() {
     println(f"names={first(names)} count={count(names)}");
     println(f"points={first(points).x} count={count(points)}");
     match maybe_first(nums) {
-        .Some(v) => { println(f"maybe={v}"); }
-        .None => { println("maybe=none"); }
+        .Some(v) => {
+            println(f"maybe={v}");
+        }
+        .None => {
+            println("maybe=none");
+        }
     }
 }

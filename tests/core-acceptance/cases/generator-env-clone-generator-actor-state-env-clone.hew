@@ -1,7 +1,9 @@
-type Config { label: string }
+type Config {
+    label: string;
+}
 
 actor Reader {
-    var name: string,
+    var name: string;
     receive gen fn stream() -> i64 {
         yield name.len();
         yield name.len() + 1;
@@ -9,9 +11,9 @@ actor Reader {
 }
 
 supervisor App(config: Config) {
-    strategy: one_for_one,
-    intensity: 3 within 60s,
-    child reader: Reader(name: config.label),
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child reader: Reader(name: config.label);
 }
 
 fn main() {
@@ -22,11 +24,14 @@ fn main() {
     var i: i64 = 0;
     while i < 16 {
         for value in reader.stream() {
-            if value <= 0 { panic("actor state value"); }
+            if value <= 0 {
+                panic("actor state value");
+            }
             seen = seen + 1;
         }
         i = i + 1;
     }
-    supervisor_stop(app);
+    stop(app);
+    stopped(app);
     print(f"{seen}:OK");
 }

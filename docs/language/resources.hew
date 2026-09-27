@@ -6,7 +6,7 @@
 //!
 //! ```hew
 //! #[resource]
-//! type Connection { id: i64, }
+//! type Connection { id: i64; }
 //! impl Connection {
 //!     fn close(consume self) { println(f"closed {self.id}"); }
 //! }

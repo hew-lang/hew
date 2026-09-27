@@ -4,6 +4,8 @@ fn f() -> Option<string> {
 
 fn main() {
     if let .Some(b) = f() {
-        if b.len() == 18 { print("m"); }
+        if b.len() == 18 {
+            print("m");
+        }
     }
 }

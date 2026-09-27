@@ -11,7 +11,6 @@ fn main() -> i64 {
     println("".starts_with(prefix));
     println(text.len());
     println(prefix.len());
-
     var changing = "alphabet".to_upper();
     println(changing.starts_with({
         changing = "changed".to_upper();

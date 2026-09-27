@@ -1,12 +1,19 @@
 import std.stream;
 
 actor Counter {
-    var count: i64 = 0,
-    var label: string = "count",
-    var journal: Stream<string>,
-    fn describe(prefix: string) -> string { prefix + " " + label }
-    fn tag() -> string { label }
-    fn bump(by: i64) -> i64 { count = count + by; count }
+    var count: i64 = 0;
+    var label: string = "count";
+    var journal: Stream<string>;
+    fn describe(prefix: string) -> string {
+        prefix + " " + label
+    }
+    fn tag() -> string {
+        label
+    }
+    fn bump(by: i64) -> i64 {
+        count = count + by;
+        count
+    }
     receive fn increment(by: i64) -> i64 {
         let total = bump(by);
         println(describe("total"));
@@ -32,6 +39,10 @@ fn main() {
         .Ok(total) => println(total),
         .Err(_) => panic("increment failed"),
     }
-    close(counter);
+    {
+        let __hew_migrated_actor_982 = counter;
+        stop(__hew_migrated_actor_982);
+        stopped(__hew_migrated_actor_982);
+    };
     println("closed");
 }

@@ -1,7 +1,7 @@
 //! Declaration-level generic bounds are enforced without blocking valid uses.
 
 type Box<T: Display> {
-    value: T,
+    value: T;
 }
 
 #[test]

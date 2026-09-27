@@ -16,7 +16,7 @@
 //! regression is legible.
 
 type Countdown {
-    n: i64,
+    n: i64;
 }
 
 impl Iterator for Countdown {
@@ -34,8 +34,8 @@ impl Iterator for Countdown {
 }
 
 type Map<I, A, B> {
-    iter: I,
-    f: fn(A) -> B,
+    iter: I;
+    f: fn(A) -> B;
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
@@ -50,8 +50,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
 }
 
 type Filter<I, A> {
-    iter: I,
-    pred: fn(A) -> bool,
+    iter: I;
+    pred: fn(A) -> bool;
 }
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
@@ -65,46 +65,37 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
                         return .Some(x);
                     }
                     // x rejected; dropped here
-                },
+                }
                 .None => {
                     return .None;
-                },
+                }
             }
         }
     }
 }
 
 /// Construct a lazy `Map` adapter (mirrors `std::iter::map`).
-fn mk_map<I, A, B>(consume it: I, consume f: fn(A) -> B) -> Map<I, A, B>
-where
-    I: Iterator<Item = A>,
-{
+fn mk_map<I, A, B>(consume it: I, consume f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
     Map { iter: it, f: f }
 }
 
 /// Construct a lazy `Filter` adapter (mirrors `std::iter::filter`).
-fn mk_filter<I, A>(consume it: I, consume pred: fn(A) -> bool) -> Filter<I, A>
-where
-    I: Iterator<Item = A>,
-{
+fn mk_filter<I, A>(consume it: I, consume pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
     Filter { iter: it, pred: pred }
 }
 
 /// Left-fold a fixed-`i64` iterator (mirrors `std::iter::fold`).
-fn fold_i64<I>(consume it: I, init: i64, consume f: fn(i64, i64) -> i64) -> i64
-where
-    I: Iterator<Item = i64>,
-{
+fn fold_i64<I>(consume it: I, init: i64, consume f: fn(i64, i64) -> i64) -> i64 where I: Iterator<Item = i64> {
     var acc = init;
     var iter = it;
     loop {
         match iter.next() {
             .Some(x) => {
                 acc = f(acc, x);
-            },
+            }
             .None => {
                 break;
-            },
+            }
         }
     }
     acc
@@ -120,7 +111,6 @@ fn main() -> i64 {
     if total != 18 {
         return 101;
     }
-
     // Filter-then-fold without map: Countdown{n:5}, filter (x % 2 != 0) → odd
     // items [5, 3, 1], sum = 9.
     let filtered2 = mk_filter(Countdown { n: 5 }, |x: i64| x % 2 != 0);
@@ -128,6 +118,5 @@ fn main() -> i64 {
     if total2 != 9 {
         return 102;
     }
-
     total
 }

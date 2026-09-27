@@ -4,9 +4,13 @@ use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen, tempdir};
 
-const SOURCE: &str = r#"
-type Task<T> { value: T }
-type Unit<T> { value: T }
+const SOURCE: &str = r#"type Task<T> {
+    value: T;
+}
+
+type Unit<T> {
+    value: T;
+}
 
 fn task_value(task: Task<i64>) -> i64 {
     task.value
@@ -34,9 +38,13 @@ fn source_path() -> (tempfile::TempDir, std::path::PathBuf) {
 
 fn package_imported_source_path() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir();
-    let module_source = r"
-pub type Task<T> { value: T }
-pub type Unit<T> { value: T }
+    let module_source = r"pub type Task<T> {
+    value: T;
+}
+
+pub type Unit<T> {
+    value: T;
+}
 
 pub fn shadow_sum(task: Task<i64>, unit: Unit<i64>) -> i64 {
     task.value + unit.value

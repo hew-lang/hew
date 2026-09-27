@@ -92,8 +92,8 @@ fn ordinary_borrow_positions_are_rejected() {
     for source in [
         "fn f(value: &i64) {}",
         "fn f() -> &i64 {}",
-        "type Field { value: &i64 }",
-        "enum Payload { Value(&i64) }",
+        "type Field { value: &i64; }",
+        "enum Payload { Value(&i64); }",
         "type Alias = &i64;",
         "trait Read { fn read(value: &i64); }",
         "type Callback = fn(&i64) -> i64;",

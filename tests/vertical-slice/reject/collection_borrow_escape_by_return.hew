@@ -4,7 +4,7 @@
 // it (use-after-close) and closed a second time by any downstream owner.
 #[resource]
 type Tok {
-    id: i64
+    id: i64;
 }
 
 impl Tok {

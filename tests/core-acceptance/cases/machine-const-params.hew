@@ -5,31 +5,31 @@
 
 machine Retry<const MAX: usize = 3> {
     events {
-        Fail,
-        Reset,
+        Fail;
+        Reset;
     }
 
-    state Trying { attempts: usize },
-    state Exhausted,
+    state Trying { attempts: usize; }
+    state Exhausted;
 
     on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
-    on Fail: Trying => Exhausted,
+    on Fail: Trying => Exhausted;
     on Reset: Trying => Trying { attempts: 0 }
     on Reset: Exhausted => Trying { attempts: 0 }
-    on Fail: Exhausted => Exhausted reenter,
+    on Fail: Exhausted => Exhausted reenter;
 }
 
 machine Fuse<const MAX: usize = 1> {
     events {
-        Fail,
+        Fail;
     }
 
-    state Whole { attempts: usize },
-    state Blown,
+    state Whole { attempts: usize; }
+    state Blown;
 
     on Fail: Whole => Whole when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
-    on Fail: Whole => Blown,
-    on Fail: Blown => Blown reenter,
+    on Fail: Whole => Blown;
+    on Fail: Blown => Blown reenter;
 }
 
 fn retry_label(value: Retry) -> string {
@@ -49,13 +49,12 @@ fn fuse_label(value: Fuse) -> string {
 fn main() {
     var retry: Retry = .Trying { attempts: 0 };
     println(retry_label(retry));
-    for _ in 0..3 {
+    for _ in 0 .. 3 {
         let _ = retry.step(.Fail);
         println(retry_label(retry));
     }
     let _ = retry.step(.Reset);
     println(retry_label(retry));
-
     var fuse: Fuse = .Whole { attempts: 0 };
     println(fuse_label(fuse));
     let _ = fuse.step(.Fail);

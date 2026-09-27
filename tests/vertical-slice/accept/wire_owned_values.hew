@@ -5,19 +5,19 @@ import std.encoding.wire;
 #[yaml("kebab-case")]
 #[wire]
 enum DispatchMode {
-    Idle,
-    SendNow(string, Vec<string>),
+    Idle;
+    SendNow(string, Vec<string>);
 }
 
 #[json(camelCase)]
 #[yaml("kebab-case")]
 #[wire]
 type Settings {
-    display_labels: Vec<Option<string>> @7,
-    rows: Vec<Vec<string>> @2,
-    binary_keys: HashMap<bytes, Vec<string>> @5,
-    delivery: DispatchMode @9,
-    comment: Option<string> @12 optional json("remark") yaml("note"),
+    display_labels: Vec<Option<string>> @7;
+    rows: Vec<Vec<string>> @2;
+    binary_keys: HashMap<bytes, Vec<string>> @5;
+    delivery: DispatchMode @9;
+    comment: Option<string> @12 optional json("remark") yaml("note");
 }
 
 fn valid(settings: Settings) -> bool {
@@ -33,7 +33,7 @@ fn valid(settings: Settings) -> bool {
             if data.len() != 8 || data[5] != 0 || data[6] != 195 {
                 return false;
             }
-        },
+        }
         .None => return false,
     }
     if let .Some(_) = settings.display_labels[1] {
@@ -53,7 +53,7 @@ fn valid(settings: Settings) -> bool {
             if values.len() != 1 || values[0] != "byte\0key" {
                 return false;
             }
-        },
+        }
         .None => return false,
     }
     match settings.delivery {
@@ -61,7 +61,7 @@ fn valid(settings: Settings) -> bool {
             if label != "packet\0name" || destinations[0] != "Montréal" {
                 return false;
             }
-        },
+        }
         .Idle => return false,
     }
     match settings.comment {
@@ -108,7 +108,7 @@ fn main() -> i64 {
             if value != "SECOND" {
                 return 9;
             }
-        },
+        }
         .None => return 10,
     }
     var unique: HashSet<bytes> = HashSet.new();

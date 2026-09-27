@@ -1,5 +1,5 @@
 type Inner {
-    data: Vec<string>,
+    data: Vec<string>;
 }
 
 impl Inner {
@@ -9,13 +9,13 @@ impl Inner {
 }
 
 type Claim {
-    config: Inner,
-    tag: string,
+    config: Inner;
+    tag: string;
 }
 
 enum Preparation {
-    Claimed(Claim),
-    Empty,
+    Claimed(Claim);
+    Empty;
 }
 
 fn make_claim() -> Result<Preparation, string> {
@@ -34,7 +34,7 @@ fn main() {
             let tag = claimed.tag;
             let count = config.consume();
             count + tag.len()
-        },
+        }
     };
     println(result);
 }

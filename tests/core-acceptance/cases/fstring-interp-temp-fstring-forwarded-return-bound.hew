@@ -1,4 +1,7 @@
-fn passthru(value: string) -> string { value }
+fn passthru(value: string) -> string {
+    value
+}
+
 fn main() -> i64 {
     var i: i64 = 0;
     var total: i64 = 0;
@@ -8,6 +11,8 @@ fn main() -> i64 {
         total = total + i;
         i = i + 1;
     }
-    if total != 1225 { return 82; }
+    if total != 1225 {
+        return 82;
+    }
     0
 }

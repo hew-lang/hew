@@ -10,7 +10,9 @@ trait Describable {
     }
 }
 
-type Widget { id: i64 }
+type Widget {
+    id: i64;
+}
 
 impl Describable for Widget {
     fn kind(w: Widget) -> string {

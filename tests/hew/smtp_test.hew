@@ -22,11 +22,11 @@ fn closed_loopback_port() -> i64 {
             let port = server.port();
             server.close();
             port
-        },
+        }
         .Err(_err) => {
             panic("could not claim an ephemeral loopback port");
             0
-        },
+        }
     }
 }
 
@@ -52,7 +52,7 @@ fn test_connect_to_a_closed_port_is_a_failure_not_a_live_conn() {
         .Ok(conn) => {
             conn.close();
             panic("expected a connect to a closed port to fail");
-        },
+        }
         .Err(msg) => assert(msg.contains("cannot reach")),
     }
 }
@@ -65,7 +65,7 @@ fn test_connect_tls_to_a_closed_port_is_a_failure_not_a_live_conn() {
         .Ok(conn) => {
             conn.close();
             panic("expected a TLS connect to a closed port to fail");
-        },
+        }
         .Err(msg) => assert(msg.contains("cannot reach")),
     }
 }
@@ -105,7 +105,7 @@ fn test_conn_connect_oversized_i64_port_rejects_before_relay_init() {
         .Ok(conn) => {
             conn.close();
             panic("expected an oversized port to be rejected, not wrapped");
-        },
+        }
         .Err(msg) => assert(msg.contains("out of range")),
     }
 }
@@ -117,7 +117,7 @@ fn test_conn_connect_tls_oversized_i64_port_rejects_before_relay_init() {
         .Ok(conn) => {
             conn.close();
             panic("expected an oversized port to be rejected, not wrapped");
-        },
+        }
         .Err(msg) => assert(msg.contains("out of range")),
     }
 }

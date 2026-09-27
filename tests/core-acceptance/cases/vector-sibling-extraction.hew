@@ -1,14 +1,14 @@
 type RunnerProvides {
-    harnesses: Vec<string>,
+    harnesses: Vec<string>;
 }
 
 type Runner {
-    name: string,
-    provides: RunnerProvides,
+    name: string;
+    provides: RunnerProvides;
 }
 
 type Plan {
-    runner: string,
+    runner: string;
 }
 
 fn main() {

@@ -39,9 +39,8 @@ fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirActorD
 
 #[test]
 fn hir_receive_handler_carries_state_guard() {
-    let src = r"
-actor Counter {
-    let count: i32,
+    let src = r"actor Counter {
+    let count: i32;
 
     receive fn inc(n: i32) {
         let seen: i32 = n;
@@ -109,9 +108,8 @@ fn main() {}
 #[test]
 fn actor_decl_lowering_happy_path() {
     // Logger: one state field, one receive handler, no lifecycle hooks, no init.
-    let src = r"
-actor Logger {
-    let label: string,
+    let src = r"actor Logger {
+    let label: string;
 
     receive fn log(msg: string) {
         let seen: string = msg;
@@ -222,9 +220,8 @@ fn main() {}
 
 #[test]
 fn actor_init_and_every_attribute_lower() {
-    let src = r"
-actor Worker {
-    let counter: i64,
+    let src = r"actor Worker {
+    let counter: i64;
 
     init(start: i64) {
         let seed: i64 = start;
@@ -279,10 +276,8 @@ fn main() {}
 
 #[test]
 fn actor_mailbox_and_overflow_lower() {
-    let src = r"
-actor Bounded {
-    mailbox 16
-    overflow drop_old,
+    let src = r"actor Bounded {
+    mailbox 16 overflow drop_old;
 
     receive fn ping() {
         let ok = true;

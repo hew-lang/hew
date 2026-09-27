@@ -1826,10 +1826,10 @@ pub struct ChildSpec {
     /// Indicates a dynamic pool (`simple_one_for_one` strategy child).
     #[serde(default)]
     pub is_pool: bool,
-    /// Per-child graceful-stop deadline, written `shutdown: <duration> |
-    /// brutal_kill | infinity`.  `None` means the supervisor default applies.
+    /// Per-child graceful-stop deadline, written `stop: <duration>`.
+    /// `None` means the supervisor default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shutdown: Option<ShutdownDirective>,
+    pub stop: Option<Spanned<Expr>>,
     /// Pool arity, written as the per-child clause `count: <expr>` after the
     /// init-arg parentheses (`pool ws: Worker(value: 7) count: 2;`). Arity
     /// lives in the child's clause namespace, never in the parenthesised list,
@@ -1853,22 +1853,6 @@ pub enum RestartPolicy {
     Permanent,
     Transient,
     Temporary,
-}
-
-/// Per-child shutdown directive: how long the supervisor waits for a child to
-/// stop gracefully before killing it.  Written `shutdown: <duration> |
-/// brutal_kill | infinity`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ShutdownDirective {
-    /// Graceful-stop deadline as a raw `Token::Duration` source string
-    /// (e.g. `"30s"`).  Unit interpretation stays in codegen.
-    Timeout(String),
-    /// Skip the graceful-stop deadline; kill the child immediately.
-    BrutalKill,
-    /// Wait indefinitely.  ACCEPTED-ONLY in v0.5: there is no per-child
-    /// deadline wheel in the runtime yet, so this parses but is not enforced.
-    /// See `format_child_spec` and the codegen note for the accepted-only seam.
-    Infinity,
 }
 
 // ── Machine declarations ─────────────────────────────────────────────

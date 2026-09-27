@@ -12,10 +12,10 @@ fn main() -> i64 {
         return 1;
     }
     match copy.get(1) {
-        .Some(_) => {},
+        .Some(_) => {}
         .None => {
             return 2;
-        },
+        }
     }
     println(copy.len());
     0

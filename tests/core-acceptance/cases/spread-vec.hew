@@ -4,11 +4,16 @@
 //
 // Harness verb: hew run
 
-type Item { name: string, parts: Vec<i64> }
+type Item {
+    name: string;
+    parts: Vec<i64>;
+}
 
 fn describe(label: string, xs: Vec<i64>) {
     var total = 0;
-    for n in xs { total = total + n; }
+    for n in xs {
+        total = total + n;
+    }
     println(f"{label}={xs.len()}:{total}");
 }
 
@@ -23,7 +28,6 @@ fn main() {
     let xs: Vec<i64> = [1, 2];
     let ys: Vec<i64> = [4, 5];
     let empty: Vec<i64> = [];
-
     describe("front", [..xs, 9]);
     describe("middle", [0, ..xs, 9]);
     describe("back", [9, ..xs]);
@@ -34,13 +38,13 @@ fn main() {
 
     // The spread is not the operand's last use: `xs` still owns its elements.
     describe("kept", xs);
-
     let names: Vec<string> = ["a", "b"];
     let more = [..names, "c"];
     var tail = "";
-    for name in more { tail = name; }
+    for name in more {
+        tail = name;
+    }
     println(f"names={names.len()} more={more.len()} tail={tail}");
-
     let one = Item { name: "one", parts: [1] };
     let two = Item { name: "two", parts: [2, 3] };
     let items: Vec<Item> = [one, two];

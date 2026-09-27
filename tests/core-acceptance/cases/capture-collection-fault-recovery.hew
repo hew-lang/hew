@@ -1,6 +1,6 @@
 type Key {
-    label: string,
-    divisor: i64,
+    label: string;
+    divisor: i64;
 }
 
 impl Hash for Key {
@@ -28,7 +28,6 @@ fn main() {
     // only ever the snapshot the capture copied.
     println(add("dddd", 1));
     println(counts.len());
-
     let names: HashSet<string> = HashSet.new();
     var edit = move capture(var names) |name: string, keep: bool| -> i64 {
         if keep {
@@ -41,7 +40,6 @@ fn main() {
     println(edit("a", true));
     println(edit("b", true));
     println(edit("a", false));
-
     let totals: HashMap<string, i64> = HashMap.new();
     var tally = capture(var totals) |word: string| -> i64 {
         totals.insert(word, 1);

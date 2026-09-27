@@ -88,6 +88,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
         spawn: SupervisorChildSpawn::Legacy(init_fn),
         identity,
         restart_policy: RESTART_PERMANENT,
+        stop_ns: -1,
         spent: false,
     }));
     // SAFETY: child and parent are valid pointers per caller contract.
@@ -487,6 +488,10 @@ pub(crate) static ROLE_ASK_SUBMIT_GAP_HOOK: Mutex<Option<Arc<dyn Fn() + Send + S
 /// - `spec.init_state` must be valid for `spec.init_state_size` bytes
 ///   (or null when `init_state_size` is 0).
 #[no_mangle]
+#[allow(
+    clippy::too_many_lines,
+    reason = "dynamic child admission initializes the complete ABI descriptor"
+)]
 pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     sup: *mut HewSupervisor,
     spec: *const HewChildSpec,
@@ -546,6 +551,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         }),
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
+        stop_ns: 5_000_000_000,
         mailbox_capacity: sp.mailbox_capacity,
         overflow: sp.overflow,
         coalesce_key_fn: sp.coalesce_key_fn,
@@ -1213,16 +1219,3 @@ pub static HEW_CIRCUIT_BREAKER_OPEN: c_int = 1;
 /// Circuit breaker state: `HALF_OPEN` (probe restart).
 #[no_mangle]
 pub static HEW_CIRCUIT_BREAKER_HALF_OPEN: c_int = 2;
-
-// ── Cooperative restart-await observer (`await_restart`) ─────────────────────
-
-/// Codegen ABI: the `await_restart` parked the continuation; the runtime wakes
-/// it via `enqueue_resume` when the restart cycle completes. The caller MUST
-/// `coro.suspend`.
-pub const RESTART_AWAIT_SUSPEND: i32 = 0;
-/// Codegen ABI: the role is settled — it holds a running incarnation with no
-/// fault pending under it, or it is permanently Dead (will never restart). The
-/// caller MUST NOT suspend and resumes immediately on the bind edge —
-/// re-resolving the slot, which is either Live (proceed) or fails closed at the
-/// send re-resolve (never an infinite hang).
-pub const RESTART_AWAIT_READY: i32 = 1;

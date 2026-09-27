@@ -1,4 +1,8 @@
-type Entry { label: string, payload: bytes }
+type Entry {
+    label: string;
+    payload: bytes;
+}
+
 fn main() {
     var entries: Vec<Entry> = Vec.new();
     entries.push(Entry { label: "first".to_upper(), payload: "one".to_bytes() });

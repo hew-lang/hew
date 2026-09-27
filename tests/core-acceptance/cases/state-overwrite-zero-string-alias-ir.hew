@@ -1,8 +1,13 @@
-type Leaf { value: i64 }
-type Wrap { leaf: Leaf }
+type Leaf {
+    value: i64;
+}
+
+type Wrap {
+    leaf: Leaf;
+}
 
 actor Keeper {
-    var cur: Wrap,
+    var cur: Wrap;
     receive fn rewrite() {
         cur = Wrap { leaf: cur.leaf };
     }

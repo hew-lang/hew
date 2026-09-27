@@ -31,11 +31,10 @@ fn put_reassigned(var counts: HashMap<string, i64>, var key: string) -> i64 {
 fn main() {
     var value_total = 0;
     var reassign_total = 0;
-    for i in 0..40 {
+    for i in 0 .. 40 {
         var store: HashMap<string, bytes> = HashMap.new();
         let payload = b"0123456789abcdef0123456789abcdef";
         value_total = value_total + ingest_value(store, payload);
-
         var counts: HashMap<string, i64> = HashMap.new();
         reassign_total = reassign_total + put_reassigned(counts, "caller" + "-key");
     }

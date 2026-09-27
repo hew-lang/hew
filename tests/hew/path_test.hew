@@ -254,7 +254,7 @@ fn test_try_glob_reports_matches_for_a_completed_walk() {
                 .Some(first) => assert(first.starts_with("std/")),
                 .None => panic("expected a first match"),
             }
-        },
+        }
         .Err(_) => panic("expected std/*.hew to expand"),
     }
 }

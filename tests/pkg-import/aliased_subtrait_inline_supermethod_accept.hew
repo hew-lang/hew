@@ -2,7 +2,7 @@
 import hew.supertraits.{Base as B, Sub as S};
 
 type W {
-    id: i64,
+    id: i64;
 }
 
 impl B for W {

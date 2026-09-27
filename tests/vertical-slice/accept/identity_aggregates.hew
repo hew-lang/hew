@@ -1,5 +1,5 @@
 type Ping {
-    value: i64,
+    value: i64;
 }
 
 actor Worker {
@@ -12,15 +12,7 @@ impl ActorMsg for Worker {
 }
 
 fn main() -> i64 {
-    Node.start(NodeConfig {
-        bind: "127.0.0.1:0",
-        transport: "tcp",
-        key: "/tmp/hew-cap13-identity-aggregates.key",
-        trust: "pinned",
-        peers: Vec.new(),
-        seeds: Vec.new(),
-    });
-
+    Node.start(NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: "/tmp/hew-cap13-identity-aggregates.key", trust: "pinned", peers: Vec.new(), seeds: Vec.new() });
     let node_id = match Node.id() {
         .Some(id) => id,
         .None => return 1,
@@ -32,31 +24,45 @@ fn main() -> i64 {
         .Err(_) => return 2,
     };
     let location = pid.location();
-
-    if pid.node_id() != node_id { return 3; }
-    if location.node_id() != node_id { return 4; }
-    if pid.slot() != location.slot() { return 5; }
-    if pid.incarnation() != location.incarnation() { return 6; }
-    if pid != pid || location != location || node_id != node_id { return 7; }
-
+    if pid.node_id() != node_id {
+        return 3;
+    }
+    if location.node_id() != node_id {
+        return 4;
+    }
+    if pid.slot() != location.slot() {
+        return 5;
+    }
+    if pid.incarnation() != location.incarnation() {
+        return 6;
+    }
+    if pid != pid || location != location || node_id != node_id {
+        return 7;
+    }
     var nodes: HashMap<NodeId, i64> = HashMap.new();
     nodes.insert(node_id, 11);
-    if nodes.get(node_id).unwrap_or(0) != 11 { return 8; }
-
+    if nodes.get(node_id).unwrap_or(0) != 11 {
+        return 8;
+    }
     var locations: HashMap<Location, i64> = HashMap.new();
     locations.insert(location, 12);
-    if locations.get(location).unwrap_or(0) != 12 { return 9; }
-
+    if locations.get(location).unwrap_or(0) != 12 {
+        return 9;
+    }
     var pids: HashMap<RemotePid<Worker>, i64> = HashMap.new();
     pids.insert(pid, 13);
-    if pids.get(pid).unwrap_or(0) != 13 { return 10; }
-
+    if pids.get(pid).unwrap_or(0) != 13 {
+        return 10;
+    }
     let node_text = to_string(node_id);
     let location_text = to_string(location);
     let pid_text = f"{pid}";
-    if node_text.len() != 32 { return 11; }
-    if location_text != pid_text { return 12; }
-
+    if node_text.len() != 32 {
+        return 11;
+    }
+    if location_text != pid_text {
+        return 12;
+    }
     Node.shutdown();
     0
 }

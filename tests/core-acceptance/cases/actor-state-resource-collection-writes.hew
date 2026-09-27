@@ -6,8 +6,8 @@ import std.failure;
 // them and teardown closes each resource once.
 #[resource]
 type Conn {
-    fd: i64,
-    items: Vec<string>,
+    fd: i64;
+    items: Vec<string>;
 }
 
 impl Conn {
@@ -17,14 +17,14 @@ impl Conn {
 }
 
 type Tally {
-    conn: Conn,
-    names: Vec<string>,
-    count: i64,
+    conn: Conn;
+    names: Vec<string>;
+    count: i64;
 }
 
 actor Holder {
-    var conn: Conn = Conn { fd: 1, items: Vec.new() },
-    var tally: Tally = Tally { conn: Conn { fd: 2, items: Vec.new() }, names: Vec.new(), count: 0 },
+    var conn: Conn = Conn { fd: 1, items: Vec.new() };
+    var tally: Tally = Tally { conn: Conn { fd: 2, items: Vec.new() }, names: Vec.new(), count: 0 };
 
     receive fn add(name: string, at: i64) -> i64 {
         tally.count = tally.count + 1;

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-terminate-down"
+intent = "Forceful termination skips the stop hook and publishes a typed Terminated DOWN after release."
+source = "cases/actor-terminate-down.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "terminated\n"
+exit = 0

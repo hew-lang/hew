@@ -163,10 +163,15 @@ fn dotted_rc_constructor_uses_the_intrinsic_identity() {
 #[test]
 fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
-        r"
-            enum Choice { Present(i64), Absent }
-            fn sample() -> Choice { Choice.Present(42) }
-        ",
+        r"enum Choice {
+    Present(i64);
+    Absent;
+}
+
+fn sample() -> Choice {
+    Choice.Present(42)
+}
+",
     );
     assert!(
         tc_output.errors.is_empty(),
@@ -200,10 +205,14 @@ fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
 #[test]
 fn dotted_struct_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
-        r"
-            enum Choice { Named { value: i64 } }
-            fn sample() -> Choice { Choice.Named { value: 7 } }
-        ",
+        r"enum Choice {
+    Named { value: i64;  }
+}
+
+fn sample() -> Choice {
+    Choice.Named { value: 7 }
+}
+",
     );
     assert!(
         tc_output.errors.is_empty(),

@@ -176,6 +176,16 @@ fn role_resolve_current_child_id(
     Ok(unsafe { ((*child).id, (*child).spawn_serial) })
 }
 
+/// Resolve a stable actor role to its current exact incarnation. The caller
+/// must still pin and compare the full spawn serial before acting on it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_actor_role_identity(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> Option<(u64, u64)> {
+    let (owner, slot) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    role_resolve_current_child_id(owner, slot, false).ok()
+}
+
 /// The classified refusal for a resolution that succeeded but whose
 /// incarnation was retired before the ID-pinned submission could begin
 /// (`with_actor_send_by_id` found the ID no longer live). Fail-closed and
@@ -638,223 +648,8 @@ pub unsafe extern "C" fn hew_supervisor_get_child_circuit_state(
 // Dynamic Supervision — Add/Remove Children at Runtime
 // ---------------------------------------------------------------------------
 
-/// Register a suspending `await_restart sup.child`.
-///
-/// Returns [`RESTART_AWAIT_READY`] when the child slot is already Live (no wait
-/// needed) OR permanently Dead (`SupervisorShutdown` / `UnknownSlot` /
-/// `BudgetExhausted` — will never restart, so the caller fails closed on resume
-/// rather than parking forever, the R4 contract). Returns
-/// [`RESTART_AWAIT_SUSPEND`] after parking the continuation as a restart
-/// observer when the slot is Transient (mid-restart / backoff / circuit-open).
-/// The caller MUST `coro.suspend` on SUSPEND and bind (re-fetch) on READY /
-/// resume.
-///
-/// This is the COOPERATIVE analogue of [`hew_supervisor_restart_await_blocking`];
-/// it never thread-blocks the single scheduler. `key` is the static-child slot
-/// index.
-///
-/// # Safety
-///
-/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
-/// - `actor` is the awaiting actor (`hew_actor_self`).
-/// - `slot` is a live read slot the caller created and holds the creator ref to.
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
-    sup: *mut HewSupervisor,
-    key: u32,
-    actor: *mut HewActor,
-    slot: *mut crate::read_slot::HewReadSlot,
-) -> i32 {
-    if sup.is_null() || slot.is_null() {
-        crate::set_last_error(
-            "C-ABI guard failed: sup/slot null in hew_supervisor_restart_await_suspend",
-        );
-        // Fail closed: report READY so the caller binds immediately rather than
-        // parking forever; the bind re-fetch fails closed on a dead slot.
-        return RESTART_AWAIT_READY;
-    }
-
-    // Snapshot the restart epoch BEFORE the pre-park check. `notify_restart`
-    // bumps it before it drains waiters (under `restart_await_waiters`), so
-    // re-reading it inside the registration critical section detects a restart
-    // that completed in the gap between the pre-park check and the push — the
-    // lost-wakeup guard (mirrors the `baseline` discipline in
-    // `hew_supervisor_restart_await_blocking`).
-    // SAFETY: the caller keeps `sup` live through this inline-field read.
-    let baseline = *unsafe { &(*sup).restart_epoch }.0.lock_or_recover();
-
-    // SAFETY: the caller keeps `sup` live through this inline-field read.
-    let owner = unsafe { (*sup).local_pid_id };
-    let role = RoleKey {
-        owner,
-        slot: key,
-        nested: false,
-    };
-
-    // Pre-park state check (R4 / issue #2124): inspect the current slot before
-    // parking so a settled role resumes immediately and a permanently-Dead child
-    // never hangs. Same settlement contract as the blocking barrier: Dead (2) →
-    // SupervisorShutdown / UnknownSlot / BudgetExhausted, will never restart, so
-    // fail closed and resume (the bind re-fetch surfaces the dead slot
-    // recoverably rather than hanging — R4); Live (0) with no fault pending
-    // under the role → nothing to wait for. A Transient slot, and a Live slot
-    // with an open record, park.
-    // SAFETY: `sup`/`key` are the FFI contract; `child_get` does its own guards.
-    let current = unsafe { hew_supervisor_child_get(sup, key) };
-    if current.tag == 2
-        || (role_holds_running_incarnation(sup, key, false)
-            && !crate::exit_status::role_has_unsettled_fault(role))
-    {
-        return RESTART_AWAIT_READY;
-    }
-
-    // Test-only: deterministically drive the racing restart cycle here, in the
-    // gap the lost-wakeup window opens. No-op in production builds.
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    fire_restart_await_park_gap_hook();
-
-    // Park under the waiters lock, but first re-check whether the restart already
-    // landed in the gap above (the lost-wakeup race the multi-worker scheduler
-    // makes reachable). Holding `restart_await_waiters` while we re-read the
-    // counter is the synchronization edge: `notify_restart` bumps the counter
-    // before it acquires `restart_await_waiters` to drain, so if its drain already
-    // ran (finding our waiter absent), the bump it performed is visible here and
-    // we resolve READY instead of parking against a wake that already fired.
-    // SAFETY: caller keeps `sup` live while its waiter registry is updated.
-    let mut waiters = unsafe { &(*sup).restart_await_waiters }.lock_or_recover();
-    // SAFETY: the caller keeps `sup` live through this inline-field read.
-    let advanced = *unsafe { &(*sup).restart_epoch }.0.lock_or_recover() != baseline;
-    // A terminal ruling wakes waiters WITHOUT advancing the epoch, and publishes
-    // the Dead state before it drains. Re-reading the slot here closes the same
-    // gap for that path, and re-reading the role's pending faults closes it for
-    // a record that settled in the gap.
-    // SAFETY: `sup`/`key` are the FFI contract; `child_get` does its own guards.
-    let settled = unsafe { hew_supervisor_child_get(sup, key) };
-    if advanced
-        || settled.tag == 2
-        || (role_holds_running_incarnation(sup, key, false)
-            && !crate::exit_status::role_has_unsettled_fault(role))
-    {
-        // The restart cycle completed, the supervisor ruled the slot spent, or
-        // the role's last fault settled since the pre-park snapshot. The wake we
-        // would park against has already fired against an empty registry;
-        // resolve READY and let the bind re-fetch resolve the now-settled slot
-        // rather than hang forever.
-        drop(waiters);
-        return RESTART_AWAIT_READY;
-    }
-    // Park: the observer takes an in-flight ref so the wake cannot free the slot
-    // out from under the abandon edge.
-    // SAFETY: caller holds the creator ref, so the slot is live to retain.
-    unsafe { crate::read_slot::read_slot_retain(slot) };
-    // SAFETY: `actor` is the awaiting actor, live for this registration.
-    let actor = unsafe { ActorIncarnation::of(actor) };
-    waiters.push(RestartAwaitWaiter { actor, slot });
-    drop(waiters);
-    RESTART_AWAIT_SUSPEND
-}
-
-/// Detach an abandoned suspending `await_restart` (the codegen abandon edge).
-///
-/// Removes the waiter from `restart_await_waiters` if still registered and
-/// releases the observer's retained in-flight ref on the slot. If the waiter
-/// already fired (drained by `notify_restart`), this is a no-op for the registry
-/// and the ref was already released by the fire path — so it does NOT
-/// double-free: the lookup-and-remove is the single authority that the ref is
-/// still held here.
-///
-/// # Safety
-///
-/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
-/// - `slot` is the read slot handed to [`hew_supervisor_restart_await_suspend`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_restart_await_detach(
-    sup: *mut HewSupervisor,
-    slot: *mut crate::read_slot::HewReadSlot,
-) {
-    if sup.is_null() || slot.is_null() {
-        return;
-    }
-    // SAFETY: caller keeps `sup` live while its waiter registry is updated.
-    let mut waiters = unsafe { &(*sup).restart_await_waiters }.lock_or_recover();
-    if let Some(pos) = waiters.iter().position(|w| w.slot == slot) {
-        waiters.swap_remove(pos);
-        drop(waiters);
-        // Cancel the slot so a racing wake drops, then release the retained ref.
-        // SAFETY: the observer held this ref; removing the waiter is the single
-        // authority that it is still live to release here.
-        unsafe { crate::read_slot::hew_read_slot_free(slot) };
-    }
-    // If not found, the waiter already fired and released its ref — no-op.
-}
-
-/// Blocking `await_restart` for a CONTEXTLESS caller (`main` / a free fn with
-/// no parkable coroutine continuation). Blocks the calling thread until the role
-/// is SETTLED, then returns. The contextless analogue of
-/// [`hew_supervisor_restart_await_suspend`].
-///
-/// A role is settled when it reads Dead — nothing will ever refill it, so the
-/// caller's re-fetch fails closed — or when it holds a RUNNING incarnation with
-/// no fault still pending under it. The first half covers a `close(role)`,
-/// which opens no fault record: the slot keeps the stopped occupant until the
-/// ruling replaces it, and that occupant's own terminal state says so. An empty
-/// slot is a ruling in flight and is never settled. "Pending" is the fact the
-/// crash site opened
-/// before it woke anybody: a supervised crash opens its record at the crash
-/// site and attributes it to the crashing child's role and every ancestor role,
-/// and the ruling that settles the record clears the attribution. So the
-/// barrier resolves on supervision facts, never on a clock.
-///
-/// That makes the two shapes that matter deterministic under any load. A caller
-/// whose own completion call returned `Err` has the record open by construction
-/// (it is opened before the terminal wake that produces that `Err`), so
-/// `let _ = child.fail(); await_restart child` waits for the ruling. A healthy
-/// role with nothing pending returns at once.
-///
-/// The one shape it does not cover, by ratified design: a fault from a one-way
-/// `mailbox(...)` submission that has not been processed when the barrier is
-/// entered has no record yet, so there is nothing to wait on.
-///
-/// This is safe to thread-block ONLY off the cooperative scheduler: `main` runs
-/// on its own thread while the supervisor fires restarts on scheduler worker
-/// threads, so there is no self-deadlock (unlike an actor handler, which MUST
-/// use the suspending observer). Codegen routes a `Default`-callconv
-/// `await_restart` here exactly as it routes a contextless `await` to a blocking
-/// ask.
-///
-/// # Safety
-///
-/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32) {
-    // SAFETY: forward the caller's live supervisor contract.
-    unsafe { supervisor_restart_await_blocking(sup, key, false) };
-}
-
-/// Whether the role's slot holds an incarnation that is still running.
-///
-/// ONE roster acquisition answers both halves, because they race each other.
-/// The ruling empties the slot under `roster` and refills it under `roster`, so
-/// asking "is the slot occupied?" and "is its occupant terminal?" in two
-/// separate critical sections can see the crashed occupant in the first and an
-/// empty slot in the second, and read the pair as a settled role.
-///
-/// An EMPTY slot is not settled: a ruling is mid-flight, and the restart or the
-/// spent mark that ends it wakes the barrier. An occupant that has already gone
-/// terminal is not settled either. `hew_supervisor_child_get` and
-/// `hew_supervisor_nested_get` classify it Live because that is what a send
-/// re-resolves, and a send to a terminal incarnation fails closed on its own;
-/// the barrier needs the stricter question, because "the slot still holds the
-/// thing I just stopped" is exactly what it has to wait out, and a
-/// `close(role)` opens no fault record to say so.
-///
-/// An actor slot is read under `roster`, which owns the pointer: a ruling takes
-/// the occupant out of the slot under the same lock before freeing it. A nested
-/// supervisor slot is NOT that: a nested supervisor is reclaimed through its own
-/// token teardown, and the parent's slot is only cleared later, when the parent
-/// dispatches `ChildSupervisorStopped`. Its stable token, resolved through the
-/// local-handle registry, is the one authority for that allocation's lifetime,
-/// so the barrier pins the token rather than dereferencing the cached pointer.
+/// Whether a selected role still holds a running incarnation. The roster and
+/// local-handle pin keep the actor or nested supervisor live during the read.
 fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: bool) -> bool {
     let index = key as usize;
     if nested {
@@ -896,45 +691,105 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
     }
 }
 
-pub(crate) unsafe fn supervisor_restart_await_blocking(
-    sup: *mut HewSupervisor,
-    key: u32,
+/// A native coroutine observes one stable role without blocking the driver.
+/// The pin keeps the supervisor allocation live until cancellation or the
+/// resumed coroutine releases this observation.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct HewNativeRestartWait {
+    pin: Option<crate::lifetime::local_handles::SupervisorPin>,
+    slot: u32,
     nested: bool,
-) {
-    if sup.is_null() {
-        return;
+    _waker: Arc<crate::wake::OwnedWaker>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for HewNativeRestartWait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewNativeRestartWait")
+            .field("has_supervisor", &self.pin.is_some())
+            .field("slot", &self.slot)
+            .field("nested", &self.nested)
+            .finish_non_exhaustive()
     }
-    // SAFETY: the caller keeps the allocation live for the whole wait.
+}
+
+/// Register before the caller checks readiness, closing the gap between a
+/// restart publication and coroutine suspension.
+///
+/// # Safety
+/// `waker` obeys the retained native wake contract.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
+    owner: crate::lifetime::local_handles::HewLocalPidId,
+    slot: u32,
+    role_kind: c_int,
+    waker: *const crate::wake::HewWaker,
+) -> *mut HewNativeRestartWait {
+    // SAFETY: the caller keeps its wake descriptor live during retention.
+    let waker = Arc::new(unsafe { crate::wake::OwnedWaker::retain(&*waker) });
+    let pin = crate::lifetime::local_handles::pin_current_supervisor(owner);
+    if let Some(pin) = &pin {
+        // SAFETY: the pin retains the supervisor through registration.
+        unsafe { &(*pin.supervisor()).native_restart_wakers }.register(&waker);
+    }
+    Box::into_raw(Box::new(HewNativeRestartWait {
+        pin,
+        slot,
+        nested: role_kind == ROLE_KIND_SUPERVISOR,
+        _waker: waker,
+    }))
+}
+
+/// Return 0 while the selected role is transient, or 1 when it has a live
+/// incarnation without a pending fault or is permanently dead.
+///
+/// # Safety
+/// `wait` remains live and uniquely owned by the caller.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
+    wait: *const HewNativeRestartWait,
+) -> c_int {
+    // SAFETY: the caller owns the wait until it is freed.
+    let wait = unsafe { &*wait };
+    let Some(pin) = &wait.pin else {
+        return 1;
+    };
+    let sup = pin.supervisor();
+    // SAFETY: the pin retains the supervisor for this lookup.
+    let current = unsafe {
+        if wait.nested {
+            hew_supervisor_nested_get(sup, wait.slot)
+        } else {
+            hew_supervisor_child_get(sup, wait.slot)
+        }
+    };
+    if current.tag == 2 {
+        return 1;
+    }
+    // SAFETY: the pin retains the supervisor and its stable local identity.
     let owner = unsafe { (*sup).local_pid_id };
     let role = RoleKey {
         owner,
-        slot: key,
-        nested,
+        slot: wait.slot,
+        nested: wait.nested,
     };
+    c_int::from(
+        role_holds_running_incarnation(sup, wait.slot, wait.nested)
+            && !crate::exit_status::role_has_unsettled_fault(role),
+    )
+}
 
-    loop {
-        // Snapshot the supervision generation BEFORE reading the slot. A
-        // transition published in the gap between that read and the wait then
-        // reads as a change rather than a wake nobody was there to receive.
-        let seen = crate::exit_status::supervision_generation();
-        let current = if nested {
-            // SAFETY: the caller retains the supervisor while waiting.
-            unsafe { hew_supervisor_nested_get(sup, key) }
-        } else {
-            // SAFETY: the caller retains the supervisor while waiting.
-            unsafe { hew_supervisor_child_get(sup, key) }
-        };
-        // Dead (2): permanent — never restarts. Fail closed: return now.
-        if current.tag == 2 {
-            return;
-        }
-        let live = role_holds_running_incarnation(sup, key, nested);
-        if crate::exit_status::role_barrier_outcome(role, live, seen)
-            == crate::exit_status::RoleBarrier::Settled
-        {
-            return;
-        }
-    }
+/// Detach a native restart observer, releasing its supervisor pin and wake.
+///
+/// # Safety
+/// The caller transfers its unique wait owner.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_native_restart_wait_free(wait: *mut HewNativeRestartWait) {
+    // SAFETY: the caller relinquishes the unique owner.
+    drop(unsafe { Box::from_raw(wait) });
 }
 
 // ── Restart observation (deterministic testing) ─────────────────────────────
@@ -948,8 +803,7 @@ pub(crate) unsafe fn supervisor_restart_await_blocking(
 ///
 /// Test-support only — reads the same `restart_epoch` counter/Condvar the
 /// contextless blocking `await_restart` path
-/// ([`hew_supervisor_restart_await_blocking`]) synchronizes on, so it is not a
-/// second authority for restart completion. Not part of the C ABI: no
+/// uses for restart completion. It is not part of the C ABI: no
 /// `#[no_mangle]`, no entry in `scripts/cabi-surface.json` or
 /// `scripts/runtime-export-classification.toml`. Callers are Rust test code in
 /// this workspace (`hew-runtime/tests/*.rs`, this module's own unit tests),

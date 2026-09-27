@@ -1,7 +1,7 @@
 #[resource]
 type Connection {
-    id: i64,
-    name: string,
+    id: i64;
+    name: string;
 }
 
 impl Connection {
@@ -16,8 +16,8 @@ fn connection(id: i64) -> Connection {
 }
 
 type Key {
-    id: i64,
-    owner: Rc<Connection>,
+    id: i64;
+    owner: Rc<Connection>;
 }
 
 impl Hash for Key {

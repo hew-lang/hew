@@ -8,10 +8,16 @@ trait Show {
     fn show(val: Self) -> string;
 }
 
-type Color { r: i64, g: i64, b: i64, }
+type Color {
+    r: i64;
+    g: i64;
+    b: i64;
+}
 
 impl Show for Color {
-    fn show(c: Color) -> string { "Color" }
+    fn show(c: Color) -> string {
+        "Color"
+    }
 }
 
 fn render_all<T: Show>(items: Vec<T>) -> string {

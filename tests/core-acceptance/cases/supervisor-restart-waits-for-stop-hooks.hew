@@ -3,14 +3,18 @@
 // and asks another actor. No replacement starts while an incarnation it
 // replaces is still stopping.
 actor Audit {
-    receive fn note(text: string) -> string { text }
+    receive fn note(text: string) -> string {
+        text
+    }
 }
 
 actor Worker {
-    var name: string,
-    audit: Audit,
+    var name: string;
+    let audit: Audit;
     #[on(start)]
-    fn started() { println("start " + name); }
+    fn started() {
+        println("start " + name);
+    }
     #[on(stop)]
     fn stopping() {
         sleep(2ms);
@@ -19,22 +23,30 @@ actor Worker {
             .Err(_) => println("audit unavailable"),
         }
     }
-    receive fn boom() { panic("worker failed"); }
-    receive fn ping() -> i64 { 1 }
+    receive fn boom() {
+        panic("worker failed");
+    }
+    receive fn ping() -> i64 {
+        1
+    }
 }
 
 supervisor App(audit: Audit) {
-    strategy: one_for_all,
-    intensity: 3 within 60s,
-    child left: Worker(name: "left", audit: audit),
-    child right: Worker(name: "right", audit: audit),
+    strategy: one_for_all;
+    intensity: 3 within 60s;
+    child left: Worker(name: "left", audit: audit);
+    child right: Worker(name: "right", audit: audit);
 }
 
 fn main() {
     let audit = spawn Audit;
     let app = spawn App(audit: audit);
     let _ = app.left.boom();
-    let replacement = await_restart app.left;
+    let replacement = {
+        let __hew_migrated_role_1122 = app.left;
+        restarted(__hew_migrated_role_1122);
+        __hew_migrated_role_1122
+    };
     match replacement.ping() {
         .Ok(value) => println(f"left {value}"),
         .Err(_) => println("left failed"),
@@ -43,7 +55,15 @@ fn main() {
         .Ok(value) => println(f"right {value}"),
         .Err(_) => println("right failed"),
     }
-    supervisor_stop(app);
+    {
+        let __hew_migrated_actor_1406 = app;
+        stop(__hew_migrated_actor_1406);
+        stopped(__hew_migrated_actor_1406);
+    };
     println("stopped");
-    close(audit);
+    {
+        let __hew_migrated_actor_1456 = audit;
+        stop(__hew_migrated_actor_1456);
+        stopped(__hew_migrated_actor_1456);
+    };
 }

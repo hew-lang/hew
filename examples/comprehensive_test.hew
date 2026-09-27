@@ -6,28 +6,28 @@
 
 // === Type Declarations ===
 type Point {
-    x: i32,
-    y: i32,
+    x: i32;
+    y: i32;
 }
 
 enum TestResult {
-    Pass,
-    Fail,
-    Skip,
+    Pass;
+    Fail;
+    Skip;
 }
 
 enum Colour {
-    Red,
-    Green,
-    Blue,
-    Custom(i32),
+    Red;
+    Green;
+    Blue;
+    Custom(i32);
 }
 
 // === Wire Types ===
 #[wire]
 type Message {
-    data: i32 @1,
-    text: string @2,
+    data: i32 @1;
+    text: string @2;
 }
 
 // === Helper Functions ===
@@ -157,7 +157,7 @@ fn test_match() -> i32 {
         20 => {
             let temp = 100;
             temp + 50
-        },
+        }
         _ => 0,
     };
     if result == 20 {

@@ -15,7 +15,10 @@
 // its record here (88 direct + 32 indirect bytes under valgrind, identical
 // when built with the compiler on `main`); that under-release is #3159 and
 // needs a leak oracle, not this fixture.
-type Holder { items: Vec<string>, label: string }
+type Holder {
+    items: Vec<string>;
+    label: string;
+}
 
 fn keep(h: Holder) -> i64 {
     var v: Vec<Holder> = [];

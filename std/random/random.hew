@@ -48,7 +48,7 @@ import std.crypto.crypto;
 /// it is needed. Two `Rng` values created with the same seed produce
 /// identical sequences.
 pub type Rng {
-    state: Vec<u64>,
+    state: Vec<u64>;
 }
 
 /// Methods available on an `Rng`.

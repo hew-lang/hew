@@ -819,16 +819,21 @@ fn main() {
 
     #[test]
     fn method_call_gets_parameter_hints_without_receiver_name() {
-        let source = r"
-type Point { x: i64, y: i64 }
+        let source = r"type Point {
+    x: i64;
+    y: i64;
+}
+
 trait PointMethods {
     fn shift(pt: Point, dx: i64, dy: i64) -> Point;
 }
+
 impl PointMethods for Point {
     fn shift(pt: Point, dx: i64, dy: i64) -> Point {
         Point { x: pt.x + dx, y: pt.y + dy }
     }
 }
+
 fn main() {
     let p = Point { x: 1, y: 2 };
     p.shift(3, 4);
@@ -1100,14 +1105,19 @@ fn main() {
 
     #[test]
     fn impl_method_without_return_annotation_gets_return_hint() {
-        let source = r"
-type Counter { value: i64 }
-
-impl Counter {
-    fn doubled(counter: Counter) { counter.value * 2 }
+        let source = r"type Counter {
+    value: i64;
 }
 
-fn main() -> i64 { 0 }
+impl Counter {
+    fn doubled(counter: Counter) {
+        counter.value * 2
+    }
+}
+
+fn main() -> i64 {
+    0
+}
 ";
         let pr = parse(source);
         let tc = type_check(&pr);
@@ -1134,7 +1144,7 @@ fn main() -> i64 { 0 }
 
     #[test]
     fn same_named_impl_methods_keep_their_own_return_hints() {
-        let source = "type A { value: i64 }\nimpl A { fn get(a: A) { a.value } }\ntype B { flag: bool }\nimpl B { fn get(b: B) { b.flag } }";
+        let source = "type A {\n    value: i64;\n}\n\nimpl A {\n    fn get(a: A) {\n        a.value\n    }\n}\n\ntype B {\n    flag: bool;\n}\n\nimpl B {\n    fn get(b: B) {\n        b.flag\n    }\n}\n";
         let parsed = parse(source);
         let mut output = type_check(&parsed);
         let method = |index: usize| match &parsed.program.items[index].0 {

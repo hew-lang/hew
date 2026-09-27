@@ -173,8 +173,11 @@ fn affine_vector_record_field_mutations_preserve_the_enclosing_owner() {
     run_vector(
         &format!(
             "{GENERATOR}{}",
-            r#"
-type Holder { values: Vec<Generator<string, ()>>, label: string, }
+            r#"type Holder {
+    values: Vec<Generator<string, ()>>;
+    label: string;
+}
+
 fn main() {
     var holder = Holder { values: [], label: "holder" };
     holder.values.push(started("field"));

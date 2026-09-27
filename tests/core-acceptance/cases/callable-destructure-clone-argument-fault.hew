@@ -1,6 +1,6 @@
 type Pair {
-    a: fn[once, clone](i64) -> i64,
-    b: fn() -> string,
+    a: fn[once, clone](i64) -> i64;
+    b: fn() -> string;
 }
 
 fn argument(divisor: i64) -> i64 {

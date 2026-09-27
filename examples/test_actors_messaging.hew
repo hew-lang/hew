@@ -4,7 +4,7 @@
 // Test: Actors and Messaging
 // Exercises: actor definition, receive fn, spawn, message send, actor state, stop
 actor Counter {
-    var count: i64,
+    var count: i64;
     receive fn increment(amount: i64) {
         count = count + amount;
     }
@@ -17,7 +17,7 @@ actor Counter {
 }
 
 actor Printer {
-    let prefix: i64,
+    let prefix: i64;
     receive fn print_msg(value: i64) -> i64 {
         println(f"  [Printer {prefix}] got: {value}");
         value
@@ -40,11 +40,11 @@ fn test_basic_actor() -> i64 {
                 println("FAIL: basic actor spawn + messaging");
                 0
             }
-        },
+        }
         .Err(_) => {
             println("FAIL: basic actor spawn + messaging");
             0
-        },
+        }
     }
 }
 
@@ -54,27 +54,27 @@ fn test_multiple_actors() -> i64 {
     let p2 = spawn Printer(prefix: 2);
     let first = p1.print_msg(100);
     match first {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => {
             println("FAIL: multiple actors");
             return 0;
-        },
+        }
     }
     let second = p2.print_msg(200);
     match second {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => {
             println("FAIL: multiple actors");
             return 0;
-        },
+        }
     }
     let third = p1.print_msg(300);
     match third {
-        .Ok(_) => {},
+        .Ok(_) => {}
         .Err(_) => {
             println("FAIL: multiple actors");
             return 0;
-        },
+        }
     }
     println("PASS: multiple actors");
     1

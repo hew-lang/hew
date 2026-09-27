@@ -9,8 +9,8 @@
 //! (#2351), plus a named type carrying a real `impl Display` (#2492).
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 impl Display for Point {

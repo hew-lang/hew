@@ -9,17 +9,16 @@ use common::typecheck_isolated as typecheck;
 #[test]
 fn struct_variant_init_infers_type_args() {
     let output = typecheck(
-        r"
-        enum Event<T> {
-            Move { x: T, y: T },
-            Click,
-        }
+        r"enum Event<T> {
+    Move { x: T; y: T;  }
+    Click;
+}
 
-        fn main() {
-            let e: Event<i64> = Event.Move { x: 10, y: 20 };
-            let _ = e;
-        }
-        ",
+fn main() {
+    let e: Event<i64> = Event.Move { x: 10, y: 20 };
+    let _ = e;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -33,19 +32,18 @@ fn struct_variant_init_infers_type_args() {
 #[test]
 fn struct_variant_init_mismatched_field_type_is_an_error() {
     let output = typecheck(
-        r"
-        enum Event<T> {
-            Move { x: T, y: T },
-            Click,
-        }
+        r"enum Event<T> {
+    Move { x: T; y: T;  }
+    Click;
+}
 
-        fn main() {
-            // Annotate T=i64 via first field; passing a bool for the second
-            // field is a mismatch because T must be consistent.
-            let e: Event<i64> = Event.Move { x: 1, y: true };
-            let _ = e;
-        }
-        ",
+fn main() {
+    // Annotate T=i64 via first field; passing a bool for the second
+    // field is a mismatch because T must be consistent.
+    let e: Event<i64> = Event.Move { x: 1, y: true };
+    let _ = e;
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -58,19 +56,18 @@ fn struct_variant_init_mismatched_field_type_is_an_error() {
 #[test]
 fn struct_variant_pattern_binds_concrete_field_types() {
     let output = typecheck(
-        r"
-        enum Wrapper<T> {
-            Pair { first: T, second: T },
-            Empty,
-        }
+        r"enum Wrapper<T> {
+    Pair { first: T; second: T;  }
+    Empty;
+}
 
-        fn add(w: Wrapper<i64>) -> i64 {
-            match w {
-                Wrapper.Pair { first, second } => first + second,
-                Wrapper.Empty => 0,
-            }
-        }
-        ",
+fn add(w: Wrapper<i64>) -> i64 {
+    match w {
+        Wrapper.Pair { first, second } => first + second,
+        Wrapper.Empty => 0,
+    }
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -83,20 +80,19 @@ fn struct_variant_pattern_binds_concrete_field_types() {
 #[test]
 fn struct_variant_pattern_wrong_field_use_is_an_error() {
     let output = typecheck(
-        r"
-        enum Wrapper<T> {
-            Pair { first: T, second: T },
-            Empty,
-        }
+        r"enum Wrapper<T> {
+    Pair { first: T; second: T;  }
+    Empty;
+}
 
-        fn broken(w: Wrapper<i64>) -> bool {
-            match w {
-                // first is i64, but we return it as bool — type error
-                Wrapper.Pair { first, second } => first,
-                Wrapper.Empty => true,
-            }
-        }
-        ",
+fn broken(w: Wrapper<i64>) -> bool {
+    match w {
+        // first is i64, but we return it as bool — type error
+        Wrapper.Pair { first, second } => first,
+        Wrapper.Empty => true,
+    }
+}
+",
     );
     assert!(
         !output.errors.is_empty(),
@@ -108,17 +104,16 @@ fn struct_variant_pattern_wrong_field_use_is_an_error() {
 #[test]
 fn struct_variant_init_unqualified_infers_type_args() {
     let output = typecheck(
-        r"
-        enum Shape<T> {
-            Rect { width: T, height: T },
-            Circle,
-        }
+        r"enum Shape<T> {
+    Rect { width: T; height: T;  }
+    Circle;
+}
 
-        fn main() {
-            let s: Shape<i64> = Rect { width: 5, height: 3 };
-            let _ = s;
-        }
-        ",
+fn main() {
+    let s: Shape<i64> = Rect { width: 5, height: 3 };
+    let _ = s;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -137,18 +132,19 @@ fn struct_variant_init_unqualified_infers_type_args() {
 #[test]
 fn struct_variant_init_nested_generic_field_with_expected_type() {
     let output = typecheck(
-        r"
-        type Box<T> { value: T }
+        r"type Box<T> {
+    value: T;
+}
 
-        enum Wrap<T> {
-            Boxed { inner: Box<T> },
-        }
+enum Wrap<T> {
+    Boxed { inner: Box<T>;  }
+}
 
-        fn main() {
-            let w: Wrap<i64> = .Boxed { inner: Box { value: 1 } };
-            let _ = w;
-        }
-        ",
+fn main() {
+    let w: Wrap<i64> = .Boxed { inner: Box { value: 1 } };
+    let _ = w;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -164,26 +160,25 @@ fn struct_variant_init_nested_generic_field_with_expected_type() {
 #[test]
 fn variant_constructors_preserve_type_args() {
     let output = typecheck(
-        r"
-        enum Maybe<T> {
-            Just(T),
-            Nothing,
-        }
+        r"enum Maybe<T> {
+    Just(T);
+    Nothing;
+}
 
-        impl Maybe<i64> {
-            fn unwrap(m: Maybe<i64>) -> i64 {
-                0
-            }
-        }
+impl Maybe<i64> {
+    fn unwrap(m: Maybe<i64>) -> i64 {
+        0
+    }
+}
 
-        fn main() {
-            let explicit: Maybe<i64> = .Just(42);
-            let x = Maybe.Just(42);
-            let y: i64 = x.unwrap();
-            let _: Maybe<i64> = explicit;
-            let _: i64 = y;
-        }
-        ",
+fn main() {
+    let explicit: Maybe<i64> = .Just(42);
+    let x = Maybe.Just(42);
+    let y: i64 = x.unwrap();
+    let _: Maybe<i64> = explicit;
+    let _: i64 = y;
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -200,21 +195,20 @@ fn variant_constructors_preserve_type_args() {
 #[test]
 fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
     let output = typecheck(
-        r"
-        pub enum Either<A, B> {
-            Left(A),
-            Right(B),
-        }
+        r"pub enum Either<A, B> {
+    Left(A);
+    Right(B);
+}
 
-        fn main() -> i64 {
-            let e: Either<i64, string> = Either.Left(42);
-            match e {
-                Either.Left(n) => println(n),
-                Either.Right(s) => println(s),
-            }
-            0
-        }
-        ",
+fn main() -> i64 {
+    let e: Either<i64, string> = Either.Left(42);
+    match e {
+        Either.Left(n) => println(n),
+        Either.Right(s) => println(s),
+    }
+    0
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -231,25 +225,24 @@ fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
 #[test]
 fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
     let output = typecheck(
-        r#"
-        pub enum Foo<T: Display> {
-            Item(T),
-            Nothing,
-        }
+        r#"pub enum Foo<T: Display> {
+    Item(T);
+    Nothing;
+}
 
-        fn show<T: Display>(f: Foo<T>) {
-            match f {
-                Foo.Item(x) => println(x),
-                Foo.Nothing => println("nothing"),
-            }
-        }
+fn show<T: Display>(f: Foo<T>) {
+    match f {
+        Foo.Item(x) => println(x),
+        Foo.Nothing => println("nothing"),
+    }
+}
 
-        fn main() -> i64 {
-            show(Foo.Item(42));
-            show(Foo.Item("hello"));
-            0
-        }
-        "#,
+fn main() -> i64 {
+    show(Foo.Item(42));
+    show(Foo.Item("hello"));
+    0
+}
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -263,21 +256,22 @@ fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
 #[test]
 fn impl_inline_bound_satisfies_display_in_method_body() {
     let output = typecheck(
-        r"
-        type Holder<T> { value: T }
+        r"type Holder<T> {
+    value: T;
+}
 
-        impl<T: Display> Holder<T> {
-            fn show(h: Holder<T>) {
-                println(h.value)
-            }
-        }
+impl<T: Display> Holder<T> {
+    fn show(h: Holder<T>) {
+        println(h.value)
+    }
+}
 
-        fn main() -> i64 {
-            let h = Holder { value: 42 };
-            h.show();
-            0
-        }
-        ",
+fn main() -> i64 {
+    let h = Holder { value: 42 };
+    h.show();
+    0
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -291,21 +285,22 @@ fn impl_inline_bound_satisfies_display_in_method_body() {
 #[test]
 fn impl_where_clause_bound_satisfies_display_in_method_body() {
     let output = typecheck(
-        r"
-        type Holder<T> { value: T }
+        r"type Holder<T> {
+    value: T;
+}
 
-        impl<T> Holder<T> where T: Display {
-            fn show(h: Holder<T>) {
-                println(h.value)
-            }
-        }
+impl<T> Holder<T> where T: Display {
+    fn show(h: Holder<T>) {
+        println(h.value)
+    }
+}
 
-        fn main() -> i64 {
-            let h = Holder { value: 42 };
-            h.show();
-            0
-        }
-        ",
+fn main() -> i64 {
+    let h = Holder { value: 42 };
+    h.show();
+    0
+}
+",
     );
     assert!(
         output.errors.is_empty(),
@@ -319,15 +314,16 @@ fn impl_where_clause_bound_satisfies_display_in_method_body() {
 #[test]
 fn impl_without_bound_rejects_display_call_in_method_body() {
     let output = typecheck(
-        r"
-        type Holder<T> { value: T }
+        r"type Holder<T> {
+    value: T;
+}
 
-        impl<T> Holder<T> {
-            fn show(h: Holder<T>) {
-                println(h.value)
-            }
-        }
-        ",
+impl<T> Holder<T> {
+    fn show(h: Holder<T>) {
+        println(h.value)
+    }
+}
+",
     );
     assert!(
         !output.errors.is_empty(),

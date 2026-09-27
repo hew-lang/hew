@@ -1,9 +1,11 @@
-type Node { value: i64, }
+type Node {
+    value: i64;
+}
 
 fn make(seed: i64) -> Vec<Rc<Node>> {
     var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(Rc.new(Node { value: seed }));
-let copy = clone holders;
+    let copy = clone holders;
     match copy.len() == 1 {
         true => copy,
         false => holders,
@@ -12,7 +14,7 @@ let copy = clone holders;
 
 fn main() -> i64 {
     var total: i64 = 0;
-    for seed in 0..48 {
+    for seed in 0 .. 48 {
         let kept = make(seed);
         total = total + kept.len();
     }

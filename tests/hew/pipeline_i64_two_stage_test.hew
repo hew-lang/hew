@@ -2,14 +2,13 @@
 
 import std.pipeline;
 
-
 fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
     pipeline.PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
 }
 
 actor PushProbe {
-    var completed: bool,
-    var accepted: bool,
+    var completed: bool;
+    var accepted: bool;
 
     receive fn finish(result: bool) {
         accepted = result;
@@ -26,26 +25,26 @@ actor PushProbe {
 }
 
 actor PushRunner {
-    let source: pipeline.SourceI64,
-    let probe: PushProbe,
+    let source: pipeline.SourceI64;
+    let probe: PushProbe;
 
-    mailbox 1,
+    mailbox 1;
 
     receive fn start(value: i64, label: string) {
         match source.push(item(value, label, false)) {
             .Ok(result) => {
                 let _ = probe.finish(result);
-            },
+            }
             .Err(_) => {
                 let _ = probe.finish(false);
-            },
+            }
         }
     }
 }
 
 actor CrashStage {
-    let next: pipeline.SinkI64,
-    var crashed: bool,
+    let next: pipeline.SinkI64;
+    var crashed: bool;
 
     receive fn push(item: pipeline.PipelineItemI64) -> bool {
         if crashed {
@@ -61,8 +60,8 @@ actor CrashStage {
 }
 
 actor CrashSource {
-    let next: CrashStage,
-    let sink: pipeline.SinkI64,
+    let next: CrashStage;
+    let sink: pipeline.SinkI64;
 
     receive fn push(item: pipeline.PipelineItemI64) -> bool {
         match next.push(item) {
@@ -86,10 +85,10 @@ fn wait_for_count(source: pipeline.SourceI64, expected: i64) {
         match source.count() {
             .Ok(value) => {
                 count = value;
-            },
+            }
             .Err(_) => {
                 count = -1;
-            },
+            }
         }
         polls = polls + 1;
         if count != expected {
@@ -108,10 +107,10 @@ fn wait_for_attempts(control: pipeline.AdmissionControlI64, expected: i64) {
         match control.attempts() {
             .Ok(value) => {
                 attempts = value;
-            },
+            }
             .Err(_) => {
                 attempts = -1;
-            },
+            }
         }
         polls = polls + 1;
         if attempts != expected {
@@ -130,10 +129,10 @@ fn wait_for_probe(probe: PushProbe) {
         match probe.is_completed() {
             .Ok(value) => {
                 completed = value;
-            },
+            }
             .Err(_) => {
                 completed = false;
-            },
+            }
         }
         polls = polls + 1;
         if !completed {
@@ -245,7 +244,7 @@ fn cancelled_admission_settles_and_pipeline_continues() {
             .Ok(true) => 1,
             .Ok(false) => -1,
             .Err(_) => -1,
-        },
+        }
         after 5ms => 0,
     };
     assert(outcome == 0);
@@ -264,16 +263,7 @@ fn cancelled_admission_settles_and_pipeline_continues() {
 #[test]
 fn crash_mid_pipeline_settles_without_sink_delivery() {
     let control = spawn pipeline.AdmissionControlI64(permits: 1, stage_attempts: 0, stage_post_sends: 0);
-    let sink = spawn pipeline.SinkI64(
-        count: 0,
-        sum: 0,
-        first: 0,
-        second: 0,
-        third: 0,
-        last_value: 0,
-        last_label: "",
-        control: control,
-    );
+    let sink = spawn pipeline.SinkI64(count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control);
     let stage = spawn CrashStage(next: sink, crashed: false);
     let source = spawn CrashSource(next: stage, sink: sink);
     match source.push(item(9, "crash-owned", true)) {

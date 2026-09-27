@@ -1,5 +1,10 @@
-fn answer() -> i64 { 42 }
-fn add_one(value: i64) -> i64 { value + 1 }
+fn answer() -> i64 {
+    42
+}
+
+fn add_one(value: i64) -> i64 {
+    value + 1
+}
 
 fn main() -> i64 {
     let zero: fn[clone]() -> i64 = answer;

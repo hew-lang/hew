@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn nominal_type_declaration_name_is_type_and_declaration() {
-        let source = "type Point { x: i32, y: i32 }";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n}\n";
         let point = build_semantic_tokens(source)
             .into_iter()
             .find(|t| &source[t.start..t.start + t.length] == "Point")

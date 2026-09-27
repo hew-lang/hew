@@ -3,8 +3,8 @@
 // still whole afterwards.
 #[resource]
 type Token {
-    label: string,
-    id: i64,
+    label: string;
+    id: i64;
 }
 
 impl Token {
@@ -21,7 +21,6 @@ fn main() -> i64 {
     var tokens: Vec<Token> = Vec.new();
     tokens.push(Token { label: "t", id: 1 });
     tokens.push(Token { label: "t", id: 2 });
-
     println(tokens[0].id);
     tokens[1].show();
     // Reading the same slot twice does not move or copy it.

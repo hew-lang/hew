@@ -1,8 +1,9 @@
 import ambiguity.trait_left.{ClashTrait};
+
 import ambiguity.trait_right.{ClashTrait};
 
 pub type Local {
-    value: i64,
+    value: i64;
 }
 
 impl ClashTrait for Local {

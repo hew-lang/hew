@@ -3,7 +3,7 @@ import trait_authority.origin.{Describe};
 import trait_authority.conflict.{Badge, decorate};
 
 type Item {
-    text: string,
+    text: string;
 }
 
 impl Describe for Item {

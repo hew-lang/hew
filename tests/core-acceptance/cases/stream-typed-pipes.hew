@@ -29,9 +29,8 @@ fn main() {
         assert(text.recv().expect("last text") == "last");
         assert(text.recv().is_none());
         assert(await writer == 3);
-    }
+    };
     text.close();
-
     let (byte_sink, data) = stream.pipe(1).expect("bytes pipe");
     scope {
         let writer = fork write_bytes(byte_sink);
@@ -40,7 +39,7 @@ fn main() {
         assert(data.recv().expect("last bytes") == "last".to_bytes());
         assert(data.recv().is_none());
         assert(await writer == 3);
-    }
+    };
     data.close();
     println("typed text and bytes, including empty items");
 }

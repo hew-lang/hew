@@ -12,8 +12,12 @@ fn main() {
     for r in 0 .. rows.len() {
         let row = rows[r];
         match row.get(key) {
-            .Some(v) => { out = out + f"{v}" + "|"; },
-            .None => { out = out + "MISSING|"; },
+            .Some(v) => {
+                out = out + f"{v}" + "|";
+            }
+            .None => {
+                out = out + "MISSING|";
+            }
         }
     }
     print(out);

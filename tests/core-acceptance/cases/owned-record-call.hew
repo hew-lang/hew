@@ -1,6 +1,11 @@
-type Packet { label: string, payload: bytes }
+type Packet {
+    label: string;
+    payload: bytes;
+}
 
-fn duplicate(packet: Packet) -> Packet { packet }
+fn duplicate(packet: Packet) -> Packet {
+    packet
+}
 
 fn main() -> i64 {
     let packet = Packet { payload: "A".to_bytes(), label: "core".to_upper() };

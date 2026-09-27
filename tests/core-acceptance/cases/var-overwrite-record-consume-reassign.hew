@@ -1,5 +1,5 @@
 type Rec {
-    name: string,
+    name: string;
 }
 
 fn take(r: Rec) -> i64 {

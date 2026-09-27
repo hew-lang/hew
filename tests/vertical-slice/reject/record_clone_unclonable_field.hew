@@ -20,7 +20,7 @@ extern "C" {
 }
 
 type Wrapper {
-    inner: Handle,
+    inner: Handle;
 }
 
 fn main() -> i64 {

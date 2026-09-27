@@ -1,27 +1,40 @@
-enum ProbeError { Failed(string), }
-type Envelope { message: string }
+enum ProbeError {
+    Failed(string);
+}
+
+type Envelope {
+    message: string;
+}
 
 fn unit_result(ok: bool) -> Result<(), string> {
-    if ok { return .Ok(()); }
+    if ok {
+        return .Ok(());
+    }
     .Err("unit failed")
 }
 
 fn text_result(ok: bool) -> Result<string, ProbeError> {
-    if ok { return .Ok("ready"); }
+    if ok {
+        return .Ok("ready");
+    }
     .Err(ProbeError.Failed("text failed"))
 }
 
 fn optional_envelope(some: bool) -> Option<Envelope> {
-    if some { return .Some(Envelope { message: "stop" }); }
+    if some {
+        return .Some(Envelope { message: "stop" });
+    }
     .None
 }
 
 fn statement_match(ok: bool, stop: bool) -> string {
     match unit_result(ok) {
         .Err(message) => return "error:" + message,
-        .Ok(_) => {},
+        .Ok(_) => {}
     }
-    if stop { return "stopped"; }
+    if stop {
+        return "stopped";
+    }
     "continued"
 }
 
@@ -29,7 +42,9 @@ fn try_comparison(ok: bool, stop: bool) -> Result<string, ProbeError> {
     if text_result(ok)? != "ready" {
         return .Err(ProbeError.Failed("unexpected"));
     }
-    if stop { return .Ok("stopped"); }
+    if stop {
+        return .Ok("stopped");
+    }
     .Ok("continued")
 }
 
@@ -39,9 +54,9 @@ fn nested_match(some: bool, ok: bool) -> string {
         .None => {
             match unit_result(ok) {
                 .Err(message) => return message,
-                .Ok(_) => {},
+                .Ok(_) => {}
             }
-        },
+        }
     }
     "nested-continued"
 }

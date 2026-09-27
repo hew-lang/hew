@@ -1,6 +1,6 @@
 enum Blob {
-    Data(bytes),
-    Empty,
+    Data(bytes);
+    Empty;
 }
 
 fn same_scope(i: i64) -> i64 {
@@ -9,7 +9,7 @@ fn same_scope(i: i64) -> i64 {
         .Data(data) => {
             let inner = data;
             inner.len() + data.len()
-        },
+        }
         .Empty => 0,
     }
 }
@@ -23,7 +23,7 @@ fn nested_scope(i: i64) -> i64 {
                 inner.len()
             };
             n + data.len()
-        },
+        }
         .Empty => 0,
     }
 }
@@ -38,9 +38,13 @@ fn direct(i: i64) -> i64 {
 
 fn main() -> i64 {
     var total = 0;
-    for i in 0..50 {
+    for i in 0 .. 50 {
         total = total + same_scope(i) + nested_scope(i) + direct(i);
         println("frame");
     }
-    if total > 0 { 0 } else { 91 }
+    if total > 0 {
+        0
+    } else {
+        91
+    }
 }

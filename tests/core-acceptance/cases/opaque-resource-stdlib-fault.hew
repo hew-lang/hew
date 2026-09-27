@@ -1,4 +1,5 @@
 import std.process;
+
 import std.stream;
 
 fn fail(divisor: i64) -> i64 {

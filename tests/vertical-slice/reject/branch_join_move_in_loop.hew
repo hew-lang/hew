@@ -7,7 +7,7 @@
 // checker's to give.
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64;
 }
 
 impl Conn {

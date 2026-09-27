@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "Other"
-line = 10
-column = 11
-message = "expected `,` between structural members"
+line = 13
+column = 1
+message = "#[opaque] type must be an empty-body type"

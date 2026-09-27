@@ -1,6 +1,6 @@
 pub type Handle {
-    label: string,
-    count: i64,
+    label: string;
+    count: i64;
 }
 
 pub fn make() -> Handle {

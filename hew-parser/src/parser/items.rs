@@ -974,107 +974,30 @@ impl Parser<'_> {
         let type_params = self.parse_opt_type_params()?;
         let where_clause = self.parse_opt_where_clause()?;
 
-        if self.eat(&Token::LeftParen) {
-            // Tuple-positional form: `type Name(T1, T2, ...) ;`
-            let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
-
-            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                let ty = self.parse_type()?;
-                field_types.push(ty);
-
-                if self.peek() == Some(&Token::Comma) {
-                    self.advance();
-                } else {
-                    break;
-                }
+        self.expect(&Token::LeftParen)?;
+        let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
+        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+            field_types.push(self.parse_type()?);
+            if !self.eat(&Token::Comma) {
+                break;
             }
-
-            if field_types.is_empty() {
-                self.error("tuple type must have at least one positional field".to_string());
-                return None;
-            }
-
-            let end = self.peek_span().start;
-            self.expect(&Token::RightParen)?;
-            self.expect(&Token::Semicolon)?;
-
-            Some(RecordDecl {
-                visibility,
-                name,
-                type_params,
-                where_clause,
-                kind: RecordKind::Tuple(field_types),
-                doc_comment: None,
-                span: start..end,
-            })
-        } else {
-            // This parser is selected only for tuple-form `type` declarations.
-            self.expect(&Token::LeftBrace)?;
-
-            let mut fields: Vec<RecordField> = Vec::new();
-            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                let field_start = self.peek_span().start;
-
-                // Field name
-                let field_name = if let Some(Token::Identifier(_)) = self.peek() {
-                    self.expect_ident()?
-                } else {
-                    let found = match self.peek() {
-                        Some(tok) => format!("{tok}"),
-                        None => "end of file".to_string(),
-                    };
-                    self.error(format!("expected field name, found {found}"));
-                    return None;
-                };
-
-                self.expect(&Token::Colon)?;
-
-                let ty = self.parse_type()?;
-                let field_end = self.peek_span().start;
-
-                fields.push(RecordField {
-                    name: field_name,
-                    ty,
-                    doc_comment: None,
-                    span: field_start..field_end,
-                });
-
-                // Comma or end of body. Semicolons are common when users
-                // switch from `type` fields; keep them invalid but recover
-                // with a targeted hint instead of cascading item-level errors.
-                if self.peek() == Some(&Token::Comma) {
-                    self.advance();
-                } else if self.peek() == Some(&Token::Semicolon) {
-                    let semi_span = self.peek_span();
-                    self.error_at_with_hint(
-                        "expected `,` or `}` after record field, found `;`".to_string(),
-                        semi_span,
-                        "record fields use commas; write `field: Type,` instead of `field: Type;`",
-                    );
-                    self.advance();
-                } else {
-                    break;
-                }
-            }
-
-            if fields.is_empty() {
-                self.error("record body must contain at least one field".to_string());
-                return None;
-            }
-
-            let end = self.peek_span().start;
-            self.expect(&Token::RightBrace)?;
-
-            Some(RecordDecl {
-                visibility,
-                name,
-                type_params,
-                where_clause,
-                kind: RecordKind::Named(fields),
-                doc_comment: None,
-                span: start..end,
-            })
         }
+        if field_types.is_empty() {
+            self.error("tuple type must have at least one positional field".to_string());
+            return None;
+        }
+        let end = self.peek_span().start;
+        self.expect(&Token::RightParen)?;
+        self.expect(&Token::Semicolon)?;
+        Some(RecordDecl {
+            visibility,
+            name,
+            type_params,
+            where_clause,
+            kind: RecordKind::Tuple(field_types),
+            doc_comment: None,
+            span: start..end,
+        })
     }
 
     /// Extract `ResourceMarker` from a pre-parsed attribute slice.
@@ -1192,6 +1115,7 @@ impl Parser<'_> {
                     let (mut method, has_consuming_self) =
                         self.parse_type_method(fn_start, attributes)?;
                     method.doc_comment = doc_comment;
+                    self.refuse_mark_after_body();
                     Some((TypeBodyItem::Method(method), has_consuming_self))
                 } else {
                     self.validate_attributes_for(&attributes, AttrPosition::Field);
@@ -1199,7 +1123,7 @@ impl Parser<'_> {
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    self.expect_structural_separator();
+                    self.expect_member_terminator("field");
                     // peek_span().start is now the first token after the `,`,
                     // which captures any trailing comment on this field's line in the
                     // range item_start..item_end (comments are skipped by the lexer,
@@ -1237,7 +1161,7 @@ impl Parser<'_> {
                         self.expect(&Token::Colon)?;
                         let ty = self.parse_type()?;
                         fields.push((field_name, ty));
-                        self.expect_structural_separator();
+                        self.expect_member_terminator("field");
                     }
                     self.expect(&Token::RightBrace)?;
                     VariantKind::Struct(fields)
@@ -1245,7 +1169,11 @@ impl Parser<'_> {
                     VariantKind::Unit
                 };
 
-                self.expect_structural_separator();
+                if matches!(kind, VariantKind::Struct(_)) {
+                    self.refuse_mark_after_body();
+                } else {
+                    self.expect_member_terminator("variant");
+                }
                 // peek_span() is now the position after the trailing `,`
                 let item_end = self.peek_span().start;
                 Some((

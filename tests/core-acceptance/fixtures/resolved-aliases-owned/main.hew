@@ -7,16 +7,16 @@ type Names = Pair<Text>;
 type Transform<T> = fn(T) -> T;
 
 type Job {
-    names: Names,
+    names: Names;
 }
 
 enum Delivery {
-    Ready(Names),
+    Ready(Names);
 }
 
 #[resource]
 type Ticket {
-    label: Text,
+    label: Text;
 }
 
 impl Ticket {
@@ -41,7 +41,7 @@ fn deliver() {
             let (first, second) = names;
             println(transform(first));
             println(transform(second));
-        },
+        }
     }
 }
 

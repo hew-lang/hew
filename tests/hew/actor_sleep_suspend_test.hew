@@ -14,7 +14,7 @@
 //! not asserted here where the ratchet runs with the default worker count.
 
 actor Sleeper {
-    var done: i64 = 0,
+    var done: i64 = 0;
     receive fn nap(d: duration) -> i64 {
         sleep(d);
         done = done + 1;

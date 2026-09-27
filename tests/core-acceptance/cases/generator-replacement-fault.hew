@@ -1,4 +1,6 @@
-type Holder { values: Generator<string, ()> }
+type Holder {
+    values: Generator<string, ()>;
+}
 
 gen fn fails_on_close(label: string) -> string {
     defer {
@@ -11,7 +13,10 @@ gen fn fails_on_close(label: string) -> string {
 
 fn started(label: string) -> Generator<string, ()> {
     let values = fails_on_close(label);
-    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    match values.next() {
+        .Some(value) => println(value),
+        .None => panic("empty"),
+    }
     values
 }
 

@@ -2,6 +2,7 @@ fn fail() -> i64 {
     defer println("child cleaned");
     panic("child failed");
 }
+
 fn main() {
     scope {
         defer println("parent cleaned");

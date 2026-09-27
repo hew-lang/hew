@@ -4,9 +4,11 @@ actor Maker {
         yield "rest";
     }
 }
+
 fn wrap(v: string) -> string {
     return v;
 }
+
 fn main() {
     println("before");
     let m = spawn Maker;

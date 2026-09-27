@@ -102,12 +102,13 @@ impl Checker {
             }],
             Ty::Unit,
         );
-        // `close(actor)` requests a cooperative stop and waits for terminal
-        // cleanup; `closed(actor)` waits without requesting. Both are ordinary
-        // calls, so `fork close(actor)` is the non-waiting request.
-        // An actor handle is the actor's own type, so these signatures carry a
-        // free variable and the call-site arms in `calls.rs` require an actor
-        // handle by the checked fact rather than by a wrapper type.
+        // Lifecycle requests return immediately; waits are explicit. The
+        // call-site arm proves the operand is an actor-addressing value.
+        for name in ["stop", "terminate", "stopped", "restarted"] {
+            self.register_builtin_fn(name, vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
+        }
+        // Retired spellings remain registered only so the checker can issue
+        // migration diagnostics before generic name resolution rejects them.
         self.register_builtin_fn("close", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
         self.register_builtin_fn("closed", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);

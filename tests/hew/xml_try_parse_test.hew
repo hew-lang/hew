@@ -14,7 +14,7 @@ fn try_parse_returns_parser_error() {
         .Ok(node) => {
             node.close();
             assert(false);
-        },
+        }
         .Err(message) => assert(message.starts_with("xml:")),
     }
 }

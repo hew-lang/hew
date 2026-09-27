@@ -2061,6 +2061,17 @@ impl Checker {
                 if let Some(alias) = nominal_alias(name.as_str()) {
                     declare(Kind::Machine, 0, name, None, alias, true);
                 }
+                // Raw machines also reach checking when normalization reports
+                // an error. Their event companion still owns a declaration,
+                // just as the generated enum does on the normalized path.
+                declare(
+                    Kind::MachineEventType,
+                    0,
+                    Symbol::intern("Event"),
+                    owner,
+                    format!("{path}.Event"),
+                    false,
+                );
                 for (index, state) in decl.states.iter().enumerate() {
                     let state_path = format!("{path}::state {}", state.name);
                     let state_owner = declare(

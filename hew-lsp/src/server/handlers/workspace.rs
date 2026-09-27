@@ -34,13 +34,7 @@ pub(crate) fn code_lens(
     let Some(path) = uri.to_file_path() else {
         return None;
     };
-    let root = server.workspace_root();
-    let file = root
-        .as_deref()
-        .and_then(|root| path.strip_prefix(root).ok())
-        .unwrap_or(&path)
-        .to_string_lossy()
-        .replace('\\', "/");
+    let file = path.to_string_lossy().replace('\\', "/");
     let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result, &file);
     non_empty(lenses)
 }

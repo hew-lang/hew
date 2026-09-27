@@ -70,6 +70,10 @@ fn test_identity(test: &discovery::TestCase, root: &Path) -> String {
     )
 }
 
+fn test_selector(test: &discovery::TestCase) -> String {
+    format!("{}::{}", test.file, test.name)
+}
+
 fn parse_partition_argument(value: Option<&str>) -> Option<TestPartition> {
     value
         .map(TestPartition::parse)
@@ -89,14 +93,14 @@ fn output_test_list(
     let mut identities: Vec<_> = tests
         .iter()
         .filter(|test| filter.is_none_or(|pattern| test_identity(test, root).contains(pattern)))
-        .map(|test| test_identity(test, root))
+        .map(|test| (test_identity(test, root), test_selector(test)))
         .collect();
     identities.sort();
-    for identity in identities {
+    for (identity, selector) in identities {
         if format == output::OutputFormat::Json {
             println!(
                 "{}",
-                serde_json::json!({ "event": "test_discovered", "identity": identity })
+                serde_json::json!({ "event": "test_discovered", "identity": identity, "selector": selector })
             );
         } else {
             println!("{identity}");

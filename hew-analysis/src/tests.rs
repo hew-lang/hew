@@ -5,6 +5,10 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// A test declaration and its source selection facts.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent source attributes are reported directly to CLI and editors"
+)]
 #[derive(Debug, Clone)]
 pub struct TestDeclaration {
     pub name: String,
@@ -76,9 +80,7 @@ fn collect_sources(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()>
             continue;
         }
         let kind = entry.file_type()?;
-        if kind.is_dir() {
-            collect_sources(&entry.path(), files)?;
-        } else if kind.is_file() {
+        if kind.is_dir() || kind.is_file() {
             collect_sources(&entry.path(), files)?;
         }
     }
@@ -86,7 +88,7 @@ fn collect_sources(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()>
 }
 
 #[cfg(test)]
-mod tests {
+mod test_cases {
     use super::*;
 
     #[test]

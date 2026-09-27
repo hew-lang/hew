@@ -223,14 +223,14 @@ fn append_test_items(
     parsed: &ParseResult,
 ) {
     let relative = roots
-        .iter()
-        .filter_map(|root| path.strip_prefix(root).ok())
-        .min_by_key(|relative| relative.components().count())
+        .first()
+        .and_then(|root| path.strip_prefix(root).ok())
         .unwrap_or(path);
     let file = relative.to_string_lossy().replace('\\', "/");
     for test in hew_analysis::tests::discover_tests(&parsed.program) {
         inventory.push(serde_json::json!({
             "identity": format!("{file}::{}", test.name),
+            "selector": format!("{}::{}", path.display(), test.name),
             "uri": uri,
             "range": span_to_range(source, lines, &test.span),
             "ignored": test.ignored,

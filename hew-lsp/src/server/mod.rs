@@ -340,7 +340,7 @@ fn hew_cli_executable() -> PathBuf {
     PathBuf::from(format!("hew{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn build_run_test_invocation(selector: &str, _workspace_root: &Path) -> (PathBuf, Vec<String>) {
+fn build_run_test_invocation(selector: &str) -> (PathBuf, Vec<String>) {
     (
         hew_cli_executable(),
         vec![
@@ -492,7 +492,7 @@ impl HewLanguageServer {
             return Ok(None);
         };
 
-        let (program, args) = build_run_test_invocation(test_name, &workspace_root);
+        let (program, args) = build_run_test_invocation(test_name);
         self.client
             .show_message(
                 MessageType::INFO,
@@ -2599,8 +2599,26 @@ impl Worker {
         let entries = test_inventory(&documents, &[PathBuf::from("/project")], Some(&uri));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["identity"], "cart_test.hew::totals");
+        assert_eq!(entries[0]["selector"], "/project/cart_test.hew::totals");
         assert_eq!(entries[0]["uri"], uri.as_str());
         assert_eq!(entries[0]["ignored"], false);
+    }
+
+    #[test]
+    fn test_inventory_keeps_same_named_tests_in_two_roots_distinct() {
+        let first = Url::parse("file:///first/cart_test.hew").unwrap();
+        let second = Url::parse("file:///second/cart_test.hew").unwrap();
+        let documents = DashMap::new();
+        documents.insert(first.clone(), make_doc("#[test]\nfn totals() {}\n"));
+        documents.insert(second.clone(), make_doc("#[test]\nfn totals() {}\n"));
+        let roots = [PathBuf::from("/first"), PathBuf::from("/second")];
+        let left = test_inventory(&documents, &roots, Some(&first));
+        let right = test_inventory(&documents, &roots, Some(&second));
+        assert_eq!(left[0]["selector"], "/first/cart_test.hew::totals");
+        assert_eq!(right[0]["selector"], "/second/cart_test.hew::totals");
+        assert_ne!(left[0]["selector"], right[0]["selector"]);
+        assert_eq!(left[0]["identity"], "cart_test.hew::totals");
+        assert_eq!(right[0]["identity"], "/second/cart_test.hew::totals");
     }
 
     #[test]
@@ -2638,14 +2656,13 @@ impl Worker {
 
     #[test]
     fn build_run_test_invocation_uses_cli_test_runner() {
-        let root = Path::new("workspace-root");
-        let (program, args) = build_run_test_invocation("test_add", root);
+        let (program, args) = build_run_test_invocation("/workspace-root/cart_test.hew::test_add");
         assert!(program.ends_with(Path::new(&format!("hew{}", std::env::consts::EXE_SUFFIX))));
         assert_eq!(
             args,
             vec![
                 "test".to_string(),
-                "test_add".to_string(),
+                "/workspace-root/cart_test.hew::test_add".to_string(),
                 "--format".to_string(),
                 "json".to_string(),
             ]

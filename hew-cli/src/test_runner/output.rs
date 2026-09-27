@@ -107,7 +107,7 @@ pub fn output_event(
         (OutputFormat::Json, TestEvent::TestStarted(test)) => {
             println!(
                 "{}",
-                json!({ "event": "test_started", "identity": super::test_identity(&test, root) })
+                json!({ "event": "test_started", "identity": super::test_identity(&test, root), "selector": super::test_selector(&test) })
             );
         }
         (OutputFormat::Json, TestEvent::TestFinished(result)) => {
@@ -126,7 +126,7 @@ pub fn output_event(
             };
             println!(
                 "{}",
-                json!({ "event": "test_finished", "identity": super::test_identity(&result.test, root), "outcome": outcome, "kind": kind, "message": message, "reason": reason, "duration_ms": result.duration.as_millis(), "output": result.output, "report": result.report })
+                json!({ "event": "test_finished", "identity": super::test_identity(&result.test, root), "selector": super::test_selector(&result.test), "outcome": outcome, "kind": kind, "message": message, "reason": reason, "duration_ms": result.duration.as_millis(), "output": result.output, "report": result.report })
             );
         }
         (

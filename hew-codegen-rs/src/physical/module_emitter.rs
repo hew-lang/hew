@@ -805,14 +805,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         // internal, and `hew_native_runtime_finish` keeps this `1` because a
         // deliberate non-zero code is never overwritten.
         let failed = self.ctx.i32_type().const_int(1, false);
-        let failed = self.emit_process_runtime_finish(&builder, failed)?;
+        let failed = self.emit_process_runtime_finish(builder, failed)?;
         builder
             .build_return(Some(&failed))
             .llvm_ctx("return physical failure status")?;
 
         builder.position_at_end(success);
-        let exit = emit_entry_success(self.ctx, &builder, result, action, callable)?;
-        let exit = self.emit_process_runtime_finish(&builder, exit)?;
+        let exit = emit_entry_success(self.ctx, builder, result, action, callable)?;
+        let exit = self.emit_process_runtime_finish(builder, exit)?;
         builder
             .build_return(Some(&exit))
             .llvm_ctx("return physical process status")?;

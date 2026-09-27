@@ -717,7 +717,7 @@ pub(super) fn check(
                         CallableNode::Declaration(id) => output.fn_sigs.get(id).map(|sig| {
                             sig.type_params
                                 .iter()
-                                .cloned()
+                                .copied()
                                 .zip(type_args.iter().cloned())
                                 .collect()
                         }),

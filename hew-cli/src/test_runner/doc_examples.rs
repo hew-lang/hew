@@ -46,7 +46,8 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
             let identity = format!("{relative}::doc({})#{}", fence.item, number);
             let selector = format!("{}::doc({})#{}", file.display(), fence.item, number);
             let generated_path = generated.path().join(format!("doc_{}.hew", tests.len()));
-            let generated_source = example_source(&source, &fence, &file);
+            let entry_name = format!("__hew_doc_example_{}", tests.len());
+            let generated_source = example_source(&source, &fence, &file, &entry_name);
             std::fs::write(&generated_path, generated_source)
                 .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
             let path = generated_path.display().to_string();
@@ -57,14 +58,17 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
                 .find(|error| error.severity == hew_parser::Severity::Error)
                 .map(|error| format!("{identity}: {}", error.message));
             if parse_error.is_some() {
-                std::fs::write(&generated_path, "#[test]\nfn __hew_doc_example() {}\n")
-                    .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
+                std::fs::write(
+                    &generated_path,
+                    format!("#[test]\nfn {entry_name}() {{}}\n"),
+                )
+                .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
                 discovered = discovery::discover_tests_in_file(&path)?;
             }
             let mut test = discovered
                 .tests
                 .into_iter()
-                .next()
+                .rfind(|test| test.name == entry_name)
                 .ok_or_else(|| format!("{identity}: generated doc test has no entry"))?;
             test.ignored = fence.ignored;
             test.doc = Some(DocTest {
@@ -236,9 +240,9 @@ fn expected_output(code: &str) -> Option<String> {
     })
 }
 
-fn example_source(module: &str, fence: &Fence, path: &Path) -> String {
+fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) -> String {
     if fence.ignored {
-        return "#[test]\nfn __hew_doc_example() {}\n".to_string();
+        return format!("#[test]\nfn {entry_name}() {{}}\n");
     }
     let standalone = path.extension().is_some_and(|ext| ext == "md")
         || fence.code.contains("fn main(")
@@ -249,12 +253,12 @@ fn example_source(module: &str, fence: &Fence, path: &Path) -> String {
     let base = if standalone { "" } else { module };
     if fence.code.contains("fn main(") {
         format!(
-            "{base}\n{}\n#[test]\nfn __hew_doc_example() {{ main(); }}\n",
+            "{base}\n{}\n#[test]\nfn {entry_name}() {{ main(); }}\n",
             fence.code
         )
     } else {
         format!(
-            "{base}\n#[test]\nfn __hew_doc_example() {{\n{}\n}}\n",
+            "{base}\n#[test]\nfn {entry_name}() {{\n{}\n}}\n",
             fence.code
         )
     }
@@ -272,7 +276,8 @@ mod tests {
         assert_eq!(examples[0].item, "split");
         assert_eq!(examples[0].expected_stdout.as_deref(), Some("3\n"));
         assert!(
-            example_source(source, &examples[0], Path::new("split.hew")).contains("pub fn split()")
+            example_source(source, &examples[0], Path::new("split.hew"), "__doc")
+                .contains("pub fn split()")
         );
     }
 

@@ -69,6 +69,31 @@ fn doc_no_run_still_rejects_a_type_error() {
 }
 
 #[test]
+fn doc_fence_selects_generated_entry_after_existing_test() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "module.hew",
+        "#[test]\nfn earlier() { println(\"earlier test\"); }\n\n/// Example.\n/// ```hew\n/// println(\"doc fence\");\n/// // Output:\n/// // doc fence\n/// ```\npub fn example() {}\n",
+    );
+    let output = run_hew_in(
+        dir.path(),
+        &["test", "--doc", "module.hew", "--format", "json"],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("module.hew::doc(example)#1"), "{events}");
+    assert!(events.contains("\"output\":\"doc fence\\n\""), "{events}");
+    assert!(!events.contains("earlier test"), "{events}");
+}
+
+#[test]
 fn should_panic_matches_checked_trap_and_fragment() {
     require_codegen();
     let output = run_suite(

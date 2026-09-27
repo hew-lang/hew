@@ -1705,6 +1705,7 @@ non-declarable = [
   "hew_fault_inject_drop",
   "hew_fault_into_host_error",
   "hew_fault_new",
+  "hew_fault_new_assertion",
   "hew_fault_new_panic",
   "hew_fault_new_unhandled_failure",
   "hew_fault_report",
@@ -7258,6 +7259,14 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_fault_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_fault_new_assertion"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_fault_drop"
+discharge-depth = "deep"
 result-retention = "transferred"
 
 [[ownership.contracts]]

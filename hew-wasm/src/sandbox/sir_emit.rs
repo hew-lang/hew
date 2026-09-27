@@ -1587,9 +1587,14 @@ impl<'m> Walker<'m> {
                 "unwind": encode_unwind(unwind),
             }),
 
-            SemTerminator::Panic { message, cleanup } => serde_json::json!({
+            SemTerminator::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => serde_json::json!({
                 "op": "panic",
                 "message": boundary(message),
+                "assertion": assertion.as_ref().map(|values| values.iter().map(boundary).collect::<Vec<_>>()),
                 "cleanup": encode_edge(cleanup),
             }),
             SemTerminator::Trap { kind } => {

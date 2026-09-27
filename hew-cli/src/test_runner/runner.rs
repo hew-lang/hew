@@ -339,6 +339,8 @@ pub struct TestReport {
     message: Option<String>,
     site_offset: Option<u32>,
     #[serde(default)]
+    pub(crate) assertion: Option<AssertionOperands>,
+    #[serde(default)]
     schedule: Option<String>,
     #[serde(default)]
     pub(crate) seed: Option<String>,
@@ -346,6 +348,13 @@ pub struct TestReport {
     steps: Option<u64>,
     #[serde(default)]
     virtual_time_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AssertionOperands {
+    pub operator: String,
+    pub left: String,
+    pub right: String,
 }
 
 impl Execution {
@@ -1474,6 +1483,15 @@ fn test_bad_eq() {
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
         if let TestOutcome::Failed(failure) = &summary.results[0].outcome {
             assert_eq!(failure.kind, TestFailureKind::Assertion);
+            let operands = summary.results[0]
+                .report
+                .as_ref()
+                .and_then(|report| report.assertion.as_ref())
+                .expect("comparison operands travel in the typed test report");
+            assert_eq!(
+                (&*operands.operator, &*operands.left, &*operands.right),
+                ("==", "1", "2")
+            );
             // The desugar reports the condition's text and both rendered
             // operands, so a failure says what went wrong without a rerun.
             assert!(

@@ -818,8 +818,20 @@ impl FunctionLowerer<'_> {
                     unwind: self.lower_edge(unwind)?,
                 })
             }
-            SemTerminator::Panic { message, cleanup } => Ok(PhysicalTerminator::Panic {
+            SemTerminator::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => Ok(PhysicalTerminator::Panic {
                 message: self.argument_transfers(std::slice::from_ref(message))?[0],
+                assertion: assertion
+                    .as_ref()
+                    .map(|values| {
+                        self.argument_transfers(values)?.try_into().map_err(|_| {
+                            PhysicalError::new("assertion payload must contain three operands")
+                        })
+                    })
+                    .transpose()?,
                 cleanup: self.lower_edge(cleanup)?,
             }),
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),

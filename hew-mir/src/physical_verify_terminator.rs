@@ -754,7 +754,11 @@ pub(crate) fn terminator_successors(
             }
             Ok(successors)
         }
-        PhysicalTerminator::Panic { message, cleanup } => {
+        PhysicalTerminator::Panic {
+            message,
+            assertion,
+            cleanup,
+        } => {
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(
                     "physical panic cannot overwrite an active fault",
@@ -764,6 +768,16 @@ pub(crate) fn terminator_successors(
                 return Err(PhysicalError::new("physical panic must borrow its message"));
             };
             initialized(function, &state, *source, block, "panic message")?;
+            if let Some(assertion) = assertion {
+                for value in assertion {
+                    let ArgumentTransfer::Borrow(source) = value else {
+                        return Err(PhysicalError::new(
+                            "physical assertion must borrow its operands",
+                        ));
+                    };
+                    initialized(function, &state, *source, block, "assertion operand")?;
+                }
+            }
             state.fault = FaultState::Active;
             state.exit = defer::TRAP;
             Ok(vec![apply_edge(function, borrows, cleanup, state, block)?])
@@ -2000,12 +2014,21 @@ pub(crate) fn verify_terminator(
             }
             Ok(())
         }
-        PhysicalTerminator::Panic { message, cleanup } => {
+        PhysicalTerminator::Panic {
+            message,
+            assertion,
+            cleanup,
+        } => {
             let ArgumentTransfer::Borrow(source) = message else {
                 return Err(PhysicalError::new("physical panic must borrow its message"));
             };
             if slot(*source)?.ty != ResolvedTy::String {
                 return Err(PhysicalError::new("physical panic message must be String"));
+            }
+            if assertion.as_ref().is_some_and(|values| values.iter().any(|value| {
+                !matches!(value, ArgumentTransfer::Borrow(source) if slot(*source).is_ok_and(|slot| slot.ty == ResolvedTy::String))
+            })) {
+                return Err(PhysicalError::new("physical assertion operands must borrow Strings"));
             }
             edge(cleanup)
         }

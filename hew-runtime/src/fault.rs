@@ -50,19 +50,37 @@ pub struct HewFault {
 struct FaultDiagnostic {
     code: i32,
     message: Option<Box<str>>,
+    assertion: Option<AssertionOperands>,
     /// Root-source byte offset, when codegen can attribute the fault.
     site: AtomicU32,
     reported: Mutex<bool>,
+}
+
+/// Rendered values from one failed comparison, retained with its fault.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct AssertionOperands {
+    pub operator: String,
+    pub left: String,
+    pub right: String,
 }
 
 const NO_SITE: u32 = u32::MAX;
 
 impl HewFault {
     fn new(code: i32, message: Option<Box<str>>) -> Self {
+        Self::new_with_assertion(code, message, None)
+    }
+
+    fn new_with_assertion(
+        code: i32,
+        message: Option<Box<str>>,
+        assertion: Option<AssertionOperands>,
+    ) -> Self {
         Self {
             primary: Arc::new(FaultDiagnostic {
                 code,
                 message,
+                assertion,
                 site: AtomicU32::new(NO_SITE),
                 reported: Mutex::new(false),
             }),
@@ -212,6 +230,39 @@ pub unsafe extern "C" fn hew_fault_new_panic(message: *const HewString) -> *mut 
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
     Box::into_raw(Box::new(HewFault::new(HEW_TRAP_USER_PANIC, Some(message))))
+}
+
+/// Copy one assertion's human report and rendered comparison values into an
+/// owned fault. The four input strings remain caller-owned.
+///
+/// # Safety
+/// Every non-null pointer must reference a live managed string for this call.
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn hew_fault_new_assertion(
+    message: *const HewString,
+    operator: *const HewString,
+    left: *const HewString,
+    right: *const HewString,
+) -> *mut HewFault {
+    // SAFETY: the caller retains all four borrowed managed strings until return.
+    let (message, operator, left, right) = unsafe {
+        (
+            string_as_str(message),
+            string_as_str(operator),
+            string_as_str(left),
+            string_as_str(right),
+        )
+    };
+    Box::into_raw(Box::new(HewFault::new_with_assertion(
+        HEW_TRAP_USER_PANIC,
+        Some(message.into()),
+        Some(AssertionOperands {
+            operator: operator.to_owned(),
+            left: left.to_owned(),
+            right: right.to_owned(),
+        }),
+    )))
 }
 
 /// Copy a borrowed managed string into the fault a `fails` handler raises
@@ -404,6 +455,7 @@ fn note_test_fault(fault: &HewFault) {
         primary.code,
         primary.message.as_deref(),
         (site != NO_SITE).then_some(site),
+        primary.assertion.as_ref(),
     );
 }
 

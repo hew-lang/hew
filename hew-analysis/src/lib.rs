@@ -20,7 +20,7 @@ pub mod rename;
 pub mod semantic_tokens;
 pub mod signature_help;
 pub mod symbols;
-pub mod tests;
+pub mod test_discovery;
 pub mod util;
 
 use serde::{Deserialize, Serialize};

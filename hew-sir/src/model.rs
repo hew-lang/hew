@@ -2066,6 +2066,9 @@ pub enum SemTerminator {
     /// The message occupies operand slot zero; cleanup arguments follow it.
     Panic {
         message: BoundaryOperand,
+        /// Operator, rendered left value and rendered right value, when this
+        /// fault came from a compared assertion.
+        assertion: Option<[BoundaryOperand; 3]>,
         cleanup: Edge,
     },
     /// A language-visible trap (§1.6). Unlike [`Self::Unreachable`] this is a
@@ -2124,7 +2127,19 @@ impl SemTerminator {
     /// `u32` operand-slot range can represent.
     pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
         match self {
-            Self::Panic { message, .. } => visit(OperandSlot(0), message),
+            Self::Panic {
+                message, assertion, ..
+            } => {
+                visit(OperandSlot(0), message);
+                if let Some(assertion) = assertion {
+                    for (index, operand) in assertion.iter().enumerate() {
+                        visit(
+                            OperandSlot(u32::try_from(index + 1).expect("assertion operand slot")),
+                            operand,
+                        );
+                    }
+                }
+            }
             Self::Return { value: Some(value) }
             | Self::ResumeUnwind {
                 handback: Some(value),
@@ -2340,13 +2355,26 @@ impl SemTerminator {
                         .expect("terminator operand count exceeds u32");
                 }
             }
-            Self::Panic { message, cleanup } => {
+            Self::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => {
                 visit(OperandSlot(0), &message.operand);
+                if let Some(assertion) = assertion {
+                    for (index, value) in assertion.iter().enumerate() {
+                        visit(
+                            OperandSlot(u32::try_from(index + 1).expect("assertion operand slot")),
+                            &value.operand,
+                        );
+                    }
+                }
+                let offset = if assertion.is_some() { 4 } else { 1 };
                 cleanup.visit_operands(|slot, operand| {
                     visit(
                         OperandSlot(
                             slot.0
-                                .checked_add(1)
+                                .checked_add(offset)
                                 .expect("SIR panic operand count exceeds u32"),
                         ),
                         operand,
@@ -2509,13 +2537,26 @@ impl SemTerminator {
                         .expect("terminator operand count exceeds u32");
                 }
             }
-            Self::Panic { message, cleanup } => {
+            Self::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => {
                 visit(OperandSlot(0), &mut message.operand);
+                if let Some(assertion) = assertion {
+                    for (index, value) in assertion.iter_mut().enumerate() {
+                        visit(
+                            OperandSlot(u32::try_from(index + 1).expect("assertion operand slot")),
+                            &mut value.operand,
+                        );
+                    }
+                }
+                let offset = if assertion.is_some() { 4 } else { 1 };
                 cleanup.visit_operands_mut(|slot, operand| {
                     visit(
                         OperandSlot(
                             slot.0
-                                .checked_add(1)
+                                .checked_add(offset)
                                 .expect("SIR panic operand count exceeds u32"),
                         ),
                         operand,
@@ -3040,6 +3081,15 @@ impl SemTerminator {
     pub fn operand_context(&self, slot: OperandSlot) -> &'static str {
         match self {
             Self::Panic { .. } if slot.0 == 0 => "panic message",
+            Self::Panic {
+                assertion: Some(_), ..
+            } if slot.0 == 1 => "assertion operator",
+            Self::Panic {
+                assertion: Some(_), ..
+            } if slot.0 == 2 => "assertion left operand",
+            Self::Panic {
+                assertion: Some(_), ..
+            } if slot.0 == 3 => "assertion right operand",
             Self::Panic { .. } => "panic cleanup-edge argument",
             Self::Return { .. } => "return value",
             Self::Goto(_) => "goto edge argument",

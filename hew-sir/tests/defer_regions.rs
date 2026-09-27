@@ -234,6 +234,7 @@ fn defer_rejects_active_fault_calls_and_failed_result_reads() {
     let function = fixture::probe(&mut active);
     function.blocks[1].terminator = SemTerminator::Panic {
         message: fixture::boundary(function.params[1].value, BoundaryDecision::Borrow),
+        assertion: None,
         cleanup: fixture::edge(16),
     };
     let mut call = function.blocks[5].terminator.clone();

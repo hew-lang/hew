@@ -5306,7 +5306,11 @@ fn verify_terminator_shape(
         call @ SemTerminator::ValueCall { .. } => {
             verify_value_call_terminator(function, call, types, blocks, diagnostics);
         }
-        SemTerminator::Panic { message, cleanup } => {
+        SemTerminator::Panic {
+            message,
+            assertion,
+            cleanup,
+        } => {
             if types.get(&message.operand.value) != Some(&ResolvedTy::String)
                 || message.decision != crate::BoundaryDecision::Borrow
             {
@@ -5314,6 +5318,19 @@ fn verify_terminator_shape(
                     function,
                     SirDiagnosticKind::InvalidTerminator {
                         reason: "panic requires one borrowed String message".into(),
+                    },
+                ));
+            }
+            if assertion.as_ref().is_some_and(|values| {
+                values.iter().any(|value| {
+                    types.get(&value.operand.value) != Some(&ResolvedTy::String)
+                        || value.decision != crate::BoundaryDecision::Borrow
+                })
+            }) {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: "assertion payload requires three borrowed String operands".into(),
                     },
                 ));
             }

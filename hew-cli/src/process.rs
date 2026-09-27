@@ -91,6 +91,9 @@ pub(crate) fn format_timeout(timeout: Duration) -> String {
 /// - the [`run_binary_with_timeout`] helper for captured output.
 pub(crate) struct BoundedChild {
     child: Child,
+    /// A test hosted in an outer sandbox may inherit that sandbox's group.
+    #[cfg(unix)]
+    isolated_group: bool,
     /// Windows-only: Job Object that owns the child and all its descendants.
     /// `None` if job creation or assignment failed at spawn time.
     #[cfg(windows)]
@@ -102,24 +105,33 @@ impl BoundedChild {
     /// platform and return it together with any cleanup resources.
     #[cfg(unix)]
     pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
+        Self::spawn_with_group(command, true)
+    }
+
+    #[cfg(unix)]
+    fn spawn_with_group(command: &mut Command, isolated_group: bool) -> Result<Self, String> {
         use std::os::unix::process::CommandExt;
 
-        // SAFETY: `pre_exec` runs in the child process after `fork` and before
-        // `exec`. `setpgid(0, 0)` only mutates the child's own process-group
-        // membership so timed-out executions can be terminated as a group.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setpgid(0, 0) == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::last_os_error())
-                }
-            });
+        if isolated_group {
+            // SAFETY: `pre_exec` runs in the child process after `fork` and
+            // before `exec`; it changes only that child's process group.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setpgid(0, 0) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
         }
 
         let child = spawn_with_retry(|| command.spawn())
             .map_err(|e| format!("cannot spawn child process: {e}"))?;
-        Ok(Self { child })
+        Ok(Self {
+            child,
+            isolated_group,
+        })
     }
 
     /// Spawn the child suspended, assign it to a Job Object, then resume it.
@@ -187,7 +199,12 @@ impl BoundedChild {
     /// been provably terminated so that drain threads can be safely joined.
     #[cfg(unix)]
     fn terminate_process_group(&mut self) -> Result<bool, String> {
-        let tree_killed = kill_timed_out_child(&mut self.child, TimeoutKillTarget::ProcessGroup)?;
+        let target = if self.isolated_group {
+            TimeoutKillTarget::ProcessGroup
+        } else {
+            TimeoutKillTarget::Child
+        };
+        let tree_killed = kill_timed_out_child(&mut self.child, target)?;
         self.child
             .wait()
             .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
@@ -370,10 +387,14 @@ pub(crate) fn run_binary_with_driver(
         Some(ordinal) => command.env("HEW_TEST", ordinal.to_string()),
         None => command.env_remove("HEW_TEST"),
     };
+    // The playground's trusted outer sandbox owns the inherited process
+    // group. Never create or signal a nested group in that mode.
+    let inherit_group =
+        std::env::var("HEW_TEST_INHERIT_PROCESS_GROUP").is_ok_and(|value| value == "1");
     if capture {
-        run_command_captured(&mut command, timeout)
+        run_command_captured_with_group(&mut command, timeout, inherit_group)
     } else {
-        run_command_uncaptured(&mut command, timeout)
+        run_command_uncaptured_with_group(&mut command, timeout, inherit_group)
     }
 }
 
@@ -382,8 +403,16 @@ pub(crate) fn run_command_uncaptured(
     command: &mut Command,
     timeout: Duration,
 ) -> Result<BinaryRunOutcome, String> {
+    run_command_uncaptured_with_group(command, timeout, false)
+}
+
+fn run_command_uncaptured_with_group(
+    command: &mut Command,
+    timeout: Duration,
+    inherit_group: bool,
+) -> Result<BinaryRunOutcome, String> {
     command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-    let mut bounded = BoundedChild::spawn(command)?;
+    let mut bounded = spawn_test_child(command, inherit_group)?;
     match bounded.wait_with_timeout(timeout)? {
         ChildWaitOutcome::Timeout => Ok(BinaryRunOutcome::Timeout),
         ChildWaitOutcome::Exited(status) if status.success() => Ok(BinaryRunOutcome::Success {
@@ -407,16 +436,35 @@ pub(crate) fn run_command_captured(
     command: &mut Command,
     timeout: Duration,
 ) -> Result<BinaryRunOutcome, String> {
+    run_command_captured_with_group(command, timeout, false)
+}
+
+fn run_command_captured_with_group(
+    command: &mut Command,
+    timeout: Duration,
+    inherit_group: bool,
+) -> Result<BinaryRunOutcome, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let mut bounded = BoundedChild::spawn(command)?;
+    let mut bounded = spawn_test_child(command, inherit_group)?;
     let drain = ConcurrentChildOutput::spawn(&mut bounded.child)?;
     let start = Instant::now();
 
     loop {
         match bounded.child.try_wait() {
             Ok(Some(status)) => {
-                let (stdout, stderr) = drain.finish()?;
+                // A descendant may retain a pipe after the direct child
+                // exits. Keep the wall deadline in force while awaiting EOF.
+                let Some((stdout, stderr)) = drain.finish_until(start + timeout)? else {
+                    #[cfg(unix)]
+                    let owns_tree = !inherit_group;
+                    #[cfg(not(unix))]
+                    let owns_tree = true;
+                    if owns_tree {
+                        bounded.terminate_process_group()?;
+                    }
+                    return Ok(BinaryRunOutcome::Timeout);
+                };
                 if status.success() {
                     return Ok(BinaryRunOutcome::Success { stdout });
                 }
@@ -437,6 +485,18 @@ pub(crate) fn run_command_captured(
             }
             Err(e) => return Err(format!("cannot poll child process: {e}")),
         }
+    }
+}
+
+fn spawn_test_child(command: &mut Command, inherit_group: bool) -> Result<BoundedChild, String> {
+    #[cfg(unix)]
+    {
+        BoundedChild::spawn_with_group(command, !inherit_group)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = inherit_group;
+        BoundedChild::spawn(command)
     }
 }
 
@@ -475,6 +535,18 @@ impl ConcurrentChildOutput {
     /// Join both drain threads and return `(stdout, stderr)`.
     pub(crate) fn finish(self) -> Result<(String, String), String> {
         Ok((self.stdout.finish()?, self.stderr.finish()?))
+    }
+
+    /// Await both pipe readers only until the test's wall deadline. Dropped
+    /// join handles detach readers when an outer sandbox still owns a writer.
+    fn finish_until(self, deadline: Instant) -> Result<Option<(String, String)>, String> {
+        let Some(stdout) = self.stdout.finish_until(deadline)? else {
+            return Ok(None);
+        };
+        let Some(stderr) = self.stderr.finish_until(deadline)? else {
+            return Ok(None);
+        };
+        Ok(Some((stdout, stderr)))
     }
 
     /// Dispose of the drain threads on the timeout path.
@@ -519,6 +591,16 @@ impl ChildPipeReader {
         self.handle
             .join()
             .map_err(|_| format!("child {} reader panicked", self.name))?
+    }
+
+    fn finish_until(self, deadline: Instant) -> Result<Option<String>, String> {
+        while !self.handle.is_finished() {
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.finish().map(Some)
     }
 }
 
@@ -942,6 +1024,36 @@ mod tests {
             "tree spinner emitted unexpected output after PID {grandchild_pid}: {:?}",
             String::from_utf8_lossy(&trailing_output)
         );
+    }
+
+    #[test]
+    fn inherited_test_group_times_out_when_descendant_retains_output_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        for (index, script) in [
+            "sleep 5 & echo $! > \"$PID_FILE\"",
+            "sleep 5 & echo $! > \"$PID_FILE\"; sleep 5",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let pid_file = dir.path().join(format!("descendant-{index}.pid"));
+            let mut command = Command::new("sh");
+            command.args(["-c", script]).env("PID_FILE", &pid_file);
+            let started = Instant::now();
+            let outcome =
+                run_command_captured_with_group(&mut command, Duration::from_millis(200), true)
+                    .expect("inherited-group test run");
+            let pid: i32 = std::fs::read_to_string(&pid_file)
+                .expect("descendant PID")
+                .trim()
+                .parse()
+                .expect("numeric descendant PID");
+            // SAFETY: this PID was published by the child just started above;
+            // signal only that descendant, never our inherited process group.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            assert!(matches!(outcome, BinaryRunOutcome::Timeout));
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
     }
 
     #[test]

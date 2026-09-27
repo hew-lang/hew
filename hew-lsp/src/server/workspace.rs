@@ -38,7 +38,7 @@ pub(super) fn build_code_lenses(
         }
     };
 
-    let tests = hew_analysis::tests::discover_tests(&parse_result.program);
+    let tests = hew_analysis::test_discovery::discover_tests(&parse_result.program);
     if !tests.is_empty() {
         lenses.push(CodeLens {
             range: offset_range_to_lsp(source, lo, 0, 0),
@@ -227,7 +227,7 @@ fn append_test_items(
         .and_then(|root| path.strip_prefix(root).ok())
         .unwrap_or(path);
     let file = relative.to_string_lossy().replace('\\', "/");
-    for test in hew_analysis::tests::discover_tests(&parsed.program) {
+    for test in hew_analysis::test_discovery::discover_tests(&parsed.program) {
         inventory.push(serde_json::json!({
             "identity": format!("{file}::{}", test.name),
             "selector": format!("{}::{}", path.display(), test.name),
@@ -520,6 +520,6 @@ fn path_is_under_workspace_root(path: &Path, workspace_roots: &[PathBuf]) -> boo
         .any(|root| normalized_path.starts_with(root))
 }
 
-fn normalize_workspace_path(path: &Path) -> PathBuf {
+pub(super) fn normalize_workspace_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }

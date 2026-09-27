@@ -44,6 +44,7 @@ try {
     fault_code: null,
     message,
     site_offset: null,
+    assertion: fault?.assertion ?? null,
     schedule: args.schedule,
     seed: args.seed.toString(),
     steps: final.step_count,

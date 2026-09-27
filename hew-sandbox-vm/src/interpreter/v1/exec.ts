@@ -74,7 +74,13 @@ type Ref =
   | { kind: "payload"; parent: Ref; index: number };
 
 type Fault = (
-  | { kind: "panic"; message: string; cancelled?: boolean; deadline?: boolean }
+  | {
+      kind: "panic";
+      message: string;
+      assertion?: { operator: string; left: string; right: string };
+      cancelled?: boolean;
+      deadline?: boolean;
+    }
   | { kind: "trap"; trap: TrapName; message?: string }
 ) & { primary?: Fault; secondary?: Fault[] };
 
@@ -1329,7 +1335,18 @@ class ExecutorV1 {
 
       case "panic": {
         const message = this.boundary(act, term.message);
-        act.fault = { kind: "panic", message: renderMessage(message) };
+        const assertion = term.assertion
+          ? {
+              operator: renderMessage(this.boundary(act, term.assertion[0])),
+              left: renderMessage(this.boundary(act, term.assertion[1])),
+              right: renderMessage(this.boundary(act, term.assertion[2])),
+            }
+          : undefined;
+        act.fault = {
+          kind: "panic",
+          message: renderMessage(message),
+          ...(assertion ? { assertion } : {}),
+        };
         if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
@@ -3577,7 +3594,14 @@ class ExecutorV1 {
     this.trace.fail(
       status,
       "runtime.failure",
-      runtimeFailure(isPanic ? "panic" : "trap", message, trapKind, null),
+      runtimeFailure(
+        isPanic ? "panic" : "trap",
+        message,
+        trapKind,
+        null,
+        undefined,
+        fault.kind === "panic" ? fault.assertion : undefined,
+      ),
     );
     throw new Halt(status);
   }

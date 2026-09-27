@@ -6,6 +6,7 @@ use tower_lsp_server::lsp_types::{
 };
 
 use super::super::uri::FileUriExt;
+use super::super::workspace::normalize_workspace_path;
 use super::super::{
     build_code_lenses, collect_project_workspace_symbols, non_empty, HewLanguageServer,
     RUN_TEST_COMMAND,
@@ -34,7 +35,7 @@ pub(crate) fn code_lens(
     let Some(path) = uri.to_file_path() else {
         return None;
     };
-    let file = path.to_string_lossy().replace('\\', "/");
+    let file = normalize_workspace_path(&path).display().to_string();
     let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result, &file);
     non_empty(lenses)
 }

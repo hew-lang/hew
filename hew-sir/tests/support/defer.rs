@@ -162,6 +162,7 @@ pub fn module(failing: bool) -> SemModule {
             vec![],
             SemTerminator::Panic {
                 message: boundary(body, BoundaryDecision::Borrow),
+                assertion: None,
                 cleanup: edge(3),
             },
         ),
@@ -272,6 +273,7 @@ pub fn module(failing: bool) -> SemModule {
             if failing {
                 SemTerminator::Panic {
                     message: boundary(older, BoundaryDecision::Borrow),
+                    assertion: None,
                     cleanup: edge(11),
                 }
             } else {
@@ -372,6 +374,7 @@ pub fn nested(failing: bool) -> SemModule {
             if failing {
                 SemTerminator::Panic {
                     message: boundary(ValueId(61), BoundaryDecision::Borrow),
+                    assertion: None,
                     cleanup: edge(18),
                 }
             } else {

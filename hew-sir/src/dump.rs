@@ -509,10 +509,14 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         | SemTerminator::ExternCall { .. } => {
             dump_call_terminator(out, module, term);
         }
-        SemTerminator::Panic { message, cleanup } => {
+        SemTerminator::Panic {
+            message,
+            assertion,
+            cleanup,
+        } => {
             writeln!(
                 out,
-                "    panic {} cleanup bb{}{}",
+                "    panic {} assertion={assertion:?} cleanup bb{}{}",
                 boundary_operand(message),
                 cleanup.target.0,
                 edge_args(cleanup)

@@ -377,8 +377,13 @@ fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>)
             used.insert(source(receiver));
             used.extend(args.iter().map(source));
         }
-        PhysicalTerminator::Panic { message, .. } => {
+        PhysicalTerminator::Panic {
+            message, assertion, ..
+        } => {
             used.insert(source(message));
+            if let Some(assertion) = assertion {
+                used.extend(assertion.iter().map(source));
+            }
         }
         _ => {}
     }

@@ -468,7 +468,12 @@ export type TermV1 =
       })
   | (TermBase &
       CallShape & { op: "wire.codec"; direction: string; plan: number })
-  | (TermBase & { op: "panic"; message: BoundaryOperand; cleanup: Edge })
+  | (TermBase & {
+      op: "panic";
+      message: BoundaryOperand;
+      assertion?: [BoundaryOperand, BoundaryOperand, BoundaryOperand] | null;
+      cleanup: Edge;
+    })
   | (TermBase & { op: "trap"; trap: TrapName })
   | (TermBase & { op: "checked_raise"; trap: TrapName; cleanup: Edge })
   | (TermBase & { op: "cleanup.dispatch"; normal: Edge; fault: Edge })

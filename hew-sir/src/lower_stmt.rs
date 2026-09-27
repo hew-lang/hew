@@ -577,6 +577,11 @@ impl Builder<'_, '_> {
                 args,
                 ..
             } if endpoint == "panic" => return self.lower_panic(expr, args),
+            HirExprKind::Call {
+                target: CallTarget::Builtin { endpoint },
+                args,
+                ..
+            } if endpoint == "assertion_panic" => return self.lower_panic(expr, args),
             _ => {}
         }
         if expr.intent != IntentKind::Consume {
@@ -691,20 +696,39 @@ impl Builder<'_, '_> {
     /// Preserve the panic message before releasing its owner and propagating
     /// the active fault through the ordinary function cleanup boundary.
     pub(super) fn lower_panic(&mut self, expr: &HirExpr, args: &[HirExpr]) -> Result<(), String> {
-        let [message] = args else {
-            return Err("panic requires exactly one string message".into());
+        let (message, assertion) = match args {
+            [message] => (message, None),
+            [message, operator, left, right] => (message, Some([operator, left, right])),
+            _ => return Err("panic requires a message and optional assertion operands".into()),
         };
-        if self.ty(&message.ty) != ResolvedTy::String || self.ty(&expr.ty) != ResolvedTy::Never {
-            return Err("panic requires a string message and a Never result".into());
+        if self.ty(&message.ty) != ResolvedTy::String
+            || assertion.is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|value| self.ty(&value.ty) != ResolvedTy::String)
+            })
+            || self.ty(&expr.ty) != ResolvedTy::Never
+        {
+            return Err("panic requires string operands and a Never result".into());
         }
         let mut loans = Vec::new();
         let operand = self.lower_call_read(message, &mut loans, true, true)?;
-        self.finish_panic(operand, &loans)
+        let assertion = if let Some([operator, left, right]) = assertion {
+            Some([
+                self.lower_call_read(operator, &mut loans, true, true)?,
+                self.lower_call_read(left, &mut loans, true, true)?,
+                self.lower_call_read(right, &mut loans, true, true)?,
+            ])
+        } else {
+            None
+        };
+        self.finish_panic(operand, assertion, &loans)
     }
 
     pub(super) fn finish_panic(
         &mut self,
         operand: Operand,
+        assertion: Option<[Operand; 3]>,
         loans: &[ValueId],
     ) -> Result<(), String> {
         let cleanup = self.new_block(Vec::new());
@@ -713,6 +737,12 @@ impl Builder<'_, '_> {
                 operand,
                 decision: crate::BoundaryDecision::Borrow,
             },
+            assertion: assertion.map(|values| {
+                values.map(|operand| crate::BoundaryOperand {
+                    operand,
+                    decision: crate::BoundaryDecision::Borrow,
+                })
+            }),
             cleanup: Edge {
                 target: cleanup,
                 args: Vec::new(),

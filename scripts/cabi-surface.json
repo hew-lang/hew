@@ -6811,6 +6811,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fault_new_assertion( *const HewString, *const HewString, *const HewString, *const HewString, ) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_fault_new_assertion( *const HewString, *const HewString, *const HewString, *const HewString, ) -> *mut HewFault"
+      },
+      "symbol": "hew_fault_new_assertion"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fault_new_panic( *const HewString) -> *mut HewFault",
         "wasm32-wasip1": "fn hew_fault_new_panic( *const HewString) -> *mut HewFault"
       },

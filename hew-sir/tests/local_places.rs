@@ -778,6 +778,7 @@ fn parked_fault_preserves_trap_only_linear_cleanup() {
                     operand: Operand { value: ValueId(2) },
                     decision: BoundaryDecision::Borrow,
                 },
+                assertion: None,
                 cleanup: edge(1),
             },
         ),

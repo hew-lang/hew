@@ -198,6 +198,7 @@ fn physical_defer_keeps_the_parked_linear_cleanup_cause() {
             ],
             SemTerminator::Panic {
                 message: fixture::boundary(ValueId(2), BoundaryDecision::Borrow),
+                assertion: None,
                 cleanup: fixture::edge(1),
             },
         ),

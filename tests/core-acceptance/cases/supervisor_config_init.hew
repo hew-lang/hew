@@ -1,5 +1,3 @@
-// Historical supervisor fixture: its stop call still needs migration to the
-// decided close(sup) form, whose implementation is pending.
 // MIR-corpus fixture: the v0.6 init-closure restart model — config-derived
 // child init.
 //

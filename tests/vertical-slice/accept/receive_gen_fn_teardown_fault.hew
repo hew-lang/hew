@@ -5,9 +5,9 @@
 //
 // One `recv()` up front guarantees the pump has left its initial idle state
 // (an infinite generator never returns to idle on its own), so the
-// subsequent `supervisor_stop` is guaranteed to observe the child actor as
-// still running its pump rather than racing an unstarted one. `supervisor_stop`
-// blocks until the child actor is fully torn down; since the generator never
+// subsequent `terminate` observes the child actor still running its pump
+// rather than racing an unstarted one. `stopped` waits until the child is
+// fully torn down; since the generator never
 // completes on its own, that can only happen once it has filled its
 // backpressure buffer and parked — which makes the buffered values at
 // teardown an exact, deterministic count (capacity 8, minus the one value
@@ -38,7 +38,8 @@ fn main() {
         .Some(v) => println(f"{v}"),
         .None => println("unexpected-close"),
     }
-    supervisor_stop(sup);
+    terminate(sup);
+    stopped(sup);
     var i = 0;
     while i < 8 {
         match s.recv() {

@@ -120,12 +120,12 @@ pub fn open(path: string) -> Result<Stream<bytes>, string> {
 ///                         .Err(error) => panic(to_string(error)),
 ///                     };
 ///                     stream.forward(file.lines(), body);  // streams file to the HTTP response
-///                 },
+///                 }
 ///                 .Err(e) => println(e),
 ///             }
 ///             req.close();
 ///             server.close();
-///         },
+///         }
 ///         .Err(_err) => println(http.listen_error()),
 ///     }
 /// }

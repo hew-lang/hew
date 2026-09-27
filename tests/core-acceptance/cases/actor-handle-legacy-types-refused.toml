@@ -8,18 +8,18 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "E_ACTOR_HANDLE_TYPE"
-line = 7
+line = 9
 column = 20
 message = "E_ACTOR_HANDLE_TYPE: `LocalPid<Greeter>` is not a type; an actor is the type of its handle"
 
 [[case.expected.diagnostics]]
 code = "E_ACTOR_HANDLE_TYPE"
-line = 11
+line = 16
 column = 14
 message = "E_ACTOR_HANDLE_TYPE: `Pid<Greeter>` is not a type; an actor is the type of its handle"
 
 [[case.expected.diagnostics]]
 code = "E_ACTOR_HANDLE_TYPE"
-line = 15
+line = 23
 column = 24
 message = "E_ACTOR_HANDLE_TYPE: `LambdaPid<i64, i64>` is not a type; an actor is the type of its handle"

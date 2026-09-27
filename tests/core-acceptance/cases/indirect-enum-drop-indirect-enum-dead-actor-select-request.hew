@@ -18,7 +18,8 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     var total: i64 = 0;
     var i: i64 = 0;
     while i < 50 {

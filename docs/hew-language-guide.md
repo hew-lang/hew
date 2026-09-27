@@ -1590,7 +1590,8 @@ actor Worker {
 fn main() {
     let worker = spawn Worker(name: "ready", size: 6);
     println(worker.label().expect("label"));
-    close(worker);
+    stop(worker);
+    stopped(worker);
 }
 ```
 
@@ -2009,7 +2010,8 @@ fn main() {
         .Ok(v) => println(v),
         .Err(_) => println("the call failed"),
     }
-    close(scale);
+    stop(scale);
+    stopped(scale);
 }
 ```
 
@@ -2037,7 +2039,8 @@ fn main() {
     };
     let inbox = mailbox(log);
     let _ = inbox("queued");
-    close(log);
+    stop(log);
+    stopped(log);
 }
 ```
 
@@ -2088,7 +2091,8 @@ actor Ticker {
 fn main() {
     let t = spawn Ticker;
     let _ = t.run(3);
-    close(t);
+    stop(t);
+    stopped(t);
     // tick 0
     // tick 1
     // tick 2
@@ -2237,13 +2241,12 @@ hook, which is a plain `fn` invoked when the actor is tearing down. The
 `sleep_loop_blocks_mailbox` lint warns on the mailbox starvation shape where a
 receive handler loops around `sleep`/`sleep_until` without an in-loop exit path.
 
-`stop` is a reserved handler name, so the handler above is `halt`, not `stop`.
-Stopping is a method with one signature: inside the actor, `self.stop()`
-lets the handler's remaining synchronous work run, then runs `#[on(stop)]` and
-stops (a suspension after the request cancels the rest of the turn); from
-outside, `pid.stop()` requests the same and returns `()`, doing nothing if the
-actor has already stopped or crashed. A `receive fn stop()` is `E_RESERVED_HANDLER_NAME`,
-whose fix-it is to rename the handler or to call `self.stop()`.
+The handler above is named `halt` for its application-level flag change. A
+`receive fn stop()` is also allowed; the lifecycle operation is `stop(actor)`.
+It requests a graceful stop and returns immediately, whether called inside or
+outside the actor. `stopped(actor)` waits for terminal cleanup, while
+`terminate(actor)` requests cancellation. After `stop(self)`, the current
+handler finishes and queued messages drain before `#[on(stop)]` runs.
 
 ### Accepting connections and reading in a handler
 

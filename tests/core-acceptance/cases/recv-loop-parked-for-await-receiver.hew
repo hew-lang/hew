@@ -189,5 +189,6 @@ fn main() {
     for _ in 0 .. 50 {
         ready_rx.recv();
     }
-    supervisor_stop(app);
+    terminate(app);
+    stopped(app);
 }

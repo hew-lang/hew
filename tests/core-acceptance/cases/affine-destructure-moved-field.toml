@@ -9,6 +9,6 @@ timeout_seconds = 30
 [[case.expected.diagnostics]]
 code = "UseAfterMove"
 severity = "error"
-line = 10
+line = 23
 column = 13
 message = "use of moved place `booking.ticket`"

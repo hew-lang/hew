@@ -225,7 +225,7 @@ actor ClientHandler {
             registered = true;
         } else {
             sink.finish();
-            self.stop();
+            stop(self);
         }
         accepted
     }
@@ -467,7 +467,7 @@ actor ClientHandler {
             }
             println(f"[mqtt] connection closed for {client_id}");
             sink.finish();
-            self.stop();
+            stop(self);
         }
         connected
     }
@@ -478,7 +478,7 @@ actor ClientHandler {
             println(f"[mqtt] connection closed for {client_id}");
         }
         sink.finish();
-        self.stop();
+        stop(self);
     }
 }
 
@@ -504,7 +504,7 @@ actor ClientReader {
                 }
             }
         }
-        self.stop();
+        stop(self);
     }
 }
 

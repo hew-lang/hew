@@ -20,7 +20,7 @@ actor Worker {
         panic("childref state transition");
     }
     receive fn stop_me() {
-        self.stop();
+        stop(self);
     }
 }
 

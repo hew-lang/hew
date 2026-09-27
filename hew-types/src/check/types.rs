@@ -2413,7 +2413,18 @@ impl ImplAssociatedType {
         let pattern = self.receiver.substitute_type_params_parallel(&fresh);
         let mut inference = crate::ty::Substitution::new();
         crate::unify::unify_exact(&mut inference, &pattern, receiver).ok()?;
-        Some(inference.resolve(&self.ty.substitute_type_params_parallel(&fresh)))
+        let instantiated = inference.resolve(&self.ty.substitute_type_params_parallel(&fresh));
+        // Receiver-independent binders remain abstract until the impl's
+        // associated-type constraints determine them. Never publish the
+        // temporary inference variables used to match the receiver.
+        Some(
+            variables
+                .into_iter()
+                .zip(&self.parameters)
+                .fold(instantiated, |ty, (variable, parameter)| {
+                    ty.substitute(variable, &Ty::param(*parameter))
+                }),
+        )
     }
 }
 

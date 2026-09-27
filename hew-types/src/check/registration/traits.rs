@@ -496,17 +496,7 @@ impl Checker {
                         .collect()
                 })
                 .unwrap_or_default();
-            let target_owned = self
-                .canonical_primitive_or_builtin_key_for_impl_name(target_name)
-                .unwrap_or_else(|| {
-                    self.current_module
-                        .as_ref()
-                        .filter(|_| !target_name.contains('.'))
-                        .map_or_else(
-                            || target_name.to_string(),
-                            |module| format!("{module}.{target_name}"),
-                        )
-                });
+            let target_owned = self.trait_impl_type_identity(target_name);
             for assoc_name in assoc_names {
                 let key = (target_owned.clone(), tb_key.clone(), assoc_name.clone());
                 if self.impl_assoc_type_bindings.contains_key(&key) {
@@ -2165,8 +2155,10 @@ impl Checker {
                 if crate::lookup_builtin_type(type_name).is_some() {
                     return type_name.to_string();
                 }
-                self.current_module
-                    .as_ref()
+                if let Some(canonical) = self.canonical_nominal_name(type_name) {
+                    return canonical;
+                }
+                self.current_module_identity()
                     .filter(|_| !type_name.contains('.'))
                     .map_or_else(
                         || type_name.to_string(),

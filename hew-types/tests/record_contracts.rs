@@ -537,8 +537,8 @@ fn selected_value_methods_require_impl_and_method_where_obligations() {
         ret: Box::new(ResolvedTy::I64),
     };
     for (name, capability) in [("Inline", Hash), ("Where", Hash), ("Method", Eq)] {
-        let good = ResolvedTy::user_for_test(name, vec![ResolvedTy::I64]);
-        let bad = ResolvedTy::user_for_test(name, vec![non_hash.clone()]);
+        let good = ResolvedTy::named_path(service.defs(), name, vec![ResolvedTy::I64]);
+        let bad = ResolvedTy::named_path(service.defs(), name, vec![non_hash.clone()]);
         assert!(matches!(
             service
                 .capability_plan(&good, capability)

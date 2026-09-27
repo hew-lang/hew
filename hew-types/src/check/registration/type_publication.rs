@@ -534,10 +534,19 @@ impl Checker {
         // table before any semantic registration; aliases and later graph
         // visits resolve the existing module/path rows and cannot mint again.
         let identity_module = self.defs.mint_module(module_full_path, &[]);
+        let item_sources = self
+            .module_item_sources
+            .get(module_full_path)
+            .cloned()
+            .unwrap_or_default();
+        let importer_source = self.current_item_source.clone();
         if self.defs.module_has_source_declarations(identity_module) {
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
                 self.declare_item_type_parameter_scopes(
-                    Some(identity_module),
+                    item_sources
+                        .get(item_ordinal)
+                        .and_then(|source| self.defs.module_for_source(source))
+                        .or(Some(identity_module)),
                     item_ordinal,
                     item,
                     span,
@@ -558,7 +567,8 @@ impl Checker {
         let saved_registration_origin = self
             .registration_origin_module
             .replace(module_full_path.to_string());
-        for (item, _span) in items {
+        for (index, (item, _span)) in items.iter().enumerate() {
+            self.current_item_source = item_sources.get(index).cloned();
             let Item::Import(decl) = item else {
                 continue;
             };
@@ -598,7 +608,8 @@ impl Checker {
         }
 
         // Pass 1: Register types, traits, and functions first
-        for (item, span) in items {
+        for (index, (item, span)) in items.iter().enumerate() {
+            self.current_item_source = item_sources.get(index).cloned();
             match item {
                 Item::TypeDecl(td) => {
                     // Record visibility for all TypeDecls (both pub and non-pub)
@@ -901,7 +912,7 @@ impl Checker {
                     // The actor's signatures resolve in its declaring module.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
-                    self.register_actor_base(ad, Some(module_short));
+                    self.register_actor_base(ad, Some(module_full_path));
                     self.current_module = saved_importer_module;
                     if ad.visibility.is_pub() {
                         if let Some(binding) = import_spec.bare_binding(ad.name.name.as_str()) {
@@ -946,7 +957,8 @@ impl Checker {
             }
         }
         // Pass 2: Register impl methods (after types exist)
-        for (item, span) in items {
+        for (index, (item, span)) in items.iter().enumerate() {
+            self.current_item_source = item_sources.get(index).cloned();
             if let Item::Impl(id) = item {
                 if Self::impl_decl_is_drop_impl(id) {
                     self.report_unsupported_impl_drop(span);
@@ -1056,7 +1068,8 @@ impl Checker {
         // Pass 3: publish canonical type definitions after impl registration.
         // Registration itself uses the source leaf as temporary assembly state;
         // only the full owner survives this pass.
-        for (item, _span) in items {
+        for (index, (item, _span)) in items.iter().enumerate() {
+            self.current_item_source = item_sources.get(index).cloned();
             match item {
                 Item::TypeDecl(td) => {
                     if let Some(source_def) = self
@@ -1133,6 +1146,7 @@ impl Checker {
         self.local_type_defs = saved_local_type_defs;
         self.source_type_defs = saved_source_type_defs;
         self.registration_origin_module = saved_registration_origin;
+        self.current_item_source = importer_source;
     }
 
     /// Publish a selected stdlib free function into one importer's bare scope.

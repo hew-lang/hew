@@ -1027,7 +1027,11 @@ impl Checker {
                 let owner = resolved_module_owner
                     .clone()
                     .unwrap_or_else(|| self.current_module.clone().unwrap_or_default());
-                self.register_file_import_items(&owner, resolved_items);
+                self.register_file_import_items(
+                    &owner,
+                    resolved_items,
+                    &decl.resolved_item_source_paths,
+                );
             } else {
                 // Lifecycle nominal identities require stronger provenance than
                 // the ordinary resolved-item surface: only an exact canonical
@@ -1338,11 +1342,14 @@ impl Checker {
         &mut self,
         owner: &str,
         items: &[Spanned<Item>],
+        item_source_paths: &[std::path::PathBuf],
     ) {
+        let importer_source = self.current_item_source.clone();
         let mut current_import_pub_spans = HashMap::new();
         let mut skipped_type_names = HashSet::new();
 
-        for (item, span) in items {
+        for (index, (item, span)) in items.iter().enumerate() {
+            self.current_item_source = item_source_paths.get(index).cloned();
             match item {
                 Item::Function(fd) => {
                     if !fd.visibility.is_pub() {
@@ -1516,7 +1523,10 @@ impl Checker {
                     // bare declaration row here would be a second authority for
                     // one actor, and the ask/spawn boundaries downstream would
                     // then disagree with the qualified path HIR carries.
-                    self.register_actor_base(ad, Some(owner).filter(|owner| !owner.is_empty()));
+                    let importer_module = self.current_module.take();
+                    self.current_module = Some(owner.to_string()).filter(|owner| !owner.is_empty());
+                    self.register_actor_base(ad, self.current_module.clone().as_deref());
+                    self.current_module = importer_module;
                     self.publish_file_import_type_name(owner, ad.name.name.as_str());
                 }
                 Item::Supervisor(sd) => {
@@ -1559,6 +1569,9 @@ impl Checker {
                         if skipped_type_names.contains(type_name) {
                             continue;
                         }
+                        let importer_module = self.current_module.take();
+                        self.current_module =
+                            Some(owner.to_string()).filter(|owner| !owner.is_empty());
                         // Validate before collect_type_param_bounds erases positional type args.
                         // This path bypasses enter_impl_scope so validation must be explicit.
                         self.validate_type_param_bound_shapes(
@@ -1629,12 +1642,14 @@ impl Checker {
                             self.record_trait_impl(type_name, &tb.path.to_string());
                             // TRANSITION(P1): deleted by A1 commit 2
                         }
+                        self.current_module = importer_module;
                     }
                 }
                 _ => {}
             }
         }
 
+        self.current_item_source = importer_source;
         self.flat_file_import_pub_spans
             .extend(current_import_pub_spans.into_iter().map(|(name, span)| {
                 (

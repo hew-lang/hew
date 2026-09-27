@@ -2151,12 +2151,17 @@ impl Checker {
                 span,
                 function.type_params.as_deref().unwrap_or_default(),
             ),
-            Item::Impl(block) => declare(
-                Kind::ImplBlock,
-                0,
-                span,
-                block.type_params.as_deref().unwrap_or_default(),
-            ),
+            Item::Impl(block) => {
+                let parameters = block.type_params.as_deref().unwrap_or_default();
+                declare(Kind::ImplBlock, 0, span, parameters);
+                // Normalization gives generated machine methods their own spans.
+                // Their enclosing impl still owns the receiver's binders.
+                for method in &block.methods {
+                    if method.fn_span.start < span.start || method.fn_span.end > span.end {
+                        declare(Kind::ImplBlock, 0, &method.fn_span, parameters);
+                    }
+                }
+            }
             Item::TypeDecl(decl) => {
                 let kind = match decl.origin {
                     hew_parser::ast::DeclarationOrigin::MachineState => Kind::Machine,

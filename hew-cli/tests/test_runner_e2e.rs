@@ -254,11 +254,19 @@ fn absolute_selectors_distinguish_same_named_tests_across_roots() {
     }
     let first = format!(
         "{}::totals",
-        dir.path().join("first/cart_test.hew").display()
+        dir.path()
+            .join("first/cart_test.hew")
+            .canonicalize()
+            .expect("first test path")
+            .display()
     );
     let second = format!(
         "{}::totals",
-        dir.path().join("second/cart_test.hew").display()
+        dir.path()
+            .join("second/cart_test.hew")
+            .canonicalize()
+            .expect("second test path")
+            .display()
     );
     let output = run_hew_in(
         &dir.path().join("first"),

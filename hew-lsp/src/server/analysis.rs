@@ -22,7 +22,7 @@ use super::{DiagnosticMap, DiagnosticSource, DocumentState};
 
 /// Keep the URI under which the editor opened a source, even when the compiler
 /// reports its canonical filesystem path. Exact spellings take precedence.
-fn open_document_uri(uri: &Url, documents: &DashMap<Url, DocumentState>) -> Url {
+pub(super) fn open_document_uri(uri: &Url, documents: &DashMap<Url, DocumentState>) -> Url {
     if documents.contains_key(uri) {
         return uri.clone();
     }

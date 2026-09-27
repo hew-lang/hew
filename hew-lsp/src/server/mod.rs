@@ -22,7 +22,8 @@ use self::handlers::text_sync::build_initialize_result_from_caps_json;
 use self::handlers::workspace::extract_run_test_name;
 // Items used by the LanguageServer impl handlers.
 use self::analysis::{
-    close_document_and_dependents, collect_published_diagnostics, refresh_document_and_dependents,
+    close_document_and_dependents, collect_published_diagnostics, open_document_uri,
+    refresh_document_and_dependents,
 };
 use self::convert::{analysis_tokens_to_lsp, symbol_info_to_doc_symbol, to_lsp_completion};
 use self::hierarchy::{
@@ -514,7 +515,7 @@ impl HewLanguageServer {
     fn reanalyze(&self, uri: &Url, source: &str) {
         self.test_diagnostics.remove(uri);
         if let Some(path) = uri.to_file_path() {
-            let prefix = format!("{}::", path.display());
+            let prefix = format!("{}::", workspace::normalize_workspace_path(&path).display());
             self.test_seeds
                 .retain(|selector, _| !selector.starts_with(&prefix));
         }
@@ -568,7 +569,8 @@ impl HewLanguageServer {
         let file = test_name
             .rsplit_once("::")
             .map_or(test_name, |(file, _)| file);
-        let target_uri = Url::from_file_path(Path::new(file));
+        let target_uri = Url::from_file_path(Path::new(file))
+            .map(|uri| open_document_uri(&uri, &self.documents));
         let mut affected = HashSet::new();
         let run_version = target_uri.as_ref().map(|uri| {
             let mut version = self.test_run_versions.entry(uri.clone()).or_insert(0);

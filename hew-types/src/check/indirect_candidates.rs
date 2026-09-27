@@ -39,9 +39,9 @@ impl Checker {
 
     fn callable_candidates_for_expr(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
         match expr {
-            Expr::Lambda { .. } => IndirectCallCandidates::single(CallableCandidate::Closure(
-                SpanKey::in_module(span, self.current_module_idx),
-            )),
+            Expr::Lambda { .. } | Expr::SpawnLambdaActor { .. } => IndirectCallCandidates::single(
+                CallableCandidate::Closure(SpanKey::in_module(span, self.current_module_idx)),
+            ),
             Expr::Ident(_) => self.resolved_callable_candidate(span),
             Expr::FieldAccess { object, field } => {
                 let key = SpanKey::in_module(&field.1, self.current_module_idx);
@@ -69,6 +69,19 @@ impl Checker {
             Expr::StructInit { .. } => IndirectCallCandidates::single(
                 CallableCandidate::Aggregate(SpanKey::in_module(span, self.current_module_idx)),
             ),
+            Expr::Call { args, .. }
+                if matches!(
+                    self.actor_delivery_calls
+                        .get(&SpanKey::in_module(span, self.current_module_idx)),
+                    Some(crate::actor_delivery::ActorDeliveryCall::Policy { .. })
+                ) =>
+            {
+                args.first()
+                    .map_or_else(IndirectCallCandidates::unknown, |target| {
+                        let (value, value_span) = target.expr();
+                        self.callable_candidates_for_expr(value, value_span)
+                    })
+            }
             Expr::Call { .. } | Expr::MethodCall { .. }
                 if self.selected_callable_declaration(span).is_some() =>
             {

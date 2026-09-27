@@ -2601,12 +2601,9 @@ impl Checker {
             .lookup_with_depth(&func_name)
             .map(|(depth, binding)| (depth, binding.clone()))
         {
-            if matches!(
-                self.normalize_for_use(&binding.ty),
-                Ty::Function { .. } | Ty::Closure { .. }
-            ) {
-                self.synthesize(&func.0, &func.1);
-            }
+            // Publish the selected local binding for every value-call kind,
+            // including actor handles and their delivery views.
+            self.synthesize(&func.0, &func.1);
             if let Some(sig) = binding
                 .def_span
                 .as_ref()

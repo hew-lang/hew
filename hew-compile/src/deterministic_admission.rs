@@ -1025,6 +1025,34 @@ mod tests {
     }
 
     #[test]
+    fn known_lambda_actor_and_delivery_view_are_deterministic() {
+        for call in [
+            "worker(7)",
+            "mailbox(worker)(7)",
+            "policy(worker, on_full: .Reject)(7)",
+        ] {
+            let source = format!("fn main() {{ let factor = 3; let worker = actor |n: i64| {{ println(n * factor); }}; let _ = {call}; stop(worker); stopped(worker); }}");
+            check_source(&source, DeterministicAdmission::ProcessEntry).unwrap();
+        }
+    }
+
+    #[test]
+    fn lambda_actor_delivery_cannot_hide_a_host_operation() {
+        for call in ["worker(7)", "mailbox(worker)(7)"] {
+            let source = format!("import std.io; fn main() {{ let worker = actor |n: i64| {{ let line = io.read_line(); println(line); }}; let _ = {call}; stop(worker); stopped(worker); }}");
+            let failure = check_source(&source, DeterministicAdmission::ProcessEntry).unwrap_err();
+            assert!(
+                failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
+                "{failure}"
+            );
+            assert!(
+                !failure.contains("E_DETERMINISTIC_INDIRECT_CALL"),
+                "{failure}"
+            );
+        }
+    }
+
+    #[test]
     fn invoked_closure_cannot_hide_stdin_read() {
         let source =
             "import std.io;\nfn main() { let reader = || io.read_line(); println(reader()); }";

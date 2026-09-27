@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import process from "node:process";
-import { classifyHewFault, runBytecode } from "../dist/interpreter/index.js";
+import { classifyHewFault, runBytecode, traceToDownloadJson } from "../dist/interpreter/index.js";
 
 function parseArgs(args) {
   if (args.length !== 7 || args[1] !== "--schedule" || args[3] !== "--seed" || args[5] !== "--step-budget") {
@@ -15,6 +15,7 @@ function parseArgs(args) {
 }
 
 const reportPath = process.env.HEW_TEST_REPORT;
+const tracePath = process.env.HEW_TEST_TRACE_PATH;
 try {
   const args = parseArgs(process.argv.slice(2));
   const packageValue = JSON.parse(fs.readFileSync(args.path, "utf8"));
@@ -29,6 +30,7 @@ try {
       inputs: [],
     },
   });
+  if (tracePath) fs.writeFileSync(tracePath, traceToDownloadJson(trace));
   const final = trace.final_state;
   const rejection = final.sandbox_rejections[0];
   const fault = final.runtime_failures[0];

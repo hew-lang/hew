@@ -72,8 +72,13 @@ impl Parser<'_> {
                 break;
             };
             let mut args = Vec::new();
+            let mut argument_count = 0;
+            let mut quoted_arguments = true;
             if self.eat(&Token::LeftParen) {
                 while self.peek() != Some(&Token::RightParen) && !self.at_end() {
+                    argument_count += 1;
+                    quoted_arguments &=
+                        matches!(self.peek(), Some(Token::StringLit(_) | Token::RawString(_)));
                     if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                         // Safe to call: we know the token is identifier-like
                         let key = self.expect_word();
@@ -163,6 +168,7 @@ impl Parser<'_> {
                 args,
                 span: start..end,
             };
+            self.validate_test_attribute_arguments(&attr, argument_count, quoted_arguments);
             self.validate_authority_attribute_shape(&attr);
             attrs.push(attr);
         }

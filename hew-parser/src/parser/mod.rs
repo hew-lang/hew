@@ -795,6 +795,8 @@ pub enum ParseDiagnosticKind {
     ForAwait,
     /// A record literal named more than one `..base`.
     DuplicateRecordBase,
+    /// A testing attribute has an invalid literal, arity or named argument.
+    AttributeArgument,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -823,6 +825,7 @@ impl ParseDiagnosticKind {
             Self::NoAsyncGen => "E_NO_ASYNC_GEN",
             Self::ForAwait => "E_FOR_AWAIT",
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
+            Self::AttributeArgument => "E_ATTRIBUTE_ARGUMENT",
             Self::Other => "Other",
         }
     }

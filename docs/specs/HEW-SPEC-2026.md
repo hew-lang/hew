@@ -6870,15 +6870,23 @@ refuses the name it does not know rather than dropping it.
 | `#[json(...)]`, `#[yaml(...)]` | type declaration | Per-encoding field-naming case for a `#[wire]` type (§7.3.2, §7.3.2a). |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
-| `#[ignore]` | `#[test]` function | Discovered but not run. |
-| `#[should_panic]` | `#[test]` function | The test passes only if the body traps. |
-| `#[serial]` | `#[test]` function | Runs alone, never concurrently with another test. |
+| `#[ignore]` | `#[test]` function | Discovered but not run; accepts an optional reason string. |
+| `#[should_panic]` | `#[test]` function | Passes on a Hew panic, assertion or checked trap; an optional string must match the fault report. Normal return, error return, process exit and signals do not satisfy it. |
+| `#[timeout(D)]` | `#[test]` function | A positive duration literal sets the per-test wall-clock hang guard. |
+| `#[serial]` | `#[test]` function | Runs mutually exclusively with other serial tests; non-serial tests may run concurrently. |
 | `#[real_time]` | `#[test]` function | Runs on the threaded scheduler with the host clock instead of the deterministic single-thread driver and virtual clock. |
 | `#[on(kind)]` | actor member `fn` | Lifecycle hook; `kind` is one of `start`, `stop`, `crash`, `exit`, `down` (§9.1.2). |
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
 | `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
 | `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
+
+Testing attribute arguments are positional. `test`, `serial` and `real_time`
+accept no arguments; `ignore` and `should_panic` accept at most one quoted
+string; `timeout` requires one positive duration literal. Named arguments,
+extra arguments and other literal shapes produce `E_ATTRIBUTE_ARGUMENT` with
+an actionable correction. All test modifiers require `#[test]` on the same
+free function.
 
 **Substrate attributes** carry compiler-internal identity and are legal only
 inside `std/`. A program that names one outside the standard library gets

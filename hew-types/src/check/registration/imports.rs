@@ -1426,7 +1426,17 @@ impl Checker {
                         skipped_type_names.insert(td.name.to_string());
                         continue;
                     }
+                    let importer_module = self.current_module.replace(owner.to_string());
+                    let importer_file = self.current_module_idx;
+                    self.current_module_idx = self
+                        .current_item_source
+                        .as_ref()
+                        .and_then(|source| self.source_file_span_indices.get(source))
+                        .copied()
+                        .unwrap_or(importer_file);
                     self.register_type_decl(td);
+                    self.current_module = importer_module;
+                    self.current_module_idx = importer_file;
                     self.known_types.insert(td.name.to_string());
                     self.publish_file_import_type_name(owner, td.name.name.as_str());
                 }
@@ -1451,7 +1461,17 @@ impl Checker {
                         skipped_type_names.insert(event_type_name);
                         continue;
                     }
+                    let importer_module = self.current_module.replace(owner.to_string());
+                    let importer_file = self.current_module_idx;
+                    self.current_module_idx = self
+                        .current_item_source
+                        .as_ref()
+                        .and_then(|source| self.source_file_span_indices.get(source))
+                        .copied()
+                        .unwrap_or(importer_file);
                     self.register_machine_decl(md, span);
+                    self.current_module = importer_module;
+                    self.current_module_idx = importer_file;
                     self.known_types.insert(md.name.to_string());
                     self.known_types.insert(format!("{}.Event", md.name));
                     self.publish_file_import_type_name(owner, md.name.name.as_str());
@@ -1572,6 +1592,13 @@ impl Checker {
                         let importer_module = self.current_module.take();
                         self.current_module =
                             Some(owner.to_string()).filter(|owner| !owner.is_empty());
+                        let importer_file = self.current_module_idx;
+                        self.current_module_idx = self
+                            .current_item_source
+                            .as_ref()
+                            .and_then(|source| self.source_file_span_indices.get(source))
+                            .copied()
+                            .unwrap_or(importer_file);
                         // Validate before collect_type_param_bounds erases positional type args.
                         // This path bypasses enter_impl_scope so validation must be explicit.
                         self.validate_type_param_bound_shapes(
@@ -1643,6 +1670,7 @@ impl Checker {
                             // TRANSITION(P1): deleted by A1 commit 2
                         }
                         self.current_module = importer_module;
+                        self.current_module_idx = importer_file;
                     }
                 }
                 _ => {}

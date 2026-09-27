@@ -26,7 +26,7 @@ async function loadPackage(name, wasm = false) {
 const hello = 'fn main() { println("Hello, npm!"); }';
 const counter = `
 actor Counter {
-    var count: i64,
+    var count: i64;
 
     receive fn increment(n: i64) -> i64 {
         count = count + n;

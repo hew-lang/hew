@@ -234,7 +234,7 @@ fn an_abstract_type_parameter_has_no_class() {
 
     let refused = ValueClass::of_ty(
         &ResolvedTy::TypeParam {
-            name: crate::ParamHead::for_test("T"),
+            name: hew_types::ParamHead::for_test("T"),
         },
         &ClassContext::empty(),
     )

@@ -100,7 +100,7 @@ actor ClientHandler {
             registered = false;
         }
         sink.finish();
-        self.stop();
+        stop(self);
     }
 }
 
@@ -125,7 +125,7 @@ actor ClientReader {
                 }
             }
         }
-        self.stop();
+        stop(self);
     }
 }
 

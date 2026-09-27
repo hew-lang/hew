@@ -1,6 +1,5 @@
-// A lambda actor is an actor: `.send(msg)` is the same completion call as
-// `handle(msg)`, and `.close()` is the same terminal release `close(handle)`
-// performs, so both spellings deliver through one path and yield one envelope.
+// A lambda actor's `.send(msg)` and direct call both deliver through one
+// completion path. `stop(handle); stopped(handle);` drains and releases it.
 fn main() {
     let doubler = actor |x: i64| {
         println(x * 2);

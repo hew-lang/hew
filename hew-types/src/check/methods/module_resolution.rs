@@ -553,7 +553,15 @@ impl Checker {
     /// checked. Use this for declaration identity and layout-facing type
     /// lookup.
     pub(in crate::check) fn current_module_identity(&self) -> Option<&str> {
-        self.current_module.as_deref()
+        self.current_module.as_deref().or_else(|| {
+            self.checking_embedded_builtins
+                .then(|| {
+                    self.defs
+                        .root_module()
+                        .map(|root| self.defs.module_path(root))
+                })
+                .flatten()
+        })
     }
 
     /// The identity a declaration written in the scope currently being checked

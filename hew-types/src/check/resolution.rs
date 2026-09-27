@@ -1316,6 +1316,31 @@ impl Checker {
         })
     }
 
+    /// Finish a source signature in the declaration's lexical module, where
+    /// import aliases in its annotations were introduced.
+    pub(super) fn resolve_source_fn_sig(
+        &mut self,
+        declaration: crate::DefId,
+        sig: &FnSig,
+    ) -> FnSig {
+        let saved_module = self.current_module.take();
+        let saved_index = self.current_module_idx;
+        let file = self.defs.module(declaration);
+        self.current_module = file
+            .map(|file| self.scopes.namespace_of(file))
+            .filter(|module| Some(*module) != self.defs.root_module())
+            .map(|module| self.defs.module_path(module).to_string());
+        self.current_module_idx = file
+            .and_then(|file| self.defs.module_source(file))
+            .and_then(|source| self.source_file_span_indices.get(source))
+            .copied()
+            .unwrap_or_default();
+        let resolved = self.resolve_fn_sig(sig);
+        self.current_module = saved_module;
+        self.current_module_idx = saved_index;
+        resolved
+    }
+
     pub(super) fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {
         FnSig {
             params: sig
@@ -2511,16 +2536,26 @@ impl Checker {
         has_cycle.get()
     }
 
-    fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Ty {
-        if let Ty::Named { head, args } = ty {
-            let name = head.registry_key();
-            if let Some(target) = self.alias_target_for_instance(name, args) {
-                if !visiting.insert(name.to_string()) {
-                    return Ty::Error;
+    fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<crate::DefId>) -> Ty {
+        if let Ty::Named {
+            head: crate::TypeHead::Nominal(head),
+            args,
+        } = ty
+        {
+            let declaration = head.id.declaration();
+            if let Some(alias) = self
+                .type_aliases
+                .values()
+                .find(|alias| alias.declaration == declaration)
+            {
+                if let Some(target) = alias.instantiate(args) {
+                    if !visiting.insert(declaration) {
+                        return Ty::Error;
+                    }
+                    let expanded = self.expand_type_aliases(&target, visiting);
+                    visiting.remove(&declaration);
+                    return expanded;
                 }
-                let expanded = self.expand_type_aliases(&target, visiting);
-                visiting.remove(name);
-                return expanded;
             }
         }
         ty.map_children_pub(&|child| {

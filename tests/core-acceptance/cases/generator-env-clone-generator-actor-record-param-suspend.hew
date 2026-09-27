@@ -47,6 +47,7 @@ fn main() {
         .Some(value) => print(f"{value}:"),
         .None => print("missing:"),
     }
-    supervisor_stop(sup);
+    terminate(sup);
+    stopped(sup);
     print("OK");
 }

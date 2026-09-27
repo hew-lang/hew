@@ -31,6 +31,7 @@ fn main() {
         }
         i = i + 1;
     }
-    supervisor_stop(app);
+    stop(app);
+    stopped(app);
     print(f"{seen}:OK");
 }

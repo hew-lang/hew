@@ -10,5 +10,5 @@ kind = "check"
 code = "var_param_mutation_lost"
 severity = "warning"
 line = 3
-column = 20
+column = 13
 message = "mutation of `var` parameter `items` is lost"

@@ -93,21 +93,18 @@ Rules:
 
 **Stopping an actor (normative).**
 
-`close(actor)` requests cooperative stop and waits for terminal cleanup.
-`closed(actor)` waits for termination without requesting it. `fork close(actor)`
-starts the same operation concurrently and returns a `Task<()>`; it does not
-remove the task's cleanup obligation. These calls return unit and are
-idempotent for an actor that is already terminal (§4.10).
+`stop(actor)` requests a graceful stop and returns immediately. It closes
+admission, drains queued messages, then runs `#[on(stop)]` and cleanup.
+`terminate(actor)` requests cancellation, discards queued messages, and
+returns immediately. `stopped(actor)` waits for terminal cleanup without
+requesting a stop. All three return unit and are idempotent for an actor that
+is already terminal (§4.10).
 
-`pid.stop()` requests the same cooperative stop without waiting, and returns
-unit; it is idempotent on an actor that has already stopped or crashed.
-Inside the actor, `self.stop()` is not divergence: the handler's remaining
-synchronous statements run and a reply it returns without suspending is
-delivered, then `#[on(stop)]` runs and the actor stops. A suspension after the
-request cancels the rest of the turn. Messages sent after the request fail
-with `SendError`. `stop` is a reserved handler name: `receive fn stop()` is
-`E_RESERVED_HANDLER_NAME`, whose fix-it renames the handler or calls
-`self.stop()`.
+The same verbs apply to `self`. After `stop(self)`, the current handler runs to
+completion before the actor drains its queue. After `terminate(self)`, the
+current handler runs to its next suspension before cancellation. An actor
+cannot wait on itself with `stopped(self)`. `stop` may be a receive-handler
+name; the lifecycle operation is the free function `stop(actor)`.
 
 Inside a named actor body, bare `self` is the actor's own handle, so
 `registry.register(self)` passes that identity. `self.field` still accesses
@@ -331,9 +328,6 @@ language contracts:
   scope's exit like every fork. Whether Hew needs a true fire-and-forget send
   is an open question: it would make resources, cleanup and control flow less
   deterministic, and nothing in this specification promises it.
-- `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
-  forms, but native supervisor lowering has not adopted them. The current
-  internal stop entry point is not the public language spelling (§5.6).
 - Native `select` realizes task, timer, actor-call and stream receive
   sources. A line, chunk or take adapter over a socket stream, and a file
   stream over a pipe, device or terminal, are not select sources yet
@@ -376,8 +370,10 @@ fn main() {
     let counter = spawn Counter(count: 0);
     // Spawn with no arguments (if actor has no-arg init or no init block)
     let worker = spawn WorkerActor();
-    close(counter);
-    close(worker);
+    stop(counter);
+    stopped(counter);
+    stop(worker);
+    stopped(worker);
 }
 ```
 
@@ -450,8 +446,10 @@ fn main() {
         println(x * factor);
     };
 
-    close(worker);
-    close(multiplier);
+    stop(worker);
+    stopped(worker);
+    stop(multiplier);
+    stopped(multiplier);
 }
 ```
 
@@ -508,9 +506,12 @@ fn main() {
     let adder: actor(i64) -> i64 = actor |x: i64| -> i64 {
         x + 1
     }; // value reply
-    close(counter);
-    close(worker);
-    close(adder);
+    stop(counter);
+    stopped(counter);
+    stop(worker);
+    stopped(worker);
+    stop(adder);
+    stopped(adder);
 }
 ```
 
@@ -529,7 +530,8 @@ fn main() {
     let worker = actor |msg: i64| { println(msg); };
     let _ = worker(42);                              // wait for completion
     let _ = mailbox(worker, on_full: .Reject)(43);    // observe submission
-    close(worker);                                  // wait for terminal cleanup
+    stop(worker);
+    stopped(worker);                                  // wait for terminal cleanup
 }
 ```
 
@@ -1186,7 +1188,8 @@ fn main() {
     };
     println(prefix);                 // the ordinary value remains usable
     let _ = worker("hello");
-    close(worker);
+    stop(worker);
+    stopped(worker);
 }
 ```
 
@@ -2811,7 +2814,8 @@ fn main() {
     calc.apply_operation(|a, b| a + b, 10).expect("add");
     calc.apply_operation(|a, b| a * b, 5).expect("multiply");
     assert(calc.value().expect("read result") == 50);
-    close(calc);
+    stop(calc);
+    stopped(calc);
 }
 ```
 
@@ -2911,8 +2915,10 @@ fn main() {
     numbers.put(41).expect("put succeeds");
     names.put("hew").expect("put succeeds");
     println(f"{numbers.get().expect("get succeeds").expect("set")} {names.get().expect("get succeeds").expect("set")}");
-    close(numbers);
-    close(names);
+    stop(numbers);
+    stopped(numbers);
+    stop(names);
+    stopped(names);
 }
 ```
 
@@ -2946,7 +2952,8 @@ fn main() {
         .Some(v) => println(v),
         .None => println("miss"),
     }
-    close(cache);
+    stop(cache);
+    stopped(cache);
 }
 ```
 
@@ -2981,7 +2988,8 @@ fn main() {
     let workers = spawn Pool<string>();
     let completed = workers.worker.run("parse").expect("the example worker completes");
     println(completed);
-    close(workers);
+    stop(workers);
+    stopped(workers);
 }
 ```
 
@@ -4609,7 +4617,7 @@ completion envelope follows §2.1.1; submission still requires a mailbox view.
 | Application error | an ordinary Result value | declared `fails` error reaches the completion envelope |
 | Fault | propagates through the owning scope | belongs to the actor and its supervisor |
 | Lifetime | bounded by its parent | independent actor lifetime |
-| Termination wait | task join | `close(actor)` or `closed(actor)` |
+| Termination wait | task join | `stopped(actor)` |
 
 **Historical note.** Earlier drafts exposed a scope handle with separate task
 launch methods. Those drafts are not source syntax for this edition. There is
@@ -4617,19 +4625,20 @@ one `fork` operation; scheduling choices are not public aliases.
 
 ### 4.10 Actor Completion and Termination
 
-`close(pid)` requests cooperative stop and waits for terminal cleanup.
-`closed(pid)` waits for termination without requesting it. Both return unit;
-closing an already terminal actor is idempotent. `fork close(pid)` returns a
-`Task<()>` and starts the same work concurrently.
+`stop(pid)` requests graceful stop and returns at once; `terminate(pid)`
+requests cancellation and returns at once. `stopped(pid)` waits for terminal
+cleanup. To request a graceful stop and wait, write `stop(pid); stopped(pid);`.
+To wait concurrently, `fork stopped(pid)` returns a `Task<()>` that must be
+joined. These operations are idempotent once the actor is terminal.
 
 A call on a receive handler waits for that handler's completion, not the
 actor's entire lifetime. `fork pid.method(args)` runs it concurrently; `await`
 then joins that task. `for item in pid.stream()` waits per item using ordinary
 iteration (§4.12).
 
-A supervisor uses the same `close`/`closed` forms, with `close(sup)` waiting for
-its children's terminal cleanup. That supervisor surface is decided but
-pending implementation; see §2.1.1 and §5.6.
+A supervisor uses the same three verbs. `stop(sup)` requests graceful
+shutdown of its children in reverse declaration order, and `stopped(sup)`
+waits for their cleanup; see §2.1.1 and §5.6.
 
 ### 4.11 Select and Race Expressions
 
@@ -4943,7 +4952,7 @@ supervisor MyPool {
 
     child worker1: Worker(id: 1, count: 0);
     child worker2: Worker(id: 2, count: 0) restart: transient;
-    child logger: Logger(level: 3) restart: temporary shutdown: 10s;
+    child logger: Logger(level: 3) restart: temporary stop: 10s;
 }
 ```
 
@@ -4960,15 +4969,15 @@ supervisor MyPool {
 
 - `child <name>: <ActorType>(<field>: <expr>, ...)` — a static supervised child.
   Init args are named (positional args are rejected with a migration diagnostic).
-- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>,` — a pool of `N`
+- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>;` — a pool of `N`
   fungible children (only under `simple_one_for_one`). The parenthesised args
   are the per-spawn template, exactly as for `child`; `count:` is the arity.
 - Per-child suffix clauses, accepted in any order:
   - `restart: permanent | transient | temporary` (optional, default
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
-  - `shutdown: <duration> | brutal_kill | infinity` (optional) — the
-    graceful-stop deadline (default `5s`). See §2.1.1 for current limitations.
+  - `stop: <duration>` (optional) — the graceful-stop deadline (default
+    `5s`). `stop: 0s` terminates immediately.
   - `count: <N>` — pool arity. Required on a `pool` child, rejected on a
     `child` declaration; it has no default, because a pool with a guessed size
     is a guess about capacity.
@@ -4977,7 +4986,7 @@ supervisor MyPool {
 - Child actor types must be declared before the supervisor.
 
 **Pool arity is a clause, not an init field (normative).** `count:` sits
-beside `restart:` and `shutdown:` in the child's clause namespace, and the
+beside `restart:` and `stop:` in the child's clause namespace, and the
 parenthesised argument list stays the actor's own field namespace. An actor
 that happens to declare a field named `count` is therefore poolable like any
 other, and its `count` field is set the same way every other field is. The
@@ -4986,18 +4995,15 @@ user's field.
 
 ### 5.2 Restart Semantics (normative)
 
-Let child exit reason be one of:
-
-- `normal`
-- `shutdown`
-- `{shutdown, term}`
-- `trap` (a language panic or fault; process abort is not supervised recovery)
+Let a child end with one `DownReason`: `Stopped`, `Terminated`, or
+`Crashed(kind)`. Remote monitoring additionally uses `MonitorLost` and
+`LocalShutdown`.
 
 Then:
 
 - `permanent`: always restart
 - `temporary`: never restart
-- `transient`: restart only if exit reason is not `normal`, `shutdown`, `{shutdown, term}` ([Erlang.org][6])
+- `transient`: restart after `Terminated` or `Crashed`, but not `Stopped`
 
 ### 5.3 Restart Strategies
 
@@ -5079,7 +5085,8 @@ fn main() {
     let w2 = pool.worker2;             // ChildRef<Worker>
     let _ = w2.tick();
 
-    close(pool);              // Graceful shutdown
+    stop(pool);               // Request graceful shutdown
+    stopped(pool);            // Wait for child cleanup
 }
 ```
 
@@ -5094,20 +5101,20 @@ fn main() {
   `ChildRef<Actor>` and traps out of range, matching `Vec[i]`; `get(i)` yields
   `Option<ChildRef<Actor>>` instead. A negative index and one at or past the
   count are both out of range.
-- `await_restart sup.child_name` / `await_restart sup.pool_name[i]` — resume
+- `restarted(sup.child_name)` / `restarted(sup.pool_name[i])` — resume
   once that one slot is Live again after a crash, or is permanently gone, with
   the same `ChildRef<Actor>`. A whole pool names many slots and has no single
   restart signal, so it is not an operand. The form resumes when the role holds
   a live incarnation with no crash still awaiting a supervisor's ruling, or when
   the role is permanently gone; a role with nothing pending resumes at once. A
   crash the caller has already observed — its own completion call returned `Err`
-  — is pending by then, so `let _ = child.fail(); await_restart sup.child` waits
+  — is pending by then, so `let _ = child.fail(); restarted(sup.child);` waits
   for the ruling. A crash from a one-way mailbox submission that has not been
-  processed when `await_restart` is entered is not yet pending and is not waited
+  processed when `restarted` is entered is not yet pending and is not waited
   for.
-- `close(sup)` — requests cooperative stop and waits for every child's terminal cleanup.
-- `fork close(sup)` — starts that stop operation as a `Task<()>`.
-- `closed(sup)` — waits for termination without requesting it.
+- `stop(sup)` — requests a graceful stop of every child in reverse declaration order.
+- `terminate(sup)` — requests cancellation of every child in that order.
+- `stopped(sup)` — waits for the whole tree's terminal cleanup.
 
 **Terminal destinations (normative).**
 
@@ -6351,7 +6358,7 @@ with a body ends at its brace (`state Active { n: i64; }`); its `entry` and
 `exit` blocks contain ordinary statements. A bodyless route ends with `;`.
 The `events { ... }`, `emits { ... }` and `default { ... }` blocks take no
 extra terminator. Supervisor child clauses such as `restart:` and
-`shutdown:` remain parts of one child member, which ends with `;`.
+`stop:` remain parts of one child member, which ends with `;`.
 
 **Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
 
@@ -6366,9 +6373,9 @@ downstream highlighters generate from it, not from this section.
 | --- | --- |
 | Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
 | Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
-| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `await`, `await_restart` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `await` |
 | Wire | `reserved`, `optional`, `deprecated` |
-| Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
+| Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
 | Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
 | Literals | `true`, `false` |
 | Other | `dyn`, `unsafe`, `is` |

@@ -1284,7 +1284,7 @@ impl Checker {
                     // registered sig for `Trait::method` so the same path
                     // resolves sibling trait-method calls on the `Self` receiver.
                     let self_parameter = crate::ParamHead::receiver(
-                        self.lookup_declaration(td.name.name.as_str())
+                        self.lookup_declaration(&self.declaration_identity(td.name.name.as_str()))
                             .expect("registered trait owns Self"),
                     );
                     let prev_sig = self.fn_sig(&qualified).cloned();

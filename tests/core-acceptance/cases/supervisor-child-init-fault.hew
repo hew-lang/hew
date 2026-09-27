@@ -15,5 +15,6 @@ supervisor App {
 fn main() {
     let app = spawn App;
     println("unreachable");
-    supervisor_stop(app);
+    stop(app);
+    stopped(app);
 }

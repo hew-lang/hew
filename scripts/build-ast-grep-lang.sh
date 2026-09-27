@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="$REPO_ROOT/tools/ast-grep.lock"
+GRAMMAR_LOCK="$REPO_ROOT/tools/downstream/tree-sitter.lock"
 ARTIFACT_DIR="$REPO_ROOT/.ast-grep"
 CACHE_DIR="$ARTIFACT_DIR/cache"
 GRAMMAR_ARCHIVE="$CACHE_DIR/tree-sitter-hew.tar.gz"
@@ -24,6 +25,19 @@ fi
 }
 # shellcheck disable=SC1090
 source "$LOCK"
+
+grammar_lock_value() {
+    sed -n "s/^$1 = \"\([^\"]*\)\"$/\1/p" "$GRAMMAR_LOCK"
+}
+TREE_SITTER_HEW_REV="$(grammar_lock_value commit)"
+TREE_SITTER_HEW_REPOSITORY="$(grammar_lock_value repository)"
+TREE_SITTER_HEW_ARCHIVE_SHA256="$(grammar_lock_value archive_sha256)"
+[[ "$TREE_SITTER_HEW_REV" =~ ^[0-9a-f]{40}$ ]] &&
+    [[ "$TREE_SITTER_HEW_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]] &&
+    [[ "$TREE_SITTER_HEW_REPOSITORY" == "https://github.com/hew-lang/tree-sitter-hew" ]] || {
+    echo "error: invalid pinned Hew grammar contract in $GRAMMAR_LOCK" >&2
+    exit 1
+}
 
 if [[ "$BOOTSTRAP" == 1 ]] && {
     [[ ! -x "$TREE_SITTER" ]] ||
@@ -82,7 +96,11 @@ sha256_file() {
 need() {
     [[ -f "$GRAMMAR_ARCHIVE" ]] || return 1
     [[ "$(sha256_file "$GRAMMAR_ARCHIVE")" == "$TREE_SITTER_HEW_ARCHIVE_SHA256" ]] || {
-        echo "error: cached grammar archive checksum does not match tools/ast-grep.lock" >&2
+        echo "error: cached grammar archive checksum does not match tools/downstream/tree-sitter.lock" >&2
+        return 1
+    }
+    [[ "$(tar -tzf "$GRAMMAR_ARCHIVE" | sed -n '1p')" == "tree-sitter-hew-$TREE_SITTER_HEW_REV/" ]] || {
+        echo "error: cached grammar archive revision does not match tools/downstream/tree-sitter.lock" >&2
         return 1
     }
 }
@@ -113,7 +131,7 @@ fi
 # invocations (make lint, the bootstrap self-tests, CI) cheap instead of
 # re-running a native build every time.
 if [[ -f "$OUT" ]] && [[ -f "$ARTIFACT_DIR/hew-lang.stamp" ]] &&
-    [[ "$(cat "$ARTIFACT_DIR/hew-lang.stamp")" == "$(printf '%s\n%s' "$TREE_SITTER_HEW_ARCHIVE_SHA256" "$TREE_SITTER_HEW_LANGUAGE_ABI")" ]]; then
+    [[ "$(cat "$ARTIFACT_DIR/hew-lang.stamp")" == "$(printf '%s\n%s\n%s' "$TREE_SITTER_HEW_REV" "$TREE_SITTER_HEW_ARCHIVE_SHA256" "$TREE_SITTER_HEW_LANGUAGE_ABI")" ]]; then
     echo "pinned Hew grammar already built: $OUT"
     exit 0
 fi
@@ -138,5 +156,5 @@ Linux) cc -shared -fPIC "$GRAMMAR_DIR/src/parser.c" -o "$OUT" ;;
     exit 1
     ;;
 esac
-printf '%s\n%s\n' "$TREE_SITTER_HEW_ARCHIVE_SHA256" "$TREE_SITTER_HEW_LANGUAGE_ABI" >"$ARTIFACT_DIR/hew-lang.stamp"
+printf '%s\n%s\n%s\n' "$TREE_SITTER_HEW_REV" "$TREE_SITTER_HEW_ARCHIVE_SHA256" "$TREE_SITTER_HEW_LANGUAGE_ABI" >"$ARTIFACT_DIR/hew-lang.stamp"
 echo "built pinned Hew grammar: $OUT"

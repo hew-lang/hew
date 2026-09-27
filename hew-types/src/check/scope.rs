@@ -241,6 +241,15 @@ impl Scopes {
         scopes
     }
 
+    /// The namespace containing a source file's declarations.
+    #[must_use]
+    pub fn namespace_of(&self, file: ModuleId) -> ModuleId {
+        self.files
+            .get(&file)
+            .and_then(|scope| scope.namespace)
+            .unwrap_or(file)
+    }
+
     /// Record that `file` joins `namespace`'s items.
     pub fn join_namespace(&mut self, file: ModuleId, namespace: ModuleId) {
         self.files.entry(file).or_default().namespace = Some(namespace);

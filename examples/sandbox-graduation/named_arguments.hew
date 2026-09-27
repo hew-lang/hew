@@ -66,5 +66,6 @@ fn main() {
     println(math.min(b: trace("b", 1), a: trace("a", 2)));
     let journal = spawn Journal;
     println(journal.pair(second: "b", first: "a").expect("pair"));
-    close(journal);
+    stop(journal);
+    stopped(journal);
 }

@@ -41,7 +41,7 @@ impl Checker {
                 head: crate::TypeHead::Unresolved(Symbol::intern("T")),
                 args: vec![],
             }],
-            Ty::Unit,
+            &Ty::Unit,
         );
         self.register_builtin_fn_with_bounds(
             "print",
@@ -51,7 +51,7 @@ impl Checker {
                 head: crate::TypeHead::Unresolved(Symbol::intern("T")),
                 args: vec![],
             }],
-            Ty::Unit,
+            &Ty::Unit,
         );
 
         // Numeric conversion. The math functions live in `std.math`; there is
@@ -66,7 +66,7 @@ impl Checker {
                 head: crate::TypeHead::Unresolved(Symbol::intern("T")),
                 args: vec![],
             }],
-            Ty::String,
+            &Ty::String,
         );
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
 
@@ -178,7 +178,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::new(),
             vec![Ty::I64],
-            Ty::Named {
+            &Ty::Named {
                 head: crate::TypeHead::Builtin(BuiltinType::Vec),
                 args: vec![Ty::Named {
                     head: crate::TypeHead::Unresolved(Symbol::intern("T")),
@@ -257,7 +257,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::new(),
             vec![Ty::String],
-            Ty::result(
+            &Ty::result(
                 Ty::remote_pid(Ty::Named {
                     head: crate::TypeHead::Unresolved(Symbol::intern("T")),
                     args: vec![],
@@ -695,21 +695,21 @@ impl Checker {
         type_params: Vec<String>,
         type_param_bounds: HashMap<String, Vec<String>>,
         params: Vec<Ty>,
-        return_type: Ty,
+        return_type: &Ty,
     ) {
         let owner = self.defs.builtin_callable(name);
         let type_params: Vec<_> = type_params
-            .iter()
+            .into_iter()
             .enumerate()
             .map(|(index, name)| {
-                crate::ParamHead::new(crate::TypeParamId::new(owner, index), Symbol::intern(name))
+                crate::ParamHead::new(crate::TypeParamId::new(owner, index), Symbol::intern(&name))
             })
             .collect();
         let params = params
-            .iter()
-            .map(|ty| self.canonicalize_registry_signature(ty, "", &type_params))
+            .into_iter()
+            .map(|ty| self.canonicalize_registry_signature(&ty, "", &type_params))
             .collect();
-        let return_type = self.canonicalize_registry_signature(&return_type, "", &type_params);
+        let return_type = self.canonicalize_registry_signature(return_type, "", &type_params);
         self.register_builtin_sig(
             name,
             FnSig {

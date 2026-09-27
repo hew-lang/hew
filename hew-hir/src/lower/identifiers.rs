@@ -144,7 +144,11 @@ impl LowerCtx {
         let emitted = self
             .call_site_type_args
             .get(&site)
-            .filter(|args| !args.iter().any(|ty| self.contains_abstract_type_param(ty)))
+            .filter(|args| {
+                !args
+                    .iter()
+                    .any(super::substitution::contains_abstract_symbol)
+            })
             .map_or_else(
                 || {
                     self.fn_symbol_overrides

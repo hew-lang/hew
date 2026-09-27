@@ -171,7 +171,7 @@ pub fn run_layout_mono_pass(
     for item in items {
         match item {
             HirItem::Record(r) => {
-                all_type_params.extend(r.type_params.iter().cloned());
+                all_type_params.extend(r.type_params.iter().copied());
                 let fields = if r.fields.is_empty() {
                     r.positional_field_tys
                         .iter()
@@ -195,7 +195,7 @@ pub fn run_layout_mono_pass(
                 );
             }
             HirItem::TypeDecl(td) => {
-                all_type_params.extend(td.type_params.iter().cloned());
+                all_type_params.extend(td.type_params.iter().copied());
                 // A struct-kind type decl contributes a record layout; an
                 // enum-kind type decl contributes an enum layout. The two are
                 // disjoint even when an enum has no variants.
@@ -226,14 +226,14 @@ pub fn run_layout_mono_pass(
                 }
             }
             HirItem::Function(f) => {
-                all_type_params.extend(f.type_params.iter().cloned());
+                all_type_params.extend(f.type_params.iter().copied());
                 origin_fns.insert(f.id, f);
             }
             // Impl-block type-params join the program-wide abstract domain so
             // an impl-method signature reference (`fn(T) -> Pair<T>`) borrowed
             // into another body is recognised as abstract, not a layout site.
             HirItem::Impl(im) => {
-                all_type_params.extend(im.type_params.iter().cloned());
+                all_type_params.extend(im.type_params.iter().copied());
             }
             // Other item variants contribute no new record/enum decls. Their
             // bodies' reach-throughs are observed through the function-mono
@@ -266,7 +266,7 @@ pub fn run_layout_mono_pass(
     for item in extra_decls {
         match item {
             HirItem::Record(r) => {
-                all_type_params.extend(r.type_params.iter().cloned());
+                all_type_params.extend(r.type_params.iter().copied());
                 record_decls
                     .entry(r.qualified_name())
                     .or_insert_with(|| RecordDecl {
@@ -288,7 +288,7 @@ pub fn run_layout_mono_pass(
                     });
             }
             HirItem::TypeDecl(td) => {
-                all_type_params.extend(td.type_params.iter().cloned());
+                all_type_params.extend(td.type_params.iter().copied());
                 if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls
                         .entry(td.qualified_name(defs))
@@ -440,11 +440,11 @@ pub fn run_layout_mono_pass(
         let subst: HashMap<hew_types::ParamHead, ResolvedTy> = origin
             .type_params
             .iter()
-            .cloned()
+            .copied()
             .zip(mono.key.type_args.iter().cloned())
             .collect();
         let residual_domain: HashSet<hew_types::ParamHead> =
-            origin.type_params.iter().cloned().collect();
+            origin.type_params.iter().copied().collect();
         walk_fn(origin, &subst, &residual_domain, &mut disc);
     }
 

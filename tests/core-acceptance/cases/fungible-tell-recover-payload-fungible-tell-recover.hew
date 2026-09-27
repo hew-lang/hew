@@ -19,7 +19,8 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w;
-    supervisor_stop(sup);
+    stop(sup);
+    stopped(sup);
     var i: i64 = 0;
     while i < 50 {
         let _ = w.take("undelivered-heap-payload".to_upper());

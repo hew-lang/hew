@@ -1,24 +1,9 @@
-// Accept + run: explicit `.close()` on an anonymous actor's handle compiles,
-// lowers, and runs without E_NOT_YET_IMPLEMENTED.
-//
-// `actor |x: i64| { println(x); }` produces `actor(i64)`.
-// `.send(42)` delivers the message; the explicit `.close()` in statement
-// context invokes `hew_lambda_actor_release` (routed by
-// the anonymous actor handle type in `lower_duplex_close`). Exit 0 proves
-// the program ran to completion; stdout "42" proves the message was
-// delivered before the handle was released.
-//
-// This fixture guards the blocker: before the fix, the checker accepted
-// `.close()` and recorded `hew_duplex_close`, but the MIR producer had
-// no arm for that symbol → `E_NOT_YET_IMPLEMENTED` at compile time.
+// An anonymous actor handles its queued message before graceful stop returns.
 fn main() {
     let printer = actor |x: i64| {
         println(x);
     };
     let _ = printer.send(42);
-    {
-        let __hew_migrated_actor_838 = printer;
-        stop(__hew_migrated_actor_838);
-        stopped(__hew_migrated_actor_838);
-    };
+    stop(printer);
+    stopped(printer);
 }

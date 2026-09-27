@@ -3857,6 +3857,7 @@ mod tests {
 
     /// Report when a detach has finished its phase-1 eviction and is about to
     /// enter the phase-2 guard wait.
+    #[cfg(unix)]
     fn detach_reaches_phase_two() -> std::sync::mpsc::Receiver<()> {
         let (tx, rx) = std::sync::mpsc::channel();
         set_detach_post_evict_hook(Some(Box::new(move || {

@@ -79,7 +79,7 @@ fn owner_only_key_security_descriptor() -> io::Result<LocalSecurityDescriptor> {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
             SDDL_REVISION_1,
-            &mut descriptor,
+            &raw mut descriptor,
             ptr::null_mut(),
         )
     };
@@ -379,18 +379,16 @@ pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use std::ffi::c_void;
     use std::ffi::CString;
     use tempfile::tempdir;
     #[cfg(windows)]
-    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     #[cfg(windows)]
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
-        SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
     };
-    #[cfg(windows)]
-    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 
     #[cfg(windows)]
     struct LocalAllocString(*mut u16);
@@ -437,7 +435,7 @@ mod tests {
                 ptr::null_mut(),
                 ptr::null_mut(),
                 ptr::null_mut(),
-                &mut descriptor,
+                &raw mut descriptor,
             )
         };
         assert_eq!(rc, ERROR_SUCCESS, "GetNamedSecurityInfoW failed: {rc}");
@@ -451,8 +449,8 @@ mod tests {
                 descriptor,
                 SDDL_REVISION_1,
                 DACL_SECURITY_INFORMATION,
-                &mut sddl_ptr,
-                &mut sddl_len,
+                &raw mut sddl_ptr,
+                &raw mut sddl_len,
             )
         };
         assert_ne!(

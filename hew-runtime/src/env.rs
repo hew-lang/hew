@@ -10,7 +10,10 @@
 
 use crate::lifetime::PoisonSafeRw;
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
-use std::ffi::{c_char, CStr};
+#[cfg(unix)]
+use std::ffi::c_char;
+#[cfg(any(unix, test))]
+use std::ffi::CStr;
 #[cfg(any(target_os = "freebsd", test))]
 use std::sync::atomic::{AtomicBool, Ordering};
 

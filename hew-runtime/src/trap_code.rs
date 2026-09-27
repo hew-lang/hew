@@ -41,8 +41,8 @@ pub(crate) unsafe fn write_stderr(msg: &[u8]) {
         WriteFile(
             handle,
             msg.as_ptr(),
-            msg.len() as u32,
-            &mut written,
+            u32::try_from(msg.len()).unwrap_or(u32::MAX),
+            &raw mut written,
             std::ptr::null_mut(),
         );
     }

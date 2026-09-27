@@ -450,9 +450,13 @@ pub unsafe fn install_shutdown_signal_handlers() {
 
 /// Windows shutdown handler using `SetConsoleCtrlHandler`.
 ///
-/// Handles CTRL_C_EVENT, CTRL_BREAK_EVENT, and CTRL_CLOSE_EVENT by
+/// Handles `CTRL_C_EVENT`, `CTRL_BREAK_EVENT`, and `CTRL_CLOSE_EVENT` by
 /// transitioning the runtime to the QUIESCE phase, mirroring the Unix
 /// SIGTERM/SIGINT handler behaviour.
+///
+/// # Safety
+///
+/// Call from the main thread before registering other console control handlers.
 #[cfg(windows)]
 pub unsafe fn install_shutdown_signal_handlers() {
     #[link(name = "kernel32")]

@@ -12,8 +12,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected",
-        "proof_kind": "rejected-boundary"
+        "disposition": "accepted",
+        "proof_kind": "internal-transient"
       },
       "release_symbol": "hew_msg_envelope_release"
     },
@@ -284,8 +284,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected",
-        "proof_kind": "rejected-boundary"
+        "disposition": "accepted",
+        "proof_kind": "internal-transient"
       },
       "release_symbol": "hew_stream_pair_free"
     }

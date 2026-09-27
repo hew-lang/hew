@@ -34,7 +34,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 cat >"$WORK/probe.hew" <<'HEW'
 actor Counter {
-    var total: i64 = 0,
+    var total: i64 = 0;
     receive fn bump(n: i64) {
         total = total + n;
     }

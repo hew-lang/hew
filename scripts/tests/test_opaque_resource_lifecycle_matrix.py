@@ -534,7 +534,7 @@ def wasm_public_programs(
                 (
                     "boundary",
                     "import std.stream;\n"
-                    f'fn main() {{ let (sink, source) = stream.pipe(1); println("{witness}"); }}\n',
+                    f'fn main() {{ let (sink, source): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe opens"); println("{witness}"); }}\n',
                 ),
             ),
         ),

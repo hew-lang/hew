@@ -2227,6 +2227,10 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "snapshot migration prepares, checks, and commits files as one transaction"
+)]
 fn migrate_in_snapshot(files: &[PathBuf], root: Option<&Path>, check: bool) -> Result<bool, ()> {
     let snapshot = tempfile::tempdir().map_err(|error| {
         eprintln!("Error: cannot create migration check snapshot: {error}");
@@ -2423,10 +2427,6 @@ fn copy_migration_snapshot_tree(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the migration must keep checker resolution, refusal reporting, and source edits in one transaction"
-)]
 fn actor_lifecycle_migration(
     source: &str,
     error: &hew_types::error::TypeError,
@@ -2574,6 +2574,10 @@ fn actor_parser_migration(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one source migration reconciles checker-selected edits before writing any output"
+)]
 fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
     let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
     let label = file_path.display().to_string();

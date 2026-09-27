@@ -163,6 +163,10 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
 /// checker's own `DerivedOrdUnavailable`); an HIR diagnostic's channel is
 /// `kind.channel()`. Computed once here — callers propagate the returned
 /// channel rather than re-deriving it from the diagnostics list.
+#[allow(
+    clippy::too_many_lines,
+    reason = "all frontend diagnostic variants render through one channel-preserving boundary"
+)]
 pub(crate) fn render_frontend_diagnostics(
     diagnostics: &[FrontendDiagnostic],
 ) -> Option<hew_types::error::DiagChannel> {

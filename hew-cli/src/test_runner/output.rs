@@ -152,9 +152,11 @@ pub fn output_event(
                     Some(failure.message.as_str()),
                 ),
             };
-            let elapsed = (result.duration.as_millis() > 100)
-                .then(|| format!("  {} ms", result.duration.as_millis()))
-                .unwrap_or_default();
+            let elapsed = if result.duration.as_millis() > 100 {
+                format!("  {} ms", result.duration.as_millis())
+            } else {
+                String::new()
+            };
             println!(
                 "{status}  {}{elapsed}",
                 super::test_identity(&result.test, root)
@@ -212,7 +214,7 @@ fn render_stream_summary(summary: &TestSummary, use_color: bool, root: &std::pat
         .iter()
         .filter(|result| result.duration.as_millis() > 100)
         .collect::<Vec<_>>();
-    slowest.sort_unstable_by(|left, right| right.duration.cmp(&left.duration));
+    slowest.sort_unstable_by_key(|result| std::cmp::Reverse(result.duration));
     if !slowest.is_empty() {
         out.push_str("slowest:\n");
         for result in slowest.into_iter().take(5) {
@@ -317,6 +319,10 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
 /// Produces a `<testsuites>` document with one `<testsuite>` per source file.
 /// Compatible with Jenkins, GitHub Actions (`mikepenz/action-junit-report`),
 /// and other `JUnit` XML consumers.
+#[allow(
+    clippy::too_many_lines,
+    reason = "JUnit suite and testcase elements share one ordered XML writer"
+)]
 fn render_junit(summary: &TestSummary, invocation_root: &std::path::Path) -> String {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;

@@ -369,7 +369,7 @@ fn fmt_migrate_rewrites_declared_machine_event_aliases() {
 fn fmt_migrate_selects_actor_lifecycle_without_touching_resource_close() {
     let dir = support::tempdir();
     let path = dir.path().join("actor-lifecycle.hew");
-    let source = r#"
+    let source = r"
         #[resource] type Gate { value: i64, }
         impl Gate { fn close(consume self) {} }
         actor Worker { receive fn ping() {} }
@@ -381,7 +381,7 @@ fn fmt_migrate_selects_actor_lifecycle_without_touching_resource_close() {
             let gate = Gate { value: 1 };
             gate.close();
         }
-    "#;
+    ";
     std::fs::write(&path, source).unwrap();
 
     let migrate = Command::new(hew_binary())

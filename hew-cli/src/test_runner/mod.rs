@@ -175,6 +175,10 @@ fn requested_test_paths(args: &crate::args::TestArgs) -> (Vec<String>, Vec<Optio
 )]
 pub fn cmd_test(args: &crate::args::TestArgs) {
     use std::io::IsTerminal as _;
+    if args.watch {
+        crate::watch::cmd_test_watch(args);
+        return;
+    }
     let filter = args.filter.as_deref();
     let partition = parse_partition_argument(args.partition.as_deref());
     let use_color = match args.color {

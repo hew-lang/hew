@@ -392,7 +392,7 @@ pub(crate) fn run_binary_with_driver(
     let inherit_group =
         std::env::var("HEW_TEST_INHERIT_PROCESS_GROUP").is_ok_and(|value| value == "1");
     if capture {
-        run_command_captured_with_group(&mut command, timeout, inherit_group)
+        capture_command(&mut command, timeout, inherit_group, true)
     } else {
         run_command_uncaptured_with_group(&mut command, timeout, inherit_group)
     }
@@ -439,15 +439,53 @@ pub(crate) fn run_command_captured(
     run_command_captured_with_group(command, timeout, false)
 }
 
+/// Capture stdout and stderr through one OS pipe, preserving write order.
+pub(crate) fn run_command_captured_merged(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<BinaryRunOutcome, String> {
+    capture_command(command, timeout, false, true)
+}
+
 fn run_command_captured_with_group(
     command: &mut Command,
     timeout: Duration,
     inherit_group: bool,
 ) -> Result<BinaryRunOutcome, String> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    capture_command(command, timeout, inherit_group, false)
+}
+
+fn capture_command(
+    command: &mut Command,
+    timeout: Duration,
+    inherit_group: bool,
+    merged: bool,
+) -> Result<BinaryRunOutcome, String> {
+    let merged_reader = if merged {
+        let (reader, writer) =
+            os_pipe::pipe().map_err(|error| format!("cannot create child output pipe: {error}"))?;
+        command
+            .stdout(Stdio::from(writer.try_clone().map_err(|error| {
+                format!("cannot clone child output pipe: {error}")
+            })?))
+            .stderr(Stdio::from(writer));
+        Some(reader)
+    } else {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        None
+    };
 
     let mut bounded = spawn_test_child(command, inherit_group)?;
-    let drain = ConcurrentChildOutput::spawn(&mut bounded.child)?;
+    if merged {
+        // `Command` retains its configured Stdio handles after spawning. Drop
+        // the parent's pipe writers so the reader observes EOF on child exit.
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let drain = if let Some(reader) = merged_reader {
+        OutputCapture::Merged(ChildPipeReader::spawn(reader, "output"))
+    } else {
+        OutputCapture::Separate(ConcurrentChildOutput::spawn(&mut bounded.child)?)
+    };
     let start = Instant::now();
 
     loop {
@@ -484,6 +522,32 @@ fn run_command_captured_with_group(
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => return Err(format!("cannot poll child process: {e}")),
+        }
+    }
+}
+
+enum OutputCapture {
+    Separate(ConcurrentChildOutput),
+    Merged(ChildPipeReader),
+}
+
+impl OutputCapture {
+    fn finish_until(self, deadline: Instant) -> Result<Option<(String, String)>, String> {
+        match self {
+            Self::Separate(readers) => readers.finish_until(deadline),
+            Self::Merged(reader) => reader
+                .finish_until(deadline)
+                .map(|text| text.map(|text| (text, String::new()))),
+        }
+    }
+
+    fn abandon(self, tree_killed: bool) {
+        match self {
+            Self::Separate(readers) => readers.abandon(tree_killed),
+            Self::Merged(reader) if tree_killed => {
+                let _ = reader.finish();
+            }
+            Self::Merged(_) => {}
         }
     }
 }
@@ -1040,9 +1104,8 @@ mod tests {
             let mut command = Command::new("sh");
             command.args(["-c", script]).env("PID_FILE", &pid_file);
             let started = Instant::now();
-            let outcome =
-                run_command_captured_with_group(&mut command, Duration::from_millis(200), true)
-                    .expect("inherited-group test run");
+            let outcome = capture_command(&mut command, Duration::from_millis(200), true, true)
+                .expect("inherited-group test run");
             let pid: i32 = std::fs::read_to_string(&pid_file)
                 .expect("descendant PID")
                 .trim()

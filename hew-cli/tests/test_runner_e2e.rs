@@ -174,6 +174,31 @@ fn doc_declarations_compile_and_can_be_called_in_the_same_fence() {
 }
 
 #[test]
+fn captured_test_output_preserves_stdout_before_fault_stderr() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "capture_test.hew",
+        "#[test]\nfn writes_then_fails() { println(\"stdout marker\"); panic(\"stderr marker\"); }\n",
+    );
+    let output = run_hew_in(
+        dir.path(),
+        &["test", "capture_test.hew", "--format", "json"],
+    );
+    assert!(!output.status.success());
+    let finished = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == "test_finished")
+        .expect("test_finished event");
+    let captured = finished["output"].as_str().expect("captured output");
+    let stdout = captured.find("stdout marker").expect("stdout");
+    let stderr = captured.find("stderr marker").expect("stderr");
+    assert!(stdout < stderr, "{captured}");
+}
+
+#[test]
 fn should_panic_matches_checked_trap_and_fragment() {
     require_codegen();
     let output = run_suite(

@@ -279,8 +279,8 @@ pub enum TestEvent {
         tests: Vec<String>,
         diagnostics: Option<String>,
     },
-    TestStarted(TestCase),
-    TestFinished(TestResult),
+    TestStarted(Box<TestCase>),
+    TestFinished(Box<TestResult>),
 }
 
 fn emit(options: &TestRunOptions<'_>, event: TestEvent) {
@@ -517,8 +517,8 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                     duration: Duration::ZERO,
                     report: None,
                 };
-                emit(options, TestEvent::TestStarted(test.clone()));
-                emit(options, TestEvent::TestFinished(result.clone()));
+                emit(options, TestEvent::TestStarted(Box::new(test.clone())));
+                emit(options, TestEvent::TestFinished(Box::new(result.clone())));
                 results.push(result);
                 continue;
             }
@@ -527,9 +527,9 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                     .iter()
                     .position(|candidate| std::ptr::eq(*candidate, test))
                     .expect("selected test has a dispatcher ordinal");
-                emit(options, TestEvent::TestStarted(test.clone()));
+                emit(options, TestEvent::TestStarted(Box::new(test.clone())));
                 let result = run_compiled_test(test, ordinal, artifact, options);
-                emit(options, TestEvent::TestFinished(result.clone()));
+                emit(options, TestEvent::TestFinished(Box::new(result.clone())));
                 results.push(result);
             }
         }
@@ -650,7 +650,7 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                         if !skipped && artifact.is_none() {
                             continue;
                         }
-                        emit(options, TestEvent::TestStarted(test.clone()));
+                        emit(options, TestEvent::TestStarted(Box::new(test.clone())));
                         let result = if skipped {
                             TestResult {
                                 test: test.clone(),
@@ -685,7 +685,7 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                                 options,
                             )
                         };
-                        emit(options, TestEvent::TestFinished(result.clone()));
+                        emit(options, TestEvent::TestFinished(Box::new(result.clone())));
                         result_slots
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)[*result_index] =
@@ -876,6 +876,10 @@ fn execute_test_run(
     (run, report, Some(dir))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one isolated execution owns its timeout, report, output, and outcome"
+)]
 fn run_compiled_test(
     test: &TestCase,
     ordinal: usize,
@@ -886,8 +890,7 @@ fn run_compiled_test(
     let timeout = test
         .timeout_ns
         .and_then(|nanos| u64::try_from(nanos).ok())
-        .map(Duration::from_nanos)
-        .unwrap_or(options.timeout);
+        .map_or(options.timeout, Duration::from_nanos);
     if test.doc.as_ref().is_some_and(|doc| doc.no_run) {
         return TestResult {
             test: test.clone(),
@@ -1053,6 +1056,10 @@ fn with_operand_diff(report: String) -> String {
 }
 
 /// Decide one execution's outcome, returning it with the captured stdout.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the outcome classifier handles the complete runtime report and process exit contract"
+)]
 fn judge_run(
     test: &TestCase,
     run_result: Result<crate::process::BinaryRunOutcome, String>,
@@ -1113,9 +1120,23 @@ fn judge_run(
                 (TestOutcome::Passed, stdout)
             } else {
                 let mut msg = if stderr.is_empty() {
-                    report
+                    let mut message = report
                         .and_then(|report| report.message.clone())
-                        .unwrap_or_else(|| "test exited with non-zero status".to_string())
+                        .unwrap_or_else(|| {
+                            if stdout.is_empty() {
+                                "test exited with non-zero status".to_string()
+                            } else {
+                                stdout.clone()
+                            }
+                        });
+                    if let Some(assertion) = report.and_then(|report| report.assertion.as_ref()) {
+                        let _ = write!(
+                            message,
+                            "\n  left: {}\n right: {}",
+                            assertion.left, assertion.right
+                        );
+                    }
+                    with_operand_diff(message)
                 } else {
                     with_operand_diff(stderr.clone())
                 };
@@ -1141,7 +1162,7 @@ fn judge_run(
                             record.fault_kind.as_deref() == Some("UserPanic")
                         }) =>
                     {
-                        if stderr.contains("assertion failed") {
+                        if report.is_some_and(|record| record.assertion.is_some()) {
                             TestFailureKind::Assertion
                         } else {
                             TestFailureKind::Panic
@@ -1150,8 +1171,8 @@ fn judge_run(
                     Some("fault") => TestFailureKind::Trap,
                     Some("error_return") => TestFailureKind::ErrorReturn,
                     Some("exit") => TestFailureKind::Runtime,
-                    _ if stderr.contains("step budget") => TestFailureKind::StepBudget,
-                    _ if stderr.contains("deadlock") => TestFailureKind::Deadlock,
+                    _ if msg.contains("step budget") => TestFailureKind::StepBudget,
+                    _ if msg.contains("deadlock") => TestFailureKind::Deadlock,
                     _ => TestFailureKind::Crash,
                 };
                 (TestOutcome::failed(kind, msg), stdout)

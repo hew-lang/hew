@@ -91,6 +91,10 @@ pub(super) fn compile_test(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the VM command needs independent package, runner, scheduler, budget, timeout, report, scratch, and capture inputs"
+)]
 pub(super) fn execute_test(
     package: &Path,
     runner: &Path,
@@ -116,7 +120,7 @@ pub(super) fn execute_test(
         .env("TMP", scratch)
         .env("TEMP", scratch);
     if capture {
-        crate::process::run_command_captured(&mut command, timeout)
+        crate::process::run_command_captured_merged(&mut command, timeout)
     } else {
         crate::process::run_command_uncaptured(&mut command, timeout)
     }

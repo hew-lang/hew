@@ -326,6 +326,10 @@ impl CommonBuildArgs {
 // Run
 // ---------------------------------------------------------------------------
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "clap maps independent run switches directly to booleans"
+)]
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// Input .hew file, or a package directory. Omit it to run the package
@@ -702,6 +706,9 @@ pub struct TestArgs {
     /// Rerun the failures recorded by the previous `hew test` invocation.
     #[arg(long, conflicts_with = "paths")]
     pub rerun_failed: bool,
+    /// Rerun tests in changed source files until interrupted.
+    #[arg(long, conflicts_with = "rerun_failed")]
+    pub watch: bool,
     /// Run ignored tests too.
     #[arg(long, conflicts_with = "ignored")]
     pub include_ignored: bool,

@@ -63,6 +63,10 @@ impl Parser<'_> {
     }
 
     /// Parse zero or more `#[name]` or `#[name(arg1, arg2)]` attributes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "attribute token forms and error recovery share one parsing loop"
+    )]
     pub(crate) fn parse_attributes(&mut self) -> Vec<Attribute> {
         let mut attrs = Vec::new();
         while self.peek() == Some(&Token::HashBracket) {

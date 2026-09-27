@@ -267,18 +267,29 @@ fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) ->
             fence.code
         )
     } else {
-        let mut imports = String::new();
+        let parsed = hew_parser::parse(&fence.code);
+        let mut declarations = String::new();
         let mut statements = String::new();
-        for line in fence.code.lines() {
-            let target = if line.trim_start().starts_with("import ") {
-                &mut imports
-            } else {
-                &mut statements
+        let mut cursor = 0;
+        for (_, span) in &parsed.program.items {
+            let (Some(before), Some(declaration)) = (
+                fence.code.get(cursor..span.start),
+                fence.code.get(span.start..span.end),
+            ) else {
+                return format!(
+                    "{base}\n{entry_attributes}\nfn {entry_name}() {{\n{}\n}}\n",
+                    fence.code
+                );
             };
-            target.push_str(line);
-            target.push('\n');
+            statements.push_str(before);
+            declarations.push_str(declaration);
+            declarations.push('\n');
+            cursor = span.end;
         }
-        format!("{base}\n{imports}\n{entry_attributes}\nfn {entry_name}() {{\n{statements}\n}}\n")
+        statements.push_str(&fence.code[cursor..]);
+        format!(
+            "{base}\n{declarations}\n{entry_attributes}\nfn {entry_name}() {{\n{statements}\n}}\n"
+        )
     }
 }
 

@@ -151,6 +151,29 @@ fn doc_imports_keep_source_items_in_scope() {
 }
 
 #[test]
+fn doc_declarations_compile_and_can_be_called_in_the_same_fence() {
+    require_codegen();
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "guide.md",
+        "```hew\nfn grade(n: i64) -> string { if n >= 90 { \"A\" } else { \"B\" } }\n```\n```hew\nenum Level { High; Low; }\nfn grade(n: i64) -> string { if n >= 90 { \"A\" } else { \"B\" } }\nprintln(grade(92));\n// Output:\n// A\n```\n",
+    );
+    let output = run_hew_in(
+        dir.path(),
+        &["test", "--doc", "guide.md", "--format", "json"],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("\"passed\":2"), "{events}");
+}
+
+#[test]
 fn should_panic_matches_checked_trap_and_fragment() {
     require_codegen();
     let output = run_suite(

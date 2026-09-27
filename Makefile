@@ -1287,7 +1287,7 @@ stdlib-user-build-clean: hew-native
 
 # Compile and run documentation examples in docs/ and std/.
 test-doc-examples: hew-native
-	"$(DEBUG_HEW)" test --doc docs std
+	"$(DEBUG_HEW)" test --doc docs std --filter '::doc('
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 #

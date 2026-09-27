@@ -6645,7 +6645,9 @@ Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`
 
 **Syntax:**
 
-```hew
+The fixed booleans below illustrate label targets; this loop does not terminate.
+
+```hew,no_run
 fn main() {
     let condition = true;
     let done = false;

@@ -749,6 +749,12 @@ impl Checker {
                             },
                         )
                     });
+                    if let Some(source_path) = resolved_source_path.as_ref() {
+                        self.record_canonical_std_module_source(
+                            &canonical_owner,
+                            std::slice::from_ref(source_path),
+                        );
+                    }
                     let registry_module = self
                         .defs
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
@@ -763,12 +769,6 @@ impl Checker {
                                 span,
                             );
                         }
-                    }
-                    if let Some(source_path) = resolved_source_path {
-                        self.record_canonical_std_module_source(
-                            &canonical_owner,
-                            std::slice::from_ref(&source_path),
-                        );
                     }
                     // Preserve the importer's lexical module binding even
                     // when the selected source belongs to a directory

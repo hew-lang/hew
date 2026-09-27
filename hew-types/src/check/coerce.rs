@@ -414,13 +414,10 @@ impl Checker {
         };
         if matches!((expected, actual), (Ty::Closure { .. }, Ty::Closure { .. })) {
             self.report_error_with_suggestions(
-                kind,
+                TypeErrorKind::ClosureShapeMismatch,
                 span,
-                "type mismatch: each closure literal has its own type".to_string(),
-                vec![format!(
-                    "write the binding type as `{}` to hold either closure",
-                    expected.user_facing()
-                )],
+                "type mismatch: closures require compatible callable shapes".to_string(),
+                vec!["use closures with matching parameter and return types".to_string()],
             );
         } else if *expected != Ty::Error && *actual != Ty::Error {
             self.report_error(

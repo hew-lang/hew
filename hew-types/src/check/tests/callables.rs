@@ -1333,7 +1333,7 @@ fn reassigning_a_closure_binding_still_rejects_a_different_shape() {
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("each closure literal has its own type")),
+            .any(|e| e.kind == TypeErrorKind::ClosureShapeMismatch),
         "a closure of a different shape must still be refused: {:?}",
         output.errors
     );

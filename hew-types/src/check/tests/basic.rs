@@ -741,10 +741,12 @@ fn typecheck_binary_op_type_mismatch() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
-    assert!(
-        !output.errors.is_empty(),
-        "expected type error for i32 + bool"
-    );
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::BinaryOperandTypes)
+        .expect("incompatible i32 and bool operands");
+    assert_eq!(source[error.span.clone()].trim(), "x");
 }
 
 #[test]
@@ -1370,13 +1372,13 @@ fn for_range_mixed_signedness_bounds_are_rejected() {
         }
     ";
     let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|error| error
-            .message
-            .contains("range bounds require compatible integer types")),
-        "mixed-signedness range must be rejected before MIR: {:#?}",
-        output.errors
-    );
+    let diagnostic = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::RangeBoundTypes)
+        .expect("incompatible range bounds");
+    assert_eq!(source[diagnostic.span.clone()].trim(), "start");
+    assert!(diagnostic.message.contains("i32") && diagnostic.message.contains("u64"));
 }
 
 #[test]
@@ -2783,4 +2785,19 @@ fn member_declarations_record_their_owner() {
         defs.owner(row(crate::DeclarationKind::ActorMethod, "peek")),
         Some(door)
     );
+}
+
+#[test]
+fn binary_operand_diagnostics_identify_the_operator_site() {
+    for expression in ["true + false", "true & false", "1.0 &+ 2.0"] {
+        let source = format!("fn main() {{ let value = {expression}; }}");
+        let output = check_source(&source);
+        let diagnostic = output
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::BinaryOperandTypes)
+            .unwrap_or_else(|| panic!("missing operand diagnostic: {:?}", output.errors));
+        assert_eq!(diagnostic.kind.as_kind_str(), "E_BINARY_OPERAND_TYPES");
+        assert_eq!(diagnostic.span.start, source.find(expression).unwrap());
+    }
 }

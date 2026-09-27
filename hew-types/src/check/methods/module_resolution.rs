@@ -561,6 +561,7 @@ impl Checker {
                     self.defs
                         .root_module()
                         .map(|root| self.defs.module_path(root))
+                        .filter(|path| *path != "#synthetic-root")
                 })
                 .flatten()
         })

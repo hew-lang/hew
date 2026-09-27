@@ -263,9 +263,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 ..
             } => self.emit_extern_call(symbol, args, *result, result_abi, normal),
-            PhysicalTerminator::Panic { message, cleanup } => {
-                self.emit_panic(*message, cleanup, self.terminator_site(block))
-            }
+            PhysicalTerminator::Panic {
+                message,
+                assertion,
+                cleanup,
+            } => self.emit_panic(*message, *assertion, cleanup, self.terminator_site(block)),
             PhysicalTerminator::Trap(kind) => {
                 let code = trap_code(*kind);
                 self.emit_new_fault(code, self.terminator_site(block))
@@ -1158,6 +1160,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     fn emit_panic(
         &self,
         message: ArgumentTransfer,
+        assertion: Option<[ArgumentTransfer; 3]>,
         cleanup: &PhysicalEdge,
         site: Option<u32>,
     ) -> CodegenResult<()> {
@@ -1166,9 +1169,40 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 "physical panic must borrow its message".into(),
             ));
         };
-        let constructor = external_unary_ptr(self.ctx, self.llvm, "hew_fault_new_panic")?;
         let message = self.load(source, "panic.message")?;
-        let fault = self.runtime_call_value(constructor, &[message.into()], "panic.fault")?;
+        let fault = if let Some(assertion) = assertion {
+            let mut fields = Vec::with_capacity(4);
+            fields.push(message.into());
+            for (index, value) in assertion.iter().enumerate() {
+                let ArgumentTransfer::Borrow(source) = value else {
+                    return Err(CodegenError::FailClosed(
+                        "assertion payload must borrow its strings".into(),
+                    ));
+                };
+                fields.push(
+                    self.load(*source, &format!("panic.assertion.{index}"))?
+                        .into(),
+                );
+            }
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let constructor = get_or_declare_external(
+                self.llvm,
+                "hew_fault_new_assertion",
+                pointer.fn_type(
+                    &[
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                    ],
+                    false,
+                ),
+            )?;
+            self.runtime_call_value(constructor, &fields, "panic.assertion.fault")?
+        } else {
+            let constructor = external_unary_ptr(self.ctx, self.llvm, "hew_fault_new_panic")?;
+            self.runtime_call_value(constructor, &[message.into()], "panic.fault")?
+        };
         self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
         self.attach_active_fault_site(site)?;
         self.emit_edge(cleanup)

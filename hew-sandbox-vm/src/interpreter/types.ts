@@ -45,6 +45,7 @@ export interface RuntimeFailure {
   message: string;
   span: TraceSpan | null;
   trap_kind: TrapKind | null;
+  assertion?: { operator: string; left: string; right: string };
   unsupported?: UnsupportedDiagnostic;
 }
 

@@ -418,6 +418,16 @@
           "type": "string",
           "minLength": 1
         },
+        "assertion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operator", "left", "right"],
+          "properties": {
+            "operator": { "type": "string" },
+            "left": { "type": "string" },
+            "right": { "type": "string" }
+          }
+        },
         "span": {
           "$ref": "#/$defs/span_or_null"
         },

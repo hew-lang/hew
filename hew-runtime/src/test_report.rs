@@ -14,6 +14,7 @@ struct FaultEvidence {
     code: i32,
     message: Option<String>,
     site_offset: Option<u32>,
+    assertion: Option<crate::fault::AssertionOperands>,
 }
 
 static FAULT: Mutex<Option<FaultEvidence>> = Mutex::new(None);
@@ -34,6 +35,7 @@ pub(crate) fn note_fault(
     code: i32,
     message: Option<&str>,
     site_offset: Option<u32>,
+    assertion: Option<&crate::fault::AssertionOperands>,
 ) {
     if std::env::var_os("HEW_TEST_REPORT").is_none() {
         return;
@@ -45,6 +47,7 @@ pub(crate) fn note_fault(
             code,
             message: message.map(str::to_owned),
             site_offset,
+            assertion: assertion.cloned(),
         });
     }
 }
@@ -70,6 +73,7 @@ pub(crate) fn finish(status: i32) {
         "fault_code": fault.as_ref().map(|fault| fault.code),
         "message": fault.as_ref().and_then(|fault| fault.message.as_deref()),
         "site_offset": fault.as_ref().and_then(|fault| fault.site_offset),
+        "assertion": fault.as_ref().and_then(|fault| fault.assertion.as_ref()),
         "schedule": driver.map(|(schedule, _, _, _)| schedule),
         "seed": driver.map(|(_, seed, _, _)| seed.to_string()),
         "steps": driver.map(|(_, _, steps, _)| steps),

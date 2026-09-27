@@ -412,6 +412,12 @@ const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
     &[BuiltinTy::String, BuiltinTy::String, BuiltinTy::String];
+const STRING_STRING_STRING_STRING: &[BuiltinTy] = &[
+    BuiltinTy::String,
+    BuiltinTy::String,
+    BuiltinTy::String,
+    BuiltinTy::String,
+];
 const EMPTY: &[BuiltinTy] = &[];
 const HASHMAP_ANY: &[BuiltinTy] = &[BuiltinTy::HashMapAny];
 const HASHSET_ANY: &[BuiltinTy] = &[BuiltinTy::HashSetAny];
@@ -545,6 +551,13 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_panic_msg",
         },
+    ),
+    direct(
+        "assertion_panic",
+        BuiltinClass::ClassA,
+        STRING_STRING_STRING_STRING,
+        BuiltinTy::Never,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
         "assert",

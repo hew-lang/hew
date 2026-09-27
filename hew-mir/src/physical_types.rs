@@ -1170,6 +1170,7 @@ pub enum PhysicalTerminator {
     /// Copy the borrowed message into the active fault, then enter cleanup.
     Panic {
         message: ArgumentTransfer,
+        assertion: Option<[ArgumentTransfer; 3]>,
         cleanup: PhysicalEdge,
     },
     Trap(TrapKind),

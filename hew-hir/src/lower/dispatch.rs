@@ -656,14 +656,13 @@ impl LowerCtx {
                     span,
                     &mut statements,
                 );
-                operands_rendered = Some(rendered);
+                operands_rendered = Some((rendered, op));
                 comparison
             }
             _ => self.lower_expr(condition, IntentKind::Read),
         };
 
-        let report = self.assertion_report(&text, message, operands_rendered, span);
-        let guard = self.assertion_guard(holds, report, span);
+        let guard = self.assertion_guard(holds, &text, message, operands_rendered, span);
         statements.push(HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Expr(guard),
@@ -788,10 +787,65 @@ impl LowerCtx {
         report
     }
 
-    /// `if !holds { panic(report) }`.
-    fn assertion_guard(&mut self, holds: HirExpr, report: HirExpr, span: &Span) -> HirExpr {
-        let panic_call = self.build_catalog_call("panic", vec![report], span.clone());
+    /// `if !holds { panic(report) }`, retaining compared values separately in
+    /// the typed fault so editors can show a diff without parsing report text.
+    fn assertion_guard(
+        &mut self,
+        holds: HirExpr,
+        text: &str,
+        message: Option<&Spanned<Expr>>,
+        operands: Option<([HirExpr; 2], BinaryOp)>,
+        span: &Span,
+    ) -> HirExpr {
         let then_scope = self.ids.scope();
+        self.push_scope();
+        let mut statements = Vec::new();
+        let panic_call = if let Some((rendered, operator)) = operands {
+            let mut bindings = Vec::with_capacity(2);
+            for (role, value) in ["left", "right"].into_iter().zip(rendered) {
+                let name = format!("__hew_assert_rendered_{role}_{}", self.ids.binding().0);
+                let binding = self.bind(name.clone(), ResolvedTy::String, false, span.clone());
+                let id = binding.id;
+                statements.push(HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Let(binding, Some(value)),
+                    span: span.clone(),
+                });
+                bindings.push((name, id));
+            }
+            let report_refs = [0, 1].map(|index| {
+                let (name, id) = &bindings[index];
+                self.make_binding_ref(
+                    name.clone(),
+                    *id,
+                    ResolvedTy::String,
+                    IntentKind::Read,
+                    span.clone(),
+                )
+            });
+            let report = self.assertion_report(text, message, Some(report_refs), span);
+            let operator = self.build_string_literal_expr(operator.to_string(), span.clone());
+            let payload_refs = [0, 1].map(|index| {
+                let (name, id) = &bindings[index];
+                self.make_binding_ref(
+                    name.clone(),
+                    *id,
+                    ResolvedTy::String,
+                    IntentKind::Read,
+                    span.clone(),
+                )
+            });
+            let [left, right] = payload_refs;
+            self.build_catalog_call(
+                "assertion_panic",
+                vec![report, operator, left, right],
+                span.clone(),
+            )
+        } else {
+            let report = self.assertion_report(text, message, None, span);
+            self.build_catalog_call("panic", vec![report], span.clone())
+        };
+        self.pop_scope();
         let then_block = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -800,7 +854,7 @@ impl LowerCtx {
             kind: HirExprKind::Block(HirBlock {
                 node: self.ids.node(),
                 scope: then_scope,
-                statements: Vec::new(),
+                statements,
                 tail: Some(Box::new(panic_call)),
                 ty: ResolvedTy::Never,
                 span: span.clone(),

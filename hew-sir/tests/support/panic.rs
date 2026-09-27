@@ -35,6 +35,7 @@ pub fn module(owned: bool) -> sir::SemModule {
                     operand: message.clone(),
                     decision: sir::BoundaryDecision::Borrow,
                 },
+                assertion: None,
                 cleanup: sir::Edge {
                     target: sir::BlockId(1),
                     args: vec![],

@@ -341,7 +341,7 @@ pub enum VecCursorMode {
 }
 
 /// Result of type-checking a program.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
     /// Ordinary checked program produced by machine normalization, when present.
     pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
@@ -1640,117 +1640,6 @@ impl TypeCheckOutput {
     }
 }
 
-impl Default for TypeCheckOutput {
-    /// Produce an empty `TypeCheckOutput` with no resolved types, rewrites, or
-    /// diagnostics. Useful in tests that exercise HIR lowering without
-    /// invoking the full type-checker (e.g. programs that contain no method
-    /// calls and therefore need no `method_call_rewrites` entries).
-    fn default() -> Self {
-        Self {
-            normalized_machines: None,
-            recovery_kinds: HashMap::new(),
-            call_argument_slots: HashMap::new(),
-            expr_types: HashMap::new(),
-            interpolation_display_types: HashMap::new(),
-            unrendered_assertion_operands: HashSet::new(),
-            user_comparison_dispatch: HashMap::new(),
-            numeric_operand_coercions: HashMap::new(),
-            extern_method_signatures: HashMap::new(),
-            actor_self_state_fields: HashSet::new(),
-            actor_deferred_field_decls: HashSet::new(),
-            actor_init_first_stores: HashSet::new(),
-            borrowed_element_for_loops: HashSet::new(),
-            borrowed_element_index_reads: HashSet::new(),
-            owning_take_vec_cursors: HashSet::new(),
-            borrowed_element_option_reads: HashSet::new(),
-            resolved_expr_types: HashMap::new(),
-            declaration_type_parameters: HashMap::new(),
-            resolved_annotation_types: HashMap::new(),
-            type_facts: BTreeMap::new(),
-            type_fact_context: TypeFactContext::default(),
-            is_type_patterns: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            method_call_consumes_receiver: HashSet::default(),
-            method_call_discharges_receiver: HashSet::default(),
-            method_call_preserves_receiver_identity: HashSet::default(),
-            opaque_resource_candidates: OpaqueResourceCandidateGraph::default(),
-            lowering_facts: HashMap::new(),
-            actor_handler_state_guards: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
-            width_cast_lowerings: HashMap::new(),
-            try_width_cast_lowerings: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            indexed_place_operations: HashMap::new(),
-            errors: Vec::new(),
-            warnings: Vec::new(),
-            user_clone_record_seeds: Vec::new(),
-            type_defs: HashMap::new(),
-            resolved_type_aliases: HashMap::new(),
-            internal_builtin_enum_names: HashSet::new(),
-            defs: std::sync::Arc::default(),
-            resolutions: HashMap::new(),
-            contexts: super::scope::SyntaxContexts::new(),
-            entry_exit_plan: None,
-            test_entry_plans: Vec::new(),
-            extern_contracts: crate::extern_table::ExternTable::new(),
-            dispatch: super::dispatch_table::DispatchTable::default(),
-            fn_sigs: HashMap::new(),
-            fn_sig_keys: HashMap::new(),
-            builtin_fn_sigs: HashMap::new(),
-            suspension_effects: super::effects::SuspensionEffects::default(),
-            direct_call_targets: HashMap::new(),
-            imported_impl_body_facts: HashMap::new(),
-            indirect_call_candidates: HashMap::new(),
-            callable_argument_flows: HashMap::new(),
-            generic_trait_call_arguments: HashMap::new(),
-            callable_formals: HashMap::new(),
-            aggregate_field_candidates: HashMap::new(),
-            callable_return_candidates: HashMap::new(),
-            trait_method_ids: HashMap::new(),
-            trait_bindings: HashMap::new(),
-            trait_defaults: HashMap::new(),
-            trait_method_ids_by_binding: HashMap::new(),
-            impl_method_declaration_ids: HashMap::new(),
-            consuming_inherent_methods: HashSet::new(),
-            root_value_bindings: HashSet::new(),
-            handle_bearing_structs: HashSet::default(),
-            cycle_capable_actors: HashSet::default(),
-            user_modules: HashSet::default(),
-            call_type_args: HashMap::new(),
-            vec_generic_element_abi: HashMap::new(),
-            record_init_type_args: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_max_heap: HashMap::new(),
-            supervisor_child_slots: HashMap::new(),
-            pool_accessor_sites: HashMap::new(),
-            actor_method_dispatch: HashMap::new(),
-            actor_delivery_calls: HashMap::new(),
-            actor_coalesce_keys: HashMap::new(),
-            machine_method_dispatch: HashMap::new(),
-            tail_ok_coercions: HashSet::new(),
-            result_return_coercions: HashMap::new(),
-            dyn_trait_coercions: HashMap::new(),
-            dyn_trait_method_calls: HashMap::new(),
-            closure_capture_facts: HashMap::new(),
-            select_sources: HashMap::new(),
-            closure_escape_facts: HashMap::new(),
-            actor_protocol_descriptors: HashMap::new(),
-            lambda_actor_declarations: HashMap::new(),
-            intrinsic_declarations: HashMap::new(),
-            pattern_resolutions: HashMap::new(),
-            pattern_plans: HashMap::new(),
-            lang_items: crate::LangItemRegistry::new(),
-            resolved_calls: HashMap::new(),
-            import_type_name_aliases: HashMap::new(),
-            module_import_bindings: HashMap::new(),
-            published_bare_const_owners: HashMap::new(),
-            import_fn_name_aliases: HashMap::new(),
-        }
-    }
-}
-
 /// Classification of a binding's right-hand-side allocation shape.
 ///
 /// Drives the `HEW-PERF-001` diagnostic. Variants cover the genuine heap
@@ -2839,7 +2728,7 @@ impl TypeAliasDef {
         let substitutions = self
             .type_params
             .iter()
-            .cloned()
+            .copied()
             .zip(args.iter().cloned())
             .collect();
         Some(self.target.substitute_type_params_parallel(&substitutions))

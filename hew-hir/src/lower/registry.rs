@@ -336,7 +336,7 @@ impl LowerCtx {
             entry
                 .type_params
                 .reserve(impl_type_params.len() + method_type_params.len());
-            entry.type_params.extend(impl_type_params.iter().cloned());
+            entry.type_params.extend(impl_type_params.iter().copied());
             entry.type_params.extend(method_type_params);
         }
     }

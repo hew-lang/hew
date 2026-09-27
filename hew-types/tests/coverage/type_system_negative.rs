@@ -68,11 +68,7 @@ fn item_declares_name(item: &Item, name: &str) -> bool {
     }
 }
 
-fn generic_param(name: &str) -> Ty {
-    Ty::param(name)
-}
-
-fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_type: &Ty) {
+fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_parameter: &str) {
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
@@ -87,8 +83,14 @@ fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_return_typ
             sig_name, output.fn_sigs
         )
     });
+    let parameter = sig
+        .type_params
+        .iter()
+        .find(|parameter| parameter.spelling.as_str() == expected_parameter)
+        .expect("declared generic parameter");
     assert_eq!(
-        &sig.return_type, expected_return_type,
+        sig.return_type,
+        Ty::param(*parameter),
         "Unexpected return type for {sig_name}: {sig:?}"
     );
 }
@@ -1497,7 +1499,7 @@ fn inference_hole_generic_free_function_return_signature_is_resolved() {
         fn main() {}
     ",
         "f",
-        &generic_param("T"),
+        "T",
     );
 }
 
@@ -1517,7 +1519,7 @@ impl<T> Box<T> {
 fn main() {}
 ",
         "Box::get",
-        &generic_param("T"),
+        "T",
     );
 }
 
@@ -1531,7 +1533,7 @@ fn inference_hole_generic_actor_receive_return_signature_is_resolved() {
         fn main() {}
     ",
         "Foo::bar",
-        &generic_param("T"),
+        "T",
     );
 }
 
@@ -1545,7 +1547,7 @@ fn inference_hole_generic_actor_method_return_signature_is_resolved() {
         fn main() {}
     ",
         "Foo::bar",
-        &generic_param("T"),
+        "T",
     );
 }
 

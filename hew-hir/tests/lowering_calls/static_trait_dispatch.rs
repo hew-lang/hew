@@ -385,7 +385,11 @@ impl Render for Box<string> {
     .expect("right bool dispatch must fall back to its generic impl");
     assert_eq!(right_selected.method_symbol, right_generic.1.method_symbol);
     assert_eq!(
-        right_selected.impl_type_params,
+        right_selected
+            .impl_type_params
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["T".to_string()],
         "right bool dispatch must select the generic impl"
     );
@@ -916,7 +920,9 @@ fn example() -> string {
         if let hew_hir::node::HirItem::Function(func) = item {
             if func.name == "Wrapper::show" {
                 assert!(
-                    func.type_params.contains(&"U".to_string()),
+                    func.type_params
+                        .iter()
+                        .any(|parameter| parameter.spelling.as_str() == "U"),
                     "expected impl-level type param `U` in Wrapper::show.type_params, \
                      got {:?}",
                     func.type_params

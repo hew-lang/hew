@@ -1316,6 +1316,31 @@ impl Checker {
         })
     }
 
+    /// Finish a source signature in the declaration's lexical module, where
+    /// import aliases in its annotations were introduced.
+    pub(super) fn resolve_source_fn_sig(
+        &mut self,
+        declaration: crate::DefId,
+        sig: &FnSig,
+    ) -> FnSig {
+        let saved_module = self.current_module.take();
+        let saved_index = self.current_module_idx;
+        let file = self.defs.module(declaration);
+        self.current_module = file
+            .map(|file| self.scopes.namespace_of(file))
+            .filter(|module| Some(*module) != self.defs.root_module())
+            .map(|module| self.defs.module_path(module).to_string());
+        self.current_module_idx = file
+            .and_then(|file| self.defs.module_source(file))
+            .and_then(|source| self.source_file_span_indices.get(source))
+            .copied()
+            .unwrap_or_default();
+        let resolved = self.resolve_fn_sig(sig);
+        self.current_module = saved_module;
+        self.current_module_idx = saved_index;
+        resolved
+    }
+
     pub(super) fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {
         FnSig {
             params: sig

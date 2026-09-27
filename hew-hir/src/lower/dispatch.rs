@@ -341,7 +341,7 @@ impl LowerCtx {
                 // verified it. Defer the concrete `Display::fmt` selection to
                 // monomorphisation (#1565); the concrete type is never
                 // re-derived here.
-                let type_param_name = name.clone();
+                let type_param_name = *name;
                 self.build_display_static_dispatch(value, display_target, type_param_name, span)
             }
             _ => {
@@ -501,7 +501,7 @@ impl LowerCtx {
         }
         if type_args
             .iter()
-            .any(|ty| self.contains_abstract_type_param(ty))
+            .any(super::substitution::contains_abstract_symbol)
         {
             return;
         }

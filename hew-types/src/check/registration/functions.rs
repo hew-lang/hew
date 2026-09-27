@@ -2394,10 +2394,16 @@ impl Checker {
             crate::DeclarationKind::ImplMethod,
             0,
         );
-        if let Ok(declaration) = self
-            .defs
-            .declare(occurrence, method.name.name, None, path.clone())
-        {
+        // Rechecking an admitted source body keeps its declaration even when
+        // the body is presented through a different lexical import surface.
+        let declaration = self.defs.declaration(occurrence).map_or_else(
+            || {
+                self.defs
+                    .declare(occurrence, method.name.name, None, path.clone())
+            },
+            Ok,
+        );
+        if let Ok(declaration) = declaration {
             if let Some(module) = self.current_declaration_module() {
                 self.scopes.declare_type_parameters(
                     module,

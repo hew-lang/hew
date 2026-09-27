@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-stopped-self-role-cycle"
+intent = "A child waiting for its own stored role detects the exact actor wait cycle and fails instead of parking forever."
+source = "cases/actor-stopped-self-role-cycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "entered\n"
+stderr = "hew: failure: UserPanic (212): local actor wait cycle at actor termination wait: 1 -> 1\nhew: actor crash in Worker.wait_on (actor 1): UserPanic\n"
+exit = 1

@@ -140,6 +140,12 @@ const SUPERVISOR_PIN_MASK: usize = !SUPERVISOR_CLOSING_BIT;
 /// that may dereference the allocation. Reclamation starts only after the
 /// direct route is retired and this count drains to zero.
 #[cfg(not(target_arch = "wasm32"))]
+type RoleWaitTargets = (
+    Vec<Option<crate::actor_native::NativeWaitTarget>>,
+    Vec<Option<crate::actor_native::NativeWaitTarget>>,
+);
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct SupervisorControl {
     supervisor_addr: usize,
     direct_id: HewLocalPidId,
@@ -150,6 +156,7 @@ pub(crate) struct SupervisorControl {
     /// terminate can escalate an in-progress graceful supervisor stop.
     terminate_requested: AtomicBool,
     completion: Arc<crate::actor_native::NativeActorCompletion>,
+    role_wait_targets: Mutex<Option<RoleWaitTargets>>,
     parent_stop_notification: Mutex<Option<(HewLocalPidId, u32)>>,
     drain_mutex: Mutex<()>,
     drained: Condvar,
@@ -170,6 +177,7 @@ impl SupervisorControl {
             teardown_claimed: AtomicBool::new(false),
             terminate_requested: AtomicBool::new(false),
             completion: Arc::default(),
+            role_wait_targets: Mutex::new(None),
             parent_stop_notification: Mutex::new(None),
             drain_mutex: Mutex::new(()),
             drained: Condvar::new(),
@@ -201,6 +209,36 @@ impl SupervisorControl {
             .parent_stop_notification
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some((parent, slot));
+    }
+
+    pub(crate) fn retain_role_wait_targets(
+        &self,
+        targets: (
+            Vec<Option<crate::actor_native::NativeWaitTarget>>,
+            Vec<Option<crate::actor_native::NativeWaitTarget>>,
+        ),
+    ) {
+        let mut snapshot = self
+            .role_wait_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if snapshot.is_none() {
+            *snapshot = Some(targets);
+        }
+    }
+
+    pub(crate) fn role_wait_target(
+        &self,
+        slot: u32,
+        supervisor: bool,
+    ) -> Option<crate::actor_native::NativeWaitTarget> {
+        let snapshot = self
+            .role_wait_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (actors, nested) = snapshot.as_ref()?;
+        let roles = if supervisor { nested } else { actors };
+        roles.get(slot as usize)?.clone()
     }
 
     pub(crate) fn supervisor(&self) -> *mut crate::supervisor::HewSupervisor {
@@ -1192,6 +1230,56 @@ pub(crate) fn current_supervisor_completion(
         let control = state.controls.get(&token)?;
         (control.runtime_id() == runtime.runtime_id()).then(|| Arc::clone(&control.completion))
     })
+}
+
+/// Resolve an exact child completion retained before its owner route closed.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_supervisor_role_wait_target(
+    owner: HewLocalPidId,
+    slot: u32,
+    supervisor: bool,
+) -> Option<crate::actor_native::NativeWaitTarget> {
+    let owner = current_supervisor_role_wait_owner(owner)?;
+    let runtime = crate::runtime::rt_current_opt()?;
+    let control = runtime.local_handles.state.access(|state| {
+        let control = state.controls.get(&owner)?;
+        (control.runtime_id() == runtime.runtime_id()).then(|| Arc::clone(control))
+    })?;
+    control.role_wait_target(slot, supervisor)
+}
+
+/// Follow a retained nested role path after its root's direct route closes.
+/// Each hop is the exact supervisor incarnation captured at owner shutdown.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_supervisor_role_wait_owner(owner: HewLocalPidId) -> Option<HewLocalPidId> {
+    let runtime = crate::runtime::rt_current_opt()?;
+    let (root, path) = runtime.local_handles.state.access(|state| {
+        let mut current = owner;
+        let mut path = Vec::new();
+        while let Some(role) = state.supervisor_roles.get(&current) {
+            path.push(role.slot);
+            current = role.owner;
+        }
+        (current, path)
+    });
+    let mut token = root;
+    for slot in path.into_iter().rev() {
+        let control = runtime
+            .local_handles
+            .state
+            .access(|state| state.controls.get(&token).cloned())?;
+        if control.runtime_id() != runtime.runtime_id() {
+            return None;
+        }
+        token = control
+            .role_wait_target(slot, true)
+            .and_then(|target| target.supervisor_token)
+            .or_else(|| {
+                let pin = pin_current_supervisor(token)?;
+                crate::supervisor::nested_child_token(pin.supervisor(), slot)
+            })?;
+    }
+    Some(token)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

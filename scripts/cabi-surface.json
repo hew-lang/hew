@@ -1470,6 +1470,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_actor_wait_edge_new_for_wait( *const HewCoroState, *const HewNativeActorWait, i32, ) -> *const HewActorWaitEdge",
+        "wasm32-wasip1": "fn hew_actor_wait_edge_new_for_wait( *const HewCoroState, *const HewNativeActorWait, i32, ) -> *const HewActorWaitEdge"
+      },
+      "symbol": "hew_actor_wait_edge_new_for_wait"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_actor_wait_edge_pending( *const HewActorWaitEdge) -> i32",
         "wasm32-wasip1": "fn hew_actor_wait_edge_pending( *const HewActorWaitEdge) -> i32"
       },

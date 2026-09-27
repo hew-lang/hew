@@ -825,11 +825,13 @@ pub(crate) fn stop_local_supervisor(
         return 1;
     };
     let sup = pin.supervisor();
+    let control = pin.control();
+    // SAFETY: this operation's pin keeps the owner and its roster live.
+    control.retain_role_wait_targets(unsafe { snapshot_role_wait_targets(sup) });
     // Publish shutdown and close the direct route while the allocation is
     // still protected by this operation's pin. Dropping the pin then permits
     // the raw destructor path to drain without self-deadlock.
     request_supervisor_shutdown(sup);
-    let control = pin.control();
     let won_close = crate::lifetime::local_handles::close_current_supervisor(&control);
     if won_close {
         run_supervisor_close_hook_for_test();

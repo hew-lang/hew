@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-stopped-nested-role-after-owner-stop"
+intent = "A nested child role follows retained owner identities to observe its exact cleanup after the root closes."
+source = "cases/supervisor-stopped-nested-role-after-owner-stop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "nested hook finished\nnested role observed\nroot observed\n"
+exit = 0

@@ -1,7 +1,5 @@
-// stopped waits for each child's stop hooks, including one that
-// suspends, within its bounded quiescence window. A hook that outlasts the
-// window leaves the supervisor to runtime cleanup, which reclaims it once the
-// hook finishes.
+// stopped waits for stop hooks that finish before their child's deadline.
+// A hook that runs past its deadline is terminated before stopped returns.
 actor Worker {
     var name: string;
     #[on(start)]
@@ -11,10 +9,10 @@ actor Worker {
     #[on(stop)]
     fn stopping() {
         if name == "mid" {
-            sleep(3000ms);
+            sleep(30ms);
         }
         if name == "slow" {
-            sleep(6000ms);
+            sleep(200ms);
         }
         println("stop " + name);
     }
@@ -24,13 +22,13 @@ supervisor Waits {
     strategy: one_for_one;
     intensity: 10 within 60s;
     child quick: Worker(name: "quick");
-    child mid: Worker(name: "mid");
+    child mid: Worker(name: "mid") stop: 100ms;
 }
 
 supervisor Outlasted {
     strategy: one_for_one;
     intensity: 10 within 60s;
-    child slow: Worker(name: "slow");
+    child slow: Worker(name: "slow") stop: 50ms;
 }
 
 fn main() {
@@ -42,7 +40,5 @@ fn main() {
     stop(outlasted);
     stopped(outlasted);
     println("stopped outlasted");
-    // Exit only once the outlasting hook has finished, so the exit drain has
-    // no hook left to wait on and cleanup meets the handed-back supervisor.
-    sleep(3000ms);
+    sleep(300ms);
 }

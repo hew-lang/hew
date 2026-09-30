@@ -4,25 +4,25 @@
 
 actor Counter {
     let name: string;
-    var count: Int;
+    var count: i64;
 
     receive fn tick() {
         count += 1;
     }
 
-    receive fn get_count() -> Int {
+    receive fn get_count() -> i64 {
         count
     }
 }
 
 actor Relay {
-    let id: Int;
+    let id: i64;
     let target: Counter;
 
-    receive fn forward(n: Int) {
+    receive fn forward(n: i64) {
         var i = 0;
         while i < n {
-            target.tick();
+            let _ = target.tick();
             i += 1;
         }
     }
@@ -32,12 +32,12 @@ actor Monitor {
     let c1: Counter;
     let c2: Counter;
     let c3: Counter;
-    var checks: Int;
+    var checks: i64;
 
     receive fn check() {
-        let a = await c1.get_count();
-        let b = await c2.get_count();
-        let c = await c3.get_count();
+        let a = c1.get_count().unwrap_or(0);
+        let b = c2.get_count().unwrap_or(0);
+        let c = c3.get_count().unwrap_or(0);
         checks += 1;
         println(f"[check #{checks}] counters: {a}, {b}, {c}");
     }
@@ -58,18 +58,18 @@ fn main() {
     // Run 60 rounds with varied message bursts (~30 seconds total)
     var round = 0;
     while round < 60 {
-        r1.forward(5);
-        r2.forward(3);
-        r3.forward(7);
+        let _ = r1.forward(5);
+        let _ = r2.forward(3);
+        let _ = r3.forward(7);
         sleep(200ms);
 
         // Check counts periodically
-        monitor.check();
+        let _ = monitor.check();
         sleep(300ms);
         round += 1;
     }
-    let total1 = await c1.get_count();
-    let total2 = await c2.get_count();
-    let total3 = await c3.get_count();
+    let total1 = c1.get_count().unwrap_or(0);
+    let total2 = c2.get_count().unwrap_or(0);
+    let total3 = c3.get_count().unwrap_or(0);
     println(f"Final: alpha={total1}, beta={total2}, gamma={total3}");
 }

@@ -1,0 +1,13 @@
+[[case]]
+id = "resource_send2"
+intent = "The fixture is refused, and the refusal names these diagnostics."
+source = "../vertical-slice/reject/resource_send2.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 22
+column = 22
+message = "use of moved value `c`"

@@ -564,22 +564,13 @@ impl Checker {
                             let resolved_ret = self.subst.resolve(ret);
                             if let Some((_, ret_err)) = resolved_ret.as_result() {
                                 let ret_err = ret_err.clone();
-                                let err_ty = self.subst.resolve(&err_ty);
-                                if !matches!(ret_err, Ty::Error) && !matches!(err_ty, Ty::Error) {
-                                    let snapshot = self.subst.snapshot();
-                                    if !self.try_unify_with_owner_identity(&ret_err, &err_ty) {
-                                        self.subst.restore(snapshot);
-                                        self.report_error(
-                                            TypeErrorKind::InvalidOperation,
-                                            span,
-                                            format!(
-                                                "`?` error type mismatch: expected `{}`, found `{}`",
-                                                ret_err.user_facing(),
-                                                err_ty.user_facing()
-                                            ),
-                                        );
-                                        return Ty::Error;
-                                    }
+                                if !self.select_error_conversion(
+                                    crate::check::coerce::FailureEdge::Try,
+                                    &err_ty,
+                                    &ret_err,
+                                    span,
+                                ) {
+                                    return Ty::Error;
                                 }
                             }
                         }
@@ -628,7 +619,24 @@ impl Checker {
                         .map(|(_, error)| error.clone())
                 });
                 if let Some(error) = error.filter(|_| self.current_fails) {
-                    self.check_against(&value.0, &value.1, &error);
+                    // A leading-dot variant names a member of the function's
+                    // own error type; everything else crosses the edge by the
+                    // failure-edge rule.
+                    if matches!(value.0, Expr::ContextVariant(_)) {
+                        self.check_against(&value.0, &value.1, &error);
+                        self.error_conversions.insert(
+                            SpanKey::in_module(span, self.current_module_idx),
+                            super::ErrorConversion::Same,
+                        );
+                    } else {
+                        let value_ty = self.synthesize(&value.0, &value.1);
+                        self.select_error_conversion(
+                            crate::check::coerce::FailureEdge::ReturnError,
+                            &value_ty,
+                            &error,
+                            span,
+                        );
+                    }
                     self.result_return_coercions.insert(
                         SpanKey::in_module(span, self.current_module_idx),
                         super::ResultReturnKind::Error,

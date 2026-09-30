@@ -1077,6 +1077,9 @@ struct LowerCtx {
     /// entry, the result is wrapped in `HirExprKind::CoerceToDynTrait`.
     /// Carries the checker's authoritative method-table resolution.
     dyn_trait_coercions: HashMap<SpanKey, hew_types::DynCoercion>,
+    /// Checker-selected conversion at each failure edge (`?`, `return
+    /// error`), keyed by the edge's span.
+    error_conversions: HashMap<SpanKey, hew_types::ErrorConversion>,
     /// Per-call-site `dyn Trait` method-dispatch side-table. Keyed by the
     /// method-call expression span. `lower_method_call` consults this
     /// before the `method_call_rewrites` branch so that

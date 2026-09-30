@@ -62,7 +62,7 @@ pub use check::{
     CallableCandidate, CallableFieldFlow, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
     DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
-    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion, ExecutionContextReader,
     ExternMethodSignature, FnSig, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     IndirectCallCandidates, LintId, LintLevel, LintLevels, LintSources, LookupError,
     MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, MethodTarget,

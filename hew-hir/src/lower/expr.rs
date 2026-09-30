@@ -1052,6 +1052,15 @@ impl LowerCtx {
                     == Some(&hew_types::ResultReturnKind::Error)
                 {
                     let value = self.lower_expr(value, IntentKind::Consume);
+                    let target = self
+                        .current_return_type
+                        .as_ref()
+                        .and_then(Self::resolved_result_parts)
+                        .map(|(_, error)| error.clone());
+                    let value = match target {
+                        Some(target) => self.apply_error_conversion(value, &target, &span),
+                        None => value,
+                    };
                     let value = self.apply_result_return_coercion(value, &span);
                     (
                         HirExprKind::Return {
@@ -1729,98 +1738,107 @@ impl LowerCtx {
         // carries; the inner expression keeps its concrete type.
         let coercion_key = self.mk_key(&span);
         if let Some(coercion) = self.dyn_trait_coercions.get(&coercion_key).cloned() {
-            let declared_traits: Vec<_> = coercion
-                .trait_bounds
-                .iter()
-                .map(|bound| bound.trait_id)
-                .collect();
-            if declared_traits.iter().any(Option::is_none)
-                || declared_traits != coercion.vtable_key.trait_ids
-            {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "dyn-trait coercion".to_string(),
-                        reason: "checked trait bounds disagree with their vtable identities"
-                            .to_string(),
-                    },
-                    span.clone(),
-                    "trait-object identity did not survive the checker boundary",
-                ));
-                return self.unsupported_expr(span, "dyn-trait identity mismatch");
-            }
-            let dyn_ty = match ResolvedTy::from_ty(&Ty::TraitObject {
-                traits: coercion.trait_bounds.clone(),
-            }) {
-                Ok(ty) => ty,
-                Err(error) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "dyn-trait coercion".to_string(),
-                            reason: error.to_string(),
-                        },
-                        span.clone(),
-                        "checked trait-object type failed boundary conversion",
-                    ));
-                    return self.unsupported_expr(span, "dyn-trait boundary type");
-                }
-            };
-            // The checker side table is keyed by source span and may preserve
-            // the original concrete provenance when an already-erased value is
-            // passed to the same `dyn Trait` type. Re-wrapping that value would
-            // make MIR box the two-word fat pointer as though it were the
-            // concrete payload, while the vtable still describes the original
-            // concrete allocation. Identical dyn-to-dyn adaptation is a no-op;
-            // a genuine trait-object upcast needs an explicit vtable-adjusting
-            // ABI and remains fail-closed.
-            if matches!(inner.ty, ResolvedTy::TraitObject { .. }) {
-                if inner.ty == dyn_ty {
-                    return inner;
-                }
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "dyn-trait coercion".to_string(),
-                        reason: format!(
-                            "unsupported dyn-to-dyn adaptation from `{:?}` to `{:?}`",
-                            inner.ty, dyn_ty
-                        ),
-                    },
-                    span.clone(),
-                    "dyn-to-dyn trait adaptation requires an explicit vtable upcast",
-                ));
-                return self.unsupported_expr(span, "dyn-to-dyn trait adaptation");
-            }
-            let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
-                Ok(r) => self.restore_type_declaration_facts(r),
-                Err(err) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "dyn-trait coercion".to_string(),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "concrete type from dyn_trait_coercions failed boundary conversion",
-                    ));
-                    return inner;
-                }
-            };
-
-            let wrapped = HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                ty: dyn_ty,
-                intent,
-                kind: HirExprKind::CoerceToDynTrait {
-                    value: Box::new(inner),
-                    trait_name: coercion.trait_name,
-                    concrete_type: concrete_resolved,
-                    method_table: coercion.method_table,
-                    vtable_entries: coercion.vtable_entries,
-                },
-                span,
-            };
-
-            return wrapped;
+            return self.wrap_dyn_coercion(inner, coercion, intent, span);
         }
         inner
+    }
+
+    /// Wrap `inner` in the checker-selected `T -> dyn Trait` erasure.
+    pub(super) fn wrap_dyn_coercion(
+        &mut self,
+        inner: HirExpr,
+        coercion: hew_types::DynCoercion,
+        intent: IntentKind,
+        span: Span,
+    ) -> HirExpr {
+        let declared_traits: Vec<_> = coercion
+            .trait_bounds
+            .iter()
+            .map(|bound| bound.trait_id)
+            .collect();
+        if declared_traits.iter().any(Option::is_none)
+            || declared_traits != coercion.vtable_key.trait_ids
+        {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "dyn-trait coercion".to_string(),
+                    reason: "checked trait bounds disagree with their vtable identities"
+                        .to_string(),
+                },
+                span.clone(),
+                "trait-object identity did not survive the checker boundary",
+            ));
+            return self.unsupported_expr(span, "dyn-trait identity mismatch");
+        }
+        let dyn_ty = match ResolvedTy::from_ty(&Ty::TraitObject {
+            traits: coercion.trait_bounds.clone(),
+        }) {
+            Ok(ty) => ty,
+            Err(error) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "dyn-trait coercion".to_string(),
+                        reason: error.to_string(),
+                    },
+                    span.clone(),
+                    "checked trait-object type failed boundary conversion",
+                ));
+                return self.unsupported_expr(span, "dyn-trait boundary type");
+            }
+        };
+        // The checker side table is keyed by source span and may preserve
+        // the original concrete provenance when an already-erased value is
+        // passed to the same `dyn Trait` type. Re-wrapping that value would
+        // make MIR box the two-word fat pointer as though it were the
+        // concrete payload, while the vtable still describes the original
+        // concrete allocation. Identical dyn-to-dyn adaptation is a no-op;
+        // a genuine trait-object upcast needs an explicit vtable-adjusting
+        // ABI and remains fail-closed.
+        if matches!(inner.ty, ResolvedTy::TraitObject { .. }) {
+            if inner.ty == dyn_ty {
+                return inner;
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "dyn-trait coercion".to_string(),
+                    reason: format!(
+                        "unsupported dyn-to-dyn adaptation from `{:?}` to `{:?}`",
+                        inner.ty, dyn_ty
+                    ),
+                },
+                span.clone(),
+                "dyn-to-dyn trait adaptation requires an explicit vtable upcast",
+            ));
+            return self.unsupported_expr(span, "dyn-to-dyn trait adaptation");
+        }
+        let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
+            Ok(r) => self.restore_type_declaration_facts(r),
+            Err(err) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "dyn-trait coercion".to_string(),
+                        reason: err.to_string(),
+                    },
+                    span.clone(),
+                    "concrete type from dyn_trait_coercions failed boundary conversion",
+                ));
+                return inner;
+            }
+        };
+
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: dyn_ty,
+            intent,
+            kind: HirExprKind::CoerceToDynTrait {
+                value: Box::new(inner),
+                trait_name: coercion.trait_name,
+                concrete_type: concrete_resolved,
+                method_table: coercion.method_table,
+                vtable_entries: coercion.vtable_entries,
+            },
+            span,
+        }
     }
 }

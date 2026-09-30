@@ -69,6 +69,7 @@ impl LowerCtx {
             fork_call_inputs: None,
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
+            error_conversions: tc_output.error_conversions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
@@ -284,6 +285,10 @@ impl LowerCtx {
             std::mem::take(&mut self.method_call_receiver_kinds),
             std::mem::take(&mut self.dyn_trait_coercions),
             std::mem::take(&mut self.dyn_trait_method_calls),
+            std::mem::replace(
+                &mut self.error_conversions,
+                tc_output.error_conversions.clone(),
+            ),
             std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
             std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
             std::mem::replace(
@@ -332,6 +337,7 @@ impl LowerCtx {
             self.method_call_receiver_kinds,
             self.dyn_trait_coercions,
             self.dyn_trait_method_calls,
+            self.error_conversions,
             self.resolved_calls,
             self.expr_types,
             self.resolved_expr_types,

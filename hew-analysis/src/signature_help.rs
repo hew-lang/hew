@@ -370,6 +370,7 @@ mod tests {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            error_conversions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),
             closure_escape_facts: std::collections::HashMap::new(),

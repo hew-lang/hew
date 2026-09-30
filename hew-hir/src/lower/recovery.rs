@@ -16,6 +16,91 @@ impl LowerCtx {
         )
     }
 
+    /// Carry an error payload across the failure edge at `edge_span` by the
+    /// checker-selected conversion into `target`, the enclosing error type.
+    pub(super) fn apply_error_conversion(
+        &mut self,
+        value: HirExpr,
+        target: &ResolvedTy,
+        edge_span: &Span,
+    ) -> HirExpr {
+        let conversion = self.error_conversions.get(&self.mk_key(edge_span)).cloned();
+        match conversion {
+            Some(hew_types::ErrorConversion::Same) => value,
+            Some(hew_types::ErrorConversion::Erase(coercion)) => {
+                self.wrap_dyn_coercion(value, coercion, IntentKind::Consume, edge_span.clone())
+            }
+            Some(hew_types::ErrorConversion::From { method }) => {
+                self.lower_from_conversion(method, value, target, edge_span)
+            }
+            None => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "failure edge".to_string(),
+                        reason: "no checked error conversion at this edge".to_string(),
+                    },
+                    edge_span.clone(),
+                    "the checker must select the conversion at every failure edge",
+                ));
+                value
+            }
+        }
+    }
+
+    /// A static call to the selected `From.from` impl method.
+    fn lower_from_conversion(
+        &mut self,
+        method: hew_types::DefId,
+        value: HirExpr,
+        target: &ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
+        let entry = self
+            .registered_impl_method_symbol(method)
+            .and_then(|symbol| {
+                let entry = self.fn_registry.get(&symbol)?;
+                Some((symbol, entry.id, entry.param_tys.clone()))
+            });
+        let Some((symbol, id, param_tys)) = entry else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CallableUnsupportedInMir {
+                    name: self.defs.path(method).to_string(),
+                },
+                span.clone(),
+                "the selected `From` conversion has no registered HIR body",
+            ));
+            return value;
+        };
+        let callee = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                params: param_tys,
+                ret: Box::new(target.clone()),
+            },
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: symbol,
+                resolved: ResolvedRef::Item(id),
+            },
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: target.clone(),
+            intent: IntentKind::Consume,
+            kind: HirExprKind::Call {
+                target: hew_types::CallTarget::ImplMethod(method),
+                callee: Box::new(callee),
+                args: vec![value],
+                evaluation_order: Vec::new(),
+            },
+            span: span.clone(),
+        }
+    }
+
     /// Wrap a function-tail expression in `Ok(value)` for the checker-marked
     /// tail Ok-coercion (`TypeCheckOutput::tail_ok_coercions`). `value` is the
     /// lowered tail, typed as the `Ok` payload; the result is the enclosing
@@ -333,6 +418,12 @@ impl LowerCtx {
 
         let ok_body = self.synthetic_binding_ref(ok_name, ok_binding, ok_ty.clone(), span);
         let err_payload = self.synthetic_binding_ref(err_name, err_binding, err_ty.clone(), span);
+        let Some((_, target_err_ty)) = Self::resolved_result_parts(&return_ty) else {
+            return self
+                .unsupported_postfix_try(span, "`?` in a body whose return type is not Result");
+        };
+        let target_err_ty = target_err_ty.clone();
+        let err_payload = self.apply_error_conversion(err_payload, &target_err_ty, span);
         let err_ctor = self.synthetic_variant_ctor(
             "Result",
             err_idx,

@@ -1762,6 +1762,9 @@ impl Checker {
                 .unwrap_or_default();
             let receiver = Ty::from_name(&type_identity)
                 .unwrap_or_else(|| self.named_ty_for_key(&type_identity, receiver_args));
+            if let Some(owner) = self.impl_method_owner(trait_bound) {
+                self.record_from_impl(owner, bound, &receiver, declaration_id);
+            }
             let impl_parameters = self.source_parameter_heads(
                 impl_type_params.map_or(&[], Vec::as_slice),
                 &method.fn_span,
@@ -2356,8 +2359,21 @@ impl Checker {
                 }
             },
         );
+        // A type may implement one generic trait at several arguments
+        // (`impl From<A> for E` beside `impl From<B> for E`); the trait
+        // arguments name which impl this method belongs to.
+        let trait_args = trait_bound
+            .and_then(|bound| bound.type_args.as_ref())
+            .filter(|args| !args.is_empty())
+            .map_or_else(String::new, |args| {
+                let rendered: Vec<String> = args
+                    .iter()
+                    .map(|arg| self.resolve_type_expr(arg).to_string())
+                    .collect();
+                format!("<{}>", rendered.join(", "))
+            });
         let path = format!(
-            "{receiver}::<impl {trait_identity} for {declared_receiver}>::{}",
+            "{receiver}::<impl {trait_identity}{trait_args} for {declared_receiver}>::{}",
             method.name
         );
         let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(

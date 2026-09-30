@@ -10,7 +10,8 @@ impl Display for A {
     }
 }
 
-impl Error for A {}
+impl Error for A {
+}
 
 enum B {
     FromA(A);
@@ -24,7 +25,8 @@ impl Display for B {
     }
 }
 
-impl Error for B {}
+impl Error for B {
+}
 
 impl From<A> for B {
     fn from(value: A) -> B {
@@ -44,7 +46,8 @@ impl Display for C {
     }
 }
 
-impl Error for C {}
+impl Error for C {
+}
 
 impl From<B> for C {
     fn from(value: B) -> C {

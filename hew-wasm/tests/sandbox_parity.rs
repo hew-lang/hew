@@ -71,7 +71,7 @@ const PARITY_CASES: &[ParityCase] = &[
     },
     ParityCase {
         // Failure edges: `?` and `return error` keep the same error, apply a
-        // declared `From` and erase into `dyn Error`, with `main`'s exit.
+        // declared `From` and erase into `dyn Error`.
         test_name: "error_edges",
         source_rel: "examples/sandbox-graduation/error_edges.hew",
     },
@@ -615,7 +615,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
         "error_edges" => Some(
-            "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\n",
+            "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nload failed: loading config: Parse: NotANumber: abc\n",
         ),
         _ => None,
     };

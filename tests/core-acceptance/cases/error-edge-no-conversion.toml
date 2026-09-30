@@ -8,6 +8,6 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "E_ERROR_NO_CONVERSION"
-line = 24
+line = 25
 column = 16
 message = "`?` cannot convert `std.fs.IoError` into `ConfigError`"

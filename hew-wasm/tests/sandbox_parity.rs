@@ -615,7 +615,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
         "error_edges" => Some(
-            "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nload failed: loading config: Parse: NotANumber: abc\n",
+            "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",
         ),
         _ => None,
     };

@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-### v0.6.0-rc4
+### v0.6.0-rc5
+
+This candidate is scoped to errors and data.
+
+## [0.6.0-rc4] - 2026-09-27
 
 This candidate updates declaration syntax, actor lifecycle operations and the
 native/sandbox testing workflow. See the [release notes](docs/releases/v0.6.0-rc4.md)

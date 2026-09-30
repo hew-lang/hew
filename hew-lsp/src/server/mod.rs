@@ -8040,7 +8040,7 @@ fn label(colour: Colour) -> string {
     /// test only checks symbols that appear in `expected_symbols`; Stage 2 pins
     /// every event and state name.
     ///
-    /// Note: non-exhaustive event coverage is intentional in this fixture.
+    /// Note: the fixture is a valid program; the pins below check symbols only.
     #[test]
     fn v05_machine_methods_document_symbols_include_machine_and_all_events() {
         let source = include_str!("../../tests/fixtures/v05_machine_methods.hew");

@@ -1817,9 +1817,9 @@ dependencies = [
 
 [[package]]
 name = "hew-codec"
-version = "0.6.0-rc4"
+version = "0.6.0-rc5"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "ciborium",
  "rmp-serde",
  "serde",

@@ -43,6 +43,14 @@ on:
         description: "Git tag to release (e.g. v0.1.0)"
         required: true
         type: string
+      dry_run:
+        description: >-
+          Build every platform, assemble and checksum the release archives and
+          fail on any missing one, but publish nothing: no GitHub Release, no
+          container image, no Homebrew dispatch, no VS Code extension.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read # default minimum; release and docker jobs override below
@@ -1423,6 +1431,7 @@ jobs:
           mv checksums.txt "hew-v${VERSION}-checksums.txt"
 
       - name: Create GitHub Release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -1457,7 +1466,7 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.event.inputs.dry_run != 'true' }}
     # Each leg now compiles natively on its own architecture instead of one
     # runner cross-building both under QEMU emulation, where the emulated
     # arm64 leg took 2h40m against the same 180-minute budget.
@@ -1588,7 +1597,7 @@ jobs:
     # Triggers every tag: Formula/hew.rb tracks the newest release including
     # release candidates, Formula/hew@stable.rb tracks final releases only —
     # update-formula.yml in homebrew-hew decides which formula(e) to touch.
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.event.inputs.dry_run != 'true' }}
     timeout-minutes: 5
 
     steps:
@@ -1709,7 +1718,7 @@ jobs:
     # until the canonical archive release has succeeded.
     needs: release
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.event.inputs.dry_run != 'true' }}
     timeout-minutes: 15
 
     # Map hew release targets to VS Code platform identifiers

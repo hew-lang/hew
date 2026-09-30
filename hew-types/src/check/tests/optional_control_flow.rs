@@ -6,8 +6,8 @@ fn fallible_returns_accept_exact_success_and_explicit_error() {
         "fn f() -> (i64, string) fails string { return (10, \"hello\"); }",
         "fn f() -> i64 fails string { return error \"missing\"; }",
         "fn f() -> i64 fails string { 7 }",
-        "fn f() -> () fails string { return; }",
-        "fn f() -> () fails string { }",
+        "fn f() fails string { return; }",
+        "fn f() fails string { }",
         "fn f(value: Result<i64, string>) -> Result<i64, string> fails bool { return value; }",
         "fn f(value: Result<i64, string>) -> Result<i64, string> fails bool { value }",
         "fn f(value: Result<i64, string>) -> i64 fails string { value? }",
@@ -79,7 +79,7 @@ fn fallible_method_bodies_share_function_return_rules() {
 
 #[test]
 fn fallible_default_unit_returns_retain_distinct_source_clause_identities() {
-    let source = "trait First { fn finish(self) -> () fails string {} } trait Second { fn finish(self) -> () fails string {} }";
+    let source = "trait First { fn finish(self) fails string {} } trait Second { fn finish(self) fails string {} }";
     let checked = check_source(source);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let parsed = hew_parser::parse(source);

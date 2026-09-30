@@ -762,6 +762,8 @@ pub enum ParseDiagnosticKind {
     LegacyTurbofish,
     /// A removed glob import was used instead of an explicit selection.
     ImportGlobRemoved,
+    /// `-> () fails E` spells out the unit a failing function omits.
+    UnitFailsArrow,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -807,6 +809,7 @@ impl ParseDiagnosticKind {
             Self::LegacyPathSeparator => "E_PATH_LEGACY_SEPARATOR",
             Self::LegacyTurbofish => "E_LEGACY_TURBOFISH",
             Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
+            Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",

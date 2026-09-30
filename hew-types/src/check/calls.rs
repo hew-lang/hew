@@ -1198,15 +1198,16 @@ impl Checker {
     /// is called from inside an actor receive function.
     ///
     /// Actor receive functions run synchronously on scheduler worker threads.
-    /// A blocking call (e.g. `recv`, `read`, `accept`) will stall that thread
+    /// A blocking call will stall that thread
     /// for the duration of the wait, preventing other actors from being
     /// scheduled and potentially causing deadlocks when all worker threads
     /// are occupied by blocked receive handlers.
     ///
     /// `op_desc` should be a short human-readable label such as
-    /// `"Receiver.recv"` or `"std.net.Connection.read"`. None of these ops has
-    /// a drop-in suspending spelling, so the remedy is to move the wait off
-    /// the receive function.
+    /// `"http.Server.accept"`. A plain function, forked task, or another actor
+    /// still runs on scheduler workers, so none of those is generic blocking
+    /// isolation. Prefer a runtime-backed suspending operation; otherwise the
+    /// native integration must deliver readiness or work as a message.
     pub(super) fn warn_if_blocking_in_receive_fn(&mut self, op_desc: &str, span: &Span) {
         if !self.in_receive_fn {
             return;
@@ -1226,8 +1227,9 @@ impl Checker {
                 self.current_module.clone(),
             )],
             suggestions: vec![
-                "send the blocking work to a dedicated actor or async task and \
-                 deliver the result as a message"
+                "use a runtime-backed suspending operation, or arrange for the \
+                 native integration to deliver readiness as a message; moving \
+                 the blocking call to a task or another actor does not isolate it"
                     .to_string(),
             ],
             source_module: self.current_module.clone(),
@@ -1240,11 +1242,11 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        if matches!(
-            (type_name, method),
-            ("http.Server" | crate::stdlib::STD_NET_LISTENER, "accept")
-                | (crate::stdlib::STD_NET_CONNECTION, "read")
-        ) {
+        // `std.net.Listener.accept` and the current connection receive path
+        // are canonical AsyncIo operations. They park on the reactor even
+        // when called from a receive handler, so warning for them would direct
+        // programmers away from the supported scheduler-safe spelling.
+        if matches!((type_name, method), ("http.Server", "accept")) {
             self.warn_if_blocking_in_receive_fn(&format!("{type_name}.{method}"), span);
         }
     }

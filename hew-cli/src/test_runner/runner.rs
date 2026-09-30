@@ -1951,12 +1951,12 @@ fn test_timeout() {
     }
 }
 
-fn read_then_write(account: Account, amount: i64) -> () fails ActorError {
+fn read_then_write(account: Account, amount: i64) fails ActorError {
     let current = account.balance()?;
     account.set(current + amount)?;
 }
 
-fn one_turn(account: Account, amount: i64) -> () fails ActorError {
+fn one_turn(account: Account, amount: i64) fails ActorError {
     account.deposit(amount)?;
 }
 

@@ -807,7 +807,6 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
             crate::lifetime::live_actors::get_actor_ptr_by_id((*actor).id),
             Some(actor)
         );
-        crate::actor::hew_actor_close(actor);
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(
             hew_node_send_location(node, &raw const target, test_dispatch(), 1, ptr::null(), 0,),

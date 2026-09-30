@@ -1,5 +1,13 @@
 //! CBOR wire-body codec.
 //!
+//! WHY: the generated wire walks drive this CBOR-specific cursor directly.
+//! WHEN obsolete: when codegen emits the format-neutral event walk over
+//! `hew-codec` (design-data-codegen §1.4).
+//! WHAT the real fix is: that walk drives `hew_codec::{Sink, Source}` through
+//! the `hew_ser_*` / `hew_de_*` shims, and this module is deleted. Its bytes
+//! match `hew-codec`'s CBOR (`wire_native` tests pin the equality) so the
+//! switch changes no wire body.
+//!
 //! This module is the runtime half of the wire-type body codec. The compiler
 //! emits `__hew_cbor_serialize_<key>` / `__hew_cbor_deserialize_<key>` thunks
 //! (see `hew-codegen-rs/src/llvm.rs`) that drive these `hew_cbor_*` primitives
@@ -126,8 +134,8 @@ impl CborSerBuf {
     }
 }
 
-/// RFC 8949 deterministic ordering compares the length of each encoded key,
-/// then its bytewise lexical representation.
+/// RFC 8949 §4.2.3 length-first ordering compares the length of each encoded
+/// key, then its bytewise lexical representation.
 fn canonical_bytes(value: &Value) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(value, &mut bytes).ok()?;
@@ -171,11 +179,11 @@ pub unsafe extern "C" fn hew_cbor_ser_begin_map(buf: *mut c_void) {
 /// Close the current CBOR map and attach it to the enclosing context, emitting
 /// its entries in canonical (ascending key) order.
 ///
-/// Map keys are wire field numbers — non-negative integers whose CBOR encodings
-/// sort bytewise in the same order as their numeric value — so an ascending
-/// numeric sort yields the RFC 8949 §4.2.1 canonical key order. Encode is
-/// canonical; the decoder stays liberal (a `BTreeMap` lookup is order-agnostic),
-/// so a non-canonical sender still round-trips.
+/// Entries sort by the length of each encoded key, then bytewise: the
+/// length-first rule of RFC 8949 §4.2.3, which `hew-codec` shares. For wire
+/// field numbers this is ascending numeric order. Encode is canonical; the
+/// decoder stays liberal (a `BTreeMap` lookup is order-agnostic), so a
+/// non-canonical sender still round-trips.
 ///
 /// # Safety
 /// `buf` must be a live handle from `hew_cbor_ser_new`.

@@ -702,8 +702,8 @@ fn local_pid_ask_with_channel_failure_preserves_caller_reference() {
     assert!(!actor.is_null());
     // SAFETY: actor is live until teardown below.
     let token = unsafe { (*actor).local_pid_id };
-    // SAFETY: actor is live; close makes subsequent asks fail closed.
-    unsafe { hew_actor_close(actor) };
+    // SAFETY: actor and its mailbox are live; a closed mailbox makes subsequent asks fail closed.
+    unsafe { mailbox::mailbox_close((*actor).mailbox.cast()) };
 
     let before = reply_channel::active_channel_count();
     let ch = reply_channel::hew_reply_channel_new();
@@ -1553,7 +1553,7 @@ fn idle_stop_retires_ask_enqueued_before_sender_wake_cas() {
         }
     }
 
-    unsafe fn run_case(reclaim_queued: bool, close_instead_of_stop: bool) {
+    unsafe fn run_case(reclaim_queued: bool) {
         static NEXT_ID: AtomicU64 = AtomicU64::new(28_310_000);
 
         let frame_baseline = crate::observe::coroutine_snapshot();
@@ -1596,11 +1596,7 @@ fn idle_stop_retires_ask_enqueued_before_sender_wake_cas() {
         if reclaim_queued {
             // Production edge: closes, wins Idle -> Stopped, then retires
             // the queued node before returning.
-            if close_instead_of_stop {
-                unsafe { hew_actor_close(actor) };
-            } else {
-                unsafe { hew_actor_stop(actor) };
-            }
+            unsafe { hew_actor_stop(actor) };
         } else {
             // Exact counterfactual: same close + terminal CAS + lifecycle
             // path, differing only by omission of the new reclaim call.
@@ -1710,9 +1706,8 @@ fn idle_stop_retires_ask_enqueued_before_sender_wake_cas() {
     let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
     // Counterfactual first, then the production edge.
     unsafe {
-        run_case(false, false);
-        run_case(true, false);
-        run_case(true, true);
+        run_case(false);
+        run_case(true);
     }
 }
 
@@ -2556,10 +2551,10 @@ fn abandoning_a_parked_activation_makes_it_reclaimable() {
 // These tests do NOT need a scheduler or a real actor allocation.
 
 #[test]
-fn null_actor_close_returns_without_crash() {
+fn null_actor_terminate_returns_without_crash() {
     let _guard = crate::runtime_test_guard();
     // SAFETY: null is the input we are testing the guard against.
-    unsafe { hew_actor_close(ptr::null_mut()) };
+    unsafe { hew_actor_terminate(ptr::null_mut()) };
 }
 
 #[test]
@@ -2714,7 +2709,6 @@ fn send_by_id_concurrent_no_deadlock() {
 
     // SAFETY: actor remains live until teardown below.
     unsafe {
-        hew_actor_close(actor);
         assert_eq!(hew_actor_free(actor), 0);
     }
 }
@@ -2743,7 +2737,6 @@ fn send_by_id_after_free_returns_genuine_failure_not_mailbox_full() {
 
     // SAFETY: actor is quiescent after close and fully owned by this test.
     unsafe {
-        hew_actor_close(actor);
         assert_eq!(hew_actor_free(actor), 0);
     }
 
@@ -3324,7 +3317,7 @@ fn free_refuses_actor_woken_by_reactor_during_detach() {
     // The guard holds SCHED_TEST_MUTEX, serializing against scheduler tests.
     let sched = scheduler::NoWorkerSchedulerForTest::install();
     // Also hold the tracing lock (consistent lock order: SCHED then tracing):
-    // this test's `hew_actor_close`/free emits SPAN_STOP lifecycle events into
+    // this test's free emits SPAN_STOP lifecycle events into
     // the process-global trace ring whenever tracing is enabled, which would
     // otherwise race a concurrent tracing/span test's ring assertions.
     let _tracing = crate::tracing::tracing_test_guard();
@@ -3402,7 +3395,6 @@ fn free_refuses_actor_woken_by_reactor_during_detach() {
     );
     // SAFETY: actor is valid and back to Idle.
     unsafe {
-        hew_actor_close(actor);
         assert_eq!(hew_actor_free(actor), 0);
     }
     drop(sched);
@@ -4493,7 +4485,6 @@ fn ask_by_id_concurrent_with_sends_completes_without_leaking_channels() {
 
     // SAFETY: actor remains live until teardown below.
     unsafe {
-        hew_actor_close(actor);
         assert_eq!(hew_actor_free(actor), 0);
     }
 
@@ -4526,9 +4517,7 @@ fn with_live_actor_by_id_requires_matching_id_and_pointer() {
 
     // SAFETY: both actors are quiescent after close and fully owned by this test.
     unsafe {
-        hew_actor_close(actor);
         assert_eq!(hew_actor_free(actor), 0);
-        hew_actor_close(other);
         assert_eq!(hew_actor_free(other), 0);
     }
 }
@@ -4542,7 +4531,7 @@ fn ask_with_channel_send_failure_returns_error() {
 
     // SAFETY: actor pointer is valid — returned by hew_actor_spawn above.
     unsafe {
-        hew_actor_close(actor);
+        mailbox::mailbox_close((*actor).mailbox.cast());
     }
 
     let ch = reply_channel::hew_reply_channel_new();
@@ -6011,7 +6000,7 @@ fn close_then_stop_runnable_actor_requests_no_shutdown() {
 
     // SAFETY: actor/mailbox pointers are valid for the duration of the test.
     unsafe {
-        hew_actor_close(actor);
+        mailbox::mailbox_close(mailbox);
         assert_eq!(
             (*actor).actor_state.load(Ordering::Acquire),
             HewActorState::Runnable as i32,
@@ -6076,7 +6065,7 @@ fn close_then_stop_running_actor_latches_the_stop_flag() {
 
     // SAFETY: actor/mailbox pointers are valid for the duration of the test.
     unsafe {
-        hew_actor_close(actor);
+        mailbox::mailbox_close(mailbox);
         assert_eq!(
             (*actor).actor_state.load(Ordering::Acquire),
             HewActorState::Running as i32,
@@ -6117,10 +6106,6 @@ fn free_actor_resources_completes_when_terminate_finishes_quickly() {
     assert!(!actor.is_null());
 
     // SAFETY: actor pointer is valid — returned by hew_actor_spawn.
-    unsafe {
-        hew_actor_close(actor);
-    }
-
     TERMINATE_WAIT_POLL_TICKS.store(0, Ordering::Release);
     // SAFETY: actor is valid, closed, and in a terminal-safe state.
     let rc = unsafe { hew_actor_free(actor) };

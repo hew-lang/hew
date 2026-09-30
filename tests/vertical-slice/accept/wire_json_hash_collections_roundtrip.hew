@@ -55,7 +55,7 @@ fn main() -> i64 {
         }
     }
     let json = registry.to_json();
-    if json != "{\"codes\":[[1,\"one\"],[2,\"two\"]],\"features\":{\"alpha\":{\"enabled\":true,\"note\":\"now\"},\"beta\":{\"enabled\":false,\"note\":\"later\"}},\"ids\":[1,2,3]}" {
+    if json != "{\"features\":{\"alpha\":{\"enabled\":true,\"note\":\"now\"},\"beta\":{\"enabled\":false,\"note\":\"later\"}},\"codes\":[[1,\"one\"],[2,\"two\"]],\"ids\":[1,2,3]}" {
         return 1;
     }
     match Registry.from_json(json) {

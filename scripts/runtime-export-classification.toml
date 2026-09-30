@@ -142,7 +142,6 @@ stable = [
   "hew_actor_await",
   "hew_actor_await_all",
   "hew_actor_cancel_periodic",
-  "hew_actor_close",
   "hew_actor_current_id",
   "hew_actor_demonitor",
   "hew_actor_exit_unhandled",
@@ -1588,8 +1587,6 @@ non-declarable = [
   "hew_task_scope_set_current",
   "hew_test_selected",
   "hew_wasm_register_actor_meta",
-  "hew_wire_cbor_to_text",
-  "hew_wire_text_to_cbor",
   "hew_xnode_register_codec",
   "hew_xnode_register_reply_codec",
 

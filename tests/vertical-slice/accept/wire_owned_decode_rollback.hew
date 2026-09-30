@@ -25,11 +25,11 @@ fn main() -> i64 {
             .Ok(_) => return 1,
             .Err(_) => {}
         }
-        match Batch.from_json("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}}],\"lookup\":[[[0,255],[\"one\",\"two\"]]],\"last\":999}") {
+        match Batch.from_json("{\"items\":[{\"label\":\"first\",\"payload\":{\"Data\":[\"owned\",[\"kept\",null],7]}}],\"lookup\":[[\"AP8=\",[\"one\",\"two\"]]],\"last\":999}") {
             .Ok(_) => return 2,
             .Err(_) => {}
         }
-        match Batch.from_json("{\"items\":[],\"lookup\":[[[0],[\"first\"]],[[0],[\"duplicate\"]]],\"last\":1}") {
+        match Batch.from_json("{\"items\":[],\"lookup\":[[\"AA==\",[\"first\"]],[\"AA==\",[\"duplicate\"]]],\"last\":1}") {
             .Ok(_) => return 3,
             .Err(_) => {}
         }

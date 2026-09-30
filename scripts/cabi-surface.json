@@ -311,19 +311,6 @@
       "availability": [
         "native"
       ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_actor_close( *mut HewActor)"
-      },
-      "symbol": "hew_actor_close"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
@@ -21937,21 +21924,6 @@
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_wire_cbor_to_text( *const u8, usize, *const c_char, c_int, ) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_wire_cbor_to_text( *const u8, usize, *const c_char, c_int, ) -> *mut c_char"
-      },
-      "symbol": "hew_wire_cbor_to_text"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_wire_decode_begin( *const c_void, i32, *const c_char, *mut *mut c_void, *mut *mut HewString, ) -> i32",
         "wasm32-wasip1": "fn hew_wire_decode_begin( *const c_void, i32, *const c_char, *mut *mut c_void, *mut *mut HewString, ) -> i32"
       },
@@ -21971,21 +21943,6 @@
         "wasm32-wasip1": "fn hew_wire_encode_finish( *mut c_void, i32, *const c_char, *mut c_void, *mut *mut HewString, ) -> i32"
       },
       "symbol": "hew_wire_encode_finish"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "length-or-count",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_wire_text_to_cbor( *const c_char, *const c_char, c_int, *mut usize, *mut *mut c_char, ) -> *mut u8",
-        "wasm32-wasip1": "fn hew_wire_text_to_cbor( *const c_char, *const c_char, c_int, *mut usize, *mut *mut c_char, ) -> *mut u8"
-      },
-      "symbol": "hew_wire_text_to_cbor"
     },
     {
       "availability": [

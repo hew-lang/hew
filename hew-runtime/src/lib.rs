@@ -294,12 +294,9 @@ pub mod xnode_serial;
 /// CBOR `bstr` payload slot unchanged.
 pub mod cbor_serial;
 
+/// Managed-value adapters for the generated wire walks, and the JSON/YAML
+/// bridge from the binary walk onto `hew-codec`.
 pub mod wire_native;
-/// Text wire-body codec: the CBOR↔JSON/YAML bridge the compiler's
-/// `__hew_wire_to_json_*` / `__hew_wire_from_json_*` (and yaml) thunks drive.
-/// Reuses the binary CBOR walk above and transcodes its value tree to/from text
-/// via a per-type tag↔name descriptor — no parallel per-format struct/enum walk.
-pub mod wire_text;
 
 /// Test-only RAII guard that serializes runtime-touching tests AND installs a
 /// default `RuntimeInner` so the de-globalized authority resolvers

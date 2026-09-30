@@ -119,6 +119,7 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: "@hew-lang"
       - name: Resolve authentic registry lockfile and archives
+        id: dependencies
         working-directory: consumer
         run: node ../release-machinery/scripts/resolve-browser-dependencies.mjs resolve
         env:
@@ -138,6 +139,8 @@ jobs:
             playground) npm run check && npm run build ;;
           esac
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # Preserve genuine resolution outputs even when consumer tests fail.
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         with:
           name: browser-dependencies-${{ inputs.consumer }}-${{ inputs.source_commit }}
           path: ${{ runner.temp }}/browser-packages

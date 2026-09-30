@@ -6,7 +6,8 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const registry = 'https://npm.pkg.github.com';
-const names = ['@hew-lang/wasm', '@hew-lang/sandbox-vm', '@hew-lang/playground-sandbox'];
+const engineNames = new Set(['@hew-lang/wasm', '@hew-lang/sandbox-vm']);
+const names = [...engineNames, '@hew-lang/playground-sandbox'];
 const output = resolve(process.env.HEW_DEPENDENCY_ARTIFACT_DIR ?? 'browser-packages');
 mkdirSync(output, { recursive: true });
 const json = (path) => JSON.parse(readFileSync(path, 'utf8'));
@@ -32,14 +33,19 @@ if (process.argv[2] === 'inspect') {
   const lockBytes = readFileSync('package-lock.json');
   const lock = JSON.parse(lockBytes);
   const packages = [];
-  for (const name of names) {
+  // Include every root @hew-lang dependency (for example playground-client),
+  // so the authenticated archives can seed an otherwise credential-free install.
+  const scopedNames = Object.keys(lock.packages)
+    .filter((path) => /^node_modules\/@hew-lang\/[^/]+$/.test(path))
+    .map((path) => path.slice('node_modules/'.length));
+  for (const name of scopedNames) {
     const entry = lock.packages[`node_modules/${name}`];
     if (!entry) continue;
     if (entry.link || !entry.resolved?.startsWith(`${registry}/`) || !entry.integrity) {
       throw new Error(`${name} did not resolve to an authenticated registry archive.`);
     }
     const installed = json(join('node_modules', name, 'package.json'));
-    if (name !== '@hew-lang/playground-sandbox' &&
+    if (engineNames.has(name) &&
         (!/^[a-f0-9]{40}$/.test(installed.hewSource?.commit ?? '') || installed.hewSource.dirty !== false)) {
       throw new Error(`${name} has no clean source revision in its published metadata.`);
     }
@@ -50,7 +56,7 @@ if (process.argv[2] === 'inspect') {
     packages.push({ name, version: entry.version, resolved: entry.resolved, integrity: entry.integrity,
       archive: archives[0].filename, ...(installed.hewSource ? { source: installed.hewSource } : {}) });
   }
-  const engine = packages.filter((pkg) => pkg.name !== '@hew-lang/playground-sandbox');
+  const engine = packages.filter((pkg) => engineNames.has(pkg.name));
   if (engine.length !== 2 || engine[0].version !== engine[1].version || engine[0].source.commit !== engine[1].source.commit) {
     throw new Error('Consumer must resolve the compiler and VM from one release revision.');
   }

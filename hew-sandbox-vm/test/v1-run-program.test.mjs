@@ -9,7 +9,7 @@ import { runProgram } from "../dist/interpreter/run-program.js";
 function v1Package(overrides = {}) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.0-rc4",
+    hew_version: "0.6.0-rc5",
     compiler_version: "v1-run-program-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },
@@ -72,7 +72,7 @@ test("runProgram runs a v1 package without the v0 exit patching", () => {
   assert.equal(result.exit_code, 0);
   assert.equal(result.status, "ok");
   assert.equal(result.compiler_version, "v1-run-program-test");
-  assert.equal(result.hew_version, "0.6.0-rc4");
+  assert.equal(result.hew_version, "0.6.0-rc5");
   assert.deepEqual(result.diagnostics, []);
 });
 

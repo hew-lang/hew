@@ -303,10 +303,10 @@ impl RuntimeCallFamily {
     /// in `hew-types/src/builtin_names.rs` for the 7-symbol set:
     /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
     /// `hew_channel_receiver_close`, `hew_duplex_close`,
-    /// `hew_duplex_close_half`, plus the TCP
-    /// active-mode handoff. The latter is not a close call: its consume fact
-    /// comes from the generated FFI contract for `hew_tcp_attach_local`,
-    /// because the reactor becomes the connection's sole close authority.
+    /// `hew_duplex_close_half`, plus the TLS and WebSocket active-mode
+    /// handoffs. Those are not close calls: their consume fact comes from the
+    /// generated FFI contract, because the runtime becomes the stream's sole
+    /// close authority.
     ///
     /// LESSONS P0 `boundary-fail-closed`: a missed consume-mark leaks
     /// the handle (drop fires once on a still-live handle) — it never
@@ -899,7 +899,6 @@ impl RuntimeCallFamily {
             | F::LocalPidSupervisorPoolChildRefGet
             | F::SupervisorPoolLen
             | F::SupervisorStop
-            | F::TcpAttachLocal
             | F::TlsAttachLocal
             | F::WebSocketAttachLocal
             | F::GeneratorFree

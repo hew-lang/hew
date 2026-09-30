@@ -149,7 +149,7 @@ impl ConnMethods for Conn {
     /// Compiler-lowered active-mode attach.
     ///
     /// The runtime delivers owned messages using the selected actor handlers.
-    #[runtime(family = WebSocketAttachLocal, symbol = hew_ws_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_message, close = on_close, result = discard_status)]
+    #[runtime(family = WebSocketAttachLocal, symbol = hew_ws_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_message, close = on_close)]
     fn attach(conn: Conn, handler: WebSocketHandler) {}
 }
 

@@ -5621,12 +5621,11 @@ mod tests {
     #[test]
     fn runtime_attribute_values_survive_formatting() {
         let source = r#"
-            impl Connection {
-                #[runtime(family = TcpAttachLocal, symbol = hew_tcp_attach_native,
+            impl TlsStream {
+                #[runtime(family = TlsAttachLocal, symbol = hew_tls_attach_native,
                     lowering = actor_ingress, target = native,
-                    classification = "non-declarable-stdlib", receiver = connection,
-                    data = on_data, close = on_close, result = status_result,
-                    error_type = "std.net.AttachError", error_variant = Refused)]
+                    classification = "non-declarable-stdlib", receiver = opaque,
+                    data = on_data, close = on_close)]
                 fn attach() {}
             }
         "#;

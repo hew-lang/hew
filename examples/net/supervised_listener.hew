@@ -1,18 +1,21 @@
-//! A bounded TCP listener running as a supervised actor.
+//! A supervised TCP acceptor with one actor per connection.
 //!
-//! `net.Listener.accept()` is a reactor-backed suspending call. It parks the
-//! actor turn while keeping the scheduler worker free. A fork or another
-//! ordinary actor is not generic isolation for a synchronous foreign call;
-//! this example uses the networking operation whose runtime contract provides
-//! suspension and cancellation.
+//! `Acceptor` owns the listener inside a supervised role. Each admitted
+//! connection moves into its own `Session` actor, which echoes what its peer
+//! sends until the peer finishes, then stops itself; its state drop closes the
+//! connection. The acceptor keeps at most two sessions and closes the third
+//! connection as overload.
 //!
-//! The acceptor keeps at most two live clients and has a one-message mailbox.
-//! It transfers each admitted connection's ownership to the active-mode
-//! reactor with `attach(self)`. The third accepted client is closed as
-//! overload. Stopping `Service` cancels the fourth, blocked accept, drains the
-//! queued input, and closes both reactor-owned connections.
+//! Every wait here is a call that suspends only its own task: `accept` and
+//! `recv` park on the reactor and leave the scheduler worker free, so `Probe`
+//! still answers on one worker while every other task waits on the network.
+//!
+//! Stopping `Service` cancels the blocked fourth accept and closes the
+//! listener. Established sessions belong to their connections, not to the
+//! acceptor, so they keep serving until their peers finish; a restarted
+//! acceptor would not drop them either.
 
-import std.net.{ConnectionHandler};
+import std.net;
 
 import std.stream;
 
@@ -24,8 +27,29 @@ actor Events {
     }
 }
 
+actor Session {
+    let conn: net.Connection;
+    let events: Events;
+
+    receive fn run() {
+        loop {
+            match conn.recv() {
+                .Some(data) => {
+                    if let .Err(_) = conn.send(data) {
+                        break;
+                    }
+                }
+                .None => {
+                    break;
+                }
+            }
+        }
+        events.mark("session finished").expect("record finish");
+        stop(self);
+    }
+}
+
 actor Acceptor {
-    mailbox 1 overflow fail;
     let address: string;
     let events: Events;
 
@@ -34,37 +58,24 @@ actor Acceptor {
         events.mark(f"port {listener.local_port()}").expect("record port");
         for index in 1 .. 4 {
             let conn = listener.accept();
-            events.mark(f"accepted {index}").expect("record acceptance");
             if index <= 2 {
-                conn.attach(self).expect("attach admitted client");
-                events.mark(f"attached {index}").expect("record transfer");
+                let session = spawn Session(conn: conn, events: events);
+                // Submitting `run` starts the session's pump in its own actor
+                // without waiting for it, so this loop returns to `accept`.
+                mailbox(session, on_full: .Wait).run().expect("start session");
+                events.mark(f"session {index}").expect("record session");
             } else {
                 conn.close();
                 events.mark(f"overload {index}").expect("record overload");
             }
         }
-        // Main waits for this event before probing scheduler progress and
-        // stopping the supervisor, so this fourth accept is known to be idle.
-        events.mark("accepting").expect("record blocked accept");
+        // Main waits for this event before probing the scheduler and stopping
+        // the supervisor, so this fourth accept is known to be waiting.
+        events.mark("accepting").expect("record waiting accept");
         let unexpected = listener.accept();
         unexpected.close();
         panic("fourth connection unexpectedly arrived");
     }
-
-    receive fn on_data(data: bytes) {
-        // Main fills this one-message mailbox while `start` is suspended in
-        // accept. Shutdown drains the owned payload without dispatching it.
-        println(f"unexpected dispatch of {data.len()} bytes");
-    }
-
-    receive fn on_close() {
-        println("unexpected close dispatch");
-    }
-}
-
-impl ConnectionHandler for Acceptor {
-    fn on_data(data: bytes) {}
-    fn on_close() {}
 }
 
 actor Probe {
@@ -106,29 +117,40 @@ fn main() {
     let port_event = next(event_input);
     let address = "127.0.0.1:" + port_event.slice(5, port_event.len());
     let first = net.connect(address).expect("first client");
-    expect(event_input, "accepted 1");
-    expect(event_input, "attached 1");
+    expect(event_input, "session 1");
     let second = net.connect(address).expect("second client");
-    expect(event_input, "accepted 2");
-    expect(event_input, "attached 2");
+    expect(event_input, "session 2");
     let third = net.connect(address).expect("third client");
-    expect(event_input, "accepted 3");
     expect(event_input, "overload 3");
     expect(event_input, "accepting");
     expect_server_closed(third);
 
-    // Fill the acceptor's bounded queue while its active turn remains parked.
-    first.send("queued input".to_bytes()).expect("queue active-mode input");
+    first.send("hello".to_bytes()).expect("send to first session");
+    match first.recv() {
+        .Some(reply) => assert(reply == "hello".to_bytes()),
+        .None => panic("first session closed early"),
+    }
+    println("session echoed");
 
-    // With one scheduler worker, this can run only if accept parks on the
-    // reactor. Both attached clients are still active at this point.
+    // With one scheduler worker, this runs only because accept and both
+    // session reads park on the reactor.
     probe.ping().expect("scheduler remains responsive");
     stop(service);
     stopped(service);
     println("supervisor stopped");
-    expect_server_closed(first);
-    expect_server_closed(second);
-    println("connections closed");
+
+    // The sessions outlive the acceptor and finish when their peers do.
+    second.send("still here".to_bytes()).expect("send to second session");
+    match second.recv() {
+        .Some(reply) => assert(reply == "still here".to_bytes()),
+        .None => panic("second session closed with its acceptor"),
+    }
+    println("sessions outlive the acceptor");
+    first.close();
+    second.close();
+    expect(event_input, "session finished");
+    expect(event_input, "session finished");
+    println("sessions finished");
     event_input.close();
     stop(events);
     stopped(events);

@@ -1,6 +1,6 @@
 [[case]]
 id = "example-net-supervised_listener"
-intent = "A reactor-backed listener stays responsive on one scheduler worker, transfers accepted connections into a bounded actor mailbox, rejects overload, and releases blocked accept plus active and queued clients on supervisor shutdown."
+intent = "A supervised acceptor gives each admitted connection its own session actor, stays responsive on one scheduler worker, closes overload, cancels its blocked accept on shutdown, and leaves established sessions serving until their peers finish."
 source = "../../examples/net/supervised_listener.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "1"
 
 [case.expected]
-stdout = "scheduler live\nsupervisor stopped\nconnections closed\n"
+stdout = "session echoed\nscheduler live\nsupervisor stopped\nsessions outlive the acceptor\nsessions finished\n"
 exit = 0

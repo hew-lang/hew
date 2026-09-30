@@ -422,7 +422,6 @@ pub enum RuntimeCallFamily {
     // --- Active transport attach (network actor binding) -------------------
     // Pre-staged method calls dispatch via callee-name intercepts that
     // synthesize concrete actor protocol IDs at codegen time.
-    TcpAttachLocal,
     TlsAttachLocal,
     WebSocketAttachLocal,
 

@@ -2,15 +2,6 @@
 
 use super::{RuntimeCallFamily, RuntimeOpRow};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeclaredRuntimeResult {
-    StatusResult {
-        error_type: &'static str,
-        error_variant: &'static str,
-    },
-    DiscardStatus,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct DeclaredRuntimeMethod {
     pub module: &'static str,
@@ -19,7 +10,6 @@ pub struct DeclaredRuntimeMethod {
     pub data_handler: &'static str,
     pub close_handler: &'static str,
     pub consumes_receiver: bool,
-    pub result: DeclaredRuntimeResult,
     pub row: RuntimeOpRow,
 }
 

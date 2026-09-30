@@ -1,7 +1,7 @@
 [[case]]
-id = "active-mode-bytes-delivery-active-mode-bytes"
-intent = "Leak oracle for active-mode TCP `on_data(bytes)` delivery. Shape `active_mode_bytes_low` (active mode bytes delivery is exactly leak free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
-source = "cases/active-mode-bytes-delivery-active-mode-bytes.hew"
+id = "tcp-pump-bytes-delivery"
+intent = "Leak oracle for TCP bytes a Hew pump delivers to an actor's `on_data(bytes)`: fifty pumped payloads reach their sinks with no leak, double free or use after free under ASan/LSan."
+source = "cases/tcp-pump-bytes-delivery.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 60
 

@@ -1,0 +1,13 @@
+[[case]]
+id = "tcp-pump-stop-with-owned-input"
+intent = "Terminate an actor fed by a Hew connection pump after it acknowledges owned input; suspended and queued owners are reclaimed."
+source = "cases/tcp-pump-stop-with-owned-input.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "pumped input released on actor termination\n"
+exit = 0

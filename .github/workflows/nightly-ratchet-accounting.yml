@@ -16,6 +16,10 @@ env:
   WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+  # Native acceptance shards on macOS and Windows; release-gate.yml uses the
+  # same split, for the same reason (Windows needs ~47 minutes of acceptance
+  # alone, macOS x86_64 ~81, against 60-minute and slow hosted runners).
+  ACCEPTANCE_SHARDS: 4
 
 jobs:
   account-linux:
@@ -81,9 +85,28 @@ jobs:
           fail_on_parse_error: true
           require_tests: true
 
+  # Shard ids for the sharded acceptance jobs below, generated from the one
+  # total so a shard cannot be dropped while the total still names it.
+  plan-acceptance:
+    name: Plan acceptance shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - id: plan
+        run: |
+          set -euo pipefail
+          test "${ACCEPTANCE_SHARDS}" -ge 1
+          shards="$(python3 -c 'import json, os; print(json.dumps([str(k) for k in range(int(os.environ["ACCEPTANCE_SHARDS"]))]))')"
+          echo "shards=${shards}" | tee -a "$GITHUB_OUTPUT"
+
   # Platform-scoped nextest rows are checked on their native hosts. Keep this
   # in sync with the ledger selectors: adding a new platform-specific selector
-  # requires a scheduled strict job for that platform.
+  # requires a scheduled strict job for that platform. Native acceptance is the
+  # other half of the platform verdict (D505): the acceptance-macos and
+  # acceptance-windows jobs below run it, strictly, against the same ledger
+  # the release gate reads.
   account-macos-nextest:
     name: Nextest ratchet accounting (macOS arm64)
     # macos-15 for the same reason as ci.yml's macOS job: macos-14's lldb
@@ -214,3 +237,120 @@ jobs:
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
+
+  # Native core acceptance, sharded `--partition k/N`, on both macOS
+  # architectures. A case that diverges on one platform goes red here between
+  # release gates instead of first surfacing in one.
+  acceptance-macos:
+    name: Native acceptance (macOS ${{ matrix.cfg.arch }}, shard ${{ matrix.shard }})
+    needs: plan-acceptance
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg:
+          - os: macos-15
+            arch: aarch64
+          - os: macos-15-intel
+            arch: x86_64
+        shard: ${{ fromJSON(needs.plan-acceptance.outputs.shards) }}
+    runs-on: ${{ matrix.cfg.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: "aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1"
+          tools: nextest@0.9.120
+          cache-shared-key: nightly-acceptance-macos
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Set macOS deployment target
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Install wasmtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-${{ matrix.cfg.arch }}-macos"
+          WASMTIME_ROOT="${RUNNER_TEMP}/wasmtime"
+          mkdir -p "${WASMTIME_ROOT}"
+          .github/scripts/retry-download.sh \
+            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --dir "${RUNNER_TEMP}" --clobber
+          tar -xJf "${RUNNER_TEMP}/${WASMTIME_DIR}.tar.xz" -C "${WASMTIME_ROOT}"
+          echo "${WASMTIME_ROOT}/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "${WASMTIME_ROOT}/${WASMTIME_DIR}/wasmtime" --version
+
+      - name: Run native acceptance (shard ${{ matrix.shard }} of ${{ env.ACCEPTANCE_SHARDS }})
+        run: make core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/${{ env.ACCEPTANCE_SHARDS }}"
+
+  acceptance-windows:
+    name: Native acceptance (Windows, shard ${{ matrix.shard }})
+    needs: plan-acceptance
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan-acceptance.outputs.shards) }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Setup MSVC environment
+        uses: ./.github/actions/setup-msvc
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: wasm32-wasip1
+          tools: nextest@0.9.120
+          cache-shared-key: nightly-acceptance-windows
+
+      - name: Install GNU Make
+        shell: pwsh
+        run: choco install make --yes --no-progress
+
+      - name: Install wasmtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
+          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
+          $root = Join-Path $env:RUNNER_TEMP "wasmtime"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --dir $env:RUNNER_TEMP --clobber
+          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
+          Expand-Archive -Path $archive -DestinationPath $root -Force
+          $wasmtimeBin = Join-Path $root $dir
+          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
+          if (-not (Test-Path -LiteralPath $wasmtimeExe)) { throw "wasmtime.exe not found at $wasmtimeExe" }
+          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
+          & $wasmtimeExe --version
+          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but --version exited $LASTEXITCODE" }
+
+      - name: Run native acceptance (shard ${{ matrix.shard }} of ${{ env.ACCEPTANCE_SHARDS }})
+        shell: bash
+        run: make SHELL=bash core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/${{ env.ACCEPTANCE_SHARDS }}"

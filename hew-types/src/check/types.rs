@@ -304,7 +304,7 @@ pub enum ResultReturnKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorConversion {
     Same,
-    Erase(DynCoercion),
+    Erase(Box<DynCoercion>),
     /// Call the selected `From.from` impl method on the error payload.
     From {
         method: crate::DefId,

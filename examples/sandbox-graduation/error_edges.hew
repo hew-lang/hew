@@ -15,7 +15,8 @@ impl Display for ParseError {
     }
 }
 
-impl Error for ParseError {}
+impl Error for ParseError {
+}
 
 enum ConfigError {
     Parse(ParseError);
@@ -33,7 +34,8 @@ impl Display for ConfigError {
     }
 }
 
-impl Error for ConfigError {}
+impl Error for ConfigError {
+}
 
 impl From<ParseError> for ConfigError {
     fn from(value: ParseError) -> ConfigError {
@@ -68,6 +70,18 @@ fn port(text: string, limit: i64) -> i64 fails ConfigError {
     n
 }
 
+fn number_or_report(text: string) -> i64 fails dyn Error {
+    let n = parse_number(text)?;
+    n
+}
+
+fn number_or_zero(text: string) -> i64 {
+    parse_number(text) handle e {
+        println(f"handled: {e}");
+        0
+    }
+}
+
 fn describe(text: string, limit: i64) {
     match port(text, limit) {
         .Ok(n) => println(f"ok {n}"),
@@ -85,7 +99,7 @@ fn load(text: string) -> i64 fails dyn Error {
     n
 }
 
-fn main() fails dyn Error {
+fn main() {
     describe("8080", 9000);
     describe("", 9000);
     describe("abc", 9000);
@@ -95,6 +109,14 @@ fn main() fails dyn Error {
         .Ok(n) => println(f"loaded {n}"),
         .Err(e) => println(f"load failed: {e.fmt()}"),
     }
-    load("abc")?;
-    println("unreachable");
+    match number_or_report("xyz") {
+        .Ok(n) => println(f"number {n}"),
+        .Err(e) => println(f"report: {e.fmt()}"),
+    }
+    let zero = number_or_zero("xyz");
+    println(f"zero {zero}");
+    match load("abc") {
+        .Ok(n) => println(f"loaded {n}"),
+        .Err(e) => println(f"load failed: {e.fmt()}"),
+    }
 }

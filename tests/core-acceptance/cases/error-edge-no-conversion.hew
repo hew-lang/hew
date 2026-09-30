@@ -1,6 +1,7 @@
 // Without a declared `From`, `?` cannot carry an `IoError` into a
 // `ConfigError`; the refusal offers all three repairs.
 import std.fs;
+
 import std.string;
 
 enum ConfigError {
@@ -17,8 +18,8 @@ impl Display for ConfigError {
     }
 }
 
-impl Error for ConfigError {}
-
+impl Error for ConfigError {
+}
 
 fn read_port(path: string) -> i64 fails ConfigError {
     let text = fs.read(path)?;

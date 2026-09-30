@@ -12,7 +12,8 @@ impl Display for Oops {
     }
 }
 
-impl Error for Oops {}
+impl Error for Oops {
+}
 
 trait Step {
     fn run(self) fails Oops;
